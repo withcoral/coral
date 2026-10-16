@@ -1,18 +1,17 @@
-//! Sequenced Run Events, their pages, and the Run counters they advance.
+//! Sequenced Run Events and their pages.
 
 use coral_db::Transaction;
 use coral_workspace::{Principal, PrincipalId, WorkspaceId};
 use sea_query::{Expr, ExprTrait as _, Iden, Order, Query};
 use sqlx::FromRow;
 
-use super::{ProgramRunRecords, principal_kind_from_storage};
-use crate::lifecycle::RunRecord;
+use super::principal_kind_from_storage;
 use crate::{
     Error, InvocationId, InvocationResultKind, PROGRAM_LOG_MESSAGE_MAX_BYTES, ProgramLogLevel,
     ProgramValue, RunEvent, RunEventKind, RunId, RunState,
 };
 
-#[derive(Iden)]
+#[derive(Iden, Clone, Copy, PartialEq, Eq)]
 enum ProgramRunEvents {
     Table,
     WorkspaceId,
@@ -152,17 +151,119 @@ pub(crate) enum NewEvent<'a> {
     Logged(ProgramLogLevel, &'a str),
 }
 
-pub(crate) async fn insert_event(
+/// Appends `events` after the Run's last Event, in multi-row statements of at
+/// most [`EVENT_INSERT_ROWS`] rows each. Only [`super::commit_chunk`] and
+/// acceptance's `run.started` write Events.
+///
+/// Each statement numbers its rows from `MAX(sequence)` read in that same
+/// statement. The caller holds the Run row, and a statement that starts after
+/// the hold sees every Event the previous holder committed; a value read
+/// beside the hold itself would not, since Postgres gives a blocked `UPDATE`
+/// its snapshot before the wait.
+pub(super) async fn insert_events(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     run_id: &RunId,
-    sequence: u64,
-    event: NewEvent<'_>,
-    occurred_at_unix_nanos: i64,
+    events: &[super::ChunkEvent<'_>],
 ) -> Result<(), Error> {
-    use ProgramRunEvents as Events;
+    use sea_query::{Alias, ValueTuple};
 
-    let output_bytes = match &event {
+    let rows = Alias::new("chunk");
+    let last = Alias::new("last");
+    let column = |index: usize| Expr::col((rows.clone(), Alias::new(format!("column{index}"))));
+    for batch in events.chunks(EVENT_INSERT_ROWS) {
+        let tuples = batch
+            .iter()
+            .enumerate()
+            .map(|(offset, event)| {
+                let offset = i64::try_from(offset + 1).map_err(|_overflow| {
+                    Error::CorruptData("Run Event sequence overflowed".to_string())
+                })?;
+                event_row(
+                    workspace_id,
+                    run_id,
+                    offset,
+                    &event.event,
+                    event.occurred_at_unix_nanos,
+                )
+                .map(|values| ValueTuple::Many(values.to_vec()))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let last_sequence = Query::select()
+            .expr_as(
+                Expr::expr(Expr::col(ProgramRunEvents::Sequence).max()).if_null(0_i64),
+                Alias::new("sequence"),
+            )
+            .from(ProgramRunEvents::Table)
+            .and_where(Expr::col(ProgramRunEvents::WorkspaceId).eq(workspace_id.to_string()))
+            .and_where(Expr::col(ProgramRunEvents::RunId).eq(run_id.to_string()))
+            .to_owned();
+        let mut select = Query::select();
+        for (index, event_column) in EVENT_COLUMNS.iter().enumerate() {
+            if *event_column == ProgramRunEvents::Sequence {
+                select
+                    .expr(Expr::col((last.clone(), Alias::new("sequence"))).add(column(index + 1)));
+            } else {
+                select.expr(column(index + 1));
+            }
+        }
+        select
+            .from_values(tuples, rows.clone())
+            .from_subquery(last_sequence, last.clone());
+        let statement = Query::insert()
+            .into_table(ProgramRunEvents::Table)
+            .columns(EVENT_COLUMNS)
+            .select_from(select)
+            .map_err(|error| Error::CorruptData(format!("Run Event insert is malformed: {error}")))?
+            .to_owned();
+        transaction.execute_change(statement).await?;
+    }
+    Ok(())
+}
+
+/// Rows per Event insert statement: the ADR's chunk cap, so a capped chunk is
+/// one statement and a larger one stays under both backends' bind limits.
+const EVENT_INSERT_ROWS: usize = 1000;
+
+/// The Event columns, in the order the insert and its value rows use. The
+/// `Sequence` entry carries the row's offset within its statement.
+const EVENT_COLUMNS: [ProgramRunEvents; 14] = [
+    ProgramRunEvents::WorkspaceId,
+    ProgramRunEvents::RunId,
+    ProgramRunEvents::Sequence,
+    ProgramRunEvents::EventType,
+    ProgramRunEvents::OccurredAtUnixNanos,
+    ProgramRunEvents::ActorPrincipalId,
+    ProgramRunEvents::ActorPrincipalKind,
+    ProgramRunEvents::TerminalState,
+    ProgramRunEvents::InvocationId,
+    ProgramRunEvents::ResultKind,
+    ProgramRunEvents::ProgramValueJson,
+    ProgramRunEvents::LogLevel,
+    ProgramRunEvents::LogMessage,
+    ProgramRunEvents::OutputBytes,
+];
+
+/// The columns one Event kind owns. The table CHECK keeps the others NULL.
+#[derive(Default)]
+struct EventPayload<'a> {
+    actor: Option<&'a Principal>,
+    terminal_state: Option<&'static str>,
+    invocation: Option<&'a InvocationId>,
+    result_kind: Option<&'static str>,
+    value: Option<&'a str>,
+    log: Option<(&'static str, &'a str)>,
+}
+
+/// One Event row in [`EVENT_COLUMNS`] order, with `offset` in the sequence slot.
+fn event_row(
+    workspace_id: &WorkspaceId,
+    run_id: &RunId,
+    offset: i64,
+    event: &NewEvent<'_>,
+    occurred_at_unix_nanos: i64,
+) -> Result<[sea_query::Value; 14], Error> {
+    let output_bytes = match event {
         NewEvent::Emitted(value) => value.encoded_json().len(),
         NewEvent::Logged(_, message) => message.len(),
         NewEvent::Ended(_, bytes) => *bytes,
@@ -170,215 +271,73 @@ pub(crate) async fn insert_event(
     };
     let output_bytes = i64::try_from(output_bytes)
         .map_err(|_overflow| Error::CorruptData("Event byte count overflow".into()))?;
-    let (event_type, mut fields) = match event {
-        NewEvent::Started => ("run.started", Vec::new()),
+    let (event_type, payload) = match event {
+        NewEvent::Started => ("run.started", EventPayload::default()),
         NewEvent::CancellationRequested(principal) => (
             "cancellation.requested",
-            vec![
-                (Events::ActorPrincipalId, Expr::val(principal.id().as_str())),
-                (
-                    Events::ActorPrincipalKind,
-                    Expr::val(principal.kind().as_storage_str()),
-                ),
-            ],
+            EventPayload {
+                actor: Some(principal),
+                ..EventPayload::default()
+            },
         ),
         NewEvent::Ended(state, _) => (
             "run.ended",
-            vec![(Events::TerminalState, Expr::val(state.as_storage_str()))],
+            EventPayload {
+                terminal_state: Some(state.as_storage_str()),
+                ..EventPayload::default()
+            },
         ),
         NewEvent::InvocationStarted(id) => (
             "invocation.started",
-            vec![(Events::InvocationId, Expr::val(id.to_string()))],
+            EventPayload {
+                invocation: Some(id),
+                ..EventPayload::default()
+            },
         ),
         NewEvent::InvocationEnded(id, kind) => (
             "invocation.ended",
-            vec![
-                (Events::InvocationId, Expr::val(id.to_string())),
-                (Events::ResultKind, Expr::val(kind.as_storage_str())),
-            ],
+            EventPayload {
+                invocation: Some(id),
+                result_kind: Some(kind.as_storage_str()),
+                ..EventPayload::default()
+            },
         ),
         NewEvent::Emitted(value) => (
             "program.emitted",
-            vec![(Events::ProgramValueJson, Expr::val(value.encoded_json()))],
+            EventPayload {
+                value: Some(value.encoded_json()),
+                ..EventPayload::default()
+            },
         ),
         NewEvent::Logged(level, message) => (
             "program.logged",
-            vec![
-                (Events::LogLevel, Expr::val(level.as_storage_str())),
-                (Events::LogMessage, Expr::val(message)),
-            ],
+            EventPayload {
+                log: Some((level.as_storage_str(), message)),
+                ..EventPayload::default()
+            },
         ),
     };
-    let sequence = i64::try_from(sequence)
-        .map_err(|_error| Error::CorruptData("Run Event sequence overflowed".to_string()))?;
-    fields.extend([
-        (Events::OutputBytes, Expr::val(output_bytes)),
-        (Events::WorkspaceId, Expr::val(workspace_id.to_string())),
-        (Events::RunId, Expr::val(run_id.to_string())),
-        (Events::Sequence, Expr::val(sequence)),
-        (Events::EventType, Expr::val(event_type)),
-        (
-            Events::OccurredAtUnixNanos,
-            Expr::val(occurred_at_unix_nanos),
+    let text = |value: Option<&str>| sea_query::Value::from(value.map(str::to_string));
+    Ok([
+        workspace_id.to_string().into(),
+        run_id.to_string().into(),
+        offset.into(),
+        event_type.into(),
+        occurred_at_unix_nanos.into(),
+        text(payload.actor.map(|principal| principal.id().as_str())),
+        text(
+            payload
+                .actor
+                .map(|principal| principal.kind().as_storage_str()),
         ),
-    ]);
-    let (columns, values): (Vec<_>, Vec<_>) = fields.into_iter().unzip();
-    let statement = Query::insert()
-        .into_table(Events::Table)
-        .columns(columns)
-        .values_panic(values)
-        .to_owned();
-    transaction.execute_change(statement).await?;
-    Ok(())
-}
-
-/// Called only after the current Invocation's guarded result write succeeds,
-/// inside the same Run-held transaction. Dispatched results may settle during termination.
-pub(crate) async fn record_invocation_output(
-    transaction: &mut Transaction<'_>,
-    run: &RunRecord,
-    claim_id: &str,
-    additional: usize,
-) -> Result<(), Error> {
-    let statement = Query::update()
-        .table(ProgramRunRecords::Table)
-        .value(
-            ProgramRunRecords::AccumulatedOutputBytes,
-            stored_output_total(run, additional)?,
-        )
-        .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(run.workspace_id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::Id).eq(run.id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::State).eq(RunState::Running.as_storage_str()))
-        .and_where(Expr::col(ProgramRunRecords::ExecutionClaimId).eq(claim_id))
-        .and_where(
-            Expr::col(ProgramRunRecords::AccumulatedOutputBytes).eq(stored_output_total(run, 0)?),
-        )
-        .to_owned();
-    if transaction.execute(statement).await? != 1 {
-        return Err(Error::InvocationPersistence(
-            "Program Run lost Invocation output accounting".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn stored_output_total(run: &RunRecord, additional: usize) -> Result<i64, Error> {
-    run.accumulated_output_bytes
-        .checked_add(additional)
-        .and_then(|total| i64::try_from(total).ok())
-        .ok_or_else(|| Error::CorruptData("Run output bytes overflowed".into()))
-}
-
-pub(crate) async fn advance_event_sequence(
-    transaction: &mut Transaction<'_>,
-    run: &RunRecord,
-    claim_id: &str,
-    increment: u64,
-    additional_output_bytes: usize,
-) -> Result<(), Error> {
-    let current = i64::try_from(run.next_event_sequence)
-        .map_err(|_error| Error::CorruptData("Run Event sequence overflowed".to_string()))?;
-    let next = run
-        .next_event_sequence
-        .checked_add(increment)
-        .and_then(|value| i64::try_from(value).ok())
-        .ok_or_else(|| Error::CorruptData("Run Event sequence overflowed".to_string()))?;
-    let statement = Query::update()
-        .table(ProgramRunRecords::Table)
-        .value(ProgramRunRecords::NextEventSequence, next)
-        .value(
-            ProgramRunRecords::AccumulatedOutputBytes,
-            stored_output_total(run, additional_output_bytes)?,
-        )
-        .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(run.workspace_id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::Id).eq(run.id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::State).eq(RunState::Running.as_storage_str()))
-        .and_where(Expr::col(ProgramRunRecords::TerminationKind).is_null())
-        .and_where(Expr::col(ProgramRunRecords::ExecutionClaimId).eq(claim_id))
-        .and_where(Expr::col(ProgramRunRecords::WorkerClaimId).eq(claim_id))
-        .and_where(Expr::col(ProgramRunRecords::NextEventSequence).eq(current))
-        .and_where(
-            Expr::col(ProgramRunRecords::AccumulatedOutputBytes).eq(stored_output_total(run, 0)?),
-        )
-        .to_owned();
-    if transaction.execute(statement).await? != 1 {
-        return Err(Error::RunEventPersistence(
-            "Program Run no longer accepts Event evidence".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) async fn advance_event_sequence_after_dispatch(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    run_id: &RunId,
-    claim_id: &str,
-    current_sequence: u64,
-    increment: u64,
-) -> Result<(), Error> {
-    advance_terminal_event_sequence(
-        transaction,
-        workspace_id,
-        run_id,
-        current_sequence,
-        increment,
-        Some(claim_id),
-    )
-    .await
-}
-
-pub(crate) async fn advance_event_sequence_during_termination(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    run_id: &RunId,
-    current_sequence: u64,
-    increment: u64,
-) -> Result<(), Error> {
-    advance_terminal_event_sequence(
-        transaction,
-        workspace_id,
-        run_id,
-        current_sequence,
-        increment,
-        None,
-    )
-    .await
-}
-
-async fn advance_terminal_event_sequence(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    run_id: &RunId,
-    current_sequence: u64,
-    increment: u64,
-    dispatched_claim_id: Option<&str>,
-) -> Result<(), Error> {
-    let current = i64::try_from(current_sequence)
-        .map_err(|_error| Error::CorruptData("Run Event sequence overflowed".to_string()))?;
-    let next = current_sequence
-        .checked_add(increment)
-        .and_then(|value| i64::try_from(value).ok())
-        .ok_or_else(|| Error::CorruptData("Run Event sequence overflowed".to_string()))?;
-    let mut statement = Query::update();
-    statement
-        .table(ProgramRunRecords::Table)
-        .value(ProgramRunRecords::NextEventSequence, next)
-        .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::Id).eq(run_id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::State).eq(RunState::Running.as_storage_str()))
-        .and_where(Expr::col(ProgramRunRecords::NextEventSequence).eq(current));
-    if let Some(claim_id) = dispatched_claim_id {
-        statement.and_where(Expr::col(ProgramRunRecords::ExecutionClaimId).eq(claim_id));
-    } else {
-        statement.and_where(Expr::col(ProgramRunRecords::TerminationKind).is_not_null());
-    }
-    if transaction.execute(statement).await? != 1 {
-        return Err(Error::RunEventPersistence(
-            "Program Run no longer accepts terminal Event evidence".to_string(),
-        ));
-    }
-    Ok(())
+        text(payload.terminal_state),
+        text(payload.invocation.map(ToString::to_string).as_deref()),
+        text(payload.result_kind),
+        text(payload.value),
+        text(payload.log.map(|(level, _)| level)),
+        text(payload.log.map(|(_, message)| message)),
+        output_bytes.into(),
+    ])
 }
 
 pub(crate) async fn event_page_in_transaction(

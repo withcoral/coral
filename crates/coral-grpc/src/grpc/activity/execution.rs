@@ -32,6 +32,9 @@ pub(super) fn run_error(error: coral_run::Error) -> Status {
         | coral_run::Error::InvocationRejected(_)
         | coral_run::Error::InvocationPersistence(_)
         | coral_run::Error::RunEventPersistence(_)
+        | coral_run::Error::ClaimMismatch
+        | coral_run::Error::HeadMismatch
+        | coral_run::Error::RunEnded
         | coral_run::Error::ProgramHostTerminated
         | coral_run::Error::Provider(_)
         | coral_run::Error::Policy(_)

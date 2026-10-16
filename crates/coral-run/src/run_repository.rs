@@ -1,5 +1,6 @@
-//! Run record persistence. Children own the package, claim, termination,
-//! Event, and retention statements; callers reach all of them through this module.
+//! Run record persistence. Children own the package, claim, Run Ledger,
+//! termination, Event, and retention statements; callers reach all of them
+//! through this module.
 
 #[cfg(test)]
 use coral_db::Database;
@@ -13,6 +14,7 @@ use crate::{Error, RunId, RunState};
 mod acceptance;
 mod claims;
 mod events;
+mod ledger;
 mod retention;
 mod run_row;
 mod termination;
@@ -22,11 +24,8 @@ pub(crate) use claims::{
     claim_execution_worker, mark_execution_started, release_unstarted_worker_claim,
     renew_worker_claim,
 };
-pub(crate) use events::{
-    NewEvent, advance_event_sequence, advance_event_sequence_after_dispatch,
-    advance_event_sequence_during_termination, event_page_in_transaction, insert_event,
-    output_page_in_transaction, record_invocation_output,
-};
+pub(crate) use events::{NewEvent, event_page_in_transaction, output_page_in_transaction};
+pub(crate) use ledger::{Chunk, ChunkEvent, commit_chunk};
 pub(crate) use retention::{delete_retained_history, retention_activity};
 use run_row::RunRow;
 pub(crate) use termination::{
@@ -62,10 +61,16 @@ enum ProgramRunRecords {
     ValueLimitsJson,
     NextEventSequence,
     AccumulatedOutputBytes,
+    ChunkSequence,
 }
 
 /// Locks the Run row for the rest of `transaction` and returns the Run as the
 /// lock found it, in one round trip. Returns `None` when the Run does not exist.
+///
+/// The held Run carries no `last_event_sequence`: on Postgres a blocked
+/// `UPDATE` keeps the snapshot it took before the wait, so a read of the Event
+/// rows beside the lock could miss the previous holder's Events. The chunk
+/// commit numbers its Events in its own statement instead.
 pub(crate) async fn hold_run(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -136,6 +141,27 @@ pub(crate) async fn find_visible_in_transaction(
     row.map(RunRow::decode).transpose()
 }
 
+/// The previous release's Event counter, which this release only advances.
+#[cfg(test)]
+pub(crate) async fn next_event_sequence(
+    database: &Database,
+    workspace_id: &WorkspaceId,
+    run_id: &RunId,
+) -> Result<i64, Error> {
+    let (counter,): (i64,) = database
+        .fetch_optional(
+            Query::select()
+                .column(ProgramRunRecords::NextEventSequence)
+                .from(ProgramRunRecords::Table)
+                .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(Expr::col(ProgramRunRecords::Id).eq(run_id.to_string()))
+                .to_owned(),
+        )
+        .await?
+        .ok_or(Error::RunNotFound)?;
+    Ok(counter)
+}
+
 #[cfg(test)]
 pub(crate) async fn count_runs(database: &Database) -> Result<u64, Error> {
     let statement = Query::select()
@@ -182,13 +208,25 @@ const RUN_COLUMNS: [ProgramRunRecords; 26] = [
     ProgramRunRecords::FailureErrorJson,
     ProgramRunRecords::FinalValueJson,
     ProgramRunRecords::ValueLimitsJson,
-    ProgramRunRecords::NextEventSequence,
     ProgramRunRecords::AccumulatedOutputBytes,
+    ProgramRunRecords::ChunkSequence,
 ];
+
+/// The Run's last Event sequence, read beside its row in one read snapshot.
+/// Event numbering is data on the Event rows; the observation index answers
+/// this from its end.
+fn last_event_sequence() -> Expr {
+    Expr::cust(
+        "COALESCE((SELECT MAX(program_run_events.sequence) FROM program_run_events \
+         WHERE program_run_events.workspace_id = program_run_records.workspace_id \
+         AND program_run_events.run_id = program_run_records.id), 0) AS last_event_sequence",
+    )
+}
 
 fn base_run_select() -> sea_query::SelectStatement {
     Query::select()
         .columns(RUN_COLUMNS)
+        .expr(last_event_sequence())
         .from(ProgramRunRecords::Table)
         .to_owned()
 }

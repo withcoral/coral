@@ -191,6 +191,18 @@ pub enum Error {
     /// Run Event persistence lost an atomic sequence transition.
     #[error("Program Run Event persistence failed: {0}")]
     RunEventPersistence(String),
+    /// A Run Ledger chunk was built on an execution claim the Run row does not
+    /// hold. Definitive: the writer has lost the Run.
+    #[error("Program Run Ledger chunk was built on a stale execution claim")]
+    ClaimMismatch,
+    /// A Run Ledger chunk was built on a head the Run row has moved past under
+    /// the same claim.
+    #[error("Program Run Ledger chunk was built on a stale head")]
+    HeadMismatch,
+    /// A Run Ledger chunk was built on a Run that has ended. No Event follows
+    /// `run.ended`.
+    #[error("Program Run Ledger chunk was built on an ended Run")]
+    RunEnded,
     /// A fatal Program host failure stopped execution for recovery.
     #[error("Program host terminated execution")]
     ProgramHostTerminated,
