@@ -77,14 +77,17 @@ fn http_unknown_result_declaration() -> String {
     )
 }
 
-pub(super) fn fallback_typescript(relative_path: &str) -> String {
-    format!(
-        "function {relative_path}(input: unknown): Promise<{{ data: unknown; metadata: {} }}>;",
-        http_metadata(
-            "number",
-            "string | null",
-            &format!("readonly {DECODE_DIAGNOSTIC}[]")
-        )
+pub(super) fn fallback_typescript() -> String {
+    render_callable_declaration(
+        "input: unknown",
+        &format!(
+            "Promise<{{ data: unknown; metadata: {} }}>",
+            http_metadata(
+                "number",
+                "string | null",
+                &format!("readonly {DECODE_DIAGNOSTIC}[]")
+            )
+        ),
     )
 }
 
@@ -94,7 +97,6 @@ pub(crate) fn typescript_names(graph: &SchemaGraph) -> TypeScriptNames {
 }
 
 pub(super) fn project_typescript(
-    relative_path: &str,
     input_schema: &SchemaId,
     binding: &HttpExecutionBinding,
     graph: &SchemaGraph,
@@ -150,10 +152,9 @@ pub(super) fn project_typescript(
     }
     declarations.extend(result_declarations);
     declarations.push(render_callable_declaration(
-        relative_path,
         &input_parameter,
         &format!("Promise<{output}>"),
-    )?);
+    ));
     Ok(TypeScriptProjection {
         declaration: declarations.join("\n"),
         type_references,
@@ -165,14 +166,12 @@ pub(super) fn project_typescript(
 /// Returns whether a stored HTTP Operation's callable takes `input`, from the
 /// same projection that materialization ran.
 pub(crate) fn declares_input(
-    relative_path: &str,
     input_schema: &SchemaId,
     binding: &HttpExecutionBinding,
     graph: &SchemaGraph,
     type_names: &TypeScriptNames,
 ) -> Result<bool, CatalogDiagnostic> {
     project_typescript(
-        relative_path,
         input_schema,
         binding,
         graph,

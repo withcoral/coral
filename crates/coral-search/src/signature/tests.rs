@@ -63,7 +63,7 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
     };
     let argumentless = {
         let (aliases, result) = http_result(&[("string", "200")]);
-        format!("{aliases}function ping(): {result};")
+        format!("{aliases}export default function (): {result};")
     };
     let fallback = "function raw(input: unknown): Promise<{ data: unknown; metadata: { readonly kind: \"http\" } }>;";
     let named_input = "interface Input {\n    value: number;\n    nested: {\n        a: string;\n    };\n    tags?: string[];\n}\nexport default function run(input: Input): number;\nexport {};\n";
@@ -104,8 +104,8 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
         ),
         (
             argumentless.as_str(),
-            Callable::Operation { leaf: "ping" },
-            "ping(): Promise<{ data: string }>",
+            Callable::Operation { leaf: "delete" },
+            "delete(): Promise<{ data: string }>",
         ),
         (
             fallback,

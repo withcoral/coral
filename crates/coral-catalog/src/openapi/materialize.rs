@@ -149,7 +149,6 @@ fn finish_operations(
     let mut shared_types = crate::schema::SharedTypes::default();
     for mut build in builds {
         let (declaration, type_references) = match project_typescript(
-            &build.relative_path,
             &build.input_schema,
             &build.binding,
             schema_graph,
@@ -162,7 +161,7 @@ fn finish_operations(
             }
             Err(diagnostic) => {
                 build.diagnostics.push(diagnostic);
-                (fallback_typescript(&build.relative_path), Vec::new())
+                (fallback_typescript(), Vec::new())
             }
         };
         if let Some(diagnostic) = crate::types::operation_description_too_large(

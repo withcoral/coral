@@ -329,8 +329,9 @@ async fn describe_returns_exact_descriptions_and_only_owned_source() {
     assert_eq!(operation.provider_id(), &scope.published.provider_id);
     let declaration = operation.typescript_declaration();
     assert!(
-        declaration
-            .contains("function getForecast(): Promise<HttpResult<({ \"temperatureC\": number }")
+        declaration.contains(
+            "export default function (): Promise<HttpResult<({ \"temperatureC\": number }"
+        )
     );
     assert!(declaration.ends_with(", 200, \"application/json\"> | HttpUnknownResult>;"));
     assert!(described_operation.saved_function_detail().is_none());
@@ -993,7 +994,9 @@ async fn phrase_points_match_whole_words_and_favor_a_whole_field() {
         "/drafts/all":{"get":{"operationId":"drafts/list","summary":"Open draft and review drafts","responses":{"200":{"description":"ok"}}}},
         "/pulls/merge":{"put":{"operationId":"pulls/merge","summary":"Merge a pull request now","description":"LONG","responses":{"200":{"description":"ok"}}}},
         "/merges":{"get":{"operationId":"merges/list","summary":"MERGE PULL REQUESTS","responses":{"200":{"description":"ok"}}}},
-        "/merges/tool":{"get":{"operationId":"merges/tool","summary":"MERGE PULLREQUEST NOW","responses":{"200":{"description":"ok"}}}}
+        "/merges/tool":{"get":{"operationId":"merges/tool","summary":"MERGE PULLREQUEST NOW","responses":{"200":{"description":"ok"}}}},
+        "/hooks/then":{"post":{"operationId":"hooks/then","summary":"Chain a hook","responses":{"200":{"description":"ok"}}}},
+        "/hooks/then/review":{"post":{"operationId":"hooks/thenReview","summary":"Chain a hook review","responses":{"200":{"description":"ok"}}}}
       }
     }"#
     .replace("LONG", long.trim_end());
@@ -1020,9 +1023,9 @@ async fn phrase_points_match_whole_words_and_favor_a_whole_field() {
             "a whole name outranks the camelCase names it begins",
         ),
         (
-            "pulls.get",
-            "pulls._get",
-            "`_` separates words, so the escaped name `_get` is the whole name",
+            "hooks.then",
+            "hooks._then",
+            "`_` separates words, so the escaped name `_then` is the whole name",
         ),
         (
             "create a pull request stack",

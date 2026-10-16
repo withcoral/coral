@@ -38,7 +38,7 @@ impl ProviderNamespace {
         if !valid_first
             || !valid_rest
             || value.len() > 128
-            || matches!(value, "__proto__" | "prototype" | "constructor" | "then")
+            || coral_catalog::call_path_segment_is_reserved(value)
         {
             return Err(Error::InvalidInput(
                 "Provider namespace must be a non-reserved safe ASCII JavaScript identifier of at most 128 bytes"

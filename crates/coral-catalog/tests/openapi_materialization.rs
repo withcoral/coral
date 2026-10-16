@@ -407,7 +407,7 @@ fn http_result_declarations_are_mutually_assignable_with_their_previous_form() {
         assert_strict_compiling_declaration(&format!(
             "{declaration}\n\
              type Previous = {previous};\n\
-             type Current = Awaited<ReturnType<typeof {operation_id}>>;\n\
+             type Current = Awaited<ReturnType<typeof callable>>;\n\
              type Assignable<From extends To, To> = From;\n\
              type PreviousIsCurrent = Assignable<Previous, Current>;\n\
              type CurrentIsPrevious = Assignable<Current, Previous>;"
@@ -491,7 +491,7 @@ paths:
     assert_strict_compiling_declaration(&format!(
         "{probe}\n\
          type Holds<Claim extends true> = Claim;\n\
-         type Statuses = Awaited<ReturnType<typeof probe>>[\"metadata\"][\"status\"];\n\
+         type Statuses = Awaited<ReturnType<typeof callable>>[\"metadata\"][\"status\"];\n\
          type RangeIsNotDefault = Holds<number extends HttpStatus4xx ? false : true>;\n\
          type RangesAreDistinct = Holds<HttpStatus4xx extends HttpStatus5xx ? false : true>;\n\
          type StatusIsANumber = Holds<Statuses extends number ? true : false>;"
@@ -2899,7 +2899,16 @@ components:
     )
 }
 
+/// An Operation's declaration with its anonymous default-export callable
+/// declared as the function `name` instead.
+fn named_callable(declaration: &str, name: &str) -> String {
+    declaration.replacen("export default function (", &format!("function {name}("), 1)
+}
+
+/// Compiles `declaration` strictly. A namespace cannot hold a default export,
+/// so the check names the Operation's callable `callable`.
 fn assert_strict_compiling_declaration(declaration: &str) {
+    let declaration = named_callable(declaration, "callable");
     let source = format!(
         "declare namespace Materialized {{\n{declaration}\n}}\nexport default function compileCheck(): void {{}}"
     );
@@ -3351,7 +3360,7 @@ fn configured_ready(document: &str) -> coral_catalog::PreparedProviderCatalog {
 }
 
 #[test]
-fn operation_ids_must_be_keys_and_reserved_words_are_escaped() {
+fn operation_ids_must_be_keys_and_keyword_paths_declare_valid_typescript() {
     let invalid = WEATHER_OPENAPI.replace("operationId: getForecast", "operationId: 7");
     let MaterializationOutcome::Rejected(diagnostic) = materialize(
         DestinationPolicy::default(),
@@ -3362,20 +3371,21 @@ fn operation_ids_must_be_keys_and_reserved_words_are_escaped() {
     };
     assert_eq!(diagnostic.code(), "invalid_operation_key");
 
-    let reserved = configured_ready(
-        &WEATHER_OPENAPI.replace("operationId: getForecast", "operationId: interface"),
+    let keyword = configured_ready(
+        &WEATHER_OPENAPI.replace("operationId: getForecast", "operationId: delete"),
     );
-    let [operation] = reserved.operations() else {
+    let [operation] = keyword.operations() else {
         panic!("one Operation");
     };
-    assert_eq!(operation.relative_path(), "_interface");
-    let declaration = reserved.authoring_declaration(operation);
+    assert_eq!(operation.relative_path(), "delete");
+    let declaration = keyword.authoring_declaration(operation);
     assert_eq!(
         declaration.lines().last(),
         Some(
-            "function _interface(): Promise<HttpResult<null, 200, string | null> | HttpUnknownResult>;"
+            "export default function (): Promise<HttpResult<null, 200, string | null> | HttpUnknownResult>;"
         )
     );
+    assert_strict_compiling_declaration(&declaration);
 }
 
 #[test]
@@ -3502,12 +3512,19 @@ fn server_user_information_is_rejected_without_echoing_it() {
 
 /// Concatenates every Operation's declaration into one scope, as a Program
 /// that calls several Operations of one Provider sees them. Identical lines
-/// declare one shared type once.
+/// declare one shared type once. One scope holds one default export, so each
+/// callable is named by its position.
 fn shared_scope(prepared: &coral_catalog::PreparedProviderCatalog) -> String {
     let declarations = prepared
         .operations()
         .iter()
-        .map(|operation| prepared.authoring_declaration(operation))
+        .enumerate()
+        .map(|(index, operation)| {
+            named_callable(
+                &prepared.authoring_declaration(operation),
+                &format!("operation{index}"),
+            )
+        })
         .collect::<Vec<_>>();
     declarations
         .iter()

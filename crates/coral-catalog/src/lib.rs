@@ -102,7 +102,7 @@ pub use openapi::{
     HttpResponseBinding, HttpResponseStatus, OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument,
     validate_openapi_configuration,
 };
-pub use paths::OperationPathAssignment;
+pub use paths::{OperationPathAssignment, call_path_segment_is_reserved};
 pub use search::{DeclarationIndexEntry, PreparedDeclarationFields, StoredDeclarationFields};
 pub use types::{
     CatalogDiagnostic, CatalogDiagnosticSeverity, CatalogSearchTarget, MaterializationOutcome,

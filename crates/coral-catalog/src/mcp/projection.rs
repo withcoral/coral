@@ -4,9 +4,8 @@ use crate::schema::{
 };
 use crate::{CatalogDiagnostic, McpExecutionBinding, McpInvocationMethod, SchemaGraph, SchemaId};
 
-pub(super) fn fallback_typescript(relative_path: &str) -> Result<String, CatalogDiagnostic> {
+pub(super) fn fallback_typescript() -> String {
     render_callable_declaration(
-        relative_path,
         "input: unknown",
         "Promise<{ data: unknown; metadata: { kind: \"mcp\" } }>",
     )
@@ -18,7 +17,6 @@ pub(crate) fn typescript_names(graph: &SchemaGraph) -> TypeScriptNames {
 }
 
 pub(super) fn project_mcp_typescript(
-    relative_path: &str,
     input_schema: &SchemaId,
     output_schema: Option<&SchemaId>,
     reads_resource: bool,
@@ -61,10 +59,9 @@ pub(super) fn project_mcp_typescript(
         )
     };
     declarations.push(render_callable_declaration(
-        relative_path,
         &input_parameter,
         &format!("Promise<{{ data: {data}; metadata: {{ kind: \"mcp\"; _meta?: McpSafeMeta }} }}>"),
-    )?);
+    ));
     Ok(TypeScriptProjection {
         declaration: declarations.join("\n"),
         type_references,
@@ -76,14 +73,12 @@ pub(super) fn project_mcp_typescript(
 /// Returns whether a stored MCP Operation's callable takes `input`, from the
 /// same projection that materialization ran.
 pub(crate) fn declares_input(
-    relative_path: &str,
     input_schema: &SchemaId,
     binding: &McpExecutionBinding,
     graph: &SchemaGraph,
     type_names: &TypeScriptNames,
 ) -> Result<bool, CatalogDiagnostic> {
     project_mcp_typescript(
-        relative_path,
         input_schema,
         binding.output_schema(),
         binding.invocation_method() == McpInvocationMethod::ReadResource,

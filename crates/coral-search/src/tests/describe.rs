@@ -81,7 +81,7 @@ async fn describe_returns_the_fitted_declaration_or_the_named_types_of_the_same_
     let [fitted, repository] = declarations.as_slice() else {
         unreachable!();
     };
-    assert!(fitted.contains("function list"), "{fitted}");
+    assert!(fitted.contains("export default function ("), "{fitted}");
     assert!(
         fitted.contains(r#"describe this path with types: ["Repository"]"#),
         "{fitted}"
@@ -91,7 +91,10 @@ async fn describe_returns_the_fitted_declaration_or_the_named_types_of_the_same_
         repository.starts_with("type Repository = ("),
         "{repository}"
     );
-    assert!(!repository.contains("function list"), "{repository}");
+    assert!(
+        !repository.contains("export default function ("),
+        "{repository}"
+    );
 }
 
 /// A rejected `types` changes nothing: an undeclared name names itself and
