@@ -516,6 +516,105 @@ async fn known_incomplete_response_is_a_durable_coral_failure() {
 }
 
 #[tokio::test]
+async fn upstream_send_failures_keep_their_cause_in_the_coral_failure() {
+    use crate::invocation::UpstreamSendError;
+    type SendFailure = fn() -> UpstreamSendError;
+    let cases: [(SendFailure, &str, &str); 4] = [
+        (
+            || UpstreamSendError::Rejected(coral_upstream::McpRejection::InvalidParams),
+            "invalid_input",
+            "Operation arguments are invalid",
+        ),
+        (
+            || UpstreamSendError::Rejected(coral_upstream::McpRejection::UnknownTool),
+            "operation_unavailable",
+            "Operation is unavailable",
+        ),
+        (
+            || UpstreamSendError::Rejected(coral_upstream::McpRejection::Other(-32603)),
+            "upstream_rejected",
+            "Upstream rejected the request",
+        ),
+        (
+            || UpstreamSendError::Incomplete,
+            "upstream_incomplete",
+            "Upstream result is incomplete",
+        ),
+    ];
+    for (failure, code, message) in cases {
+        let upstream = Arc::new(FailingUpstream::new(failure));
+        let fixture = TestModules::with_upstream(
+            Arc::new(
+                crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
+                    .expect("V8 engine"),
+            ),
+            upstream.clone(),
+        )
+        .await;
+        let operation = fixture
+            .user_operation("user:send-failure", "Catch an upstream send failure")
+            .await;
+        let accepted = fixture
+            .runs
+            .start(
+                &operation.principal,
+                &operation.workspace_id,
+                submission(
+                    r#"
+            try { await coral.providers.weather.getForecast({}); }
+            catch (error) {
+                if (!(error instanceof coral.OperationError)) throw error;
+                return {code: error.code, message: error.message};
+            }
+            return "resolved";
+        "#,
+                ),
+            )
+            .await
+            .expect("accept Program");
+        let terminal = wait_for_terminal(
+            &fixture.runs,
+            &operation.principal,
+            &operation.workspace_id,
+            accepted.run_id(),
+        )
+        .await;
+        assert_eq!(
+            terminal.state(),
+            RunState::Succeeded,
+            "{code}: {terminal:?}"
+        );
+        assert!(
+            matches!(
+                terminal.terminal_outcome(),
+                Some(RunTerminalOutcome::Succeeded { final_value: FinalValue::Present(value) })
+                    if value.as_json() == &serde_json::json!({"code": code, "message": message})
+            ),
+            "{code}: {terminal:?}"
+        );
+        assert!(
+            retained_events(
+                &fixture.runs,
+                &operation.principal,
+                &operation.workspace_id,
+                terminal.run_id()
+            )
+            .await
+            .iter()
+            .any(|event| matches!(
+                event.kind(),
+                RunEventKind::InvocationEnded {
+                    result_kind: crate::InvocationResultKind::CoralFailure,
+                    ..
+                }
+            )),
+            "{code}"
+        );
+        assert_eq!(upstream.sends.load(Ordering::SeqCst), 1, "{code}");
+    }
+}
+
+#[tokio::test]
 async fn unknown_call_path_creates_no_invocation_or_send() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::Value::Null));
     let fixture = TestModules::with_upstream(

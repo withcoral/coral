@@ -200,9 +200,14 @@ export const PointerAndHistory: Story = {
     loads.open()
     const { canvas, screen, table, link, row, address, rail, heading, focus } =
       await surface(canvasElement)
+    // A rail opened by pointer takes focus a frame after it shows. Let that land
+    // before the next click, or it pulls focus from the table after that click.
+    const focused = (dialog: HTMLElement) =>
+      waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement))
     await userEvent.click(link('Task 1'))
     const opened = await screen.findByRole('dialog', { name: 'Activity details' })
     await heading(opened, 'Task 1')
+    await focused(opened)
 
     // Another record replaces the detail in the same rail; focus rests on the table,
     // whose cursor row shows it.
@@ -241,6 +246,7 @@ export const PointerAndHistory: Story = {
     await history('forward')
     const reopened = await screen.findByRole('dialog', { name: 'Activity details' })
     await heading(reopened, 'Task 1')
+    await focused(reopened)
 
     // Tab follows the document: from the table into the rail and back.
     await userEvent.click(link('Task 1'))

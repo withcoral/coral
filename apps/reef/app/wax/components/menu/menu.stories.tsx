@@ -229,6 +229,14 @@ export const WithNestedSubmenu: Story = {
 
 export const KeyboardEscClosesSubmenusOneAtATime: Story = {
   play: async ({ canvas, step, userEvent }) => {
+    // A menu takes focus a frame after it opens, and a key goes to the focused menu.
+    // Wait for that focus before the next key, or the key reaches the menu it left.
+    const focusIn = (item: string) =>
+      waitFor(() =>
+        expect(
+          screen.getByRole('menuitem', { name: item }).closest('[role="menu"]'),
+        ).toContainElement(document.activeElement as HTMLElement),
+      )
     await step('Open menu', async () => {
       // Ensure menu is closed before starting (handles rerun without remount)
       for (let i = 0; i < 5 && screen.queryByRole('menu'); i++) {
@@ -238,6 +246,7 @@ export const KeyboardEscClosesSubmenusOneAtATime: Story = {
 
       await userEvent.click(canvas.getByRole('button'))
       await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Edit' })).toBeVisible())
+      await focusIn('Edit')
     })
 
     await step('Navigate to deepest submenu', async () => {
@@ -245,12 +254,14 @@ export const KeyboardEscClosesSubmenusOneAtATime: Story = {
       await userEvent.keyboard('{ArrowDown}') // Share
       await userEvent.keyboard('{ArrowRight}') // Open Share submenu
       await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Copy link' })).toBeVisible())
+      await focusIn('Copy link')
 
       await userEvent.keyboard('{ArrowDown}') // Share with team
       await userEvent.keyboard('{ArrowRight}') // Open "Share with team" submenu
       await waitFor(() =>
         expect(screen.getByRole('menuitem', { name: 'Engineering' })).toBeVisible(),
       )
+      await focusIn('Engineering')
     })
 
     await step('First ESC closes only the innermost submenu', async () => {
@@ -259,12 +270,14 @@ export const KeyboardEscClosesSubmenusOneAtATime: Story = {
         expect(screen.queryByRole('menuitem', { name: 'Engineering' })).toBeNull(),
       )
       await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Copy link' })).toBeVisible())
+      await focusIn('Copy link')
     })
 
     await step('Second ESC closes the Share submenu', async () => {
       await userEvent.keyboard('{Escape}')
       await waitFor(() => expect(screen.queryByRole('menuitem', { name: 'Copy link' })).toBeNull())
       await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Edit' })).toBeVisible())
+      await focusIn('Edit')
     })
 
     await step('Third ESC closes the main menu', async () => {
@@ -358,6 +371,48 @@ export const WithRadioGroup: Story = {
         </Menu.Container>
         <p style={{ color: 'white', marginTop: '16px' }}>Selected theme: {theme}</p>
       </div>
+    )
+  },
+}
+
+/**
+ * A closing menu leaves the accessibility tree at once, though it stays on screen
+ * while it fades out. A query that runs while the menu reopens finds only the new
+ * menu's items, never a fading one that is about to unmount.
+ */
+export const ClosingMenuHidesItsItems: Story = {
+  render: function Render() {
+    const [status, setStatus] = useState('all')
+    return (
+      <div style={{ padding: '100px' }}>
+        <Menu.Container>
+          <Menu.Trigger render={<Button.Container variant="secondary" />}>
+            <Button.Text>Status: {status}</Button.Text>
+          </Menu.Trigger>
+          <Menu.Content>
+            <Menu.RadioGroup onValueChange={setStatus} value={status}>
+              <Menu.RadioItem value="all">All</Menu.RadioItem>
+              <Menu.RadioItem value="open">Open</Menu.RadioItem>
+            </Menu.RadioGroup>
+          </Menu.Content>
+        </Menu.Container>
+      </div>
+    )
+  },
+  play: async ({ canvas, userEvent }) => {
+    await userEvent.click(canvas.getByRole('button', { name: 'Status: all' }))
+    await userEvent.click(await screen.findByRole('menuitemradio', { name: 'Open' }))
+    const closing = document.querySelector('[role="menu"][data-ending-style]')
+    await expect(closing).not.toBeNull()
+    await expect(screen.queryAllByRole('menuitemradio')).toEqual([])
+
+    await userEvent.click(canvas.getByRole('button', { name: 'Status: open' }))
+    await userEvent.click(await screen.findByRole('menuitemradio', { name: 'All' }))
+    await waitFor(() =>
+      expect(canvas.getByRole('button', { name: 'Status: all' })).toHaveAttribute(
+        'aria-expanded',
+        'false',
+      ),
     )
   },
 }

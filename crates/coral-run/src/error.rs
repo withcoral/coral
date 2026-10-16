@@ -63,6 +63,8 @@ coral_failures! {
     AuthorityLost => "dispatch_authority_lost",
     /// No complete bounded upstream result was received.
     UpstreamIncomplete => "upstream_incomplete",
+    /// The upstream peer received the request and answered with a protocol error.
+    UpstreamRejected => "upstream_rejected",
     // Per-result and cumulative output limits share one durable code; this one decodes.
     /// The upstream result exceeds its accepted bound.
     ResultTooLarge => "upstream_result_too_large",
@@ -71,6 +73,19 @@ coral_failures! {
 }
 
 impl CoralFailure {
+    /// An invalid-params rejection is the Operation contract refusing the
+    /// arguments, a tool the peer no longer lists leaves the cataloged Operation
+    /// nothing to invoke, and every other protocol error is the peer refusing
+    /// the request.
+    #[must_use]
+    pub(crate) const fn from_mcp_rejection(rejection: coral_upstream::McpRejection) -> Self {
+        match rejection {
+            coral_upstream::McpRejection::InvalidParams => Self::InvalidInput,
+            coral_upstream::McpRejection::UnknownTool => Self::OperationUnavailable,
+            coral_upstream::McpRejection::Other(_) => Self::UpstreamRejected,
+        }
+    }
+
     /// Inverse of [`Self::code`] for durable evidence.
     pub(crate) fn from_code(code: &str) -> Option<Self> {
         Self::ALL
@@ -104,6 +119,7 @@ impl CoralFailure {
             Self::AuthorityLost => "Operation is not permitted",
             Self::OutboundDestinationRejected => "Provider destination is not permitted",
             Self::UpstreamIncomplete => "Upstream result is incomplete",
+            Self::UpstreamRejected => "Upstream rejected the request",
             Self::ResultTooLarge => "Upstream result exceeds its limit",
             Self::RunOutputTooLarge => "Run output exceeds its limit",
         }

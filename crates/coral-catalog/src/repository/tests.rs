@@ -40,6 +40,10 @@ async fn catalog_preserves_retained_generations_and_operations() {
         let fingerprint = prepared.fingerprint();
         let graph = prepared.schema_graph().clone();
         let operations = prepared.operations().to_vec();
+        let declarations = operations
+            .iter()
+            .map(|operation| prepared.authoring_declaration(operation))
+            .collect::<Vec<_>>();
         let generation_id = publish_generation(
             &mut transaction,
             GenerationInput::Setup(input),
@@ -50,12 +54,13 @@ async fn catalog_preserves_retained_generations_and_operations() {
         )
         .await
         .expect("persist Generation");
-        expected.push((generation_id, fingerprint, graph, operations));
+        expected.push((generation_id, fingerprint, graph, operations, declarations));
     }
     transaction.commit().await.unwrap();
 
     let mut transaction = database.begin().await.unwrap();
-    for (generation_id, fingerprint, graph, operations) in expected {
+    let mut shared_types_named = 0;
+    for (generation_id, fingerprint, graph, operations, declarations) in expected {
         assert_eq!(
             generation_fingerprint(&mut transaction, &generation_id)
                 .await
@@ -77,6 +82,21 @@ async fn catalog_preserves_retained_generations_and_operations() {
                 .unwrap(),
             operations
         );
+        for (operation, declaration) in operations.iter().zip(declarations) {
+            if declaration != operation.typescript_declaration() {
+                shared_types_named += 1;
+            }
+            assert_eq!(
+                crate::authoring_declaration_in_transaction(
+                    &mut transaction,
+                    &generation_id,
+                    operation
+                )
+                .await
+                .unwrap(),
+                declaration
+            );
+        }
         for operation in operations {
             assert_eq!(
                 load_operation(&mut transaction, &generation_id, operation.key())
@@ -110,6 +130,7 @@ async fn catalog_preserves_retained_generations_and_operations() {
                 .is_none()
         );
     }
+    assert!(shared_types_named > 0, "the fixtures name shared types");
     let missing_generation = ProviderGenerationId::generate();
     assert!(matches!(
         available_search_targets(&mut transaction, &missing_generation).await,
