@@ -341,19 +341,23 @@ Program Value, Run data, or observed memory. Reef exact catalog inspection is a 
 
 **Search Entity**: One thing Universal Search can find: a Discoverable Operation of one current Provider, or one of
 the Principal's current Saved Functions. Each Search Entity has one complete Call Path, one Authoring Description,
-and one set of secret-free fields, its metadata and declaration-field paths, that Provider Publication or Saved
-Function save hands to Universal Search to index. An Operation whose declaration-field paths exceed the index bound
-keeps only its shallower paths and carries a warning. Universal Search returns a Search Hit for it, and describe its
+and one set of secret-free fields, its metadata and declaration-field paths, that Universal Search indexes for it. An
+Operation whose declaration-field paths exceed the index bound keeps only its shallower paths, and the index logs a
+warning; no search bound makes an Operation unavailable. Universal Search returns a Search Hit for it, and describe its
 Authoring Description, never the Entity's private material. _Avoid_: Authoring Kind, search document
 
-**Search Hit**: One item of a search page: a Search Entity's kind and Call Path, its Provider display name, title,
-signature line, Description Snippet, Operation Hints, approval requirement, deprecation flag, and the evidence for why it
-matched; a Guidance Snippet and matched tags only where a query term matched them. Never the declaration.
+**Search Hit**: One item of a search page, cut to what an agent needs to choose and call a Search Entity: its Call
+Path, signature line, and Description Snippet; a Guidance Snippet and matched tags only where a query term matched
+them, and the matched arguments that its cut signature line does not show; for an Operation, its declared Operation
+Hints, and its approval requirement and deprecation flag only when set.
+The Call Path names the kind and the Provider, the rank reflects why the hit matched, and describe gives the rest.
+Never the declaration.
 
 **Search Coverage**: What one search page states, per kind of Search Entity, about how much of the Principal's Search
 Entities it examined and why results may be missing: how many Providers or Saved Functions were eligible, searched, and
 failed, how many results the kind returned, and whether more remain. A kind that the Provider filter leaves out is
-skipped, not incomplete. Coverage describes one page at the time of the search, not the current catalog.
+skipped, not incomplete. A page states coverage only for a kind whose results may be missing. Coverage describes one
+page at the time of the search, not the current catalog.
 
 **Description Snippet**: The bounded window of an Entity's description that a Search Hit shows: around the first
 matched query term when the description matched, otherwise its beginning.
@@ -388,6 +392,21 @@ authorized detail and Approval Request can show its exact logical arguments; sum
 telemetry omit them. Credentials and host-generated authentication data are never Invocation arguments. Repeating a call
 is a new Invocation rather than an automatic retry. _Avoid_: Retry attempt, query execution, stored Program
 
+**Dispatch Fence**: The one authoritative check that lets an Operation Invocation start its dispatch. The Run Owner runs
+it for every ready Invocation after any wait has ended, against the current Workspace, Provider, policy and account
+facts, the User's current authority, and the Run state it holds, including each Approval Request's decision. A change to
+those facts either completes before the fence reads them or waits until the fence has recorded its outcome, so a
+revocation that commits first always wins. The fence records the dispatch start; a change that commits after it does not
+stop a dispatch already started. A cached or earlier decision cannot authorize dispatch. _Avoid_: dispatch recheck, held
+fence, versioned decision, authorization cache
+
+**Fan-out Limit**: The deployment-wide number of Operation Invocations of one Coral Program Run that may be
+`dispatching` at the same time. Coral admits every call as an Invocation at once; a ready Invocation above the limit
+stays `pending` and starts its dispatch, in the order it became ready, when an earlier one ends. Waits for account
+connection or approval do not count toward the limit, so every Approval Request a Run needs is visible at once. A
+waiting Invocation has no separate deadline; Run termination ends it as `run_terminated`. _Avoid_: fan-out budget,
+admitted-count quota, dispatch rate, per-Workspace fan-out
+
 **Operation Availability**: Whether a cataloged Operation can be invoked while preserving its upstream-native semantics.
 Caller credentials, approval, quotas, and upstream outages do not change it. Principal-facing discovery omits an
 unavailable Operation; Reef can show it and its structural reason for diagnostics. _Avoid_: Caller readiness,
@@ -400,9 +419,9 @@ read-only (see Operation Hints) as possibly effectful. _Avoid_: Write operation,
 **Operation Hints**: The effect hints an Operation's provider source declares: read-only, destructive, idempotent, and
 open-world. Coral takes each hint at catalog materialization only when the source declares it, from an MCP tool's
 annotations in v1, and never assumes a protocol default, so an undeclared hint says nothing. OpenAPI/HTTP-sourced
-Operations declare none in v1; Coral's MCP resource read is read-only by protocol definition. Hints are provider claims,
-not caller-configurable, and only a declared read-only hint affects policy. _Avoid_: Effect classification, `unknown`
-effect, tool annotations
+Operations declare none in v1, and their HTTP method is not a hint; Coral's MCP resource read is read-only by protocol
+definition. Hints are provider claims, not caller-configurable, and only a declared read-only hint affects policy among
+them. _Avoid_: Effect classification, `unknown` effect, tool annotations
 _In Reef_: one label per hint declared true: "Read-only", "Destructive", "Idempotent", "Open world"; none when undeclared
 
 **Operation Access State**: The Workspace decision that one Operation is `enabled`, `approval_required`, or `disabled`.
@@ -411,10 +430,11 @@ Organization policy does not set Operation access in v1, and there are no Princi
 Credential Route-specific rules, patterns, ordered rules, or globs. A reusable Program in one Workspace therefore has
 one Operation policy for one Provider regardless of its Invoking Principal. A Principal can still have different
 discoverability and readiness because Credential Route, Provider Accounts, and Agent state are not policy (see
-Discoverable Operation); a stale Invocation fails safely. If no exact rule matches, the Operation's Operation Hints supply
-the default: an Operation that declares itself read-only defaults to `enabled`; every other Operation defaults to
-`approval_required`. Because v1 OpenAPI/HTTP-sourced Operations declare no hints, those Operations require approval
-until a Workspace rule enables them. Provider signature and execution-binding changes do not
+Discoverable Operation); a stale Invocation fails safely. If no exact rule matches, a default applies: an Operation that
+declares itself read-only, or an OpenAPI/HTTP-sourced Operation with a safe HTTP method (GET, HEAD, OPTIONS, or TRACE),
+defaults to `enabled`; every other Operation defaults to `approval_required`. The default applies to every Operation
+without an exact rule, including those of existing Providers, and a Workspace Owner overrides it with an exact rule, for
+example for an upstream that changes state on GET. Provider signature and execution-binding changes do not
 stale an exact rule in v1. A changed Operation Key does. Policy for one Provider does not affect another Provider.
 A Principal that needs a different Operation set belongs in a different Workspace.
 _Avoid_: Principal policy, Agent policy, Account-specific policy, Credential Route policy, Provider permission,
@@ -664,6 +684,42 @@ does not determine Run status. _Avoid_: Program request, connection-scoped execu
 consumption and audit. It describes Run execution, including cancellation and recovery effects, but does not duplicate
 control-plane, authoring, or approval decisions recorded as Administrative Lifecycle Events. Run Events are not replay
 checkpoints. _Avoid_: Administrative Lifecycle Event, stream chunk, workflow checkpoint
+
+**Run Owner**: The single writer of one Coral Program Run while the Run is not terminal. It exists from Run acceptance
+until the Run ends, receives every Run Request, Invocation outcome, deadline and wake-up for that Run in one order, and
+alone appends Program Run Events and the Run-scoped records they describe. It decides the Run's lifecycle and keeps its
+record durable; it does not call upstream or handle credential material, which the Operation Invocations it starts do
+outside it. A requester outside the Run acts on an outcome only once its Run Request is Recorded; the Program may
+continue on an Applied one. A repeat of the same Run Request receives the recorded answer. Workspace- and
+Provider-scoped changes reach it only as wake-ups. When a Run's worker lease lapses and no process owns it, Coral
+recreates its Run Owner; it records any deadline that passed, then the interruption or the termination already decided,
+and retires. Coral never resumes a Run. _Avoid_: Run actor, claim holder, lock holder, sweeper, external writer
+
+**Run Ledger**: The durable record of one Coral Program Run that its Run Owner appends to in chunks: the Program Run
+Events, the Run-scoped records they describe, and the Run's head. Every chunk advances the head by one and commits only
+if it extends the head it was built on, so the Ledger has one writer and one order. The Run Owner commits a chunk
+whenever none is in flight and something is pending, so a chunk holds what arrived during the previous commit, up to a
+fixed size. An uncertain commit is resolved by reading the head again. _Avoid_: event log, stream, journal, checkpoint
+
+**Run Request**: A message that asks the Run Owner of one Coral Program Run to decide something about that Run: start an
+Operation Invocation, publish a Program Emission or Program Log, finish the Run, decide an Approval Request, or cancel.
+A Run Request passes through three stages: **Applied**, when the Run Owner has decided it in memory; **Recorded**, when
+that decision is durable; and **Settled**, when what it started has ended. The Program shares the Run Owner's fate and
+continues on an Applied answer; every later effect of the Run is recorded only after that answer is. A requester outside
+the Run acts on an answer only once it is Recorded. A Run Request that decides something is identified by the thing it
+decides (the Approval Request, the Run, the Invocation), so the first request wins and a repeat receives the recorded
+answer. An Emission or Log has no identity and no repeat: the Program shares the Run Owner's fate, so it never sends one
+twice. When the output the Run Owner has applied but not yet recorded exceeds the **Applied cap**, a Program request
+answers at Recorded instead, so the output a Run can lose or hold in memory stays bounded. Deadlines and changes outside
+the Run reach the Run Owner as wake-ups, not Run Requests. _Avoid_: command, signal, mailbox message, request token,
+idempotency key
+
+**Run Output Budget**: The limit on the bytes of Program Emissions, Program Logs, Operation Invocation results, and the
+Final Value that one Coral Program Run may produce. The Run Owner decides every request against the exact total when it
+applies the request, so a Run never exceeds its budget by a byte. A refused Emission or Log is not Run output and the
+Program observes the refusal; a refused Invocation result ends that Invocation with an Operation Error; a Final Value
+that does not fit fails the Run. Operation arguments do not count. _Avoid_: approximate budget, soft limit, output
+quota, bounded overshoot
 
 **Program Emission**: A bounded, structured value that a Coral Program explicitly publishes during its Run. An Emission
 is durable caller-facing output, does not suspend execution, and remains observable if the Run later fails. _Avoid_:

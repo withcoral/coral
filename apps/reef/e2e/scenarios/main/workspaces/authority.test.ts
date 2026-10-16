@@ -6,7 +6,7 @@ import { withBrowserSession } from '../../../support/browser-session.ts'
 import { managementClients } from '../../../support/management.ts'
 import { breadcrumb } from '../../../support/providers.ts'
 import { copyNewAgentKey } from '../../../support/agent-key.ts'
-import { pickPerson } from '../../../support/members.ts'
+import { organizationWorkspaceRow, pickPerson } from '../../../support/members.ts'
 
 test('Organization Owner governance, eligible Memberships, and private server paths', async (context) => {
   const { owner, alice, bob } = await createActors(context)
@@ -71,24 +71,16 @@ test('Organization Owner governance, eligible Memberships, and private server pa
         await page.getByRole('button', { name: /^Open account menu for / }).click()
         await page.getByRole('menuitem', { name: 'Workspaces', exact: true }).click()
         await breadcrumb(page, 'Workspaces').waitFor()
-        const row = page.getByRole('row').filter({ hasText: name })
-        // The shared target holds other scenarios' Workspaces on earlier pages.
-        for (let pages = 0; pages < 50 && (await row.count()) === 0; pages++) {
-          const previous = page.url()
-          await page.getByRole('link', { name: 'Next workspaces', exact: true }).click()
-          await page.waitForURL((url) => url.href !== previous)
-          await page.getByRole('table', { name: 'Workspaces', exact: true }).waitFor()
-        }
+        const row = await organizationWorkspaceRow(page, name)
         await row.getByText('Active', { exact: true }).waitFor()
         await row.getByTitle(alice.email, { exact: true }).waitFor()
         await row.getByRole('button', { name: `Actions for ${name}`, exact: true }).click()
-        await page.getByRole('menuitem', { name: 'Assign owner', exact: true }).click()
-        const dialog = page.getByRole('dialog', { name: 'Assign owner', exact: true })
-        await dialog.getByRole('button', { name: 'Owner', exact: true }).click()
-        await page.getByRole('menuitemradio', { name: `${owner.label} · You`, exact: true }).click()
+        await page.getByRole('menuitem', { name: 'Assign owners', exact: true }).click()
+        const dialog = page.getByRole('dialog', { name: 'Assign owners', exact: true })
+        await pickPerson(page, owner.email)
         await dialog.getByRole('button', { name: 'Assign owner', exact: true }).click()
         await expect.poll(() => dialog.count()).toBe(0)
-        await row.getByText(`${owner.label} · You`, { exact: true }).waitFor()
+        await row.getByText(`${owner.label} (You)`, { exact: true }).waitFor()
         // The new Membership puts the Workspace in the Owner's sidebar.
         await nav.getByRole('button', { name, exact: true }).waitFor()
         const members = await api.memberships.listWorkspaceMemberships({ parent })
@@ -187,7 +179,7 @@ test('Organization Owner governance, eligible Memberships, and private server pa
         const csrf = await page.getByRole('dialog').locator('input[name=csrf]').inputValue()
         await page.getByRole('button', { name: 'Cancel', exact: true }).click()
         const workspace = await api.workspaces.getWorkspace({ name: parent })
-        const response = await page.request.post(`${path}/settings`, {
+        const response = await page.request.post(path, {
           headers: { Origin: new URL(page.url()).origin },
           form: { csrf, intent: 'rename', etag: workspace.etag, displayName: 'Forbidden rename' },
         })

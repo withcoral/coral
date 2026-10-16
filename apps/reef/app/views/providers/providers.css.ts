@@ -2,7 +2,6 @@ import { globalStyle, style } from '@vanilla-extract/css'
 
 import { utils } from '@/styles/utils'
 import { theme } from '@/wax/theme/theme.css'
-import { railItem } from '@/components/catalog/catalog.css'
 
 export const setupPage = style({ maxWidth: 1120, width: '100%', minWidth: 0 })
 export const sourceGrid = style({
@@ -138,16 +137,6 @@ export const filterLabel = style({
   ...theme.typography.bodySmallStrong,
 })
 export const helpIcon = style({ alignItems: 'center', display: 'inline-flex' })
-// A provider's settings gear shows for the provider the table is on, and while
-// its rail entry has the pointer or keyboard focus.
-export const providerRailAction = style({
-  flexShrink: 0,
-  opacity: 0,
-  selectors: {
-    [`${railItem}:hover &, ${railItem}:has(:focus-visible) &, ${railItem}[data-current="page"] &`]:
-      { opacity: 1 },
-  },
-})
 // The table scrolls, so the browser can focus it. While a keyboard cursor row
 // shows where the keys act, the table draws no focus outline of its own.
 export const providersTable = style({
@@ -156,15 +145,6 @@ export const providersTable = style({
 })
 // The policy column ends a step in from the table's edge.
 globalStyle(`${providersTable} [role="row"] > :last-child`, { paddingInlineEnd: 24 })
-// The bulk policy form ends the table, at its trailing edge. The footer keeps
-// its height when nothing is selected, so the table does not move.
-export const bulkPolicyFooter = style({
-  alignItems: 'center',
-  display: 'flex',
-  flexShrink: 0,
-  justifyContent: 'flex-end',
-  minHeight: 32,
-})
 // A no-match status runs its copy and its button on one centred line.
 export const sectionStatus = style({
   alignItems: 'center',
@@ -174,6 +154,7 @@ export const sectionStatus = style({
   justifyContent: 'center',
   rowGap: 4,
 })
+// The form lays out its controls in the Wax action bar that frames it.
 export const bulkPolicyForm = style({
   alignItems: 'center',
   display: 'flex',
@@ -212,6 +193,11 @@ export const policySummaryItem = style({
     '&:hover, &[aria-pressed="true"]': { color: theme.content.primary },
   },
 })
+// A checked row is filled, so the selection reads down the table at a glance.
+export const checkedRow = style({
+  backgroundColor: theme.surface.onMainContent,
+  selectors: { '&:hover': { backgroundColor: theme.surface.onMainContentHover } },
+})
 export const operationNameCell = style({
   alignItems: 'center',
   display: 'flex',
@@ -242,6 +228,8 @@ export const operationDescriptionText = style({
   ...utils.boxClamp(2),
 })
 export const inlineTooltipTarget = style({ display: 'inline-flex' })
+// The column is as wide as its toggles; the header centres over them.
+export const policyHeader = style({ display: 'flex', justifyContent: 'center' })
 // One line: a wrapped outcome pill would change the row's height after a save.
 export const policyCell = style({
   alignItems: 'center',
@@ -579,26 +567,6 @@ export const settingsSourceActions = style({
 })
 
 // The provider name heads the page; the pencil sits right beside it.
-export const nameHeading = style({
-  alignItems: 'center',
-  display: 'flex',
-  gap: 4,
-  minWidth: 0,
-})
-export const nameForm = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 8,
-  minWidth: 0,
-})
-export const nameRow = style({
-  alignItems: 'center',
-  display: 'flex',
-  flexWrap: 'wrap',
-  gap: 8,
-  minWidth: 0,
-})
-export const nameInput = style({ flex: '1 1 240px', maxWidth: 480, minWidth: 0 })
 
 // The scopes take the row; the separator picker keeps its width beside them.
 export const scopesRow = style({

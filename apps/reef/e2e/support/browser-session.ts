@@ -39,8 +39,34 @@ export type OpenSurface = (recording: {
 
 const sessionSequences = new WeakMap<TestContext['task'], number>()
 
-// Tests retain raw Playwright access. The only abstraction is resource/evidence
-// ownership; no product workflow or authorization rules live here.
+/**
+ * Makes `goto` and `reload` return only once React has hydrated the page they
+ * load. Reef's server markup shows first, and a key or click that lands before
+ * hydration does nothing. Pages that React Router did not render, such as
+ * fixture pages and resource routes, return at once.
+ */
+function waitForHydrationOnLoad(page: Page) {
+  const hydrated = () =>
+    page.waitForFunction(
+      () => !('__reactRouterContext' in window) || 'hydrated' in document.documentElement.dataset,
+    )
+  const goto = page.goto.bind(page)
+  page.goto = (async (url, options) => {
+    const response = await goto(url, options)
+    await hydrated()
+    return response
+  }) as Page['goto']
+  const reload = page.reload.bind(page)
+  page.reload = (async (options) => {
+    const response = await reload(options)
+    await hydrated()
+    return response
+  }) as Page['reload']
+}
+
+// Tests retain raw Playwright access. The only abstractions are resource/evidence
+// ownership and the hydration wait; no product workflow or authorization rules
+// live here.
 export async function withBrowserSession(
   test: TestContext,
   body: (session: Session) => Promise<void>,
@@ -210,6 +236,8 @@ export async function withBrowserSession(
     })
     const { context } = surface
     page = surface.page
+    waitForHydrationOnLoad(page)
+    context.on('page', waitForHydrationOnLoad)
     active()
     context.setDefaultTimeout(5000)
     context.setDefaultNavigationTimeout(10_000)

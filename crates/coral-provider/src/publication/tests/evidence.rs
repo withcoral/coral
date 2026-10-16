@@ -109,6 +109,7 @@ async fn creation_evidence_names_the_activated_generation_or_the_failed_outcome(
     assert_eq!(
         created.evidence,
         PublicationEvidence::Activated(ActivatedGeneration::new(
+            fixture.workspace_id.clone(),
             provider.id().clone(),
             generation,
             None,
@@ -167,6 +168,7 @@ async fn regeneration_evidence_names_the_replaced_generation_the_reuse_or_the_fa
             active_generation(&providers, &fixture.workspace_id, &fixture.provider_id).await;
         let expected = match expected {
             Expected::Replaced => PublicationEvidence::Activated(ActivatedGeneration::new(
+                fixture.workspace_id.clone(),
                 fixture.provider_id.clone(),
                 after,
                 Some(before),

@@ -275,6 +275,10 @@ test('Activity automatically streams new rows and continuously loads bounded chi
         await page.locator('pre').filter({ hasText: '299' }).first().waitFor()
         await page.getByRole('button', { name: 'Close details', exact: true }).click()
         await page.waitForURL((url) => !url.searchParams.has('record'))
+        // Back must reopen the detail, not find the one still exiting.
+        await page
+          .getByRole('dialog', { name: 'Activity details', exact: true })
+          .waitFor({ state: 'detached' })
         await expect.poll(relativePosition, { timeout: 10_000 }).toBeCloseTo(top, 0)
         await page.goBack()
         await page.waitForURL((url) => url.searchParams.get('record') === selected)
@@ -742,7 +746,7 @@ test('Live authority loss conceals Agent history and exact snapshots without gra
             },
             updateMask: { paths: ['role'] },
           })
-          await page.getByText('You cannot inspect this agent.', { exact: true }).waitFor()
+          await page.getByText('You cannot inspect this agent', { exact: true }).waitFor()
           await expect
             .poll(() => page.locator('pre').filter({ hasText: 'live-private-source' }).count())
             .toBe(0)

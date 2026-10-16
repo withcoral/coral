@@ -1,8 +1,8 @@
 //! Indexing a Provider Generation through `SearchIndex`.
 //!
-//! Every test publishes through the real Provider Module, then either prepares
-//! the Generation's entries the way the owner does and hands them to
-//! `SearchIndex`, or lets a reconcile pass find the Generation. Until the read
+//! Every test publishes through the real Provider Module, then either notifies
+//! `SearchIndex` with the Generation's ids, as publication does after its
+//! commit, or lets a reconcile pass find the Generation. Until the read
 //! side lands, the tests observe the index
 //! through a test-only read of the search-owned tables: membership, text
 //! columns, and state, never counts, scores, or weights.
@@ -338,12 +338,66 @@ async fn a_pass_rewrites_the_statistics_of_a_workspace_it_did_not_write() {
 }
 
 #[tokio::test]
+async fn a_pass_records_its_duration_and_its_statistics_work_on_its_spans() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+
+    let spans = CapturedSpans::default();
+    {
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default().with(spans.clone()),
+        );
+        world.index.reconcile().await;
+    }
+
+    let recorded = spans.recorded();
+    assert_eq!(
+        recorded.iter().map(|span| span.name).collect::<Vec<_>>(),
+        [
+            "coral.search.reconcile",
+            "coral.search.reconcile.remove_superseded",
+            "coral.search.reconcile.generations",
+            "coral.search.reconcile.functions",
+            "coral.search.reconcile.statistics",
+        ]
+    );
+    for span in &recorded {
+        assert!(
+            span.u64_field("duration_ms").is_some(),
+            "{} records its duration",
+            span.name
+        );
+    }
+    let [pass, .., statistics] = recorded.as_slice() else {
+        panic!("a pass and its steps");
+    };
+    // Only Postgres keeps statistics of its own; the pass reports its last
+    // step's work.
+    let expected = match world.modules.search.database.system() {
+        DatabaseSystem::Postgres => (Some(1), Some(1), true),
+        DatabaseSystem::Sqlite => (Some(0), Some(0), false),
+    };
+    for span in [statistics, pass] {
+        assert_eq!(
+            (
+                span.u64_field("workspaces_checked"),
+                span.u64_field("workspaces_recounted"),
+                span.u64_field("rows_written").is_some_and(|rows| rows > 0),
+            ),
+            expected,
+            "{}",
+            span.name
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_published_generation_indexes_its_operations_and_a_complete_state() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let entries = world.stored_entries(&world.tracer).await;
 
-    world.index.index_generation(entries.clone());
+    notify(&world.index, &entries);
     world.index.settled().await;
 
     let generation = entries.generation_id().to_string();
@@ -392,7 +446,7 @@ async fn a_generation_without_operations_indexes_only_a_complete_state() {
     let entries = world.stored_entries(&callbacks_only).await;
     assert!(entries.operations().is_empty(), "no Operation is available");
 
-    world.index.index_generation(entries.clone());
+    notify(&world.index, &entries);
     world.index.settled().await;
 
     assert!(world.operation_rows().await.is_empty());
@@ -407,6 +461,107 @@ async fn a_generation_without_operations_indexes_only_a_complete_state() {
 }
 
 #[tokio::test]
+async fn a_notice_for_a_replaced_generation_writes_nothing() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let replaced = world.stored_entries(&ledger).await;
+    let document: serde_json::Value =
+        serde_json::from_str(&LEDGER.replace("List ledger entries", "List every ledger entry"))
+            .unwrap();
+    world
+        .modules
+        .regenerate_workspace_provider(
+            &change(world.user.clone(), 60, '6'),
+            &world.workspace,
+            &ledger,
+            &document,
+        )
+        .await;
+    assert_ne!(
+        world.stored_entries(&ledger).await.generation_id(),
+        replaced.generation_id()
+    );
+
+    notify(&world.index, &replaced);
+    world.index.settled().await;
+
+    assert!(world.operation_rows().await.is_empty());
+    assert!(world.states().await.is_empty());
+}
+
+#[tokio::test]
+async fn a_bounded_walk_indexes_the_operation_and_logs_a_warning() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let properties = (0..8_300)
+        .map(|index| {
+            (
+                format!("f{index:04}"),
+                serde_json::json!({"type": "boolean"}),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let document = serde_json::json!({
+        "openapi": "3.1.0",
+        "info": {"title": "Wide", "version": "1"},
+        "servers": [{"url": "https://wide.example"}],
+        "paths": {"/wide": {"get": {
+            "operationId": "wide",
+            "responses": {"200": {
+                "description": "ok",
+                "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": properties,
+                }}},
+            }},
+        }}},
+    })
+    .to_string();
+    let wide = world
+        .modules
+        .publish_openapi(&world.user, &world.workspace, &document, "wide", 40)
+        .await;
+    let entries = world.stored_entries(&wide).await;
+
+    let logs = CapturedLogs::default();
+    {
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default().with(logs.clone()),
+        );
+        notify(&world.index, &entries);
+    }
+    world.index.settled().await;
+
+    assert_eq!(
+        world
+            .operation_rows()
+            .await
+            .iter()
+            .map(|row| row.operation_key.as_str())
+            .collect::<Vec<_>>(),
+        ["wide"]
+    );
+    let [event] = logs
+        .events()
+        .into_iter()
+        .filter(|event| event.level == tracing::Level::WARN)
+        .collect::<Vec<_>>()
+        .try_into()
+        .expect("one warning");
+    assert_eq!(event.target, "coral_search::index");
+    for (field, value) in [
+        ("workspace_id", world.workspace.to_string()),
+        ("provider_id", wide.to_string()),
+        ("generation_id", entries.generation_id().to_string()),
+        ("operation_key", "wide".to_string()),
+        ("code", "operation_search_material_truncated".to_string()),
+    ] {
+        assert_eq!(event.fields.get(field), Some(&value), "{field}");
+    }
+}
+
+#[tokio::test]
 async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
     // A first attempt rolls back its own rows; a failed rewrite also removes
     // the rows an earlier attempt wrote, because a failed Generation counts
@@ -416,7 +571,7 @@ async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
         let world = World::publish_tracer(&upstream).await;
         let entries = world.stored_entries(&world.tracer).await;
         if indexed_before {
-            world.index.index_generation(entries.clone());
+            notify(&world.index, &entries);
             world.index.settled().await;
             assert!(!world.operation_rows().await.is_empty());
         }
@@ -427,7 +582,7 @@ async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
             let _subscriber = tracing::subscriber::set_default(
                 tracing_subscriber::Registry::default().with(logs.clone()),
             );
-            world.index.index_generation(entries.clone());
+            notify(&world.index, &entries);
         }
         world.index.settled().await;
 
@@ -468,7 +623,7 @@ async fn a_no_op_regeneration_keeps_the_indexed_generation_and_a_rewrite_leaves_
     let world = World::publish_tracer(&upstream).await;
     let ledger = world.publish_ledger().await;
     let indexed = world.stored_entries(&ledger).await;
-    world.index.index_generation(indexed.clone());
+    notify(&world.index, &indexed);
     world.index.settled().await;
     let rows = world.operation_rows().await;
     let states = world.states().await;
@@ -497,7 +652,7 @@ async fn a_no_op_regeneration_keeps_the_indexed_generation_and_a_rewrite_leaves_
     assert_eq!(world.operation_rows().await, rows);
     assert_eq!(world.states().await, states);
 
-    world.index.index_generation(regenerated);
+    notify(&world.index, &regenerated);
     world.index.settled().await;
     assert_eq!(
         world.operation_rows().await,
@@ -512,18 +667,19 @@ async fn a_rewrite_removes_rows_its_entries_no_longer_hold() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let entries = world.stored_entries(&world.tracer).await;
-    world.index.index_generation(entries.clone());
+    notify(&world.index, &entries);
     world.index.settled().await;
     assert!(!world.operation_rows().await.is_empty());
 
     let provider = world.active_provider(&world.tracer).await;
     world
         .index
-        .index_generation(Arc::new(GenerationEntries::new(
+        .write_generation(&GenerationEntries::new(
             &provider,
             entries.generation_id().clone(),
             Vec::new(),
-        )));
+        ))
+        .await;
     world.index.settled().await;
 
     assert!(world.operation_rows().await.is_empty());
@@ -542,7 +698,7 @@ async fn a_renamed_provider_rewrites_its_generation_under_the_new_name() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let entries = world.stored_entries(&world.tracer).await;
-    world.index.index_generation(entries.clone());
+    notify(&world.index, &entries);
     world.index.settled().await;
 
     world
@@ -589,7 +745,7 @@ async fn notified_writes_land_in_notification_order() {
     let entries = world.stored_entries(&world.tracer).await;
 
     for _ in 0..100 {
-        world.index.index_generation(entries.clone());
+        notify(&world.index, &entries);
         world
             .index
             .remove_generation(entries.generation_id().clone());
@@ -607,8 +763,8 @@ async fn removals_remove_only_the_generation_or_provider_they_name() {
     let ledger = world.publish_ledger().await;
     let tracer_entries = world.stored_entries(&world.tracer).await;
     let ledger_entries = world.stored_entries(&ledger).await;
-    world.index.index_generation(tracer_entries.clone());
-    world.index.index_generation(ledger_entries.clone());
+    notify(&world.index, &tracer_entries);
+    notify(&world.index, &ledger_entries);
     world.index.settled().await;
     let ledger_generation = ledger_entries.generation_id().to_string();
 
@@ -625,7 +781,7 @@ async fn removals_remove_only_the_generation_or_provider_they_name() {
         [StateRow::complete(&ledger, &ledger_generation, "Ledger")]
     );
 
-    world.index.index_generation(tracer_entries.clone());
+    notify(&world.index, &tracer_entries);
     world
         .index
         .remove_provider(world.workspace.clone(), ledger.clone());
@@ -654,15 +810,13 @@ async fn postgres_statistics_follow_each_write_and_removal_of_the_workspace() {
 
     let tracer_entries = world.stored_entries(&world.tracer).await;
     let tracer_generation = tracer_entries.generation_id().clone();
-    world.index.index_generation(tracer_entries);
+    notify(&world.index, &tracer_entries);
     world.index.settled().await;
     let after_tracer = world.statistics().await.expect("statistics after a write");
     assert!(world.has_term("forecast").await);
     assert!(!world.has_term("ledger").await);
 
-    world
-        .index
-        .index_generation(world.stored_entries(&ledger).await);
+    notify(&world.index, &world.stored_entries(&ledger).await);
     world.index.settled().await;
     let after_ledger = world.statistics().await.expect("statistics after a write");
     assert_ne!(after_ledger, after_tracer);
@@ -708,7 +862,7 @@ async fn a_write_stalled_past_its_limit_rolls_back_and_frees_later_writes() {
         let _subscriber = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(logs.clone()),
         );
-        index.index_generation(entries.clone());
+        notify(&index, &entries);
     }
     index.settled().await;
     blocker.rollback().await.expect("release the writer");
@@ -727,7 +881,7 @@ async fn a_write_stalled_past_its_limit_rolls_back_and_frees_later_writes() {
         "{first:?}"
     );
 
-    index.index_generation(entries.clone());
+    notify(&index, &entries);
     index.settled().await;
     assert_eq!(
         world.states().await,
@@ -782,11 +936,21 @@ async fn an_inert_index_writes_nothing_when_notified() {
     let entries = world.stored_entries(&world.tracer).await;
     let inert = SearchIndex::inert(world.modules.search.database.clone());
 
-    inert.index_generation(entries);
+    notify(&inert, &entries);
     inert.settled().await;
 
     assert_eq!(world.indexed_generations().await, Vec::<String>::new());
     assert_eq!(world.states().await, []);
+}
+
+/// Notifies the index that the Generation the entries name became active, as
+/// publication does after its commit: with the ids alone.
+fn notify(index: &SearchIndex, entries: &GenerationEntries) {
+    index.index_generation(
+        entries.workspace_id().clone(),
+        entries.provider_id().clone(),
+        entries.generation_id().clone(),
+    );
 }
 
 struct World {
@@ -818,10 +982,7 @@ impl World {
 
     /// The active Generation's entries, prepared by the owner from what the
     /// catalog stores.
-    async fn stored_entries(
-        &self,
-        provider: &coral_provider::ProviderId,
-    ) -> Arc<GenerationEntries> {
+    async fn stored_entries(&self, provider: &coral_provider::ProviderId) -> GenerationEntries {
         let mut transaction = self
             .modules
             .search
@@ -838,7 +999,7 @@ impl World {
         .unwrap()
         .expect("published Provider");
         transaction.rollback().await.unwrap();
-        Arc::new(entries)
+        entries
     }
 
     /// The Provider as its Workspace's active Providers list it.
@@ -1227,6 +1388,84 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CapturedLogs {
             target: event.metadata().target().to_string(),
             fields: fields.0,
         });
+    }
+}
+
+/// Records every span of this crate with its name and the fields recorded on
+/// it so far, in the order the spans start. It does not wait for a span to
+/// close: a database driver may still hold a span for a moment after the
+/// work in it returns.
+#[derive(Clone, Default)]
+struct CapturedSpans(Arc<std::sync::Mutex<Vec<CapturedSpan>>>);
+
+#[derive(Debug)]
+struct CapturedSpan {
+    name: &'static str,
+    fields: BTreeMap<String, String>,
+}
+
+/// A captured span's position in [`CapturedSpans`].
+struct CapturedSpanIndex(usize);
+
+impl CapturedSpans {
+    fn recorded(&self) -> Vec<CapturedSpan> {
+        std::mem::take(&mut *self.0.lock().expect("captured spans"))
+    }
+}
+
+impl CapturedSpan {
+    fn u64_field(&self, name: &str) -> Option<u64> {
+        self.fields.get(name).and_then(|value| value.parse().ok())
+    }
+}
+
+impl<S> tracing_subscriber::Layer<S> for CapturedSpans
+where
+    S: tracing::Subscriber + for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>,
+{
+    fn on_new_span(
+        &self,
+        attributes: &tracing::span::Attributes<'_>,
+        id: &tracing::span::Id,
+        context: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let Some(span) = context.span(id) else {
+            return;
+        };
+        if !span.metadata().target().starts_with("coral_search") {
+            return;
+        }
+        let mut fields = FieldRecorder::default();
+        attributes.record(&mut fields);
+        let mut spans = self.0.lock().expect("captured spans");
+        span.extensions_mut().insert(CapturedSpanIndex(spans.len()));
+        spans.push(CapturedSpan {
+            name: span.metadata().name(),
+            fields: fields.0,
+        });
+    }
+
+    fn on_record(
+        &self,
+        id: &tracing::span::Id,
+        values: &tracing::span::Record<'_>,
+        context: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let Some(span) = context.span(id) else {
+            return;
+        };
+        let Some(index) = span
+            .extensions()
+            .get::<CapturedSpanIndex>()
+            .map(|index| index.0)
+        else {
+            return;
+        };
+        let mut fields = FieldRecorder::default();
+        values.record(&mut fields);
+        if let Some(captured) = self.0.lock().expect("captured spans").get_mut(index) {
+            captured.fields.extend(fields.0);
+        }
     }
 }
 

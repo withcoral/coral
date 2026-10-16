@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
@@ -592,10 +594,7 @@ impl ProjectionOptions {
         Self {
             honor_property_access: true,
             binary_string_type: Some("BinaryValue"),
-            declared_type_names: &[
-                crate::openapi::HTTP_RESULT,
-                crate::openapi::HTTP_UNKNOWN_RESULT,
-            ],
+            declared_type_names: &crate::openapi::DECLARED_TYPE_NAMES,
             disambiguation_source_prefix: None,
             widen_unguarded_reference_cycles: true,
             use_recursive_map_index_signatures: true,
@@ -662,6 +661,27 @@ pub(super) fn property_is_visible(
 
 type ProjectionKey = (SchemaId, Direction);
 
+/// One named schema's projection, kept for the Provider's later Operations.
+///
+/// A named body does not depend on the Operation that reaches it: references
+/// inside it project as names, and its reference guard starts at zero. What
+/// does depend on the Operation is which diagnostics are new and which named
+/// types are not yet rendered, so the render keeps its effects in order and
+/// each Operation replays them.
+struct NamedRender {
+    body: String,
+    effects: Vec<RenderEffect>,
+}
+
+enum RenderEffect {
+    Warn(&'static str, &'static str),
+    NamedScalar(&'static str),
+    Reference {
+        target: ProjectionKey,
+        guarded: bool,
+    },
+}
+
 /// TypeScript names for every schema of one Provider, in both directions.
 ///
 /// Every Operation of the Provider projects through the same table, so a name
@@ -669,6 +689,11 @@ type ProjectionKey = (SchemaId, Direction);
 /// share one scope.
 pub(crate) struct TypeScriptNames {
     names: HashMap<ProjectionKey, String>,
+    options: ProjectionOptions,
+    /// Named schemas already projected for an earlier Operation. Projecting
+    /// each Operation from scratch repeats the whole reachable type graph,
+    /// which large Providers such as Microsoft Graph cannot afford.
+    renders: RefCell<HashMap<ProjectionKey, Arc<NamedRender>>>,
 }
 
 impl TypeScriptNames {
@@ -709,11 +734,23 @@ impl TypeScriptNames {
             }
             names.insert(key, name);
         }
-        Self { names }
+        Self {
+            names,
+            options,
+            renders: RefCell::default(),
+        }
     }
 
     fn get(&self, id: &SchemaId, direction: Direction) -> Option<&String> {
         self.names.get(&(id.clone(), direction))
+    }
+
+    fn render(&self, key: &ProjectionKey) -> Option<Arc<NamedRender>> {
+        self.renders.borrow().get(key).cloned()
+    }
+
+    fn keep_render(&self, key: ProjectionKey, render: NamedRender) {
+        self.renders.borrow_mut().insert(key, Arc::new(render));
     }
 }
 
@@ -730,6 +767,8 @@ pub(super) struct TypeScriptProjector<'a> {
     diagnostics: Vec<CatalogDiagnostic>,
     diagnostic_codes: HashSet<&'static str>,
     used_named_scalars: BTreeSet<&'static str>,
+    /// Effects of each named render in progress, innermost last.
+    recording: Vec<Vec<RenderEffect>>,
 }
 
 impl<'a> TypeScriptProjector<'a> {
@@ -738,6 +777,10 @@ impl<'a> TypeScriptProjector<'a> {
         type_names: &'a TypeScriptNames,
         options: ProjectionOptions,
     ) -> Self {
+        debug_assert_eq!(
+            type_names.options, options,
+            "kept renders are valid only for the options that named the schemas"
+        );
         Self {
             graph,
             type_names,
@@ -751,6 +794,7 @@ impl<'a> TypeScriptProjector<'a> {
             diagnostics: Vec::new(),
             diagnostic_codes: HashSet::new(),
             used_named_scalars: BTreeSet::new(),
+            recording: Vec::new(),
         }
     }
 
@@ -768,7 +812,8 @@ impl<'a> TypeScriptProjector<'a> {
         direction: Direction,
         named: bool,
     ) -> Result<String, CatalogDiagnostic> {
-        let schema = self.graph.schema(id).cloned().ok_or_else(|| {
+        let graph = self.graph;
+        let schema = graph.schema(id).ok_or_else(|| {
             CatalogDiagnostic::stable(
                 "invalid_schema_graph",
                 "an Operation references a missing package-local schema",
@@ -783,16 +828,52 @@ impl<'a> TypeScriptProjector<'a> {
             self.resolving.insert(key.clone());
             self.rendering.push(key.clone());
             let caller_guard_depth = std::mem::take(&mut self.reference_guard_depth);
-            let rendered = self.project_schema(&schema, direction);
+            self.recording.push(Vec::new());
+            let rendered = match self.type_names.render(&key) {
+                Some(kept) => self.replay(&key, &kept).map(|()| kept.body.clone()),
+                None => self.project_schema(schema, direction),
+            };
+            let effects = self.recording.pop().unwrap_or_default();
             self.reference_guard_depth = caller_guard_depth;
             self.rendering.pop();
             self.resolving.remove(&key);
             let rendered = rendered?;
+            if self.type_names.render(&key).is_none() {
+                self.type_names.keep_render(
+                    key.clone(),
+                    NamedRender {
+                        body: rendered.clone(),
+                        effects,
+                    },
+                );
+            }
             self.rendered.insert(key, rendered);
             Ok(name)
         } else {
-            self.project_schema(&schema, direction)
+            self.project_schema(schema, direction)
         }
+    }
+
+    /// Applies a kept render's effects to this Operation in their original order.
+    fn replay(&mut self, key: &ProjectionKey, kept: &NamedRender) -> Result<(), CatalogDiagnostic> {
+        for effect in &kept.effects {
+            match effect {
+                RenderEffect::Warn(code, message) => self.warn(code, message),
+                RenderEffect::NamedScalar(name) => {
+                    self.used_named_scalars.insert(name);
+                }
+                RenderEffect::Reference { target, guarded } => {
+                    if !guarded {
+                        self.unguarded_reference_edges
+                            .entry(key.clone())
+                            .or_default()
+                            .push(target.clone());
+                    }
+                    let _name = self.project_id(&target.0, target.1, true)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     #[expect(
@@ -808,11 +889,26 @@ impl<'a> TypeScriptProjector<'a> {
             return Ok(if allowed { "unknown" } else { "never" }.to_string());
         }
         let object = schema.as_object().ok_or_else(invalid_schema)?;
+        if !self.graph.semantics().nullable_applies()
+            && declares_nullable(object)
+            && !type_admits_null(object)
+        {
+            self.warn(
+                "nullable_ignored",
+                "nullable has no effect in JSON Schema; include null in type instead",
+            );
+        }
         if let Some(reference) = object.get("$ref") {
             let reference = reference.as_str().ok_or_else(invalid_schema_reference)?;
             let id = SchemaId::from_storage(reference.to_string())
                 .map_err(|_error| invalid_schema_reference())?;
             let target = (id.clone(), direction);
+            if let Some(effects) = self.recording.last_mut() {
+                effects.push(RenderEffect::Reference {
+                    target: target.clone(),
+                    guarded: self.reference_guard_depth != 0,
+                });
+            }
             if self.reference_guard_depth == 0
                 && let Some(source) = self.rendering.last()
             {
@@ -846,7 +942,7 @@ impl<'a> TypeScriptProjector<'a> {
                 );
                 "unknown".to_string()
             });
-            return Ok(with_nullable(object, projected));
+            return Ok(self.with_nullable(object, projected));
         }
         if let Some(enumeration) = object.get("enum") {
             let values = enumeration.as_array().ok_or_else(invalid_schema)?;
@@ -864,7 +960,7 @@ impl<'a> TypeScriptProjector<'a> {
                 },
                 |values| values.join(" | "),
             );
-            return Ok(with_nullable(object, projected));
+            return Ok(self.with_nullable(object, projected));
         }
         for keyword in ["oneOf", "anyOf"] {
             if let Some(branches) = object.get(keyword) {
@@ -876,7 +972,7 @@ impl<'a> TypeScriptProjector<'a> {
                     .iter()
                     .map(|branch| self.project_schema(branch, direction))
                     .collect::<Result<Vec<_>, _>>()
-                    .map(|types| format!("({})", types.join(" | ")));
+                    .map(|types| self.with_nullable(object, format!("({})", types.join(" | "))));
             }
         }
         if let Some(branches) = object.get("allOf") {
@@ -888,7 +984,7 @@ impl<'a> TypeScriptProjector<'a> {
                 .iter()
                 .map(|branch| self.project_schema(branch, direction))
                 .collect::<Result<Vec<_>, _>>()
-                .map(|types| format!("({})", types.join(" & ")));
+                .map(|types| self.with_nullable(object, format!("({})", types.join(" & "))));
         }
         if object.contains_key("not")
             || object.contains_key("if")
@@ -902,11 +998,7 @@ impl<'a> TypeScriptProjector<'a> {
             return Ok("unknown".to_string());
         }
 
-        let nullable = object
-            .get("nullable")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let mut projected = match object.get("type") {
+        let projected = match object.get("type") {
             Some(Value::Array(types)) => {
                 let mut projections = Vec::new();
                 for kind in types {
@@ -927,9 +1019,7 @@ impl<'a> TypeScriptProjector<'a> {
             }
             None => "unknown".to_string(),
         };
-        if nullable {
-            projected = with_nullable(object, projected);
-        }
+        let projected = self.with_nullable(object, projected);
         self.warn_unrepresented_constraints(object);
         Ok(projected)
     }
@@ -959,6 +1049,9 @@ impl<'a> TypeScriptProjector<'a> {
                         Some("binary" | "base64")
                     )
                 {
+                    if let Some(effects) = self.recording.last_mut() {
+                        effects.push(RenderEffect::NamedScalar(binary_type));
+                    }
                     self.used_named_scalars.insert(binary_type);
                     Ok(binary_type.to_string())
                 } else {
@@ -1134,7 +1227,21 @@ impl<'a> TypeScriptProjector<'a> {
         }
     }
 
+    fn with_nullable(&self, schema: &Map<String, Value>, projected: String) -> String {
+        if self.graph.semantics().nullable_applies()
+            && declares_nullable(schema)
+            && !projected.split(" | ").any(|kind| kind == "null")
+        {
+            format!("{projected} | null")
+        } else {
+            projected
+        }
+    }
+
     fn warn(&mut self, code: &'static str, message: &'static str) {
+        if let Some(effects) = self.recording.last_mut() {
+            effects.push(RenderEffect::Warn(code, message));
+        }
         if self.diagnostic_codes.insert(code) {
             self.diagnostics
                 .push(CatalogDiagnostic::warning(code, message));
@@ -1307,13 +1414,16 @@ fn cyclic_alias_indices(edges: &[Vec<usize>]) -> Vec<usize> {
         .collect()
 }
 
-fn with_nullable(schema: &Map<String, Value>, projected: String) -> String {
-    if schema.get("nullable").and_then(Value::as_bool) == Some(true)
-        && !projected.split(" | ").any(|kind| kind == "null")
-    {
-        format!("{projected} | null")
-    } else {
-        projected
+/// Whether a schema sets OpenAPI 3.0's `nullable` keyword.
+pub(crate) fn declares_nullable(schema: &Map<String, Value>) -> bool {
+    schema.get("nullable").and_then(Value::as_bool) == Some(true)
+}
+
+fn type_admits_null(schema: &Map<String, Value>) -> bool {
+    match schema.get("type") {
+        Some(Value::String(kind)) => kind == "null",
+        Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind == "null"),
+        _ => false,
     }
 }
 

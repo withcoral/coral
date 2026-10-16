@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use coral_db::Transaction;
 use coral_functions::SavedFunctionSearchMaterial;
 use coral_policy::ExactOperationRules;
-use coral_provider::ActiveProvider;
+use coral_provider::{ActiveProvider, LoadedGenerations};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
 use crate::{
@@ -28,13 +28,15 @@ use crate::{
     SearchHit,
 };
 
-/// The request one retriever call serves: who asks, in which Workspace, and
-/// the engine's normalized query terms, if any.
+/// The request one retriever call serves: who asks, in which Workspace, the
+/// engine's normalized query terms, if any, and the Generations its hits
+/// have loaded.
 #[derive(Clone, Copy)]
 pub(crate) struct RequestContext<'a> {
     pub(crate) actor: &'a AuthenticatedPrincipal,
     pub(crate) workspace_id: &'a WorkspaceId,
     pub(crate) terms: Option<&'a [String]>,
+    pub(crate) loaded: &'a LoadedGenerations,
 }
 
 /// One ranked or listed Search Entity. The payload is the hydration handle

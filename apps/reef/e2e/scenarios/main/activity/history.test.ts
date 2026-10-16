@@ -181,9 +181,9 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           )
           await page.getByRole('button', { name: 'Close details', exact: true }).click()
           await page.waitForURL((url) => !url.searchParams.has('record'))
+          // The address changes first; the detail keeps its evidence while it exits.
           await page
-            .locator('pre')
-            .filter({ hasText: 'historical-source-249' })
+            .getByRole('dialog', { name: 'Activity details', exact: true })
             .waitFor({ state: 'detached' })
           expect(await page.content()).not.toContain('historical-source-249')
           await page.goBack()
@@ -456,7 +456,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           await api.agents.deleteAgent({ name, etag: issued.agent!.etag })
           await page.reload()
           await page
-            .getByText('This agent cannot start new work. Inspect its retained activity.', {
+            .getByText('This agent cannot start new work', {
               exact: true,
             })
             .waitFor()

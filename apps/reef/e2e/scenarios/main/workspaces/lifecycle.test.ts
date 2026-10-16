@@ -2,11 +2,10 @@ import { expect, test } from 'vitest'
 import { withOwnerSession } from '../../../support/actors.ts'
 import { breadcrumb } from '../../../support/providers.ts'
 
-test('Workspace creation, MCP endpoint copy, settings dialog, rename, archive confirmation and restoration', async (context) => {
+test('Workspace creation, MCP endpoint copy, rename, archive from the sidebar and restoration', async (context) => {
   await withOwnerSession(context, async ({ page, target, step, actor }) => {
     const name = `Lifecycle ${crypto.randomUUID()}`
     const nav = page.getByRole('navigation', { name: 'Coral', exact: true })
-    const settings = page.getByRole('dialog', { name: 'Workspace settings', exact: true })
     let overview = ''
     await step('Create a Workspace', async () => {
       await page.goto('/')
@@ -18,7 +17,7 @@ test('Workspace creation, MCP endpoint copy, settings dialog, rename, archive co
         .getByRole('button', { name: 'Create workspace', exact: true })
         .click()
       await breadcrumb(page, name).waitFor()
-      await page.getByText(`${actor.label} · You`, { exact: true }).waitFor()
+      await page.getByText(`${actor.label} (You)`, { exact: true }).waitFor()
       overview = page.url()
     })
     await step('Copy the Workspace MCP endpoint from its sidebar header', async () => {
@@ -41,49 +40,59 @@ test('Workspace creation, MCP endpoint copy, settings dialog, rename, archive co
         `${target.mcpURL}/workspaces/${workspace}/mcp`,
       )
     })
-    await step('Open settings as a dialog over the Overview', async () => {
-      await nav.getByRole('link', { name: `${name} settings`, exact: true }).click()
-      await settings.waitFor()
-      expect(page.url()).toBe(`${overview}/settings`)
+    const renamed = `${name} renamed`
+    await step('Rename from the Overview heading without changing identity', async () => {
+      await page.getByRole('button', { name: 'Edit workspace name', exact: true }).click()
+      const input = page.getByRole('textbox', { name: 'Workspace name', exact: true })
+      await input.fill(renamed)
+      await input.press('Enter')
+      await page.getByRole('heading', { name: renamed, exact: true, level: 1 }).waitFor()
+      await breadcrumb(page, renamed).waitFor()
+      await nav.getByRole('button', { name: renamed, exact: true, expanded: true }).waitFor()
+      expect(page.url()).toBe(overview)
     })
-    await step('Rename without changing identity', async () => {
-      await settings.getByLabel('Workspace name', { exact: true }).fill(`${name} renamed`)
-      await settings.getByRole('button', { name: 'Save name', exact: true }).click()
-      await expect
-        .poll(() => settings.getByLabel('Workspace name', { exact: true }).inputValue())
-        .toBe(`${name} renamed`)
-      expect(page.url()).toBe(`${overview}/settings`)
-    })
-    const archive = page.getByRole('dialog', { name: 'Archive workspace', exact: true })
-    await step('Cancel archiving', async () => {
-      await settings.getByRole('button', { name: 'Archive workspace', exact: true }).click()
+    const archive = page.getByRole('dialog', { name: `Archive ${renamed}`, exact: true })
+    const archivedEntry = nav.getByRole('link', { name: `${renamed}, archived`, exact: true })
+    const banner = page.getByText('This workspace is archived', { exact: true })
+    await step('Cancel archiving from the sidebar header', async () => {
+      await nav.getByRole('button', { name: `Archive ${renamed}`, exact: true }).click()
       await archive.getByRole('button', { name: 'Cancel', exact: true }).click()
       await expect.poll(() => archive.count()).toBe(0)
-      await settings.getByText('Active', { exact: true }).first().waitFor()
+      expect(page.url()).toBe(overview)
+      expect(await archivedEntry.count()).toBe(0)
     })
-    await step('Confirm archive and reject configuration', async () => {
-      await settings.getByRole('button', { name: 'Archive workspace', exact: true }).click()
-      await archive.getByRole('button', { name: 'Archive workspace', exact: true }).click()
-      await settings.getByText('Archived', { exact: true }).first().waitFor()
-      expect(await settings.getByRole('button', { name: 'Save name', exact: true }).count()).toBe(0)
-      await page.reload()
-      await settings.getByText('Archived', { exact: true }).first().waitFor()
-    })
-    await step('Restore future work', async () => {
-      await settings.getByRole('button', { name: 'Restore workspace', exact: true }).click()
-      await settings.getByText('Active', { exact: true }).first().waitFor()
-      await settings.getByRole('button', { name: 'Save name', exact: true }).waitFor()
-    })
-    await step('Closing settings replaces them with the Overview in history', async () => {
-      const entries = await page.evaluate(() => history.length)
-      await page.keyboard.press('Escape')
-      await expect.poll(() => settings.count()).toBe(0)
-      await page.waitForURL(overview)
-      await breadcrumb(page, `${name} renamed`).waitFor()
+    await step(
+      'Confirm archive: the Workspace moves to Archived and opens its history',
+      async () => {
+        await nav.getByRole('button', { name: `Archive ${renamed}`, exact: true }).click()
+        await archive.getByRole('button', { name: 'Archive workspace', exact: true }).click()
+        await page.waitForURL(`${overview}/activity`)
+        await banner.waitFor()
+        // The archived group opens on the current Workspace; the active tree drops it.
+        expect(await archivedEntry.getAttribute('aria-current')).toBe('page')
+        expect(
+          await nav
+            .getByRole('button', { name: 'Archived', exact: true })
+            .getAttribute('aria-expanded'),
+        ).toBe('true')
+        expect(await nav.getByRole('button', { name: renamed, exact: true }).count()).toBe(0)
+        // Its Overview opens its history, so nothing there offers new work.
+        await page.goto(overview)
+        await page.waitForURL(`${overview}/activity`)
+        await banner.waitFor()
+      },
+    )
+    await step('Restore from the sidebar returns it to the active tree', async () => {
+      await nav.getByRole('button', { name: `Restore ${renamed}`, exact: true }).click()
+      await nav.getByRole('button', { name: renamed, exact: true, expanded: true }).waitFor()
+      await expect.poll(() => banner.count()).toBe(0)
+      expect(await archivedEntry.count()).toBe(0)
       await nav
-        .getByRole('button', { name: `${name} renamed`, exact: true, expanded: true })
-        .waitFor()
-      expect(await page.evaluate(() => history.length)).toBe(entries)
+        .getByRole('group', { name: renamed, exact: true })
+        .getByRole('link', { name: 'Overview', exact: true })
+        .click()
+      await page.waitForURL(overview)
+      await page.getByRole('button', { name: 'Edit workspace name', exact: true }).waitFor()
     })
     await step(
       'Sidebar creation, the Workspace tree, and browser history keep URL-derived context',
@@ -107,7 +116,7 @@ test('Workspace creation, MCP endpoint copy, settings dialog, rename, archive co
         expect(second).not.toBe(overview)
         expect(await header(`${name} second`).getAttribute('aria-expanded')).toBe('true')
         // Opening another Workspace keeps the earlier one open.
-        expect(await header(`${name} renamed`).getAttribute('aria-expanded')).toBe('true')
+        expect(await header(renamed).getAttribute('aria-expanded')).toBe('true')
         expect(
           await group(`${name} second`)
             .getByRole('link', { name: 'Overview', exact: true })
@@ -117,19 +126,17 @@ test('Workspace creation, MCP endpoint copy, settings dialog, rename, archive co
         await header(`${name} second`).click()
         await nav.getByRole('button', { name: `${name} second`, expanded: false }).waitFor()
         expect(await group(`${name} second`).count()).toBe(0)
-        expect(await header(`${name} renamed`).getAttribute('aria-expanded')).toBe('true')
+        expect(await header(renamed).getAttribute('aria-expanded')).toBe('true')
         expect(page.url()).toBe(second)
         await header(`${name} second`).click()
         await group(`${name} second`).getByRole('link', { name: 'Overview', exact: true }).waitFor()
         // Navigating into a Workspace opens it in the tree.
         await page.goBack()
-        await breadcrumb(page, `${name} renamed`).waitFor()
+        await breadcrumb(page, renamed).waitFor()
         expect(page.url()).toBe(overview)
-        await nav
-          .getByRole('button', { name: `${name} renamed`, exact: true, expanded: true })
-          .waitFor()
+        await nav.getByRole('button', { name: renamed, exact: true, expanded: true }).waitFor()
         expect(
-          await group(`${name} renamed`)
+          await group(renamed)
             .getByRole('link', { name: 'Overview', exact: true })
             .getAttribute('aria-current'),
         ).toBe('page')

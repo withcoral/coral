@@ -175,7 +175,7 @@ async fn listing_orders_hits_by_call_path() {
     assert_eq!(operation.hints(), OperationHints::default());
     assert_eq!(
         operation.approval_requirement(),
-        ApprovalRequirement::Required
+        ApprovalRequirement::NotRequired
     );
 }
 
@@ -3048,6 +3048,19 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
     fixture
         .policies
         .set_access_state(&context, target, OperationAccessState::Enabled)
+        .await
+        .unwrap();
+    fixture
+        .policies
+        .set_access_state(
+            &context,
+            OperationPolicyTarget::new(
+                workspace.clone(),
+                first.id().clone(),
+                OperationKey::parse("getForecast").unwrap(),
+            ),
+            OperationAccessState::ApprovalRequired,
+        )
         .await
         .unwrap();
     for (path, approval) in [

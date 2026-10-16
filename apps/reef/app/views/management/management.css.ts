@@ -39,8 +39,6 @@ export const plainList = style({
   margin: 0,
   padding: 0,
 })
-// The owners of one workspace, in a table cell.
-export const owners = style([plainList, { gap: 4 }])
 // A card's few rows and the link to the rest sit close, apart from the card's other parts.
 export const glimpse = style({ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 })
 export const glimpseMore = style({ alignSelf: 'flex-start' })
@@ -162,7 +160,6 @@ export const secret = style({
   userSelect: 'all',
   padding: 16,
 })
-export const dialogHeading = style({ display: 'flex', alignItems: 'center', gap: 8 })
 
 // One line under the breadcrumb: context on the left, page actions on the right.
 export const pageIntro = style({
@@ -186,3 +183,41 @@ export const addFields = style({
 // The role menu alone, as wide as the role column in the add dialog.
 export const roleField = style({ display: 'flex', flexDirection: 'column', gap: 8, width: 140 })
 export const addField = style({ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 })
+
+// A page's name as its heading, with an editor in its place while you rename it.
+export const nameHeading = style({
+  alignItems: 'center',
+  display: 'flex',
+  gap: 4,
+  minWidth: 0,
+  overflowWrap: 'anywhere',
+})
+export const nameForm = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+  minWidth: 0,
+})
+export const nameRow = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 8,
+  minWidth: 0,
+})
+export const nameInput = style({ flex: '1 1 240px', maxWidth: 480, minWidth: 0 })
+// In the top bar the editor takes the title's place on one line: the breadcrumb
+// sizes to its content, so a row free to wrap would drop its buttons under the input.
+export const titleNameRow = style({ flexWrap: 'nowrap' })
+export const titleNameInput = style({ flex: '0 1 280px', minWidth: 160 })
+
+// What a confirmed action changes, as a short list between two sentences.
+export const consequences = style({ display: 'flex', flexDirection: 'column', gap: 8 })
+export const bulletList = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  margin: 0,
+  paddingLeft: 20,
+  listStyle: 'disc',
+})

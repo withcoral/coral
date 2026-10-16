@@ -53,7 +53,11 @@ export async function connectionRequests(context: TestContext) {
         providerPath = await addProviderFromFile(
           page,
           workspace,
-          openApiDocument('Connections', { listEntries: { summary: 'List entries' } }, {}),
+          openApiDocument(
+            'Connections',
+            { listEntries: { summary: 'List entries', method: 'post' } },
+            {},
+          ),
           'connections',
           { authentication: 'Bearer token', account: 'own-later' },
         )

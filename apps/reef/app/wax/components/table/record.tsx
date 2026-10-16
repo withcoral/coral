@@ -14,6 +14,7 @@ export function Record({
   marker,
   metadata,
   icon,
+  tabbable = true,
 }: {
   depth?: number
   expanded?: boolean
@@ -25,6 +26,11 @@ export function Record({
   metadata?: ReactNode
   /** Accessible record kind without a repeated text label. */
   icon?: { name: IconName; label: string }
+  /**
+   * False takes the toggle out of the Tab order, for a table that is one Tab stop
+   * itself and toggles from its own keys. A click still toggles.
+   */
+  tabbable?: boolean
 }) {
   return (
     <div className={styles.record} style={{ paddingInlineStart: depth * 20 }}>
@@ -36,6 +42,7 @@ export function Record({
             ariaLabel={expanded ? 'Collapse record' : 'Expand record'}
             aria-expanded={expanded}
             disabled={disabled}
+            tabIndex={tabbable ? undefined : -1}
             onClick={onToggle}
           >
             <Button.Icon name={expanded ? 'ChevronDown' : 'ChevronRight'} />

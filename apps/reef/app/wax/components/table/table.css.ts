@@ -15,6 +15,7 @@ import {
   justifyProperty,
   MAX_ALIGNED_COLUMNS,
   ROWS_MAX_HEIGHT_PROPERTY,
+  SCROLL_END_ROOM_PROPERTY,
 } from './constants'
 
 // The fallback keeps a cell rendered outside a Container styled as the default
@@ -75,10 +76,13 @@ export const scrollTable = style({
   minBlockSize: 0,
   minWidth: 0,
   overscrollBehavior: 'contain',
+  paddingBlockEnd: `var(${SCROLL_END_ROOM_PROPERTY}, 0px)`,
   selectors: {
     // The horizontal scrollbar's 20px hit area overlays the port's foot, so
     // the last row ends above it and keeps its clicks.
-    '&[data-has-overflow-x]': { paddingBlockEnd: 20 },
+    '&[data-has-overflow-x]': {
+      paddingBlockEnd: `max(20px, var(${SCROLL_END_ROOM_PROPERTY}, 0px))`,
+    },
   },
 })
 
@@ -112,6 +116,19 @@ export const container = recipe({
           [tableVars.headingHeight.ref]: `${HEADING_HEIGHT_PX.compact}px`,
           [tableVars.rowHoverBackground.ref]: theme.surface.onMainContentSubtle,
           [tableVars.scrollRowPaddingBlock.ref]: '4px',
+        },
+      },
+      // One line of small text with room around it, for a list read row by row.
+      comfortable: {
+        vars: {
+          [tableVars.cellHeight.ref]: `${CELL_HEIGHT_PX.comfortable}px`,
+          [tableVars.cellPaddingBlock.ref]: '8px',
+          [tableVars.cellPaddingInline.ref]: '12px',
+          [tableVars.groupHeadingHeight.ref]:
+            `var(${GROUP_HEADING_HEIGHT_PROPERTY}, ${GROUP_HEADING_HEIGHT_PX.comfortable}px)`,
+          [tableVars.headingHeight.ref]: `${HEADING_HEIGHT_PX.comfortable}px`,
+          [tableVars.rowHoverBackground.ref]: theme.surface.onMainContentSubtle,
+          [tableVars.scrollRowPaddingBlock.ref]: '5px',
         },
       },
       default: {
@@ -297,6 +314,13 @@ const cursor = {
   boxShadow: `inset 0 0 0 2px ${theme.stroke.focused}`,
 }
 export const activeRow = style(cursor)
+// A table that takes focus shows it, unless a cursor row already shows where the keys act.
+export const focusableTable = style({
+  selectors: {
+    '&:focus-visible': { outline: `2px solid ${theme.stroke.focused}`, outlineOffset: -2 },
+    '&:focus-visible:has([data-active])': { outline: 'none' },
+  },
+})
 
 // The marker overlays the existing edge without moving columns or replacing selection.
 export const markedRow = style({

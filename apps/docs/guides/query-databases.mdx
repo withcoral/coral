@@ -1,0 +1,102 @@
+---
+title: "Query databases"
+description: "Connect your database to Coral through MCP Toolbox for Databases."
+---
+
+[MCP Toolbox for Databases](https://mcp-toolbox.dev/documentation/introduction/) exposes database tools through MCP.
+Add Toolbox as a Coral provider so your agents can query your database.
+You need a running Coral instance and a workspace that you own.
+
+Supported databases and query engines include:
+
+- **Relational:** [PostgreSQL](https://mcp-toolbox.dev/integrations/postgres/), [MySQL](https://mcp-toolbox.dev/integrations/mysql/), [MariaDB](https://mcp-toolbox.dev/integrations/mariadb/), [SQL Server](https://mcp-toolbox.dev/integrations/mssql/), [SQLite](https://mcp-toolbox.dev/integrations/sqlite/), [Oracle](https://mcp-toolbox.dev/integrations/oracle/), and [Firebird](https://mcp-toolbox.dev/integrations/firebird/).
+- **Distributed SQL:** [CockroachDB](https://mcp-toolbox.dev/integrations/cockroachdb/), [OceanBase](https://mcp-toolbox.dev/integrations/oceanbase/), [TiDB](https://mcp-toolbox.dev/integrations/tidb/), and [YugabyteDB](https://mcp-toolbox.dev/integrations/yuagbytedb/).
+- **NoSQL:** [MongoDB](https://mcp-toolbox.dev/integrations/mongodb/), [Couchbase](https://mcp-toolbox.dev/integrations/couchbase/), [Cassandra](https://mcp-toolbox.dev/integrations/cassandra/), [ScyllaDB](https://mcp-toolbox.dev/integrations/scylladb/), [Redis](https://mcp-toolbox.dev/integrations/redis/), and [Valkey](https://mcp-toolbox.dev/integrations/valkey/).
+- **Graph:** [Neo4j](https://mcp-toolbox.dev/integrations/neo4j/), [Dgraph](https://mcp-toolbox.dev/integrations/dgraph/), [FalkorDB](https://mcp-toolbox.dev/integrations/falkordb/), and [ArcadeDB](https://mcp-toolbox.dev/integrations/arcadedb/).
+- **Analytics and search:** [ClickHouse](https://mcp-toolbox.dev/integrations/clickhouse/), [Snowflake](https://mcp-toolbox.dev/integrations/snowflake/), [SingleStore](https://mcp-toolbox.dev/integrations/singlestore/), [Elasticsearch](https://mcp-toolbox.dev/integrations/elasticsearch/), [Trino](https://mcp-toolbox.dev/integrations/trino/), and [MindsDB](https://mcp-toolbox.dev/integrations/mindsdb/).
+- **Google Cloud:** [AlloyDB](https://mcp-toolbox.dev/integrations/alloydb/), Cloud SQL for [PostgreSQL](https://mcp-toolbox.dev/integrations/cloud-sql-pg/), [MySQL](https://mcp-toolbox.dev/integrations/cloud-sql-mysql/), and [SQL Server](https://mcp-toolbox.dev/integrations/cloud-sql-mssql/), [BigQuery](https://mcp-toolbox.dev/integrations/bigquery/), [Bigtable](https://mcp-toolbox.dev/integrations/bigtable/), [Firestore](https://mcp-toolbox.dev/integrations/firestore/), and [Spanner](https://mcp-toolbox.dev/integrations/spanner/).
+
+See [Toolbox's integration catalog](https://mcp-toolbox.dev/integrations/) for the full list and available tools.
+
+## Run Toolbox
+
+1. [Install Toolbox](https://mcp-toolbox.dev/documentation/introduction/) on a host that can reach your database.
+2. For trusted development, choose a [prebuilt configuration](https://mcp-toolbox.dev/documentation/configuration/prebuilt-configs/) for your database.
+3. Set the connection and credential environment variables listed in that configuration's documentation.
+
+For example, after setting the [PostgreSQL environment variables](https://mcp-toolbox.dev/integrations/postgres/prebuilt-configs/postgresql/), start a local server:
+
+```shellscript
+toolbox --prebuilt postgres --address 127.0.0.1 --port 5000
+```
+
+This loads Toolbox's built-in PostgreSQL tools without a `tools.yaml` file.
+For custom tools or databases without a prebuilt configuration, [define `tools.yaml`](https://mcp-toolbox.dev/documentation/configuration/) and use `--config tools.yaml` instead.
+
+Coral recommends exposing only an `execute_sql` tool, using a database account with the minimum permissions required for your agent's work.
+See [Toolbox's security guidance](https://mcp-toolbox.dev/documentation/configuration/prebuilt-configs/#security-for-dynamic-sql-tools).
+
+Its MCP endpoint is `http://127.0.0.1:5000/mcp`.
+To expose a specific toolset, use `/mcp/<toolset-name>` instead.
+For containers or a remote server, use an address reachable from the Coral runtime.
+See [Deploy with Coral](#deploy-with-coral) below.
+
+Configure database credentials in Toolbox.
+If Toolbox requires client authentication, follow its [authentication documentation](https://mcp-toolbox.dev/documentation/configuration/authentication/) and configure the corresponding credentials in Coral.
+
+## Add Toolbox to Coral
+
+1. Open your workspace and select **Providers**, then **Add provider**.
+2. Select **Add custom** and enter the Toolbox endpoint in **MCP server URL**.
+3. Select **Connect**.
+4. Set the display name and namespace, then choose the sign-in method that matches your Toolbox configuration.
+5. Select **Next**. Authenticate if prompted, then review the discovered operations with **Expand all**.
+6. Select **Next**, choose the account setting, and select **Add provider**.
+
+For a server without authentication, select **No authentication** and confirm **No account needed**.
+Review the provider's [operation policy](/guides/concepts#operation-policy) to choose which operations can run or require approval.
+The database account's permissions still apply to every query.
+
+## Query through Coral
+
+[Connect your MCP client to Coral](/getting-started/quickstart#connect-an-mcp-client).
+Give your client the Coral workspace URL, and keep the Toolbox URL in the provider configuration.
+Ask your agent to query the database using the provider's namespace.
+
+## Deploy with Coral
+
+Without Toolbox client authentication, allow only Coral to reach its MCP endpoint.
+Direct access bypasses Coral's operation policy.
+
+### Local
+
+Run Toolbox on the same host as Coral with `--address 127.0.0.1`, as shown above.
+Use `http://127.0.0.1:5000/mcp` as the provider URL.
+Loopback binding blocks remote connections, but other processes on the host can still access Toolbox.
+
+### Docker Compose
+
+Follow [Toolbox's Docker Compose guide](https://mcp-toolbox.dev/documentation/deploy-to/docker/) to add it to your [Coral deployment](/getting-started/self-host/docker-compose).
+Connect Coral and Toolbox through a private network shared only by these services.
+Omit Toolbox's `ports` mapping to keep its MCP port unpublished.
+Keep Toolbox connected to a network that can reach your database.
+For a service named `toolbox` on port `5000`, use `http://toolbox:5000/mcp` as the provider URL.
+
+### Kubernetes
+
+Follow [Toolbox's Kubernetes guide](https://mcp-toolbox.dev/documentation/deploy-to/kubernetes/) alongside [Coral's Kubernetes guide](/getting-started/self-host/kubernetes).
+For a sidecar, run Toolbox in Coral's Pod with `--address 127.0.0.1`.
+Use `http://127.0.0.1:5000/mcp` as the provider URL, without a Service for Toolbox.
+
+For a separate Deployment, use an internal ClusterIP Service and a NetworkPolicy that permits inbound connections only from Coral.
+For a Service named `toolbox` in the `coral` namespace, use `http://toolbox.coral.svc.cluster.local:5000/mcp`.
+Adjust the namespace, port, and cluster domain to match your deployment.
+
+For each deployment, include the provider URL's hostname and port in Toolbox's `--allowed-hosts`.
+Configure Coral's [outbound permissions](/reference/configuration#outbound) for the endpoint in its `[outbound]` configuration:
+
+- For loopback HTTP endpoints, including `127.0.0.1` sidecars, set `loopback = "http-and-https"`.
+- For private network HTTP endpoints, including Compose services and Kubernetes ClusterIP Services, set `private_networks = "http-and-https"`.
+
+These permissions are independent and default to `deny` in server deployments.
+Desktop and implicit-user local deployments allow both by default, unless you explicitly override them.

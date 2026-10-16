@@ -321,10 +321,6 @@ fn http_result_declarations_are_mutually_assignable_with_their_previous_form() {
     let json = |schema: Value| serde_json::json!({"application/json": {"schema": schema}});
     let reference =
         |name: &str| serde_json::json!({"$ref": format!("#/components/schemas/{name}")});
-    let two_hundreds = (200..300)
-        .map(|status| status.to_string())
-        .collect::<Vec<_>>()
-        .join(" | ");
     let application_json = Some("\"application/json\"");
     let cases = [
         (
@@ -339,16 +335,6 @@ fn http_result_declarations_are_mutually_assignable_with_their_previous_form() {
                 previous_typed("BasicError", "404", application_json),
                 previous_typed("Branch", "200", application_json),
             ],
-        ),
-        (
-            "listNames",
-            serde_json::json!({"2XX": {"description": "ok",
-                "content": json(serde_json::json!({"type": "array", "items": {"type": "string"}}))}}),
-            vec![previous_typed(
-                "Array<string>",
-                &two_hundreds,
-                application_json,
-            )],
         ),
         (
             "getWithDefault",
@@ -425,6 +411,88 @@ fn http_result_declarations_are_mutually_assignable_with_their_previous_form() {
              type CurrentIsPrevious = Assignable<Current, Previous>;"
         ));
     }
+}
+
+#[test]
+fn status_ranges_project_as_one_named_type_per_range() {
+    let document = r"
+openapi: 3.1.0
+info: { title: Range status, version: '1' }
+servers: [{ url: https://api.example.test }]
+paths:
+  /probe:
+    get:
+      operationId: probe
+      responses:
+        '2XX': { description: ok }
+        '4XX':
+          description: error
+          content:
+            application/json:
+              schema: { type: object }
+        '5XX': { description: failure }
+        default: { description: other }
+  /exact:
+    get:
+      operationId: exact
+      responses:
+        '200': { description: ok }
+";
+    let prepared = ready(document);
+    let declaration = |key: &str| {
+        prepared
+            .operations()
+            .iter()
+            .find(|operation| operation.key().as_str() == key)
+            .expect("declared Operation")
+            .typescript_declaration()
+    };
+    let probe = declaration("probe");
+
+    for range in ["2xx", "4xx", "5xx"] {
+        let alias = format!(
+            "type HttpStatus{range} = number & {{ readonly [HttpStatusRangeBrand]: \"{range}\" }};"
+        );
+        assert_eq!(
+            probe.lines().filter(|line| *line == alias).count(),
+            1,
+            "`{alias}` is declared once in:\n{probe}"
+        );
+    }
+    for branch in [
+        "HttpResult<({} & Record<string, unknown>), HttpStatus4xx, \"application/json\">",
+        "HttpResult<null, HttpStatus2xx, string | null>",
+        "HttpResult<null, HttpStatus5xx, string | null>",
+        "HttpResult<null, number, string | null>",
+    ] {
+        assert!(probe.contains(branch), "missing `{branch}` in:\n{probe}");
+    }
+    assert_eq!(
+        probe
+            .lines()
+            .filter(|line| *line == "const HttpStatusRangeBrand: unique symbol;")
+            .count(),
+        1,
+        "the brand is declared once in:\n{probe}"
+    );
+    for absent in ["HttpStatus1xx", "HttpStatus3xx", "418"] {
+        assert!(
+            !probe.contains(absent),
+            "unexpected `{absent}` in:\n{probe}"
+        );
+    }
+    assert!(
+        !declaration("exact").contains("HttpStatus"),
+        "an Operation without ranges declares none"
+    );
+    assert_strict_compiling_declaration(&format!(
+        "{probe}\n\
+         type Holds<Claim extends true> = Claim;\n\
+         type Statuses = Awaited<ReturnType<typeof probe>>[\"metadata\"][\"status\"];\n\
+         type RangeIsNotDefault = Holds<number extends HttpStatus4xx ? false : true>;\n\
+         type RangesAreDistinct = Holds<HttpStatus4xx extends HttpStatus5xx ? false : true>;\n\
+         type StatusIsANumber = Holds<Statuses extends number ? true : false>;"
+    ));
 }
 
 #[test]
@@ -686,15 +754,188 @@ paths:
     );
 }
 
+/// One schema's expected behaviour under the `nullable` rules.
+struct NullableCase {
+    version: &'static str,
+    schema: &'static str,
+    /// The projected response data type, or `None` to leave it unchecked.
+    projection: Option<&'static str>,
+    accepts_null: bool,
+    /// A string the schema must still reject.
+    rejects: Option<&'static str>,
+    warns: bool,
+    /// Whether a `text/plain` request body with this schema stays available,
+    /// or `None` to leave it unchecked.
+    text_body_available: Option<bool>,
+}
+
+const NULLABLE_CASES: [NullableCase; 9] = [
+    NullableCase {
+        version: "3.0.3",
+        schema: "{ type: string, nullable: true }",
+        projection: Some("string | null"),
+        accepts_null: true,
+        rejects: None,
+        warns: false,
+        // Null has no text form.
+        text_body_available: Some(false),
+    },
+    NullableCase {
+        version: "3.0.3",
+        schema: "{ type: string, enum: [open], nullable: true }",
+        projection: Some("\"open\" | null"),
+        accepts_null: true,
+        rejects: Some("closed"),
+        warns: false,
+        text_body_available: None,
+    },
+    NullableCase {
+        version: "3.0.3",
+        schema: "{ oneOf: [{ type: string }, { type: boolean }], nullable: true }",
+        projection: Some("(string | boolean) | null"),
+        accepts_null: true,
+        rejects: None,
+        warns: false,
+        text_body_available: None,
+    },
+    NullableCase {
+        version: "3.0.3",
+        schema: "{ allOf: [{ type: string }], nullable: true }",
+        projection: Some("(string) | null"),
+        accepts_null: true,
+        rejects: None,
+        warns: false,
+        text_body_available: None,
+    },
+    NullableCase {
+        version: "3.1.0",
+        schema: "{ type: string, nullable: true }",
+        projection: Some("string"),
+        accepts_null: false,
+        rejects: None,
+        warns: true,
+        text_body_available: Some(true),
+    },
+    NullableCase {
+        version: "3.1.0",
+        schema: "{ type: string, enum: [open], nullable: true }",
+        projection: Some("\"open\""),
+        accepts_null: false,
+        rejects: Some("closed"),
+        warns: true,
+        text_body_available: None,
+    },
+    NullableCase {
+        version: "3.1.0",
+        // OpenAI's shape: a reference made "nullable" by an `allOf` sibling.
+        schema: "{ allOf: [{ $ref: \"#/components/schemas/Truncation\" }, { nullable: true }] }",
+        projection: Some("(Truncation & unknown)"),
+        accepts_null: false,
+        rejects: None,
+        warns: true,
+        text_body_available: None,
+    },
+    NullableCase {
+        version: "3.1.0",
+        schema: "{ type: [string, \"null\"] }",
+        projection: Some("null | string"),
+        accepts_null: true,
+        rejects: None,
+        warns: false,
+        text_body_available: None,
+    },
+    // The type already admits null, so `nullable` changes nothing.
+    NullableCase {
+        version: "3.1.0",
+        schema: "{ type: [string, \"null\"], nullable: true }",
+        projection: Some("null | string"),
+        accepts_null: true,
+        rejects: None,
+        warns: false,
+        text_body_available: None,
+    },
+];
+
 #[test]
-fn openapi_30_nullable_enum_includes_null() {
+fn operations_sharing_a_named_type_each_carry_its_declaration_and_diagnostics() {
     let prepared = ready(
-        r#"openapi: 3.0.3
+        r##"openapi: 3.1.0
 info:
-  title: Nullable enum
+  title: Shared type
   version: "1"
 servers:
   - url: https://api.example.test
+paths:
+  /first:
+    get:
+      operationId: getFirst
+      responses:
+        "200":
+          description: first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Attachment"
+  /second:
+    get:
+      operationId: getSecond
+      responses:
+        "200":
+          description: second
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Attachment"
+components:
+  schemas:
+    Attachment:
+      type: object
+      properties:
+        size:
+          type: integer
+          format: int64
+        content:
+          type: string
+          format: binary
+"##,
+    );
+    assert_eq!(prepared.operations().len(), 2);
+    for operation in prepared.operations() {
+        let declaration = operation.typescript_declaration();
+        assert!(
+            declaration
+                .contains(r#"type Attachment = ({ "content"?: BinaryValue; "size"?: number }"#),
+            "{}: {declaration}",
+            operation.key().as_str()
+        );
+        assert!(
+            declaration.contains("type BinaryValue = "),
+            "{}: {declaration}",
+            operation.key().as_str()
+        );
+        assert!(
+            operation
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code() == "typescript_integer_widened"),
+            "{}",
+            operation.key().as_str()
+        );
+    }
+}
+
+/// OpenAPI 3.0's `nullable` admits null. OpenAPI 3.1 gives it no meaning, so
+/// the projection and the validator both ignore it, and materialization warns.
+#[test]
+fn nullable_follows_the_declared_openapi_version() {
+    for case in NULLABLE_CASES {
+        let NullableCase {
+            version, schema, ..
+        } = case;
+        let prepared = ready(&format!(
+            r#"openapi: {version}
+info: {{ title: Nullable, version: "1" }}
+servers: [{{ url: https://api.example.test }}]
 paths:
   /state:
     get:
@@ -704,34 +945,63 @@ paths:
           description: state
           content:
             application/json:
-              schema:
-                type: string
-                enum: [open]
-                nullable: true
-"#,
-    );
-    assert_eq!(
-        prepared.schema_graph().semantics(),
-        coral_catalog::SchemaSemantics::OpenApiV3_0
-    );
-    let operation = &prepared.operations()[0];
-    assert!(
-        operation
-            .typescript_declaration()
-            .contains("\"open\" | null")
-    );
-    let schema = http_binding(operation).responses()[0].content()[0].schema();
-    assert!(prepared.schema_graph().accepts(schema, &Value::Null));
-    assert!(
-        prepared
-            .schema_graph()
-            .accepts(schema, &Value::from("open"))
-    );
-    assert!(
-        !prepared
-            .schema_graph()
-            .accepts(schema, &Value::from("closed"))
-    );
+              schema: {schema}
+components:
+  schemas:
+    Truncation: {{ type: string }}
+"#
+        ));
+        let operation = &prepared.operations()[0];
+        let response = http_binding(operation).responses()[0].content()[0].schema();
+        let graph = prepared.schema_graph();
+        assert_eq!(
+            (
+                case.projection.is_none_or(|projection| {
+                    operation
+                        .typescript_declaration()
+                        .contains(&format!("HttpResult<{projection}, 200,"))
+                }),
+                graph.accepts(response, &Value::Null),
+                graph.accepts(response, &Value::from("open")),
+                case.rejects
+                    .is_none_or(|rejected| !graph.accepts(response, &Value::from(rejected))),
+                operation
+                    .diagnostics()
+                    .iter()
+                    .any(|diagnostic| diagnostic.code() == "nullable_ignored"),
+            ),
+            (true, case.accepts_null, true, true, case.warns),
+            "{version} {schema}\n{}",
+            operation.typescript_declaration()
+        );
+
+        if let Some(available) = case.text_body_available {
+            let prepared = ready(&format!(
+                r#"openapi: {version}
+info: {{ title: Nullable text, version: "1" }}
+servers: [{{ url: https://api.example.test }}]
+paths:
+  /state:
+    post:
+      operationId: setState
+      requestBody:
+        content:
+          text/plain:
+            schema: {schema}
+      responses: {{ "204": {{ description: set }} }}
+"#
+            ));
+            assert_eq!(
+                prepared.operations()[0].availability(),
+                if available {
+                    OperationAvailability::Available
+                } else {
+                    OperationAvailability::Unavailable
+                },
+                "{version} {schema} as a text/plain request body"
+            );
+        }
+    }
 }
 
 #[test]
@@ -815,31 +1085,13 @@ components:
     assert_eq!(diagnostic.code(), "credentials_not_supported");
 }
 
-#[test]
-fn operations_agree_on_credential_contracts_not_security_scheme_names() {
-    let bearer = "{ type: http, scheme: bearer }";
-    let oauth = r#"{ type: oauth2, flows: { authorizationCode: { authorizationUrl: "https://auth.example.test/authorize", tokenUrl: "https://auth.example.test/token", scopes: { read: r, admin: a } } } }"#;
-    for (case, user_scheme, user_scopes, admin_scheme, admin_scopes, shared) in [
-        ("identical bearer schemes", bearer, "", bearer, "", true),
-        (
-            "bearer and API key",
-            bearer,
-            "",
-            "{ type: apiKey, in: header, name: X-Admin-Key }",
-            "",
-            false,
-        ),
-        (
-            "one OAuth scheme, different scopes",
-            oauth,
-            "read",
-            oauth,
-            "admin",
-            false,
-        ),
-    ] {
-        let source = format!(
-            r#"openapi: 3.1.0
+/// A document whose `/probe` Operation uses `UserAuth` through the root
+/// security and whose `/admin/probe` Operation names `AdminAuth` itself.
+fn two_scheme_document(user: (&str, &str), admin: (&str, &str)) -> String {
+    let (user_scheme, user_scopes) = user;
+    let (admin_scheme, admin_scopes) = admin;
+    format!(
+        r#"openapi: 3.1.0
 info: {{ title: Two credential schemes, version: "1" }}
 servers: [{{ url: https://api.example.test }}]
 security:
@@ -860,14 +1112,126 @@ components:
     UserAuth: {user_scheme}
     AdminAuth: {admin_scheme}
 "#
-        );
-        let document = OpenApiDocument::parse(&source).expect("credential fixture");
+    )
+}
+
+/// The scopes the Provider's one contract requests, or `None` when that
+/// contract is not OAuth.
+fn oauth_scopes(prepared: &coral_catalog::PreparedProviderCatalog) -> Option<Vec<String>> {
+    prepared
+        .credential_contract()
+        .authentication()
+        .oauth_scopes()
+        .map(|(scopes, _format)| scopes.to_vec())
+}
+
+#[test]
+fn operations_share_one_oauth_grant_up_to_the_scope_limit() {
+    // The scheme declares 101 scopes; each Operation asks for 60 of them.
+    let declared = (0..=100)
+        .map(|index| format!("s{index}: s{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let oauth = format!(
+        r#"{{ type: oauth2, flows: {{ authorizationCode: {{ authorizationUrl: "https://auth.example.test/authorize", tokenUrl: "https://auth.example.test/token", scopes: {{ {declared} }} }} }} }}"#
+    );
+    let scope_list = |range: std::ops::RangeInclusive<usize>| {
+        range
+            .map(|index| format!("s{index}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    for (case, admin_scopes, union_size) in [
+        ("union within the limit", scope_list(40..=99), Some(100)),
+        ("union over the limit", scope_list(41..=100), None),
+    ] {
+        let document = OpenApiDocument::parse(&two_scheme_document(
+            (&oauth, &scope_list(0..=59)),
+            (&oauth, &admin_scopes),
+        ))
+        .expect("overlapping scope fixture");
         match materialize(
             DestinationPolicy::default(),
             &ProviderSetupInput::from(document),
             &[],
         ) {
-            MaterializationOutcome::Ready(prepared) if shared => {
+            MaterializationOutcome::Ready(prepared) => {
+                assert_eq!(
+                    oauth_scopes(&prepared).map(|scopes| scopes.len()),
+                    union_size,
+                    "{case}"
+                );
+            }
+            MaterializationOutcome::Rejected(diagnostic) => {
+                assert!(union_size.is_none(), "{case}: {}", diagnostic.message());
+                assert_eq!(diagnostic.code(), "credentials_not_supported", "{case}");
+                assert_eq!(
+                    diagnostic.message(),
+                    "the Provider's Operations together request more OAuth scopes than one \
+                     grant can hold at #/paths/~1probe/get: UserAuth and AdminAuth together \
+                     exceed the scope limit",
+                    "{case}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn operations_agree_on_credential_contracts_not_security_scheme_names() {
+    let bearer = "{ type: http, scheme: bearer }";
+    let api_key = "{ type: apiKey, in: header, name: X-Admin-Key }";
+    let oauth = r#"{ type: oauth2, flows: { authorizationCode: { authorizationUrl: "https://auth.example.test/authorize", tokenUrl: "https://auth.example.test/token", scopes: { read: r, admin: a } } } }"#;
+    let other_oauth = r#"{ type: oauth2, flows: { authorizationCode: { authorizationUrl: "https://other.example.test/authorize", tokenUrl: "https://other.example.test/token", scopes: { read: r, admin: a } } } }"#;
+    // The scopes the one shared contract requests, `Some(None)` for a shared
+    // contract that is not OAuth; `None` means the Operations need separate
+    // credentials.
+    let cases = [
+        (
+            "identical bearer schemes",
+            (bearer, ""),
+            (bearer, ""),
+            Some(None),
+        ),
+        ("bearer and API key", (bearer, ""), (api_key, ""), None),
+        (
+            "one OAuth scheme, different scopes",
+            (oauth, "read"),
+            (oauth, "admin"),
+            Some(Some(&["admin", "read"][..])),
+        ),
+        (
+            "one OAuth scheme, overlapping scopes",
+            (oauth, "read, admin"),
+            (oauth, "admin"),
+            Some(Some(&["admin", "read"][..])),
+        ),
+        (
+            "one OAuth scheme, one Operation without scopes",
+            (oauth, "read"),
+            (oauth, ""),
+            Some(Some(&["read"][..])),
+        ),
+        (
+            "two OAuth authorization servers, same scopes",
+            (oauth, "read"),
+            (other_oauth, "read"),
+            None,
+        ),
+    ];
+    for (case, user, admin, shared) in cases {
+        let document =
+            OpenApiDocument::parse(&two_scheme_document(user, admin)).expect("credential fixture");
+        match materialize(
+            DestinationPolicy::default(),
+            &ProviderSetupInput::from(document),
+            &[],
+        ) {
+            MaterializationOutcome::Ready(prepared) if shared.is_some() => {
+                let expected = shared
+                    .flatten()
+                    .map(|scopes| scopes.iter().map(ToString::to_string).collect::<Vec<_>>());
+                assert_eq!(oauth_scopes(&prepared), expected, "{case}");
                 for operation in prepared.operations() {
                     assert_eq!(operation.availability(), OperationAvailability::Available);
                     let binding = http_binding(operation);
@@ -883,7 +1247,7 @@ components:
                     assert_eq!(slot.scheme_name(), own_scheme, "{case}");
                 }
             }
-            MaterializationOutcome::Rejected(diagnostic) if !shared => {
+            MaterializationOutcome::Rejected(diagnostic) if shared.is_none() => {
                 assert_eq!(diagnostic.code(), "credentials_not_supported", "{case}");
                 assert_eq!(
                     diagnostic.message(),
@@ -2699,8 +3063,17 @@ fn summaries_bearing_nonwhitespace_control_characters_fall_back_to_the_method_an
 }
 
 #[test]
-fn oversized_search_material_warns_without_blocking_the_catalog() {
-    let properties = (0..8_300)
+fn search_material_never_reaches_the_catalog() {
+    // Universal Search prepares its own material after the commit (ADR 0017):
+    // an Operation past the field bound, or with one field over the former
+    // 256 KiB bound, is Available and carries no search diagnostic.
+    let ok = |schema: Value| {
+        serde_json::json!({"200": {
+            "description": "ok",
+            "content": {"application/json": {"schema": schema}},
+        }})
+    };
+    let wide = (0..8_300)
         .map(|index| {
             (
                 format!("f{index:04}"),
@@ -2708,51 +3081,48 @@ fn oversized_search_material_warns_without_blocking_the_catalog() {
             )
         })
         .collect::<serde_json::Map<_, _>>();
-    let ok = |schema: Value| {
-        serde_json::json!({"200": {
-            "description": "ok",
-            "content": {"application/json": {"schema": schema}},
-        }})
-    };
-    let document = serde_json::json!({
-        "openapi": "3.1.0",
-        "info": {"title": "Oversized search material", "version": "1"},
-        "servers": [{"url": "https://api.example.test"}],
-        "security": [],
-        "paths": {
-            "/wide": {"get": {
-                "operationId": "wide",
-                "responses": ok(serde_json::json!({"type": "object", "properties": properties})),
-            }},
-            "/small": {"get": {
-                "operationId": "small",
-                "responses": ok(serde_json::json!({"type": "string"})),
-            }},
-        },
-    })
-    .to_string();
+    // The examples stay out of the TypeScript declaration, so only the search
+    // material is large.
+    let long = "x".repeat(300 * 1024);
+    for (case, schema) in [
+        (
+            "over the field bound",
+            serde_json::json!({"type": "object", "properties": wide}),
+        ),
+        (
+            "one field over 256 KiB",
+            serde_json::json!({"type": "string", "examples": [long]}),
+        ),
+    ] {
+        let document = serde_json::json!({
+            "openapi": "3.1.0",
+            "info": {"title": "Large search material", "version": "1"},
+            "servers": [{"url": "https://api.example.test"}],
+            "security": [],
+            "paths": {"/large": {"get": {"operationId": "large", "responses": ok(schema)}}},
+        })
+        .to_string();
 
-    let prepared = ready(&document);
+        let prepared = ready(&document);
 
-    assert_eq!(prepared.operations().len(), 2);
-    assert!(
-        prepared
-            .operations()
-            .iter()
-            .all(|operation| operation.availability() == OperationAvailability::Available)
-    );
-    let wide = prepared
-        .operations()
-        .iter()
-        .find(|operation| operation.key().as_str() == "wide")
-        .expect("oversized Operation");
-    assert_eq!(
-        wide.diagnostics()
-            .iter()
-            .map(coral_catalog::CatalogDiagnostic::code)
-            .collect::<Vec<_>>(),
-        ["operation_search_material_truncated"]
-    );
+        let [operation] = prepared.operations() else {
+            panic!("{case}: one Operation");
+        };
+        assert_eq!(
+            operation.availability(),
+            OperationAvailability::Available,
+            "{case}"
+        );
+        assert_eq!(
+            operation
+                .diagnostics()
+                .iter()
+                .map(coral_catalog::CatalogDiagnostic::code)
+                .collect::<Vec<_>>(),
+            Vec::<&str>::new(),
+            "{case}"
+        );
+    }
 }
 
 #[test]
@@ -3140,7 +3510,7 @@ fn declarations_of_every_operation_compile_together_in_one_scope() {
             "/items/id": {"get": {
                 "operationId": "byLiteral",
                 "parameters": query("literal"),
-                "responses": {"200": {"description": "ok"}}
+                "responses": {"200": {"description": "ok"}, "4XX": {"description": "error"}}
             }},
             "/settings": {"put": {
                 "operationId": "putSettings",
@@ -3156,7 +3526,8 @@ fn declarations_of_every_operation_compile_together_in_one_scope() {
                     "anyOf": [
                         reference("HttpResult"),
                         reference("HttpUnknownResult"),
-                        reference("BinaryValue")
+                        reference("BinaryValue"),
+                        reference("HttpStatus4xx")
                     ]
                 }))
             }}
@@ -3168,7 +3539,8 @@ fn declarations_of_every_operation_compile_together_in_one_scope() {
             "SettingsInput": {"const": "component named SettingsInput"},
             "HttpResult": {"const": "component named HttpResult"},
             "HttpUnknownResult": {"const": "component named HttpUnknownResult"},
-            "BinaryValue": {"const": "component named BinaryValue"}
+            "BinaryValue": {"const": "component named BinaryValue"},
+            "HttpStatus4xx": {"const": "component named HttpStatus4xx"}
         }}
     });
     let prepared = ready(&document.to_string());
@@ -3191,6 +3563,8 @@ fn declarations_of_every_operation_compile_together_in_one_scope() {
         r#"type HttpResult2 = "component named HttpResult";"#,
         r#"type HttpUnknownResult2 = "component named HttpUnknownResult";"#,
         r#"type BinaryValue2 = "component named BinaryValue";"#,
+        r#"type HttpStatus4xx2 = "component named HttpStatus4xx";"#,
+        r#"type HttpStatus4xx = number & { readonly [HttpStatusRangeBrand]: "4xx" };"#,
     ] {
         assert!(
             scope.lines().any(|line| line == expected),

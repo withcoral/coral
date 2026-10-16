@@ -95,3 +95,64 @@ export const pendingPage = activityPage({
     unavailable: false,
   },
 })
+
+const at = '2026-09-18T14:02:00.000Z'
+
+/** An open Task in `workspace`, labelled by its intent. */
+export function taskRow(id: string, intent = id): Extract<ActivityRow, { kind: 'task' }> {
+  return {
+    kind: 'task',
+    name: `${workspace}/tasks/${id}`,
+    workspace,
+    agent: '',
+    actor: 'you',
+    intent,
+    outcome: 'open',
+    startedAt: at,
+    endedAt: null,
+  }
+}
+
+/** A finished personal Run in `parent`, labelled by its actor. */
+export function runRow(
+  id: string,
+  parent: string,
+  overrides: Partial<Extract<ActivityRow, { kind: 'run' }>> = {},
+): Extract<ActivityRow, { kind: 'run' }> {
+  return {
+    kind: 'run',
+    name: `${workspace}/runs/${id}`,
+    workspace,
+    agent: '',
+    actor: id,
+    task: parent,
+    state: 'succeeded',
+    startedAt: at,
+    endedAt: at,
+    durationNanos: '1',
+    requiresAction: false,
+    ...overrides,
+  }
+}
+
+/** A tool call in Task `parent`, labelled by its intent. */
+export function toolRow(
+  parent: string,
+  id: string,
+  overrides: Partial<Extract<ActivityRow, { kind: 'tool' }>> = {},
+): Extract<ActivityRow, { kind: 'tool' }> {
+  return {
+    kind: 'tool',
+    name: `${parent}/interactions/${id}`,
+    workspace,
+    agent: '',
+    task: parent,
+    tool: 'search',
+    intent: id,
+    outcome: 'succeeded',
+    startedAt: at,
+    completedAt: at,
+    acceptedRun: '',
+    ...overrides,
+  }
+}

@@ -10,7 +10,6 @@ use crate::{
 };
 
 const MAX_SEARCH_FIELDS: usize = 8_192;
-const MAX_SEARCH_FIELD_BYTES: usize = 256 * 1024;
 const MAX_SCHEMA_DEPTH: usize = 64;
 
 /// One typed declaration-path contributor in prepared search material.
@@ -41,59 +40,95 @@ impl DeclarationIndexEntry {
     }
 }
 
-/// Rebuilds the declaration fields of every structurally available Operation
-/// of a stored Generation from its schema graph, by the current materialization
-/// rules: the same TypeScript projection and the same breadth-first walk.
+/// A stored Generation's schema graph, ready to rebuild the declaration
+/// fields of any of its Operations by the current rules: the TypeScript
+/// projection materialization uses, then the breadth-first walk. Only Universal
+/// Search runs the walk, after the Generation is stored (ADR 0017).
 ///
-/// # Errors
-///
-/// Returns [`crate::Error::CorruptData`] when a stored Operation can no longer
-/// be prepared; materialization prepared it once, so the package is inconsistent.
-pub fn stored_declaration_fields(
-    graph: &SchemaGraph,
-    operations: &[MaterializedOperation],
-) -> Result<BTreeMap<OperationKey, Vec<DeclarationIndexEntry>>, crate::Error> {
-    let openapi_names = OnceCell::new();
-    let mcp_names = OnceCell::new();
-    operations
-        .iter()
-        .filter(|operation| operation.availability() == crate::OperationAvailability::Available)
-        .map(|operation| {
-            let input_declared = match operation.execution_binding() {
-                ExecutionBinding::Http(binding) => crate::openapi::declares_input(
-                    operation.relative_path(),
+/// Loading and naming a large graph costs far more than one Operation's walk,
+/// so a caller that needs several Operations of one Generation keeps one of
+/// these. The names are built on first use.
+pub struct StoredDeclarationFields {
+    graph: SchemaGraph,
+    openapi_names: OnceCell<crate::schema::TypeScriptNames>,
+    mcp_names: OnceCell<crate::schema::TypeScriptNames>,
+}
+
+impl StoredDeclarationFields {
+    /// Prepares fields from one stored Generation's schema graph.
+    #[must_use]
+    pub const fn new(graph: SchemaGraph) -> Self {
+        Self {
+            graph,
+            openapi_names: OnceCell::new(),
+            mcp_names: OnceCell::new(),
+        }
+    }
+
+    /// Rebuilds the declaration fields of every structurally available
+    /// Operation, each with the warnings its walk left.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::CorruptData`] when a stored Operation's input
+    /// declaration can no longer be read; materialization read it once, so
+    /// the package is inconsistent.
+    pub fn all(
+        &self,
+        operations: &[MaterializedOperation],
+    ) -> Result<BTreeMap<OperationKey, PreparedDeclarationFields>, crate::Error> {
+        operations
+            .iter()
+            .filter(|operation| operation.availability() == crate::OperationAvailability::Available)
+            .map(|operation| Ok((operation.key().clone(), self.operation(operation)?)))
+            .collect()
+    }
+
+    /// Rebuilds one structurally available Operation's declaration fields and
+    /// the warnings its walk left.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::CorruptData`] when the stored Operation's input
+    /// declaration can no longer be read.
+    pub fn operation(
+        &self,
+        operation: &MaterializedOperation,
+    ) -> Result<PreparedDeclarationFields, crate::Error> {
+        let graph = &self.graph;
+        let input_declared = match operation.execution_binding() {
+            ExecutionBinding::Http(binding) => crate::openapi::declares_input(
+                operation.relative_path(),
+                operation.input_schema(),
+                binding,
+                graph,
+                self.openapi_names
+                    .get_or_init(|| crate::openapi::typescript_names(graph)),
+            ),
+            ExecutionBinding::Mcp(binding) => crate::mcp::declares_input(
+                operation.relative_path(),
+                operation.input_schema(),
+                binding,
+                graph,
+                self.mcp_names
+                    .get_or_init(|| crate::mcp::typescript_names(graph)),
+            ),
+        };
+        input_declared
+            .map(|input_declared| {
+                prepare_operation_declaration_fields(
+                    operation.execution_binding(),
                     operation.input_schema(),
-                    binding,
+                    input_declared,
                     graph,
-                    openapi_names.get_or_init(|| crate::openapi::typescript_names(graph)),
-                ),
-                ExecutionBinding::Mcp(binding) => crate::mcp::declares_input(
-                    operation.relative_path(),
-                    operation.input_schema(),
-                    binding,
-                    graph,
-                    mcp_names.get_or_init(|| crate::mcp::typescript_names(graph)),
-                ),
-            };
-            let prepared = input_declared
-                .and_then(|input_declared| {
-                    prepare_operation_declaration_fields(
-                        operation.execution_binding(),
-                        operation.input_schema(),
-                        input_declared,
-                        graph,
-                    )
-                })
-                .map_err(|_diagnostic| {
-                    crate::Error::CorruptData(
-                        "a stored Operation cannot be prepared for Universal Search".to_string(),
-                    )
-                })?;
-            // A truncation warning is already on the stored Operation; only
-            // the entries matter here.
-            Ok((operation.key().clone(), prepared.entries))
-        })
-        .collect()
+                )
+            })
+            .map_err(|_diagnostic| {
+                crate::Error::CorruptData(
+                    "a stored Operation's input declaration cannot be read".to_string(),
+                )
+            })
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -102,23 +137,76 @@ struct EvidenceProjection {
     honor_property_access: bool,
 }
 
-/// Declaration fields for one Operation, and a warning when the bound cut them short.
-pub(crate) struct PreparedDeclarationFields {
+/// Declaration fields for one Operation, and the warnings the walk left:
+/// at most one for a schema it could not read and one for the field bound.
+/// The warnings concern search only; they never reach the Operation (ADR 0017).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedDeclarationFields {
     pub(crate) entries: Vec<DeclarationIndexEntry>,
-    pub(crate) diagnostic: Option<CatalogDiagnostic>,
+    pub(crate) warnings: Vec<CatalogDiagnostic>,
+}
+
+impl PreparedDeclarationFields {
+    /// Returns the readable declaration paths with the values the schema lists.
+    #[must_use]
+    pub fn entries(&self) -> &[DeclarationIndexEntry] {
+        &self.entries
+    }
+
+    /// Returns the warnings the walk left.
+    #[must_use]
+    pub fn warnings(&self) -> &[CatalogDiagnostic] {
+        &self.warnings
+    }
+
+    /// Returns the fields without the warnings.
+    #[must_use]
+    pub fn into_entries(self) -> Vec<DeclarationIndexEntry> {
+        self.entries
+    }
 }
 
 /// Indexes an Operation's input and output declarations breadth-first.
 ///
-/// When the field bound is reached the walk stops and keeps the shallower
-/// fields, so an oversized Operation stays searchable instead of failing.
+/// The walk never fails the Operation (ADR 0017). When the field bound is
+/// reached it stops and keeps the shallower fields. When the schema graph
+/// cannot be read it stops and keeps the fields indexed so far. Each case
+/// leaves its own warning, both when both apply, and the Operation stays
+/// available.
 pub(crate) fn prepare_operation_declaration_fields(
     binding: &ExecutionBinding,
     input_schema: &SchemaId,
     input_declared: bool,
     graph: &SchemaGraph,
-) -> Result<PreparedDeclarationFields, CatalogDiagnostic> {
+) -> PreparedDeclarationFields {
     let mut walk = DeclarationWalk::new(graph);
+    let mut warnings = Vec::new();
+    if let Err(unreadable) = walk_declarations(&mut walk, binding, input_schema, input_declared) {
+        warnings.push(unreadable);
+    }
+    if walk.omitted {
+        warnings.push(truncation_warning());
+    }
+    let entries = walk
+        .fields
+        .into_iter()
+        .map(|(path, values)| {
+            let text = values.into_iter().collect::<Vec<_>>().join("\n");
+            DeclarationIndexEntry::new(path, text)
+        })
+        .collect();
+    PreparedDeclarationFields { entries, warnings }
+}
+
+/// Walks every root of the Operation. `Err` carries the warning for a schema
+/// graph the walk cannot read, never an Error diagnostic; the fields indexed
+/// before it stay in `walk`.
+fn walk_declarations(
+    walk: &mut DeclarationWalk<'_>,
+    binding: &ExecutionBinding,
+    input_schema: &SchemaId,
+    input_declared: bool,
+) -> Result<(), CatalogDiagnostic> {
     let honor_property_access = matches!(binding, ExecutionBinding::Http(_));
     if input_declared {
         walk.index_root(
@@ -138,7 +226,7 @@ pub(crate) fn prepare_operation_declaration_fields(
         ExecutionBinding::Http(binding) => {
             let output_path = DeclarationPath::result()
                 .property("data")
-                .ok_or_else(index_too_large)?;
+                .ok_or_else(invalid_index)?;
             for response in binding.responses() {
                 for content in response.content() {
                     walk.index_root(content.schema(), &output_path, output_projection)?;
@@ -150,33 +238,20 @@ pub(crate) fn prepare_operation_declaration_fields(
                 let output_path = DeclarationPath::result()
                     .property("data")
                     .and_then(|path| path.property("structuredContent"))
-                    .ok_or_else(index_too_large)?;
+                    .ok_or_else(invalid_index)?;
                 walk.index_root(output_schema, &output_path, output_projection)?;
             }
         }
     }
-    walk.drain()?;
-    let diagnostic = walk.omitted.then(|| {
-        CatalogDiagnostic::warning(
-            "operation_search_material_truncated",
-            "an Operation exceeds the Universal Search bound; only its shallower fields are indexed",
-        )
-    });
-    let entries = walk
-        .fields
-        .into_iter()
-        .map(|(path, values)| {
-            let text = values.into_iter().collect::<Vec<_>>().join("\n");
-            if text.len() > MAX_SEARCH_FIELD_BYTES {
-                return Err(index_too_large());
-            }
-            Ok(DeclarationIndexEntry::new(path, text))
-        })
-        .collect::<Result<_, _>>()?;
-    Ok(PreparedDeclarationFields {
-        entries,
-        diagnostic,
-    })
+    walk.drain()
+}
+
+/// The field bound stopped the walk; the shallower fields are indexed.
+fn truncation_warning() -> CatalogDiagnostic {
+    CatalogDiagnostic::warning(
+        "operation_search_material_truncated",
+        "an Operation exceeds the Universal Search bound; only its shallower fields are indexed",
+    )
 }
 
 /// One schema reference being resolved, linked to the references above it.
@@ -325,7 +400,8 @@ impl<'g> DeclarationWalk<'g> {
             return Ok(());
         }
         let Some(object) = schema.as_object() else {
-            return self.add_field(path, &schema.to_string());
+            self.add_field(path, &schema.to_string());
+            return Ok(());
         };
 
         let mut descriptors = vec![path.as_str().to_string()];
@@ -359,7 +435,7 @@ impl<'g> DeclarationWalk<'g> {
                 ancestry,
             );
         }
-        self.add_field(path, &descriptors.join("\n"))?;
+        self.add_field(path, &descriptors.join("\n"));
 
         if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
             self.index_reference(
@@ -456,7 +532,8 @@ impl<'g> DeclarationWalk<'g> {
             Some(items) => Some(items),
         };
         if prefix_items.is_empty() && items.is_none() {
-            return self.add_field(&item_path, item_path.as_str());
+            self.add_field(&item_path, item_path.as_str());
+            return Ok(());
         }
         let children = prefix_items
             .iter()
@@ -483,7 +560,7 @@ impl<'g> DeclarationWalk<'g> {
             Some(Value::Bool(false)) => None,
             Some(Value::Bool(true)) | None => {
                 if let Some(index_path) = &index_path {
-                    self.add_field(index_path, index_path.as_str())?;
+                    self.add_field(index_path, index_path.as_str());
                 }
                 None
             }
@@ -521,10 +598,7 @@ impl<'g> DeclarationWalk<'g> {
     }
 
     /// Records one descriptor, refusing new paths once the field bound is full.
-    fn add_field(&mut self, path: &DeclarationPath, text: &str) -> Result<(), CatalogDiagnostic> {
-        if text.is_empty() || text.len() > MAX_SEARCH_FIELD_BYTES {
-            return Err(index_too_large());
-        }
+    fn add_field(&mut self, path: &DeclarationPath, text: &str) {
         if let Some(values) = self.fields.get_mut(path) {
             values.insert(text.to_string());
         } else if self.fields.len() < MAX_SEARCH_FIELDS {
@@ -533,7 +607,6 @@ impl<'g> DeclarationWalk<'g> {
         } else {
             self.omitted = true;
         }
-        Ok(())
     }
 }
 
@@ -553,24 +626,16 @@ fn append_json_descriptor(
     value: &Value,
 ) -> Result<(), CatalogDiagnostic> {
     let encoded = serde_json::to_string(value).map_err(|_error| invalid_index())?;
-    if encoded.len() > MAX_SEARCH_FIELD_BYTES {
-        return Err(index_too_large());
-    }
     descriptors.push(encoded);
     Ok(())
 }
 
+/// The walk met a schema it cannot read. A warning, never an error: the
+/// Operation stays available with the fields indexed before it (ADR 0017).
 fn invalid_index() -> CatalogDiagnostic {
-    CatalogDiagnostic::stable(
+    CatalogDiagnostic::warning(
         "invalid_operation_search_material",
-        "an Operation cannot be represented in Universal Search material",
-    )
-}
-
-fn index_too_large() -> CatalogDiagnostic {
-    CatalogDiagnostic::stable(
-        "operation_search_material_too_large",
-        "an Operation exceeds the private Universal Search material bound",
+        "part of an Operation cannot be represented in Universal Search material; only its readable fields are indexed",
     )
 }
 
@@ -655,14 +720,14 @@ mod tests {
             &SchemaId::for_source("input"),
             true,
             &graph,
-        )
-        .expect("an oversized declaration is truncated, not rejected");
+        );
 
         let paths = indexed_paths(&prepared.entries);
         assert_eq!(paths.len(), MAX_SEARCH_FIELDS);
         assert!(paths.contains("input.deep"));
         assert!(paths.contains("input.shallow"));
-        let warning = prepared.diagnostic.expect("truncation diagnostic");
+        assert_eq!(prepared.warnings.len(), 1);
+        let warning = prepared.warnings.first().expect("one warning");
         assert_eq!(warning.code(), "operation_search_material_truncated");
         assert_eq!(
             warning.severity(),
@@ -694,11 +759,10 @@ mod tests {
             &SchemaId::for_source("input"),
             true,
             &graph,
-        )
-        .expect("an oversized declaration is truncated, not rejected");
+        );
 
         assert!(indexed_paths(&prepared.entries).contains("result.data.structuredContent.name"));
-        assert!(prepared.diagnostic.is_some());
+        assert!(!prepared.warnings.is_empty());
     }
 
     #[test]
@@ -750,11 +814,36 @@ mod tests {
             &SchemaId::for_source("input"),
             true,
             &graph,
-        )
-        .expect("small declaration");
+        );
 
         // The root, its ten properties, and its open index signature.
         assert_eq!(prepared.entries.len(), 12);
-        assert!(prepared.diagnostic.is_none());
+        assert!(prepared.warnings.is_empty());
+    }
+
+    #[test]
+    fn oversized_field_text_is_indexed_whole_and_keeps_the_operation() {
+        // Before ADR 0017 one field over 256 KiB made the whole Operation
+        // unavailable. There is no byte bound: the text is indexed as it is.
+        let description = "x".repeat(300 * 1024);
+        let graph = graph(&[(
+            "input",
+            serde_json::json!({"type": "string", "description": description}),
+        )]);
+
+        let prepared = prepare_operation_declaration_fields(
+            &mcp_binding("input", None),
+            &SchemaId::for_source("input"),
+            true,
+            &graph,
+        );
+
+        let field = prepared
+            .entries
+            .iter()
+            .find(|field| field.path().as_str() == "input")
+            .expect("the root field is indexed");
+        assert!(field.text().len() > 256 * 1024);
+        assert!(prepared.warnings.is_empty());
     }
 }

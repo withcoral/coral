@@ -120,16 +120,6 @@ fn mismatched_command_result() -> Error {
     Error::CorruptData("Publication returned another command's result".to_string())
 }
 
-impl Command<RegenerationBaseline> {
-    fn namespace(&self) -> &crate::ProviderNamespace {
-        match self {
-            Self::Workspace(request) => request.namespace(),
-
-            Self::Regenerate { regeneration, .. } => &regeneration.namespace,
-        }
-    }
-}
-
 struct RegenerationPrecondition {
     expected_etag: Option<String>,
 }
@@ -139,7 +129,6 @@ struct RegenerationBaseline {
     generation_id: coral_catalog::ProviderGenerationId,
     fingerprint: coral_catalog::ProviderGenerationFingerprint,
     display_name: ProviderDisplayName,
-    namespace: crate::ProviderNamespace,
     operation_paths: Vec<coral_catalog::OperationPathAssignment>,
 }
 
@@ -168,7 +157,6 @@ pub enum PreparedPublication<T> {
 pub struct MaterializedPublication<T> {
     pinned: PinnedPublication,
     materialized: MaterializationOutcome,
-    entries: crate::EntryMaterial,
     started: std::time::Instant,
     result: fn(Terminal) -> Result<T, Error>,
 }
@@ -234,17 +222,10 @@ impl ProviderModule {
             .materialize(&pinned.setup_input, paths)
             .await
             .map_err(|error| Error::OperationalPublication(error.message().to_string()))?;
-        // An entry failure never fails publication: the material carries it.
-        let entries = crate::EntryMaterial::prepare(
-            pinned.command.owner(),
-            pinned.command.namespace().clone(),
-            &materialized,
-        );
         Ok(PreparedPublication::Materialized(Box::new(
             MaterializedPublication {
                 pinned,
                 materialized,
-                entries,
                 started,
                 result,
             },
@@ -340,7 +321,6 @@ impl ProviderModule {
                         )
                         .await?,
                         display_name: provider.provider.display_name_metadata().clone(),
-                        namespace: provider.provider.access().namespace().clone(),
                         generation_id: provider.generation_id,
                     },
                 }
@@ -855,7 +835,6 @@ impl ProviderModule {
         let MaterializedPublication {
             pinned,
             materialized,
-            entries,
             started,
             result,
         } = publication;
@@ -865,7 +844,6 @@ impl ProviderModule {
         Ok(Published {
             publication: result(terminal)?,
             evidence,
-            entries,
         })
     }
 }
@@ -1110,6 +1088,7 @@ impl ProviderModule {
                     .await?;
                 }
                 let evidence = PublicationEvidence::Activated(ActivatedGeneration::new(
+                    request.workspace_id().clone(),
                     provider.id().clone(),
                     generation,
                     None,
@@ -1287,6 +1266,7 @@ impl ProviderModule {
                         return Err(Error::ProviderChangedDuringPublication);
                     }
                     Some(ActivatedGeneration::new(
+                        request.owner().clone(),
                         request.provider_id().clone(),
                         generation_id,
                         Some(baseline.generation_id.clone()),

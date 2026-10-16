@@ -386,6 +386,11 @@ impl SchemaSemantics {
     pub(crate) const fn ref_siblings_apply(self) -> bool {
         matches!(self, Self::JsonSchema2020_12)
     }
+
+    /// Only the OpenAPI 3.0 dialect defines `nullable`; elsewhere it has no effect.
+    pub(crate) const fn nullable_applies(self) -> bool {
+        matches!(self, Self::OpenApiV3_0)
+    }
 }
 
 /// Complete authoritative package-local schema graph.
@@ -602,7 +607,7 @@ fn rewrite_schema_references(
             if graph.semantics == SchemaSemantics::OpenApiV3_0 {
                 normalize_openapi_30_numeric_bounds(object);
             }
-            if graph.semantics == SchemaSemantics::OpenApiV3_0
+            if graph.semantics.nullable_applies()
                 && object.remove("nullable") == Some(Value::Bool(true))
             {
                 let non_null = Value::Object(std::mem::take(object));
@@ -936,6 +941,7 @@ pub struct CatalogSearchTarget {
     key: OperationKey,
     relative_path: String,
     hints: OperationHints,
+    http_method: Option<crate::HttpMethod>,
 }
 
 impl CatalogSearchTarget {
@@ -943,11 +949,13 @@ impl CatalogSearchTarget {
         key: OperationKey,
         relative_path: String,
         hints: OperationHints,
+        http_method: Option<crate::HttpMethod>,
     ) -> Self {
         Self {
             key,
             relative_path,
             hints,
+            http_method,
         }
     }
 
@@ -967,6 +975,12 @@ impl CatalogSearchTarget {
     #[must_use]
     pub const fn hints(&self) -> OperationHints {
         self.hints
+    }
+
+    /// Returns the method of an HTTP Operation; `None` for other protocols.
+    #[must_use]
+    pub const fn http_method(&self) -> Option<crate::HttpMethod> {
+        self.http_method
     }
 }
 
@@ -1073,6 +1087,15 @@ impl MaterializedOperation {
     #[must_use]
     pub const fn hints(&self) -> OperationHints {
         self.hints
+    }
+
+    /// Returns the method of an HTTP Operation; `None` for other protocols.
+    #[must_use]
+    pub const fn http_method(&self) -> Option<crate::HttpMethod> {
+        match &self.execution_binding {
+            ExecutionBinding::Http(binding) => Some(binding.method()),
+            ExecutionBinding::Mcp(_) => None,
+        }
     }
 
     pub(crate) fn binding_json(&self) -> &str {
@@ -1253,7 +1276,6 @@ pub struct PreparedProviderCatalog {
     schema_graph_json: String,
     typescript_view: String,
     operations: Vec<MaterializedOperation>,
-    declaration_fields: BTreeMap<OperationKey, Vec<crate::DeclarationIndexEntry>>,
     configuration_json: Option<String>,
 }
 
@@ -1269,7 +1291,6 @@ impl PreparedProviderCatalog {
         schema_graph: SchemaGraph,
         schema_graph_json: String,
         operations: Vec<MaterializedOperation>,
-        declaration_fields: BTreeMap<OperationKey, Vec<crate::DeclarationIndexEntry>>,
     ) -> Self {
         let typescript_view = operations
             .iter()
@@ -1285,7 +1306,6 @@ impl PreparedProviderCatalog {
             schema_graph_json,
             typescript_view,
             operations,
-            declaration_fields,
             configuration_json: None,
         }
     }
@@ -1383,15 +1403,6 @@ impl PreparedProviderCatalog {
     #[must_use]
     pub fn operations(&self) -> &[MaterializedOperation] {
         &self.operations
-    }
-
-    /// Returns the declaration fields prepared for each structurally available
-    /// Operation: its readable declaration paths with the values the schema lists.
-    #[must_use]
-    pub const fn declaration_fields(
-        &self,
-    ) -> &BTreeMap<OperationKey, Vec<crate::DeclarationIndexEntry>> {
-        &self.declaration_fields
     }
 
     /// Returns current path assignments for regeneration carry-forward.

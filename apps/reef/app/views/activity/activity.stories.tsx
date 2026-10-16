@@ -1086,14 +1086,29 @@ export const HistoricalSearch: Story = {
       opened.getByText('Intent: Find the operation that merges a pull request'),
     ).toBeVisible()
     await expect(opened.getByText('Query').nextElementSibling).toHaveTextContent('“github pulls”')
+    // Every retriever searched, so the page states only that more results remain.
+    const coverage = opened.getByRole('group', { name: 'Search coverage' })
+    await expect(coverage).toHaveTextContent(/^More results were available after this page\.$/)
+    const results = within(opened.getByRole('list', { name: 'Results in rank order' }))
+    await expect(results.getAllByRole('listitem')).toHaveLength(5)
+    // A hit names no title, so its path under the namespace heads it.
+    await expect(results.getByText('pulls.updateBranch')).toBeVisible()
+    // The stored response stays available, closed, after the results.
+    await expect(opened.getByText('Raw response').closest('details')).not.toHaveAttribute('open')
+  },
+}
+/** A page retained before Coral trimmed Search Hits, with titles, full coverage, and paths. */
+export const HistoricalSearchUntrimmed: Story = {
+  args: discovery(searched, stored.untrimmed),
+  play: async ({ canvasElement }) => {
+    const opened = await openDetail(canvasElement)
     const coverage = within(opened.getByRole('group', { name: 'Search coverage' }))
     await expect(coverage.getByText('100 found')).toBeVisible()
     await expect(coverage.getByText('1 of 1 providers searched, more available')).toBeVisible()
     await expect(coverage.getByText('none match')).toBeVisible()
     const results = within(opened.getByRole('list', { name: 'Results in rank order' }))
-    await expect(results.getAllByRole('listitem')).toHaveLength(5)
-    // The stored response stays available, closed, after the results.
-    await expect(opened.getByText('Raw response').closest('details')).not.toHaveAttribute('open')
+    await expect(results.getByText('Update a pull request branch')).toBeVisible()
+    await expect(results.getByText('Matched declaration paths (1)')).toBeVisible()
   },
 }
 export const HistoricalSearchPartialCoverage: Story = {
@@ -1116,7 +1131,7 @@ export const HistoricalSearchFailedCoverage: Story = {
     await expect(coverage.getByText('Results are missing.')).toBeVisible()
   },
 }
-/** Both kinds of result, with flags, a guidance match, and matched declaration paths. */
+/** Both kinds of result, with flags and a guidance match. */
 export const HistoricalSearchMixedResults: Story = {
   args: discovery({ ...searched, query: 'github issues by label' }, stored.mixed),
   play: async ({ canvasElement }) => {

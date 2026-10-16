@@ -92,6 +92,10 @@ export const Compact: Story = {
   render: () => <ExampleTable density="compact" />,
 }
 
+export const Comfortable: Story = {
+  render: () => <ExampleTable density="comfortable" />,
+}
+
 export const Default: Story = {
   render: () => <ExampleTable density="default" />,
 }
@@ -820,6 +824,7 @@ function PinnedReadingExample() {
         Insert earlier children
       </Button.TextButton>
       <Button.TextButton onClick={() => setReveal('parent')}>Reveal the parent</Button.TextButton>
+      <Button.TextButton onClick={() => setReveal('Child 30')}>Reveal Child 30</Button.TextButton>
       <div style={{ height: 300, display: 'flex' }}>
         <Container
           ariaLabel="Pinned reading"
@@ -861,7 +866,8 @@ function PinnedReadingExample() {
 }
 /**
  * A pinned record heading stays put while its rows move, so reading position must not
- * anchor on it, and revealing it scrolls to where its record starts.
+ * anchor on it, and revealing it scrolls to where its record starts. A row revealed
+ * from under the heading comes out just beneath it.
  */
 export const PinnedReadingAnchor: Story = {
   render: () => <PinnedReadingExample />,
@@ -888,6 +894,20 @@ export const PinnedReadingAnchor: Story = {
     await waitFor(() => expect(within(port).getByText('Earlier 1')).toBeVisible())
     await waitFor(() => expect(top('Earlier 1')).toBeLessThan(port.clientHeight))
     await expect(top('Earlier 1')).toBeGreaterThan(0)
+
+    // Child 30 sits under the pinned heading. Revealing it moves it out, and no further.
+    port.scrollTop += top('Child 30') - top('Parent')
+    port.dispatchEvent(new Event('scroll'))
+    const heading = () =>
+      within(port)
+        .getAllByRole('row')
+        .find((row) => within(row).queryByText('Parent'))!
+    const beneath = () =>
+      heading().getBoundingClientRect().bottom - port.getBoundingClientRect().top
+    await waitFor(() => expect(top('Child 30')).toBeLessThan(beneath() - 4))
+    await userEvent.click(canvas.getByRole('button', { name: 'Reveal Child 30' }))
+    await waitFor(() => expect(top('Child 30')).toBeGreaterThanOrEqual(beneath()))
+    await expect(top('Child 30')).toBeLessThanOrEqual(beneath() + 1)
   },
 }
 

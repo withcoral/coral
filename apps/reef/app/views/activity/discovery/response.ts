@@ -4,6 +4,8 @@ import type {
   DiscoveryContext,
   DiscoveryView,
   OperationFacts,
+  OperationFlags,
+  SearchCoverage,
   SearchHit,
   SearchPage,
 } from '../types'
@@ -21,19 +23,57 @@ const hints = z.object({
   idempotent: z.boolean().optional(),
   open_world: z.boolean().optional(),
 })
-const hitFields = {
+const count = z.int().min(0)
+const retrieverCoverage = z.object({
+  eligible_units: count,
+  searched_units: count,
+  failed_units: count,
+  returned_count: count,
+  has_more: z.boolean(),
+})
+export const searchPageSchema = z.object({
+  hits: z.array(
+    z.object({
+      call_path: z.string(),
+      signature_line: z.string(),
+      description_snippet: z.string(),
+      guidance_snippet: z.string().nullish(),
+      matched_tags: z.array(z.string()).optional(),
+      matched_inputs: z.array(z.string()).optional(),
+      hints: hints.optional(),
+      approval_required: z.boolean().optional(),
+      deprecated: z.boolean().optional(),
+    }),
+  ),
+  has_more: z.boolean(),
+  retriever_statuses: z
+    .array(
+      z.object({
+        retriever: entityKind,
+        state: z.enum(['partial', 'error']),
+        coverage: retrieverCoverage,
+      }),
+    )
+    .optional(),
+})
+
+/*
+ * A search page that Coral retained before it trimmed each hit to what an
+ * agent acts on. Coral no longer writes this shape, so no advertised schema
+ * checks it. Keep it while Activity can hold such pages.
+ */
+const untrimmedHitFields = {
   call_path: z.string(),
   signature_line: z.string(),
   description_snippet: z.string(),
   evidence: z.object({ fields: z.array(z.string()), paths: z.array(z.string()) }),
 }
-const count = z.int().min(0)
-export const searchPageSchema = z.object({
+const untrimmedSearchPageSchema = z.object({
   hits: z.array(
     z.discriminatedUnion('kind', [
       z.object({
         kind: z.literal('operation'),
-        ...hitFields,
+        ...untrimmedHitFields,
         provider_display_name: z.string(),
         title: z.string().nullable(),
         hints,
@@ -42,7 +82,7 @@ export const searchPageSchema = z.object({
         guidance_snippet: z.string().nullish(),
         matched_tags: z.array(z.string()).optional(),
       }),
-      z.object({ kind: z.literal('saved_function'), ...hitFields }),
+      z.object({ kind: z.literal('saved_function'), ...untrimmedHitFields }),
     ]),
   ),
   has_more: z.boolean(),
@@ -50,13 +90,7 @@ export const searchPageSchema = z.object({
     z.object({
       retriever: entityKind,
       state: z.enum(['results_found', 'empty', 'skipped', 'partial', 'error']),
-      coverage: z.object({
-        eligible_units: count,
-        searched_units: count,
-        failed_units: count,
-        returned_count: count,
-        has_more: z.boolean(),
-      }),
+      coverage: retrieverCoverage,
     }),
   ),
 })
@@ -112,23 +146,26 @@ export function functionTarget(callPath: string) {
   return callPath.startsWith(FUNCTIONS) ? callPath.slice(FUNCTIONS.length) : null
 }
 
-function operationFacts(value: {
-  provider_display_name: string
-  approval_required: boolean
-  deprecated: boolean
-  hints: z.infer<typeof hints>
-}): OperationFacts {
+function operationFlags(value: {
+  approval_required?: boolean
+  deprecated?: boolean
+  hints?: z.infer<typeof hints>
+}): OperationFlags {
   return {
-    providerLabel: value.provider_display_name,
-    approvalRequired: value.approval_required,
-    deprecated: value.deprecated,
+    approvalRequired: value.approval_required ?? false,
+    deprecated: value.deprecated ?? false,
     hints: {
-      readOnly: value.hints.read_only,
-      destructive: value.hints.destructive,
-      idempotent: value.hints.idempotent,
-      openWorld: value.hints.open_world,
+      readOnly: value.hints?.read_only,
+      destructive: value.hints?.destructive,
+      idempotent: value.hints?.idempotent,
+      openWorld: value.hints?.open_world,
     },
   }
+}
+function operationFacts(
+  value: Parameters<typeof operationFlags>[0] & { provider_display_name: string },
+): OperationFacts {
+  return { providerLabel: value.provider_display_name, ...operationFlags(value) }
 }
 /** An Operation without a title and a Saved Function show their path. */
 function title(value: { call_path: string; title?: string | null }) {
@@ -140,7 +177,49 @@ function title(value: { call_path: string; title?: string | null }) {
   )
 }
 
+function searchCoverage({
+  retriever,
+  state,
+  coverage,
+}: z.infer<typeof untrimmedSearchPageSchema>['retriever_statuses'][number]): SearchCoverage {
+  return {
+    kind: retriever,
+    state,
+    eligible: coverage.eligible_units,
+    searched: coverage.searched_units,
+    failed: coverage.failed_units,
+    returned: coverage.returned_count,
+    hasMore: coverage.has_more,
+  }
+}
+
+/** The Call Path names the kind: Saved Functions live under `coral.functions`. */
 function searchPage(value: z.infer<typeof searchPageSchema>): SearchPage {
+  return {
+    hits: value.hits.map((hit): SearchHit => {
+      const kind = functionTarget(hit.call_path) === null ? 'operation' : 'saved_function'
+      return {
+        kind,
+        callPath: hit.call_path,
+        title: title(hit),
+        signatureLine: hit.signature_line,
+        descriptionSnippet: hit.description_snippet,
+        guidanceSnippet: hit.guidance_snippet ?? null,
+        operation: kind === 'operation' ? operationFlags(hit) : null,
+        matched: {
+          fields: [],
+          tags: hit.matched_tags ?? [],
+          paths: (hit.matched_inputs ?? []).map((name) => `input.${name}`),
+        },
+        currentHref: null,
+      }
+    }),
+    hasMore: value.has_more,
+    coverage: (value.retriever_statuses ?? []).map(searchCoverage),
+  }
+}
+
+function untrimmedSearchPage(value: z.infer<typeof untrimmedSearchPageSchema>): SearchPage {
   return {
     hits: value.hits.map((hit): SearchHit => ({
       kind: hit.kind,
@@ -149,7 +228,7 @@ function searchPage(value: z.infer<typeof searchPageSchema>): SearchPage {
       signatureLine: hit.signature_line,
       descriptionSnippet: hit.description_snippet,
       guidanceSnippet: (hit.kind === 'operation' && hit.guidance_snippet) || null,
-      operation: hit.kind === 'operation' ? operationFacts(hit) : null,
+      operation: hit.kind === 'operation' ? operationFlags(hit) : null,
       matched: {
         fields: hit.evidence.fields,
         tags: (hit.kind === 'operation' && hit.matched_tags) || [],
@@ -158,15 +237,7 @@ function searchPage(value: z.infer<typeof searchPageSchema>): SearchPage {
       currentHref: null,
     })),
     hasMore: value.has_more,
-    coverage: value.retriever_statuses.map(({ retriever, state, coverage }) => ({
-      kind: retriever,
-      state,
-      eligible: coverage.eligible_units,
-      searched: coverage.searched_units,
-      failed: coverage.failed_units,
-      returned: coverage.returned_count,
-      hasMore: coverage.has_more,
-    })),
+    coverage: value.retriever_statuses.map(searchCoverage),
   }
 }
 
@@ -205,6 +276,9 @@ export function discoveryView(context: DiscoveryContext, response: string): Disc
     return { kind: 'raw' }
   }
   if (context.kind === 'search') {
+    // The current schema drops keys it does not read, so it could take an untrimmed page and lose its titles.
+    const untrimmed = untrimmedSearchPageSchema.safeParse(value)
+    if (untrimmed.success) return { kind: 'search', page: untrimmedSearchPage(untrimmed.data) }
     const page = searchPageSchema.safeParse(value)
     if (page.success) return { kind: 'search', page: searchPage(page.data) }
   }

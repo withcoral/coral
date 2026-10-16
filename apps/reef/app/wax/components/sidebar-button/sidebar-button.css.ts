@@ -39,6 +39,21 @@ const baseStyles = {
   width: '100%',
 } as const
 
+// Muted shares the default surface; only its resting text is quieter.
+const defaultSurface = {
+  selectors: {
+    '&:focus-visible': {
+      outline: `1px solid ${theme.button.primary.focus}`,
+    },
+    [`&.${activeClass}`]: {
+      background: theme.sidebar.button.selected,
+    },
+    [`&:hover:not(.${disabledClass})`]: {
+      background: theme.sidebar.button.hover,
+    },
+  },
+}
+
 export const sidebarButton = recipe({
   base: baseStyles,
 
@@ -81,19 +96,8 @@ export const sidebarButton = recipe({
           },
         },
       },
-      default: {
-        selectors: {
-          '&:focus-visible': {
-            outline: `1px solid ${theme.button.primary.focus}`,
-          },
-          [`&.${activeClass}`]: {
-            background: theme.sidebar.button.selected,
-          },
-          [`&:hover:not(.${disabledClass})`]: {
-            background: theme.sidebar.button.hover,
-          },
-        },
-      },
+      default: defaultSurface,
+      muted: defaultSurface,
     },
   },
 })
@@ -124,6 +128,14 @@ export const iconStyles = recipe({
         },
       },
       default: {
+        color: theme.content.tertiary,
+        selectors: {
+          [`.${activeClass} &`]: {
+            color: theme.content.primary,
+          },
+        },
+      },
+      muted: {
         color: theme.content.tertiary,
         selectors: {
           [`.${activeClass} &`]: {
@@ -165,7 +177,15 @@ export const textStyles = recipe({
         },
       },
       default: {
-        color: theme.content.secondary,
+        color: theme.content.muted,
+        selectors: {
+          [`.${activeClass} &`]: {
+            color: theme.content.primary,
+          },
+        },
+      },
+      muted: {
+        color: theme.content.tertiary,
         selectors: {
           [`.${activeClass} &`]: {
             color: theme.content.primary,

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
-import { Banner, Button, Typography } from '@/wax/components'
+import { Banner, Typography } from '@/wax/components'
+import { RestoreWorkspaceButton } from './restore-workspace'
 import type { Segment } from '@/wax/components/breadcrumbs/breadcrumbs'
 import { PageLayout } from '@/wax/components/page-layout'
 import type { Crumb, WorkspaceView } from './types'
@@ -7,11 +8,14 @@ import * as styles from './management.css'
 
 export function ManagementLayout({
   breadcrumbs,
+  title,
   actions,
   bounded,
   children,
 }: {
   breadcrumbs: Segment[]
+  /** The page's h1 in place of the current breadcrumb; see `PageLayout`. */
+  title?: ReactNode
   /** Page actions, which sit beside the breadcrumb. */
   actions?: ReactNode
   /** The page is no taller than the viewport; its scroll table scrolls instead. */
@@ -19,7 +23,7 @@ export function ManagementLayout({
   children: ReactNode
 }) {
   return (
-    <PageLayout breadcrumbs={breadcrumbs} actions={actions} bounded={bounded}>
+    <PageLayout breadcrumbs={breadcrumbs} title={title} actions={actions} bounded={bounded}>
       {children}
     </PageLayout>
   )
@@ -79,7 +83,7 @@ export function Section({
   )
 }
 
-/** Says the Workspace is archived and what that blocks. Only an Owner gets the restore link. */
+/** Says the Workspace is archived and what that blocks. Only an Owner can restore it here. */
 export function ArchivedBanner({
   workspace,
   children,
@@ -94,9 +98,7 @@ export function ArchivedBanner({
       title="This workspace is archived"
       action={
         workspace.effectiveRole === 'owner' ? (
-          <Button.InternalLink to={`${workspace.path}/settings`} size="small">
-            Restore in settings
-          </Button.InternalLink>
+          <RestoreWorkspaceButton workspace={workspace} />
         ) : undefined
       }
     >

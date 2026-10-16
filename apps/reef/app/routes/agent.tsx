@@ -23,7 +23,7 @@ import { callbackRedirectUri } from '@/lib/provider-publication-attempt/setup.se
 import { agentView, workspaceView } from '@/lib/management-views.server'
 import { LiveActivity } from './activity-live'
 import { PageLayout } from '@/wax/components/page-layout'
-import { Button, Typography } from '@/wax/components'
+import { Banner, Button } from '@/wax/components'
 import { AgentActivityPage } from '@/views/management/agent-activity-page'
 import { trail } from '@/views/management/layout'
 import { loadActivity } from '@/lib/activity.server'
@@ -150,12 +150,21 @@ export default function AgentRoute({ loaderData, params }: Route.ComponentProps)
         variant="split"
         breadcrumbs={trail([], 'Activity')}
         header={
-          <>
-            <Typography.Body as="p">You cannot inspect this agent.</Typography.Body>
-            <Button.InternalLink to={`/workspaces/${params.workspace}/activity`}>
-              Open activity
-            </Button.InternalLink>
-          </>
+          <Banner
+            variant="warning"
+            title="You cannot inspect this agent"
+            action={
+              <Button.InternalLink
+                to={`/workspaces/${params.workspace}/activity`}
+                variant="bare"
+                size="x-small"
+              >
+                Open activity
+              </Button.InternalLink>
+            }
+          >
+            Open the workspace activity instead.
+          </Banner>
         }
       >
         <LiveActivity initial={loaderData.activity} />
@@ -170,11 +179,9 @@ export default function AgentRoute({ loaderData, params }: Route.ComponentProps)
           loaderData.displayName,
         )}
         header={
-          <>
-            <Typography.Body as="p">
-              This agent cannot start new work. Inspect its retained activity.
-            </Typography.Body>
-          </>
+          <Banner variant="info" title="This agent cannot start new work">
+            Inspect its retained activity below.
+          </Banner>
         }
       >
         <LiveActivity initial={loaderData.activity} />

@@ -12,7 +12,6 @@ use crate::openapi::schema::{
 };
 use crate::paths::assign_operation_paths;
 use crate::schema::canonicalize;
-use crate::search::prepare_operation_declaration_fields;
 use crate::{
     CatalogDiagnostic, HttpContentBinding, HttpEncodingBinding, HttpExecutionBinding,
     HttpHeaderBinding, HttpMethod, HttpParameterBinding, HttpParameterLocation, HttpParameterStyle,
@@ -112,14 +111,9 @@ fn build_openapi(
             "the authoritative OpenAPI schema graph cannot be encoded",
         )
     })?;
-    let (operations, declaration_fields) = finish_operations(builds, &display_name, &schema_graph)?;
-    let catalog = PreparedProviderCatalog::new(
-        display_name,
-        schema_graph,
-        schema_graph_json,
-        operations,
-        declaration_fields,
-    );
+    let operations = finish_operations(builds, &display_name, &schema_graph)?;
+    let catalog =
+        PreparedProviderCatalog::new(display_name, schema_graph, schema_graph_json, operations);
     let Some(configuration) = configuration else {
         return Ok(catalog);
     };
@@ -140,21 +134,15 @@ fn build_openapi(
         })
 }
 
-type FinishedOperations = (
-    Vec<MaterializedOperation>,
-    BTreeMap<OperationKey, Vec<crate::DeclarationIndexEntry>>,
-);
-
 fn finish_operations(
     builds: Vec<OperationBuild>,
     display_name: &str,
     schema_graph: &crate::SchemaGraph,
-) -> Result<FinishedOperations, CatalogDiagnostic> {
+) -> Result<Vec<MaterializedOperation>, CatalogDiagnostic> {
     let mut operations = Vec::with_capacity(builds.len());
-    let mut declaration_fields = BTreeMap::new();
     let type_names = typescript_names(schema_graph);
     for mut build in builds {
-        let (declaration, input_declared) = match project_typescript(
+        let declaration = match project_typescript(
             &build.relative_path,
             &build.input_schema,
             &build.binding,
@@ -163,11 +151,11 @@ fn finish_operations(
         ) {
             Ok(projection) => {
                 build.diagnostics.extend(projection.diagnostics);
-                (projection.declaration, projection.input_declared)
+                projection.declaration
             }
             Err(diagnostic) => {
                 build.diagnostics.push(diagnostic);
-                (fallback_typescript(&build.relative_path), true)
+                fallback_typescript(&build.relative_path)
             }
         };
         if !crate::types::operation_description_fits(
@@ -180,24 +168,6 @@ fn finish_operations(
                 "operation_authoring_description_too_large",
                 "the complete Operation Authoring Description exceeds the discovery limit",
             ));
-        }
-        if !build
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.severity() == crate::CatalogDiagnosticSeverity::Error)
-        {
-            match prepare_operation_declaration_fields(
-                &crate::ExecutionBinding::Http(build.binding.clone()),
-                &build.input_schema,
-                input_declared,
-                schema_graph,
-            ) {
-                Ok(prepared) => {
-                    build.diagnostics.extend(prepared.diagnostic);
-                    declaration_fields.insert(build.key.clone(), prepared.entries);
-                }
-                Err(diagnostic) => build.diagnostics.push(diagnostic),
-            }
         }
         let binding_json = build.binding.to_storage_json().map_err(|_error| {
             diagnostic(
@@ -228,7 +198,7 @@ fn finish_operations(
         ));
     }
     operations.sort_by(|left, right| left.key().cmp(right.key()));
-    Ok((operations, declaration_fields))
+    Ok(operations)
 }
 
 pub(super) fn parse_document(document: &OpenApiDocument) -> Result<Value, CatalogDiagnostic> {
@@ -1256,28 +1226,114 @@ pub(super) fn validate_credential_contract(
             operation.object.get("security").or(root.get("security")),
             security_schemes,
         )?;
-        match &selected {
-            Some(previous) if !same_contracts(previous, &slots) => {
-                return Err(diagnostic(
-                    "credentials_not_supported",
-                    "the Provider's Operations require different credential contracts",
-                )
-                .at_location(&format!(
-                    "{}: {} differs from {}",
-                    operation.pointer,
-                    scheme_names(&slots),
-                    scheme_names(previous)
-                )));
-            }
-            Some(_) => {}
-            None => selected = Some(slots.clone()),
-        }
+        selected = Some(match selected {
+            None => slots.clone(),
+            Some(previous) => shared_contracts(&previous, &slots).map_err(|conflict| {
+                let (message, detail) = match conflict {
+                    ContractConflict::Different => (
+                        "the Provider's Operations require different credential contracts",
+                        format!(
+                            "{} differs from {}",
+                            scheme_names(&slots),
+                            scheme_names(&previous)
+                        ),
+                    ),
+                    ContractConflict::ScopeLimit => (
+                        "the Provider's Operations together request more OAuth scopes than \
+                         one grant can hold",
+                        format!(
+                            "{} and {} together exceed the scope limit",
+                            scheme_names(&slots),
+                            scheme_names(&previous)
+                        ),
+                    ),
+                };
+                diagnostic("credentials_not_supported", message)
+                    .at_location(&format!("{}: {detail}", operation.pointer))
+            })?,
+        });
         by_operation.insert(operation.key, slots);
     }
+    let shared = selected.unwrap_or_default();
+    // Every Operation retains the shared contract under its own scheme name,
+    // so one account grant covers every scope the Operations ask for.
+    for slots in by_operation.values_mut() {
+        for (slot, shared) in slots.iter_mut().zip(&shared) {
+            *slot = crate::HttpCredentialSlot::new(
+                slot.scheme_name().to_owned(),
+                shared.contract().clone(),
+            );
+        }
+    }
     Ok(CredentialSelection {
-        shared: selected.unwrap_or_default(),
+        shared,
         by_operation,
     })
+}
+
+/// Why an Operation cannot join the credential contract its predecessors share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContractConflict {
+    /// The contracts differ in more than their OAuth scopes.
+    Different,
+    /// The contracts agree, but one grant cannot request every scope they ask for.
+    ScopeLimit,
+}
+
+/// The one contract the Operations so far and the next one can share: their
+/// common contract, or one OAuth contract requesting every scope when they
+/// differ only in scopes.
+fn shared_contracts(
+    previous: &[crate::HttpCredentialSlot],
+    next: &[crate::HttpCredentialSlot],
+) -> Result<Vec<crate::HttpCredentialSlot>, ContractConflict> {
+    if same_contracts(previous, next) {
+        return Ok(previous.to_vec());
+    }
+    let ([previous], [next]) = (previous, next) else {
+        return Err(ContractConflict::Different);
+    };
+    let merged = union_oauth_scopes(
+        previous.contract().authentication(),
+        next.contract().authentication(),
+    )?;
+    Ok(vec![crate::HttpCredentialSlot::new(
+        previous.scheme_name().to_owned(),
+        merged.into(),
+    )])
+}
+
+/// One authorization-code contract requesting both scope sets, when the two
+/// agree on everything but the scopes.
+fn union_oauth_scopes(
+    left: &AuthenticationConfiguration,
+    right: &AuthenticationConfiguration,
+) -> Result<AuthenticationConfiguration, ContractConflict> {
+    let mut merged = left.clone();
+    let mut other = right.clone();
+    let (
+        AuthenticationConfiguration::OAuthAuthorizationCode { scopes, .. },
+        AuthenticationConfiguration::OAuthAuthorizationCode {
+            scopes: other_scopes,
+            ..
+        },
+    ) = (&mut merged, &mut other)
+    else {
+        return Err(ContractConflict::Different);
+    };
+    scopes.append(other_scopes);
+    // Each list is already normalized, so only the union counts against the
+    // scope limit, and the limit is the only check the union can fail.
+    scopes.sort();
+    scopes.dedup();
+    *scopes = super::authentication::scopes(scopes)
+        .map_err(|_over_limit| ContractConflict::ScopeLimit)?;
+    other_scopes.clone_from(scopes);
+    if merged == other {
+        Ok(merged)
+    } else {
+        Err(ContractConflict::Different)
+    }
 }
 
 fn same_contracts(left: &[crate::HttpCredentialSlot], right: &[crate::HttpCredentialSlot]) -> bool {
@@ -1976,7 +2032,7 @@ fn schema_value_is_text_serializable(
     let Some(schema) = schema.as_object() else {
         return false;
     };
-    if schema.get("nullable").and_then(Value::as_bool) == Some(true) {
+    if schemas.semantics().nullable_applies() && crate::schema::declares_nullable(schema) {
         return false;
     }
     if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {

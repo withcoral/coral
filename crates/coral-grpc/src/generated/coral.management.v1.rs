@@ -158,7 +158,8 @@ pub struct ProviderOperation {
     /// Safe complete upstream-authored description.
     #[prost(string, tag = "8")]
     pub description: ::prost::alloc::string::String,
-    /// Declared effect hints; a declared read-only hint sets the policy default.
+    /// Declared effect hints. A declared read-only hint, like a safe HTTP method,
+    /// makes the policy default `enabled`.
     #[prost(message, optional, tag = "9")]
     pub hints: ::core::option::Option<OperationHints>,
 }

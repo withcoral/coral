@@ -1,13 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
-import { Form, useFetcher } from 'react-router'
+import { Form } from 'react-router'
 
-import { Banner, Button, Inputs, Typography } from '@/wax/components'
-import { ErrorMessage } from '@/wax/components/error-message/error-message'
+import { Banner, Button, Typography } from '@/wax/components'
 import { PageLayout } from '@/wax/components/page-layout'
 import { Card } from '@/wax/components/card/card'
 import { Pill } from '@/wax/components/pill'
 import { ActionDialog, Fields } from '@/views/management/forms'
 import { ArchivedBanner, trail } from '@/views/management/layout'
+import { NameHeading } from '@/views/management/name-heading'
 import {
   SettingsAside,
   SettingsFact,
@@ -17,7 +16,6 @@ import {
 } from '@/wax/components/settings-layout'
 
 import type {
-  ActionResult,
   FormContext,
   ProviderSettingsPageProps,
   ProviderSettingsView,
@@ -97,12 +95,7 @@ export function ProviderSettingsPage({
   )
 }
 
-/**
- * The provider name heads the settings under the breadcrumb, which titles the
- * page. A pencil beside it swaps the text for
- * an input: Enter or Save saves, Escape or Cancel discards, and leaving the
- * field does neither. A failed save keeps the draft beside its error.
- */
+/** The provider name heads the settings under the breadcrumb, which titles the page. */
 function ProviderNameHeading({
   provider,
   form,
@@ -112,96 +105,27 @@ function ProviderNameHeading({
   form: FormContext
   canRename: boolean
 }) {
-  const fetcher = useFetcher<ActionResult>()
-  const [open, setOpen] = useState(false)
-  // The result the last edit started from: anything newer belongs to this edit.
-  const [earlier, setEarlier] = useState<ActionResult | undefined>(undefined)
-  const [draft, setDraft] = useState(provider.displayName)
-  const pencil = useRef<HTMLButtonElement>(null)
-  const formRef = useRef<HTMLFormElement>(null)
-  const saving = fetcher.state !== 'idle'
-  const result = !saving && fetcher.data !== earlier ? fetcher.data : undefined
-  // A saved name closes the editor; a refused one keeps the draft open.
-  const editing = open && !(result && !result.error)
-  // Closing the editor, by saving or cancelling, returns focus to the pencil.
-  const wasEditing = useRef(false)
-  useEffect(() => {
-    if (wasEditing.current && !editing) pencil.current?.focus()
-    wasEditing.current = editing
-  }, [editing])
-  const cancel = () => setOpen(false)
-  if (!editing)
-    return (
-      <div className={styles.nameHeading}>
-        <Typography.HeadingLarge as="h2">{provider.displayName}</Typography.HeadingLarge>
-        {canRename && (
-          <Button.IconButton
-            ref={pencil}
-            name="Pencil"
-            variant="bare"
-            size="32"
-            tooltipText="Edit provider name"
-            onClick={() => {
-              setDraft(provider.displayName)
-              setEarlier(fetcher.data)
-              setOpen(true)
-            }}
-          />
-        )}
-        {!provider.enabled && (
-          <Pill color="amber" data-provider-state="disabled">
-            Disabled
-          </Pill>
-        )}
-        {!provider.operationsReady && (
-          <Pill color="amber" data-provider-state="no-operations">
-            No operations ready
-          </Pill>
-        )}
-      </div>
-    )
-  const error = result?.error
   return (
-    <fetcher.Form method="post" ref={formRef} className={styles.nameForm} aria-busy={saving}>
-      <Fields form={form} intent="renameProvider" etag={provider.etag} />
-      <input type="hidden" name="provider" value={provider.id} />
-      <div className={styles.nameRow}>
-        <div className={styles.nameInput}>
-          <Inputs.TextInput
-            ariaLabel="Provider name"
-            name="displayName"
-            value={draft}
-            onChange={setDraft}
-            autoFocus
-            required
-            maxLength={256}
-            invalid={Boolean(error)}
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') {
-                event.preventDefault()
-                cancel()
-              } else if (event.key === 'Enter') {
-                event.preventDefault()
-                if (!saving) formRef.current?.requestSubmit()
-              }
-            }}
-          />
-        </div>
-        <Button.TextButton type="submit" size="32" disabled={saving}>
-          {saving ? 'Saving…' : 'Save'}
-        </Button.TextButton>
-        <Button.TextButton
-          type="button"
-          variant="secondary"
-          size="32"
-          disabled={saving}
-          onClick={cancel}
-        >
-          Cancel
-        </Button.TextButton>
-      </div>
-      {error && <ErrorMessage message={error} />}
-    </fetcher.Form>
+    <NameHeading
+      name={provider.displayName}
+      noun="provider"
+      canRename={canRename}
+      form={form}
+      intent="renameProvider"
+      etag={provider.etag}
+      fields={<input type="hidden" name="provider" value={provider.id} />}
+    >
+      {!provider.enabled && (
+        <Pill color="amber" data-provider-state="disabled">
+          Disabled
+        </Pill>
+      )}
+      {!provider.operationsReady && (
+        <Pill color="amber" data-provider-state="no-operations">
+          No operations ready
+        </Pill>
+      )}
+    </NameHeading>
   )
 }
 
@@ -305,14 +229,15 @@ function AccountSection({
           </Banner>
         )}
         {provider.connection === 'unknown' && (
-          <Typography.BodySmall as="p">
-            {`Coral could not read ${whose}. Open it to see its state.`}
-          </Typography.BodySmall>
+          <Banner
+            variant="warning"
+            title={`Cannot read ${shared ? 'the shared account' : 'your account'}`}
+          >
+            Open it to see its state.
+          </Banner>
         )}
         {shared && !owner && !connected && (
-          <Typography.BodySmall as="p">
-            Ask a workspace owner to connect the shared account.
-          </Typography.BodySmall>
+          <Banner variant="info">Ask a workspace owner to connect the shared account.</Banner>
         )}
         {(connection || canChange) && (
           <div className={styles.rowActions}>
