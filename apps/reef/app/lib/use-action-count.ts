@@ -13,7 +13,7 @@ function actionCounts(value: unknown): ActionCounts {
 
 /** The last counts stay this long after the stream reports a drop, then clear. A silent
  * stall reports only when its 15 s lease ends, so a count can stay about 45 s after the
- * last sign of life. Only heartbeats show that the counts are still current. */
+ * last sign of life. */
 const STALE_MS = 30_000
 
 /** One shell-owned subscription for every Workspace's count. A short drop keeps the last
