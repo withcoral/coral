@@ -184,7 +184,7 @@ export const BuiltinProvider: Story = {
       ...provider,
       displayName: 'Coral',
       namespace: '',
-      callRoot: 'coral.admin',
+      callRoot: 'coral.workspace',
       builtin: true,
       account: 'none',
     },
