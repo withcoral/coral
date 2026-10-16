@@ -88,8 +88,8 @@ impl SearchIndex {
     /// and its `complete` state row in one transaction. The committing
     /// workflow sends ids alone and never waits for the preparation (ADR
     /// 0017). Writing an indexed Generation again rewrites its rows. A failed
-    /// write rolls back and leaves a `failed` state row; a failed preparation
-    /// is logged, and the reconcile task indexes the Generation instead.
+    /// preparation or write leaves a `failed` state row, and the reconcile
+    /// task retries the Generation once the failure is old enough.
     ///
     /// A Generation that another publication replaced before the write runs
     /// is skipped: the replacing publication's notification indexes its own.
@@ -417,13 +417,26 @@ impl SearchIndex {
         .await
     }
 
+    /// Begins a write, waiting again while the writer is busy. A write that
+    /// overran its limit keeps the writer until its statement ends, and the
+    /// failure it leaves must still be recorded. The caller's limit bounds
+    /// the wait.
+    async fn begin_when_writer_free(&self) -> Result<Transaction<'_>, IndexError> {
+        loop {
+            match self.database.begin().await {
+                Err(coral_db::Error::WriterBusy) => {}
+                begun => return Ok(begun?),
+            }
+        }
+    }
+
     async fn record_failed_generation(
         &self,
         generation: AttemptedGeneration<'_>,
         error: &IndexError,
     ) -> Result<(), IndexError> {
         self.within_limit(async {
-            let mut transaction = self.database.begin().await?;
+            let mut transaction = self.begin_when_writer_free().await?;
             operations::record_failed_attempt(&mut transaction, generation, error).await?;
             transaction.commit().await?;
             Ok(())
@@ -436,7 +449,7 @@ impl SearchIndex {
         error: &IndexError,
     ) -> Result<(), IndexError> {
         self.within_limit(async {
-            let mut transaction = self.database.begin().await?;
+            let mut transaction = self.begin_when_writer_free().await?;
             functions::record_failed_attempt(&mut transaction, entry, error).await?;
             transaction.commit().await?;
             Ok(())

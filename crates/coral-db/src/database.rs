@@ -57,12 +57,32 @@ impl Database {
         Self::connect_with_keepalive(options.into(), keepalive).await
     }
 
+    /// Opens the selected backend with a shorter wait for the `SQLite`
+    /// writer, so tests can observe [`Error::WriterBusy`] without waiting
+    /// seconds. Postgres has no writer wait and ignores it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::connect`].
+    #[cfg(feature = "test-support")]
+    pub async fn connect_with_writer_wait(
+        options: impl Into<DatabaseOptions>,
+        writer_wait: Duration,
+    ) -> Result<Self, Error> {
+        match options.into() {
+            DatabaseOptions::Sqlite { path } => connect_sqlite(&path, writer_wait).await,
+            DatabaseOptions::Postgres { url } => {
+                connect_postgres(&url, crate::changes::DEFAULT_KEEPALIVE).await
+            }
+        }
+    }
+
     async fn connect_with_keepalive(
         options: DatabaseOptions,
         keepalive: Duration,
     ) -> Result<Self, Error> {
         match options {
-            DatabaseOptions::Sqlite { path } => connect_sqlite(&path).await,
+            DatabaseOptions::Sqlite { path } => connect_sqlite(&path, SQLITE_BUSY_TIMEOUT).await,
             DatabaseOptions::Postgres { url } => connect_postgres(&url, keepalive).await,
         }
     }
@@ -132,7 +152,9 @@ impl<Access> Database<Access> {
     }
 }
 
-async fn connect_sqlite(path: &Path) -> Result<Database, Error> {
+/// `writer_wait` bounds how long a write waits for the one writer: in this
+/// process for the pool's connection, and in others for the file lock.
+async fn connect_sqlite(path: &Path, writer_wait: Duration) -> Result<Database, Error> {
     let parent = path
         .parent()
         .ok_or_else(|| Error::MissingDatabaseParent(path.to_path_buf()))?;
@@ -147,14 +169,14 @@ async fn connect_sqlite(path: &Path) -> Result<Database, Error> {
         .foreign_keys(true)
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)
-        .busy_timeout(SQLITE_BUSY_TIMEOUT)
+        .busy_timeout(writer_wait)
         // `REGEXP` lets a statement use the pattern it gives Postgres's `~`.
         .with_regexp();
     // Connect the writer first: it may switch a new file to WAL, which a
     // query-only reader cannot do.
     let writes = SqlitePoolOptions::new()
         .max_connections(1)
-        .acquire_timeout(SQLITE_BUSY_TIMEOUT)
+        .acquire_timeout(writer_wait)
         .connect_with(options.clone())
         .await?;
     let reads = SqlitePoolOptions::new()

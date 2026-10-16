@@ -1017,6 +1017,43 @@ async fn a_write_stalled_past_its_limit_rolls_back_and_frees_later_writes() {
     );
 }
 
+#[tokio::test]
+async fn a_failure_waits_for_a_busy_writer_to_record_its_state() {
+    // A write that runs past its limit keeps SQLite's one writer until its
+    // statement ends. The failure it leaves must still be recorded once the
+    // writer is free, or the Provider reads as pending until a reconcile
+    // pass. Postgres has no single writer: a blocked write waits on locks.
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    if world.modules.search.database.system() == DatabaseSystem::Postgres {
+        return;
+    }
+    let entries = world.stored_entries(&world.tracer).await;
+    let database = Arc::new(
+        world
+            .modules
+            .fixture
+            .connect_peer_with_writer_wait(std::time::Duration::from_millis(50))
+            .await
+            .expect("open a handle with a short writer wait"),
+    );
+    let index = SearchIndex::new(database.clone(), RECONCILE_INTERVAL)
+        .with_write_limit(std::time::Duration::from_secs(1));
+
+    let blocker = database.begin().await.expect("hold the writer");
+    notify(&index, &entries);
+    tokio::join!(index.settled(), async {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        blocker.rollback().await.expect("release the writer");
+    });
+
+    let [state] = world.states().await.try_into().expect("one state row");
+    assert_eq!(
+        (state.generation_id.as_str(), state.state.as_str()),
+        (entries.generation_id().to_string().as_str(), "failed")
+    );
+}
+
 /// A small Provider with one Operation and no credentials.
 const LEDGER: &str = r#"{
   "openapi": "3.1.0",
