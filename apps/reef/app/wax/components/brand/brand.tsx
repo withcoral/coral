@@ -1,6 +1,4 @@
-import { Icon } from '@/wax/components/icon'
-import { Typography } from '@/wax/components/typography'
-
+import { CoralMark, CoralWordmark } from './brand-art'
 import * as styles from './brand.css'
 
 interface BrandProps {
@@ -11,12 +9,8 @@ interface BrandProps {
 export function Brand({ compact = false }: BrandProps) {
   return (
     <span className={styles.brand} role="img" aria-label="Coral">
-      <Icon name="Coral" size="30" />
-      {!compact && (
-        <Typography.HeadingLarge as="span" className={styles.wordmark}>
-          Coral
-        </Typography.HeadingLarge>
-      )}
+      <CoralMark className={styles.mark} />
+      {!compact && <CoralWordmark className={styles.wordmark} />}
     </span>
   )
 }

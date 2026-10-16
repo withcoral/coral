@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { Banner, Button, Menu, Typography } from '@/wax/components'
 import { Pill } from '@/wax/components/pill'
+import { InfoTip } from '@/wax/components/tooltip'
 import type {
   ActionResult,
   FormContext,
@@ -93,9 +94,9 @@ export function WorkspaceMembersPage({
     >
       <PageIntro status={!active ? <Pill color="gray">Archived</Pill> : undefined}>
         {!owner ? (
-          <Typography.BodySmall as="p">
-            You can see your profile and the current owners. You cannot see other members or agents.
-          </Typography.BodySmall>
+          <InfoTip label="Workspace members">
+            As a member, you see only yourself and the owners. Owners see all members.
+          </InfoTip>
         ) : undefined}
       </PageIntro>
       {!active && (

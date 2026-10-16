@@ -1,6 +1,8 @@
 import { useState } from 'react'
 
 import * as Combobox from '@/wax/components/combobox'
+import { Container as ScrollArea } from '@/wax/components/scroll-area'
+import { Tooltip } from '@/wax/components/tooltip'
 
 import * as styles from './token-input.css'
 
@@ -17,6 +19,11 @@ export interface TokenInputProps {
   removeLabel?: (token: string) => string
   /** Tokens offered as the person types; chosen ones leave the list. */
   suggestions?: string[]
+  /**
+   * The text a chip shows for its token. When it differs from the token, or
+   * the chip cuts it off, a tooltip shows the whole token.
+   */
+  tokenLabel?: (token: string) => string
   value: string[]
 }
 
@@ -32,6 +39,7 @@ export function TokenInput({
   placeholder,
   removeLabel = (token) => `Remove ${token}`,
   suggestions = [],
+  tokenLabel = (token) => token,
   value,
 }: TokenInputProps) {
   const [text, setText] = useState('')
@@ -68,40 +76,49 @@ export function TokenInput({
       }}
     >
       <Combobox.InputGroup className={invalid ? styles.invalid : undefined}>
-        <Combobox.Chips>
-          {value.map((token) => (
-            <Combobox.Chip key={token}>
-              <Combobox.ChipLabel>{token}</Combobox.ChipLabel>
-              <Combobox.ChipRemove aria-label={removeLabel(token)} />
-            </Combobox.Chip>
-          ))}
-          <Combobox.Input
-            bare
-            id={id}
-            invalid={invalid}
-            ariaDescribedBy={ariaDescribedBy}
-            placeholder={value.length > 0 ? '' : placeholder}
-            onBlur={commit}
-            onKeyDown={(event) => {
-              // Tab closes an open list, and the combobox clears the text as it
-              // closes, before the blur that would add it. Add it first.
-              if (event.key === 'Tab') {
-                commit()
-                return
-              }
-              // A highlighted suggestion is the combobox's to choose.
-              if (
-                event.key !== 'Enter' ||
-                !text.trim() ||
-                event.currentTarget.getAttribute('aria-activedescendant')
+        {/* Many tokens scroll inside the field, so a long list does not push the
+            rest of the form down. */}
+        <ScrollArea maxHeight="144px" scrollDirection="vertical" constrainWidth>
+          <Combobox.Chips>
+            {value.map((token) => {
+              const label = tokenLabel(token)
+              return (
+                <Combobox.Chip key={token}>
+                  <Tooltip content={token} showOnlyWhenTruncated={label === token}>
+                    <Combobox.ChipLabel>{label}</Combobox.ChipLabel>
+                  </Tooltip>
+                  <Combobox.ChipRemove aria-label={removeLabel(token)} />
+                </Combobox.Chip>
               )
-                return
-              // Enter adds the token rather than submitting the form around it.
-              event.preventDefault()
-              commit()
-            }}
-          />
-        </Combobox.Chips>
+            })}
+            <Combobox.Input
+              bare
+              id={id}
+              invalid={invalid}
+              ariaDescribedBy={ariaDescribedBy}
+              placeholder={value.length > 0 ? '' : placeholder}
+              onBlur={commit}
+              onKeyDown={(event) => {
+                // Tab closes an open list, and the combobox clears the text as it
+                // closes, before the blur that would add it. Add it first.
+                if (event.key === 'Tab') {
+                  commit()
+                  return
+                }
+                // A highlighted suggestion is the combobox's to choose.
+                if (
+                  event.key !== 'Enter' ||
+                  !text.trim() ||
+                  event.currentTarget.getAttribute('aria-activedescendant')
+                )
+                  return
+                // Enter adds the token rather than submitting the form around it.
+                event.preventDefault()
+                commit()
+              }}
+            />
+          </Combobox.Chips>
+        </ScrollArea>
       </Combobox.InputGroup>
       <Combobox.Content>
         <Combobox.List>

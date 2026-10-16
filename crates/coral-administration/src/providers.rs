@@ -12,9 +12,9 @@ use std::sync::Arc;
 
 use coral_db::Database;
 use coral_provider::{
-    ActivatedGeneration, EntryMaterial, Error, MaterializedPublication, PreparedPublication,
-    Provider, ProviderDisplayName, ProviderId, ProviderModule, ProviderPublication,
-    ProviderRegenerationPublication, ProviderRegenerationRequest, PublicationEvidence, Published,
+    Error, MaterializedPublication, PreparedPublication, Provider, ProviderDisplayName, ProviderId,
+    ProviderModule, ProviderPublication, ProviderRegenerationPublication,
+    ProviderRegenerationRequest, PublicationEvidence, Published,
     WorkspaceProviderPublicationRequest,
 };
 use coral_search::SearchIndex;
@@ -139,7 +139,6 @@ impl ProviderWorkflow {
         let Published {
             publication,
             evidence,
-            entries: material,
         } = self
             .providers
             .publish_in_transaction(&mut transaction, context, publication)
@@ -148,31 +147,17 @@ impl ProviderWorkflow {
         // A replay, a reuse of the active Generation, or a failed outcome
         // changed nothing to index.
         if let PublicationEvidence::Activated(activated) = evidence {
-            self.index_activated(&activated, material);
+            // Search prepares the Generation's entries from storage, so
+            // publication never waits for them (ADR 0017).
+            self.search.index_generation(
+                activated.workspace().clone(),
+                activated.provider().clone(),
+                activated.generation().clone(),
+            );
+            if let Some(replaced) = activated.replaced() {
+                self.search.remove_generation(replaced.clone());
+            }
         }
         Ok(publication)
-    }
-
-    fn index_activated(&self, activated: &ActivatedGeneration, material: EntryMaterial) {
-        let workspace = material.workspace_id().clone();
-        match material.into_entries(activated) {
-            Ok(entries) => {
-                self.search.index_generation(Arc::new(entries));
-                if let Some(replaced) = activated.replaced() {
-                    self.search.remove_generation(replaced.clone());
-                }
-            }
-            // The reconcile task indexes the stored Generation instead.
-            Err(error) => {
-                // TODO: an error monitor for failed index writes is still to be set up.
-                tracing::error!(
-                    workspace_id = %workspace,
-                    provider_id = %activated.provider(),
-                    generation_id = %activated.generation(),
-                    error = %error,
-                    "failed to prepare a published Generation's search entries"
-                );
-            }
-        }
     }
 }

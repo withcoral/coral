@@ -120,16 +120,6 @@ fn mismatched_command_result() -> Error {
     Error::CorruptData("Publication returned another command's result".to_string())
 }
 
-impl Command<RegenerationBaseline> {
-    fn call_root(&self) -> crate::ProviderCallRoot {
-        match self {
-            Self::Workspace(request) => request.call_root(),
-
-            Self::Regenerate { regeneration, .. } => regeneration.call_root.clone(),
-        }
-    }
-}
-
 struct RegenerationPrecondition {
     expected_etag: Option<String>,
 }
@@ -139,7 +129,6 @@ struct RegenerationBaseline {
     generation_id: coral_catalog::ProviderGenerationId,
     fingerprint: coral_catalog::ProviderGenerationFingerprint,
     display_name: ProviderDisplayName,
-    call_root: crate::ProviderCallRoot,
     operation_paths: Vec<coral_catalog::OperationPathAssignment>,
 }
 
@@ -168,7 +157,6 @@ pub enum PreparedPublication<T> {
 pub struct MaterializedPublication<T> {
     pinned: PinnedPublication,
     materialized: MaterializationOutcome,
-    entries: crate::EntryMaterial,
     started: std::time::Instant,
     result: fn(Terminal) -> Result<T, Error>,
 }
@@ -234,27 +222,16 @@ impl ProviderModule {
             .materialize(&pinned.setup_input, paths)
             .await
             .map_err(|error| Error::OperationalPublication(error.message().to_string()))?;
-        // An entry failure never fails publication: the material carries it.
-        let entries = crate::EntryMaterial::prepare(
-            pinned.command.owner(),
-            pinned.command.call_root(),
-            &materialized,
-        );
         Ok(PreparedPublication::Materialized(Box::new(
             MaterializedPublication {
                 pinned,
                 materialized,
-                entries,
                 started,
                 result,
             },
         )))
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one preflight keeps replay, the row lock, and the regeneration baseline in order"
-    )]
     async fn publication_preflight(
         &self,
         context: &ChangeContext,
@@ -346,7 +323,6 @@ impl ProviderModule {
                         )
                         .await?,
                         display_name: provider.provider.display_name_metadata().clone(),
-                        call_root: provider.provider.access().call_root().clone(),
                         generation_id: provider.generation_id,
                     },
                 }
@@ -861,7 +837,6 @@ impl ProviderModule {
         let MaterializedPublication {
             pinned,
             materialized,
-            entries,
             started,
             result,
         } = publication;
@@ -871,7 +846,6 @@ impl ProviderModule {
         Ok(Published {
             publication: result(terminal)?,
             evidence,
-            entries,
         })
     }
 }
@@ -1114,6 +1088,7 @@ impl ProviderModule {
                     .await?;
                 }
                 let evidence = PublicationEvidence::Activated(ActivatedGeneration::new(
+                    request.workspace_id().clone(),
                     provider.id().clone(),
                     generation,
                     None,
@@ -1291,6 +1266,7 @@ impl ProviderModule {
                         return Err(Error::ProviderChangedDuringPublication);
                     }
                     Some(ActivatedGeneration::new(
+                        request.owner().clone(),
                         request.provider_id().clone(),
                         generation_id,
                         Some(baseline.generation_id.clone()),

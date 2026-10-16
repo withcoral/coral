@@ -615,11 +615,12 @@ dependencies = [
  "coral-test-support",
  "coral-workspace",
  "sea-query",
+ "serde",
+ "serde_yaml",
  "sqlx",
  "tempfile",
  "thiserror",
  "tokio",
- "tracing",
  "uuid",
 ]
 
