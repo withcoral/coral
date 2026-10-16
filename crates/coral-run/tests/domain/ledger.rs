@@ -44,6 +44,7 @@ async fn a_chunk_built_on_a_stale_claim_matches_no_row_and_changes_nothing() {
     for (label, row_claim, chunk_claim) in cases {
         let (workspace_id, run_id) = arranged_run(&fixture, label, row_claim).await;
         let before = fixture.run_record(&workspace_id, &run_id).await;
+        let counter_before = fixture.compatibility_counter(&workspace_id, &run_id).await;
         let events_before = fixture.events_after(&workspace_id, &run_id, 0).await;
 
         let mut transaction = fixture.database.begin().await.expect("begin");
@@ -75,6 +76,11 @@ async fn a_chunk_built_on_a_stale_claim_matches_no_row_and_changes_nothing() {
             events_before,
             "{label}: no Event landed"
         );
+        assert_eq!(
+            fixture.compatibility_counter(&workspace_id, &run_id).await,
+            counter_before,
+            "{label}: the previous release's counter is unchanged"
+        );
     }
 }
 
@@ -97,6 +103,7 @@ async fn a_chunk_built_on_a_stale_head_matches_no_row_and_changes_nothing() {
     .expect("the first chunk commits");
     transaction.commit().await.expect("commit");
     let before = fixture.run_record(&workspace_id, &run_id).await;
+    let counter_before = fixture.compatibility_counter(&workspace_id, &run_id).await;
     let events_before = fixture.events_after(&workspace_id, &run_id, 0).await;
     assert_eq!(before.chunk_sequence, 1);
 
@@ -130,6 +137,11 @@ async fn a_chunk_built_on_a_stale_head_matches_no_row_and_changes_nothing() {
             fixture.events_after(&workspace_id, &run_id, 0).await,
             events_before,
             "head {stale_head}: no Event landed"
+        );
+        assert_eq!(
+            fixture.compatibility_counter(&workspace_id, &run_id).await,
+            counter_before,
+            "head {stale_head}: the previous release's counter is unchanged"
         );
     }
 }
@@ -279,6 +291,7 @@ async fn no_chunk_lands_after_run_ended() {
     transaction.commit().await.expect("commit");
     let ended = fixture.run_record(&workspace_id, &run_id).await;
     assert_eq!(ended.state, RunState::Succeeded);
+    let counter_ended = fixture.compatibility_counter(&workspace_id, &run_id).await;
     let events_before = fixture.events_after(&workspace_id, &run_id, 0).await;
 
     // A chunk built on the ended Run's own head and claim: nothing stale about
@@ -304,5 +317,9 @@ async fn no_chunk_lands_after_run_ended() {
     assert_eq!(
         fixture.events_after(&workspace_id, &run_id, 0).await,
         events_before
+    );
+    assert_eq!(
+        fixture.compatibility_counter(&workspace_id, &run_id).await,
+        counter_ended
     );
 }
