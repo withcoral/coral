@@ -4,7 +4,7 @@
  */
 
 /** The Built-in Provider's Call Root. Coral defines and manages that provider. */
-const BUILTIN_CALL_ROOT = 'coral.admin'
+const BUILTIN_CALL_ROOT = 'coral.workspace'
 
 /** Whether the Call Root is the Built-in Provider's, which owners cannot change. */
 export function isBuiltinProvider(callRoot: string) {

@@ -241,7 +241,7 @@ export async function nextPublication(page: Page) {
 }
 
 /** Every workspace also holds the Built-in Provider, which Coral adds itself. */
-const BUILTIN_CALL_ROOT = 'coral.admin'
+const BUILTIN_CALL_ROOT = 'coral.workspace'
 
 /** The providers the workspace added, without the Built-in Provider. */
 export function addedProviders<P extends { callRoot: string }>(providers: readonly P[]) {

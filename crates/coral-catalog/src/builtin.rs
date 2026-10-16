@@ -615,7 +615,7 @@ fn definition(operation: BuiltinOperation) -> Definition {
                         "properties": {
                             "namespace": {
                                 "type": ["string", "null"],
-                                "description": "The Provider Namespace. Its Operations are called under coral.providers.<namespace>. Null for Coral's own Provider, whose Operations are called under coral.admin."
+                                "description": "The Provider Namespace. Its Operations are called under coral.providers.<namespace>. Null for Coral's own Provider, whose Operations are called under coral.workspace."
                             },
                             "displayName": { "type": "string", "description": "The Provider display name." },
                             "state": {
