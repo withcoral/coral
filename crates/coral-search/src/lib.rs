@@ -89,14 +89,14 @@ pub use types::{
 /// fused union of the windows is the result universe a cursor pages through.
 const RETRIEVAL_WINDOW: usize = 100;
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+static MIGRATOR: coral_db::MigrationPlan = coral_db::migration_plan!();
 
 /// Returns Universal Search's portable migrations for the shared chain.
 ///
 /// Process bootstrap runs [`prepare_storage`] after the chain for the
 /// backend-specific objects on top of these tables.
 #[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
+pub const fn migrator() -> &'static coral_db::MigrationPlan {
     &MIGRATOR
 }
 

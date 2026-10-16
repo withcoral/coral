@@ -74,7 +74,7 @@ impl CancellationCaller {
 }
 
 /// Every domain migration plan a Run test database installs.
-pub(crate) const MIGRATION_PLANS: [&sqlx::migrate::Migrator; 7] = [
+pub(crate) const MIGRATION_PLANS: [&coral_test_support::MigrationPlan; 7] = [
     coral_workspace::migrator(),
     coral_catalog::migrator(),
     coral_provider::migrator(),

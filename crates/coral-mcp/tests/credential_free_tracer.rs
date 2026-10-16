@@ -2737,7 +2737,7 @@ async fn publish_operations(
     provider_id
 }
 
-fn test_migrator() -> sqlx::migrate::Migrator {
+fn test_migrator() -> coral_test_support::MigrationPlan {
     coral_test_support::combined_migrator(&[
         coral_workspace::migrator(),
         coral_task::migrator(),

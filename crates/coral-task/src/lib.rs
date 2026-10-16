@@ -82,11 +82,11 @@ pub use types::{
     TASK_FEEDBACK_MAX_CHARS, TASK_INTENT_MAX_CHARS, Task, TaskId, TaskIntent, TaskOutcome,
 };
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+static MIGRATOR: coral_db::MigrationPlan = coral_db::migration_plan!();
 
 /// Returns the Task Module's domain-owned migration plan.
 #[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
+pub const fn migrator() -> &'static coral_db::MigrationPlan {
     &MIGRATOR
 }
 

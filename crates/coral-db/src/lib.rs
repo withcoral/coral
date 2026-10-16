@@ -55,6 +55,7 @@ pub use changes::ChangeSubscription;
 pub use database::{Database, ReadOnlyDatabase, validate_postgres_url};
 pub use error::{Error, sqlx_error_is_serialization_conflict, sqlx_error_is_unique_violation};
 pub use executor::QueryExecutor;
+pub use migration::MigrationPlan;
 pub use options::DatabaseOptions;
 pub use query::{col, column};
 pub use transaction::{Transaction, TransactionToken};

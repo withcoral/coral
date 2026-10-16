@@ -125,11 +125,11 @@ pub use types::{
     WorkspaceMembership, WorkspaceRole, WorkspaceState, local_organization_owner,
 };
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+static MIGRATOR: coral_db::MigrationPlan = coral_db::migration_plan!();
 
 /// Returns the Workspace Module's domain-owned migration plan.
 #[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
+pub const fn migrator() -> &'static coral_db::MigrationPlan {
     &MIGRATOR
 }
 

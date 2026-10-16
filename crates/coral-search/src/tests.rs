@@ -3707,7 +3707,7 @@ impl TestModules {
         modules
     }
 
-    async fn with_migrator(migrator: &sqlx::migrate::Migrator) -> Self {
+    async fn with_migrator(migrator: &coral_test_support::MigrationPlan) -> Self {
         let fixture = TestDatabase::new(migrator)
             .await
             .expect("create Universal Search test database");
@@ -4124,7 +4124,7 @@ export default function formatForecast(value: Forecast): string {{
     }
 }
 
-fn test_migrator() -> sqlx::migrate::Migrator {
+fn test_migrator() -> coral_test_support::MigrationPlan {
     coral_test_support::combined_migrator(&[
         coral_workspace::migrator(),
         coral_catalog::migrator(),

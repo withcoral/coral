@@ -22,9 +22,8 @@ use std::sync::Arc;
 
 pub use coral_credentials::CredentialValues as FixtureCredentialValues;
 pub use coral_credentials::Secret as FixtureSecret;
-pub use coral_db::DatabaseSystem;
 use coral_db::{Database, DatabaseOptions};
-use sqlx::migrate::Migrator;
+pub use coral_db::{DatabaseSystem, MigrationPlan};
 use tempfile::TempDir;
 use thiserror::Error;
 use uuid::Uuid;
@@ -64,7 +63,7 @@ pub struct TestDatabase {
 }
 
 impl TestDatabase {
-    /// Creates an isolated database and applies `migrator`.
+    /// Creates an isolated database and applies its half of `migrator`.
     ///
     /// With no `CORAL_TEST_DATABASE`, this creates a temporary `SQLite` file.
     /// `CORAL_TEST_DATABASE=postgres` requires `CORAL_TEST_POSTGRES_URL` and
@@ -74,7 +73,7 @@ impl TestDatabase {
     ///
     /// Returns an error for invalid bootstrap configuration, fixture creation,
     /// connection, or migration failure.
-    pub async fn new(migrator: &Migrator) -> Result<Self, TestDatabaseError> {
+    pub async fn new(migrator: &MigrationPlan) -> Result<Self, TestDatabaseError> {
         let selection = optional_environment(TEST_DATABASE_ENV)?;
         let postgres_url = optional_environment(POSTGRES_URL_ENV)?;
         match select_database(selection.as_deref(), postgres_url.as_deref())
@@ -166,7 +165,7 @@ impl TestDatabase {
         Ok(())
     }
 
-    async fn sqlite(migrator: &Migrator) -> Result<Self, TestDatabaseError> {
+    async fn sqlite(migrator: &MigrationPlan) -> Result<Self, TestDatabaseError> {
         let directory = tempfile::tempdir()?;
         let options = DatabaseOptions::Sqlite {
             path: directory.path().join("coral.sqlite"),
@@ -180,7 +179,7 @@ impl TestDatabase {
         })
     }
 
-    async fn postgres(migrator: &Migrator, base_url: &str) -> Result<Self, TestDatabaseError> {
+    async fn postgres(migrator: &MigrationPlan, base_url: &str) -> Result<Self, TestDatabaseError> {
         coral_db::validate_postgres_url(base_url)?;
         let administration_pool = sqlx::PgPool::connect(base_url).await?;
         let schema = format!("coral_test_{}", Uuid::new_v4().simple());
@@ -303,7 +302,10 @@ fn optional_environment(name: &str) -> Result<Option<String>, TestDatabaseError>
 mod tests {
     use super::*;
 
-    static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./tests/migrations");
+    static MIGRATOR: MigrationPlan = MigrationPlan::new(
+        sqlx::migrate!("./tests/migrations/postgres"),
+        sqlx::migrate!("./tests/migrations/sqlite"),
+    );
 
     #[tokio::test]
     async fn selected_database_is_live_and_shareable() {

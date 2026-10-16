@@ -231,7 +231,7 @@ pub(crate) async fn test_foundation() -> (TestDatabase, Arc<Database>, Workspace
 
 /// The Workspace, Catalog and Provider schemas plus `extra` Modules' schemas.
 async fn test_foundation_with(
-    extra: &[&sqlx::migrate::Migrator],
+    extra: &[&coral_test_support::MigrationPlan],
 ) -> (TestDatabase, Arc<Database>, WorkspaceModule) {
     let mut plans = vec![
         coral_workspace::migrator(),
@@ -271,7 +271,7 @@ impl Harness {
     }
 
     /// Adds other Modules' schemas, such as Saved Functions for offboarding.
-    pub(crate) async fn with_migrations(extra: &[&sqlx::migrate::Migrator]) -> Self {
+    pub(crate) async fn with_migrations(extra: &[&coral_test_support::MigrationPlan]) -> Self {
         let (fixture, database, workspaces) = test_foundation_with(extra).await;
         let providers = ProviderModule::with_running_catalog(
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),

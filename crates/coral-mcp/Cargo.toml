@@ -43,4 +43,3 @@ reqwest.workspace = true
 coral-policy.workspace = true
 coral-provider = { workspace = true, features = ["test-fixtures"] }
 coral-test-support.workspace = true
-sqlx.workspace = true

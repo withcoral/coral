@@ -327,23 +327,25 @@ async fn summary_pages_use_ordinal_keys_independently_of_database_locale() {
 
 #[tokio::test]
 async fn catalog_schema_rejects_drift() {
-    let mut migrations = vec![sqlx::migrate::Migration::new(
-        0,
-        "inject schema drift".into(),
-        sqlx::migrate::MigrationType::Simple,
-        sqlx::SqlStr::from_static("CREATE TABLE materialized_operations (unexpected TEXT)"),
-        false,
-    )];
-    let fixture = TestDatabase::new(&sqlx::migrate::Migrator::with_migrations(
-        migrations.clone(),
-    ))
-    .await
-    .unwrap();
-    migrations.extend(crate::migrator().iter().cloned());
+    let drift = || {
+        sqlx::migrate::Migration::new(
+            0,
+            "inject schema drift".into(),
+            sqlx::migrate::MigrationType::Simple,
+            sqlx::SqlStr::from_static("CREATE TABLE materialized_operations (unexpected TEXT)"),
+            false,
+        )
+    };
+    let fixture = TestDatabase::new(&coral_test_support::combined_migrator_with(&[], [drift()]))
+        .await
+        .unwrap();
     assert!(
         fixture
             .database()
-            .migrate(&sqlx::migrate::Migrator::with_migrations(migrations))
+            .migrate(&coral_test_support::combined_migrator_with(
+                &[crate::migrator()],
+                [drift()],
+            ))
             .await
             .is_err()
     );

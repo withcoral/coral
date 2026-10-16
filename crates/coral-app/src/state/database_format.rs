@@ -3,7 +3,7 @@
 use std::io;
 use std::path::Path;
 
-use coral_db::{DatabaseOptions, ReadOnlyDatabase};
+use coral_db::{DatabaseOptions, DatabaseSystem, ReadOnlyDatabase};
 use rusqlite::OpenFlags;
 use sea_query::{Alias, Expr, ExprTrait as _, JoinType, Order, Query, SelectStatement};
 
@@ -202,7 +202,7 @@ fn validate_sqlite_migration_ledger(connection: &rusqlite::Connection) -> Result
                 .collect::<Result<Vec<_>, _>>()
         })
         .map_err(malformed_database_probe_error)?;
-    validate_ledger_rows(&rows)
+    validate_ledger_rows(&rows, DatabaseSystem::Sqlite)
 }
 
 async fn validate_postgres_migration_ledger(
@@ -226,15 +226,18 @@ async fn validate_postgres_migration_ledger(
         )
         .await
         .map_err(malformed_database_probe_error)?;
-    validate_ledger_rows(&rows)
+    validate_ledger_rows(&rows, DatabaseSystem::Postgres)
 }
 
 /// An empty ledger or a failed migration is broken state, not a migration this
 /// build does not recognize.
-fn validate_ledger_rows(rows: &[(i64, Vec<u8>, bool)]) -> Result<(), AppError> {
+fn validate_ledger_rows(
+    rows: &[(i64, Vec<u8>, bool)],
+    system: DatabaseSystem,
+) -> Result<(), AppError> {
     if rows.is_empty() || rows.iter().any(|(_, _, success)| !success) {
         Err(malformed_database_marker_error())
-    } else if rows_match_known_migration_prefix(rows) {
+    } else if rows_match_known_migration_prefix(rows, system) {
         Ok(())
     } else {
         Err(unknown_migrations_error())

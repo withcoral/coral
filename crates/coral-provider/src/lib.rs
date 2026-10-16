@@ -104,11 +104,11 @@ use publication::{NoopPublicationObserver, PublicationObserver, PublicationPoint
 #[cfg(test)]
 use coral_provider as _;
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+static MIGRATOR: coral_db::MigrationPlan = coral_db::migration_plan!();
 
 /// Returns the Provider Module's domain-owned migration plan.
 #[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
+pub const fn migrator() -> &'static coral_db::MigrationPlan {
     &MIGRATOR
 }
 

@@ -5,12 +5,20 @@
     reason = "integration tests share the library dependency set"
 )]
 
-use coral_db::{Database, DatabaseOptions, DatabaseSystem, QueryExecutor, ReadOnlyDatabase};
+use coral_db::{
+    Database, DatabaseOptions, DatabaseSystem, MigrationPlan, QueryExecutor, ReadOnlyDatabase,
+};
 use coral_test_support::TestDatabase;
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./tests/migrations");
-static DRIFTED_MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./tests/drifted_migrations");
+static MIGRATOR: MigrationPlan = MigrationPlan::new(
+    sqlx::migrate!("./tests/migrations/postgres"),
+    sqlx::migrate!("./tests/migrations/sqlite"),
+);
+static DRIFTED_MIGRATOR: MigrationPlan = MigrationPlan::new(
+    sqlx::migrate!("./tests/drifted_migrations/postgres"),
+    sqlx::migrate!("./tests/drifted_migrations/sqlite"),
+);
 
 mod sqlite_only {
     use super::*;
@@ -231,6 +239,171 @@ mod sqlite_only {
             "unexpected schema drift error: {error}"
         );
     }
+
+    #[tokio::test]
+    async fn a_migration_that_leaves_a_foreign_key_without_its_row_is_reported() {
+        coral_test_support::database_only!(Sqlite);
+        let fixture = TestDatabase::new(&fixture_plan(&[(1, LINKED_TABLES, LINKED_TABLES)]))
+            .await
+            .unwrap();
+        let orphan = "INSERT INTO fixture_children (id, parent_id) VALUES ('orphan', 'missing');";
+
+        let error = fixture
+            .database()
+            .migrate(&fixture_plan(&[
+                (1, LINKED_TABLES, LINKED_TABLES),
+                (2, orphan, orphan),
+            ]))
+            .await
+            .expect_err("an orphaned row must be reported");
+
+        assert!(
+            matches!(
+                &error,
+                coral_db::Error::MigrationForeignKeys { tables } if tables == "fixture_children"
+            ),
+            "{error:?}"
+        );
+    }
+}
+
+/// A parent whose kind a CHECK lists, and a child whose rows go with their parent.
+const LINKED_TABLES: &str = "CREATE TABLE fixture_parents (
+    id TEXT NOT NULL PRIMARY KEY,
+    kind TEXT NOT NULL,
+    CONSTRAINT fixture_parents_kind_valid CHECK (kind IN ('listed'))
+);
+CREATE TABLE fixture_children (
+    id TEXT NOT NULL PRIMARY KEY,
+    parent_id TEXT NOT NULL REFERENCES fixture_parents(id) ON DELETE CASCADE
+);";
+
+/// Drops the parent's CHECK in place.
+const DROP_PARENT_KIND_RULE_POSTGRES: &str =
+    "ALTER TABLE fixture_parents DROP CONSTRAINT fixture_parents_kind_valid;";
+
+/// Drops the parent's CHECK by rebuilding the table.
+const DROP_PARENT_KIND_RULE_SQLITE: &str =
+    "CREATE TABLE fixture_parents_new (id TEXT NOT NULL PRIMARY KEY, kind TEXT NOT NULL);
+INSERT INTO fixture_parents_new (id, kind) SELECT id, kind FROM fixture_parents;
+DROP TABLE fixture_parents;
+ALTER TABLE fixture_parents_new RENAME TO fixture_parents;
+";
+
+/// A plan of fixture migrations, one per `(version, postgres SQL, SQLite SQL)`.
+fn fixture_plan(migrations: &[(i64, &'static str, &'static str)]) -> MigrationPlan {
+    use sqlx::SqlSafeStr as _;
+    let migrator = |sql_for: fn(&(i64, &'static str, &'static str)) -> &'static str| {
+        sqlx::migrate::Migrator::with_migrations(
+            migrations
+                .iter()
+                .map(|migration| {
+                    sqlx::migrate::Migration::new(
+                        migration.0,
+                        format!("fixture {}", migration.0).into(),
+                        sqlx::migrate::MigrationType::Simple,
+                        sql_for(migration).into_sql_str(),
+                        false,
+                    )
+                })
+                .collect(),
+        )
+    };
+    MigrationPlan::new(migrator(|m| m.1), migrator(|m| m.2))
+}
+
+#[tokio::test]
+async fn each_database_runs_its_own_migration() {
+    let plan = fixture_plan(&[(
+        1,
+        "CREATE TABLE fixture_backends (name TEXT NOT NULL);
+         INSERT INTO fixture_backends (name) VALUES ('postgres');",
+        "CREATE TABLE fixture_backends (name TEXT NOT NULL);
+         INSERT INTO fixture_backends (name) VALUES ('sqlite');",
+    )]);
+    let fixture = TestDatabase::new(&plan).await.unwrap();
+    let database = fixture.database();
+    database
+        .migrate(&plan)
+        .await
+        .expect("validate the database's own migration again");
+
+    let names: Vec<(String,)> = database
+        .fetch_all(
+            Query::select()
+                .column(sea_query::Alias::new("name"))
+                .from(sea_query::Alias::new("fixture_backends"))
+                .to_owned(),
+        )
+        .await
+        .unwrap();
+    let backend = match database.system() {
+        DatabaseSystem::Sqlite => "sqlite",
+        DatabaseSystem::Postgres => "postgres",
+    };
+    assert_eq!(names, vec![(backend.to_string(),)]);
+}
+
+#[tokio::test]
+async fn a_migration_that_rebuilds_a_referenced_table_keeps_the_referencing_rows() {
+    let fixture = TestDatabase::new(&fixture_plan(&[(1, LINKED_TABLES, LINKED_TABLES)]))
+        .await
+        .unwrap();
+    let database = fixture.database();
+    let mut transaction = database.begin().await.unwrap();
+    transaction
+        .execute_script(
+            "INSERT INTO fixture_parents (id, kind) VALUES ('parent', 'listed');
+             INSERT INTO fixture_children (id, parent_id) VALUES ('child', 'parent');",
+        )
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+
+    database
+        .migrate(&fixture_plan(&[
+            (1, LINKED_TABLES, LINKED_TABLES),
+            (
+                2,
+                DROP_PARENT_KIND_RULE_POSTGRES,
+                DROP_PARENT_KIND_RULE_SQLITE,
+            ),
+        ]))
+        .await
+        .expect("drop the parent's kind rule");
+
+    let children: Vec<(String, String)> = database
+        .fetch_all(
+            Query::select()
+                .columns([
+                    sea_query::Alias::new("id"),
+                    sea_query::Alias::new("parent_id"),
+                ])
+                .from(sea_query::Alias::new("fixture_children"))
+                .to_owned(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(children, vec![("child".to_string(), "parent".to_string())]);
+
+    let mut transaction = database.begin().await.unwrap();
+    transaction
+        .execute_script("INSERT INTO fixture_parents (id, kind) VALUES ('other', 'unlisted');")
+        .await
+        .expect("the kind rule is gone");
+    let error = transaction
+        .execute_script(
+            "INSERT INTO fixture_children (id, parent_id) VALUES ('orphan', 'missing');",
+        )
+        .await
+        .expect_err("writers still enforce foreign keys after migrating");
+    assert!(
+        matches!(
+            &error,
+            coral_db::Error::Sqlx(sqlx::Error::Database(cause)) if cause.is_foreign_key_violation()
+        ),
+        "{error:?}"
+    );
 }
 
 #[tokio::test]
