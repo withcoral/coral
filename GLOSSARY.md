@@ -310,8 +310,7 @@ Saved Function. It identifies the kind and call path and contains a safe summary
 declaration with every public type that the callable signature references. Its declaration can be projected from
 authoritative Provider schemas or emitted from Saved Function source; callers do not receive the different internal
 authority formats. Coral stores an Operation's own declaration and declares each named type of its Provider once per
-Provider Generation; the complete Authoring Description is the Operation's own declaration plus every named type it
-reaches. Coral compiles Programs against it and builds Search Hit signature lines from it. Exact Principal-facing description returns the complete inputs, the callable, an
+Provider Generation; an Operation's complete declaration is its own declaration plus every named type it reaches. Coral compiles Programs against it and builds Search Hit signature lines from it. Exact Principal-facing description returns the complete inputs, the callable, an
 Operation's result wrapper, and the top level of the success data, and the other result types within a fixed byte
 budget: in full, as field-name stubs, or listed by name. Describing the same Call Path with `types` returns the named
 types of its declaration whole, with their own nested types under the same budget. Exact description of the Principal's

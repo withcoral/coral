@@ -1003,6 +1003,40 @@ fn an_operation_over_the_discovery_limit_reports_its_size_and_the_limit() {
     assert_eq!(sizes(1_401) - sizes(1_400), 204 + 2 + 3);
 }
 
+/// The discovery limit counts an Operation's own declaration, not the shared
+/// types it names, so a large shared type leaves the Operation available.
+#[test]
+fn a_shared_type_over_the_discovery_limit_leaves_its_operation_available() {
+    let values = (0..1_400)
+        .map(|n| format!("{n:04}{}", "x".repeat(200)))
+        .collect::<Vec<_>>();
+    let document = serde_json::json!({
+        "openapi": "3.1.0",
+        "info": {"title": "Large", "version": "1"},
+        "servers": [{"url": "https://api.example.test"}],
+        "paths": {"/large": {"get": {
+            "operationId": "large",
+            "responses": {"200": {
+                "description": "OK",
+                "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Large"}}}
+            }}
+        }}},
+        "components": {"schemas": {"Large": {"type": "string", "enum": values}}}
+    });
+    let prepared = ready(&document.to_string());
+    let operation = &prepared.operations()[0];
+    assert_eq!(
+        operation.availability(),
+        OperationAvailability::Available,
+        "{:?}",
+        operation.diagnostic()
+    );
+    assert!(
+        prepared.authoring_declaration(operation).len()
+            > coral_catalog::OPERATION_AUTHORING_DESCRIPTION_MAX_BYTES
+    );
+}
+
 /// OpenAPI 3.0's `nullable` admits null. OpenAPI 3.1 gives it no meaning, so
 /// the projection and the validator both ignore it, and materialization warns.
 #[test]
