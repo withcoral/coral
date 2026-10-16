@@ -956,27 +956,43 @@ components:
     }
 }
 
+/// A document whose one Operation returns a string enum of `literals`
+/// 204-character literals, declared inline or as the shared type `Large`.
+fn large_enum_document(literals: usize, shared: bool) -> String {
+    let values = (0..literals)
+        .map(|n| format!("{n:04}{}", "x".repeat(200)))
+        .collect::<Vec<_>>();
+    let large = serde_json::json!({"type": "string", "enum": values});
+    let (schema, components) = if shared {
+        (
+            serde_json::json!({"$ref": "#/components/schemas/Large"}),
+            serde_json::json!({"schemas": {"Large": large}}),
+        )
+    } else {
+        (large, serde_json::json!({}))
+    };
+    serde_json::json!({
+        "openapi": "3.1.0",
+        "info": {"title": "Large", "version": "1"},
+        "servers": [{"url": "https://api.example.test"}],
+        "paths": {"/large": {"get": {
+            "operationId": "large",
+            "responses": {"200": {
+                "description": "OK",
+                "content": {"application/json": {"schema": schema}}
+            }}
+        }}},
+        "components": components
+    })
+    .to_string()
+}
+
 /// The diagnostic of an Operation over the discovery limit states its size
 /// and the limit, and the size grows by exactly what the Operation adds.
 #[test]
 fn an_operation_over_the_discovery_limit_reports_its_size_and_the_limit() {
     let sizes = |literals: usize| {
-        let values = (0..literals)
-            .map(|n| format!("{n:04}{}", "x".repeat(200)))
-            .collect::<Vec<_>>();
-        let document = serde_json::json!({
-            "openapi": "3.1.0",
-            "info": {"title": "Large", "version": "1"},
-            "servers": [{"url": "https://api.example.test"}],
-            "paths": {"/large": {"get": {
-                "operationId": "large",
-                "responses": {"200": {
-                    "description": "OK",
-                    "content": {"application/json": {"schema": {"type": "string", "enum": values}}}
-                }}
-            }}}
-        });
-        let prepared = ready(&document.to_string());
+        let prepared = ready(&large_enum_document(literals, false));
         let operation = &prepared.operations()[0];
         assert_eq!(operation.availability(), OperationAvailability::Unavailable);
         let diagnostic = operation.diagnostic().expect("too large");
@@ -1007,23 +1023,7 @@ fn an_operation_over_the_discovery_limit_reports_its_size_and_the_limit() {
 /// types it names, so a large shared type leaves the Operation available.
 #[test]
 fn a_shared_type_over_the_discovery_limit_leaves_its_operation_available() {
-    let values = (0..1_400)
-        .map(|n| format!("{n:04}{}", "x".repeat(200)))
-        .collect::<Vec<_>>();
-    let document = serde_json::json!({
-        "openapi": "3.1.0",
-        "info": {"title": "Large", "version": "1"},
-        "servers": [{"url": "https://api.example.test"}],
-        "paths": {"/large": {"get": {
-            "operationId": "large",
-            "responses": {"200": {
-                "description": "OK",
-                "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Large"}}}
-            }}
-        }}},
-        "components": {"schemas": {"Large": {"type": "string", "enum": values}}}
-    });
-    let prepared = ready(&document.to_string());
+    let prepared = ready(&large_enum_document(1_400, true));
     let operation = &prepared.operations()[0];
     assert_eq!(
         operation.availability(),
