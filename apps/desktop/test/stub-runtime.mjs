@@ -14,7 +14,7 @@
 //   stub.refuse  like fail
 //   stub.hang    like hang
 // GET /exit on the MCP listener makes a running stub exit 7. GET /launch answers
-// with the config.toml and the environment that the stub started with.
+// with the config.toml and the database URL variable that the stub started with.
 import { existsSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { join } from 'node:path'
@@ -55,9 +55,12 @@ const grpc = createServer((request, response) => {
 const mcp = createServer((request, response) => {
   if (request.url === '/readyz') response.writeHead(mode === 'hang' ? 503 : 200).end()
   else if (request.url === '/launch')
-    response
-      .writeHead(200, { 'content-type': 'application/json' })
-      .end(JSON.stringify({ config, env: process.env }))
+    response.writeHead(200, { 'content-type': 'application/json' }).end(
+      JSON.stringify({
+        config,
+        env: { CORAL_DESKTOP_DATABASE_URL: process.env.CORAL_DESKTOP_DATABASE_URL },
+      }),
+    )
   else if (request.url === '/exit') {
     response.writeHead(200).end()
     process.exit(7)

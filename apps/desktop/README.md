@@ -230,10 +230,13 @@ profile.
 
 The runtime keeps its state in `runtime/coral.db`, a SQLite file. To use a
 Postgres database instead, quit Coral and add a `database` section to
-`desktop.json`:
+`desktop.json`. Keep the sections that are already there:
 
 ```json
-"database": { "backend": "postgres", "url": "postgres://user:password@127.0.0.1:5432/coral" }
+{
+  "ports": { "mcp": 58100, "reef": 58101 },
+  "database": { "backend": "postgres", "url": "postgres://user:password@127.0.0.1:5432/coral" }
+}
 ```
 
 Desktop then writes `[database]` in `runtime/config.toml` and gives the runtime
