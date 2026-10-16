@@ -11,8 +11,8 @@ use coral_functions::SavedFunctionId;
 use coral_provider::ProviderId;
 use coral_workspace::{Principal, WorkspaceId};
 use sea_query::{
-    Alias, Asterisk, DeleteStatement, Expr, ExprTrait as _, Func, Iden, JoinType, OnConflict,
-    Query, SimpleExpr,
+    Alias, Asterisk, BinOper, Cond, DeleteStatement, Expr, ExprTrait as _, Func, Iden, JoinType,
+    OnConflict, Query, SimpleExpr,
 };
 
 use super::IndexError;
@@ -20,7 +20,7 @@ use crate::CallPath;
 
 /// The `search_entities` table and its columns, for sea-query. Each row is
 /// one Search Entity that indexed: an Operation or a Saved Function.
-#[derive(Iden)]
+#[derive(Clone, Copy, Iden)]
 enum SearchEntities {
     Table,
     WorkspaceId,
@@ -230,32 +230,30 @@ pub(super) async fn upsert_operation_rows(
 /// version, and no trigger fires for it. On Postgres the update also clears
 /// `doc_len`, so the length refresh counts that row again.
 ///
+/// Both databases compare with `IS DISTINCT FROM`, so two NULLs are equal.
+/// `SQLite` has it from 3.39; the bundled build is newer.
+///
 /// `columns` opens with the two key columns and ends with the stamp.
 fn changed_rows_only<const N: usize>(
     system: DatabaseSystem,
     columns: [SearchEntities; N],
 ) -> OnConflict {
-    let differs = match system {
-        DatabaseSystem::Postgres => "IS DISTINCT FROM",
-        DatabaseSystem::Sqlite => "IS NOT",
-    };
-    let table = SearchEntities::Table.unquoted();
     let changed = columns
-        .iter()
+        .into_iter()
         .skip(2)
         .filter(|column| !matches!(column, SearchEntities::IndexedAtUnixNanos))
-        .map(|column| {
-            let column = column.unquoted();
-            format!("{table}.{column} {differs} excluded.{column}")
-        })
-        .collect::<Vec<_>>()
-        .join(" OR ");
+        .fold(Cond::any(), |changed, column| {
+            changed.add(Expr::col((SearchEntities::Table, column)).binary(
+                BinOper::Custom("IS DISTINCT FROM"),
+                Expr::col((Alias::new("excluded"), column)),
+            ))
+        });
     let mut on_conflict = OnConflict::columns([SearchEntities::WorkspaceId, SearchEntities::DocId]);
     on_conflict.update_columns(columns.into_iter().skip(2));
     if system == DatabaseSystem::Postgres {
         on_conflict.value(SearchEntities::DocLen, Expr::null());
     }
-    on_conflict.action_and_where(Expr::cust(changed));
+    on_conflict.action_and_where(changed.into());
     on_conflict
 }
 
