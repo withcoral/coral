@@ -61,7 +61,7 @@ fn provider_states(
         .map(|active| {
             let state = outcomes
                 .get(active.generation_id())
-                .cloned()
+                .copied()
                 .unwrap_or(SearchIndexState::Pending);
             (active.provider_id().clone(), state)
         })

@@ -16,7 +16,7 @@ use sea_query::{
 };
 
 use super::IndexError;
-use crate::{CallPath, SearchIndexState};
+use crate::{CallPath, SearchIndexFailure, SearchIndexState};
 
 /// The `search_entities` table and its columns, for sea-query. Each row is
 /// one Search Entity that indexed: an Operation or a Saved Function.
@@ -65,6 +65,8 @@ enum SearchIndexStates {
     State,
     AttemptedAtUnixNanos,
     Error,
+    /// The kind of error a failed Generation attempt recorded.
+    ErrorKind,
 }
 
 /// The Postgres `search_stats` table and the columns the reconcile pass
@@ -188,7 +190,10 @@ impl OperationRow<'_> {
 /// The outcome an index attempt records.
 pub(super) enum AttemptState {
     Complete,
-    Failed { error: String },
+    Failed {
+        error: String,
+        failure: Option<SearchIndexFailure>,
+    },
 }
 
 /// One Generation's row in `search_index_states`.
@@ -328,9 +333,9 @@ pub(super) async fn write_generation_state(
     transaction: &mut Transaction<'_>,
     state: GenerationState<'_>,
 ) -> Result<(), Error> {
-    let (name, error) = match state.state {
-        AttemptState::Complete => (COMPLETE, None),
-        AttemptState::Failed { error } => (FAILED, Some(error)),
+    let (name, error, error_kind) = match state.state {
+        AttemptState::Complete => (COMPLETE, None, None),
+        AttemptState::Failed { error, failure } => (FAILED, Some(error), failure.map(failure_kind)),
     };
     transaction
         .execute(
@@ -346,6 +351,7 @@ pub(super) async fn write_generation_state(
                     SearchIndexStates::State,
                     SearchIndexStates::AttemptedAtUnixNanos,
                     SearchIndexStates::Error,
+                    SearchIndexStates::ErrorKind,
                 ])
                 .values_panic([
                     state.workspace_id.to_string().into(),
@@ -357,6 +363,7 @@ pub(super) async fn write_generation_state(
                     name.into(),
                     state.attempted_at_unix_nanos.into(),
                     error.into(),
+                    error_kind.into(),
                 ])
                 .on_conflict(
                     OnConflict::column(SearchIndexStates::TargetId)
@@ -365,6 +372,7 @@ pub(super) async fn write_generation_state(
                             SearchIndexStates::State,
                             SearchIndexStates::AttemptedAtUnixNanos,
                             SearchIndexStates::Error,
+                            SearchIndexStates::ErrorKind,
                         ])
                         .to_owned(),
                 )
@@ -702,7 +710,7 @@ pub(crate) async fn generation_outcomes_in_workspace(
                 .columns([
                     SearchIndexStates::ProviderGenerationId,
                     SearchIndexStates::State,
-                    SearchIndexStates::Error,
+                    SearchIndexStates::ErrorKind,
                 ])
                 .from(SearchIndexStates::Table)
                 .and_where(Expr::col(SearchIndexStates::WorkspaceId).eq(workspace_id.to_string()))
@@ -711,18 +719,44 @@ pub(crate) async fn generation_outcomes_in_workspace(
         )
         .await?;
     rows.into_iter()
-        .map(|(generation_id, state, error)| {
+        .map(|(generation_id, state, error_kind)| {
             let generation_id = ProviderGenerationId::parse(&generation_id)
                 .map_err(|_error| crate::Error::ServiceUnavailable)?;
-            // The state check pairs `failed`, and only `failed`, with an error.
-            let state = match (state.as_str(), error) {
+            let state = match (state.as_str(), error_kind.as_deref()) {
                 (COMPLETE, None) => SearchIndexState::Indexed,
-                (FAILED, Some(reason)) => SearchIndexState::Failed { reason },
+                (FAILED, kind) => SearchIndexState::Failed {
+                    reason: kind.and_then(parse_failure_kind),
+                },
                 _ => return Err(crate::Error::ServiceUnavailable),
             };
             Ok((generation_id, state))
         })
         .collect()
+}
+
+const fn failure_kind(failure: SearchIndexFailure) -> &'static str {
+    match failure {
+        SearchIndexFailure::InvalidEntry => "invalid_entry",
+        SearchIndexFailure::TimedOut => "timed_out",
+        SearchIndexFailure::Clock => "clock",
+        SearchIndexFailure::Corrupt => "corrupt",
+        SearchIndexFailure::Provider => "provider",
+        SearchIndexFailure::Database => "database",
+    }
+}
+
+/// `None` for a kind this Coral does not know, such as one a later Coral
+/// wrote: the kind is information only, so it never fails the read.
+fn parse_failure_kind(kind: &str) -> Option<SearchIndexFailure> {
+    Some(match kind {
+        "invalid_entry" => SearchIndexFailure::InvalidEntry,
+        "timed_out" => SearchIndexFailure::TimedOut,
+        "clock" => SearchIndexFailure::Clock,
+        "corrupt" => SearchIndexFailure::Corrupt,
+        "provider" => SearchIndexFailure::Provider,
+        "database" => SearchIndexFailure::Database,
+        _ => return None,
+    })
 }
 
 /// Reads a Workspace's Operation rows as `(provider id, Generation id, Call

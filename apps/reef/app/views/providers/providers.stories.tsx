@@ -340,7 +340,7 @@ export const TreeSearchIndexFailed: Story = {
   render: () => (
     <WorkspaceProvidersPage
       {...treeProps}
-      providers={[{ ...github, searchIndexFailure: 'database is locked' }, weather]}
+      providers={[{ ...github, searchIndexFailure: 'Indexing took too long.' }, weather]}
       selectedProvider="prov-github"
       selectedOperation="issues.create"
     />
@@ -361,12 +361,12 @@ export const TreeSearchIndexFailureReason: Story = {
   render: () => (
     <WorkspaceProvidersPage
       {...treeProps}
-      providers={[{ ...github, searchIndexFailure: 'database is locked' }, weather]}
+      providers={[{ ...github, searchIndexFailure: 'Indexing took too long.' }, weather]}
     />
   ),
   play: async ({ canvasElement }) => {
     await userEvent.hover(within(canvasElement).getByText('Not in search', { exact: true }))
-    await waitFor(() => expect(screen.getByText(/Reason: database is locked/)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/Reason: Indexing took too long\./)).toBeVisible())
   },
 }
 export const TreeAsMember: Story = {

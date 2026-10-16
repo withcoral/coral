@@ -4,6 +4,7 @@ import {
   CredentialRoute_Kind,
   ProviderBlocker,
   ProviderState,
+  SearchIndexFailureReason,
   SearchIndexState,
   type CredentialRoute,
   type OperationHints,
@@ -208,6 +209,22 @@ function enabled(state: ProviderState) {
   }
 }
 
+// Each kind of indexing error, never its message, which can hold internal detail.
+const searchIndexFailureReasons: Partial<Record<SearchIndexFailureReason, string>> = {
+  [SearchIndexFailureReason.INVALID_ENTRY]: 'Search cannot read one of the operations.',
+  [SearchIndexFailureReason.TIMED_OUT]: 'Indexing took too long.',
+  [SearchIndexFailureReason.CLOCK]: 'The server clock is wrong.',
+  [SearchIndexFailureReason.CORRUPT]: 'The search index is damaged.',
+  [SearchIndexFailureReason.PROVIDER]: "Search cannot read the provider's operations.",
+  [SearchIndexFailureReason.DATABASE]: 'Search cannot write to its database.',
+}
+
+/** Why search could not index the provider, or null when it did not fail. */
+export function searchIndexFailure(provider: Provider): string | null {
+  if (provider.searchIndexState !== SearchIndexState.FAILED) return null
+  return searchIndexFailureReasons[provider.searchIndexFailureReason] ?? 'No reason recorded.'
+}
+
 export async function providerView(
   api: ManagementApi,
   provider: Provider,
@@ -248,10 +265,7 @@ export async function providerView(
     account: accountLabel(provider.credentialRoute),
     blockers: provider.blockers.map(blockerLabel),
     personalAccountAction: personalAccountAction(provider, personalAccounts),
-    searchIndexFailure:
-      provider.searchIndexState === SearchIndexState.FAILED
-        ? provider.searchIndexFailure || 'No reason recorded.'
-        : null,
+    searchIndexFailure: searchIndexFailure(provider),
     readyCount: ops.filter((o) => o.available).length,
     totalCount: ops.length,
     etag: provider.etag,

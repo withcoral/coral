@@ -981,7 +981,7 @@ impl ExactAuthoringDescription {
 /// Whether search has indexed a Provider's active Generation. Search prepares
 /// a Generation's entries after the commit that activates it (ADR 0017), so
 /// the state lags publication and never gates a call.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchIndexState {
     /// No attempt has reached the Generation yet.
     Pending,
@@ -990,7 +990,26 @@ pub enum SearchIndexState {
     /// The last attempt failed; the Operations are missing from search until
     /// the reconcile task retries.
     Failed {
-        /// The error the attempt recorded.
-        reason: String,
+        /// The kind of error the attempt recorded; `None` when the row holds
+        /// no kind this Coral knows. Never the error's message, which can
+        /// hold internal detail.
+        reason: Option<SearchIndexFailure>,
     },
+}
+
+/// The kind of error that failed a Generation's indexing attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchIndexFailure {
+    /// An entry could not become a row, for example an invalid Call Path.
+    InvalidEntry,
+    /// The write did not finish within its limit.
+    TimedOut,
+    /// The system clock could not stamp the attempt.
+    Clock,
+    /// A search-owned row held a value its column does not admit.
+    Corrupt,
+    /// Reading or preparing the Provider's Generation failed.
+    Provider,
+    /// Database access failed.
+    Database,
 }

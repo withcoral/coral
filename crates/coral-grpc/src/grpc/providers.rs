@@ -88,17 +88,34 @@ pub(super) fn provider_view(
                 .into()
             })
             .collect(),
-        search_index_state: match &search_index {
+        search_index_state: match search_index {
             None => wire::SearchIndexState::Unspecified,
             Some(coral_search::SearchIndexState::Pending) => wire::SearchIndexState::Pending,
             Some(coral_search::SearchIndexState::Indexed) => wire::SearchIndexState::Indexed,
             Some(coral_search::SearchIndexState::Failed { .. }) => wire::SearchIndexState::Failed,
         }
         .into(),
-        search_index_failure: match search_index {
-            Some(coral_search::SearchIndexState::Failed { reason }) => reason,
-            _ => String::new(),
-        },
+        search_index_failure_reason: match search_index {
+            Some(coral_search::SearchIndexState::Failed {
+                reason: Some(reason),
+            }) => search_index_failure_reason(reason),
+            _ => wire::SearchIndexFailureReason::Unspecified,
+        }
+        .into(),
+    }
+}
+
+const fn search_index_failure_reason(
+    reason: coral_search::SearchIndexFailure,
+) -> wire::SearchIndexFailureReason {
+    use coral_search::SearchIndexFailure as Failure;
+    match reason {
+        Failure::InvalidEntry => wire::SearchIndexFailureReason::InvalidEntry,
+        Failure::TimedOut => wire::SearchIndexFailureReason::TimedOut,
+        Failure::Clock => wire::SearchIndexFailureReason::Clock,
+        Failure::Corrupt => wire::SearchIndexFailureReason::Corrupt,
+        Failure::Provider => wire::SearchIndexFailureReason::Provider,
+        Failure::Database => wire::SearchIndexFailureReason::Database,
     }
 }
 
@@ -830,7 +847,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
                     provider_view(
                         &inspection.provider,
                         &inspection.blockers,
-                        search_index.get(inspection.provider.id()).cloned(),
+                        search_index.get(inspection.provider.id()).copied(),
                     )
                 })
                 .collect(),
@@ -1027,7 +1044,7 @@ impl GrpcServices {
         Ok(provider_view(
             &inspection.provider,
             &inspection.blockers,
-            search_index.get(id).cloned(),
+            search_index.get(id).copied(),
         ))
     }
 }

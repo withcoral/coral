@@ -1,9 +1,14 @@
 import { expect, it } from 'vitest'
 import { create } from '@bufbuild/protobuf'
 import { Code, ConnectError } from '@connectrpc/connect'
-import { CredentialRoute_Kind, ProviderSchema } from '@/generated/coral/management/v1/provider_pb'
+import {
+  CredentialRoute_Kind,
+  ProviderSchema,
+  SearchIndexFailureReason,
+  SearchIndexState,
+} from '@/generated/coral/management/v1/provider_pb'
 import type { PersonalAccountState } from '@/views/accounts/types'
-import { personalAccountAction, providerFailure } from './providers.server'
+import { personalAccountAction, providerFailure, searchIndexFailure } from './providers.server'
 
 const name = 'workspaces/w/providers/p'
 
@@ -55,4 +60,26 @@ it.each([
   )
   expect(result.init?.status).toBe(409)
   expect(result.data).toEqual({ error: message, credential: null })
+})
+
+// Catches: a provider that search indexed showing a failure, or a failure
+// showing no reason because its kind is missing from the map.
+it.each([
+  [SearchIndexState.INDEXED, SearchIndexFailureReason.UNSPECIFIED, null],
+  [SearchIndexState.PENDING, SearchIndexFailureReason.UNSPECIFIED, null],
+  [SearchIndexState.UNSPECIFIED, SearchIndexFailureReason.UNSPECIFIED, null],
+  [SearchIndexState.FAILED, SearchIndexFailureReason.TIMED_OUT, 'Indexing took too long.'],
+  [
+    SearchIndexState.FAILED,
+    SearchIndexFailureReason.DATABASE,
+    'Search cannot write to its database.',
+  ],
+  [SearchIndexState.FAILED, SearchIndexFailureReason.UNSPECIFIED, 'No reason recorded.'],
+])('reads search index state %s with reason %s as %s', (state, reason, failure) => {
+  const provider = create(ProviderSchema, {
+    name,
+    searchIndexState: state,
+    searchIndexFailureReason: reason,
+  })
+  expect(searchIndexFailure(provider)).toBe(failure)
 })

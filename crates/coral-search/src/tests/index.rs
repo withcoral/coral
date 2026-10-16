@@ -1027,6 +1027,7 @@ async fn an_inert_index_writes_nothing_when_notified() {
 
 #[tokio::test]
 async fn search_index_states_follow_each_providers_active_generation() {
+    use crate::SearchIndexFailure;
     use crate::SearchIndexState::{Failed, Indexed, Pending};
 
     let upstream = MockServer::start().await;
@@ -1041,23 +1042,20 @@ async fn search_index_states_follow_each_providers_active_generation() {
     world.reject_complete_states().await;
     world.index.reconcile().await;
     world.allow_complete_states().await;
-    let failed = world.search_index_states(None).await;
-    for provider in [&world.tracer, &ledger] {
-        assert!(
-            matches!(failed.get(provider), Some(Failed { reason }) if reason.contains(INJECTED_FAULT)),
-            "the failure carries the attempt's error: {failed:?}"
-        );
-    }
-    let ledger_failed = failed.get(&ledger).expect("ledger state").clone();
+    let failed = || Failed {
+        reason: Some(SearchIndexFailure::Database),
+    };
+    assert_eq!(
+        world.search_index_states(None).await,
+        BTreeMap::from([(world.tracer.clone(), failed()), (ledger.clone(), failed())]),
+        "the injected fault is a database error"
+    );
 
     notify(&world.index, &world.stored_entries(&world.tracer).await);
     world.index.settled().await;
     assert_eq!(
         world.search_index_states(None).await,
-        BTreeMap::from([
-            (world.tracer.clone(), Indexed),
-            (ledger.clone(), ledger_failed)
-        ])
+        BTreeMap::from([(world.tracer.clone(), Indexed), (ledger.clone(), failed())])
     );
 
     world
@@ -1079,6 +1077,36 @@ async fn search_index_states_follow_each_providers_active_generation() {
         world.search_index_states(Some(&world.tracer)).await,
         BTreeMap::from([(world.tracer.clone(), Indexed)])
     );
+}
+
+#[tokio::test]
+async fn a_failure_without_a_known_kind_reports_no_reason() {
+    // A row written before Coral recorded the kind holds none; a row written
+    // by a later Coral may hold a kind this one does not know.
+    for kind in ["NULL", "'a_later_kind'"] {
+        let upstream = MockServer::start().await;
+        let world = World::publish_tracer(&upstream).await;
+        world.reject_complete_states().await;
+        world.index.reconcile().await;
+        world.allow_complete_states().await;
+        world
+            .modules
+            .fixture
+            .execute_fixture_sql(&format!(
+                "UPDATE search_index_states SET error_kind = {kind}"
+            ))
+            .await
+            .expect("replace the recorded kind");
+
+        assert_eq!(
+            world.search_index_states(None).await,
+            BTreeMap::from([(
+                world.tracer.clone(),
+                crate::SearchIndexState::Failed { reason: None }
+            )]),
+            "error_kind = {kind}"
+        );
+    }
 }
 
 #[tokio::test]

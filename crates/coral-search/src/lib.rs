@@ -84,7 +84,8 @@ pub use types::{
     SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX, SEARCH_EVIDENCE_PATH_MAX_BYTES,
     SEARCH_EVIDENCE_PATHS_MAX, SEARCH_PAGE_MAX_BYTES, SEARCH_QUERY_MAX_BYTES,
     SEARCH_RESULT_LIMIT_MAX, SavedFunctionAuthoringDescription, SearchCursor, SearchEvidence,
-    SearchHit, SearchIndexState, SearchInput, SearchLimit, SearchPage, SearchQuery, SearchRequest,
+    SearchHit, SearchIndexFailure, SearchIndexState, SearchInput, SearchLimit, SearchPage,
+    SearchQuery, SearchRequest,
 };
 
 /// How many ranked Search Entities each retriever hands the engine. The

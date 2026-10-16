@@ -111,6 +111,25 @@ enum SearchIndexState {
   SEARCH_INDEX_STATE_FAILED = 3;
 }
 
+// Why search could not index the active Generation: the kind of error, never
+// its message, which can hold internal detail.
+enum SearchIndexFailureReason {
+  // Not failed, not recognized by this client, or recorded before Coral kept the kind.
+  SEARCH_INDEX_FAILURE_REASON_UNSPECIFIED = 0;
+  // An Operation could not become a search entry.
+  SEARCH_INDEX_FAILURE_REASON_INVALID_ENTRY = 1;
+  // The write did not finish within its limit.
+  SEARCH_INDEX_FAILURE_REASON_TIMED_OUT = 2;
+  // The system clock could not stamp the attempt.
+  SEARCH_INDEX_FAILURE_REASON_CLOCK = 3;
+  // The search index holds a value it does not admit.
+  SEARCH_INDEX_FAILURE_REASON_CORRUPT = 4;
+  // Reading or preparing the Provider's Generation failed.
+  SEARCH_INDEX_FAILURE_REASON_PROVIDER = 5;
+  // Database access failed.
+  SEARCH_INDEX_FAILURE_REASON_DATABASE = 6;
+}
+
 // One Provider at workspaces/{workspace}/providers/{provider}.
 message Provider {
   // Canonical resource name containing the immutable Workspace and Provider IDs.
@@ -131,8 +150,8 @@ message Provider {
   repeated ProviderBlocker blockers = 9;
   // Search state of the active Generation, read apart from the blockers.
   SearchIndexState search_index_state = 10;
-  // Why the last attempt failed. Set only when search_index_state is FAILED.
-  string search_index_failure = 11;
+  // Why the last attempt failed. Unspecified unless search_index_state is FAILED.
+  SearchIndexFailureReason search_index_failure_reason = 11;
 }
 
 // Lists Providers owned by one authorized Workspace.
