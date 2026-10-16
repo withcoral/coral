@@ -13,8 +13,8 @@ pub use dispatch::{ReadyDispatch, UpstreamOutcome};
 pub use http::{HttpDecodeDiagnostic, HttpOutcome, HttpRedirect, HttpUpstream, ReadyHttpDispatch};
 pub use mcp::{
     AuthorizationDiscoveryError, AuthorizationRequirement, BearerChallenge, McpOutcome,
-    McpResources, McpUpstream, ReadyMcpDispatch, RegisteredClient, discover_authorization,
-    discover_mcp, register_client,
+    McpRejection, McpResources, McpUpstream, ReadyMcpDispatch, RegisteredClient,
+    discover_authorization, discover_mcp, register_client,
 };
 
 #[cfg(test)]
@@ -166,6 +166,10 @@ pub enum Error {
     /// The upstream protocol no longer matches the materialized recipe.
     #[error("upstream MCP protocol differs from the retained binding")]
     McpProtocolChanged,
+    /// The MCP peer answered the Operation request with a JSON-RPC error instead
+    /// of a result, so the request was received and refused rather than lost.
+    #[error("upstream MCP peer rejected the request: {0}")]
+    McpRejected(McpRejection),
     /// An MCP peer did not return the complete result required by this method.
     #[error("upstream MCP result is incomplete or unsupported")]
     McpResult,

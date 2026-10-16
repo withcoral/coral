@@ -54,7 +54,7 @@ impl SearchIndex {
     /// Builds the write side over initialized domain persistence whose search
     /// storage [`crate::prepare_storage`] has prepared. The reconcile task
     /// runs a pass every `reconcile_interval`, and a pass retries a failed
-    /// Generation once its failure is older than that.
+    /// Generation or Saved Function once its failure is older than that.
     #[must_use]
     pub fn new(database: Arc<Database>, reconcile_interval: Duration) -> Self {
         Self {

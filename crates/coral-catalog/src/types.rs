@@ -6,6 +6,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
+use crate::schema::SharedTypes;
 use crate::{
     Error, ExecutionBinding, McpDiscoverySnapshot, OpenApiDocument, OperationPathAssignment,
 };
@@ -926,12 +927,17 @@ fn unsafe_control(character: char) -> bool {
     character.is_control() && !character.is_whitespace()
 }
 
-pub(crate) fn operation_description_fits(
+/// The diagnostic that makes an Operation unavailable when its Authoring
+/// Description is over [`OPERATION_AUTHORING_DESCRIPTION_MAX_BYTES`].
+///
+/// The declaration counted is the Operation's own: the Provider's shared
+/// types it names are declared once for the Provider and not counted here.
+pub(crate) fn operation_description_too_large(
     relative_path: &str,
     provider_display_name: &str,
     typescript_declaration: &str,
     presentation: &OperationPresentation,
-) -> bool {
+) -> Option<CatalogDiagnostic> {
     let raw_bytes = [
         relative_path.len(),
         provider_display_name.len(),
@@ -943,7 +949,13 @@ pub(crate) fn operation_description_fits(
     ]
     .into_iter()
     .fold(8 * 1024usize, usize::saturating_add);
-    raw_bytes <= OPERATION_AUTHORING_DESCRIPTION_MAX_BYTES
+    (raw_bytes > OPERATION_AUTHORING_DESCRIPTION_MAX_BYTES).then(|| CatalogDiagnostic {
+        code: DiagnosticCode("operation_authoring_description_too_large".to_string()),
+        message: format!(
+            "the Operation Authoring Description is {raw_bytes} bytes, over the discovery limit of {OPERATION_AUTHORING_DESCRIPTION_MAX_BYTES} bytes"
+        ),
+        severity: CatalogDiagnosticSeverity::Error,
+    })
 }
 
 /// Minimal structurally available Operation identity used before search hydration.
@@ -1009,6 +1021,7 @@ pub struct MaterializedOperation {
     input_schema_json: String,
     output_schema_json: String,
     typescript_declaration: String,
+    type_references: Vec<String>,
     availability: OperationAvailability,
     diagnostics: Vec<CatalogDiagnostic>,
     diagnostics_json: String,
@@ -1031,6 +1044,7 @@ impl MaterializedOperation {
         input_schema_json: String,
         output_schema_json: String,
         typescript_declaration: String,
+        type_references: Vec<String>,
         diagnostics: Vec<CatalogDiagnostic>,
         diagnostics_json: String,
     ) -> Self {
@@ -1058,6 +1072,7 @@ impl MaterializedOperation {
             input_schema_json,
             output_schema_json,
             typescript_declaration,
+            type_references,
             availability,
             diagnostics,
             diagnostics_json,
@@ -1173,10 +1188,18 @@ impl MaterializedOperation {
         &self.output_schema_json
     }
 
-    /// Returns the self-contained TypeScript declaration.
+    /// Returns the Operation's own TypeScript declaration. It names the
+    /// Provider's shared types without declaring them; the complete
+    /// declaration comes from [`crate::PreparedProviderCatalog::authoring_declaration`]
+    /// or [`crate::authoring_declaration_in_transaction`].
     #[must_use]
     pub fn typescript_declaration(&self) -> &str {
         &self.typescript_declaration
+    }
+
+    /// Returns the shared types the Operation's own declaration names.
+    pub(crate) fn type_references(&self) -> &[String] {
+        &self.type_references
     }
 
     pub(crate) fn diagnostics_json(&self) -> &str {
@@ -1245,6 +1268,7 @@ impl ProviderGenerationFingerprint {
                 operation.input_schema_json.as_str(),
                 operation.output_schema_json.as_str(),
                 operation.typescript_declaration.as_str(),
+                &operation.type_references.join("\n"),
                 operation.availability.as_storage_str(),
                 operation.diagnostics_json.as_str(),
             ] {
@@ -1301,6 +1325,7 @@ pub struct PreparedProviderCatalog {
     schema_graph_json: String,
     typescript_view: String,
     operations: Vec<MaterializedOperation>,
+    shared_types: SharedTypes,
     configuration_json: Option<String>,
 }
 
@@ -1308,6 +1333,7 @@ pub(crate) struct PreparedCatalogParts {
     pub(crate) schema_graph_json: String,
     pub(crate) typescript_view: String,
     pub(crate) operations: Vec<MaterializedOperation>,
+    pub(crate) shared_types: SharedTypes,
 }
 
 impl PreparedProviderCatalog {
@@ -1318,11 +1344,17 @@ impl PreparedProviderCatalog {
         schema_graph: SchemaGraph,
         schema_graph_json: String,
         mut operations: Vec<MaterializedOperation>,
+        shared_types: SharedTypes,
     ) -> Self {
         operations.sort_by(|left, right| left.key().cmp(right.key()));
         let typescript_view = operations
             .iter()
             .flat_map(|operation| operation.typescript_declaration().lines())
+            .chain(
+                shared_types
+                    .iter()
+                    .map(|(_name, shared)| shared.declaration.as_str()),
+            )
             .map(str::to_string)
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -1334,6 +1366,7 @@ impl PreparedProviderCatalog {
             schema_graph_json,
             typescript_view,
             operations,
+            shared_types,
             configuration_json: None,
         }
     }
@@ -1434,6 +1467,16 @@ impl PreparedProviderCatalog {
         &self.operations
     }
 
+    /// Returns an Operation's complete self-contained declaration: its own
+    /// declaration and every shared type it reaches.
+    #[must_use]
+    pub fn authoring_declaration(&self, operation: &MaterializedOperation) -> String {
+        self.shared_types.compose(
+            &operation.typescript_declaration,
+            &operation.type_references,
+        )
+    }
+
     /// Returns current path assignments for regeneration carry-forward.
     #[must_use]
     pub fn operation_paths(&self) -> Vec<OperationPathAssignment> {
@@ -1456,6 +1499,7 @@ impl PreparedProviderCatalog {
             schema_graph_json: self.schema_graph_json,
             typescript_view: self.typescript_view,
             operations: self.operations,
+            shared_types: self.shared_types,
         }
     }
 }

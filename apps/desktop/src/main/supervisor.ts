@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
+import { readDatabase } from './database'
 import { PortInUseError, resolvePorts, type PersistedListener, type Ports } from './ports'
 import type { Launcher, ManagedProcess, ProcessExit } from './process'
 import {
@@ -208,10 +209,16 @@ export function createSupervisor(options: SupervisorOptions): Supervisor {
 
   async function startRuntime(ports: Ports, signal: AbortSignal) {
     const stateDir = join(options.dataDir, 'runtime')
-    await writeRuntimeConfig(stateDir, ports)
+    const database = await readDatabase(join(options.dataDir, 'desktop.json'))
+    await writeRuntimeConfig(stateDir, ports, database)
     const deadline = Date.now() + options.readinessTimeoutMs
     for (;;) {
-      const runtime = launch('runtime', options.runtime, runtimeEnv(stateDir, ports), signal)
+      const runtime = launch(
+        'runtime',
+        options.runtime,
+        runtimeEnv(stateDir, ports, database),
+        signal,
+      )
       try {
         // MCP readiness and gRPC `coral.readiness` report the same engine
         // check. Reef's own readiness probes gRPC, so its wait covers that

@@ -3,7 +3,7 @@ import { createTheme } from '@/wax/css'
 import { utils } from '@/styles/utils'
 import { paletteDark } from '@/wax/base/palette/palette-dark'
 import { fontFamily } from '@/wax/theme/font.css'
-import { staticUtilities, theme } from '@/wax/theme/theme.css'
+import { theme } from '@/wax/theme/theme.css'
 
 export const darkThemeValues = {
   avatarFallback: {
@@ -197,7 +197,8 @@ export const darkThemeValues = {
     },
   },
   sidebar: {
-    badge: { background: paletteDark.Red['08'], content: staticUtilities.white },
+    // The primary button's colors: a pending action is your next step, not an error.
+    badge: { background: paletteDark.CoralGreen['09'], content: paletteDark.CoralGreen['02'] },
     button: {
       hover: paletteDark.GrayAlpha['02'],
       selected: paletteDark.GrayAlpha['03'],

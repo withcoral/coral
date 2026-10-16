@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use crate::schema::{
-    Direction, ProjectionOptions, TypeScriptNames, TypeScriptProjection, TypeScriptProjector,
-    render_callable_declaration,
+    Direction, ProjectionOptions, SharedTypes, TypeScriptNames, TypeScriptProjection,
+    TypeScriptProjector, render_callable_declaration,
 };
 use crate::{CatalogDiagnostic, HttpExecutionBinding, HttpResponseStatus, SchemaGraph, SchemaId};
 
@@ -99,6 +99,7 @@ pub(super) fn project_typescript(
     binding: &HttpExecutionBinding,
     graph: &SchemaGraph,
     type_names: &TypeScriptNames,
+    shared: &mut SharedTypes,
 ) -> Result<TypeScriptProjection, CatalogDiagnostic> {
     let mut projector = TypeScriptProjector::new(graph, type_names, ProjectionOptions::openapi());
     let input = projector.project(input_schema, Direction::Input)?;
@@ -140,10 +141,10 @@ pub(super) fn project_typescript(
     } else {
         String::new()
     };
-    let mut declarations = projector.render_named_declarations()?;
+    let type_references = projector.share_named_declarations(shared)?;
+    let mut declarations = Vec::new();
     if projector.uses_named_scalar("BinaryValue") {
-        declarations.insert(
-            0,
+        declarations.push(
             "type BinaryValue = { readonly _tag: \"BinaryValue\"; readonly encoding: \"base64\"; readonly data: string; readonly mimeType: string; readonly byteLength: number; readonly name?: string };".to_string(),
         );
     }
@@ -155,6 +156,7 @@ pub(super) fn project_typescript(
     )?);
     Ok(TypeScriptProjection {
         declaration: declarations.join("\n"),
+        type_references,
         input_declared,
         diagnostics: projector.into_diagnostics(),
     })
@@ -169,8 +171,15 @@ pub(crate) fn declares_input(
     graph: &SchemaGraph,
     type_names: &TypeScriptNames,
 ) -> Result<bool, CatalogDiagnostic> {
-    project_typescript(relative_path, input_schema, binding, graph, type_names)
-        .map(|projection| projection.input_declared)
+    project_typescript(
+        relative_path,
+        input_schema,
+        binding,
+        graph,
+        type_names,
+        &mut SharedTypes::default(),
+    )
+    .map(|projection| projection.input_declared)
 }
 
 fn projected_status(status: HttpResponseStatus) -> Result<String, CatalogDiagnostic> {
