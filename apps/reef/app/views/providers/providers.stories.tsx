@@ -534,6 +534,54 @@ export const ConfigurationOAuthFieldErrors: Story = {
   ),
 }
 
+// Microsoft requests many scopes that share a URL prefix on each of two hosts.
+export const ConfigurationOAuthManyScopes: Story = {
+  render: () => (
+    <StepperPage
+      {...stepperWorkspace}
+      setup={{
+        ...configurationSetup,
+        configuration: {
+          ...configurationSetup.configuration!,
+          values: {
+            ...configurationSetup.configuration!.values,
+            authentication: 'oauth',
+            authorizationUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+            tokenUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+            scopes: [
+              'offline_access',
+              ...[
+                'User.Read',
+                'User.ReadBasic.All',
+                'People.Read',
+                'Mail.ReadWrite',
+                'Mail.ReadWrite.Shared',
+                'Mail.Send',
+                'Mail.Send.Shared',
+                'MailboxSettings.ReadWrite',
+                'Calendars.ReadWrite',
+                'Calendars.ReadWrite.Shared',
+                'Contacts.ReadWrite',
+                'Files.ReadWrite.All',
+                'Sites.ReadWrite.All',
+                'Sites.Manage.All',
+                'Tasks.ReadWrite',
+                'Chat.Create',
+                'Chat.ReadWrite',
+                'ChatMessage.Send',
+                'Team.ReadBasic.All',
+                'Channel.ReadBasic.All',
+              ].map((scope) => `https://graph.microsoft.com/${scope}`),
+              'https://outlook.office.com/IMAP.AccessAsUser.All',
+              'https://outlook.office.com/SMTP.Send',
+            ],
+          },
+        },
+      }}
+    />
+  ),
+}
+
 export const ConfigurationRejectedOAuthDraft: Story = {
   render: () => (
     <StepperPage
@@ -676,7 +724,7 @@ export const TreeBulkPending: Story = {
     // The menu renders in a portal outside the canvas.
     const body = within(canvasElement.ownerDocument.body)
     await userEvent.click(await body.findByRole('menuitemradio', { name: 'Disabled' }))
-    await userEvent.click(within(bulk).getByRole('button', { name: /^Apply to/ }))
+    await userEvent.click(within(bulk).getByRole('button', { name: 'Apply' }))
     await expect(canvas.getByRole('checkbox', { name: 'Select GitHub operations' })).toBeDisabled()
   },
 }

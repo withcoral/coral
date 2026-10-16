@@ -40,6 +40,7 @@ import {
   operationCount,
   serverLabel,
 } from './configuration-details'
+import { ScopesField } from './scopes-field'
 import { ServerField } from './server-field'
 import { serverProblem, type ServerGroup } from './server-choices'
 import { StepFrame } from './step-frame'
@@ -618,61 +619,6 @@ export function ConfigurationStep({
         )}
       </Form>
     </StepFrame>
-  )
-}
-
-/** The scopes Coral requests, one chip each, and the separator Coral sends them with. */
-function ScopesField({
-  value,
-  onChange,
-  suggestions,
-  error,
-  format,
-  onFormatChange,
-  formatError,
-}: {
-  value: string[]
-  onChange: (scopes: string[]) => void
-  suggestions: string[]
-  error?: string
-  format: 'space' | 'comma'
-  onFormatChange: (format: 'space' | 'comma') => void
-  formatError?: string
-}) {
-  const id = useId()
-  return (
-    <div className={styles.scopesRow}>
-      <div className={styles.scopesInput}>
-        <Typography.BodySmallStrong as="label" htmlFor={id}>
-          Requested scopes
-        </Typography.BodySmallStrong>
-        <Inputs.TokenInput
-          id={id}
-          value={value}
-          onChange={onChange}
-          suggestions={suggestions}
-          placeholder="Add a scope"
-          invalid={Boolean(error)}
-          ariaDescribedBy={error ? `${id}-error` : undefined}
-        />
-        {error && <FieldError id={`${id}-error`} message={error} />}
-      </div>
-      <div className={styles.scopesFormat}>
-        <Typography.BodySmallStrong as="span">Send scopes separated by</Typography.BodySmallStrong>
-        <div className={styles.inlineControl}>
-          <Picker
-            ariaLabel="Send scopes separated by"
-            value={format}
-            options={[
-              { value: 'space', label: 'Spaces' },
-              { value: 'comma', label: 'Commas' },
-            ]}
-            onChange={(next) => onFormatChange(next as 'space' | 'comma')}
-          />
-        </div>
-        <FieldError message={formatError} />
-      </div>
-    </div>
   )
 }
 

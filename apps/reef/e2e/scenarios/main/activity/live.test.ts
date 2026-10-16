@@ -746,7 +746,7 @@ test('Live authority loss conceals Agent history and exact snapshots without gra
             },
             updateMask: { paths: ['role'] },
           })
-          await page.getByText('You cannot inspect this agent.', { exact: true }).waitFor()
+          await page.getByText('You cannot inspect this agent', { exact: true }).waitFor()
           await expect
             .poll(() => page.locator('pre').filter({ hasText: 'live-private-source' }).count())
             .toBe(0)
