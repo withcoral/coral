@@ -659,6 +659,47 @@ async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
 }
 
 #[tokio::test]
+async fn a_failed_preparation_after_a_notice_leaves_a_failed_state() {
+    // Without the state, the Provider reads as pending until a reconcile
+    // pass fails the same way and records it.
+    for by_generation in [true, false] {
+        let upstream = MockServer::start().await;
+        let world = World::publish_tracer(&upstream).await;
+        let generation = world
+            .stored_entries(&world.tracer)
+            .await
+            .generation_id()
+            .clone();
+        world
+            .modules
+            .fixture
+            .execute_fixture_sql("ALTER TABLE materialized_operations RENAME TO hidden_operations")
+            .await
+            .expect("hide the catalog's Operations");
+
+        if by_generation {
+            world.index.index_generation(
+                world.workspace.clone(),
+                world.tracer.clone(),
+                generation.clone(),
+            );
+        } else {
+            world
+                .index
+                .index_active_generation(world.workspace.clone(), world.tracer.clone());
+        }
+        world.index.settled().await;
+
+        let [state] = world.states().await.try_into().expect("one state row");
+        assert_eq!(
+            (state.generation_id.as_str(), state.state.as_str()),
+            (generation.to_string().as_str(), "failed"),
+            "by generation: {by_generation}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_no_op_regeneration_keeps_the_indexed_generation_and_a_rewrite_leaves_the_same_rows() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
