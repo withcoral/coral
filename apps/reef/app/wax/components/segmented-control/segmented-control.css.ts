@@ -66,6 +66,11 @@ export const segment = recipe({
       variants: { icon: true, size: 'small' },
       style: { minHeight: 24, minWidth: 26 },
     },
+    // A chosen icon repeats down a table, so it recedes; the raised chip shows the choice.
+    {
+      variants: { checked: true, icon: true },
+      style: { color: theme.content.muted },
+    },
     // A read-only control still shows its choice.
     {
       variants: { checked: true },

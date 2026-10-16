@@ -12,8 +12,9 @@ export const layout = style({
   width: '100%',
   '@media': { '(max-width: 760px)': { gridTemplateColumns: '1fr' } },
 })
+// Beside the content, the content's own border divides the two, so the rail
+// draws none: two rules a few pixels apart read as a mistake.
 export const rail = style({
-  borderInlineEnd: `1px solid ${theme.stroke.secondary}`,
   display: 'flex',
   flexDirection: 'column',
   gap: 12,
@@ -23,7 +24,6 @@ export const rail = style({
   '@media': {
     '(max-width: 760px)': {
       borderBlockEnd: `1px solid ${theme.stroke.secondary}`,
-      borderInlineEnd: 0,
       paddingBlockEnd: 16,
       paddingInlineEnd: 0,
     },
@@ -78,19 +78,20 @@ export const railName = style({
   textAlign: 'start',
   textOverflow: 'ellipsis',
 })
+// Metadata, so it reads as quietly as the table's own counts.
 export const railCount = style({
-  alignItems: 'center',
-  background: theme.surface.onMainContentSubtle,
-  borderRadius: 999,
-  color: theme.content.secondary,
-  display: 'inline-flex',
+  color: theme.content.tertiary,
   flexShrink: 0,
-  justifyContent: 'center',
+  fontVariantNumeric: 'tabular-nums',
   marginInlineStart: 'auto',
-  minWidth: 24,
-  paddingBlock: 2,
-  paddingInline: 7,
-  ...theme.typography.bodySmallStrong,
+  ...theme.typography.bodySmall,
+})
+export const railTrailing = style({ alignItems: 'center', display: 'flex', flexShrink: 0 })
+// The controls show on the current entry and while an entry has the pointer or
+// keyboard focus. Hidden, they keep their room, so a name does not reflow on
+// hover, and Tab still reaches them.
+globalStyle(`${railItem}:not(:hover, :has(:focus-visible), [data-current]) ${railTrailing}`, {
+  opacity: 0,
 })
 export const main = style({
   display: 'flex',

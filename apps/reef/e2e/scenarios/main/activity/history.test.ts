@@ -456,7 +456,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           await api.agents.deleteAgent({ name, etag: issued.agent!.etag })
           await page.reload()
           await page
-            .getByText('This agent cannot start new work. Inspect its retained activity.', {
+            .getByText('This agent cannot start new work', {
               exact: true,
             })
             .waitFor()

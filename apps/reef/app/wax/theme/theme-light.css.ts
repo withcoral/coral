@@ -102,6 +102,7 @@ export const lightThemeValues = {
     success: paletteLight.GreenAlpha['11'],
     successBackground: paletteLight.GreenAlpha['03'],
     tertiary: paletteLight.GrayAlpha['09'],
+    muted: paletteLight.GrayAlpha['11'],
     warning: paletteLight.AmberAlpha['11'],
     warningBackground: paletteLight.AmberAlpha['03'],
   },
@@ -208,6 +209,7 @@ export const lightThemeValues = {
     },
   },
   stroke: {
+    control: paletteLight.GrayAlpha['09'],
     floating: paletteLight.GrayAlpha['03'],
     focused: paletteLight.CoralGreen['10'],
     mainContent: paletteLight.GrayAlpha['04'],

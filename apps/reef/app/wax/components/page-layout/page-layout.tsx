@@ -11,6 +11,11 @@ export interface PageLayoutProps {
   header?: ReactNode
   /** Navigation in a separate top bar above the scrolling content. The current segment titles the page. */
   breadcrumbs?: Segment[]
+  /**
+   * The page's h1 in place of the current breadcrumb, for a title that
+   * carries its own control, such as a name to rename.
+   */
+  title?: ReactNode
   /** Page-level actions at the end of the top bar. */
   actions?: ReactNode
   /** Standard pages are centered; wide pages fill the width. Split pages bound their own scrolling. */
@@ -32,6 +37,7 @@ export function PageLayout({
   children,
   header,
   breadcrumbs,
+  title,
   actions,
   variant = 'standard',
   bounded = false,
@@ -44,7 +50,9 @@ export function PageLayout({
   )
   return (
     <div className={styles.container}>
-      {breadcrumbs && <TopBar breadcrumbs={breadcrumbs} actions={actions} />}
+      {(breadcrumbs || title) && (
+        <TopBar breadcrumbs={breadcrumbs ?? []} title={title} actions={actions} />
+      )}
       {variant === 'split' || bounded ? (
         <div className={styles.scrollContainer}>{frame}</div>
       ) : (
@@ -69,10 +77,18 @@ export function PageLayout({
  * Coral's navigation bar keeps breadcrumbs separate from page content. Pages
  * have no other title: the current segment is the page's h1.
  */
-export function TopBar({ breadcrumbs, actions }: { breadcrumbs: Segment[]; actions?: ReactNode }) {
+export function TopBar({
+  breadcrumbs,
+  title,
+  actions,
+}: {
+  breadcrumbs: Segment[]
+  title?: ReactNode
+  actions?: ReactNode
+}) {
   return (
     <header className={styles.topBar}>
-      <Breadcrumbs items={breadcrumbs} heading />
+      <Breadcrumbs items={breadcrumbs} heading current={title} />
       {actions && <div className={styles.topBarActions}>{actions}</div>}
     </header>
   )

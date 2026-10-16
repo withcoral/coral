@@ -4,6 +4,11 @@ import { theme } from '@/wax/theme/theme.css'
 
 import { breakpoints } from '@/styles/breakpoints'
 
+import { TOP_BAR_HEIGHT_PX } from './constants'
+
+// A breadcrumb link's height: the one row the bar holds.
+const LINK_HEIGHT_PX = 36
+
 export const container = style({
   display: 'flex',
   flexDirection: 'column',
@@ -19,11 +24,19 @@ export const topBar = style({
   flexShrink: 0,
   gap: 24,
   justifyContent: 'space-between',
-  // Keep single-segment and linked breadcrumbs at the same height: one row of links.
-  minHeight: 44,
+  // Level with the sidebar's masthead beside it: the breadcrumbs centre on the
+  // brand, with the same room under them as above. The bar stays one row of
+  // links tall, so single-segment and linked breadcrumbs match.
+  minHeight: TOP_BAR_HEIGHT_PX,
+  paddingBlock: (TOP_BAR_HEIGHT_PX - LINK_HEIGHT_PX) / 2,
   paddingInline: 24,
   '@media': {
-    [`screen and (max-width: ${breakpoints.mobile})`]: { gap: 12, paddingInline: 16 },
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      gap: 12,
+      minHeight: 44,
+      paddingBlock: 0,
+      paddingInline: 16,
+    },
   },
 })
 
@@ -44,6 +57,8 @@ export const frame = recipe({
     width: '100%',
     '@media': {
       [`screen and (max-width: ${breakpoints.mobile})`]: { padding: '24px 16px', gap: 24 },
+      // A short window keeps its height for the content under the tall top bar.
+      'screen and (max-height: 480px)': { gap: 16, paddingBlock: 16 },
     },
   },
   variants: {
