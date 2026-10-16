@@ -40,3 +40,7 @@ apps/reef/recipes/*/openapi.yaml linguist-generated
 
 # Provider logos imported and fitted from provider artwork.
 apps/reef/recipes/*/logo*.svg linguist-generated
+
+# GitHub's OpenAPI document, copied verbatim at a pinned commit for the search
+# smoke test.
+crates/coral-administration/src/tests/search_eval/github.openapi.yaml linguist-generated

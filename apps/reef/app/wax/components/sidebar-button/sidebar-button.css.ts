@@ -177,7 +177,7 @@ export const textStyles = recipe({
         },
       },
       default: {
-        color: theme.content.secondary,
+        color: theme.content.muted,
         selectors: {
           [`.${activeClass} &`]: {
             color: theme.content.primary,

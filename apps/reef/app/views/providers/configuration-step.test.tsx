@@ -485,6 +485,74 @@ it('submits recipe MCP scopes and their format while keeping discovered endpoint
   expect(html).toContain('Requested scopes')
 })
 
+// Catches: long URL scopes, such as Microsoft Graph's, that all truncate to
+// the same visible prefix and cannot be told apart, and a bare name that looks
+// like a shortened one.
+const graph = 'https://graph.example.test/'
+it.each([
+  [
+    'a shared URL prefix',
+    ['offline_access', `${graph}Mail.Send`, `${graph}User.Read`],
+    ['offline_access', '…/Mail.Send', '…/User.Read'],
+    `Shared prefix: ${graph}`,
+  ],
+  [
+    'a bare name beside URL scopes',
+    [`${graph}Mail.Send`, `${graph}User.Read`, 'Mail.Read'],
+    ['…/Mail.Send', '…/User.Read', 'Mail.Read'],
+    `Shared prefix: ${graph}`,
+  ],
+  [
+    'a deeper shared path',
+    ['https://api.example.test/auth/read', 'https://api.example.test/auth/write'],
+    ['…/read', '…/write'],
+    'Shared prefix: https://api.example.test/auth/',
+  ],
+  [
+    'an unrelated host beside URL scopes',
+    [`${graph}Mail.Send`, `${graph}User.Read`, 'https://mail.example.test/IMAP'],
+    ['…/Mail.Send', '…/User.Read', 'https://mail.example.test/IMAP'],
+    `Shared prefix: ${graph}`,
+  ],
+  [
+    'two hosts that each share a prefix',
+    [
+      `${graph}User.Read`,
+      `${graph}Mail.Send`,
+      'https://mail.example.test/User.Read',
+      'https://mail.example.test/IMAP',
+    ],
+    ['…/User.Read', '…/Mail.Send', '…/User.Read', '…/IMAP'],
+    `Shared prefixes: ${graph}, https://mail.example.test/`,
+  ],
+  [
+    'one scope on each host',
+    ['https://a.example.test/read', 'https://b.example.test/write'],
+    ['https://a.example.test/read', 'https://b.example.test/write'],
+    undefined,
+  ],
+])('scope chips with %s show %j', (_case, scopes, labels, note) => {
+  const container = document.createElement('div')
+  container.innerHTML = render(review, {
+    id: 'url_scopes',
+    inputs: [],
+    suggestedMethods: ['oauth'],
+    values: { authentication: 'oauth', scopes },
+  })
+  const chips = [...container.querySelectorAll('button[aria-label^="Remove "]')].map(
+    (remove) => remove.parentElement?.textContent,
+  )
+  expect(chips).toEqual(labels)
+  // The input names the prefix, so a screen reader hears what "…/" stands for.
+  const described = container
+    .querySelector('input[role="combobox"]')
+    ?.getAttribute('aria-describedby')
+  expect(described ? container.querySelector(`#${CSS.escape(described)}`)?.textContent : null).toBe(
+    note ?? null,
+  )
+  expect(submitted(container.innerHTML)).toMatchObject({ scopes })
+})
+
 it('shows and submits recipe service headers without requiring credential authentication', () => {
   const html = render(
     { ...review, authenticationMethods: ['none'] },
