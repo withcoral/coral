@@ -23,7 +23,7 @@ import type {
 } from '@/views/providers/types'
 import type { PersonalAccountState } from '@/views/accounts/types'
 import { accountLabels } from '@/views/providers/account-labels'
-import { operationCallPath } from './call-root'
+import { isBuiltinProvider, operationCallPath } from './call-root'
 import { privateHeaders, type ManagementApi } from './management.server'
 import { OPENAPI_DOCUMENT_SIZE_LABEL } from './provider-input-limits'
 
@@ -245,6 +245,7 @@ export async function providerView(
     id,
     displayName: provider.displayName,
     namespace: provider.namespace,
+    builtin: isBuiltinProvider(provider.callRoot),
     account: accountLabel(provider.credentialRoute),
     blockers: provider.blockers.map(blockerLabel),
     personalAccountAction: personalAccountAction(provider, personalAccounts),
@@ -285,6 +286,7 @@ export function providerSettingsView(
     displayName: provider.displayName,
     namespace: provider.namespace,
     callRoot: provider.callRoot,
+    builtin: isBuiltinProvider(provider.callRoot),
     etag: provider.etag,
     path: providerPath(workspacePath, provider.name),
     enabled: enabled(provider.state),

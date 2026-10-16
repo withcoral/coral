@@ -26,6 +26,7 @@ const provider: ProviderSettingsView = {
   displayName: 'GitLab.com',
   namespace: 'gitlab',
   callRoot: 'coral.providers.gitlab',
+  builtin: false,
   etag: 'etag-1',
   path: '/workspaces/demo/providers/00000000-0000-4000-8000-000000000001',
   account: 'caller',
@@ -361,6 +362,25 @@ test('a disabled provider is tagged beside its name', async () => {
   act(() => roots.pop()!.unmount())
   await render()
   expect(document.querySelector('[data-provider-state="disabled"]')).toBeNull()
+})
+
+// Catches: an owner offered a change Coral refuses for the Built-in Provider.
+test('the built-in provider offers no change', async () => {
+  await render({
+    source: undefined,
+    provider: {
+      builtin: true,
+      displayName: 'Coral',
+      namespace: '',
+      callRoot: 'coral.workspace',
+      account: 'none',
+    },
+  })
+  expect(byLabel('Edit provider name')).toBeNull()
+  expect(byLabel('Source')).toBeNull()
+  expect(document.querySelector('[aria-label="Configuration"]')).toBeNull()
+  for (const name of ['Change account setting', 'Remove provider'])
+    expect(named('button', name)).toBeUndefined()
 })
 
 // Catches: a provider with no callable operation looking ready in settings.

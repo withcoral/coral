@@ -43,6 +43,7 @@ service ProviderService {
   // Inspects one exact Workspace Provider.
   rpc GetProvider(GetProviderRequest) returns (Provider);
   // Reads source provenance for the current Workspace Owner only.
+  // The Built-in Provider has no source and fails with FailedPrecondition.
   rpc GetProviderSource(GetProviderSourceRequest) returns (ProviderSource);
   // Changes display metadata without changing identity or namespace.
   rpc UpdateProvider(UpdateProviderRequest) returns (Provider);

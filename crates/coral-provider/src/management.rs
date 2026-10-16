@@ -1,5 +1,5 @@
 //! Current Workspace authority and exact Provider inspection.
-use crate::{Error, Provider, ProviderId, ProviderModule, repository};
+use crate::{Error, Provider, ProviderCallRoot, ProviderId, ProviderModule, repository};
 use coral_catalog::{OperationKey, OperationSummary};
 use coral_workspace::AuthenticatedUser;
 use coral_workspace::WorkspaceAction;
@@ -18,7 +18,9 @@ impl ProviderModule {
     /// Inspects the saved source for one exact Provider under current Owner authority.
     ///
     /// # Errors
-    /// Returns current Owner authority, missing Provider, or persistence failures.
+    /// Returns current Owner authority, missing Provider, or persistence failures, and
+    /// [`Error::BuiltinProviderManaged`] for the Built-in Provider, whose catalog Coral
+    /// defines without a source.
     pub async fn inspect_provider_source(
         &self,
         actor: &AuthenticatedUser,
@@ -31,6 +33,10 @@ impl ProviderModule {
         let stored = repository::provider_in_transaction(&mut tx, workspace, provider)
             .await?
             .ok_or(Error::ProviderNotFound)?;
+        match stored.provider.call_root() {
+            ProviderCallRoot::Owner(_) => {}
+            ProviderCallRoot::Builtin => return Err(Error::BuiltinProviderManaged),
+        }
         let kind =
             coral_catalog::setup_input_kind_in_transaction(&mut tx, &stored.generation_id).await?;
         tx.rollback().await?;

@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { expect, test } from 'vitest'
 import { renderRoute } from '@/test-support/route'
 
-import { provider, workspaceView } from './fixtures'
+import { builtinProvider, provider, workspaceView } from './fixtures'
 import type { OperationView, ProviderView } from './types'
 import { WorkspaceProvidersPage } from './workspace-providers-page'
 
@@ -182,6 +182,22 @@ test('operation groups sort alphabetically without regard to case', () => {
     boxes.indexOf(checkbox(`Select ${group} operations`)),
   )
   expect(positions).toEqual(positions.toSorted((a, b) => a - b))
+})
+
+// Catches: Coral's Built-in Provider sorted among the providers you add,
+// instead of leading the rail and the table, or linking to settings it does
+// not have.
+test('the built-in provider leads the providers you add and has no settings', () => {
+  const coral = builtinProvider('00000000-0000-4000-8000-000000000003')
+  const arcade = provider('00000000-0000-4000-8000-000000000004', 'Arcade', 'arcade')
+  renderPage({ providers: [weather, arcade, coral, github] })
+  const gears = screen.getAllByRole('link', { name: / settings$/ })
+  expect(gears.map((gear) => gear.getAttribute('aria-label'))).toEqual([
+    'Arcade settings',
+    'GitHub settings',
+    'Weather settings',
+  ])
+  expect(providerGroups()).toEqual(['Coral', 'Arcade', 'GitHub', 'Weather'])
 })
 
 // Catches: a policy form naming the provider's installation instead of its

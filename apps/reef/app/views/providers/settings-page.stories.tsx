@@ -11,6 +11,7 @@ const provider: ProviderSettingsView = {
   displayName: 'GitLab.com',
   namespace: 'gitlab',
   callRoot: 'coral.providers.gitlab',
+  builtin: false,
   etag: 'provider-etag',
   path: '/workspaces/demo/providers/00000000-0000-4000-8000-000000000001',
   account: 'caller',
@@ -173,4 +174,19 @@ export const NoOperationsReady: Story = {
 
 export const YourAccountUnreadable: Story = {
   args: { provider: { ...provider, connection: 'unknown' } },
+}
+
+// Coral manages the Built-in Provider: its settings offer no change.
+export const BuiltinProvider: Story = {
+  args: {
+    source: undefined,
+    provider: {
+      ...provider,
+      displayName: 'Coral',
+      namespace: '',
+      callRoot: 'coral.workspace',
+      builtin: true,
+      account: 'none',
+    },
+  },
 }
