@@ -20,7 +20,13 @@ pub async fn delete_workspace_provider_current_in_transaction(
 ) -> Result<(), Error> {
     let owner = workspace.clone();
     for id in crate::repository::unconsumed_setups_for_provider(tx, workspace, provider).await? {
-        super::setup_oauth::cancel_in_transaction(tx, context, workspace, &id, authority).await?;
+        super::setup_oauth::end_in_transaction(
+            tx,
+            super::setup_oauth::SetupActor::User { context, authority },
+            workspace,
+            &id,
+        )
+        .await?;
     }
     for id in repository::workspace_provider_open_authorizations(tx, workspace, provider).await? {
         let mut row = repository::load_authorization(tx, &owner, id).await?;

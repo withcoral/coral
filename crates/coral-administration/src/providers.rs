@@ -15,7 +15,7 @@ use coral_provider::{
     Error, MaterializedPublication, PreparedPublication, Provider, ProviderDisplayName, ProviderId,
     ProviderModule, ProviderPublication, ProviderRegenerationPublication,
     ProviderRegenerationRequest, PublicationEvidence, Published,
-    WorkspaceProviderPublicationRequest,
+    WorkspaceProviderPublicationRequest, WorkspaceProviderPublisher,
 };
 use coral_search::SearchIndex;
 use coral_workspace::{ChangeContext, WorkspaceId};
@@ -159,5 +159,18 @@ impl ProviderWorkflow {
             }
         }
         Ok(publication)
+    }
+}
+
+/// A Built-in Operation publishes through this workflow, so its Publication
+/// and its search notification are the ones Reef's gives.
+#[async_trait::async_trait]
+impl WorkspaceProviderPublisher for ProviderWorkflow {
+    async fn publish_workspace_provider(
+        &self,
+        context: &ChangeContext,
+        request: WorkspaceProviderPublicationRequest,
+    ) -> Result<ProviderPublication, Error> {
+        Self::publish_workspace_provider(self, context, request).await
     }
 }

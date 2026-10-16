@@ -10,6 +10,7 @@ publish = false
 workspace = true
 
 [dependencies]
+async-trait.workspace = true
 coral-db.workspace = true
 coral-workspace.workspace = true
 coral-provider.workspace = true

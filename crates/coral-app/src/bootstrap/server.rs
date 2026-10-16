@@ -676,6 +676,16 @@ pub(crate) async fn start_server(
             None => accounts,
         }
     });
+    // State initialization already ran the search checks and stream. The
+    // reconcile task's first pass runs in the background, so neither boot nor
+    // a request waits for it.
+    let search_index = coral_search::SearchIndex::new(Arc::clone(&database), reconcile_interval);
+    let provider_workflow = coral_administration::ProviderWorkflow::new(
+        database.clone(),
+        providers.clone(),
+        search_index.clone(),
+    );
+    // createProvider publishes through the same workflow as Reef.
     let mut runs = coral_run::RunModule::new(
         policy,
         database.clone(),
@@ -683,7 +693,8 @@ pub(crate) async fn start_server(
         providers.clone(),
         coral_run::IsolateLimits::default(),
     )
-    .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+    .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
+    .with_provider_publisher(Arc::new(provider_workflow.clone()));
     if let Some(accounts) = &accounts {
         runs = runs.with_accounts(accounts.clone());
     }
@@ -691,10 +702,6 @@ pub(crate) async fn start_server(
         coral_functions::SavedFunctionInspection::new(database.clone(), workspaces.clone());
     let saved_function_deletion =
         coral_functions::SavedFunctionDeletion::new(database.clone(), workspaces.clone());
-    // State initialization already ran the search checks and stream. The
-    // reconcile task's first pass runs in the background, so neither boot nor
-    // a request waits for it.
-    let search_index = coral_search::SearchIndex::new(Arc::clone(&database), reconcile_interval);
     let mcp_origin = Arc::new(std::sync::OnceLock::new());
     let routes = coral_grpc::routes(
         coral_grpc::Dependencies {
@@ -711,11 +718,7 @@ pub(crate) async fn start_server(
                 database.clone(),
                 workspaces.clone(),
             ),
-            provider_workflow: coral_administration::ProviderWorkflow::new(
-                database.clone(),
-                providers.clone(),
-                search_index.clone(),
-            ),
+            provider_workflow,
             workspace_workflow: coral_administration::WorkspaceWorkflow::new(
                 database.clone(),
                 workspaces.clone(),

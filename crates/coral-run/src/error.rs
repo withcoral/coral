@@ -43,6 +43,10 @@ coral_failures! {
     ApprovalExpired => "approval_expired",
     /// The Provider is no longer available in the Workspace.
     ProviderUnavailable => "provider_unavailable",
+    /// Another Provider in the Workspace already uses the requested namespace.
+    ProviderNamespaceConflict => "provider_namespace_conflict",
+    /// Coral attempted the Provider's Publication, and it failed.
+    ProviderPublicationFailed => "provider_publication_failed",
     /// Exact Operation policy disables this Invocation.
     OperationDisabled => "operation_disabled",
     /// The retained Credential Route changed.
@@ -107,6 +111,8 @@ impl CoralFailure {
             Self::ApprovalExpired => "Invocation approval expired",
             Self::OperationDisabled => "Operation is disabled",
             Self::ProviderUnavailable => "Provider is unavailable",
+            Self::ProviderNamespaceConflict => "Provider namespace is already in use",
+            Self::ProviderPublicationFailed => "Coral could not publish the Provider",
             Self::CredentialRouteChanged => "Operation credential route changed",
             Self::AccountRequired => "Operation requires a Provider Account",
             Self::CredentialRefreshFailed => "Operation credential refresh failed",

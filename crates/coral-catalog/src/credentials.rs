@@ -200,6 +200,25 @@ pub enum CredentialSource {
 }
 
 impl AuthenticationConfiguration {
+    /// Whether any credential part is a non-empty literal value rather than a
+    /// Credential Field a person fills in.
+    #[must_use]
+    pub fn has_literal_values(&self) -> bool {
+        // An empty literal, such as a Basic password that is absent, carries no value.
+        let literal = |source: &CredentialSource| matches!(source, CredentialSource::Literal { value } if !value.is_empty());
+        match self {
+            Self::HeaderCredentials { headers } => headers.values().any(
+                |binding| matches!(binding, HeaderBinding::Literal { value } if !value.is_empty()),
+            ),
+            Self::BasicAuth { username, password } => literal(username) || literal(password),
+            Self::QueryCredentials { parameters } => parameters.values().any(literal),
+            Self::None
+            | Self::Bearer
+            | Self::OAuthDeviceCode { .. }
+            | Self::OAuthAuthorizationCode { .. } => false,
+        }
+    }
+
     /// Returns the requested tokens and their outgoing encoding for either OAuth flow.
     #[must_use]
     pub fn oauth_scopes(&self) -> Option<(&[String], OAuthScopeFormat)> {

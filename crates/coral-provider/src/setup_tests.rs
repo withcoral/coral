@@ -1727,6 +1727,225 @@ async fn route_none_with_a_sealed_credential_fails_publication_and_scrubs_it() {
     ));
 }
 
+// Catches: callers each deciding for themselves whether a Setup needs a person,
+// or a route that does not suit the source getting through to Publication.
+#[tokio::test]
+async fn publishability_says_who_can_publish_a_setup_under_a_route() {
+    use crate::{PublishabilityRejection as R, SetupPublishability as P};
+    let server = MockServer::start().await;
+    let open = crate::tests::CREDENTIAL_FREE_OPENAPI.to_string();
+    let bearer = bearer_openapi(&server);
+    for (document, confirmed, route, expected) in [
+        (&open, true, CredentialRoute::None, P::Coral),
+        (
+            &open,
+            true,
+            CredentialRoute::Fixed,
+            P::Rejected(R::SourceNeedsNoCredential),
+        ),
+        (
+            &open,
+            true,
+            CredentialRoute::Caller,
+            P::Rejected(R::SourceNeedsNoCredential),
+        ),
+        (
+            &bearer,
+            true,
+            CredentialRoute::None,
+            P::Rejected(R::SourceNeedsCredential),
+        ),
+        (&bearer, true, CredentialRoute::Fixed, P::Person),
+        (&bearer, true, CredentialRoute::Caller, P::Coral),
+        (
+            &open,
+            false,
+            CredentialRoute::None,
+            P::Rejected(R::NotConfigured),
+        ),
+    ] {
+        let harness = harness().await;
+        let (owner, workspace) = workspace_owner(&harness, "user:publishability").await;
+        let context = change_context(owner.clone(), 10, '1');
+        let document = crate::OpenApiDocument::parse(document).unwrap();
+        let setup = if confirmed {
+            harness
+                .providers
+                .prepare_openapi_fixture(&context, workspace.id(), document)
+                .await
+                .unwrap()
+        } else {
+            harness
+                .providers
+                .prepare_setup(
+                    &context,
+                    workspace.id(),
+                    ProviderSetupSource::OpenApiDocument(document),
+                    None,
+                )
+                .await
+                .unwrap()
+        };
+        assert_eq!(
+            harness
+                .providers
+                .setup_publishability(&owner, workspace.id(), setup.id(), route)
+                .await
+                .unwrap(),
+            expected,
+            "{route:?} confirmed: {confirmed}"
+        );
+    }
+}
+
+/// Who ends a Setup in [`ending_cancels_an_open_setup_and_expires_one_past_its_deadline`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ender {
+    /// The Owner cancels it, as Reef does.
+    User,
+    /// Coral abandons a Setup that nobody will finish.
+    Coral,
+}
+
+/// Where a Setup stands when someone ends it.
+#[derive(Debug, Clone, Copy)]
+enum Start {
+    Open,
+    PastDeadline,
+    Canceled,
+    Published,
+}
+
+impl Start {
+    /// Brings a Setup prepared at 10 to this point, and returns when it is ended.
+    async fn arrange(
+        self,
+        harness: &Harness,
+        owner: &coral_workspace::AuthenticatedUser,
+        scope: &coral_workspace::WorkspaceId,
+        setup: &crate::ProviderSetupId,
+    ) -> i64 {
+        let context = change_context(owner.clone(), 11, '2');
+        match self {
+            Self::Open => {}
+            Self::PastDeadline => return 10 + HOUR,
+            Self::Canceled => {
+                harness
+                    .accounts
+                    .cancel_setup(&context, scope, setup)
+                    .await
+                    .unwrap();
+            }
+            Self::Published => {
+                harness
+                    .providers
+                    .publish_setup_fixture(&context, scope, setup, "weather", CredentialRoute::None)
+                    .await
+                    .unwrap();
+            }
+        }
+        20
+    }
+}
+
+// Catches: a Setup ended after its deadline recorded as canceled instead of
+// expired, Coral's ending recorded as a User's, or an ended Setup changed again.
+#[tokio::test]
+async fn ending_cancels_an_open_setup_and_expires_one_past_its_deadline() {
+    for ender in [Ender::User, Ender::Coral] {
+        for (start, ended_as) in [
+            (
+                Start::Open,
+                Some((LifecycleAction::SetupCanceled, ProviderSetupState::Canceled)),
+            ),
+            (
+                Start::PastDeadline,
+                Some((LifecycleAction::SetupExpired, ProviderSetupState::Expired)),
+            ),
+            (Start::Canceled, None),
+            (Start::Published, None),
+        ] {
+            let harness = harness().await;
+            let (owner, workspace) = workspace_owner(&harness, "user:end-setup").await;
+            let scope = workspace.id().clone();
+            let document =
+                crate::OpenApiDocument::parse(crate::tests::CREDENTIAL_FREE_OPENAPI).unwrap();
+            let setup = harness
+                .providers
+                .prepare_openapi_fixture(&change_context(owner.clone(), 10, '1'), &scope, document)
+                .await
+                .unwrap();
+            let now = start.arrange(&harness, &owner, &scope, setup.id()).await;
+            let state_before = harness
+                .providers
+                .get_setup(&owner, &scope, setup.id())
+                .await
+                .unwrap()
+                .state();
+            let events_before = harness
+                .providers
+                .list_lifecycle_events(&owner, &scope)
+                .await
+                .unwrap()
+                .len();
+            match ender {
+                Ender::User => {
+                    let ended = harness
+                        .accounts
+                        .cancel_setup(&change_context(owner.clone(), now, '3'), &scope, setup.id())
+                        .await;
+                    if ended_as.is_some() {
+                        assert!(ended.is_ok(), "{start:?}: {ended:?}");
+                    } else {
+                        assert!(
+                            matches!(ended, Err(crate::Error::ProviderSetupNotApplicable)),
+                            "{start:?}: {ended:?}"
+                        );
+                    }
+                }
+                Ender::Coral => {
+                    harness
+                        .providers
+                        .abandon_setup(&scope, setup.id(), now)
+                        .await
+                        .unwrap();
+                }
+            }
+            let state = harness
+                .providers
+                .get_setup(&owner, &scope, setup.id())
+                .await
+                .unwrap()
+                .state();
+            let events = harness
+                .providers
+                .list_lifecycle_events(&owner, &scope)
+                .await
+                .unwrap();
+            let new_events = &events[events_before..];
+            let Some((action, ended_state)) = ended_as else {
+                assert_eq!(state, state_before, "{ender:?} {start:?}");
+                assert!(new_events.is_empty(), "{ender:?} {start:?}: {new_events:?}");
+                continue;
+            };
+            assert_eq!(state, ended_state, "{ender:?} {start:?}");
+            let [event] = new_events
+                .iter()
+                .filter(|event| event.target_id() == setup.id().to_string())
+                .collect::<Vec<_>>()[..]
+            else {
+                panic!("{ender:?} {start:?}: one event for the Setup: {new_events:?}")
+            };
+            assert_eq!(event.action(), action, "{ender:?} {start:?}");
+            assert_eq!(
+                matches!(event.actor(), crate::LifecycleActor::Coral),
+                ender == Ender::Coral,
+                "{ender:?} {start:?}: {event:?}"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn expired_setup_credential_fails_publication_and_creates_no_account() {
     let harness = harness().await;

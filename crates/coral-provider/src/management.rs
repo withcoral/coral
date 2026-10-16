@@ -65,6 +65,29 @@ impl ProviderModule {
         tx.rollback().await?;
         Ok(result)
     }
+    /// Whether a Provider in this Workspace already uses `namespace`, so a
+    /// Publication under it would fail with a namespace conflict.
+    ///
+    /// # Errors
+    /// Returns current Workspace authority or persistence failures.
+    pub async fn namespace_in_use(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace: &WorkspaceId,
+        namespace: &crate::ProviderNamespace,
+    ) -> Result<bool, Error> {
+        let mut tx = self.database.begin_read_snapshot().await?;
+        self.management_authority(&mut tx, actor, workspace).await?;
+        let in_use = crate::access::call_root_exists(
+            &mut tx,
+            workspace,
+            &crate::ProviderCallRoot::Owner(namespace.clone()),
+        )
+        .await?;
+        tx.rollback().await?;
+        Ok(in_use)
+    }
+
     /// Inspects one Provider, concealing other Workspaces as absent.
     ///
     /// # Errors

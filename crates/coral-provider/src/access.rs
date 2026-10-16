@@ -257,6 +257,15 @@ pub(crate) async fn verify_retained_in_transaction(
     Ok(RetainedProviderVerification::Current)
 }
 
+/// Whether a Provider in the Workspace already uses `call_root`.
+pub(crate) async fn call_root_exists(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    call_root: &ProviderCallRoot,
+) -> Result<bool, Error> {
+    repository::call_root_exists(transaction, workspace_id, call_root).await
+}
+
 pub(super) enum PreparedProviderAccess {
     Ready(ProviderAccess),
     CallRootConflict,

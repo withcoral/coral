@@ -12,25 +12,28 @@ use sea_query::{Alias, Expr, ExprTrait as _, Query};
 use sha2::{Digest as _, Sha256};
 use std::fmt::Write as _;
 
+/// Publishes one Generation of the Built-in catalog, prepared before it.
+async fn publish_builtin(
+    transaction: &mut coral_db::Transaction<'_>,
+    created_at_unix_nanos: i64,
+) -> coral_catalog::ProviderGenerationId {
+    let catalog = coral_catalog::prepare_builtin_catalog().expect("prepare the Built-in catalog");
+    coral_catalog::publish_builtin_generation_in_transaction(
+        transaction,
+        catalog,
+        created_at_unix_nanos,
+    )
+    .await
+    .expect("publish a Built-in Generation")
+}
+
 #[tokio::test]
 async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     let fixture = TestDatabase::new(coral_catalog::migrator()).await.unwrap();
     let database = fixture.database();
     let mut transaction = database.begin().await.unwrap();
-    let first = coral_catalog::publish_builtin_generation_in_transaction(
-        &mut transaction,
-        coral_catalog::prepare_builtin_catalog().unwrap(),
-        1,
-    )
-    .await
-    .unwrap();
-    let second = coral_catalog::publish_builtin_generation_in_transaction(
-        &mut transaction,
-        coral_catalog::prepare_builtin_catalog().unwrap(),
-        2,
-    )
-    .await
-    .unwrap();
+    let first = publish_builtin(&mut transaction, 1).await;
+    let second = publish_builtin(&mut transaction, 2).await;
     transaction.commit().await.unwrap();
     assert_ne!(first, second, "each Workspace gets its own Generation");
 
@@ -63,8 +66,13 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         "\"openapi_document\"",
         "\"openapi_url\"",
         "\"mcp_url\"",
-        r#"function createProvider(input: { "namespace": string; "source": ProviderSourceInput })"#,
-        r#"data: { "namespace": string; "status": "needs_sign_in"; "url": string }"#,
+        "function createProvider(input: {",
+        r#""credentialRoute": "none" | "fixed" | "caller""#,
+        r#""displayName"?: string"#,
+        r#""namespace": string"#,
+        r#""source": ProviderSourceInput"#,
+        r#"{ "accountRequired": boolean; "authentication": "none" | "bearer" | "header_credentials" | "basic_auth" | "query_credentials" | "oauth_device_code" | "oauth_authorization_code"; "credentialRoute": "none" | "fixed" | "caller"; "displayName": string; "namespace": string; "operations": number; "status": "published" }"#,
+        r#"{ "namespace": string; "status": "needs_sign_in"; "url": string }"#,
         "metadata: { kind: \"builtin\" }",
     ] {
         assert!(
@@ -97,8 +105,18 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         .iter()
         .map(|entry| entry.path().as_str())
         .collect::<Vec<_>>();
-    assert!(paths.contains(&"input.namespace"), "{paths:?}");
+    for path in [
+        "input.namespace",
+        "input.credentialRoute",
+        "input.displayName",
+        "input.servers",
+        "input.authentication",
+        "input.requestHeaders",
+    ] {
+        assert!(paths.contains(&path), "{path} in {paths:?}");
+    }
     assert!(paths.contains(&"result.data.url"), "{paths:?}");
+    assert!(paths.contains(&"result.data.operations"), "{paths:?}");
 
     assert_eq!(
         coral_catalog::credential_contract_in_transaction(&mut transaction, &first)
@@ -122,20 +140,8 @@ async fn a_builtin_generation_pins_its_catalog_identity_and_decodes_any_well_for
     let fixture = TestDatabase::new(coral_catalog::migrator()).await.unwrap();
     let database = fixture.database();
     let mut transaction = database.begin().await.unwrap();
-    let first = coral_catalog::publish_builtin_generation_in_transaction(
-        &mut transaction,
-        coral_catalog::prepare_builtin_catalog().unwrap(),
-        1,
-    )
-    .await
-    .unwrap();
-    let second = coral_catalog::publish_builtin_generation_in_transaction(
-        &mut transaction,
-        coral_catalog::prepare_builtin_catalog().unwrap(),
-        2,
-    )
-    .await
-    .unwrap();
+    let first = publish_builtin(&mut transaction, 1).await;
+    let second = publish_builtin(&mut transaction, 2).await;
     transaction.commit().await.unwrap();
 
     let mut transaction = database.begin_read_snapshot().await.unwrap();
