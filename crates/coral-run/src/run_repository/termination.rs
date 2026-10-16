@@ -112,7 +112,8 @@ pub(crate) async fn finish_termination(
 }
 
 /// The terminal chunk: the outcome, a released worker claim, and `run.ended`.
-/// No Event follows it, because every later chunk is built on a head it moved.
+/// No Event follows it: a chunk built before it mismatches the head it moved,
+/// and a chunk built after it finds no running Run.
 async fn finish_terminal_run(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,

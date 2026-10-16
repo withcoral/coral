@@ -16,7 +16,7 @@ use sea_query::{Expr, ExprTrait as _, Query};
 
 use super::events::{NewEvent, insert_events};
 use super::{ProgramRunRecords, RunRecord};
-use crate::{Error, RunId};
+use crate::{Error, RunId, RunState};
 
 /// One Event of a chunk and when it occurred.
 pub(crate) struct ChunkEvent<'a> {
@@ -97,15 +97,23 @@ impl<'a> Chunk<'a> {
     }
 }
 
-/// Commits `chunk` in `transaction`: asserts the claim and the head, moves the
-/// head by one, writes the output total, renews the lease, and appends the
-/// Events after the Run's last one. The caller commits the transaction.
+/// Commits `chunk` in `transaction`: asserts the claim, the head and a running
+/// Run, moves the head by one, writes the output total, renews the lease, and
+/// appends the Events after the Run's last one. The caller commits the
+/// transaction.
+///
+/// The update also advances `next_event_sequence` by the chunk's Event count.
+/// This release never reads it, but the previous release numbers its Events
+/// from it, and during a rolling update both may write one Run: a cancel or
+/// an approval decision served by the new process must leave the counter
+/// where the old process's next write expects it.
 ///
 /// # Errors
 ///
 /// [`Error::ClaimMismatch`] when the Run row holds another execution claim,
-/// [`Error::HeadMismatch`] when it holds the claim but the head has moved.
-/// Neither writes anything.
+/// [`Error::RunEnded`] when it holds the claim but the Run is terminal (no
+/// Event follows `run.ended`), [`Error::HeadMismatch`] when it holds the claim
+/// and is running but the head has moved. None of them writes anything.
 pub(crate) async fn commit_chunk(
     transaction: &mut Transaction<'_>,
     chunk: Chunk<'_>,
@@ -126,6 +134,8 @@ pub(super) async fn commit_chunk_with(
         .ok_or_else(|| Error::CorruptData("Run Ledger head overflowed".to_string()))?;
     let output_bytes = i64::try_from(chunk.output_bytes)
         .map_err(|_error| Error::CorruptData("Run output bytes overflowed".to_string()))?;
+    let event_count = i64::try_from(chunk.events.len())
+        .map_err(|_error| Error::CorruptData("Run Event sequence overflowed".to_string()))?;
     let mut statement = Query::update();
     statement
         .table(ProgramRunRecords::Table)
@@ -135,10 +145,15 @@ pub(super) async fn commit_chunk_with(
                 ProgramRunRecords::AccumulatedOutputBytes,
                 Expr::val(output_bytes),
             ),
+            (
+                ProgramRunRecords::NextEventSequence,
+                Expr::col(ProgramRunRecords::NextEventSequence).add(event_count),
+            ),
         ])
         .values(run_values)
         .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(chunk.workspace_id.to_string()))
         .and_where(Expr::col(ProgramRunRecords::Id).eq(chunk.run_id.to_string()))
+        .and_where(Expr::col(ProgramRunRecords::State).eq(RunState::Running.as_storage_str()))
         .and_where(Expr::col(ProgramRunRecords::ChunkSequence).eq(head));
     match chunk.execution_claim_id {
         Some(claim_id) => {
@@ -165,12 +180,16 @@ pub(super) async fn commit_chunk_with(
 }
 
 /// Reads why the head update matched no row. Under the Run hold the row cannot
-/// change between the update and this read.
+/// change between the update and this read. A missing row counts as a claim
+/// mismatch: no row holds the chunk's claim.
 async fn rejection(transaction: &mut Transaction<'_>, chunk: &Chunk<'_>) -> Result<Error, Error> {
-    let row: Option<(Option<String>,)> = transaction
+    let row: Option<(Option<String>, String)> = transaction
         .fetch_optional(
             Query::select()
-                .column(ProgramRunRecords::ExecutionClaimId)
+                .columns([
+                    ProgramRunRecords::ExecutionClaimId,
+                    ProgramRunRecords::State,
+                ])
                 .from(ProgramRunRecords::Table)
                 .and_where(
                     Expr::col(ProgramRunRecords::WorkspaceId).eq(chunk.workspace_id.to_string()),
@@ -180,7 +199,13 @@ async fn rejection(transaction: &mut Transaction<'_>, chunk: &Chunk<'_>) -> Resu
         )
         .await?;
     Ok(match row {
-        Some((claim_id,)) if claim_id.as_deref() == chunk.execution_claim_id => Error::HeadMismatch,
+        Some((claim_id, state)) if claim_id.as_deref() == chunk.execution_claim_id => {
+            if RunState::from_storage_str(&state)?.is_terminal() {
+                Error::RunEnded
+            } else {
+                Error::HeadMismatch
+            }
+        }
         Some(_) | None => Error::ClaimMismatch,
     })
 }

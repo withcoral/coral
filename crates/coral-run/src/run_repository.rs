@@ -141,6 +141,27 @@ pub(crate) async fn find_visible_in_transaction(
     row.map(RunRow::decode).transpose()
 }
 
+/// The previous release's Event counter, which this release only advances.
+#[cfg(test)]
+pub(crate) async fn next_event_sequence(
+    database: &Database,
+    workspace_id: &WorkspaceId,
+    run_id: &RunId,
+) -> Result<i64, Error> {
+    let (counter,): (i64,) = database
+        .fetch_optional(
+            Query::select()
+                .column(ProgramRunRecords::NextEventSequence)
+                .from(ProgramRunRecords::Table)
+                .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(Expr::col(ProgramRunRecords::Id).eq(run_id.to_string()))
+                .to_owned(),
+        )
+        .await?
+        .ok_or(Error::RunNotFound)?;
+    Ok(counter)
+}
+
 #[cfg(test)]
 pub(crate) async fn count_runs(database: &Database) -> Result<u64, Error> {
     let statement = Query::select()

@@ -458,6 +458,17 @@ impl TestModules {
         run
     }
 
+    /// The previous release's Event counter on the Run row.
+    pub(crate) async fn compatibility_counter(
+        &self,
+        workspace_id: &coral_workspace::WorkspaceId,
+        run_id: &crate::RunId,
+    ) -> i64 {
+        crate::run_repository::next_event_sequence(&self.database, workspace_id, run_id)
+            .await
+            .expect("read the compatibility counter")
+    }
+
     /// Every Event after `after_sequence`, from a fresh read snapshot.
     pub(crate) async fn events_after(
         &self,

@@ -142,6 +142,7 @@ async fn a_chunk_of_n_events_moves_the_head_once_and_lands_prefix_complete() {
     let (workspace_id, run_id) = arranged_run(&fixture, "chunk", Some("claim-a")).await;
     let before = fixture.run_record(&workspace_id, &run_id).await;
     assert_eq!(before.worker_claim_expires_at_unix_nanos, Some(LEASE_UNTIL));
+    let counter_before = fixture.compatibility_counter(&workspace_id, &run_id).await;
 
     let mut transaction = fixture.database.begin().await.expect("begin");
     let run = hold_run(&mut transaction, &workspace_id, &run_id)
@@ -186,6 +187,12 @@ async fn a_chunk_of_n_events_moves_the_head_once_and_lands_prefix_complete() {
     assert_eq!(
         after.worker_claim_expires_at_unix_nanos,
         Some(LEASE_UNTIL + 1)
+    );
+    // The previous release numbers its Events from this counter during a
+    // rolling update, so the chunk moves it by exactly its Event count.
+    assert_eq!(
+        fixture.compatibility_counter(&workspace_id, &run_id).await - counter_before,
+        i64::try_from(EVENTS).expect("a small chunk")
     );
     let landed = fixture
         .events_after(&workspace_id, &run_id, last_sequence(&before))
@@ -246,5 +253,56 @@ async fn writers_serialized_by_the_run_hold_number_their_events_after_each_other
     assert_eq!(
         landed.iter().map(RunEvent::sequence).collect::<Vec<_>>(),
         (last_sequence(&before) + 1..=last_sequence(&before) + WRITERS as u64).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn no_chunk_lands_after_run_ended() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let (workspace_id, run_id) = arranged_run(&fixture, "ended", Some("claim-a")).await;
+    let mut transaction = fixture.database.begin().await.expect("begin");
+    let run = hold_run(&mut transaction, &workspace_id, &run_id)
+        .await
+        .expect("hold")
+        .expect("Run exists");
+    crate::run_repository::finish_run(
+        &mut transaction,
+        &run,
+        "claim-a",
+        &RunTerminalOutcome::Succeeded {
+            final_value: FinalValue::Absent,
+        },
+        2_000,
+    )
+    .await
+    .expect("the terminal chunk commits");
+    transaction.commit().await.expect("commit");
+    let ended = fixture.run_record(&workspace_id, &run_id).await;
+    assert_eq!(ended.state, RunState::Succeeded);
+    let events_before = fixture.events_after(&workspace_id, &run_id, 0).await;
+
+    // A chunk built on the ended Run's own head and claim: nothing stale about
+    // it, and still no Event may follow `run.ended`.
+    let mut transaction = fixture.database.begin().await.expect("begin");
+    let run = hold_run(&mut transaction, &workspace_id, &run_id)
+        .await
+        .expect("hold")
+        .expect("Run exists");
+    let rejected = commit_chunk(
+        &mut transaction,
+        Chunk::new(&run, Some("claim-a"))
+            .event(NewEvent::Logged(ProgramLogLevel::Info, "late"), 3_000),
+    )
+    .await;
+    assert!(matches!(rejected, Err(Error::RunEnded)), "{rejected:?}");
+    transaction
+        .commit()
+        .await
+        .expect("commit the rejected write");
+
+    assert_eq!(fixture.run_record(&workspace_id, &run_id).await, ended);
+    assert_eq!(
+        fixture.events_after(&workspace_id, &run_id, 0).await,
+        events_before
     );
 }

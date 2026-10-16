@@ -100,7 +100,8 @@ pub(crate) async fn insert_acceptance(
             Expr::val(run.deadline_at_unix_nanos),
             Expr::val(run.shutdown_grace_nanos),
             Expr::val(serde_json::to_string(&run.value_limits).map_err(Error::ProgramValueJson)?),
-            // The previous release's Event counter; nothing in this release reads it.
+            // The previous release's Event counter: this release advances it per
+            // chunk for that release's writers and never reads it.
             Expr::val(2_i64),
             Expr::val(0_i64),
             Expr::val(0_i64),
