@@ -542,4 +542,4 @@ export async function main(argv) {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) await main(process.argv.slice(2))
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main(process.argv.slice(2))

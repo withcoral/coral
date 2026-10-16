@@ -2,33 +2,40 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Toxiproxy, parseArgs, plan } from './load.mjs'
 
-/** Answers every toxiproxy API call with the status configured for its method, recording the calls. */
+/** Answers every toxiproxy API call with the status configured for its method, recording the calls and their bodies. */
 function stubToxiproxyApi(t, statusByMethod) {
   const calls = []
+  const bodies = []
   t.mock.method(globalThis, 'fetch', async (url, init = {}) => {
     const method = init.method ?? 'GET'
     calls.push(`${method} ${new URL(url).pathname}`)
+    if (init.body !== undefined) bodies.push(JSON.parse(init.body))
     return new Response(null, { status: statusByMethod[method] ?? 200 })
   })
-  return calls
+  return { calls, bodies }
 }
 
 test('a latency step fails when the previous toxic cannot be removed, before a new one is added', async (t) => {
-  const calls = stubToxiproxyApi(t, { DELETE: 500 })
+  const { calls, bodies } = stubToxiproxyApi(t, { DELETE: 500 })
   await assert.rejects(new Toxiproxy({}).setLatency(5), /latency toxic removal failed: 500/)
   assert.deepEqual(calls, ['DELETE /proxies/coral-load-pg/toxics/latency'])
+  assert.deepEqual(bodies, [])
 })
 
 test('a missing toxic counts as removed and the requested latency is added', async (t) => {
-  const calls = stubToxiproxyApi(t, { DELETE: 404, POST: 200 })
+  const { calls, bodies } = stubToxiproxyApi(t, { DELETE: 404, POST: 200 })
   await new Toxiproxy({}).setLatency(5)
   assert.deepEqual(calls, ['DELETE /proxies/coral-load-pg/toxics/latency', 'POST /proxies/coral-load-pg/toxics'])
+  assert.deepEqual(bodies, [
+    { name: 'latency', type: 'latency', stream: 'downstream', toxicity: 1, attributes: { latency: 5, jitter: 0 } },
+  ])
 })
 
 test('no added latency only removes the toxic', async (t) => {
-  const calls = stubToxiproxyApi(t, { DELETE: 204 })
+  const { calls, bodies } = stubToxiproxyApi(t, { DELETE: 204 })
   await new Toxiproxy({}).setLatency(0)
   assert.deepEqual(calls, ['DELETE /proxies/coral-load-pg/toxics/latency'])
+  assert.deepEqual(bodies, [])
 })
 
 test('options that would run a different workload than requested are rejected', async () => {
