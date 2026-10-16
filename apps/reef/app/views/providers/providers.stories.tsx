@@ -86,7 +86,7 @@ const github: ProviderView = {
   account: 'Individual accounts',
   blockers: [],
   personalAccountAction: null,
-  searchIndexFailed: false,
+  searchIndexFailure: null,
   readyCount: 3,
   totalCount: 4,
   etag: 'prov-etag',
@@ -101,7 +101,7 @@ const weather: ProviderView = {
   account: 'No account',
   blockers: [],
   personalAccountAction: null,
-  searchIndexFailed: false,
+  searchIndexFailure: null,
   readyCount: 1,
   totalCount: 1,
   etag: 'prov-etag-2',
@@ -340,7 +340,7 @@ export const TreeSearchIndexFailed: Story = {
   render: () => (
     <WorkspaceProvidersPage
       {...treeProps}
-      providers={[{ ...github, searchIndexFailed: true }, weather]}
+      providers={[{ ...github, searchIndexFailure: 'database is locked' }, weather]}
       selectedProvider="prov-github"
       selectedOperation="issues.create"
     />
@@ -354,6 +354,19 @@ export const TreeSearchIndexFailed: Story = {
       }),
     )
     await expect(drawer.getByText(/Search cannot find this operation\./)).toBeVisible()
+  },
+}
+// The pill's tooltip names the error the failed attempt recorded.
+export const TreeSearchIndexFailureReason: Story = {
+  render: () => (
+    <WorkspaceProvidersPage
+      {...treeProps}
+      providers={[{ ...github, searchIndexFailure: 'database is locked' }, weather]}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.hover(within(canvasElement).getByText('Not in search', { exact: true }))
+    await waitFor(() => expect(screen.getByText(/Reason: database is locked/)).toBeVisible())
   },
 }
 export const TreeAsMember: Story = {

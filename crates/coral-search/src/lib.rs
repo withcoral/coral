@@ -46,6 +46,7 @@ mod error;
 mod evidence;
 mod hit;
 mod index;
+mod index_state;
 mod indexer;
 mod page;
 pub mod projection;

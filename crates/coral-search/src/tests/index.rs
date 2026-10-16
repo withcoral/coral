@@ -1041,16 +1041,23 @@ async fn search_index_states_follow_each_providers_active_generation() {
     world.reject_complete_states().await;
     world.index.reconcile().await;
     world.allow_complete_states().await;
-    assert_eq!(
-        world.search_index_states(None).await,
-        BTreeMap::from([(world.tracer.clone(), Failed), (ledger.clone(), Failed)])
-    );
+    let failed = world.search_index_states(None).await;
+    for provider in [&world.tracer, &ledger] {
+        assert!(
+            matches!(failed.get(provider), Some(Failed { reason }) if reason.contains(INJECTED_FAULT)),
+            "the failure carries the attempt's error: {failed:?}"
+        );
+    }
+    let ledger_failed = failed.get(&ledger).expect("ledger state").clone();
 
     notify(&world.index, &world.stored_entries(&world.tracer).await);
     world.index.settled().await;
     assert_eq!(
         world.search_index_states(None).await,
-        BTreeMap::from([(world.tracer.clone(), Indexed), (ledger.clone(), Failed)])
+        BTreeMap::from([
+            (world.tracer.clone(), Indexed),
+            (ledger.clone(), ledger_failed)
+        ])
     );
 
     world
@@ -1071,6 +1078,41 @@ async fn search_index_states_follow_each_providers_active_generation() {
     assert_eq!(
         world.search_index_states(Some(&world.tracer)).await,
         BTreeMap::from([(world.tracer.clone(), Indexed)])
+    );
+}
+
+#[tokio::test]
+async fn a_failed_state_read_reports_no_states_and_logs_the_error() {
+    // Search state is information only (ADR 0017): a read that fails must not
+    // fail the Provider inspection that asked for it.
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql("ALTER TABLE search_index_states RENAME TO hidden_index_states")
+        .await
+        .expect("hide the state rows");
+
+    let logs = CapturedLogs::default();
+    let states = {
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default().with(logs.clone()),
+        );
+        world
+            .modules
+            .search
+            .inspect_search_index_states(&world.user, &world.workspace, None)
+            .await
+            .expect("a failed state read never fails the inspection")
+    };
+
+    assert!(states.is_empty(), "{states:?}");
+    let [event] = logs.events().try_into().expect("one log event");
+    assert_eq!(event.level, tracing::Level::WARN);
+    assert_eq!(
+        event.fields.get("workspace_id"),
+        Some(&world.workspace.to_string())
     );
 }
 

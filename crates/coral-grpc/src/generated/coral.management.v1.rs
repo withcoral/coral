@@ -45,7 +45,10 @@ pub struct Provider {
     pub blockers: ::prost::alloc::vec::Vec<i32>,
     /// Search state of the active Generation, read apart from the blockers.
     #[prost(enumeration = "SearchIndexState", tag = "10")]
-    pub search_index: i32,
+    pub search_index_state: i32,
+    /// Why the last attempt failed. Set only when search_index_state is FAILED.
+    #[prost(string, tag = "11")]
+    pub search_index_failure: ::prost::alloc::string::String,
 }
 /// Lists Providers owned by one authorized Workspace.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

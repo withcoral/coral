@@ -248,7 +248,10 @@ export async function providerView(
     account: accountLabel(provider.credentialRoute),
     blockers: provider.blockers.map(blockerLabel),
     personalAccountAction: personalAccountAction(provider, personalAccounts),
-    searchIndexFailed: provider.searchIndex === SearchIndexState.FAILED,
+    searchIndexFailure:
+      provider.searchIndexState === SearchIndexState.FAILED
+        ? provider.searchIndexFailure || 'No reason recorded.'
+        : null,
     readyCount: ops.filter((o) => o.available).length,
     totalCount: ops.length,
     etag: provider.etag,

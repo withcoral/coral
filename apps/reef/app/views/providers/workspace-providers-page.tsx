@@ -1669,8 +1669,10 @@ function PolicySummary({
   const unavailable = provider.totalCount - provider.readyCount
   return (
     <>
-      {provider.searchIndexFailed && (
-        <Tooltip content="Search cannot find these operations. Agents can still call them.">
+      {provider.searchIndexFailure !== null && (
+        <Tooltip
+          content={`Search cannot find these operations. Agents can still call them. Reason: ${provider.searchIndexFailure}`}
+        >
           <Pill size="small" color="amber">
             <Icon name="SearchX" size="14" color="inherit" />
             Not in search
@@ -1774,7 +1776,7 @@ function OperationDetailsDrawer({
                   />
                 )}
               </div>
-              {provider?.searchIndexFailed && (
+              {provider && provider.searchIndexFailure !== null && (
                 <Banner variant="info" title="Not in search">
                   Search cannot find this operation. Agents can still call it.
                 </Banner>

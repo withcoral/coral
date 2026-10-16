@@ -981,7 +981,7 @@ impl ExactAuthoringDescription {
 /// Whether search has indexed a Provider's active Generation. Search prepares
 /// a Generation's entries after the commit that activates it (ADR 0017), so
 /// the state lags publication and never gates a call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SearchIndexState {
     /// No attempt has reached the Generation yet.
     Pending,
@@ -989,5 +989,8 @@ pub enum SearchIndexState {
     Indexed,
     /// The last attempt failed; the Operations are missing from search until
     /// the reconcile task retries.
-    Failed,
+    Failed {
+        /// The error the attempt recorded.
+        reason: String,
+    },
 }

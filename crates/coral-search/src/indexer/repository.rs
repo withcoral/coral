@@ -696,12 +696,13 @@ pub(crate) async fn generation_outcomes_in_workspace(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
 ) -> Result<HashMap<ProviderGenerationId, SearchIndexState>, crate::Error> {
-    let rows: Vec<(String, String)> = transaction
+    let rows: Vec<(String, String, Option<String>)> = transaction
         .fetch_all(
             Query::select()
                 .columns([
                     SearchIndexStates::ProviderGenerationId,
                     SearchIndexStates::State,
+                    SearchIndexStates::Error,
                 ])
                 .from(SearchIndexStates::Table)
                 .and_where(Expr::col(SearchIndexStates::WorkspaceId).eq(workspace_id.to_string()))
@@ -710,14 +711,14 @@ pub(crate) async fn generation_outcomes_in_workspace(
         )
         .await?;
     rows.into_iter()
-        .map(|(generation_id, state)| {
+        .map(|(generation_id, state, error)| {
             let generation_id = ProviderGenerationId::parse(&generation_id)
                 .map_err(|_error| crate::Error::ServiceUnavailable)?;
-            // The state check admits only `complete` and `failed`.
-            let state = if state == COMPLETE {
-                SearchIndexState::Indexed
-            } else {
-                SearchIndexState::Failed
+            // The state check pairs `failed`, and only `failed`, with an error.
+            let state = match (state.as_str(), error) {
+                (COMPLETE, None) => SearchIndexState::Indexed,
+                (FAILED, Some(reason)) => SearchIndexState::Failed { reason },
+                _ => return Err(crate::Error::ServiceUnavailable),
             };
             Ok((generation_id, state))
         })

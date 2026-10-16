@@ -130,7 +130,9 @@ message Provider {
   // Derived configuration and inspected-Agent blockers from one read snapshot.
   repeated ProviderBlocker blockers = 9;
   // Search state of the active Generation, read apart from the blockers.
-  SearchIndexState search_index = 10;
+  SearchIndexState search_index_state = 10;
+  // Why the last attempt failed. Set only when search_index_state is FAILED.
+  string search_index_failure = 11;
 }
 
 // Lists Providers owned by one authorized Workspace.
