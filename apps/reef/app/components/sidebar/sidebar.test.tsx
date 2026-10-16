@@ -300,18 +300,9 @@ test.each([
     'Activity. 9007199254740993 pending actions',
     '999+',
   ],
-  [
-    'distinguishes an unavailable count from zero',
-    { '/workspaces/ops': null },
-    'Activity. Pending actions unavailable',
-    '?',
-  ],
-  [
-    'marks every count unavailable when the stream is',
-    null,
-    'Activity. Pending actions unavailable',
-    '?',
-  ],
+  // An unknown count leaves nothing for you to do; Activity reports it.
+  ['omits an unavailable count', { '/workspaces/ops': null }, 'Activity', undefined],
+  ['omits every count when none loaded', null, 'Activity', undefined],
 ])('%s', (_, actionCounts, name, badge) => {
   render('/workspaces/ops', { actionCounts })
   expect(activityLink()).toHaveAccessibleName(name)

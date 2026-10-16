@@ -3,7 +3,7 @@
 //! Removal needs no write: the row and any state row cascade from the
 //! function, its Workspace, and, through the function, its Principal.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::convert::Infallible;
 
 use async_trait::async_trait;
@@ -29,6 +29,7 @@ impl EntityIndexer for SavedFunctionIndexer {
         transaction: &mut Transaction<'_>,
         entry: &SavedFunctionEntry,
     ) -> Result<(), IndexError> {
+        repository::lock_workspace(transaction, entry.workspace_id()).await?;
         let row = function_row(entry, now_unix_nanos()?)?;
         repository::upsert_function_row(transaction, &row).await?;
         repository::delete_function_state(transaction, entry.workspace_id(), entry.id()).await?;
@@ -45,10 +46,14 @@ impl EntityIndexer for SavedFunctionIndexer {
         match *removal {}
     }
 
-    /// Returns each current function with no row, a row whose fingerprint
-    /// differs from its definition revision, or a `failed` state row. Every
-    /// failed function is returned, whenever it failed. Nothing is left to
-    /// remove: a function's row and state row cascade with it.
+    /// Returns each current function with a `failed` state row attempted
+    /// before `retry_failed_from_unix_nanos`, and each function without
+    /// such a row that has no row or a row whose fingerprint differs from its
+    /// definition revision. A newer failure waits for a later pass whatever
+    /// the function's row holds. The state row does not record the revision
+    /// that failed, so a newer revision waits too; a save notifies the index
+    /// of its revision at once all the same. Nothing is left to remove: a
+    /// function's row and state row cascade with it.
     ///
     /// The fingerprint is an opaque version marker, compared for equality
     /// only. As text, revision 10 would sort before revision 9.
@@ -56,17 +61,18 @@ impl EntityIndexer for SavedFunctionIndexer {
         &self,
         transaction: &mut Transaction<'_>,
         expected: &'e [SavedFunctionEntry],
-        _retry_failed_from_unix_nanos: i64,
+        retry_failed_from_unix_nanos: i64,
     ) -> Result<Vec<&'e SavedFunctionEntry>, IndexError> {
         let fingerprints = repository::recorded_functions(transaction)
             .await?
             .into_iter()
             .map(|row| (row.function, row.fingerprint))
             .collect::<HashMap<_, _>>();
-        let failed = repository::failed_functions(transaction)
+        let failures = repository::failed_functions(transaction)
             .await?
             .into_iter()
-            .collect::<HashSet<_>>();
+            .map(|failed| (failed.function, failed.attempted_at_unix_nanos))
+            .collect::<HashMap<_, _>>();
         Ok(expected
             .iter()
             .filter(|entry| {
@@ -74,8 +80,12 @@ impl EntityIndexer for SavedFunctionIndexer {
                     workspace_id: entry.workspace_id().clone(),
                     function_id: entry.id().clone(),
                 };
-                failed.contains(&key)
-                    || fingerprints.get(&key) != Some(&entry.revision().to_string())
+                match failures.get(&key) {
+                    Some(attempted_at_unix_nanos) => {
+                        *attempted_at_unix_nanos < retry_failed_from_unix_nanos
+                    }
+                    None => fingerprints.get(&key) != Some(&entry.revision().to_string()),
+                }
             })
             .collect())
     }
@@ -91,6 +101,7 @@ pub(crate) async fn record_failed_attempt(
     entry: &SavedFunctionEntry,
     error: &IndexError,
 ) -> Result<(), IndexError> {
+    repository::lock_workspace(transaction, entry.workspace_id()).await?;
     repository::delete_function_row(transaction, entry.workspace_id(), entry.id()).await?;
     repository::write_failed_function_state(
         transaction,

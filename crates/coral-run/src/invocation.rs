@@ -19,7 +19,7 @@ use coral_policy::{OperationAccessState, OperationPolicyTarget};
 use coral_provider::{
     InvocationCaller, InvocationOperationVerification, ResolvedInvocationOperation,
 };
-use coral_upstream::{McpResources, ReadyDispatch, UpstreamOutcome};
+use coral_upstream::{McpRejection, McpResources, ReadyDispatch, UpstreamOutcome};
 use coral_workspace::{AuthenticatedPrincipal, Principal, PrincipalWorkspaceEvidence};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
 
@@ -33,7 +33,10 @@ pub(crate) enum UpstreamSendError {
     DestinationRejected,
     InputTooLarge,
     TooLarge,
+    /// No complete result arrived: transport, protocol, or an unusable result.
     Incomplete,
+    /// The peer answered the request with a JSON-RPC error.
+    Rejected(McpRejection),
     Canceled,
     Fatal(coral_upstream::Error),
 }
@@ -82,6 +85,9 @@ impl UpstreamSender for ProductionUpstream {
                 coral_upstream::Error::DestinationRejected => UpstreamSendError::DestinationRejected,
                 coral_upstream::Error::InputTooLarge => UpstreamSendError::InputTooLarge,
                 coral_upstream::Error::ResultTooLarge => UpstreamSendError::TooLarge,
+                coral_upstream::Error::McpRejected(rejection) => {
+                    UpstreamSendError::Rejected(rejection)
+                }
                 coral_upstream::Error::Send(_)
                 | coral_upstream::Error::Body(_)
                 | coral_upstream::Error::McpRequest
@@ -381,6 +387,11 @@ impl OperationInvoker {
             Err(UpstreamSendError::Incomplete) => {
                 return Err(self
                     .finish_failure(admitted, CoralFailure::UpstreamIncomplete)
+                    .await?);
+            }
+            Err(UpstreamSendError::Rejected(rejection)) => {
+                return Err(self
+                    .finish_failure(admitted, CoralFailure::from_mcp_rejection(rejection))
                     .await?);
             }
         };

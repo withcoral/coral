@@ -1,10 +1,15 @@
 //! The reconcile task of [`SearchIndex`]: its schedule, one pass, and the
 //! pass's steps, as [`SearchIndex::reconcile`] lists them.
 
+use std::future::Future;
+use std::time::Instant;
+
 use coral_provider::{GenerationEntries, ProviderId};
 use coral_workspace::WorkspaceId;
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
+use tracing::Instrument as _;
+use tracing::field::Empty;
 use tracing::instrument::WithSubscriber as _;
 
 use super::SearchIndex;
@@ -44,35 +49,85 @@ impl SearchIndex {
     /// 1. Indexes every Provider whose active Generation has no `complete`
     ///    state row, one under another Provider display name, or a `failed`
     ///    one older than the reconcile interval, from the stored Generation.
-    /// 2. Indexes every Saved Function whose row is missing, whose fingerprint
-    ///    differs from its definition revision, or that has a `failed` state
-    ///    row.
+    /// 2. Indexes every Saved Function whose `failed` state row is older than
+    ///    the reconcile interval, and every one with no `failed` state row
+    ///    whose row is missing or whose fingerprint differs from its
+    ///    definition revision. A newer failure waits, whatever the row holds.
     /// 3. Removes the rows and state rows of every Generation that is no
     ///    Provider's active Generation. Best effort. Saved Function rows never
     ///    outlive their function.
-    /// 4. On Postgres, rewrites the statistics of every Workspace, not only
-    ///    those this pass wrote: two processes that write one Workspace at
-    ///    once can each count without the other's rows, and nothing else
-    ///    corrects that until the Workspace's next write.
+    /// 4. On Postgres, recounts the statistics of every Workspace whose rows
+    ///    changed after its last count, not only those this pass wrote: a
+    ///    Saved Function delete cascades to its row without an index write,
+    ///    and step 3 removes rows without a count.
     ///
     /// Removal runs first, in a transaction of its own that reads the active
     /// Generations again; a failed removal is logged and the pass goes on.
     /// Each Generation and each function is written in a transaction of its
     /// own; a failure is logged and recorded like a notified write's, and the
     /// pass goes on. Passes in two processes write the same idempotent rows.
+    ///
+    /// The pass runs in a root span, `coral.search.reconcile`, and each step
+    /// in a child span. Each span records its `duration_ms`. The statistics
+    /// step and the pass also record the Workspaces the step checked and
+    /// recounted, and the statistics rows it wrote. A pass that finds no
+    /// change writes no row.
     pub async fn reconcile(&self) {
         let _write = self.writes.lock().await;
+        let pass = tracing::info_span!(
+            parent: None,
+            "coral.search.reconcile",
+            duration_ms = Empty,
+            workspaces_checked = Empty,
+            workspaces_recounted = Empty,
+            rows_written = Empty,
+        );
+        let started = Instant::now();
+        if let Some(statistics) = self.run_pass().instrument(pass.clone()).await {
+            statistics.record(&pass);
+        }
+        record_duration(&pass, started);
+    }
+
+    /// Runs the steps of one pass, each in its own span. `None` when the pass
+    /// cannot start or cannot read the statistics watermarks: no span then
+    /// records counts the pass did not take.
+    async fn run_pass(&self) -> Option<StatisticsWork> {
         let Some(now) = crate::unix_now_nanos() else {
             // TODO: an error monitor for failed index writes is still to be set up.
             tracing::error!(error = %IndexError::Clock, "failed to start a search index reconcile pass");
-            return;
+            return None;
         };
         let interval = i64::try_from(self.reconcile_interval.as_nanos()).unwrap_or(i64::MAX);
         let retry_failed_from = now.saturating_sub(interval);
-        self.remove_superseded_generations().await;
-        self.reconcile_generations(retry_failed_from).await;
-        self.reconcile_functions(retry_failed_from).await;
-        self.refresh_every_workspace().await;
+        step(
+            tracing::info_span!(
+                "coral.search.reconcile.remove_superseded",
+                duration_ms = Empty
+            ),
+            self.remove_superseded_generations(),
+        )
+        .await;
+        step(
+            tracing::info_span!("coral.search.reconcile.generations", duration_ms = Empty),
+            self.reconcile_generations(retry_failed_from),
+        )
+        .await;
+        step(
+            tracing::info_span!("coral.search.reconcile.functions", duration_ms = Empty),
+            self.reconcile_functions(retry_failed_from),
+        )
+        .await;
+        let span = tracing::info_span!(
+            "coral.search.reconcile.statistics",
+            duration_ms = Empty,
+            workspaces_checked = Empty,
+            workspaces_recounted = Empty,
+            rows_written = Empty,
+        );
+        let statistics = step(span.clone(), self.refresh_stale_workspaces()).await?;
+        statistics.record(&span);
+        Some(statistics)
     }
 
     /// Step 3 of a pass, run first: removes the rows and state rows of every
@@ -161,8 +216,9 @@ impl SearchIndex {
         .await
     }
 
-    /// Step 2 of a pass: indexes each current Saved Function the index lacks,
-    /// holds at another revision, or holds as failed.
+    /// Step 2 of a pass: indexes each current Saved Function that failed
+    /// before `retry_failed_from`, and each without a failure that the index
+    /// lacks or holds at another revision. A newer failure waits.
     async fn reconcile_functions(&self, retry_failed_from: i64) {
         let stale = self
             .within_limit(async {
@@ -193,42 +249,86 @@ impl SearchIndex {
         }
     }
 
-    /// Step 4 of a pass: on Postgres, rewrites every Workspace's statistics,
-    /// one Workspace per transaction.
-    async fn refresh_every_workspace(&self) {
-        let workspaces = self
+    /// Step 4 of a pass: on Postgres, recounts the statistics of each
+    /// Workspace whose watermark no longer matches its rows, one Workspace per
+    /// transaction under its lock. `None` when the watermarks cannot be read.
+    async fn refresh_stale_workspaces(&self) -> Option<StatisticsWork> {
+        let check = self
             .within_limit(async {
                 let mut transaction = self.database.begin_read_snapshot().await?;
-                let workspaces = indexer::workspaces_with_statistics(&mut transaction).await?;
+                let check = indexer::check_statistics(&mut transaction).await?;
                 transaction.rollback().await?;
-                Ok(workspaces)
+                Ok(check)
             })
             .await;
-        let workspaces = match workspaces {
-            Ok(workspaces) => workspaces,
+        let check = match check {
+            Ok(check) => check,
             Err(error) => {
                 // TODO: an error monitor for failed index writes is still to be set up.
-                tracing::error!(error = %error, "failed to list the Workspaces to refresh search statistics for");
-                return;
+                tracing::error!(error = %error, "failed to check the Workspaces' search statistics");
+                return None;
             }
         };
-        for workspace_id in &workspaces {
+        let mut work = StatisticsWork {
+            workspaces_checked: u64::try_from(check.workspaces_checked).unwrap_or(u64::MAX),
+            ..StatisticsWork::default()
+        };
+        for workspace_id in &check.stale {
             let refreshed = self
                 .within_limit(async {
                     let mut transaction = self.database.begin().await?;
-                    indexer::refresh_statistics(&mut transaction, workspace_id).await?;
+                    let rows = indexer::refresh_statistics(&mut transaction, workspace_id).await?;
                     transaction.commit().await?;
-                    Ok(())
+                    Ok(rows)
                 })
                 .await;
-            if let Err(error) = refreshed {
-                // TODO: an error monitor for failed index writes is still to be set up.
-                tracing::error!(
-                    workspace_id = %workspace_id,
-                    error = %error,
-                    "failed to refresh a Workspace's search statistics"
-                );
+            match refreshed {
+                Ok(rows) => {
+                    work.workspaces_recounted += 1;
+                    work.rows_written += rows;
+                }
+                Err(error) => {
+                    // TODO: an error monitor for failed index writes is still to be set up.
+                    tracing::error!(
+                        workspace_id = %workspace_id,
+                        error = %error,
+                        "failed to refresh a Workspace's search statistics"
+                    );
+                }
             }
         }
+        Some(work)
     }
+}
+
+/// What the statistics step of a pass did.
+#[derive(Debug, Default, Clone, Copy)]
+struct StatisticsWork {
+    /// The Workspaces whose watermark the step compared.
+    workspaces_checked: u64,
+    /// The Workspaces whose statistics the step counted again.
+    workspaces_recounted: u64,
+    /// The `search_terms` and `search_stats` rows the step wrote or deleted.
+    rows_written: u64,
+}
+
+impl StatisticsWork {
+    fn record(self, span: &tracing::Span) {
+        span.record("workspaces_checked", self.workspaces_checked);
+        span.record("workspaces_recounted", self.workspaces_recounted);
+        span.record("rows_written", self.rows_written);
+    }
+}
+
+/// Runs one step of a pass in `span` and records the step's duration on it.
+async fn step<T>(span: tracing::Span, work: impl Future<Output = T>) -> T {
+    let started = Instant::now();
+    let output = work.instrument(span.clone()).await;
+    record_duration(&span, started);
+    output
+}
+
+fn record_duration(span: &tracing::Span, started: Instant) {
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    span.record("duration_ms", duration_ms);
 }

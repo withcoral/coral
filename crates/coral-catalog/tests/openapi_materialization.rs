@@ -248,18 +248,19 @@ fn corpus_slice_materializes_schema_authority_and_typed_http_bindings() {
     assert_eq!(body.content()[0].media_type(), "application/octet-stream");
 
     for operation in prepared.operations() {
-        let declaration = operation.typescript_declaration();
+        let declaration = prepared.authoring_declaration(operation);
         assert!(declaration.contains("Promise<"));
         assert!(!declaration.contains("import "));
     }
-    assert!(list.typescript_declaration().contains("type Issue"));
+    assert!(prepared.authoring_declaration(list).contains("type Issue"));
     assert!(
-        list.typescript_declaration()
+        prepared
+            .authoring_declaration(list)
             .lines()
             .any(|line| line.starts_with("type Issue = ") && !line.ends_with(" = unknown;")),
         "productive object recursion must remain typed"
     );
-    assert_strict_compiling_declaration(list.typescript_declaration());
+    assert_strict_compiling_declaration(&prepared.authoring_declaration(list));
 }
 
 #[test]
@@ -277,7 +278,7 @@ fn reserved_openapi_header_parameters_do_not_become_caller_arguments() {
             .iter()
             .any(|parameter| parameter.wire_name() == "Accept")
     );
-    assert!(!list.typescript_declaration().contains("Accept"));
+    assert!(!prepared.authoring_declaration(list).contains("Accept"));
 }
 
 #[test]
@@ -288,12 +289,12 @@ fn http_declarations_preserve_response_alternatives_and_unknown_fallback() {
         .iter()
         .find(|operation| operation.key().as_str() == "issues/list-for-repo")
         .expect("list Operation");
-    let declaration = list.typescript_declaration();
+    let declaration = prepared.authoring_declaration(list);
 
     assert!(declaration.contains("HttpResult<Array<Issue>, 200, \"application/json\">"));
     assert!(declaration.contains(", 422, \"application/problem+json\">"));
     assert!(declaration.contains("| HttpUnknownResult>;"));
-    assert_strict_compiling_declaration(declaration);
+    assert_strict_compiling_declaration(&declaration);
 }
 
 /// The HTTP result metadata as each union branch repeated it before the
@@ -386,12 +387,13 @@ fn http_result_declarations_are_mutually_assignable_with_their_previous_form() {
     );
 
     for (operation_id, _, typed) in cases {
-        let declaration = prepared
-            .operations()
-            .iter()
-            .find(|operation| operation.key().as_str() == operation_id)
-            .expect("declared Operation")
-            .typescript_declaration();
+        let declaration = prepared.authoring_declaration(
+            prepared
+                .operations()
+                .iter()
+                .find(|operation| operation.key().as_str() == operation_id)
+                .expect("declared Operation"),
+        );
         assert!(
             !declaration.contains(" & { readonly status"),
             "no branch repeats the wrapper: {declaration}"
@@ -440,12 +442,13 @@ paths:
 ";
     let prepared = ready(document);
     let declaration = |key: &str| {
-        prepared
-            .operations()
-            .iter()
-            .find(|operation| operation.key().as_str() == key)
-            .expect("declared Operation")
-            .typescript_declaration()
+        prepared.authoring_declaration(
+            prepared
+                .operations()
+                .iter()
+                .find(|operation| operation.key().as_str() == key)
+                .expect("declared Operation"),
+        )
     };
     let probe = declaration("probe");
 
@@ -503,7 +506,7 @@ fn multi_media_requests_expose_each_explicit_media_selection() {
         .iter()
         .find(|operation| operation.key().as_str() == "markdown/render-raw")
         .expect("multi-media request Operation");
-    let declaration = markdown.typescript_declaration();
+    let declaration = prepared.authoring_declaration(markdown);
 
     assert_eq!(
         http_binding(markdown)
@@ -521,7 +524,7 @@ fn multi_media_requests_expose_each_explicit_media_selection() {
         ),
         "each media type is one member of the body union: {declaration}"
     );
-    assert_strict_compiling_declaration(declaration);
+    assert_strict_compiling_declaration(&declaration);
 }
 
 #[test]
@@ -547,20 +550,24 @@ fn approved_http_corpus_retains_all_transport_and_schema_shapes() {
         .content()[0];
     assert_eq!(form.media_type(), "application/x-www-form-urlencoded");
     assert_eq!(form.encoding()[0].property_name(), "metadata");
-    assert!(!create_customer.typescript_declaration().contains("secret"));
     assert!(
-        !create_customer
-            .typescript_declaration()
+        !prepared
+            .authoring_declaration(create_customer)
+            .contains("secret")
+    );
+    assert!(
+        !prepared
+            .authoring_declaration(create_customer)
             .contains("server_id")
     );
     assert!(
-        create_customer
-            .typescript_declaration()
+        prepared
+            .authoring_declaration(create_customer)
             .contains("Record<string, unknown>")
     );
     assert!(
-        !create_customer
-            .typescript_declaration()
+        !prepared
+            .authoring_declaration(create_customer)
             .contains("write_token"),
         "write-only provider fields do not leak into response authoring types"
     );
@@ -589,8 +596,8 @@ fn approved_http_corpus_retains_all_transport_and_schema_shapes() {
     assert_eq!(content_binding.responses().len(), 3);
     assert_eq!(content_binding.responses()[0].content().len(), 3);
     assert!(
-        content
-            .typescript_declaration()
+        prepared
+            .authoring_declaration(content)
             .contains("[number, number]")
     );
 
@@ -745,7 +752,11 @@ paths:
     );
     let operation = prepared.operations().first().expect("Operation");
     assert_eq!(operation.availability(), OperationAvailability::Available);
-    assert!(operation.typescript_declaration().contains("data: unknown"));
+    assert!(
+        prepared
+            .authoring_declaration(operation)
+            .contains("data: unknown")
+    );
     assert!(
         operation
             .diagnostics()
@@ -857,7 +868,7 @@ const NULLABLE_CASES: [NullableCase; 9] = [
 ];
 
 #[test]
-fn operations_sharing_a_named_type_each_carry_its_declaration_and_diagnostics() {
+fn operations_sharing_a_named_type_name_it_and_carry_its_diagnostics() {
     let prepared = ready(
         r##"openapi: 3.1.0
 info:
@@ -897,14 +908,35 @@ components:
         content:
           type: string
           format: binary
+        owner:
+          $ref: "#/components/schemas/User"
+    User:
+      type: object
+      properties:
+        name:
+          type: string
 "##,
     );
     assert_eq!(prepared.operations().len(), 2);
     for operation in prepared.operations() {
-        let declaration = operation.typescript_declaration();
+        let own = operation.typescript_declaration();
         assert!(
-            declaration
-                .contains(r#"type Attachment = ({ "content"?: BinaryValue; "size"?: number }"#),
+            own.contains("HttpResult<Attachment, 200,") && !own.contains("type Attachment ="),
+            "{}: {own}",
+            operation.key().as_str()
+        );
+        let declaration = prepared.authoring_declaration(operation);
+        assert_strict_compiling_declaration(&declaration);
+        assert!(
+            declaration.contains(
+                r#"type Attachment = ({ "content"?: BinaryValue; "owner"?: User; "size"?: number }"#
+            ),
+            "{}: {declaration}",
+            operation.key().as_str()
+        );
+        // `User` is reached only through `Attachment`.
+        assert!(
+            !own.contains("User") && declaration.contains(r#"type User = ({ "name"?: string }"#),
             "{}: {declaration}",
             operation.key().as_str()
         );
@@ -922,6 +954,87 @@ components:
             operation.key().as_str()
         );
     }
+}
+
+/// A document whose one Operation returns a string enum of `literals`
+/// 204-character literals, declared inline or as the shared type `Large`.
+fn large_enum_document(literals: usize, shared: bool) -> String {
+    let values = (0..literals)
+        .map(|n| format!("{n:04}{}", "x".repeat(200)))
+        .collect::<Vec<_>>();
+    let large = serde_json::json!({"type": "string", "enum": values});
+    let (schema, components) = if shared {
+        (
+            serde_json::json!({"$ref": "#/components/schemas/Large"}),
+            serde_json::json!({"schemas": {"Large": large}}),
+        )
+    } else {
+        (large, serde_json::json!({}))
+    };
+    serde_json::json!({
+        "openapi": "3.1.0",
+        "info": {"title": "Large", "version": "1"},
+        "servers": [{"url": "https://api.example.test"}],
+        "paths": {"/large": {"get": {
+            "operationId": "large",
+            "responses": {"200": {
+                "description": "OK",
+                "content": {"application/json": {"schema": schema}}
+            }}
+        }}},
+        "components": components
+    })
+    .to_string()
+}
+
+/// The diagnostic of an Operation over the discovery limit states its size
+/// and the limit, and the size grows by exactly what the Operation adds.
+#[test]
+fn an_operation_over_the_discovery_limit_reports_its_size_and_the_limit() {
+    let sizes = |literals: usize| {
+        let prepared = ready(&large_enum_document(literals, false));
+        let operation = &prepared.operations()[0];
+        assert_eq!(operation.availability(), OperationAvailability::Unavailable);
+        let diagnostic = operation.diagnostic().expect("too large");
+        assert_eq!(
+            diagnostic.code(),
+            "operation_authoring_description_too_large"
+        );
+        let numbers = diagnostic
+            .message()
+            .split(|character: char| !character.is_ascii_digit())
+            .filter_map(|digits| digits.parse::<usize>().ok())
+            .collect::<Vec<_>>();
+        let [observed, limit] = numbers[..] else {
+            panic!("{}", diagnostic.message());
+        };
+        assert_eq!(
+            limit,
+            coral_catalog::OPERATION_AUTHORING_DESCRIPTION_MAX_BYTES
+        );
+        assert!(observed > limit, "{observed}");
+        observed
+    };
+    // One more 204-character literal adds its quotes and a " | " separator.
+    assert_eq!(sizes(1_401) - sizes(1_400), 204 + 2 + 3);
+}
+
+/// The discovery limit counts an Operation's own declaration, not the shared
+/// types it names, so a large shared type leaves the Operation available.
+#[test]
+fn a_shared_type_over_the_discovery_limit_leaves_its_operation_available() {
+    let prepared = ready(&large_enum_document(1_400, true));
+    let operation = &prepared.operations()[0];
+    assert_eq!(
+        operation.availability(),
+        OperationAvailability::Available,
+        "{:?}",
+        operation.diagnostic()
+    );
+    assert!(
+        prepared.authoring_declaration(operation).len()
+            > coral_catalog::OPERATION_AUTHORING_DESCRIPTION_MAX_BYTES
+    );
 }
 
 /// OpenAPI 3.0's `nullable` admits null. OpenAPI 3.1 gives it no meaning, so
@@ -957,8 +1070,8 @@ components:
         assert_eq!(
             (
                 case.projection.is_none_or(|projection| {
-                    operation
-                        .typescript_declaration()
+                    prepared
+                        .authoring_declaration(operation)
                         .contains(&format!("HttpResult<{projection}, 200,"))
                 }),
                 graph.accepts(response, &Value::Null),
@@ -972,7 +1085,7 @@ components:
             ),
             (true, case.accepts_null, true, true, case.warns),
             "{version} {schema}\n{}",
-            operation.typescript_declaration()
+            prepared.authoring_declaration(operation)
         );
 
         if let Some(available) = case.text_body_available {
@@ -1033,7 +1146,7 @@ paths:
 "#,
     );
     let operation = prepared.operations().first().expect("Operation");
-    let declaration = operation.typescript_declaration();
+    let declaration = prepared.authoring_declaration(operation);
     assert!(declaration.contains("\"count\": number"));
     assert!(declaration.contains("Record<string, unknown>"));
     assert!(!declaration.contains("Record<string, string>"));
@@ -1585,7 +1698,7 @@ components:
     let operation = prepared.operations().first().expect("Operation");
     assert_eq!(operation.availability(), OperationAvailability::Available);
     assert!(
-        operation.typescript_declaration().contains(
+        prepared.authoring_declaration(operation).contains(
             r#"type Probe = ({ "id": string; "name": string } & Record<string, unknown>);"#
         )
     );
@@ -2016,11 +2129,11 @@ fn schema_cycles_propagate_failures_and_closed_cycles_remain_package_local() {
     }
     for operation in valid.operations() {
         assert!(
-            direct_type_aliases_are_acyclic(operation.typescript_declaration()),
+            direct_type_aliases_are_acyclic(&valid.authoring_declaration(operation)),
             "declaration contains a circular direct alias:\n{}",
-            operation.typescript_declaration()
+            valid.authoring_declaration(operation)
         );
-        assert_strict_compiling_declaration(operation.typescript_declaration());
+        assert_strict_compiling_declaration(&valid.authoring_declaration(operation));
     }
 }
 
@@ -2159,11 +2272,11 @@ fn productive_array_recursion_remains_strict_compiling_and_typed() {
     let operation = &prepared.operations()[0];
     assert_eq!(operation.availability(), OperationAvailability::Available);
     assert!(
-        operation
-            .typescript_declaration()
+        prepared
+            .authoring_declaration(operation)
             .contains("type RecursiveArray = Array<RecursiveArray>;")
     );
-    assert_strict_compiling_declaration(operation.typescript_declaration());
+    assert_strict_compiling_declaration(&prepared.authoring_declaration(operation));
 }
 
 #[test]
@@ -2190,8 +2303,8 @@ fn productive_map_recursion_remains_strict_compiling_and_typed() {
     let operation = &prepared.operations()[0];
     assert_eq!(operation.availability(), OperationAvailability::Available);
     assert!(
-        operation
-            .typescript_declaration()
+        prepared
+            .authoring_declaration(operation)
             .contains("type RecursiveMap = { [key: string]: RecursiveMap };")
     );
     assert!(
@@ -2200,7 +2313,7 @@ fn productive_map_recursion_remains_strict_compiling_and_typed() {
             .iter()
             .any(|diagnostic| diagnostic.code() == "typescript_schema_widened")
     );
-    assert_strict_compiling_declaration(operation.typescript_declaration());
+    assert_strict_compiling_declaration(&prepared.authoring_declaration(operation));
 }
 
 #[test]
@@ -2226,8 +2339,8 @@ fn composed_reference_cycles_widen_to_strict_compiling_types() {
     let prepared = ready(&document.to_string());
     let operation = &prepared.operations()[0];
     assert_eq!(operation.availability(), OperationAvailability::Available);
-    let aliases = operation
-        .typescript_declaration()
+    let declaration = prepared.authoring_declaration(operation);
+    let aliases = declaration
         .lines()
         .filter(|line| {
             line.starts_with("type ")
@@ -2246,7 +2359,7 @@ fn composed_reference_cycles_widen_to_strict_compiling_types() {
             .iter()
             .any(|diagnostic| diagnostic.code() == "typescript_schema_widened")
     );
-    assert_strict_compiling_declaration(operation.typescript_declaration());
+    assert_strict_compiling_declaration(&prepared.authoring_declaration(operation));
 }
 
 #[test]
@@ -3256,7 +3369,7 @@ fn operation_ids_must_be_keys_and_reserved_words_are_escaped() {
         panic!("one Operation");
     };
     assert_eq!(operation.relative_path(), "_interface");
-    let declaration = operation.typescript_declaration();
+    let declaration = reserved.authoring_declaration(operation);
     assert_eq!(
         declaration.lines().last(),
         Some(
@@ -3274,7 +3387,7 @@ fn response_schema_drives_the_typescript_declaration() {
         )
     );
     let prepared = configured_ready(&document);
-    let declaration = prepared.operations()[0].typescript_declaration();
+    let declaration = prepared.authoring_declaration(&prepared.operations()[0]);
     assert!(
         declaration.starts_with(
             "type Forecast = ({ \"temperature\": number } & Record<string, unknown>);\n"
@@ -3391,10 +3504,14 @@ fn server_user_information_is_rejected_without_echoing_it() {
 /// that calls several Operations of one Provider sees them. Identical lines
 /// declare one shared type once.
 fn shared_scope(prepared: &coral_catalog::PreparedProviderCatalog) -> String {
-    prepared
+    let declarations = prepared
         .operations()
         .iter()
-        .flat_map(|operation| operation.typescript_declaration().lines())
+        .map(|operation| prepared.authoring_declaration(operation))
+        .collect::<Vec<_>>();
+    declarations
+        .iter()
+        .flat_map(|declaration| declaration.lines())
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>()

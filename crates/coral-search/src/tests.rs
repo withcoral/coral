@@ -3773,6 +3773,29 @@ impl TestModules {
             .expect("save Saved Function")
     }
 
+    /// Deletes the Saved Function at `path`. Its row in the index cascades
+    /// with it, and no index write follows.
+    async fn delete_function(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        path: &str,
+        occurred_at_unix_nanos: i64,
+    ) {
+        self.saved_functions
+            .delete(
+                &SavedFunctionChangeContext::new(
+                    principal.clone(),
+                    occurred_at_unix_nanos,
+                    trace('5'),
+                ),
+                workspace_id,
+                &SavedFunctionPath::parse(path).expect("Saved Function path"),
+            )
+            .await
+            .expect("delete Saved Function");
+    }
+
     async fn publish_configured(
         &self,
         context: &ChangeContext,

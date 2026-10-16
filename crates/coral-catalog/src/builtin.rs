@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::schema::{
-    Direction, ProjectionOptions, SchemaGraphAccumulator, TypeScriptNames, TypeScriptProjector,
-    canonicalize, render_callable_declaration,
+    Direction, ProjectionOptions, SchemaGraphAccumulator, SharedTypes, TypeScriptNames,
+    TypeScriptProjector, canonicalize, render_callable_declaration,
 };
 use crate::{
     CatalogDiagnostic, Error, ExecutionBinding, MaterializedOperation, OperationHints,
@@ -328,18 +328,27 @@ pub(crate) fn prepare() -> Result<PreparedBuiltinCatalog, CatalogDiagnostic> {
         .to_storage_json()
         .map_err(|_error| invalid("the built-in schema graph cannot be encoded"))?;
     let type_names = typescript_names(&schema_graph);
+    let mut shared_types = SharedTypes::default();
     let mut operations = Vec::with_capacity(drafts.len());
     for (definition, binding) in drafts {
         let key = OperationKey::parse(definition.operation.key())
             .map_err(|_error| invalid("a built-in Operation Key is invalid"))?;
         let relative_path = definition.operation.key().to_string();
-        let declaration = project(&relative_path, &binding, &schema_graph, &type_names)?;
-        if !crate::types::operation_description_fits(
+        let (declaration, type_references) = project(
+            &relative_path,
+            &binding,
+            &schema_graph,
+            &type_names,
+            &mut shared_types,
+        )?;
+        if crate::types::operation_description_too_large(
             &relative_path,
             BUILTIN_PROVIDER_DISPLAY_NAME,
             &declaration,
             &definition.presentation,
-        ) {
+        )
+        .is_some()
+        {
             return Err(invalid(
                 "a built-in Operation description exceeds the discovery limit",
             ));
@@ -359,6 +368,7 @@ pub(crate) fn prepare() -> Result<PreparedBuiltinCatalog, CatalogDiagnostic> {
             encode(&definition.input)?,
             encode(&definition.output)?,
             declaration,
+            type_references,
             Vec::new(),
             "[]".to_string(),
         ));
@@ -368,6 +378,7 @@ pub(crate) fn prepare() -> Result<PreparedBuiltinCatalog, CatalogDiagnostic> {
         schema_graph,
         schema_graph_json,
         operations,
+        shared_types,
     );
     Ok(PreparedBuiltinCatalog {
         identity: catalog_identity(&catalog),
@@ -385,11 +396,12 @@ fn project(
     binding: &BuiltinExecutionBinding,
     graph: &SchemaGraph,
     type_names: &TypeScriptNames,
-) -> Result<String, CatalogDiagnostic> {
+    shared: &mut SharedTypes,
+) -> Result<(String, Vec<String>), CatalogDiagnostic> {
     let mut projector = TypeScriptProjector::new(graph, type_names, ProjectionOptions::builtin());
     let input = projector.project(binding.input_schema(), Direction::Input)?;
     let output = projector.project(binding.output_schema(), Direction::Output)?;
-    let mut declarations = projector.render_named_declarations()?;
+    let type_references = projector.share_named_declarations(shared)?;
     // A closed object is wider in structural TypeScript; only an error rejects.
     if projector
         .into_diagnostics()
@@ -398,12 +410,12 @@ fn project(
     {
         return Err(invalid("a built-in schema cannot be projected faithfully"));
     }
-    declarations.push(render_callable_declaration(
+    let declaration = render_callable_declaration(
         relative_path,
         &format!("input: {input}"),
         &format!("Promise<{{ data: {output}; metadata: {{ kind: \"builtin\" }} }}>"),
-    )?);
-    Ok(declarations.join("\n"))
+    )?;
+    Ok((declaration, type_references))
 }
 
 fn schema_source(operation: BuiltinOperation, direction: &str) -> String {
