@@ -389,7 +389,7 @@ impl CreateProvider {
     }
 }
 
-/// Whether a recorded Call Path is `coral.admin.createProvider`.
+/// Whether a recorded Call Path is `coral.workspace.createProvider`.
 pub(crate) fn names_create_provider(call_path: &str) -> bool {
     call_path
         .strip_prefix(coral_provider::access::ProviderCallRoot::Builtin.as_str())

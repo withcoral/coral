@@ -274,7 +274,7 @@ impl RunModule {
         self
     }
 
-    /// Lets `coral.admin.createProvider` publish a Provider that needs nobody to
+    /// Lets `coral.workspace.createProvider` publish a Provider that needs nobody to
     /// sign in, through the workflow Reef publishes with. Without it, such a
     /// call fails with `operation_unavailable`.
     #[must_use]

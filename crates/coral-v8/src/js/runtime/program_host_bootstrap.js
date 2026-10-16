@@ -92,7 +92,7 @@
     configurable: false,
   });
 
-  // `providers` and `admin` start the two kinds of Provider Call Root; the
+  // `providers` and `workspace` start the two kinds of Provider Call Root; the
   // host resolves the Provider from the complete Call Path. Any other member
   // is undefined, so a misspelled one throws where the Program uses it.
   const coral = Object.create(null);
@@ -109,8 +109,8 @@
       writable: false,
       configurable: false,
     },
-    admin: {
-      value: callablePath("coral.admin"),
+    workspace: {
+      value: callablePath("coral.workspace"),
       enumerable: true,
       writable: false,
       configurable: false,

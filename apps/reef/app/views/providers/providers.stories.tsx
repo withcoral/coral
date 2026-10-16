@@ -147,7 +147,7 @@ const coral: ProviderView = {
       ...weather.operations[0]!,
       name: 'providers/prov-coral/operations/createProvider',
       relativePath: 'createProvider',
-      callPath: 'coral.admin.createProvider',
+      callPath: 'coral.workspace.createProvider',
       path: '/workspaces/demo/providers/prov-coral/ops/createProvider',
     },
   ],
