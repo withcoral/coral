@@ -132,13 +132,13 @@ fn definition(operation: BuiltinOperation) -> Definition {
             presentation: OperationPresentation::new(
                 Some("Create provider".to_string()),
                 "Prepare a Provider in this Workspace from an OpenAPI document, an OpenAPI \
-                 document URL, or an MCP server URL. Returns a Reef link where a person \
-                 finishes and publishes it."
+                 document URL, or an MCP server URL. Returns a Coral UI link where a \
+                 person finishes and publishes it."
                     .to_string(),
                 false,
                 vec!["providers".to_string()],
                 Some(
-                    "Show the person the returned url. They finish the Provider in Reef. \
+                    "Show the person the returned url. They finish the Provider in the Coral UI. \
                      To check whether it is published, search with its namespace as \
                      provider."
                         .to_string(),
@@ -195,8 +195,8 @@ fn definition(operation: BuiltinOperation) -> Definition {
                 "type": "object",
                 "required": ["status", "url", "namespace"],
                 "properties": {
-                    "status": { "const": "needs_sign_in", "description": "A person must finish the Provider in Reef." },
-                    "url": { "type": "string", "description": "The Reef page where a person finishes and publishes the Provider." },
+                    "status": { "const": "needs_sign_in", "description": "A person must finish the Provider in the Coral UI." },
+                    "url": { "type": "string", "description": "The Coral UI page where a person finishes and publishes the Provider." },
                     "namespace": { "type": "string", "description": "The requested Provider Namespace. The person can change it." }
                 },
                 "additionalProperties": false
