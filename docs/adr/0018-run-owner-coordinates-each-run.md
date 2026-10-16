@@ -6,11 +6,12 @@ status: accepted
 
 A Coral Program Run is coordinated by one in-process **Run Owner**: an actor that exists from Run acceptance until the
 Run is terminal and is the only writer of that Run's **Run Ledger**. Every Run-scoped request reaches its mailbox as a
-**Run Request** or a wake-up; the owner applies them in arrival order in memory, builds chunks, and commits each chunk in
-one short transaction whose predicate is the Run's execution claim id and the ledger head it was built on. Only two
-transitions wait for the database: the chunk commit and the **Dispatch Fence**, which rides inside a chunk commit. Admit,
-wait, settle, decide and cancel are owner memory. Nothing holds a connection while a Program waits for a human, a
-credential refresh, or an upstream call.
+**Run Request** or a wake-up; the owner applies them in arrival order in memory, builds chunks, and commits each chunk
+in one short transaction whose predicate is the Run's execution claim id and the ledger head it was built on. Once a Run
+is claimed, only two transitions wait for the database: the chunk commit and the **Dispatch Fence**, which rides inside
+a chunk commit; the claim itself is written in the acceptance transaction, renewed by every commit, and taken over only
+by the recovery sweep below. Admit, wait, settle, decide and cancel are owner memory. Nothing holds a connection while a
+Program waits for a human, a credential refresh, or an upstream call.
 
 This replaces the shape where a `hold_run` row lock on the Run row served as the Run's work queue, serial Event ledger
 and live authority fence at once, with compare-and-set counters (`next_event_sequence`, `accumulated_output_bytes`) as
@@ -31,27 +32,29 @@ lock without a write fence is the shape the evidence rejects.
 
 ## The shape
 
-- **Run Owner**. One per nonterminal Run, created at acceptance, retired at
-  termination. It safeguards Event persistence and the Run's lifecycle: the fence, the pre-send terminal check,
-  deadlines, wait prechecks and every outcome decision. Decryption and the upstream call run in the dispatch it starts
-  and report back through the mailbox. Nothing outside the owner writes its memory. The claim CAS is the only
-  compare-and-set; every re-claim mints a new claim id, and the stale-owner fence is that id in every commit predicate.
-- **Run Request**. Admit, Emit, Log and Finish come from the
-  sandbox host; Decide Approval and Cancel from outside. Stages: Applied (decided in memory), Recorded (chunk committed),
-  Settled (what it started has ended). Shared fate decides who may act on Applied: the sandbox dies with the owner and
-  answers at Applied, because every later effect of the Run is a later owner commit that carries everything applied
-  before it; outside requesters answer at Recorded. No caller tokens: a request is identified by the entity it decides
-  (Approval Request, Run, Invocation), first wins, a repeat gets the recorded answer. `OwnerLost` means outcome unknown,
-  reread. Timers and coalesced wake-ups share the mailbox. The clock never decides state outside the owner.
-- **Run Ledger**. The Run row's `chunk_sequence` is the head; every chunk that
-  writes increments it, and Event numbering stays data. Commit-when-free after draining the mailbox, no timer; a chunk
-  closes at 1000 Events or 1 MiB of output; the Applied cap on unrecorded output bytes (default 8 MiB,
-  bootstrap-configured, validated at ≥ 2 × the chunk bytes cap) makes Program requests answer at Recorded, so the cap
-  bounds loss and memory, never the admission burst. Every chunk commit renews the worker lease; an idle tick renews it
-  at half a lease. A fenced owner stops on its commit's evidence, by failure class: claim mismatch is definitive; head
-  mismatch under a matching claim means the chunk landed; no answer means reread the head under the claim and resolve to
-  landed, recommit as built, or corruption. Suspect after one lease without a commit; self-interrupt after three; retries
-  end only on success or claim mismatch.
+- **Run Owner**. One per nonterminal Run, created in the acceptance transaction, which also writes its claim, and
+  retired at termination. It safeguards Event persistence and the Run's lifecycle: the fence, the pre-send terminal
+  check, deadlines, wait prechecks and every outcome decision. Decryption and the upstream call run in the dispatch it
+  starts and report back through the mailbox. Nothing outside the owner writes its memory. The claim is the only
+  compare-and-set outside a chunk commit; every chunk commit carries the claim-and-head predicate, every re-claim mints
+  a new claim id, and the stale-owner fence is that id in every commit predicate.
+- **Run Request**. Admit, Emit, Log and Finish come from the sandbox host; Decide Approval and Cancel from outside.
+  Stages: Applied (decided in memory), Recorded (chunk committed), Settled (what it started has ended). Shared fate
+  decides who may act on Applied: the sandbox dies with the owner and answers at Applied, because every later effect of
+  the Run is a later owner commit that carries everything applied before it; outside requesters answer at Recorded. No
+  caller tokens: a request that decides something is identified by the entity it decides (Approval Request, Run,
+  Invocation), first wins, a repeat gets the recorded answer; Emit and Log have no identity and no repeat, since the
+  Program shares the owner's fate. `OwnerLost` means outcome unknown, reread. Timers and coalesced wake-ups share the
+  mailbox. The clock never decides state outside the owner.
+- **Run Ledger**. The Run row's `chunk_sequence` is the head; every chunk that writes increments it, and Event numbering
+  stays data. Commit-when-free after draining the mailbox, no timer; a chunk closes at 1000 Events or 1 MiB of output;
+  the Applied cap on unrecorded output bytes (default 8 MiB, bootstrap-configured, validated at ≥ 2 × the chunk bytes
+  cap) makes Program requests answer at Recorded only while it is exceeded, so the cap bounds loss and memory, never the
+  admission burst. Every chunk commit renews the worker lease; an idle tick renews it at half a lease. A fenced owner
+  stops on its commit's evidence, by failure class: claim mismatch is definitive; head mismatch under a matching claim
+  means the chunk landed; no answer means reread the head under the claim and resolve to landed, recommit as built, or
+  corruption. Suspect after one lease without a commit; self-interrupt after three; retries end only on success or claim
+  mismatch.
 - **Run Output Budget**. Exact, zero overshoot, decided at
   apply time against the owner's in-memory total; `accumulated_output_bytes` is written as a plain value per chunk under
   the claim-id fence. Evidence on exceed keeps today's shape and both failure codes.
@@ -73,14 +76,16 @@ lock without a write fence is the shape the evidence rejects.
   everything else and replaces the 5 s poll and the 30 s held recheck. A wake-up is a hint, never evidence.
 - **Recovery**. The worker lease is ownership: a Run belongs to the process whose owner holds its live lease, and no
   process touches a Run with a live lease it does not hold. An expired-lease sweep recovers the rest: every `running`
-  Run whose lease has lapsed or was never taken and that has no local owner gets an owner with passed timers queued in
-  deadline order, then "finish the recorded termination" or "interrupt"; that owner writes one chunk and retires. The
-  sweep runs first at boot, before any listener binds, and then every half lease for the life of the process, so a Run
-  whose process died ends within one lease and one sweep. Coral never resumes a Run. A local owner whose lease lapsed
-  is not swept: it continues when its next commit shows a matching claim, and a takeover by another process reaches it
-  as a claim mismatch. An owner task that ends without retiring while the process lives (a panic unwinds; nothing
-  aborts the process) is caught by its supervisor through the task's join handle, which takes over the claim and writes
-  the same one-chunk interruption.
+  Run with no local owner whose lease has lapsed, or that has no claim and was accepted more than one lease ago (the
+  previous release claims a moment after acceptance; the new one claims in the acceptance transaction, so a fresh
+  unclaimed Run is the hot process's, not abandoned), gets an owner with passed timers queued in deadline order, then
+  "finish the recorded termination" or "interrupt"; that owner writes one chunk and retires. The sweep runs first at
+  boot, before any listener binds, and then every half lease for the life of the process, so a Run whose process died
+  ends within one lease and one sweep. Coral never resumes a Run. A local owner whose lease lapsed is not swept: it
+  continues when its next commit shows a matching claim, and a takeover by another process reaches it as a claim
+  mismatch. An owner task that ends without retiring while the process lives (a panic unwinds; nothing aborts the
+  process) is caught by its supervisor through the task's join handle, which takes over the claim and writes the same
+  one-chunk interruption.
 - **Rollout**. A deploy may run one hot process and one cold process until the routing flip, with no routing drain.
   The cold process's boot sweep leaves the hot process's Runs alone. On shutdown the hot process reports not ready,
   refuses new Runs, and waits the **Shutdown Drain** (bootstrap-configured) for its live Runs to finish on their own;
@@ -141,11 +146,11 @@ lock without a write fence is the shape the evidence rejects.
   and readiness during the burst, admit p95 and the lock-wait ceiling should move; the emit-to-visible numbers from
   the cadence spike must hold behind `RunModule` with V8, the fence and the probes.
 - **Rolling updates are supported; scale-out is not.** A rollout must not crash or lose information; it may degrade.
-  What degrades: a Run that does not finish within the Shutdown Drain ends `interrupted` at the hot process's
-  shutdown; a cancel or decision for such a Run that reaches the cold process answers retry until the Run is terminal,
-  so a Run waiting on a human during the drain ends interrupted unless the decision reaches the hot process; a Run
-  whose process crashed takes up to one lease and one sweep to end. The orchestrator's termination grace must exceed
-  the Shutdown Drain plus the commit grace, and the hosted deployment and the self-host guides say so.
+  What degrades: a Run that does not finish within the Shutdown Drain ends `interrupted` at the hot process's shutdown;
+  a cancel or decision for such a Run that reaches the cold process answers retry until the Run is terminal, so a Run
+  waiting on a human during the drain ends interrupted unless the decision reaches the hot process; a Run whose process
+  crashed takes up to one lease and one sweep to end. The orchestrator's termination grace must exceed the Shutdown
+  Drain plus the commit grace; the hosted deployment and the self-host guides must say so before boot recovery ships.
 - **Migrations are expand-only across one release.** The cold process migrates at boot while the hot process still
   serves, so a migration must keep the previous release's queries valid: add columns and tables, keep constraints the
   old code satisfies, and drop in a later release. The Run Ledger head is added beside `next_event_sequence`, which

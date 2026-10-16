@@ -390,10 +390,11 @@ is a new Invocation rather than an automatic retry. _Avoid_: Retry attempt, quer
 
 **Dispatch Fence**: The one authoritative check that lets an Operation Invocation start its dispatch. The Run Owner runs
 it for every ready Invocation after any wait has ended, against the current Workspace, Provider, policy and account
-facts and the Run state it holds. A change to those facts either completes before the fence reads them or waits until
-the fence has recorded its outcome, so a revocation that commits first always wins. The fence records the dispatch
-start; a change that commits after it does not stop a dispatch already started. A cached or earlier decision cannot
-authorize dispatch. _Avoid_: dispatch recheck, held fence, versioned decision, authorization cache
+facts, the User's current authority, and the Run state it holds, including each Approval Request's decision. A change to
+those facts either completes before the fence reads them or waits until the fence has recorded its outcome, so a
+revocation that commits first always wins. The fence records the dispatch start; a change that commits after it does not
+stop a dispatch already started. A cached or earlier decision cannot authorize dispatch. _Avoid_: dispatch recheck, held
+fence, versioned decision, authorization cache
 
 **Fan-out Limit**: The deployment-wide number of Operation Invocations of one Coral Program Run that may be
 `dispatching` at the same time. Coral admits every call as an Invocation at once; a ready Invocation above the limit
@@ -700,11 +701,13 @@ Operation Invocation, publish a Program Emission or Program Log, finish the Run,
 A Run Request passes through three stages: **Applied**, when the Run Owner has decided it in memory; **Recorded**, when
 that decision is durable; and **Settled**, when what it started has ended. The Program shares the Run Owner's fate and
 continues on an Applied answer; every later effect of the Run is recorded only after that answer is. A requester outside
-the Run acts on an answer only once it is Recorded. A Run Request is identified by the thing it decides (the Approval
-Request, the Run, the Invocation), so the first request wins and a repeat receives the recorded answer. When the output
-the Run Owner has applied but not yet recorded exceeds the **Applied cap**, a Program request answers at Recorded
-instead, so the output a Run can lose or hold in memory stays bounded. Deadlines and changes outside the Run reach the
-Run Owner as wake-ups, not Run Requests. _Avoid_: command, signal, mailbox message, request token, idempotency key
+the Run acts on an answer only once it is Recorded. A Run Request that decides something is identified by the thing it
+decides (the Approval Request, the Run, the Invocation), so the first request wins and a repeat receives the recorded
+answer. An Emission or Log has no identity and no repeat: the Program shares the Run Owner's fate, so it never sends one
+twice. When the output the Run Owner has applied but not yet recorded exceeds the **Applied cap**, a Program request
+answers at Recorded instead, so the output a Run can lose or hold in memory stays bounded. Deadlines and changes outside
+the Run reach the Run Owner as wake-ups, not Run Requests. _Avoid_: command, signal, mailbox message, request token,
+idempotency key
 
 **Run Output Budget**: The limit on the bytes of Program Emissions, Program Logs, Operation Invocation results, and the
 Final Value that one Coral Program Run may produce. The Run Owner decides every request against the exact total when it
