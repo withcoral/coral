@@ -88,7 +88,7 @@ export interface ProviderView {
   blockers: string[]
   /** What you must do with your own account before you call the provider, if anything. */
   personalAccountAction: string | null
-  /** Whether search can find the provider's operations; null when it can. Calls still work. */
+  /** Whether search can find the provider's operations; null when it can, or when Coral sent no state. Calls still work. */
   searchIndex: SearchIndexView | null
   readyCount: number
   totalCount: number

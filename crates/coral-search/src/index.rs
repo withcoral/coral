@@ -417,14 +417,14 @@ impl SearchIndex {
         .await
     }
 
-    /// Begins a write, waiting again while the writer is busy. A write that
-    /// overran its limit keeps the writer until its statement ends, and the
-    /// failure it leaves must still be recorded. The caller's limit bounds
-    /// the wait.
+    /// Begins a write, waiting again while the writer is busy, in this
+    /// process or another. A write that overran its limit keeps the writer
+    /// until its statement ends, and the failure it leaves must still be
+    /// recorded. The caller's limit bounds the wait.
     async fn begin_when_writer_free(&self) -> Result<Transaction<'_>, IndexError> {
         loop {
             match self.database.begin().await {
-                Err(coral_db::Error::WriterBusy) => {}
+                Err(error) if error.is_serialization_conflict() => {}
                 begun => return Ok(begun?),
             }
         }

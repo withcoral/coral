@@ -335,9 +335,7 @@ pub(super) async fn write_generation_state(
 ) -> Result<(), Error> {
     let (name, error, error_kind) = match state.state {
         AttemptState::Complete => (COMPLETE, None, None),
-        AttemptState::Failed { error, failure } => {
-            (FAILED, Some(error), failure.and_then(failure_kind))
-        }
+        AttemptState::Failed { error, failure } => (FAILED, Some(error), failure.map(failure_kind)),
     };
     transaction
         .execute(
@@ -743,32 +741,36 @@ pub(crate) async fn generation_outcomes_in_workspace(
         .collect()
 }
 
-/// Each kind and its `error_kind` value: one table for the write and the read.
-const FAILURE_KINDS: [(SearchIndexFailure, &str); 6] = [
-    (SearchIndexFailure::InvalidEntry, "invalid_entry"),
-    (SearchIndexFailure::TimedOut, "timed_out"),
-    (SearchIndexFailure::Clock, "clock"),
-    (SearchIndexFailure::Corrupt, "corrupt"),
-    (SearchIndexFailure::Provider, "provider"),
-    (SearchIndexFailure::Database, "database"),
-];
-
-/// `None` only for a kind missing from [`FAILURE_KINDS`], which its test
-/// rules out.
-fn failure_kind(failure: SearchIndexFailure) -> Option<&'static str> {
-    FAILURE_KINDS
-        .iter()
-        .find(|(kind, _)| *kind == failure)
-        .map(|(_, value)| *value)
+/// The `error_kind` value of each kind. Exhaustive, so a new kind does not
+/// compile without one.
+const fn failure_kind(failure: SearchIndexFailure) -> &'static str {
+    match failure {
+        SearchIndexFailure::InvalidEntry => "invalid_entry",
+        SearchIndexFailure::TimedOut => "timed_out",
+        SearchIndexFailure::Clock => "clock",
+        SearchIndexFailure::Corrupt => "corrupt",
+        SearchIndexFailure::Provider => "provider",
+        SearchIndexFailure::Database => "database",
+    }
 }
+
+/// Every kind the read can name. A kind missing here reads as no reason;
+/// its test lists every kind with an exhaustive match.
+const FAILURES: [SearchIndexFailure; 6] = [
+    SearchIndexFailure::InvalidEntry,
+    SearchIndexFailure::TimedOut,
+    SearchIndexFailure::Clock,
+    SearchIndexFailure::Corrupt,
+    SearchIndexFailure::Provider,
+    SearchIndexFailure::Database,
+];
 
 /// `None` for a kind this Coral does not know, such as one a later Coral
 /// wrote: the kind is information only, so it never fails the read.
 fn parse_failure_kind(value: &str) -> Option<SearchIndexFailure> {
-    FAILURE_KINDS
-        .iter()
-        .find(|(_, stored)| *stored == value)
-        .map(|(kind, _)| *kind)
+    FAILURES
+        .into_iter()
+        .find(|failure| failure_kind(*failure) == value)
 }
 
 /// Reads a Workspace's Operation rows as `(provider id, Generation id, Call
@@ -1223,14 +1225,22 @@ async fn refresh_statistics(
 
 #[cfg(test)]
 mod failure_kind_tests {
-    use super::{FAILURE_KINDS, failure_kind, parse_failure_kind};
+    use super::{FAILURES, failure_kind, parse_failure_kind};
     use crate::SearchIndexFailure;
 
     // Catches: a kind the write records but the read cannot name, which
     // would show "No reason recorded." instead of the real reason.
     #[test]
     fn every_failure_kind_reads_back_as_itself() {
-        for kind in FAILURE_KINDS.map(|(kind, _)| kind) {
+        let every_kind = [
+            SearchIndexFailure::InvalidEntry,
+            SearchIndexFailure::TimedOut,
+            SearchIndexFailure::Clock,
+            SearchIndexFailure::Corrupt,
+            SearchIndexFailure::Provider,
+            SearchIndexFailure::Database,
+        ];
+        for kind in every_kind {
             // Exhaustive: a new kind stops this compiling until it is listed.
             match kind {
                 SearchIndexFailure::InvalidEntry
@@ -1240,17 +1250,13 @@ mod failure_kind_tests {
                 | SearchIndexFailure::Provider
                 | SearchIndexFailure::Database => {}
             }
-            let value = failure_kind(kind).expect("every kind has a stored value");
-            assert_eq!(parse_failure_kind(value), Some(kind), "{value}");
+            assert!(FAILURES.contains(&kind), "{kind:?} is readable");
+            assert_eq!(parse_failure_kind(failure_kind(kind)), Some(kind));
         }
-        let values = FAILURE_KINDS
-            .map(|(_, value)| value)
+        let values = FAILURES
+            .map(failure_kind)
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(
-            values.len(),
-            FAILURE_KINDS.len(),
-            "stored values are distinct"
-        );
+        assert_eq!(values.len(), FAILURES.len(), "stored values are distinct");
     }
 }
