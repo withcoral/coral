@@ -236,9 +236,10 @@ test('Recover a lost Add response by replaying the same request identity', async
       await waitForPublication(page)
       expect(committedBody).toContain(new URL(page.url()).pathname)
       const rail = page.getByRole('navigation', { name: 'installed providers', exact: true })
+      // Only the added provider has settings; Coral has none.
       const settings = rail.getByRole('link', { name: / settings$/ })
-      await settings.nth(1).waitFor()
-      expect(await settings.count()).toBe(2)
+      await settings.first().waitFor()
+      expect(await settings.count()).toBe(1)
     })
   })
 })
