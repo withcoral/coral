@@ -330,8 +330,10 @@ the catalog. _Avoid_: Raw provider descriptor, live provider catalog, account in
 Saved Function. It identifies the kind and call path and contains a safe summary plus one self-contained TypeScript
 declaration with every public type that the callable signature references. Its declaration can be projected from
 authoritative Provider schemas or emitted from Saved Function source; callers do not receive the different internal
-authority formats. Coral stores the complete Authoring Description, compiles Programs against it, and builds Search
-Hit signature lines from it. Exact Principal-facing description returns the complete inputs, the callable, an
+authority formats. Coral stores an Operation's own declaration and declares each named type of its Provider once per
+Provider Generation; an Operation's complete declaration is its own declaration plus every named type it reaches.
+Coral compiles Programs against it and builds Search Hit signature lines from it. Exact Principal-facing description
+returns the complete inputs, the callable, an
 Operation's result wrapper, and the top level of the success data, and the other result types within a fixed byte
 budget: in full, as field-name stubs, or listed by name. Describing the same Call Path with `types` returns the named
 types of its declaration whole, with their own nested types under the same budget. Exact description of the Principal's
@@ -342,8 +344,9 @@ shared storage format
 safe presentation metadata, Operation Hints, and current approval requirement.
 Shared types belong to the Provider namespace, such as `coral.providers.github.SimpleUser`, rather than to one
 Operation group or a global type namespace. Authoritative provider schemas remain private catalog material and are not
-also returned as JSON Schema. An Operation whose complete stored description cannot fit the discovery limit is
-unavailable to Principal-facing discovery, while Reef can show its safe diagnostic; within that limit, describe fits
+also returned as JSON Schema. An Operation whose own description, without the shared types it names, cannot fit the
+discovery limit is unavailable to Principal-facing discovery, while Reef can show its safe diagnostic with the observed
+and permitted sizes; within that limit, describe fits
 its result types to the describe budget and returns the rest through `types`. _Avoid_: JSON Schema discovery result,
 global provider type
 
@@ -412,6 +415,21 @@ reconnection; a temporary refresh failure is a coded Coral Failure and does not 
 authorized detail and Approval Request can show its exact logical arguments; summaries, logs, notifications, and
 telemetry omit them. Credentials and host-generated authentication data are never Invocation arguments. Repeating a call
 is a new Invocation rather than an automatic retry. _Avoid_: Retry attempt, query execution, stored Program
+
+**Dispatch Fence**: The one authoritative check that lets an Operation Invocation start its dispatch. The Run Owner runs
+it for every ready Invocation after any wait has ended, against the current Workspace, Provider, policy and account
+facts, the User's current authority, and the Run state it holds, including each Approval Request's decision. A change to
+those facts either completes before the fence reads them or waits until the fence has recorded its outcome, so a
+revocation that commits first always wins. The fence records the dispatch start; a change that commits after it does not
+stop a dispatch already started. A cached or earlier decision cannot authorize dispatch. _Avoid_: dispatch recheck, held
+fence, versioned decision, authorization cache
+
+**Fan-out Limit**: The deployment-wide number of Operation Invocations of one Coral Program Run that may be
+`dispatching` at the same time. Coral admits every call as an Invocation at once; a ready Invocation above the limit
+stays `pending` and starts its dispatch, in the order it became ready, when an earlier one ends. Waits for account
+connection or approval do not count toward the limit, so every Approval Request a Run needs is visible at once. A
+waiting Invocation has no separate deadline; Run termination ends it as `run_terminated`. _Avoid_: fan-out budget,
+admitted-count quota, dispatch rate, per-Workspace fan-out
 
 **Operation Availability**: Whether a cataloged Operation can be invoked while preserving its upstream-native semantics.
 Caller credentials, approval, quotas, and upstream outages do not change it. Principal-facing discovery omits an
@@ -692,6 +710,42 @@ does not determine Run status. _Avoid_: Program request, connection-scoped execu
 consumption and audit. It describes Run execution, including cancellation and recovery effects, but does not duplicate
 control-plane, authoring, or approval decisions recorded as Administrative Lifecycle Events. Run Events are not replay
 checkpoints. _Avoid_: Administrative Lifecycle Event, stream chunk, workflow checkpoint
+
+**Run Owner**: The single writer of one Coral Program Run while the Run is not terminal. It exists from Run acceptance
+until the Run ends, receives every Run Request, Invocation outcome, deadline and wake-up for that Run in one order, and
+alone appends Program Run Events and the Run-scoped records they describe. It decides the Run's lifecycle and keeps its
+record durable; it does not call upstream or handle credential material, which the Operation Invocations it starts do
+outside it. A requester outside the Run acts on an outcome only once its Run Request is Recorded; the Program may
+continue on an Applied one. A repeat of the same Run Request receives the recorded answer. Workspace- and
+Provider-scoped changes reach it only as wake-ups. When a Run's worker lease lapses and no process owns it, Coral
+recreates its Run Owner; it records any deadline that passed, then the interruption or the termination already decided,
+and retires. Coral never resumes a Run. _Avoid_: Run actor, claim holder, lock holder, sweeper, external writer
+
+**Run Ledger**: The durable record of one Coral Program Run that its Run Owner appends to in chunks: the Program Run
+Events, the Run-scoped records they describe, and the Run's head. Every chunk advances the head by one and commits only
+if it extends the head it was built on, so the Ledger has one writer and one order. The Run Owner commits a chunk
+whenever none is in flight and something is pending, so a chunk holds what arrived during the previous commit, up to a
+fixed size. An uncertain commit is resolved by reading the head again. _Avoid_: event log, stream, journal, checkpoint
+
+**Run Request**: A message that asks the Run Owner of one Coral Program Run to decide something about that Run: start an
+Operation Invocation, publish a Program Emission or Program Log, finish the Run, decide an Approval Request, or cancel.
+A Run Request passes through three stages: **Applied**, when the Run Owner has decided it in memory; **Recorded**, when
+that decision is durable; and **Settled**, when what it started has ended. The Program shares the Run Owner's fate and
+continues on an Applied answer; every later effect of the Run is recorded only after that answer is. A requester outside
+the Run acts on an answer only once it is Recorded. A Run Request that decides something is identified by the thing it
+decides (the Approval Request, the Run, the Invocation), so the first request wins and a repeat receives the recorded
+answer. An Emission or Log has no identity and no repeat: the Program shares the Run Owner's fate, so it never sends one
+twice. When the output the Run Owner has applied but not yet recorded exceeds the **Applied cap**, a Program request
+answers at Recorded instead, so the output a Run can lose or hold in memory stays bounded. Deadlines and changes outside
+the Run reach the Run Owner as wake-ups, not Run Requests. _Avoid_: command, signal, mailbox message, request token,
+idempotency key
+
+**Run Output Budget**: The limit on the bytes of Program Emissions, Program Logs, Operation Invocation results, and the
+Final Value that one Coral Program Run may produce. The Run Owner decides every request against the exact total when it
+applies the request, so a Run never exceeds its budget by a byte. A refused Emission or Log is not Run output and the
+Program observes the refusal; a refused Invocation result ends that Invocation with an Operation Error; a Final Value
+that does not fit fails the Run. Operation arguments do not count. _Avoid_: approximate budget, soft limit, output
+quota, bounded overshoot
 
 **Program Emission**: A bounded, structured value that a Coral Program explicitly publishes during its Run. An Emission
 is durable caller-facing output, does not suspend execution, and remains observable if the Run later fails. _Avoid_:

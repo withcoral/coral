@@ -101,11 +101,12 @@ export const main = style({
   minWidth: 0,
   paddingInlineStart: 16,
 })
+// The rail's gap, so the first rail entry and the table start on one line.
 export const stack = style({
   display: 'flex',
   flex: '1 1 auto',
   flexDirection: 'column',
-  gap: 16,
+  gap: 12,
   minHeight: 0,
   minWidth: 0,
 })

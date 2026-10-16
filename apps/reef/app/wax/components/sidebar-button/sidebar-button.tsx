@@ -19,7 +19,6 @@ export interface SidebarButtonProps<T extends ElementType = 'button'> {
   as?: T
   /** Supplementary status; include its meaning in the link's accessible name. */
   badge?: string
-  badgeTone?: BadgeTone
   children: React.ReactNode
   className?: string
   disabled?: boolean
@@ -44,7 +43,6 @@ export function SidebarButton<T extends ElementType = 'button'>(
   const {
     as,
     badge,
-    badgeTone = 'attention',
     children,
     className,
     disabled = false,
@@ -78,12 +76,10 @@ export function SidebarButton<T extends ElementType = 'button'>(
     <Component {...componentProps}>
       <Icon className={iconStyles({ variant })} color="inherit" name={icon} size="18" />
       {!isMinimized && children && <span className={textStyles({ variant })}>{children}</span>}
-      <SidebarBadge badge={badge} tone={badgeTone} isMinimized={isMinimized} />
+      <SidebarBadge badge={badge} isMinimized={isMinimized} />
     </Component>
   )
 }
-
-type BadgeTone = 'attention' | 'neutral'
 
 /** A status badge for sidebar controls. Minimized, it is a dot in the positioned
  * parent's top corner. Include its meaning in the control's accessible name.
@@ -91,22 +87,20 @@ type BadgeTone = 'attention' | 'neutral'
  * render pops in, and one that leaves keeps its last value while it pops out. */
 export function SidebarBadge({
   badge,
-  tone = 'attention',
   isMinimized = false,
 }: {
   badge?: string
-  tone?: BadgeTone
   isMinimized?: boolean
 }) {
   const open = Boolean(badge)
   const [shown, setShown] = useState<{
-    last?: { badge: string; tone: BadgeTone }
+    last?: string
     open: boolean
     arrived: boolean
-  }>({ last: badge ? { badge, tone } : undefined, open, arrived: false })
-  if (open !== shown.open || (badge && (badge !== shown.last?.badge || tone !== shown.last.tone)))
+  }>({ last: badge, open, arrived: false })
+  if (open !== shown.open || (badge && badge !== shown.last))
     setShown({
-      last: badge ? { badge, tone } : shown.last,
+      last: badge || shown.last,
       open,
       arrived: open ? shown.arrived || !shown.open : shown.arrived,
     })
@@ -115,14 +109,14 @@ export function SidebarBadge({
     <span
       aria-hidden="true"
       className={classNames(
-        badgeStyles({ tone: shown.last.tone, isMinimized }),
+        badgeStyles({ isMinimized }),
         shown.open ? shown.arrived && badgeEnter : badgeExit,
       )}
       onAnimationEnd={() =>
         setShown((current) => (current.open ? current : { ...current, last: undefined }))
       }
     >
-      {!isMinimized && shown.last.badge}
+      {!isMinimized && shown.last}
     </span>
   )
 }

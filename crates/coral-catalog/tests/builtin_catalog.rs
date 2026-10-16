@@ -54,7 +54,10 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     };
     assert_eq!(binding.operation(), BuiltinOperation::CreateProvider);
 
-    let declaration = operation.typescript_declaration();
+    let declaration =
+        coral_catalog::authoring_declaration_in_transaction(&mut transaction, &first, operation)
+            .await
+            .unwrap();
     for expected in [
         "type ProviderSourceInput =",
         "\"openapi_document\"",

@@ -4,6 +4,15 @@ import { RefObject } from 'react'
 
 import * as styles from './menu.css'
 
+/**
+ * A closing menu stays mounted while it fades out, and Base UI makes it `inert`.
+ * `aria-hidden` says the same to tools that ignore `inert`, such as Testing Library,
+ * so a query never finds an item that is about to unmount.
+ */
+export function hideWhileClosing(props: React.ComponentProps<'div'>, state: { open: boolean }) {
+  return <div {...props} aria-hidden={state.open ? undefined : true} />
+}
+
 export interface ContentProps {
   align?: 'center' | 'end' | 'start'
   alignOffset?: number
@@ -29,6 +38,7 @@ export function Content({
         align={align}
         alignOffset={alignOffset}
         className={styles.positioner}
+        render={hideWhileClosing}
         side={side}
         sideOffset={sideOffset}
       >
