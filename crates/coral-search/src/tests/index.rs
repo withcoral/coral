@@ -892,7 +892,10 @@ async fn a_rewrite_of_an_unchanged_generation_writes_no_search_row() {
     world.index.settled().await;
     let stamps = world.row_stamps().await;
     let versions = world.search_row_versions().await;
-    if world.modules.search.database.system() == DatabaseSystem::Postgres {
+    // Only Postgres has row versions and statistics rows; on `SQLite` the
+    // stamps show that no row changed.
+    let postgres = world.modules.search.database.system() == DatabaseSystem::Postgres;
+    if postgres {
         assert!(
             versions.iter().any(|(table, ..)| table == "search_terms"),
             "the write counted the terms"
@@ -905,11 +908,13 @@ async fn a_rewrite_of_an_unchanged_generation_writes_no_search_row() {
     world.index.settled().await;
 
     assert_eq!(world.row_stamps().await, stamps, "no row changed");
-    assert_eq!(
-        world.search_row_versions().await,
-        versions,
-        "no row, term, or totals row was written"
-    );
+    if postgres {
+        assert_eq!(
+            world.search_row_versions().await,
+            versions,
+            "no row, term, or totals row was written"
+        );
+    }
     world.assert_exact_statistics().await;
 }
 

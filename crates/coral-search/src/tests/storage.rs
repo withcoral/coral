@@ -347,6 +347,13 @@ async fn postgres_step_two_splits_indexed_names_and_restates_lengths_and_statist
         .index
         .remove_generation(coral_catalog::ProviderGenerationId::parse(&generation).unwrap());
     modules.index.settled().await;
+    assert!(
+        Statistics::read(&database, &workspace)
+            .await
+            .lengths
+            .is_empty(),
+        "the removal left no row"
+    );
     modules
         .index
         .index_active_generation(workspace.clone(), provider.clone());
