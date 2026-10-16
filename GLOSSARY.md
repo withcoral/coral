@@ -309,8 +309,9 @@ the catalog. _Avoid_: Raw provider descriptor, live provider catalog, account in
 Saved Function. It identifies the kind and call path and contains a safe summary plus one self-contained TypeScript
 declaration with every public type that the callable signature references. Its declaration can be projected from
 authoritative Provider schemas or emitted from Saved Function source; callers do not receive the different internal
-authority formats. Coral stores the complete Authoring Description, compiles Programs against it, and builds Search
-Hit signature lines from it. Exact Principal-facing description returns the complete inputs, the callable, an
+authority formats. Coral stores an Operation's own declaration and declares each named type of its Provider once per
+Provider Generation; the complete Authoring Description is the Operation's own declaration plus every named type it
+reaches. Coral compiles Programs against it and builds Search Hit signature lines from it. Exact Principal-facing description returns the complete inputs, the callable, an
 Operation's result wrapper, and the top level of the success data, and the other result types within a fixed byte
 budget: in full, as field-name stubs, or listed by name. Describing the same Call Path with `types` returns the named
 types of its declaration whole, with their own nested types under the same budget. Exact description of the Principal's
@@ -321,8 +322,9 @@ shared storage format
 safe presentation metadata, Operation Hints, and current approval requirement.
 Shared types belong to the Provider namespace, such as `coral.providers.github.SimpleUser`, rather than to one
 Operation group or a global type namespace. Authoritative provider schemas remain private catalog material and are not
-also returned as JSON Schema. An Operation whose complete stored description cannot fit the discovery limit is
-unavailable to Principal-facing discovery, while Reef can show its safe diagnostic; within that limit, describe fits
+also returned as JSON Schema. An Operation whose own description, without the shared types it names, cannot fit the
+discovery limit is unavailable to Principal-facing discovery, while Reef can show its safe diagnostic with the observed
+and permitted sizes; within that limit, describe fits
 its result types to the describe budget and returns the rest through `types`. _Avoid_: JSON Schema discovery result,
 global provider type
 

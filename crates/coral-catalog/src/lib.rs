@@ -316,6 +316,20 @@ pub async fn operation_in_transaction(
     repository::load_operation(transaction, generation_id, operation_key).await
 }
 
+/// Loads an Operation's complete self-contained declaration: its own
+/// declaration and every shared type of the Generation that it reaches.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-package failure.
+pub async fn authoring_declaration_in_transaction(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+    operation: &MaterializedOperation,
+) -> Result<String, Error> {
+    repository::load_authoring_declaration(transaction, generation_id, operation).await
+}
+
 /// Reads hints and the HTTP method for 1–100 exact keys without loading
 /// executable definitions or schemas. The method is `None` for other protocols.
 /// Absent keys are omitted; structurally unavailable Operations remain included.

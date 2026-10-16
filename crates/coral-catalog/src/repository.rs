@@ -55,7 +55,20 @@ enum MaterializedOperations {
     DiagnosticMessage,
     InputSchemaId,
     DiagnosticsJson,
+    TypeReferencesJson,
 }
+
+#[derive(Iden)]
+enum ProviderGenerationTypes {
+    Table,
+    ProviderGenerationId,
+    Name,
+    Declaration,
+    ReferencesJson,
+}
+
+/// Shared types written per statement, within every database's bind limit.
+const TYPE_ROWS_PER_STATEMENT: usize = 256;
 
 #[derive(Debug, FromRow)]
 struct GenerationRow {
@@ -245,6 +258,7 @@ struct OperationRow {
     diagnostic_message: Option<String>,
     input_schema_id: Option<String>,
     diagnostics_json: Option<String>,
+    type_references_json: String,
 }
 
 impl OperationRow {
@@ -271,6 +285,12 @@ impl OperationRow {
                 "Materialized Operation has no TypeScript declaration".to_string(),
             ));
         }
+        let type_references: Vec<String> = serde_json::from_str(&self.type_references_json)
+            .map_err(|_error| {
+                Error::CorruptData(
+                    "Materialized Operation type references are not valid JSON".to_string(),
+                )
+            })?;
         let presentation = crate::OperationPresentation::new(
             self.title,
             self.description,
@@ -367,6 +387,7 @@ impl OperationRow {
             self.input_schema_json,
             self.output_schema_json,
             self.typescript_declaration,
+            type_references,
             diagnostics,
             diagnostics_json,
         ))
@@ -399,7 +420,103 @@ pub(super) async fn publish_generation(
     for operation in &parts.operations {
         insert_operation(transaction, &generation_id, operation).await?;
     }
+    insert_shared_types(transaction, &generation_id, &parts.shared_types).await?;
     Ok(generation_id)
+}
+
+async fn insert_shared_types(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+    shared_types: &crate::schema::SharedTypes,
+) -> Result<(), Error> {
+    let rows = shared_types.iter().collect::<Vec<_>>();
+    for chunk in rows.chunks(TYPE_ROWS_PER_STATEMENT) {
+        let mut statement = Query::insert()
+            .into_table(ProviderGenerationTypes::Table)
+            .columns([
+                ProviderGenerationTypes::ProviderGenerationId,
+                ProviderGenerationTypes::Name,
+                ProviderGenerationTypes::Declaration,
+                ProviderGenerationTypes::ReferencesJson,
+            ])
+            .to_owned();
+        for (name, shared) in chunk {
+            let references = serde_json::to_string(&shared.references).map_err(|_error| {
+                Error::CorruptData("shared type references cannot be encoded".to_string())
+            })?;
+            statement.values_panic([
+                Expr::val(generation_id.to_string()),
+                Expr::val(*name),
+                Expr::val(shared.declaration.as_str()),
+                Expr::val(references),
+            ]);
+        }
+        transaction.execute(statement).await?;
+    }
+    Ok(())
+}
+
+/// Loads an Operation's complete declaration: its own text and every shared
+/// type of its Generation that it reaches.
+pub(super) async fn load_authoring_declaration(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+    operation: &MaterializedOperation,
+) -> Result<String, Error> {
+    #[derive(FromRow)]
+    struct TypeRow {
+        name: String,
+        declaration: String,
+        references_json: String,
+    }
+    let mut reached = std::collections::BTreeMap::<String, String>::new();
+    let mut pending = operation.type_references().to_vec();
+    while !pending.is_empty() {
+        pending.sort();
+        pending.dedup();
+        pending.retain(|name| !reached.contains_key(name));
+        let mut next = Vec::new();
+        for chunk in pending.chunks(TYPE_ROWS_PER_STATEMENT) {
+            let rows: Vec<TypeRow> = transaction
+                .fetch_all(
+                    Query::select()
+                        .columns([
+                            ProviderGenerationTypes::Name,
+                            ProviderGenerationTypes::Declaration,
+                            ProviderGenerationTypes::ReferencesJson,
+                        ])
+                        .from(ProviderGenerationTypes::Table)
+                        .and_where(
+                            Expr::col(ProviderGenerationTypes::ProviderGenerationId)
+                                .eq(generation_id.to_string()),
+                        )
+                        .and_where(
+                            Expr::col(ProviderGenerationTypes::Name)
+                                .is_in(chunk.iter().map(String::as_str)),
+                        )
+                        .to_owned(),
+                )
+                .await?;
+            if rows.len() != chunk.len() {
+                return Err(Error::CorruptData(
+                    "Materialized Operation names a missing shared type".to_string(),
+                ));
+            }
+            for row in rows {
+                let references: Vec<String> =
+                    serde_json::from_str(&row.references_json).map_err(|_error| {
+                        Error::CorruptData("shared type references are not valid JSON".to_string())
+                    })?;
+                next.extend(references);
+                reached.insert(row.name, row.declaration);
+            }
+        }
+        pending = next;
+    }
+    Ok(crate::schema::compose_declaration(
+        reached.values().map(String::as_str),
+        operation.typescript_declaration(),
+    ))
 }
 
 #[expect(
@@ -489,6 +606,7 @@ async fn insert_operation(
             MaterializedOperations::DiagnosticMessage,
             MaterializedOperations::InputSchemaId,
             MaterializedOperations::DiagnosticsJson,
+            MaterializedOperations::TypeReferencesJson,
         ])
         .values_panic([
             Expr::val(generation_id.to_string()),
@@ -529,6 +647,11 @@ async fn insert_operation(
             ),
             Expr::val(operation.input_schema().as_str()),
             Expr::val(operation.diagnostics_json()),
+            Expr::val(
+                serde_json::to_string(operation.type_references()).map_err(|_error| {
+                    Error::CorruptData("Operation type references cannot be encoded".to_string())
+                })?,
+            ),
         ])
         .to_owned();
     transaction.execute(statement).await?;
@@ -921,7 +1044,7 @@ fn verify_operation_schema_references(
     Ok(())
 }
 
-fn operation_columns() -> [MaterializedOperations; 25] {
+fn operation_columns() -> [MaterializedOperations; 26] {
     [
         MaterializedOperations::OperationKey,
         MaterializedOperations::RelativePath,
@@ -948,5 +1071,6 @@ fn operation_columns() -> [MaterializedOperations; 25] {
         MaterializedOperations::DiagnosticMessage,
         MaterializedOperations::InputSchemaId,
         MaterializedOperations::DiagnosticsJson,
+        MaterializedOperations::TypeReferencesJson,
     ]
 }
