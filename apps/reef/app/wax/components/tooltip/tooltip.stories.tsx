@@ -2,11 +2,13 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { Info } from 'lucide-react'
 import { useState } from 'react'
+import { expect, screen, userEvent, waitFor, within } from 'storybook/test'
 
 import { IconButton } from '@/wax/components/button/icon-button'
 import { Icon } from '@/wax/components/icon'
 import { Pill } from '@/wax/components/pill/pill'
 
+import { InfoTip } from './info-tip'
 import { Tooltip } from './tooltip'
 
 const meta: Meta<typeof Tooltip> = {
@@ -44,6 +46,26 @@ export const WithIcon: Story = {
   ),
 }
 
+export const WithInfoTip: Story = {
+  render: () => (
+    <div style={{ display: 'flex', gap: '24px', padding: '48px' }}>
+      <InfoTip label="Workspace members">
+        As a member, you see only yourself and the owners. Owners see all members.
+      </InfoTip>
+      <InfoTip>Shows an icon alone when there is no label.</InfoTip>
+    </div>
+  ),
+  // Checks that a touch press opens the explanation. A simulated tap also
+  // focuses the trigger, and focus opens a Tooltip too, so this does not
+  // catch a Tooltip-based InfoTip. Only real touch input does.
+  play: async ({ canvas }) => {
+    const target = canvas.getByRole('button', { name: 'Workspace members' })
+    await userEvent.pointer({ keys: '[TouchA]', target })
+    const text = await within(document.body).findByText(/Owners see all members\./)
+    await waitFor(() => expect(text).toBeVisible())
+  },
+}
+
 export const AllSides: Story = {
   render: () => (
     <div
@@ -77,6 +99,24 @@ export const LongContent: Story = {
     content:
       'This is a longer tooltip that contains more information. It will wrap to multiple lines when the content exceeds the maximum width.',
     side: 'top',
+  },
+}
+
+// Catches: a URL, which has no spaces, running past the tooltip's edge.
+export const LongUnbrokenContent: Story = {
+  args: {
+    children: <button style={{ padding: '8px 16px' }}>Hover for the scope</button>,
+    content: 'https://graph.microsoft.com/TeamSettings.ReadWrite.All',
+    maxWidth: 200,
+    side: 'top',
+  },
+  play: async ({ canvasElement }) => {
+    await userEvent.hover(within(canvasElement).getByRole('button'))
+    const popup = await waitFor(() => {
+      const text = screen.getByText('https://graph.microsoft.com/TeamSettings.ReadWrite.All')
+      return text.closest('[data-open]') ?? text
+    })
+    await expect(popup.scrollWidth).toBeLessThanOrEqual(popup.clientWidth)
   },
 }
 

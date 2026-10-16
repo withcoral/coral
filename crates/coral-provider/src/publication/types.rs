@@ -361,6 +361,7 @@ pub enum PublicationEvidence {
 /// The Generation one write activated, and the Generation it replaced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivatedGeneration {
+    workspace: coral_workspace::WorkspaceId,
     provider: ProviderId,
     generation: coral_catalog::ProviderGenerationId,
     replaced: Option<coral_catalog::ProviderGenerationId>,
@@ -368,15 +369,23 @@ pub struct ActivatedGeneration {
 
 impl ActivatedGeneration {
     pub(crate) const fn new(
+        workspace: coral_workspace::WorkspaceId,
         provider: ProviderId,
         generation: coral_catalog::ProviderGenerationId,
         replaced: Option<coral_catalog::ProviderGenerationId>,
     ) -> Self {
         Self {
+            workspace,
             provider,
             generation,
             replaced,
         }
+    }
+
+    /// Returns the Workspace that owns the Provider.
+    #[must_use]
+    pub const fn workspace(&self) -> &coral_workspace::WorkspaceId {
+        &self.workspace
     }
 
     /// Returns the Provider whose active Generation changed.
@@ -405,7 +414,4 @@ pub struct Published<T> {
     pub publication: T,
     /// What the write changed. The caller acts on it only after its commit.
     pub evidence: PublicationEvidence,
-    /// What preparation set aside for Universal Search. On activation, the
-    /// caller builds the Generation's entries from it after its commit.
-    pub entries: crate::EntryMaterial,
 }

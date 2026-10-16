@@ -92,6 +92,10 @@ export const Compact: Story = {
   render: () => <ExampleTable density="compact" />,
 }
 
+export const Comfortable: Story = {
+  render: () => <ExampleTable density="comfortable" />,
+}
+
 export const Default: Story = {
   render: () => <ExampleTable density="default" />,
 }

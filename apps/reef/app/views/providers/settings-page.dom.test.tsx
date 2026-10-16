@@ -407,7 +407,8 @@ test('an unreadable account says so and still links to it', async () => {
   await render({ provider: { account: 'caller', connection: 'unknown' } })
   const card = byLabel('Individual accounts')!
   expect(card.textContent).not.toMatch(/Connected|Not connected|Needs reconnect/)
-  expect(text()).toContain('Coral could not read your account. Open it to see its state.')
+  expect(text()).toContain('Cannot read your account')
+  expect(text()).toContain('Open it to see its state.')
   expect(named('link', 'Manage your account')?.getAttribute('href')).toBe(yourAccountPath)
 })
 

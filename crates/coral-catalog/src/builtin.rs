@@ -5,8 +5,6 @@
 //! MCP snapshot exists. The Generation pins this catalog's identity instead,
 //! so each Workspace's Generation records which definition it materialized.
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -14,7 +12,6 @@ use crate::schema::{
     Direction, ProjectionOptions, SchemaGraphAccumulator, TypeScriptNames, TypeScriptProjector,
     canonicalize, render_callable_declaration,
 };
-use crate::search::prepare_operation_declaration_fields;
 use crate::{
     CatalogDiagnostic, Error, ExecutionBinding, MaterializedOperation, OperationHints,
     OperationKey, OperationPresentation, PreparedProviderCatalog, SchemaGraph, SchemaId,
@@ -231,7 +228,6 @@ pub(crate) fn prepare() -> Result<PreparedBuiltinCatalog, CatalogDiagnostic> {
         .map_err(|_error| invalid("the built-in schema graph cannot be encoded"))?;
     let type_names = typescript_names(&schema_graph);
     let mut operations = Vec::with_capacity(drafts.len());
-    let mut declaration_fields = BTreeMap::new();
     for (definition, binding) in drafts {
         let key = OperationKey::parse(definition.operation.key())
             .map_err(|_error| invalid("a built-in Operation Key is invalid"))?;
@@ -248,13 +244,6 @@ pub(crate) fn prepare() -> Result<PreparedBuiltinCatalog, CatalogDiagnostic> {
             ));
         }
         let execution_binding = ExecutionBinding::Builtin(binding.clone());
-        let prepared = prepare_operation_declaration_fields(
-            &execution_binding,
-            binding.input_schema(),
-            true,
-            &schema_graph,
-        )?;
-        declaration_fields.insert(key.clone(), prepared.entries);
         operations.push(MaterializedOperation::new(
             key,
             relative_path,
@@ -278,7 +267,6 @@ pub(crate) fn prepare() -> Result<PreparedBuiltinCatalog, CatalogDiagnostic> {
         schema_graph,
         schema_graph_json,
         operations,
-        declaration_fields,
     );
     Ok(PreparedBuiltinCatalog {
         identity: catalog_identity(&catalog),

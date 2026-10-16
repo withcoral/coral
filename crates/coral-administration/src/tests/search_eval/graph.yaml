@@ -1,0 +1,92 @@
+# Microsoft Graph v1.0, from apps/reef/recipes/microsoft_graph.
+# Each query is a request as an agent might phrase it, without record values.
+# A request about the signed-in user accepts the `me` path and the `users`
+# path that takes a user ID. Graph reaches one item through several parents,
+# such as a message directly or through its mail folder, so a `*` pattern
+# accepts every path to the same action.
+
+# Mail
+- query: list my emails
+  accept: [me.listMessages, users.listMessages, "me.mailFolders*.listMessages", "users.mailFolders*.listMessages"]
+- query: send an email
+  accept: [me.sendMail, users.user.sendMail]
+- query: reply to an email
+  accept: ["me.*messages.message.reply*", "me.*messages.message.createReply*", "users.*messages.message.reply*", "users.*messages.message.createReply*"]
+- query: forward an email
+  accept: ["me.*messages.message.forward", "me.*messages.message.createForward", "users.*messages.message.forward", "users.*messages.message.createForward"]
+- query: move an email to another folder
+  accept: ["me.*messages.message.move", "users.*messages.message.move"]
+- query: create a draft email
+  accept: [me.createMessages, users.createMessages, "me.mailFolders*.createMessages", "users.mailFolders*.createMessages"]
+- query: list my mail folders
+  accept: [me.listMailFolders, users.listMailFolders]
+- query: list messages in a mail folder
+  accept: ["me.mailFolders*.listMessages", "users.mailFolders*.listMessages"]
+- query: list attachments on an email
+  accept: ["me.*messages.listAttachments", "users.*messages.listAttachments"]
+- query: create an inbox rule
+  accept: ["me.mailFolders*.createMessageRules", "users.mailFolders*.createMessageRules"]
+
+# Calendar
+- query: create calendar event
+  accept: [me.createEvents, "me.calendar*.createEvents", users.createEvents, "users.calendar*.createEvents"]
+- query: list my calendar events
+  accept: [me.listEvents, "me.calendar*.listEvents", users.listEvents, "users.calendar*.listEvents"]
+- query: show my calendar for next week
+  accept: [me.listCalendarView, "me.calendar*.listCalendarView", users.listCalendarView, "users.calendar*.listCalendarView"]
+- query: accept a meeting invitation
+  accept: ["me.*events.event.accept", "users.user.*events.event.accept"]
+- query: decline a meeting
+  accept: ["me.*events.event.decline", "users.user.*events.event.decline"]
+- query: cancel a meeting
+  accept: ["me.*events.event.cancel", "users.user.*events.event.cancel"]
+- query: find a meeting time that works for everyone
+  accept: [me.findMeetingTimes, users.user.findMeetingTimes]
+- query: check when people are free or busy
+  accept: ["me.calendar*.getSchedule", "users.user.calendar*.getSchedule"]
+- query: create an online meeting
+  accept: [me.createOnlineMeetings, users.createOnlineMeetings]
+
+# People and directory
+- query: list my contacts
+  accept: [me.listContacts, "me.contactFolders*.listContacts", users.listContacts, "users.contactFolders*.listContacts"]
+- query: add a contact
+  accept: [me.createContacts, "me.contactFolders*.createContacts", users.createContacts, "users.contactFolders*.createContacts"]
+- query: get my manager
+  accept: [me.getManager, users.getManager]
+- query: list my direct reports
+  accept: [me.listDirectReports, users.listDirectReports]
+- query: get a user's presence status
+  accept: [me.getPresence, users.getPresence]
+- query: list members of a group
+  accept: [groups.listMembers, groups.listTransitiveMembers]
+- query: add a member to a group
+  accept: [groups.createRefMembers]
+
+# Files
+- query: list files in a folder
+  accept: [drives.items.listChildren]
+- query: download a file
+  accept: [drives.getItemsContent, shares.getItemsContent]
+- query: upload a file
+  accept: [drives.updateItemsContent, drives.drive.items.driveItem.createUploadSession]
+- query: search for files
+  accept: [drives.drive.search, drives.drive.items.driveItem.search]
+- query: create a sharing link for a file
+  accept: [drives.drive.items.driveItem.createLink]
+
+# Teams and tasks
+- query: list the teams I belong to
+  accept: [me.listJoinedTeams, users.listJoinedTeams]
+- query: list channels in a team
+  accept: [teams.listChannels, teams.listAllChannels]
+- query: post a message to a channel
+  accept: [teams.channels.createMessages, me.joinedTeams.channels.createMessages, me.joinedTeams.primaryChannel.createMessages]
+- query: send a chat message
+  accept: [chats.createMessages, me.chats.createMessages, users.chats.createMessages]
+- query: list my chats
+  accept: [me.listChats, users.listChats]
+- query: list my planner tasks
+  accept: [me.planner.listTasks, users.planner.listTasks]
+- query: create a to do task
+  accept: [me.todo.lists.createTasks, users.todo.lists.createTasks]
