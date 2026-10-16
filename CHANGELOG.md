@@ -1,5 +1,42 @@
 # Changelog
 
+## [1.2.0](https://github.com/withcoral/coral/compare/v1.1.0...v1.2.0) (2026-10-16)
+
+
+### Features
+
+* **catalog:** share named TypeScript types across a Provider ([#2482](https://github.com/withcoral/coral/issues/2482)) ([256e37d](https://github.com/withcoral/coral/commit/256e37d892d6aef0a4a8518984e5f1748ba1fbad))
+* **desktop:** run the runtime on a Postgres database named in desktop.json ([#2485](https://github.com/withcoral/coral/issues/2485)) ([96465a0](https://github.com/withcoral/coral/commit/96465a0864a204d61819edcbbf58fa0373f9837f))
+* **reef:** calmer providers table and a flush app shell ([#2462](https://github.com/withcoral/coral/issues/2462)) ([ffe279c](https://github.com/withcoral/coral/commit/ffe279c1be9070ed12b85102cb748c05a7d3e87a))
+* **reef:** show search indexing failures on a Provider and its Operations ([#2504](https://github.com/withcoral/coral/issues/2504)) ([6cffed0](https://github.com/withcoral/coral/commit/6cffed0da46a057c70e9eea13cba733c7f5aa6ef))
+* **search:** trace each reconcile pass and its steps ([#2456](https://github.com/withcoral/coral/issues/2456)) ([0594094](https://github.com/withcoral/coral/commit/05940948d06b774d33df89afe258996f9c302209))
+
+
+### Bug Fixes
+
+* **app:** sweep device authorization leases every 15 s ([#2452](https://github.com/withcoral/coral/issues/2452)) ([1a4e4ae](https://github.com/withcoral/coral/commit/1a4e4ae5d05e841862bd7d1910e54148c1b02cce))
+* **catalog:** import OpenAPI Providers whose Operations request different OAuth scopes ([#2401](https://github.com/withcoral/coral/issues/2401)) ([3acfe55](https://github.com/withcoral/coral/commit/3acfe5538a34842a6a088ffdbee3808f8c79702b))
+* **catalog:** keep keyword names in Operation Call Paths ([#2506](https://github.com/withcoral/coral/issues/2506)) ([b20795b](https://github.com/withcoral/coral/commit/b20795b2a71e2b5c5ba6b9c617a568e524ffef96))
+* **catalog:** never make an Operation unavailable for search material ([#2465](https://github.com/withcoral/coral/issues/2465)) ([f83c909](https://github.com/withcoral/coral/commit/f83c909b667ff99cecb929006c11d768164a9922))
+* **reef:** align the catalog table with the first rail entry ([#2484](https://github.com/withcoral/coral/issues/2484)) ([fb59758](https://github.com/withcoral/coral/commit/fb597588cddac3bb246515b5f8efcf6546da83c4))
+* **reef:** calm the Activity badge and keep it while the stream reconnects ([#2468](https://github.com/withcoral/coral/issues/2468)) ([1b66639](https://github.com/withcoral/coral/commit/1b666397fd671439eac1e009e48c18aba567713d))
+* **reef:** frame the providers table again and lower the top bar ([#2472](https://github.com/withcoral/coral/issues/2472)) ([87e41ee](https://github.com/withcoral/coral/commit/87e41eedb5dd96084877ded39c1492d612dd04e5))
+* **reef:** replace loose help text with info tips and banners ([#2461](https://github.com/withcoral/coral/issues/2461)) ([695500a](https://github.com/withcoral/coral/commit/695500a4e6207f1f2dd7cf18f774d276cfe98f49))
+* **reef:** round the page's corners beside the sidebar ([#2503](https://github.com/withcoral/coral/issues/2503)) ([a1fef64](https://github.com/withcoral/coral/commit/a1fef6498be0a35ce2493c237241ffa081876041))
+* **reef:** shorten OAuth scope chips that share a URL prefix ([#2455](https://github.com/withcoral/coral/issues/2455)) ([5ae67ec](https://github.com/withcoral/coral/commit/5ae67ec6294ac25f5b45b3b91d1c0c99d9878e9e))
+* **run:** report an MCP JSON-RPC rejection as invalid_input or upstream_rejected ([#2402](https://github.com/withcoral/coral/issues/2402)) ([749770b](https://github.com/withcoral/coral/commit/749770b4ccb41d58d7cb9eb633f0035be94a26f7))
+* **search:** load each Generation's schema graph once per search ([#2448](https://github.com/withcoral/coral/issues/2448)) ([445d945](https://github.com/withcoral/coral/commit/445d94569105087c42586756c12be1019883c63e))
+* **search:** retry a failed Saved Function only after one interval ([#2460](https://github.com/withcoral/coral/issues/2460)) ([a61ab3a](https://github.com/withcoral/coral/commit/a61ab3aa0ed6073a810d46de33dd68ace382a546))
+
+
+### Performance Improvements
+
+* **catalog:** project each named TypeScript type once per Provider ([#2443](https://github.com/withcoral/coral/issues/2443)) ([153c273](https://github.com/withcoral/coral/commit/153c273c03cd90ab3daeb1f7e61cb3d2f1ddf7f0))
+* **search:** prepare search entries in the indexer after commit ([#2467](https://github.com/withcoral/coral/issues/2467)) ([1ab6765](https://github.com/withcoral/coral/commit/1ab67651d9c3d3dbefbd03d1f9c7cde31cffe1b4))
+* **search:** recount only Workspaces whose rows changed ([#2457](https://github.com/withcoral/coral/issues/2457)) ([777cfb3](https://github.com/withcoral/coral/commit/777cfb335a457ef1ae9306f1ae8d6c2f1dd667e4))
+* **search:** skip unchanged rows when an index write runs again ([#2459](https://github.com/withcoral/coral/issues/2459)) ([43b5188](https://github.com/withcoral/coral/commit/43b518821a3344e896e0c809d8b3632c896b935e))
+* **search:** write only the statistics rows that changed ([#2458](https://github.com/withcoral/coral/issues/2458)) ([8e2832c](https://github.com/withcoral/coral/commit/8e2832cc465a192035281ec20d12617dd0d6687d))
+
 ## [1.1.0](https://github.com/withcoral/coral/compare/v1.0.0...v1.1.0) (2026-10-15)
 
 
