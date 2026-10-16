@@ -6,7 +6,7 @@ use sqlx::FromRow;
 
 use crate::invocation::{AdmittedInvocation, InvocationCompletion};
 use crate::invocation_lifecycle::{InvocationState, UnfinishedInvocation};
-use crate::run_repository::NewEvent;
+use crate::run_repository::{Chunk, NewEvent};
 use crate::{CoralFailure, Error, InvocationId, InvocationResultKind, RunId, run_repository};
 
 #[derive(Iden)]
@@ -59,6 +59,8 @@ impl InvocationState {
     }
 }
 
+/// Inserts the admitted Invocation and commits `invocation.started` as one
+/// chunk under the worker's claim.
 pub(super) async fn insert_admission(
     transaction: &mut Transaction<'_>,
     admitted: &AdmittedInvocation,
@@ -102,14 +104,12 @@ pub(super) async fn insert_admission(
         ])
         .to_owned();
     transaction.execute(statement).await?;
-    run_repository::advance_event_sequence(transaction, run, &admitted.claim_id, 1, 0).await?;
-    run_repository::insert_event(
+    run_repository::commit_chunk(
         transaction,
-        &admitted.workspace_id,
-        &admitted.run_id,
-        run.next_event_sequence,
-        NewEvent::InvocationStarted(&admitted.id),
-        admitted.admitted_at_unix_nanos,
+        Chunk::new(run, Some(&admitted.claim_id)).event(
+            NewEvent::InvocationStarted(&admitted.id),
+            admitted.admitted_at_unix_nanos,
+        ),
     )
     .await
 }

@@ -587,7 +587,7 @@ impl Probe {
     }
 
     async fn run_row(&mut self, run: &RunId) -> (i64, Option<i64>, String, Option<String>, i64) {
-        let sql = "select accepted_at_unix_nanos, terminal_at_unix_nanos, state, termination_kind, next_event_sequence \
+        let sql = "select accepted_at_unix_nanos, terminal_at_unix_nanos, state, termination_kind, chunk_sequence \
                    from program_run_records where id = $1";
         match self {
             Self::Postgres(c) => sqlx::query_as(sql)
