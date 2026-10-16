@@ -1,6 +1,6 @@
 use crate::schema::{
-    Direction, ProjectionOptions, TypeScriptNames, TypeScriptProjection, TypeScriptProjector,
-    render_callable_declaration,
+    Direction, ProjectionOptions, SharedTypes, TypeScriptNames, TypeScriptProjection,
+    TypeScriptProjector, render_callable_declaration,
 };
 use crate::{CatalogDiagnostic, McpExecutionBinding, McpInvocationMethod, SchemaGraph, SchemaId};
 
@@ -24,6 +24,7 @@ pub(super) fn project_mcp_typescript(
     reads_resource: bool,
     graph: &SchemaGraph,
     type_names: &TypeScriptNames,
+    shared: &mut SharedTypes,
 ) -> Result<TypeScriptProjection, CatalogDiagnostic> {
     let mut projector = TypeScriptProjector::new(graph, type_names, ProjectionOptions::mcp());
     let input = if reads_resource {
@@ -41,7 +42,8 @@ pub(super) fn project_mcp_typescript(
     } else {
         String::new()
     };
-    let mut declarations = projector.render_named_declarations()?;
+    let type_references = projector.share_named_declarations(shared)?;
+    let mut declarations = Vec::new();
     declarations.extend([
         "declare const McpResourceRefBrand: unique symbol;".to_string(),
         "type McpResourceRef = { readonly [McpResourceRefBrand]: true };".to_string(),
@@ -65,6 +67,7 @@ pub(super) fn project_mcp_typescript(
     )?);
     Ok(TypeScriptProjection {
         declaration: declarations.join("\n"),
+        type_references,
         input_declared,
         diagnostics: projector.into_diagnostics(),
     })
@@ -86,6 +89,7 @@ pub(crate) fn declares_input(
         binding.invocation_method() == McpInvocationMethod::ReadResource,
         graph,
         type_names,
+        &mut SharedTypes::default(),
     )
     .map(|projection| projection.input_declared)
 }

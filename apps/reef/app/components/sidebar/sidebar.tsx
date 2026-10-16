@@ -25,7 +25,7 @@ export type SidebarWorkspace = Pick<
 >
 
 interface SidebarProps {
-  /** Pending actions by Workspace path. Null: every count is unavailable. */
+  /** Pending actions by Workspace path. Null or a null count shows no badge. */
   actionCounts?: ActionCounts | null
   organizationOwner?: boolean
   auth?: BrowserAuth
@@ -51,7 +51,6 @@ interface Destination {
 
 interface Pending {
   badge: string
-  tone: 'attention' | 'neutral'
   /** The count in words, for the accessible name. */
   text: string
 }
@@ -72,13 +71,12 @@ const externalLinks: { href: string; icon: IconName; label: string }[] = [
   },
 ]
 
-/** Undefined shows no badge: a zero count, or a Workspace without a count. */
+/** Undefined shows no badge: a zero count, or a Workspace without a known count. An
+ * unknown count has nothing for you to do, and the Activity page reports it. */
 function pending(count: string | null | undefined): Pending | undefined {
-  if (count === null) return { badge: '?', tone: 'neutral', text: 'Pending actions unavailable' }
   if (!count || count === '0') return undefined
   return {
     badge: count.length > 3 ? '999+' : count,
-    tone: 'attention',
     text: `${count} pending ${count === '1' ? 'action' : 'actions'}`,
   }
 }
@@ -209,8 +207,7 @@ function SidebarNavigation({
       ? location.pathname === d.to
       : location.pathname.startsWith(d.to) ||
         Boolean(d.also && location.pathname.startsWith(d.also))
-  const countFor = (w: SidebarWorkspace) =>
-    pending(actionCounts === null ? null : actionCounts?.[w.path])
+  const countFor = (w: SidebarWorkspace) => pending(actionCounts?.[w.path])
   const links = (destinations: Destination[]) =>
     destinations.map((d) => (
       <SidebarButton
@@ -219,7 +216,6 @@ function SidebarNavigation({
         to={d.to}
         icon={d.icon}
         badge={d.pending?.badge}
-        badgeTone={d.pending?.tone}
         aria-label={named(d.label, d.pending)}
         title={named(d.label, d.pending)}
         isMinimized={isMinimized}
@@ -290,7 +286,7 @@ function SidebarNavigation({
                   className={classNames(styles.railTile, current && styles.railTileCurrent)}
                 >
                   <Avatar name={w.displayName} seed={w.path} shape="square" size="28" />
-                  <SidebarBadge badge={tileCount?.badge} tone={tileCount?.tone} isMinimized />
+                  <SidebarBadge badge={tileCount?.badge} isMinimized />
                 </Link>
                 {current && (
                   <div className={styles.railDestinations}>
@@ -364,7 +360,6 @@ function SidebarNavigation({
                         aria-label={named(w.displayName, headerCount)}
                         title={named(w.displayName, headerCount)}
                         badge={headerCount?.badge}
-                        badgeTone={headerCount?.tone}
                         className={classNames(
                           styles.headerButton,
                           styles.headerActionsSpace[actions],

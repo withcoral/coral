@@ -93,7 +93,13 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             panic!("a built-in Operation has a built-in Execution Binding");
         };
         assert_eq!(binding.operation(), Some(operation_key));
-        let declaration = operation.typescript_declaration();
+        let declaration = coral_catalog::authoring_declaration_in_transaction(
+            &mut transaction,
+            &first,
+            operation,
+        )
+        .await
+        .unwrap();
         for expected in declared {
             assert!(
                 declaration.contains(expected),

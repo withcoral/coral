@@ -572,9 +572,126 @@ fn validate_dependent_required(value: &Value) -> Result<(), CatalogDiagnostic> {
 }
 
 pub(super) struct TypeScriptProjection {
+    /// The Operation's own declaration. It names the Provider's shared types
+    /// rather than declaring them.
     pub(super) declaration: String,
+    /// The shared types the declaration names directly.
+    pub(super) type_references: Vec<String>,
     pub(super) input_declared: bool,
     pub(super) diagnostics: Vec<CatalogDiagnostic>,
+}
+
+/// One named type of a Provider: its `type Name = …;` line and the named
+/// types that line names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SharedType {
+    pub(crate) declaration: String,
+    pub(crate) references: Vec<String>,
+}
+
+/// The named types of one Provider, each declared once.
+///
+/// An Operation's declaration names these types instead of declaring them.
+/// Its complete declaration is its own text plus every shared type it
+/// reaches; see [`TypeClosure`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SharedTypes(BTreeMap<String, SharedType>);
+
+impl SharedTypes {
+    fn contains(&self, name: &str) -> bool {
+        self.0.contains_key(name)
+    }
+
+    fn insert(&mut self, name: String, shared: SharedType) {
+        debug_assert!(
+            self.0.get(&name).is_none_or(|kept| *kept == shared),
+            "a shared type name means one type across the Provider"
+        );
+        self.0.entry(name).or_insert(shared);
+    }
+
+    /// Every shared type, by name.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, &SharedType)> {
+        self.0.iter().map(|(name, shared)| (name.as_str(), shared))
+    }
+
+    /// The complete declaration of an Operation whose own text is
+    /// `declaration` and which names `references` directly.
+    pub(crate) fn compose(&self, declaration: &str, references: &[String]) -> String {
+        let mut closure = TypeClosure::new(references);
+        loop {
+            let names = closure.pending();
+            if names.is_empty() {
+                break;
+            }
+            let found = names
+                .iter()
+                .filter_map(|name| Some((name.clone(), self.0.get(name)?.clone())))
+                .collect();
+            closure
+                .reach(&names, found)
+                .expect("materialization declares every shared type an Operation names");
+        }
+        closure.compose(declaration)
+    }
+}
+
+/// The shared types one Operation reaches, found level by level from the
+/// names its own declaration names. Each level looks up only names not yet
+/// reached, so a cycle ends the walk.
+pub(crate) struct TypeClosure {
+    reached: BTreeMap<String, String>,
+    pending: Vec<String>,
+}
+
+impl TypeClosure {
+    pub(crate) fn new(references: &[String]) -> Self {
+        Self {
+            reached: BTreeMap::new(),
+            pending: references.to_vec(),
+        }
+    }
+
+    /// The names to look up next, each once. Empty when the walk is done.
+    pub(crate) fn pending(&mut self) -> Vec<String> {
+        let mut names = std::mem::take(&mut self.pending);
+        names.sort();
+        names.dedup();
+        names.retain(|name| !self.reached.contains_key(name));
+        names
+    }
+
+    /// Records the shared types found for the `requested` names and queues
+    /// the names they reference.
+    ///
+    /// # Errors
+    ///
+    /// Corrupt data when a requested name has no shared type.
+    pub(crate) fn reach(
+        &mut self,
+        requested: &[String],
+        found: Vec<(String, SharedType)>,
+    ) -> Result<(), crate::Error> {
+        for (name, shared) in found {
+            self.pending.extend(shared.references);
+            self.reached.insert(name, shared.declaration);
+        }
+        if requested.iter().all(|name| self.reached.contains_key(name)) {
+            Ok(())
+        } else {
+            Err(crate::Error::CorruptData(
+                "an Operation names a missing shared type".to_string(),
+            ))
+        }
+    }
+
+    /// The complete declaration: the reached types in name order, then the
+    /// Operation's own `declaration`.
+    pub(crate) fn compose(self, declaration: &str) -> String {
+        let mut lines = self.reached.into_values().collect::<Vec<_>>();
+        lines.push(declaration.to_string());
+        lines.join("\n")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -781,6 +898,9 @@ pub(super) struct TypeScriptProjector<'a> {
     used_named_scalars: BTreeSet<&'static str>,
     /// Effects of each named render in progress, innermost last.
     recording: Vec<Vec<RenderEffect>>,
+    /// Named types the Operation's own projections name, outside any named
+    /// type's body.
+    direct_references: BTreeSet<String>,
 }
 
 impl<'a> TypeScriptProjector<'a> {
@@ -807,6 +927,7 @@ impl<'a> TypeScriptProjector<'a> {
             diagnostic_codes: HashSet::new(),
             used_named_scalars: BTreeSet::new(),
             recording: Vec::new(),
+            direct_references: BTreeSet::new(),
         }
     }
 
@@ -930,6 +1051,9 @@ impl<'a> TypeScriptProjector<'a> {
                     .push(target);
             }
             let referenced = self.project_id(&id, direction, true)?;
+            if self.rendering.is_empty() {
+                self.direct_references.insert(referenced.clone());
+            }
             let siblings = object
                 .iter()
                 .filter(|(name, _value)| name.as_str() != "$ref")
@@ -1318,7 +1442,12 @@ impl<'a> TypeScriptProjector<'a> {
         self.diagnostics
     }
 
-    pub(super) fn render_named_declarations(&mut self) -> Result<Vec<String>, CatalogDiagnostic> {
+    /// Adds every named type the Operation reaches to the Provider's shared
+    /// types, and returns the names its own projections name directly.
+    pub(super) fn share_named_declarations(
+        &mut self,
+        shared: &mut SharedTypes,
+    ) -> Result<Vec<String>, CatalogDiagnostic> {
         loop {
             let pending = self
                 .referenced
@@ -1336,19 +1465,45 @@ impl<'a> TypeScriptProjector<'a> {
         if self.options.widen_unguarded_reference_cycles {
             self.widen_unguarded_reference_cycles();
         }
-        let mut declarations = self
-            .rendered
-            .iter()
-            .map(|(key, value)| {
-                let name = self
-                    .referenced
-                    .get(key)
-                    .expect("a rendered schema always has an assigned TypeScript name");
-                format!("type {name} = {value};")
-            })
-            .collect::<Vec<_>>();
-        declarations.sort();
-        Ok(declarations)
+        for (key, body) in &self.rendered {
+            let name = self
+                .referenced
+                .get(key)
+                .expect("a rendered schema always has an assigned TypeScript name");
+            if shared.contains(name) {
+                continue;
+            }
+            // A body widened to `unknown` names nothing.
+            let references = if body == "unknown" {
+                Vec::new()
+            } else {
+                self.type_names
+                    .render(key)
+                    .into_iter()
+                    .flat_map(|kept| {
+                        kept.effects
+                            .iter()
+                            .filter_map(|effect| match effect {
+                                RenderEffect::Reference { target, .. } => {
+                                    self.type_names.get(&target.0, target.1).cloned()
+                                }
+                                RenderEffect::Warn(..) | RenderEffect::NamedScalar(_) => None,
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect()
+            };
+            shared.insert(
+                name.clone(),
+                SharedType {
+                    declaration: format!("type {name} = {body};"),
+                    references,
+                },
+            );
+        }
+        Ok(self.direct_references.iter().cloned().collect())
     }
 }
 

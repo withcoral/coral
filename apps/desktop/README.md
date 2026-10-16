@@ -215,7 +215,9 @@ Desktop keeps everything under `<appData>/com.withcoral.app`, which is
 
 - `runtime/`: the runtime's state. Desktop rewrites `runtime/config.toml` on
   every launch.
-- `desktop.json`: the kept MCP and Reef ports, and the background notice. See [Ports](#ports) and [Background](#background).
+- `desktop.json`: the kept MCP and Reef ports, the background notice, and the
+  database, if you set one. See [Ports](#ports), [Background](#background) and
+  [Database](#database).
 - `logs/`: `coral.log`, `reef.log` and `desktop.log`, Desktop's own record of
   starts, failures and restarts. Help > Show logs opens this folder. A log
   that reaches 5 MB moves to `<name>.1.log`, which replaces the previous one.
@@ -223,3 +225,23 @@ Desktop keeps everything under `<appData>/com.withcoral.app`, which is
 On Windows, the runtime's owner-only file permissions have no effect. The data
 folder relies on the access control list that it inherits from the user's
 profile.
+
+### Database
+
+The runtime keeps its state in `runtime/coral.db`, a SQLite file. To use a
+Postgres database instead, quit Coral and add a `database` section to
+`desktop.json`. Keep the sections that are already there:
+
+```json
+{
+  "ports": { "mcp": 58100, "reef": 58101 },
+  "database": { "backend": "postgres", "url": "postgres://user:password@127.0.0.1:5432/coral" }
+}
+```
+
+Desktop then writes `[database]` in `runtime/config.toml` and gives the runtime
+the URL in `CORAL_DESKTOP_DATABASE_URL`, so the file never holds the password.
+Desktop never writes this section. An invalid section stops Coral from
+starting; it never falls back to SQLite. The runtime does not copy state
+between the two databases, and `runtime/credentials.key` must stay with the
+state that it sealed.
