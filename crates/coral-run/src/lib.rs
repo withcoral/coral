@@ -101,11 +101,14 @@ pub use activity_observation::{ActivityObservation, ActivityWake};
 pub use admission::{PreparedRun, StagedRun};
 pub mod approval;
 mod approval_repository;
+mod builtin;
 mod engine;
 mod error;
 mod execution;
 mod history;
+mod human_interface;
 pub use history::{InvocationStatus, InvocationSummary, RunSummary};
+pub use human_interface::{HumanInterfaceUrl, HumanInterfaceUrlError};
 pub mod history_repository;
 mod inspection;
 mod inspection_repository;
@@ -185,6 +188,8 @@ impl TestObservers {
 #[derive(Clone)]
 pub struct RunModule {
     accounts: Option<coral_provider::account::AccountModule>,
+    providers: coral_provider::ProviderModule,
+    human_interface: Option<HumanInterfaceUrl>,
     database: Arc<Database>,
     workspaces: WorkspaceModule,
     engine: Arc<dyn ProgramEngine>,
@@ -201,15 +206,20 @@ pub struct RunModule {
 
 impl RunModule {
     /// Builds the runtime with deployment-selected outbound policy and isolate limits.
+    /// Built-in Operations prepare Setups through `providers`, the bootstrap's
+    /// Provider Module.
     /// # Errors
     /// Returns an initialization error when the runtime or HTTP client cannot start.
     pub fn new(
         policy: coral_outbound::DestinationPolicy,
         database: Arc<Database>,
         workspaces: WorkspaceModule,
+        providers: coral_provider::ProviderModule,
         isolate_limits: IsolateLimits,
     ) -> Result<Self, Error> {
         Ok(Self {
+            providers,
+            human_interface: None,
             database,
             workspaces,
             accounts: None,
@@ -230,12 +240,15 @@ impl RunModule {
     pub(crate) fn with_adapters(
         database: Arc<Database>,
         workspaces: WorkspaceModule,
+        providers: coral_provider::ProviderModule,
         engine: Arc<dyn ProgramEngine>,
         upstream: Arc<dyn UpstreamSender>,
         clock: Arc<dyn Clock>,
         observers: TestObservers,
     ) -> Self {
         Self {
+            providers,
+            human_interface: None,
             database,
             workspaces,
             accounts: None,
@@ -255,6 +268,15 @@ impl RunModule {
     #[must_use]
     pub fn with_accounts(mut self, accounts: coral_provider::account::AccountModule) -> Self {
         self.accounts = Some(accounts);
+        self
+    }
+
+    /// Names the Reef origin that built-in Operation Results link to. Only the
+    /// runtime that launches Programs needs it; without it, a built-in
+    /// Operation fails as `operation_unavailable`.
+    #[must_use]
+    pub fn with_human_interface(mut self, human_interface: HumanInterfaceUrl) -> Self {
+        self.human_interface = Some(human_interface);
         self
     }
 

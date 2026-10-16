@@ -1284,8 +1284,8 @@ async fn cancellation_and_expiry_leave_no_usable_credential() {
                 .authorized,
             "{flow:?}: material past the Setup deadline is scrubbed"
         );
-        // The expired ready Setup can still record its failed Publication.
-        let failed = if let Some(sealed) = &sealed {
+        // A Ready Setup expires at its deadline as well, so it publishes nothing.
+        if let Some(sealed) = &sealed {
             let publication = fixture
                 .harness
                 .providers
@@ -1300,14 +1300,12 @@ async fn cancellation_and_expiry_leave_no_usable_credential() {
                     )
                     .with_account_grant(sealed.provisional_grant_id.unwrap()),
                 )
-                .await
-                .unwrap();
-            assert_eq!(publication.outcome(), ProviderPublicationOutcome::Failed);
-            assert_eq!(publication.diagnostic().unwrap().code(), "setup_expired");
-            Some(publication.id().clone())
-        } else {
-            None
-        };
+                .await;
+            assert!(
+                matches!(publication, Err(Error::ProviderSetupNotReady)),
+                "{flow:?}: {publication:?}"
+            );
+        }
         assert!(
             matches!(
                 fixture.begin(owner, &expiring, 102 + HOUR).await,
@@ -1317,7 +1315,7 @@ async fn cancellation_and_expiry_leave_no_usable_credential() {
         );
         assert_eq!(
             fixture.setup_state(&expiring).await,
-            failed.map_or(ProviderSetupState::Expired, ProviderSetupState::Consumed),
+            ProviderSetupState::Expired,
             "{flow:?}"
         );
         assert!(
@@ -4465,7 +4463,8 @@ async fn regeneration_expires_only_setup_secrets_and_repairs_only_replaced_appli
     let original_secret = active_secret().await;
     for (secret, created, now, succeeds, repairs) in [
         (Some("expired-canary"), 10, HOUR + 10, false, false),
-        (None, 10, HOUR + 10, true, false),
+        // A Setup expires at its deadline with or without a secret of its own.
+        (None, 10, HOUR + 10, false, false),
         (Some("fresh-canary"), HOUR + 11, HOUR + 12, true, true),
     ] {
         let created_context = change_context(actor.clone(), created, '2');

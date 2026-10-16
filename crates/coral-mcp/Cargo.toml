@@ -14,7 +14,6 @@ async-trait.workspace = true
 chrono.workspace = true
 axum = { workspace = true, features = ["http1", "tokio"] }
 coral-run.workspace = true
-coral-outbound.workspace = true
 coral-functions.workspace = true
 coral-search.workspace = true
 coral-task.workspace = true
@@ -29,6 +28,7 @@ tower.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+coral-outbound.workspace = true
 coral-workspace = { workspace = true, features = ["test-fixtures"] }
 coral-search = { workspace = true, features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["test-util"] }

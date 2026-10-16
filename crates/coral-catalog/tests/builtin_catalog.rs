@@ -64,7 +64,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         "\"openapi_url\"",
         "\"mcp_url\"",
         r#"function createProvider(input: { "namespace": string; "source": ProviderSourceInput })"#,
-        r#"data: { "callRoot": string; "displayName": string; "namespace": string }"#,
+        r#"data: { "namespace": string; "status": "needs_sign_in"; "url": string }"#,
         "metadata: { kind: \"builtin\" }",
     ] {
         assert!(
@@ -98,7 +98,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         .map(|entry| entry.path().as_str())
         .collect::<Vec<_>>();
     assert!(paths.contains(&"input.namespace"), "{paths:?}");
-    assert!(paths.contains(&"result.data.callRoot"), "{paths:?}");
+    assert!(paths.contains(&"result.data.url"), "{paths:?}");
 
     assert_eq!(
         coral_catalog::credential_contract_in_transaction(&mut transaction, &first)

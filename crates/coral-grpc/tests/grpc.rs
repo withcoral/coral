@@ -183,6 +183,7 @@ impl Fixture {
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             database.clone(),
             workspaces.clone(),
+            providers.clone(),
             coral_run::IsolateLimits::default(),
         )
         .unwrap()

@@ -116,6 +116,7 @@ async fn durable_cancellation_stops_execution_owned_by_an_independent_worker() {
     let canceling_worker = RunModule::with_adapters(
         fixture.database.clone(),
         fixture.workspaces.clone(),
+        fixture.providers.clone(),
         engine.clone(),
         fixture.upstream.clone(),
         fixture.clock.clone(),
@@ -1073,6 +1074,7 @@ async fn durable_cancellation_wins_completion_and_preserves_principal_confidenti
     let immediate_runs = RunModule::with_adapters(
         fixture.database.clone(),
         fixture.workspaces.clone(),
+        fixture.providers.clone(),
         Arc::new(ImmediateEngine::default()),
         fixture.upstream.clone(),
         fixture.clock.clone(),
