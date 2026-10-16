@@ -45,9 +45,24 @@ impl UpstreamSender for DefectiveUpstream {
     }
 }
 
-#[derive(Default)]
 pub(crate) struct FailingUpstream {
     pub(crate) sends: AtomicUsize,
+    failure: fn() -> crate::invocation::UpstreamSendError,
+}
+
+impl FailingUpstream {
+    pub(crate) const fn new(failure: fn() -> crate::invocation::UpstreamSendError) -> Self {
+        Self {
+            sends: AtomicUsize::new(0),
+            failure,
+        }
+    }
+}
+
+impl Default for FailingUpstream {
+    fn default() -> Self {
+        Self::new(|| crate::invocation::UpstreamSendError::Incomplete)
+    }
 }
 
 #[async_trait]
@@ -58,7 +73,7 @@ impl UpstreamSender for FailingUpstream {
         _stop: Arc<ExecutionStop>,
     ) -> Result<UpstreamOutcome, crate::invocation::UpstreamSendError> {
         self.sends.fetch_add(1, Ordering::SeqCst);
-        Err(crate::invocation::UpstreamSendError::Incomplete)
+        Err((self.failure)())
     }
 }
 

@@ -11,20 +11,42 @@ function actionCounts(value: unknown): ActionCounts {
   return value as ActionCounts
 }
 
-/** One shell-owned subscription for every Workspace's count. Failures conceal the counts
- * (null); reconnect starts from fresh counts, never from a cached authority grant or a
- * replay cursor.
+/** The last counts stay this long after the stream reports a drop, then clear. A silent
+ * stall reports only when its 15 s lease ends, so a count can stay about 45 s after the
+ * last sign of life. */
+const STALE_MS = 30_000
+
+/** One shell-owned subscription for every Workspace's count. A short drop keeps the last
+ * counts until the next snapshot replaces them all. A long drop or an expired session
+ * conceals them (null). Reconnect never starts from a cached authority grant or a replay
+ * cursor: the next snapshot alone sets the counts.
  */
 export function useActionCounts(initial: ActionCounts | null) {
   const [counts] = useState(() => {
     const value = atom<ActionCounts | null>(initial)
     value.onMount = (set) => {
+      let stale: ReturnType<typeof setTimeout> | undefined
+      const fresh = () => {
+        clearTimeout(stale)
+        stale = undefined
+      }
       const stream = subscribeActivityStream('/activity/count', {
-        onValue: (event) => set(actionCounts(event.counts)),
-        onUnavailable: () => set(null),
-        onSessionExpired: () => set(null),
+        onValue: (event) => {
+          set(actionCounts(event.counts))
+          fresh()
+        },
+        onUnavailable: () => {
+          stale ??= setTimeout(() => set(null), STALE_MS)
+        },
+        onSessionExpired: () => {
+          fresh()
+          set(null)
+        },
       })
-      return () => stream.close()
+      return () => {
+        fresh()
+        stream.close()
+      }
     }
     return value
   })

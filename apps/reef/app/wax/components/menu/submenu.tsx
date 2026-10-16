@@ -6,6 +6,7 @@ import { Icon } from '@/wax/components/icon'
 import type { IconName } from '@/wax/components/icon'
 import { Tooltip } from '@/wax/components/tooltip'
 
+import { hideWhileClosing } from './content'
 import * as styles from './menu.css'
 
 export interface SubmenuContentProps {
@@ -58,6 +59,7 @@ export function SubmenuContent({
         align={align}
         alignOffset={alignOffset}
         className={styles.positioner}
+        render={hideWhileClosing}
         side="right"
         sideOffset={sideOffset}
       >

@@ -211,15 +211,10 @@ export const badgeStyles = recipe({
     marginBlock: -1,
     paddingInline: 5,
     fontVariantNumeric: 'tabular-nums',
+    backgroundColor: theme.sidebar.badge.background,
+    color: theme.sidebar.badge.content,
   },
   variants: {
-    tone: {
-      attention: {
-        backgroundColor: theme.sidebar.badge.background,
-        color: theme.sidebar.badge.content,
-      },
-      neutral: { backgroundColor: theme.surface.onMainContent, color: theme.content.secondary },
-    },
     isMinimized: {
       false: {},
       true: {

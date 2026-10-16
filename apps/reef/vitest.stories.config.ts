@@ -3,6 +3,7 @@
 // Stories run in their own Vitest process. The Storybook plugin loads `.env` into
 // process.env, which would leak local settings into the Node test projects.
 
+import { availableParallelism } from 'node:os'
 import path from 'node:path'
 
 import { storybookTest } from '@storybook/addon-vitest/vitest-plugin'
@@ -33,6 +34,9 @@ export default defineConfig({
       provider: playwright(),
     },
     css: true,
+    // One Node process serves every page and relays each real key press. Past four
+    // pages it falls behind, and stories that press keys time out.
+    maxWorkers: Math.min(4, availableParallelism()),
     name: 'storybook',
   },
 })
