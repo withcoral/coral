@@ -28,7 +28,7 @@ mod tests;
 pub enum ProviderCallRoot {
     /// `coral.providers.<namespace>`: a Provider an Owner adds.
     Owner(ProviderNamespace),
-    /// `coral.admin`: the Workspace's Built-in Provider, which Coral defines.
+    /// `coral.workspace`: the Workspace's Built-in Provider, which Coral defines.
     Builtin,
 }
 
@@ -43,7 +43,7 @@ pub struct ProviderNamespace {
 /// The prefix of every Owner-added Provider's Call Root.
 const OWNER_ROOT_PREFIX: &str = "coral.providers.";
 /// The Call Root of every Workspace's Built-in Provider.
-const BUILTIN_ROOT: &str = "coral.admin";
+const BUILTIN_ROOT: &str = "coral.workspace";
 const MAX_SEGMENT_BYTES: usize = 128;
 
 impl ProviderNamespace {
@@ -74,7 +74,7 @@ impl ProviderNamespace {
 }
 
 impl ProviderCallRoot {
-    /// Validates one Call Root: `coral.providers.<namespace>` or `coral.admin`.
+    /// Validates one Call Root: `coral.providers.<namespace>` or `coral.workspace`.
     ///
     /// # Errors
     ///
@@ -89,7 +89,7 @@ impl ProviderCallRoot {
             .map(Self::Owner)
             .ok_or_else(|| {
                 Error::InvalidInput(
-                    "Provider Call Root must be coral.providers.<namespace>, with a non-reserved safe ASCII JavaScript identifier of at most 128 bytes, or coral.admin"
+                    "Provider Call Root must be coral.providers.<namespace>, with a non-reserved safe ASCII JavaScript identifier of at most 128 bytes, or coral.workspace"
                         .to_string(),
                 )
             })
@@ -118,7 +118,7 @@ impl ProviderCallRoot {
         }
     }
 
-    /// Returns the Call Root's last segment, such as `github` or `admin`, for
+    /// Returns the Call Root's last segment, such as `github` or `workspace`, for
     /// search text and labels. No rule reads it.
     #[must_use]
     pub fn name(&self) -> &str {

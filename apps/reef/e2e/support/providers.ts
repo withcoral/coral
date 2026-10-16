@@ -241,7 +241,7 @@ export async function nextPublication(page: Page) {
 }
 
 /** Every workspace also holds the Built-in Provider, which Coral adds itself. */
-const BUILTIN_CALL_ROOT = 'coral.admin'
+const BUILTIN_CALL_ROOT = 'coral.workspace'
 const BUILTIN_GEAR = 'Coral admin settings'
 /** Every gear in the rail but the Built-in Provider's. */
 const ADDED_GEAR = /^(?!Coral admin settings$).+ settings$/

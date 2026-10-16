@@ -74,7 +74,7 @@ fn bounded_message(message: &str) -> String {
 pub(crate) struct StartedTask {
     #[schemars(schema_with = "crate::arguments::uuid_schema")]
     pub(crate) task_id: String,
-    /// The namespaces of the Providers you can search, and coral.admin for
+    /// The namespaces of the Providers you can search, and coral.workspace for
     /// Coral's own operations: the values `search` accepts as `provider`.
     pub(crate) providers: Vec<String>,
 }

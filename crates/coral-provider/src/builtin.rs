@@ -1,4 +1,4 @@
-//! The Built-in Provider: "Coral admin" at the Call Root `coral.admin`.
+//! The Built-in Provider: "Coral admin" at the Call Root `coral.workspace`.
 //!
 //! Every Workspace gets one when it is created, with its own Generation of the
 //! Coral-defined catalog. It has no Setup, no Publication and no Accounts.

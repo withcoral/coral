@@ -1,4 +1,4 @@
-//! The Built-in Provider: one per Workspace at `coral.admin`, discoverable and
+//! The Built-in Provider: one per Workspace at `coral.workspace`, discoverable and
 //! callable only by Users with effective Workspace Owner authority.
 use coral_workspace::{
     AgentDisplayName, AuthenticatedPrincipal, OrganizationRole, WorkspaceDisplayName, WorkspaceRole,
@@ -91,7 +91,7 @@ async fn only_users_with_effective_owner_authority_discover_and_call_the_builtin
             &mut transaction,
             workspace.id(),
             crate::InvocationCaller::new(&workspaces, &principal, 12),
-            "coral.admin.createProvider",
+            "coral.workspace.createProvider",
         )
         .await
         .unwrap();
@@ -101,7 +101,7 @@ async fn only_users_with_effective_owner_authority_discover_and_call_the_builtin
 }
 
 #[tokio::test]
-async fn a_workspace_has_one_builtin_provider_beside_an_owner_provider_named_admin() {
+async fn a_workspace_has_one_builtin_provider_beside_an_owner_provider_named_workspace() {
     let (fixture, workspaces, providers) = test_modules().await;
     let database = fixture.database();
     let owner = organization_user(database.clone(), "user:owner", OrganizationRole::Member).await;
@@ -122,17 +122,17 @@ async fn a_workspace_has_one_builtin_provider_beside_an_owner_provider_named_adm
         .unwrap();
     transaction.commit().await.unwrap();
 
-    let admin = publish_provider(
+    let namesake = publish_provider(
         &providers,
         &context,
         workspace.id(),
         CREDENTIAL_FREE_OPENAPI,
-        "admin",
+        "workspace",
         CredentialRoute::None,
     )
     .await;
-    assert_eq!(builtin.call_root().as_str(), "coral.admin");
-    assert_eq!(admin.call_root().as_str(), "coral.providers.admin");
+    assert_eq!(builtin.call_root().as_str(), "coral.workspace");
+    assert_eq!(namesake.call_root().as_str(), "coral.providers.workspace");
 
     let mut transaction = database.begin().await.unwrap();
     assert!(matches!(
@@ -155,7 +155,7 @@ async fn a_workspace_has_one_builtin_provider_beside_an_owner_provider_named_adm
         .map(|provider| provider.provider().call_root().as_str().to_string())
         .collect::<Vec<_>>();
     roots.sort_unstable();
-    assert_eq!(roots, ["coral.admin", "coral.providers.admin"]);
+    assert_eq!(roots, ["coral.providers.workspace", "coral.workspace"]);
     transaction.rollback().await.unwrap();
 }
 
