@@ -1206,7 +1206,7 @@ impl ProgramHost for RejectingOperationHost {
         Box::pin(async move {
             Err(OperationHostError::Rejected {
                 code: "upstream_incomplete",
-                message: "durable Operation failure",
+                message: "durable Operation failure".into(),
                 trace_id: call_path
                     .ends_with(".traced")
                     .then(|| "0123456789abcdef0123456789abcdef".to_string()),

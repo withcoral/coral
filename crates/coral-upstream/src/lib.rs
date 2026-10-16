@@ -137,7 +137,9 @@ pub enum Error {
     /// The complete response body could not be read.
     #[error("upstream HTTP body read failed: {0}")]
     Body(#[source] reqwest::Error),
-    /// Logical arguments do not satisfy the retained wire recipe.
+    /// Logical arguments do not satisfy the retained wire recipe. The reason is
+    /// Coral's own and reaches the Program: it may name an argument, never hold
+    /// an argument value or upstream content.
     #[error("invalid Operation arguments: {0}")]
     InvalidArguments(String),
     /// A JSON request value could not be encoded.

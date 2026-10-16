@@ -67,7 +67,7 @@ impl coral_v8::ProgramHost for RunProgramHost {
             let arguments = serde_json::from_str(&arguments_json).map_err(|_error| {
                 coral_v8::OperationHostError::Rejected {
                     code: CoralFailure::InvalidInput.code(),
-                    message: CoralFailure::InvalidInput.message(),
+                    message: CoralFailure::InvalidInput.message().into(),
                     trace_id: None,
                 }
             })?;

@@ -392,9 +392,10 @@ fn serialize_parameters(
                 if path_texts(value).any(|text| {
                     text.contains(['/', '\\']) && text.split(['/', '\\']).any(is_dot_segment)
                 }) {
-                    return Err(Error::InvalidArguments(
-                        "a path argument cannot contain a `.` or `..` segment".to_string(),
-                    ));
+                    return Err(Error::InvalidArguments(format!(
+                        "Operation argument `{}` cannot contain a `.` or `..` path segment",
+                        parameter.logical_name()
+                    )));
                 }
                 let encoded = serialize_path_parameter(parameter, value)?;
                 path = path.replace(&format!("{{{}}}", parameter.wire_name()), &encoded);

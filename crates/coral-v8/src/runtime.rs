@@ -281,7 +281,7 @@ fn drain_program_work(
                                 scope,
                                 resolver,
                                 code,
-                                message,
+                                &message,
                                 trace_id.as_deref(),
                                 &call_stack,
                             );

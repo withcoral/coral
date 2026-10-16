@@ -12,13 +12,14 @@ use coral_catalog::{
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::{
     ManagementRequestId, OpenApiDocument, ProviderModule, ProviderSetupId, ProviderSetupSource,
-    ResolvedInvocationOperation, SetupPublishability, WorkspaceProviderPublicationRequest,
-    WorkspaceProviderPublisher,
+    PublishabilityRejection, ResolvedInvocationOperation, SetupPublishability,
+    WorkspaceProviderPublicationRequest, WorkspaceProviderPublisher,
 };
 use coral_workspace::{ChangeContext, Principal, WorkspaceId};
 use serde::Deserialize;
 
-use crate::{CoralFailure, Error, HumanInterfaceUrl};
+use crate::error::InputProblem;
+use crate::{CoralFailure, Error, HumanInterfaceUrl, Rejection};
 
 mod input;
 
@@ -34,7 +35,7 @@ impl BuiltinCall {
     pub(crate) fn parse(
         target: &ResolvedInvocationOperation,
         arguments: &serde_json::Value,
-    ) -> Option<Result<Self, CoralFailure>> {
+    ) -> Option<Result<Self, Rejection>> {
         match target.operation().execution_binding() {
             ExecutionBinding::Builtin(binding) => Some(match binding.operation() {
                 BuiltinOperation::CreateProvider => {
@@ -134,6 +135,31 @@ enum SourceArguments {
     McpUrl { url: String },
 }
 
+impl SourceArguments {
+    /// The source to prepare. An MCP server is discovered with the same
+    /// non-secret headers it is configured with.
+    fn into_source(
+        self,
+        request_headers: Option<&BTreeMap<String, String>>,
+    ) -> Result<ProviderSetupSource, InputProblem> {
+        match self {
+            Self::OpenapiDocument { document } => OpenApiDocument::parse(&document)
+                .map(ProviderSetupSource::OpenApiDocument)
+                .map_err(|_error| {
+                    InputProblem::new(
+                        "source.document",
+                        "Coral cannot read this as an OpenAPI document",
+                    )
+                }),
+            Self::OpenapiUrl { url } => web_url(url).map(ProviderSetupSource::OpenApiUrl),
+            Self::McpUrl { url } => web_url(url).map(|url| ProviderSetupSource::McpUrl {
+                url,
+                request_headers: request_headers.cloned().unwrap_or_default(),
+            }),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum RouteArgument {
@@ -144,45 +170,67 @@ enum RouteArgument {
 
 impl CreateProvider {
     /// Validates the namespace syntax first, then the route and the source,
-    /// without any network call.
-    fn parse(arguments: &serde_json::Value) -> Result<Self, CoralFailure> {
-        let arguments = CreateProviderArguments::deserialize(arguments)
-            .map_err(|_error| CoralFailure::InvalidInput)?;
+    /// without any network call. A rejection names every argument to correct.
+    fn parse(arguments: &serde_json::Value) -> Result<Self, Rejection> {
+        let arguments: CreateProviderArguments = serde_path_to_error::deserialize(arguments)
+            .map_err(|error| {
+                let field = error.path().to_string();
+                let field = if field == "." { String::new() } else { field };
+                Rejection::invalid_input(field, shape_reason(&error.into_inner().to_string()))
+            })?;
+        // Each check below stands alone, so the Program learns every problem at once.
+        let mut problems = Vec::new();
         let namespace = ProviderNamespace::parse(&arguments.namespace)
-            .map_err(|_error| CoralFailure::InvalidInput)?;
+            .map_err(|_error| {
+                problems.push(InputProblem::new(
+                    "namespace",
+                    "use a JavaScript identifier of at most 128 bytes, such as `weather`",
+                ));
+            })
+            .ok();
         // A credential-named header would carry a credential value through the
         // Program; a person enters every value in Reef. The authentication input
         // takes no literal value but an empty one.
-        if arguments
+        for name in arguments
             .request_headers
-            .as_ref()
-            .is_some_and(|headers| headers.keys().any(|name| names_a_credential(name)))
+            .iter()
+            .flat_map(BTreeMap::keys)
+            .filter(|name| names_a_credential(name))
         {
-            return Err(CoralFailure::InvalidInput);
+            problems.push(InputProblem::new(
+                format!("requestHeaders.{name}"),
+                "this header names a credential; send it through `authentication` \
+                 so a person enters its value when they sign in",
+            ));
         }
         let authentication = arguments
             .authentication
             .map(AuthenticationConfiguration::try_from)
             .transpose()
-            .map_err(|_rejected| CoralFailure::InvalidInput)?;
-        let route = match arguments
-            .credential_route
-            .ok_or(CoralFailure::InvalidInput)?
-        {
-            RouteArgument::None => CredentialRoute::None,
-            RouteArgument::Fixed => CredentialRoute::Fixed,
-            RouteArgument::Caller => CredentialRoute::Caller,
+            .map_err(|problem| problems.push(problem))
+            .ok()
+            .flatten();
+        let route = match arguments.credential_route {
+            Some(RouteArgument::None) => Some(CredentialRoute::None),
+            Some(RouteArgument::Fixed) => Some(CredentialRoute::Fixed),
+            Some(RouteArgument::Caller) => Some(CredentialRoute::Caller),
+            None => {
+                problems.push(InputProblem::new(
+                    "credentialRoute",
+                    "choose `none`, `fixed` or `caller`",
+                ));
+                None
+            }
         };
-        let source = match arguments.source {
-            SourceArguments::OpenapiDocument { document } => ProviderSetupSource::OpenApiDocument(
-                OpenApiDocument::parse(&document).map_err(|_error| CoralFailure::InvalidInput)?,
-            ),
-            SourceArguments::OpenapiUrl { url } => ProviderSetupSource::OpenApiUrl(web_url(url)?),
-            // The MCP server is discovered with the same non-secret headers it is configured with.
-            SourceArguments::McpUrl { url } => ProviderSetupSource::McpUrl {
-                url: web_url(url)?,
-                request_headers: arguments.request_headers.clone().unwrap_or_default(),
-            },
+        let source = arguments
+            .source
+            .into_source(arguments.request_headers.as_ref())
+            .map_err(|problem| problems.push(problem))
+            .ok();
+        let (Some(namespace), Some(route), Some(source), true) =
+            (namespace, route, source, problems.is_empty())
+        else {
+            return Err(Rejection::invalid_inputs(problems));
         };
         Ok(Self {
             namespace,
@@ -220,7 +268,7 @@ impl CreateProvider {
             .map_err(setup_error)?
         {
             return Err(Error::InvocationRejected(
-                CoralFailure::ProviderNamespaceConflict,
+                CoralFailure::ProviderNamespaceConflict.into(),
             ));
         }
         // Only the fetch waits on the network, so only it stops with the Run.
@@ -263,13 +311,25 @@ impl CreateProvider {
         host: &BuiltinHost<'_>,
         setup: &ProviderSetupId,
     ) -> Result<Publisher, Error> {
-        let invalid = || Error::InvocationRejected(CoralFailure::InvalidInput);
+        let invalid = |field: &str, reason: &str| {
+            Error::InvocationRejected(Rejection::invalid_input(field, reason))
+        };
         let review = host
             .providers
             .review_setup_configuration(host.context.actor(), host.workspace_id, setup)
             .await
             .map_err(setup_error)?;
-        let suggested = review.document.ok_or_else(invalid)?.suggested;
+        let Some(document) = review.document else {
+            return Err(Error::InvocationRejected(
+                configuration_rejection(&review).unwrap_or_else(|| {
+                    Rejection::invalid_input(
+                        "source",
+                        "Coral could not read a configuration from the source",
+                    )
+                }),
+            ));
+        };
+        let suggested = document.suggested;
         let confirmed = host
             .providers
             .confirm_setup_configuration(
@@ -281,8 +341,8 @@ impl CreateProvider {
             )
             .await
             .map_err(setup_error)?;
-        if !confirmed.errors.is_empty() || confirmed.diagnostic.is_some() {
-            return Err(invalid());
+        if let Some(rejection) = configuration_rejection(&confirmed) {
+            return Err(Error::InvocationRejected(rejection));
         }
         match host
             .providers
@@ -292,7 +352,24 @@ impl CreateProvider {
         {
             SetupPublishability::Coral => Ok(Publisher::Coral),
             SetupPublishability::Person => Ok(Publisher::Person),
-            SetupPublishability::Rejected(_) => Err(invalid()),
+            SetupPublishability::Rejected(PublishabilityRejection::NotConfigured) => Err(invalid(
+                "source",
+                "Coral could not tell whether the source needs a credential",
+            )),
+            // The route must suit the source, as Reef offers it; no route falls back to another.
+            SetupPublishability::Rejected(PublishabilityRejection::SourceNeedsCredential) => {
+                Err(invalid(
+                    "credentialRoute",
+                    "the source needs a credential; use `fixed` or `caller`",
+                ))
+            }
+            SetupPublishability::Rejected(PublishabilityRejection::SourceNeedsNoCredential) => {
+                Err(invalid(
+                    "credentialRoute",
+                    "the source declares no credential; use `none`, or give `authentication` \
+                     to say how a person signs in",
+                ))
+            }
         }
     }
 
@@ -345,7 +422,7 @@ impl CreateProvider {
         let Some(publisher) = host.publisher else {
             end_setup(host, setup).await;
             return Err(Error::InvocationRejected(
-                CoralFailure::OperationUnavailable,
+                CoralFailure::OperationUnavailable.into(),
             ));
         };
         // A Run that ended could no longer return the Provider: publish nothing.
@@ -378,7 +455,8 @@ impl CreateProvider {
                     CoralFailure::ProviderNamespaceConflict
                 } else {
                     CoralFailure::ProviderPublicationFailed
-                },
+                }
+                .into(),
             ));
         };
         let details = host
@@ -524,8 +602,14 @@ const fn authentication_name(kind: coral_catalog::AuthenticationKind) -> &'stati
 /// A source URL must be an http or https URL with a host, and no credentials
 /// or fragment, as the Setup requires. Whether Coral may fetch it is the
 /// destination policy's to decide, when the Setup is prepared.
-fn web_url(url: String) -> Result<String, CoralFailure> {
-    let parsed = url::Url::parse(&url).map_err(|_error| CoralFailure::InvalidInput)?;
+fn web_url(url: String) -> Result<String, InputProblem> {
+    let problem = || {
+        InputProblem::new(
+            "source.url",
+            "use an absolute `http` or `https` URL without credentials or a fragment",
+        )
+    };
+    let parsed = url::Url::parse(&url).map_err(|_error| problem())?;
     if matches!(parsed.scheme(), "http" | "https")
         && parsed.host_str().is_some()
         && parsed.username().is_empty()
@@ -534,7 +618,7 @@ fn web_url(url: String) -> Result<String, CoralFailure> {
     {
         Ok(url)
     } else {
-        Err(CoralFailure::InvalidInput)
+        Err(problem())
     }
 }
 
@@ -564,8 +648,6 @@ fn setup_path(
     }
 }
 
-/// Maps a Setup preparation failure to the Program-safe vocabulary. Only
-/// input problems are the Program's to catch; anything else is a host defect.
 /// A Publication rejected because its Setup ended or changed, or its request
 /// is stale, is a failure the Program can catch. Persistence and corrupt
 /// evidence still stop the Run for recovery.
@@ -577,26 +659,109 @@ fn publication_error(error: coral_provider::Error) -> Error {
         | coral_provider::Error::EtagMismatch
         | coral_provider::Error::RequestIdConflict
         | coral_provider::Error::ProviderChangedDuringPublication => {
-            Error::InvocationRejected(CoralFailure::ProviderPublicationFailed)
+            Error::InvocationRejected(CoralFailure::ProviderPublicationFailed.into())
         }
         other => setup_error(other),
     }
 }
 
+/// Maps a Setup preparation failure to the Program-safe vocabulary. Only
+/// input problems are the Program's to catch; anything else is a host defect.
 fn setup_error(error: coral_provider::Error) -> Error {
-    let failure = match error {
+    let source =
+        |reason: &str| Error::InvocationRejected(Rejection::invalid_input("source", reason));
+    match error {
         coral_provider::Error::OutboundDestinationRejected => {
-            CoralFailure::OutboundDestinationRejected
+            Error::InvocationRejected(CoralFailure::OutboundDestinationRejected.into())
         }
-        coral_provider::Error::InputUnavailable
-        | coral_provider::Error::InvalidInput(_)
-        | coral_provider::Error::AccountInput => CoralFailure::InvalidInput,
+        // A source Coral fetched but cannot use is the Program's to correct.
+        // Each reason is Coral's own: a fetched body or error never reaches it.
+        coral_provider::Error::InputUnavailable => {
+            source("Coral could not fetch a usable response from the source URL")
+        }
+        coral_provider::Error::InvalidInput(_)
+        | coral_provider::Error::Catalog(coral_catalog::Error::InvalidInput(_)) => {
+            source("Coral cannot read an OpenAPI document or an MCP server from the source")
+        }
+        coral_provider::Error::Catalog(coral_catalog::Error::OpenApiDocumentTooLarge) => {
+            source("the OpenAPI document exceeds Coral's size limit")
+        }
+        coral_provider::Error::AuthorizationDiscovery(code) => source(&format!(
+            "Coral could not discover how to sign in to the MCP server ({code})"
+        )),
+        coral_provider::Error::AccountInput => Error::InvocationRejected(Rejection::invalid_input(
+            "authentication",
+            "Coral cannot use this authentication method for the source",
+        )),
+        coral_provider::Error::ProviderCallRootConflict => {
+            Error::InvocationRejected(CoralFailure::ProviderNamespaceConflict.into())
+        }
         coral_provider::Error::Workspace(
             coral_workspace::Error::WorkspaceNotFound
             | coral_workspace::Error::PermissionDenied(_)
             | coral_workspace::Error::WorkspaceArchived,
-        ) => CoralFailure::AuthorityLost,
-        other => return other.into(),
-    };
-    Error::InvocationRejected(failure)
+        ) => Error::InvocationRejected(CoralFailure::AuthorityLost.into()),
+        other => other.into(),
+    }
+}
+
+/// Every problem Coral found when it read or confirmed the configuration, as
+/// the arguments to correct. Coral writes these field errors and diagnostic
+/// codes without any submitted value.
+fn configuration_rejection(
+    confirmed: &coral_provider::SetupConfigurationReview,
+) -> Option<Rejection> {
+    let problems: Vec<_> = confirmed
+        .errors
+        .iter()
+        .map(|error| InputProblem::new(program_field(&error.field), error.message.clone()))
+        .chain(confirmed.diagnostic.iter().map(|diagnostic| {
+            InputProblem::new(
+                "source",
+                format!("Coral cannot build a Provider from the source ({diagnostic})"),
+            )
+        }))
+        .collect();
+    (!problems.is_empty()).then(|| Rejection::invalid_inputs(problems))
+}
+
+/// The `createProvider` argument for a stored configuration field address.
+fn program_field(field: &str) -> String {
+    // A server declaration is a JSON pointer that keys `servers`.
+    if field.starts_with("#/") {
+        return format!("servers.{field}");
+    }
+    for (stored, argument) in [
+        ("display_name", "displayName"),
+        ("request_headers", "requestHeaders"),
+        ("credential_fields", "credentialFields"),
+        ("authentication.fields", "credentialFields"),
+        ("application", "authentication.client"),
+        ("server", "servers"),
+    ] {
+        if field == stored {
+            return argument.to_owned();
+        }
+        if let Some(rest) = field
+            .strip_prefix(stored)
+            .and_then(|rest| rest.strip_prefix('.'))
+        {
+            return format!("{argument}.{rest}");
+        }
+    }
+    field.to_owned()
+}
+
+/// What is wrong with the shape of one argument, from serde's message without
+/// the submitted value: a misplaced credential must not reach a failure message.
+/// Field and variant names the contract declares stay, since they say what to write.
+fn shape_reason(message: &str) -> String {
+    if message.starts_with("missing field") || message.starts_with("unknown field") {
+        return message.to_owned();
+    }
+    // serde writes the submitted value first, so only the last clause is its own.
+    match message.rsplit_once("expected ") {
+        Some((_found, expected)) => format!("expected {expected}"),
+        None => "has a value Coral does not accept".to_owned(),
+    }
 }

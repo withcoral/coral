@@ -12,8 +12,11 @@ use coral_catalog::{
 };
 use serde::Deserialize;
 
-/// Input the Program could write but Coral must not accept, such as a value.
-pub(super) struct Rejected;
+use crate::error::InputProblem;
+
+/// What every OAuth endpoint must be, so it cannot carry a credential.
+const ENDPOINT_REASON: &str = "use an absolute `http` or `https` URL without credentials, a \
+     fragment or an OAuth parameter that Coral sets, such as `client_secret`";
 
 /// One server choice per server declaration.
 #[derive(Deserialize)]
@@ -93,9 +96,10 @@ pub(super) enum AuthenticationInput {
 }
 
 impl TryFrom<AuthenticationInput> for AuthenticationConfiguration {
-    type Error = Rejected;
+    type Error = InputProblem;
 
-    fn try_from(input: AuthenticationInput) -> Result<Self, Rejected> {
+    /// Converts the input, or names the first argument to correct.
+    fn try_from(input: AuthenticationInput) -> Result<Self, InputProblem> {
         Ok(match input {
             AuthenticationInput::None => Self::None,
             AuthenticationInput::Bearer => Self::Bearer,
@@ -106,14 +110,17 @@ impl TryFrom<AuthenticationInput> for AuthenticationConfiguration {
                     .collect(),
             },
             AuthenticationInput::BasicAuth { username, password } => Self::BasicAuth {
-                username: username.try_into()?,
-                password: password.try_into()?,
+                username: credential_source("authentication.username", username)?,
+                password: credential_source("authentication.password", password)?,
             },
             AuthenticationInput::QueryCredentials { parameters } => Self::QueryCredentials {
                 parameters: parameters
                     .into_iter()
-                    .map(|(name, source)| Ok((name, source.try_into()?)))
-                    .collect::<Result<_, Rejected>>()?,
+                    .map(|(name, source)| {
+                        let field = format!("authentication.parameters.{name}");
+                        Ok((name, credential_source(field, source)?))
+                    })
+                    .collect::<Result<_, InputProblem>>()?,
             },
             // Device authorization has no redirect for PKCE to protect.
             AuthenticationInput::OauthDeviceCode {
@@ -123,8 +130,11 @@ impl TryFrom<AuthenticationInput> for AuthenticationConfiguration {
                 scope_format,
                 client,
             } => Self::OAuthDeviceCode {
-                device_authorization_url: endpoint(device_authorization_url)?,
-                token_url: endpoint(token_url)?,
+                device_authorization_url: endpoint(
+                    "device_authorization_url",
+                    device_authorization_url,
+                )?,
+                token_url: endpoint("token_url", token_url)?,
                 scopes,
                 scope_format: scope_format.into(),
                 resource: None,
@@ -140,8 +150,8 @@ impl TryFrom<AuthenticationInput> for AuthenticationConfiguration {
                 scope_format,
                 client,
             } => Self::OAuthAuthorizationCode {
-                authorization_url: endpoint(authorization_url)?,
-                token_url: endpoint(token_url)?,
+                authorization_url: endpoint("authorization_url", authorization_url)?,
+                token_url: endpoint("token_url", token_url)?,
                 scopes,
                 scope_format: scope_format.into(),
                 resource: None,
@@ -152,13 +162,17 @@ impl TryFrom<AuthenticationInput> for AuthenticationConfiguration {
     }
 }
 
-/// An OAuth endpoint, rejected before the arguments are stored when it could
-/// carry a credential, such as `user:secret@` or a `client_secret` parameter.
-fn endpoint(url: String) -> Result<String, Rejected> {
+/// The OAuth endpoint at `authentication.{field}`, rejected before the
+/// arguments are stored when it could carry a credential, such as
+/// `user:secret@` or a `client_secret` parameter.
+fn endpoint(field: &str, url: String) -> Result<String, InputProblem> {
     if coral_catalog::oauth_endpoint_is_valid(&url) {
         Ok(url)
     } else {
-        Err(Rejected)
+        Err(InputProblem::new(
+            format!("authentication.{field}"),
+            ENDPOINT_REASON,
+        ))
     }
 }
 
@@ -190,16 +204,22 @@ pub(super) enum SourceInput {
     Literal { value: String },
 }
 
-impl TryFrom<SourceInput> for CredentialSource {
-    type Error = Rejected;
-
-    fn try_from(input: SourceInput) -> Result<Self, Rejected> {
-        match input {
-            SourceInput::Field { field } => Ok(Self::Field { field }),
-            SourceInput::Literal { value } if value.is_empty() => Ok(Self::Literal { value }),
-            // A person enters every value when they sign in.
-            SourceInput::Literal { .. } => Err(Rejected),
+/// The credential part at `field`. A person enters every value when they
+/// sign in, so a literal must be empty.
+fn credential_source(
+    field: impl Into<String>,
+    input: SourceInput,
+) -> Result<CredentialSource, InputProblem> {
+    match input {
+        SourceInput::Field { field } => Ok(CredentialSource::Field { field }),
+        SourceInput::Literal { value } if value.is_empty() => {
+            Ok(CredentialSource::Literal { value })
         }
+        SourceInput::Literal { .. } => Err(InputProblem::new(
+            field,
+            "a literal credential value must be empty; use a `field` source so a person \
+             enters the value when they sign in",
+        )),
     }
 }
 
@@ -238,13 +258,20 @@ impl ClientInput {
     /// The application policy; `fixed_pkce` overrides the Program's choice
     /// where the method decides it. A reserved parameter, such as
     /// `client_secret`, is rejected before the arguments are stored.
-    fn policy(self, fixed_pkce: Option<OAuthPkcePolicy>) -> Result<OAuthClientPolicy, Rejected> {
-        if self
+    fn policy(
+        self,
+        fixed_pkce: Option<OAuthPkcePolicy>,
+    ) -> Result<OAuthClientPolicy, InputProblem> {
+        if let Some(name) = self
             .authorization_parameters
             .keys()
-            .any(|name| coral_catalog::oauth_parameter_is_reserved(name))
+            .find(|name| coral_catalog::oauth_parameter_is_reserved(name))
         {
-            return Err(Rejected);
+            return Err(InputProblem::new(
+                format!("authentication.client.authorization_parameters.{name}"),
+                "Coral sets this OAuth parameter, or a person enters it when they sign in; \
+                 remove it",
+            ));
         }
         Ok(OAuthClientPolicy {
             bootstrap: OAuthClientBootstrap::Manual,

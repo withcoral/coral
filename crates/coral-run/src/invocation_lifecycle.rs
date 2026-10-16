@@ -83,7 +83,7 @@ pub(super) async fn finish(
                 // Per-result and cumulative output limits intentionally share one code.
                 Some(existing) if existing.code() == failure.code() => Ok(true),
                 Some(existing) if approval::prevents_continuation(existing) => {
-                    Err(Error::InvocationRejected(existing))
+                    Err(Error::InvocationRejected(existing.into()))
                 }
                 _ => Ok(false),
             };
