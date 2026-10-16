@@ -717,8 +717,11 @@ export const FollowsInTheSourceSplit: Story = {
   },
 }
 
-/** A new operation that live mode selects slides in by Run order. Detail motion owns the rule. */
-export const SlidesToEachNewOperation: Story = {
+/**
+ * Each new operation, log or emission that live mode selects slides in by Run order,
+ * and the final value replaces it at once. Detail motion owns the rule.
+ */
+export const SlidesToEachNewRecord: Story = {
   beforeEach: () => world.reset([operation(program.name, 1, 'mail.list')]),
   play: async (context) => {
     const { toggle, press, selects } = await surface(context)
@@ -727,12 +730,26 @@ export const SlidesToEachNewOperation: Story = {
     await selects('mail.list', 'mail.list')
     const recorder = recordAnimations()
     try {
+      /** The first transform of each animation since the last call, once they end. */
+      const starts = async () => {
+        const moves = recorder.started.map(({ transforms }) => transforms[0])
+        await Promise.all(recorder.started.map(({ animation }) => animation.finished))
+        recorder.clear()
+        return moves
+      }
+      const fromBelow = ['translateY(100%)', 'translateY(0)']
       await press('Add operation')
       await selects('mail.send', 'mail.send')
-      await expect(recorder.started.map(({ transforms }) => transforms[0])).toEqual([
-        'translateY(100%)',
-        'translateY(0)',
-      ])
+      await expect(await starts()).toEqual(fromBelow)
+      await press('Add log')
+      await selects('console.info #3', 'log #3')
+      await expect(await starts()).toEqual(fromBelow)
+      await press('Add emission')
+      await selects('coral.emit #4', 'emission #4')
+      await expect(await starts()).toEqual(fromBelow)
+      await press('End run')
+      await selects('Send reminders', 'final value')
+      await expect(await starts()).toEqual([])
     } finally {
       recorder.stop()
     }

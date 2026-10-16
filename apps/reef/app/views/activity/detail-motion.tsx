@@ -16,9 +16,10 @@ interface Snapshot {
 
 /**
  * Slides the selected record's whole detail, header included, when the reader moves
- * between Operation Invocations of one Run: a later one enters from below while the
- * old one leaves upward, and an earlier one the reverse. Every other change, such as
- * another kind of record, an unknown position or reduced motion, replaces it at once.
+ * between records of one Run at known positions, such as its Operation Invocations,
+ * Program Logs and Program Emissions: a later one enters from below while the old one leaves upward, and an
+ * earlier one the reverse. Every other change, such as the Run itself, an unknown
+ * position or reduced motion, replaces it at once.
  *
  * Native View Transitions do not fit here: their snapshots draw above the page, not
  * clipped by this pane, and they hold pointer input until they end. So this copies the

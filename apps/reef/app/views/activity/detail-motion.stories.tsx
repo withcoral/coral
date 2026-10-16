@@ -45,7 +45,22 @@ const logged: Extract<ActivityRow, { kind: 'output' }> = {
 }
 const archive = operation(reminders.name, 'archive', 'mail.archive', 4)
 const notify = operation(reminders.name, 'notify', 'mail.notify', 5)
-// The Run's seventh record: Coral holds it, but the loaded window ends before it.
+const emitted: Extract<ActivityRow, { kind: 'output' }> = {
+  ...logged,
+  name: `${reminders.name}/events/6`,
+  label: 'emission #6',
+  eventKind: 'program.emitted',
+  position: 6,
+}
+// The record of an operation ending: neither an operation, a log nor an emission.
+const ended: Extract<ActivityRow, { kind: 'output' }> = {
+  ...logged,
+  name: `${reminders.name}/events/7`,
+  label: 'ended #7',
+  eventKind: 'invocation.ended',
+  position: 7,
+}
+// The Run's ninth record: Coral holds it, but the loaded window ends before it.
 const unloaded = operation(reminders.name, 'unloaded', 'mail.unloaded')
 const audited = operation(audit.name, 'audited', 'audit.check', 0)
 
@@ -57,8 +72,21 @@ const events: Record<string, RunEvent> = {
     level: 'info',
     message: 'checked',
   },
+  [emitted.name]: {
+    kind: 'program.emitted',
+    sequence: '6',
+    occurredAt: reminders.startedAt,
+    value: '{"sent":2}',
+  },
+  [ended.name]: {
+    kind: 'invocation.ended',
+    sequence: '7',
+    occurredAt: reminders.startedAt,
+    invocation: notify.name,
+    outcome: 'upstream_outcome',
+  },
 }
-const branchRows = [list, send, check, logged, archive, notify]
+const branchRows = [list, send, check, logged, archive, notify, emitted, ended]
 const records: ActivityRow[] = [reminders, audit, ...branchRows, unloaded, audited]
 
 function runDetail(run: Extract<ActivityRow, { kind: 'run' }>): RunDetail {
@@ -81,7 +109,7 @@ function pageFor(url: URL): ActivityPage {
     rows: [reminders, audit],
     expanded: [reminders.name, audit.name],
     branches: {
-      [reminders.name]: { rows: branchRows, offset: 0, total: '7', next: '', unavailable: false },
+      [reminders.name]: { rows: branchRows, offset: 0, total: '9', next: '', unavailable: false },
       [audit.name]: { rows: [audited], offset: 0, total: '1', next: '', unavailable: false },
     },
     selected: selectedRow?.name ?? null,
@@ -378,7 +406,44 @@ export const KeepsTheSourceStill: Story = {
   },
 }
 
-/** Every change but one between known operations of one Run replaces the record at once. */
+/**
+ * Logs and emissions take their place in the Run's order too: ↑, ↓ and clicks slide
+ * between them and operations.
+ */
+export const SlidesThroughLogsAndEmissions: Story = {
+  play: async (context) => {
+    if (!(await inTestBrowser())) return
+    const { rail, recorder, shows, select } = await surface(context)
+    try {
+      await shows('mail.send')
+      rail().focus()
+      await press('{ArrowDown}')
+      await expect(await shows('mail.check')).toEqual(down('mail.send', 'mail.check'))
+      await press('{ArrowDown}')
+      await expect(await shows('console.info #3')).toEqual(down('mail.check', 'console.info #3'))
+      await press('{ArrowDown}')
+      await expect(await shows('mail.archive')).toEqual(down('console.info #3', 'mail.archive'))
+      await press('{ArrowUp}')
+      await expect(await shows('console.info #3')).toEqual(up('mail.archive', 'console.info #3'))
+      await select('emission #6')
+      await expect(await shows('coral.emit #6')).toEqual(down('console.info #3', 'coral.emit #6'))
+      await select('mail.notify')
+      await expect(await shows('mail.notify')).toEqual(up('coral.emit #6', 'mail.notify'))
+      rail().focus()
+      await press('{ArrowDown}')
+      await expect(await shows('coral.emit #6')).toEqual(down('mail.notify', 'coral.emit #6'))
+      await press('{ArrowUp}')
+      await expect(await shows('mail.notify')).toEqual(up('coral.emit #6', 'mail.notify'))
+    } finally {
+      recorder.stop()
+    }
+  },
+}
+
+/**
+ * Every change but one between operations, logs and emissions of one Run, each at a
+ * known position, replaces the record at once.
+ */
 export const ReplacesAtOnce: Story = {
   parameters: { initialEntry: `/workspaces/finance/activity?${expand}&record=${reminders.name}` },
   play: async (context) => {
@@ -389,8 +454,8 @@ export const ReplacesAtOnce: Story = {
       // From the Run itself, and to and from another kind of record.
       await select('mail.send')
       await expect(await shows('mail.send')).toEqual(instant)
-      await select('log #3')
-      await expect(await shows('console.info #3')).toEqual(instant)
+      await select('ended #7')
+      await expect(await shows('Operation call ended: upstream outcome')).toEqual(instant)
       await select('mail.archive')
       await expect(await shows('mail.archive')).toEqual(instant)
       // An operation of another Run.
