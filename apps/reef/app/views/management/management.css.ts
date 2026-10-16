@@ -206,6 +206,10 @@ export const nameRow = style({
   minWidth: 0,
 })
 export const nameInput = style({ flex: '1 1 240px', maxWidth: 480, minWidth: 0 })
+// In the top bar the editor takes the title's place on one line: the breadcrumb
+// sizes to its content, so a row free to wrap would drop its buttons under the input.
+export const titleNameRow = style({ flexWrap: 'nowrap' })
+export const titleNameInput = style({ flex: '0 1 280px', minWidth: 160 })
 
 // What a confirmed action changes, as a short list between two sentences.
 export const consequences = style({ display: 'flex', flexDirection: 'column', gap: 8 })

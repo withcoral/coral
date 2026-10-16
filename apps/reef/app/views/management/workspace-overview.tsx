@@ -76,7 +76,21 @@ export function WorkspaceOverview({
       enabled: ownMembership.enabled,
     })
   return (
-    <ManagementLayout breadcrumbs={[]}>
+    <ManagementLayout
+      breadcrumbs={[]}
+      title={
+        <NameHeading
+          name={w.displayName}
+          noun="workspace"
+          canRename={canChange}
+          form={form}
+          intent="rename"
+          etag={w.etag}
+          action={w.path}
+          pageTitle
+        />
+      }
+    >
       {/* Stays mounted whichever button opened it, so the one-time key survives revalidation. */}
       <ActionDialog
         open={createOpen}
@@ -97,15 +111,6 @@ export function WorkspaceOverview({
         agentName={created?.agentDisplayName}
         endpoint={w.mcpEndpoint}
         onClose={() => setCreated(undefined)}
-      />
-      <NameHeading
-        name={w.displayName}
-        noun="workspace"
-        canRename={canChange}
-        form={form}
-        intent="rename"
-        etag={w.etag}
-        action={w.path}
       />
       {active && w.mcpEndpoint && <WorkspaceQuickStart endpoint={w.mcpEndpoint} />}
       <div className={styles.cards}>

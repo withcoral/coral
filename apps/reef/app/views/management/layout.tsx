@@ -8,11 +8,14 @@ import * as styles from './management.css'
 
 export function ManagementLayout({
   breadcrumbs,
+  title,
   actions,
   bounded,
   children,
 }: {
   breadcrumbs: Segment[]
+  /** The page's h1 in place of the current breadcrumb; see `PageLayout`. */
+  title?: ReactNode
   /** Page actions, which sit beside the breadcrumb. */
   actions?: ReactNode
   /** The page is no taller than the viewport; its scroll table scrolls instead. */
@@ -20,7 +23,7 @@ export function ManagementLayout({
   children: ReactNode
 }) {
   return (
-    <PageLayout breadcrumbs={breadcrumbs} actions={actions} bounded={bounded}>
+    <PageLayout breadcrumbs={breadcrumbs} title={title} actions={actions} bounded={bounded}>
       {children}
     </PageLayout>
   )
