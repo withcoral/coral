@@ -1039,9 +1039,7 @@ async fn search_index_states_follow_each_providers_active_generation() {
         "a Generation no attempt has reached"
     );
 
-    world.reject_complete_states().await;
-    world.index.reconcile().await;
-    world.allow_complete_states().await;
+    world.fail_an_attempt().await;
     let failed = || Failed {
         reason: Some(SearchIndexFailure::Database),
     };
@@ -1086,9 +1084,7 @@ async fn a_failure_without_a_known_kind_reports_no_reason() {
     for kind in ["NULL", "'a_later_kind'"] {
         let upstream = MockServer::start().await;
         let world = World::publish_tracer(&upstream).await;
-        world.reject_complete_states().await;
-        world.index.reconcile().await;
-        world.allow_complete_states().await;
+        world.fail_an_attempt().await;
         world
             .modules
             .fixture
@@ -1455,6 +1451,14 @@ impl World {
             .expect("count the rows");
         transaction.rollback().await.unwrap();
         (terms, totals.into_iter().next())
+    }
+
+    /// Runs one reconcile pass whose every Generation attempt fails with a
+    /// database error, then lets later attempts succeed.
+    async fn fail_an_attempt(&self) {
+        self.reject_complete_states().await;
+        self.index.reconcile().await;
+        self.allow_complete_states().await;
     }
 
     /// Makes every `complete` state row fail to insert, so an attempt fails

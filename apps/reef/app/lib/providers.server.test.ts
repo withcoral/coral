@@ -69,11 +69,7 @@ it.each([
   [SearchIndexState.PENDING, SearchIndexFailureReason.UNSPECIFIED, null],
   [SearchIndexState.UNSPECIFIED, SearchIndexFailureReason.UNSPECIFIED, null],
   [SearchIndexState.FAILED, SearchIndexFailureReason.TIMED_OUT, 'Indexing took too long.'],
-  [
-    SearchIndexState.FAILED,
-    SearchIndexFailureReason.DATABASE,
-    'Search cannot write to its database.',
-  ],
+  [SearchIndexState.FAILED, SearchIndexFailureReason.DATABASE, 'Search cannot use its database.'],
   [SearchIndexState.FAILED, SearchIndexFailureReason.UNSPECIFIED, 'No reason recorded.'],
 ])('reads search index state %s with reason %s as %s', (state, reason, failure) => {
   const provider = create(ProviderSchema, {

@@ -211,12 +211,12 @@ function enabled(state: ProviderState) {
 
 // Each kind of indexing error, never its message, which can hold internal detail.
 const searchIndexFailureReasons: Partial<Record<SearchIndexFailureReason, string>> = {
-  [SearchIndexFailureReason.INVALID_ENTRY]: 'Search cannot read one of the operations.',
+  [SearchIndexFailureReason.INVALID_ENTRY]: 'One of the operations cannot become a search entry.',
   [SearchIndexFailureReason.TIMED_OUT]: 'Indexing took too long.',
   [SearchIndexFailureReason.CLOCK]: 'The server clock is wrong.',
   [SearchIndexFailureReason.CORRUPT]: 'The search index is damaged.',
   [SearchIndexFailureReason.PROVIDER]: "Search cannot read the provider's operations.",
-  [SearchIndexFailureReason.DATABASE]: 'Search cannot write to its database.',
+  [SearchIndexFailureReason.DATABASE]: 'Search cannot use its database.',
 }
 
 /** Why search could not index the provider, or null when it did not fail. */
