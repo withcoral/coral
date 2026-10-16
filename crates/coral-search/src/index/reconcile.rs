@@ -49,9 +49,10 @@ impl SearchIndex {
     /// 1. Indexes every Provider whose active Generation has no `complete`
     ///    state row, one under another Provider display name, or a `failed`
     ///    one older than the reconcile interval, from the stored Generation.
-    /// 2. Indexes every Saved Function whose row is missing or whose
-    ///    fingerprint differs from its definition revision, and every one
-    ///    whose `failed` state row is older than the reconcile interval.
+    /// 2. Indexes every Saved Function whose `failed` state row is older than
+    ///    the reconcile interval, and every one with no `failed` state row
+    ///    whose row is missing or whose fingerprint differs from its
+    ///    definition revision. A newer failure waits, whatever the row holds.
     /// 3. Removes the rows and state rows of every Generation that is no
     ///    Provider's active Generation. Best effort. Saved Function rows never
     ///    outlive their function.
@@ -215,9 +216,9 @@ impl SearchIndex {
         .await
     }
 
-    /// Step 2 of a pass: indexes each current Saved Function the index lacks
-    /// or holds at another revision, and each that failed before
-    /// `retry_failed_from`.
+    /// Step 2 of a pass: indexes each current Saved Function that failed
+    /// before `retry_failed_from`, and each without a failure that the index
+    /// lacks or holds at another revision. A newer failure waits.
     async fn reconcile_functions(&self, retry_failed_from: i64) {
         let stale = self
             .within_limit(async {
