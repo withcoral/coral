@@ -315,6 +315,16 @@ async fn provider_and_catalog_inspection_require_current_workspace_access() {
                 .len(),
             1
         );
+        assert_eq!(
+            providers
+                .published_providers(actor, workspace.id())
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|published| published.provider)
+                .collect::<Vec<_>>(),
+            std::slice::from_ref(&provider)
+        );
     }
     // An Organization Owner without a Membership is as much a stranger as any non-Member.
     for actor in [&stranger, &administrator] {
@@ -332,6 +342,10 @@ async fn provider_and_catalog_inspection_require_current_workspace_access() {
             providers
                 .inspect_catalog_page(actor, workspace.id(), provider.id(), None, 10)
                 .await,
+            Err(Error::Workspace(coral_workspace::Error::WorkspaceNotFound))
+        ));
+        assert!(matches!(
+            providers.published_providers(actor, workspace.id()).await,
             Err(Error::Workspace(coral_workspace::Error::WorkspaceNotFound))
         ));
     }

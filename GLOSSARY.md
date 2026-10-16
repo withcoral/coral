@@ -451,8 +451,9 @@ read-only (see Operation Hints) as possibly effectful. _Avoid_: Write operation,
 open-world. Coral takes each hint at catalog materialization only when the source declares it, from an MCP tool's
 annotations in v1, and never assumes a protocol default, so an undeclared hint says nothing. OpenAPI/HTTP-sourced
 Operations declare none in v1, and their HTTP method is not a hint; Coral's MCP resource read is read-only by protocol
-definition. Hints are provider claims, not caller-configurable, and only a declared read-only hint affects policy among
-them. _Avoid_: Effect classification, `unknown` effect, tool annotations
+definition. Coral declares the hints of each Built-in Provider Operation in its catalog. Hints are provider claims, not
+caller-configurable, and only a declared read-only hint affects policy among them. _Avoid_: Effect classification,
+`unknown` effect, tool annotations
 _In Reef_: one label per hint declared true: "Read-only", "Destructive", "Idempotent", "Open world"; none when undeclared
 
 **Operation Access State**: The Workspace decision that one Operation is `enabled`, `approval_required`, or `disabled`.

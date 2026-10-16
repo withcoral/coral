@@ -135,6 +135,13 @@ const blocked: ProviderView = {
   operations: githubOps('prov-hr', 'hr'),
 }
 // Coral's Built-in Provider, which leads the rail under Coral's mark.
+const coralOperations = ['createProvider', 'listProviders'].map((key) => ({
+  ...weather.operations[0]!,
+  name: `providers/prov-coral/operations/${key}`,
+  relativePath: key,
+  callPath: `coral.workspace.${key}`,
+  path: `/workspaces/demo/providers/prov-coral/ops/${key}`,
+}))
 const coral: ProviderView = {
   ...weather,
   id: 'prov-coral',
@@ -142,15 +149,9 @@ const coral: ProviderView = {
   namespace: '',
   builtin: true,
   path: '/workspaces/demo/providers/prov-coral',
-  operations: [
-    {
-      ...weather.operations[0]!,
-      name: 'providers/prov-coral/operations/createProvider',
-      relativePath: 'createProvider',
-      callPath: 'coral.workspace.createProvider',
-      path: '/workspaces/demo/providers/prov-coral/ops/createProvider',
-    },
-  ],
+  readyCount: coralOperations.length,
+  totalCount: coralOperations.length,
+  operations: coralOperations,
 }
 const meta = {
   title: 'Management/Providers',

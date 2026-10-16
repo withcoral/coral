@@ -9,11 +9,11 @@ use coral_catalog::{
     AuthenticationConfiguration, BuiltinOperation, CredentialField, ExecutionBinding,
     ProviderConfiguration, ServerSelection,
 };
-use coral_provider::access::{CredentialRoute, ProviderNamespace};
+use coral_provider::access::{CredentialRoute, ProviderCallRoot, ProviderNamespace};
 use coral_provider::{
     ManagementRequestId, OpenApiDocument, ProviderModule, ProviderSetupId, ProviderSetupSource,
-    PublishabilityRejection, ResolvedInvocationOperation, SetupPublishability,
-    WorkspaceProviderPublicationRequest, WorkspaceProviderPublisher,
+    ProviderState, PublishabilityRejection, PublishedProvider, ResolvedInvocationOperation,
+    SetupPublishability, WorkspaceProviderPublicationRequest, WorkspaceProviderPublisher,
 };
 use coral_workspace::{ChangeContext, Principal, WorkspaceId};
 use serde::Deserialize;
@@ -26,7 +26,8 @@ mod input;
 /// One admitted Built-in Operation with its validated input.
 #[derive(Clone)]
 pub(crate) enum BuiltinCall {
-    CreateProvider(CreateProvider),
+    CreateProvider(Box<CreateProvider>),
+    ListProviders,
 }
 
 impl BuiltinCall {
@@ -38,8 +39,10 @@ impl BuiltinCall {
     ) -> Option<Result<Self, Rejection>> {
         match target.operation().execution_binding() {
             ExecutionBinding::Builtin(binding) => Some(match binding.operation() {
-                Some(BuiltinOperation::CreateProvider) => {
-                    CreateProvider::parse(arguments).map(Self::CreateProvider)
+                Some(BuiltinOperation::CreateProvider) => CreateProvider::parse(arguments)
+                    .map(|input| Self::CreateProvider(Box::new(input))),
+                Some(BuiltinOperation::ListProviders) => {
+                    no_arguments(arguments).map(|()| Self::ListProviders)
                 }
                 // A newer Coral published an Operation this version does not perform.
                 None => Err(CoralFailure::OperationUnavailable.into()),
@@ -52,6 +55,7 @@ impl BuiltinCall {
     pub(crate) async fn perform(&self, host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
         match self {
             Self::CreateProvider(input) => input.perform(host).await,
+            Self::ListProviders => list_providers(host).await,
         }
     }
 }
@@ -469,6 +473,56 @@ impl CreateProvider {
     }
 }
 
+/// Accepts only an empty arguments object. A Program that calls with no
+/// argument sends one.
+fn no_arguments(arguments: &serde_json::Value) -> Result<(), Rejection> {
+    let Some(fields) = arguments.as_object() else {
+        return Err(Rejection::invalid_input("", "pass an empty object"));
+    };
+    if fields.is_empty() {
+        return Ok(());
+    }
+    Err(Rejection::invalid_inputs(
+        fields
+            .keys()
+            .map(|field| InputProblem::new(field.clone(), "unknown field; pass an empty object"))
+            .collect(),
+    ))
+}
+
+/// Lists every Provider in the Workspace, with what each offers the invoking User.
+async fn list_providers(host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
+    let providers = host
+        .providers
+        .published_providers(host.context.actor(), host.workspace_id)
+        .await
+        .map_err(authority_error)?;
+    Ok(serde_json::json!({
+        "data": {
+            "providers": providers.iter().map(listed_provider).collect::<Vec<_>>(),
+        },
+        "metadata": { "kind": "builtin" },
+    }))
+}
+
+/// One `listProviders` entry. The Built-in Provider has no namespace: its
+/// Operations are under `coral.workspace`.
+fn listed_provider(published: &PublishedProvider) -> serde_json::Value {
+    let provider = &published.provider;
+    let namespace = match provider.call_root() {
+        ProviderCallRoot::Owner(namespace) => Some(namespace.as_str()),
+        ProviderCallRoot::Builtin => None,
+    };
+    let state = match provider.state() {
+        ProviderState::Active => "active",
+        ProviderState::Disabled => "disabled",
+    };
+    let mut entry = provider_facts(published);
+    entry.insert("namespace".to_owned(), serde_json::json!(namespace));
+    entry.insert("state".to_owned(), state.into());
+    serde_json::Value::Object(entry)
+}
+
 /// Whether a recorded Call Path is `coral.workspace.createProvider`.
 pub(crate) fn names_create_provider(call_path: &str) -> bool {
     call_path
@@ -563,20 +617,39 @@ fn names_a_credential(header: &str) -> bool {
 /// The Operation Result for a Provider Coral published, with Coral as the
 /// Upstream Service. It says what Coral resolved, so the Program need not guess
 /// whether its next call needs a person.
-fn published_result(published: &coral_provider::PublishedProvider) -> serde_json::Value {
-    let provider = &published.provider;
+fn published_result(published: &PublishedProvider) -> serde_json::Value {
+    let mut data = provider_facts(published);
+    data.insert("status".to_owned(), "published".into());
+    data.insert(
+        "namespace".to_owned(),
+        published.provider.call_root().name().into(),
+    );
     serde_json::json!({
-        "data": {
-            "status": "published",
-            "namespace": provider.call_root().name(),
-            "displayName": provider.display_name(),
-            "credentialRoute": route_name(provider.access().credential_route()),
-            "authentication": authentication_name(published.authentication),
-            "operations": published.available_operations,
-            "accountRequired": published.account_required,
-        },
+        "data": data,
         "metadata": { "kind": "builtin" },
     })
+}
+
+/// What both `createProvider` and `listProviders` report about a Provider:
+/// how to call it and whether the Program needs a person first.
+fn provider_facts(published: &PublishedProvider) -> serde_json::Map<String, serde_json::Value> {
+    let provider = &published.provider;
+    [
+        ("displayName", serde_json::json!(provider.display_name())),
+        (
+            "credentialRoute",
+            route_name(provider.access().credential_route()).into(),
+        ),
+        (
+            "authentication",
+            authentication_name(published.authentication).into(),
+        ),
+        ("operations", published.available_operations.into()),
+        ("accountRequired", published.account_required.into()),
+    ]
+    .into_iter()
+    .map(|(field, value)| (field.to_owned(), value))
+    .collect()
 }
 
 const fn route_name(route: CredentialRoute) -> &'static str {
@@ -698,6 +771,14 @@ fn setup_error(error: coral_provider::Error) -> Error {
         coral_provider::Error::ProviderCallRootConflict => {
             Error::InvocationRejected(CoralFailure::ProviderNamespaceConflict.into())
         }
+        other => authority_error(other),
+    }
+}
+
+/// A User who lost Workspace authority since admission is a failure the
+/// Program can catch; anything else is a host defect.
+fn authority_error(error: coral_provider::Error) -> Error {
+    match error {
         coral_provider::Error::Workspace(
             coral_workspace::Error::WorkspaceNotFound
             | coral_workspace::Error::PermissionDenied(_)

@@ -4,7 +4,7 @@ use coral_workspace::{
     AgentDisplayName, AuthenticatedPrincipal, OrganizationRole, WorkspaceDisplayName, WorkspaceRole,
 };
 
-use coral_catalog::{BuiltinCatalog, OperationHints};
+use coral_catalog::{AuthenticationKind, BuiltinCatalog, OperationHints};
 use coral_credentials::Secret;
 
 use super::tests::{
@@ -661,4 +661,84 @@ async fn two_processes_that_boot_together_activate_one_generation() {
     );
     assert_eq!(arranged.keys().await, keys);
     assert_eq!(arranged.events().await.len(), before + 1);
+}
+
+// Catches: a disabled Provider left out of the list though it still holds its
+// namespace, or a list whose order or account facts a Program cannot rely on.
+#[tokio::test]
+async fn published_providers_lists_every_provider_in_creation_order() {
+    let arranged = BuiltinWorkspace::new().await;
+    let workspace = arranged.workspace.id();
+    let weather = publish_provider(
+        &arranged.providers,
+        &change_context(arranged.owner.clone(), 15, '2'),
+        workspace,
+        CREDENTIAL_FREE_OPENAPI,
+        "weather",
+        CredentialRoute::None,
+    )
+    .await;
+    publish_provider(
+        &arranged.providers,
+        &change_context(arranged.owner.clone(), 16, '3'),
+        workspace,
+        crate::account_tests::CREDENTIAL_REQUIRED_OPENAPI,
+        "private",
+        CredentialRoute::Caller,
+    )
+    .await;
+    arranged
+        .providers
+        .disable_provider(
+            &change_context(arranged.owner.clone(), 17, '4')
+                .with_etag(&weather.etag())
+                .unwrap(),
+            workspace,
+            weather.id(),
+        )
+        .await
+        .unwrap();
+
+    let listed = arranged
+        .providers
+        .published_providers(&arranged.owner, workspace)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        listed
+            .iter()
+            .map(|published| (
+                published.provider.call_root().as_str(),
+                published.provider.state(),
+                published.authentication,
+                published.available_operations,
+                published.account_required,
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "coral.workspace",
+                ProviderState::Active,
+                AuthenticationKind::None,
+                arranged.keys().await.len(),
+                false,
+            ),
+            (
+                "coral.providers.weather",
+                ProviderState::Disabled,
+                AuthenticationKind::None,
+                1,
+                false,
+            ),
+            // The Owner has not connected an Account yet.
+            (
+                "coral.providers.private",
+                ProviderState::Active,
+                AuthenticationKind::Bearer,
+                1,
+                true,
+            ),
+        ]
+    );
 }

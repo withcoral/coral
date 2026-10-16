@@ -16,7 +16,7 @@ use std::fmt::Write as _;
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one Generation's read-back checks every facet Coral stores for the catalog"
+    reason = "one table checks each Built-in Operation's retained contract"
 )]
 async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     let fixture = TestDatabase::new(coral_catalog::migrator()).await.unwrap();
@@ -41,53 +41,77 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     let operations = coral_catalog::operations_in_transaction(&mut transaction, &first)
         .await
         .unwrap();
-    let [operation] = operations.as_slice() else {
-        panic!("the built-in catalog has exactly one Operation");
-    };
-    assert_eq!(operation.key().as_str(), "createProvider");
-    assert_eq!(operation.relative_path(), "createProvider");
-    assert_eq!(operation.availability(), OperationAvailability::Available);
-    // No read-only hint, so the default Operation Access State is approval_required.
-    assert_eq!(operation.hints(), OperationHints::default());
-    let ExecutionBinding::Builtin(binding) = operation.execution_binding() else {
-        panic!("a built-in Operation has a built-in Execution Binding");
-    };
-    assert_eq!(binding.operation(), Some(BuiltinOperation::CreateProvider));
-
-    let declaration =
-        coral_catalog::authoring_declaration_in_transaction(&mut transaction, &first, operation)
-            .await
-            .unwrap();
-    for expected in [
-        "type ProviderSourceInput =",
-        "\"openapi_document\"",
-        "\"openapi_url\"",
-        "\"mcp_url\"",
-        "function createProvider(input: {",
-        r#""credentialRoute": "none" | "fixed" | "caller""#,
-        r#""displayName"?: string"#,
-        r#""namespace": string"#,
-        r#""source": ProviderSourceInput"#,
-        r#"{ "accountRequired": boolean; "authentication": "none" | "bearer" | "header_credentials" | "basic_auth" | "query_credentials" | "oauth_device_code" | "oauth_authorization_code"; "credentialRoute": "none" | "fixed" | "caller"; "displayName": string; "namespace": string; "operations": number; "status": "published" }"#,
-        r#"{ "namespace": string; "status": "needs_sign_in"; "url": string }"#,
-        "metadata: { kind: \"builtin\" }",
-    ] {
-        assert!(
-            declaration.contains(expected),
-            "declaration lacks {expected}: {declaration}"
-        );
-    }
-
     let targets = coral_catalog::available_search_targets_in_transaction(&mut transaction, &first)
         .await
         .unwrap();
-    assert_eq!(
-        targets
+    // Each declared contract: hints, so the default Operation Access State
+    // follows, and the declaration a Program reads.
+    for (operation_key, hints, declared) in [
+        (
+            BuiltinOperation::CreateProvider,
+            // No read-only hint, so the default Operation Access State is approval_required.
+            OperationHints::default(),
+            &[
+                "type ProviderSourceInput =",
+                "\"openapi_document\"",
+                "\"openapi_url\"",
+                "\"mcp_url\"",
+                "function createProvider(input: {",
+                r#""credentialRoute": "none" | "fixed" | "caller""#,
+                r#""displayName"?: string"#,
+                r#""namespace": string"#,
+                r#""source": ProviderSourceInput"#,
+                r#"{ "accountRequired": boolean; "authentication": "none" | "bearer" | "header_credentials" | "basic_auth" | "query_credentials" | "oauth_device_code" | "oauth_authorization_code"; "credentialRoute": "none" | "fixed" | "caller"; "displayName": string; "namespace": string; "operations": number; "status": "published" }"#,
+                r#"{ "namespace": string; "status": "needs_sign_in"; "url": string }"#,
+                "metadata: { kind: \"builtin\" }",
+            ][..],
+        ),
+        (
+            BuiltinOperation::ListProviders,
+            // Read-only, so the default Operation Access State is enabled.
+            OperationHints::new(Some(true), None, Some(true), None),
+            &[
+                "function listProviders(input: Record<string, never>)",
+                r#"{ "providers": Array<Provider> }"#,
+                // The Built-in Provider has no namespace.
+                r#""namespace": null | string"#,
+                r#""state": "active" | "disabled""#,
+                r#""accountRequired": boolean"#,
+                "metadata: { kind: \"builtin\" }",
+            ][..],
+        ),
+    ] {
+        let key = operation_key.key();
+        let operation = operations
             .iter()
-            .map(|target| target.key().as_str())
-            .collect::<Vec<_>>(),
-        ["createProvider"]
-    );
+            .find(|operation| operation.key().as_str() == key)
+            .unwrap_or_else(|| panic!("the catalog defines {key}"));
+        assert_eq!(operation.relative_path(), key);
+        assert_eq!(operation.availability(), OperationAvailability::Available);
+        assert_eq!(operation.hints(), hints, "{key}");
+        let ExecutionBinding::Builtin(binding) = operation.execution_binding() else {
+            panic!("a built-in Operation has a built-in Execution Binding");
+        };
+        assert_eq!(binding.operation(), Some(operation_key));
+        let declaration = coral_catalog::authoring_declaration_in_transaction(
+            &mut transaction,
+            &first,
+            operation,
+        )
+        .await
+        .unwrap();
+        for expected in declared {
+            assert!(
+                declaration.contains(expected),
+                "{key} declaration lacks {expected}: {declaration}"
+            );
+        }
+        assert!(
+            targets.iter().any(|target| target.key().as_str() == key),
+            "{key} is a search target"
+        );
+    }
+
     let graph = coral_catalog::schema_graph_in_transaction(&mut transaction, &first)
         .await
         .unwrap();

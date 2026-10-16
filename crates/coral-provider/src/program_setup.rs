@@ -88,7 +88,7 @@ impl ProviderModule {
     }
 }
 
-/// What a Principal learns about a Provider it just published from a Setup.
+/// What a Principal learns about a published Provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishedProvider {
     /// The Provider as published.
@@ -118,6 +118,15 @@ pub async fn published_provider_in_transaction(
         crate::repository::provider_in_transaction(&mut *transaction, workspace_id, provider.id())
             .await?
             .ok_or(Error::ProviderNotFound)?;
+    published_active_provider_in_transaction(transaction, active, principal).await
+}
+
+/// Reads what `active`'s Generation offers `principal`, in the caller's transaction.
+pub(crate) async fn published_active_provider_in_transaction(
+    transaction: &mut Transaction<'_>,
+    active: crate::repository::ProviderWithActiveGeneration,
+    principal: &coral_workspace::Principal,
+) -> Result<PublishedProvider, Error> {
     let contract =
         coral_catalog::credential_contract_in_transaction(transaction, &active.generation_id)
             .await?;

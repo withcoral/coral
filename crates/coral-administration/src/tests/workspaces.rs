@@ -95,20 +95,31 @@ async fn creating_a_workspace_creates_its_builtin_provider_with_the_creator_as_a
         .unwrap();
     assert_eq!(provider.call_root().as_str(), "coral.workspace");
 
-    // The commit notified search; no reconcile pass ran.
-    let indexed = indexed_operations(&f.db.database(), workspace.id())
+    // The commit notified search of every Built-in Operation; no reconcile pass ran.
+    let catalog = f
+        .providers
+        .inspect_catalog_page(&f.creator, workspace.id(), provider.id(), None, 100)
         .await
         .unwrap();
-    assert_eq!(
-        indexed
-            .iter()
-            .map(|operation| (
-                operation.call_path.as_str(),
-                operation.provider_name.as_str()
-            ))
-            .collect::<Vec<_>>(),
-        [("coral.workspace.createProvider", "workspace Coral")]
-    );
+    let mut indexed = indexed_operations(&f.db.database(), workspace.id())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|operation| (operation.call_path, operation.provider_name))
+        .collect::<Vec<_>>();
+    indexed.sort();
+    let mut expected = catalog
+        .iter()
+        .map(|operation| {
+            (
+                format!("coral.workspace.{}", operation.key.as_str()),
+                "workspace Coral".to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    expected.sort();
+    assert!(!expected.is_empty());
+    assert_eq!(indexed, expected);
 }
 
 #[tokio::test]

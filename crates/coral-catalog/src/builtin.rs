@@ -70,16 +70,20 @@ pub enum BuiltinOperation {
     /// Coral publishes it when nobody needs to sign in; otherwise a person
     /// finishes it in Reef.
     CreateProvider,
+    /// Lists every Provider in the Workspace, so a Program can see which
+    /// namespaces are taken before it creates one.
+    ListProviders,
 }
 
 impl BuiltinOperation {
-    const ALL: [Self; 1] = [Self::CreateProvider];
+    const ALL: [Self; 2] = [Self::CreateProvider, Self::ListProviders];
 
     /// Returns the Operation Key, which is also its relative path.
     #[must_use]
     pub const fn key(self) -> &'static str {
         match self {
             Self::CreateProvider => "createProvider",
+            Self::ListProviders => "listProviders",
         }
     }
 
@@ -215,6 +219,19 @@ impl BuiltinExecutionBinding {
     }
 }
 
+/// Each Credential Route, as a Program writes it.
+const CREDENTIAL_ROUTES: [&str; 3] = ["none", "fixed", "caller"];
+/// Each way Coral sends a Provider's credentials, as a Program reads it.
+const AUTHENTICATION_KINDS: [&str; 7] = [
+    "none",
+    "bearer",
+    "header_credentials",
+    "basic_auth",
+    "query_credentials",
+    "oauth_device_code",
+    "oauth_authorization_code",
+];
+
 struct Definition {
     key: &'static str,
     summary: &'static str,
@@ -271,7 +288,7 @@ fn definition(operation: BuiltinOperation) -> Definition {
                     },
                     "source": { "$ref": "#/$defs/ProviderSource" },
                     "credentialRoute": {
-                        "enum": ["none", "fixed", "caller"],
+                        "enum": CREDENTIAL_ROUTES,
                         "description": "Whose account Invocations use: none for a source that needs no credential, fixed for one shared account that a person signs in to, or caller for each person's own account."
                     },
                     "displayName": {
@@ -525,14 +542,11 @@ fn definition(operation: BuiltinOperation) -> Definition {
                             "namespace": { "type": "string", "description": "The published Provider Namespace." },
                             "displayName": { "type": "string", "description": "The published Provider display name." },
                             "credentialRoute": {
-                                "enum": ["none", "fixed", "caller"],
+                                "enum": CREDENTIAL_ROUTES,
                                 "description": "The published Credential Route."
                             },
                             "authentication": {
-                                "enum": [
-                                    "none", "bearer", "header_credentials", "basic_auth",
-                                    "query_credentials", "oauth_device_code", "oauth_authorization_code"
-                                ],
+                                "enum": AUTHENTICATION_KINDS,
                                 "description": "How Coral sends the Provider's credentials, as resolved from your input and the source."
                             },
                             "operations": {
@@ -558,6 +572,77 @@ fn definition(operation: BuiltinOperation) -> Definition {
                         "additionalProperties": false
                     }
                 ]
+            }),
+        },
+        BuiltinOperation::ListProviders => Definition {
+            key: operation.key(),
+            summary: "List the Providers in this Workspace",
+            presentation: OperationPresentation::new(
+                Some("List providers".to_string()),
+                "List every Provider in this Workspace, including disabled ones and Coral's \
+                 own, in the order they were created."
+                    .to_string(),
+                false,
+                vec!["providers".to_string()],
+                Some(
+                    "Pass an empty object. A namespace in the list is taken, even when its \
+                     Provider is disabled. Call a Provider's Operations under \
+                     coral.providers.<namespace>."
+                        .to_string(),
+                ),
+            ),
+            // Read-only: the default Operation Access State is enabled.
+            hints: OperationHints::new(Some(true), None, Some(true), None),
+            input: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            output: json!({
+                "type": "object",
+                "required": ["providers"],
+                "properties": {
+                    "providers": {
+                        "type": "array",
+                        "description": "Every Provider in this Workspace, in the order they were created. Coral's own comes first.",
+                        "items": { "$ref": "#/$defs/Provider" }
+                    }
+                },
+                "additionalProperties": false,
+                "$defs": {
+                    "Provider": {
+                        "type": "object",
+                        "required": [
+                            "namespace", "displayName", "state", "credentialRoute",
+                            "authentication", "operations", "accountRequired"
+                        ],
+                        "properties": {
+                            "namespace": {
+                                "type": ["string", "null"],
+                                "description": "The Provider Namespace. Its Operations are called under coral.providers.<namespace>. Null for Coral's own Provider, whose Operations are called under coral.workspace."
+                            },
+                            "displayName": { "type": "string", "description": "The Provider display name." },
+                            "state": {
+                                "enum": ["active", "disabled"],
+                                "description": "Whether the Provider accepts calls. A disabled Provider still holds its namespace."
+                            },
+                            "credentialRoute": {
+                                "enum": CREDENTIAL_ROUTES,
+                                "description": "Whose account Invocations use."
+                            },
+                            "authentication": {
+                                "enum": AUTHENTICATION_KINDS,
+                                "description": "How Coral sends the Provider's credentials."
+                            },
+                            "operations": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": "How many of the Provider's Operations you can discover and call."
+                            },
+                            "accountRequired": {
+                                "type": "boolean",
+                                "description": "True when you must connect your own Account before your calls can use the Provider."
+                            }
+                        },
+                        "additionalProperties": false
+                    }
+                }
             }),
         },
     }

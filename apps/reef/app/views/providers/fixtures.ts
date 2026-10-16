@@ -64,10 +64,10 @@ export function provider(
   return view
 }
 
-/** Coral's Built-in Provider, with its one operation under `coral.workspace`. */
+/** Coral's Built-in Provider, with its operations under `coral.workspace`. */
 export function builtinProvider(id: string): ProviderView {
   const view: ProviderView = { ...provider(id, 'Coral', ''), builtin: true }
-  view.operations = [operation(view, 'createProvider')]
+  view.operations = [operation(view, 'createProvider'), operation(view, 'listProviders')]
   view.readyCount = view.totalCount = view.operations.length
   return view
 }
