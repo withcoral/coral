@@ -119,6 +119,9 @@ export function WorkspaceOverview({
         <OnboardingDialog
           displayName={w.displayName}
           endpoint={w.mcpEndpoint}
+          // Coral serves the implicit local user only when it runs without authentication,
+          // and that same runtime setting serves its MCP server with no sign-in.
+          signIn={!w.profile.local}
           open={onboardingOpen}
           onClose={() => setOnboardingOpen(false)}
         />
