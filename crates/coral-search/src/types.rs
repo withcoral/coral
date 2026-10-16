@@ -155,7 +155,7 @@ pub struct SearchRequest {
 pub struct SearchInput {
     /// Optional caller query, preserved exactly when accepted.
     pub query: Option<String>,
-    /// Optional Provider filter: a namespace, such as `github`, or `coral.admin`.
+    /// Optional Provider filter: a namespace, such as `github`, or `coral.workspace`.
     pub provider: Option<String>,
     /// Optional requested page size.
     pub limit: Option<u16>,
@@ -184,7 +184,7 @@ impl TryFrom<SearchInput> for SearchRequest {
 }
 
 /// Parses the `provider` filter: a Provider Namespace, such as `github`, or
-/// `coral.admin` for the Built-in Provider. A complete `coral.providers` Call
+/// `coral.workspace` for the Built-in Provider. A complete `coral.providers` Call
 /// Root is rejected with the namespace to use instead.
 fn provider_filter(value: &str) -> Result<ProviderCallRoot, Error> {
     match ProviderCallRoot::parse(value) {
@@ -200,7 +200,7 @@ fn provider_filter(value: &str) -> Result<ProviderCallRoot, Error> {
 }
 
 /// The `provider` filter value that selects the Provider at this Call Root:
-/// its namespace, such as `github`, or `coral.admin` for the Built-in Provider.
+/// its namespace, such as `github`, or `coral.workspace` for the Built-in Provider.
 /// Callers see this value; the Call Root stays internal.
 #[must_use]
 pub fn provider_filter_value(call_root: &ProviderCallRoot) -> &str {
@@ -290,7 +290,7 @@ impl CallPath {
             || matches!(segments.as_slice(), ["coral", "functions", _, ..]);
         if !shaped || segments.iter().any(|segment| !safe_path_segment(segment)) {
             return Err(Error::InvalidInput(
-                "Call Path must be a complete safe coral.providers, coral.admin or coral.functions JavaScript path"
+                "Call Path must be a complete safe coral.providers, coral.workspace or coral.functions JavaScript path"
                     .to_string(),
             ));
         }

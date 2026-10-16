@@ -2197,7 +2197,7 @@ fn describe_requires_one_complete_safe_call_path() {
     }
     for valid in [
         "coral.providers.weather.getForecast",
-        "coral.admin.createProvider",
+        "coral.workspace.createProvider",
         "coral.functions.internal.formatForecast",
         "coral.functions.天気.予報",
     ] {

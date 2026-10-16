@@ -913,7 +913,7 @@ fn programs_call_every_call_root_under_coral_by_its_complete_path() {
     let program = compiler
         .compile(
             compilation_deadline(),
-            "await coral.providers.admin.create({ id: 1 }); await coral.admin.createProvider(); \
+            "await coral.providers.workspace.create({ id: 1 }); await coral.workspace.createProvider(); \
              let typo = 'no error'; try { coral.emitt(1); } catch (error) { typo = error.name; } \
              return [typeof coral.emit, coral.OperationError.name, Object.keys(coral).sort(), \
                      coral.then, typeof coral.billing, typo];",
@@ -927,16 +927,19 @@ fn programs_call_every_call_root_under_coral_by_its_complete_path() {
         host.calls.lock().expect("calls").as_slice(),
         &[
             (
-                "coral.providers.admin.create".to_string(),
+                "coral.providers.workspace.create".to_string(),
                 "{\"id\":1}".to_string()
             ),
-            ("coral.admin.createProvider".to_string(), "{}".to_string()),
+            (
+                "coral.workspace.createProvider".to_string(),
+                "{}".to_string()
+            ),
         ]
     );
     assert_eq!(
         outcome.final_value_json(),
         Some(
-            "[\"function\",\"OperationError\",[\"OperationError\",\"admin\",\"emit\",\"providers\"],\
+            "[\"function\",\"OperationError\",[\"OperationError\",\"emit\",\"providers\",\"workspace\"],\
              null,\"undefined\",\"TypeError\"]"
         )
     );

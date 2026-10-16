@@ -1,4 +1,4 @@
-//! `coral.admin.createProvider` prepares a Provider Setup and returns the Reef
+//! `coral.workspace.createProvider` prepares a Provider Setup and returns the Reef
 //! page where a person finishes it. The call never waits for that person.
 use super::*;
 use coral_provider::{ProviderSetupId, ProviderSetupState};
@@ -11,7 +11,7 @@ fn create_provider(namespace: &str, source: &serde_json::Value) -> RunSubmission
     submission(
         &"
         try {
-            return await coral.admin.createProvider({ namespace: NAMESPACE, source: SOURCE });
+            return await coral.workspace.createProvider({ namespace: NAMESPACE, source: SOURCE });
         } catch (error) {
             if (!(error instanceof coral.OperationError)) throw error;
             return error.code;
@@ -77,7 +77,7 @@ impl AdminScope {
             &mut transaction,
             &self.workspace_id,
             coral_provider::InvocationCaller::new(&self.fixture.workspaces, &self.owner, 12),
-            "coral.admin.createProvider",
+            "coral.workspace.createProvider",
         )
         .await
         .unwrap()
