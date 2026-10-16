@@ -554,8 +554,8 @@ async fn json_rpc_errors_are_typed_rejections_that_never_repeat_the_call() {
             move |request: &Request| {
                 let request: Value = request.body_json().expect("call");
                 let envelope = json!({"jsonrpc": "2.0", "id": request["id"], "error": {
-                    "code": code, "message": "Invalid params: unknown field",
-                    "data": {"field": "zzzUnknown", "secret": "peer-canary"}
+                    "code": code, "message": "Invalid params: message-canary",
+                    "data": {"field": "zzzUnknown", "secret": "data-canary"}
                 }});
                 if sse {
                     ResponseTemplate::new(200)
@@ -589,6 +589,91 @@ async fn json_rpc_errors_are_typed_rejections_that_never_repeat_the_call() {
             requests_for(&server, "tools/list").await,
             listings,
             "{listing:?}: only a -32602 on tools/call reads the listing"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_json_rpc_error_on_resources_read_is_a_typed_rejection_without_a_listing_read() {
+    for (code, expected) in [
+        (-32602, McpRejection::InvalidParams),
+        (-32603, McpRejection::Other(-32603)),
+    ] {
+        let server = server(json!({"content": [
+            {"type": "resource_link", "uri": "private://bucket/report", "name": "report"}
+        ]}))
+        .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "resources/read"})))
+            .respond_with(move |request: &Request| {
+                let request: Value = request.body_json().expect("read request");
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0", "id": request["id"], "error": {
+                        "code": code, "message": "Resource not found: message-canary",
+                        "data": {"uri": "private://bucket/report", "secret": "data-canary"}
+                    }
+                }))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let catalog = catalog(&server.uri());
+        let tool = catalog
+            .operations()
+            .iter()
+            .find(|op| op.key().as_str() == "mixed")
+            .expect("tool");
+        let read = catalog
+            .operations()
+            .iter()
+            .find(|op| op.key().as_str() == "resources/read")
+            .expect("resource Operation");
+        let resources = Arc::new(McpResources::default());
+        let upstream = McpUpstream::new(
+            DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
+        )
+        .expect("client");
+        let dispatch = ReadyMcpDispatch::plan(
+            tool,
+            &json!({"page": 2}),
+            "provider-a",
+            resources.clone(),
+            coral_value::ValueLimits::default(),
+        )
+        .expect("plan");
+        let outcome = upstream.send(dispatch).await.expect("link");
+        let args =
+            json!({"reference": outcome.operation_result()["data"]["content"][0]["resource"]});
+        let dispatch = ReadyMcpDispatch::plan(
+            read,
+            &args,
+            "provider-a",
+            resources,
+            coral_value::ValueLimits::default(),
+        )
+        .expect("reference");
+        let error = upstream
+            .send(dispatch)
+            .await
+            .expect_err("a JSON-RPC error is an answer, not a result");
+        assert!(
+            matches!(error, coral_upstream::Error::McpRejected(rejection) if rejection == expected),
+            "{code}: {error:?}"
+        );
+        assert!(
+            !error.to_string().contains("canary"),
+            "the peer's error payload never leaves the Adapter: {error}"
+        );
+        server.verify().await;
+        assert_eq!(
+            requests_for(&server, "resources/read").await,
+            1,
+            "{code}: a rejection is never retried"
+        );
+        assert_eq!(
+            requests_for(&server, "tools/list").await,
+            0,
+            "{code}: only a tools/call rejection reads the listing"
         );
     }
 }
