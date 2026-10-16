@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { useState } from 'react'
-import { expect, userEvent as user, within } from 'storybook/test'
+import { expect, screen, userEvent as user, waitFor, within } from 'storybook/test'
 
 import { TokenInput, type TokenInputProps } from './token-input'
 
@@ -146,5 +146,31 @@ export const TypeAtHumanSpeed: Story = {
     // "c" matches nothing; "r" matches both suggestions, and "rx" neither.
     await slow.type(canvas.getByRole('combobox'), 'rx{Enter}custom{Enter}')
     await expect(canvas.getByText('Value: ["rx","custom"]')).toBeVisible()
+  },
+}
+
+// Catches: a token too long for its chip, with no shorter label, that you
+// cannot read in full.
+export const LongTokenTooltip: Story = {
+  args: { onChange: () => {}, value: [] },
+  render: () => (
+    <Controlled value={['read', 'https://graph.microsoft.com/TeamSettings.ReadWrite.All']} />
+  ),
+  play: async ({ canvas, userEvent }) => {
+    await userEvent.hover(
+      canvas.getByText('https://graph.microsoft.com/TeamSettings.ReadWrite.All'),
+    )
+    await waitFor(() =>
+      expect(
+        screen.getAllByText('https://graph.microsoft.com/TeamSettings.ReadWrite.All'),
+      ).toHaveLength(2),
+    )
+    // A token that fits its chip shows no tooltip.
+    await userEvent.unhover(
+      canvas.getByText('https://graph.microsoft.com/TeamSettings.ReadWrite.All'),
+    )
+    await userEvent.hover(canvas.getByText('read'))
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    await expect(screen.getAllByText('read')).toHaveLength(1)
   },
 }

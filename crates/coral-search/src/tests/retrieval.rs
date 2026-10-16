@@ -153,9 +153,11 @@ impl Corpus {
         .unwrap()
         .expect("active Generation");
         transaction.rollback().await.unwrap();
-        self.modules
-            .index
-            .index_generation(std::sync::Arc::new(entries));
+        self.modules.index.index_generation(
+            self.workspace.clone(),
+            self.github.clone(),
+            entries.generation_id().clone(),
+        );
         self.modules.index.settled().await;
     }
 

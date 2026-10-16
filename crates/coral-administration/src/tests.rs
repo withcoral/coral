@@ -4,6 +4,7 @@ mod owner_transfer;
 mod providers;
 mod provisional;
 mod repository;
+mod search_eval;
 mod setup;
 mod workspaces;
 

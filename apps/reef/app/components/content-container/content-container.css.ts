@@ -3,8 +3,6 @@ import { style } from '@vanilla-extract/css'
 import { breakpoints } from '@/styles/breakpoints'
 import { theme } from '@/wax/theme/theme.css'
 
-const CONTAINER_MARGIN_PX = 12
-
 export const contentContainer = style({
   backgroundColor: theme.surface.main,
   display: 'flex',
@@ -15,22 +13,17 @@ export const contentContainer = style({
   overflow: 'auto',
 })
 
+// The page sits flush beside the sidebar, split from it by one line.
 export const content = style({
   '@media': {
     [`screen and (max-width: ${breakpoints.mobile})`]: {
-      borderRadius: 0,
-      marginBlock: 0,
-      marginInlineEnd: 0,
-      maxHeight: '100dvh',
+      borderInlineStart: 0,
     },
   },
   background: theme.surface.mainContent,
-  border: `1px solid ${theme.stroke.mainContent}`,
-  borderRadius: '8px',
+  borderInlineStart: `1px solid ${theme.stroke.mainContent}`,
   flex: 1,
-  marginBlock: `${CONTAINER_MARGIN_PX}px`,
-  marginInlineEnd: `${CONTAINER_MARGIN_PX}px`,
-  maxHeight: `calc(100dvh - ${CONTAINER_MARGIN_PX * 2}px)`,
+  maxHeight: '100dvh',
   minHeight: 0,
   overflow: 'hidden',
 })

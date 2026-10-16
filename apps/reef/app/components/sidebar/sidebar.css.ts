@@ -1,5 +1,12 @@
-import { keyframes, style, styleVariants } from '@vanilla-extract/css'
+import { globalStyle, keyframes, style, styleVariants } from '@vanilla-extract/css'
 import { animation, theme, zIndex } from '@/wax/theme/theme.css'
+import { TOP_BAR_HEIGHT_PX } from '@/wax/components/page-layout/constants'
+
+const SIDEBAR_PADDING_PX = 12
+// The masthead centres the brand on the page's top bar beside it.
+const MASTHEAD_HEIGHT_PX = TOP_BAR_HEIGHT_PX - 2 * SIDEBAR_PADDING_PX
+// As tall as the collapse toggle beside the brand.
+const IDENTITY_HEIGHT_PX = 32
 export const sidebar = style({
   backgroundColor: theme.surface.main,
   display: 'flex',
@@ -7,7 +14,7 @@ export const sidebar = style({
   flex: '0 0 220px',
   height: '100dvh',
   minWidth: 0,
-  padding: 12,
+  padding: SIDEBAR_PADDING_PX,
   gap: 16,
   zIndex: zIndex.navigation,
 })
@@ -37,21 +44,21 @@ export const sidebarResized = style({
 })
 export const drawerSidebar = style({ flex: 1, height: 'auto', padding: 0, minHeight: 0 })
 // A masthead: the brand with the collapse toggle at its end, and room beneath
-// it before the scopes begin. Collapsed, the toggle sits under the mark, so it
-// stays at the top in both states.
+// it before the scopes begin. Collapsed, the toggle takes the mark's place while
+// the pointer is on the masthead or the toggle has keyboard focus.
 export const header = style({
   alignItems: 'center',
   display: 'flex',
   gap: 4,
   minWidth: 0,
-  paddingBlock: 8,
+  paddingBlock: (MASTHEAD_HEIGHT_PX - IDENTITY_HEIGHT_PX) / 2,
 })
 // Same inset as the icon-and-text buttons below, so every icon shares one column.
 export const identity = style({
   display: 'flex',
   alignItems: 'center',
   flex: 1,
-  minHeight: 36,
+  minHeight: IDENTITY_HEIGHT_PX,
   paddingInline: 7,
   color: theme.content.primary,
   textDecoration: 'none',
@@ -165,9 +172,12 @@ export const railWorkspace = style({
   gap: 2,
   paddingTop: 6,
   width: 44,
+  // A rule divides one Workspace from the next; the masthead's space already
+  // sets the first apart, as it does in the expanded sidebar.
+  selectors: { '&:first-child': { borderTop: 0, paddingTop: 0 } },
 })
-// Each Workspace is its avatar. A ring marks the current one, and the selected
-// background stays on its destinations.
+// Each Workspace is its avatar. A fine ring marks the current one, quieter
+// than the selected background its current destination carries.
 export const railTile = style({
   // Positions a pending-action dot in the corner.
   position: 'relative',
@@ -185,7 +195,7 @@ export const railTile = style({
   },
 })
 export const railTileCurrent = style({
-  boxShadow: `inset 0 0 0 2px ${theme.content.primary}`,
+  boxShadow: `inset 0 0 0 1px ${theme.stroke.control}`,
 })
 export const externalLinks = style({ display: 'flex', flexDirection: 'column', gap: 2 })
 // The account sits alone at the foot, so its name has the full width. Collapsed,
@@ -202,6 +212,26 @@ export const minimizedControl = style({
   width: 34,
 })
 export const minimizedColumn = style({ alignItems: 'center', flexDirection: 'column' })
+// Collapsed, the mark and the toggle share one cell. The masthead is as tall as
+// the expanded one, so the mark stays level with the page's breadcrumbs.
+export const minimizedHeader = style({
+  display: 'grid',
+  height: MASTHEAD_HEIGHT_PX,
+  paddingBlock: 0,
+  placeItems: 'center',
+})
+globalStyle(`${minimizedHeader} > *`, {
+  gridArea: '1 / 1',
+  transition: animation.fadeTransition,
+})
+globalStyle(`${minimizedHeader} > :last-child`, { opacity: 0 })
+globalStyle(`${minimizedHeader}:is(:hover, :has(button:focus-visible)) > :last-child`, {
+  opacity: 1,
+})
+globalStyle(`${minimizedHeader}:is(:hover, :has(button:focus-visible)) > :first-child`, {
+  opacity: 0,
+  pointerEvents: 'none',
+})
 export const railDestinations = style({
   alignItems: 'center',
   display: 'flex',

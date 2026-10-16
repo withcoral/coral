@@ -1,0 +1,64 @@
+# GitHub REST API, from apps/reef/recipes/github.
+# Each query is a request as an agent might phrase it, without record values.
+- query: create an issue
+  accept: [issues.create]
+- query: comment on an issue
+  accept: [issues.createComment]
+- query: add labels to an issue
+  accept: [issues.addLabels, issues.setLabels]
+- query: assign someone to an issue
+  accept: [issues.addAssignees]
+- query: close an issue
+  accept: [issues.update]
+- query: list open pull requests in a repository
+  accept: [pulls.list]
+- query: merge a pull request
+  accept: [pulls.merge, pulls.mergeAsync]
+- query: request reviewers on a pull request
+  accept: [pulls.requestReviewers]
+- query: list files changed in a pull request
+  accept: [pulls.listFiles]
+- query: get the contents of a file in a repository
+  accept: [repos.getContent]
+- query: create or update a file in a repository
+  accept: [repos.createOrUpdateFileContents]
+- query: list branches
+  accept: [repos.listBranches]
+- query: list commits on a branch
+  accept: [repos.listCommits]
+- query: compare two commits
+  accept: [repos.compareCommits]
+- query: create a release
+  accept: [repos.createRelease]
+- query: fork a repository
+  accept: [repos.createFork]
+- query: add a collaborator to a repository
+  accept: [repos.addCollaborator]
+- query: list workflow runs
+  accept: [actions.listWorkflowRunsForRepo, actions.listWorkflowRuns]
+- query: re-run a failed workflow
+  accept: [actions.reRunWorkflow, actions.reRunWorkflowFailedJobs]
+- query: download workflow run logs
+  accept: [actions.downloadWorkflowRunLogs]
+- query: trigger a workflow manually
+  accept: [actions.createWorkflowDispatch]
+- query: set a repository secret for actions
+  accept: [actions.createOrUpdateRepoSecret]
+- query: list check runs for a commit
+  accept: [checks.listForRef]
+- query: list dependabot alerts
+  accept: [dependabot.listAlertsForRepo]
+- query: star a repository
+  accept: [activity.starRepoForAuthenticatedUser]
+- query: list my notifications
+  accept: [activity.listNotificationsForAuthenticatedUser]
+- query: search code
+  accept: [search.code]
+- query: search issues and pull requests
+  accept: [search.issuesAndPullRequests]
+- query: get the authenticated user
+  accept: [users.getAuthenticated]
+- query: list members of an organization
+  accept: [orgs.listMembers]
+- query: create a gist
+  accept: [gists.create]
