@@ -13,6 +13,7 @@ import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
 import { Activity } from './activity'
 import { ActionReviewSession } from '../actions/review'
+import { recordAnimations } from '../../../.storybook/browser'
 import {
   activityPage,
   approvalRequest,
@@ -713,6 +714,28 @@ export const FollowsInTheSourceSplit: Story = {
     await press('Add log')
     await selects('mail.send', 'mail.send')
     await expect(highlighted()).toEqual([2])
+  },
+}
+
+/** A new operation that live mode selects slides in by Run order. Detail motion owns the rule. */
+export const SlidesToEachNewOperation: Story = {
+  beforeEach: () => world.reset([operation(program.name, 1, 'mail.list')]),
+  play: async (context) => {
+    const { toggle, press, selects } = await surface(context)
+    await selects('Send reminders', 'Reminder run')
+    await context.userEvent.click(toggle())
+    await selects('mail.list', 'mail.list')
+    const recorder = recordAnimations()
+    try {
+      await press('Add operation')
+      await selects('mail.send', 'mail.send')
+      await expect(recorder.started.map(({ transforms }) => transforms[0])).toEqual([
+        'translateY(100%)',
+        'translateY(0)',
+      ])
+    } finally {
+      recorder.stop()
+    }
   },
 }
 

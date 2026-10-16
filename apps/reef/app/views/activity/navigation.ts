@@ -565,3 +565,14 @@ export function stepStop(
   const next = from < 0 ? undefined : stops[from + step]
   return next?.kind === 'record' ? next : null
 }
+
+/**
+ * An Operation Invocation's position among its Run's records, as Coral ordered them.
+ * Undefined for any other record, or when its Run's loaded window does not hold it.
+ */
+export function invocationPosition(page: ActivityPage, row: ActivityRow | null) {
+  if (row?.kind !== 'invocation') return undefined
+  const branch = page.branches[row.run]
+  if (!branch || branch.unavailable) return undefined
+  return branch.rows.find((item) => item.name === row.name)?.position
+}

@@ -71,3 +71,39 @@ export async function click(element: Element) {
   await context.userEvent.click(element)
   return true
 }
+
+/** One Web Animation the page started: its element, its transforms in order, and its timing. */
+export interface StartedAnimation {
+  target: Element
+  transforms: string[]
+  options: KeyframeAnimationOptions | number | undefined
+  animation: Animation
+}
+
+/**
+ * Records every Web Animation the page starts with `Element.animate` until `stop`.
+ * Each still plays as it would without the recording.
+ */
+export function recordAnimations() {
+  const started: StartedAnimation[] = []
+  const animate = Element.prototype.animate
+  Element.prototype.animate = function (this: Element, keyframes, options) {
+    const animation = animate.call(this, keyframes, options)
+    const frames = Array.isArray(keyframes) ? keyframes : []
+    started.push({
+      target: this,
+      transforms: frames.map((frame) => String(frame.transform ?? '')),
+      options,
+      animation,
+    })
+    return animation
+  }
+  return {
+    started,
+    /** Forgets what it recorded so far. */
+    clear: () => void started.splice(0),
+    stop: () => {
+      Element.prototype.animate = animate
+    },
+  }
+}
