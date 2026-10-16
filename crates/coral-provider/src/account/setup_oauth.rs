@@ -93,7 +93,7 @@ impl AccountModule {
         // outside the transaction: registration is a network call.
         let mut tx = self.providers.database.begin().await?;
         let (_authority, loaded) = self.lock_pre_ready(&mut tx, context, owner, id).await?;
-        let flow = flow_of(self.providers.outbound_policy, &loaded, context)?;
+        let flow = flow_of(self.providers.outbound_policy, &loaded)?;
         if loaded.configuration_revision != configuration_revision {
             return Err(Error::EtagMismatch);
         }
@@ -174,7 +174,7 @@ impl AccountModule {
         let context = &advanced(context, started);
         let mut tx = self.providers.database.begin().await?;
         let (authority, loaded) = self.lock_pre_ready(&mut tx, context, owner, id).await?;
-        if flow_of(self.providers.outbound_policy, &loaded, context)?.kind != flow.kind
+        if flow_of(self.providers.outbound_policy, &loaded)?.kind != flow.kind
             || loaded.configuration_revision != configuration_revision
             || context.occurred_at_unix_nanos() >= expires_at_unix_nanos
             || context.occurred_at_unix_nanos() >= authorization_expires_at
@@ -363,6 +363,7 @@ impl AccountModule {
             .providers
             .check_owner_configuration_in_transaction(&mut tx, context.actor(), owner)
             .await?;
+        crate::started_setup(&mut tx, context.actor(), owner, id).await?;
         if !end_in_transaction(&mut tx, SetupActor::User { context, authority }, owner, id).await? {
             return Err(Error::ProviderSetupNotApplicable);
         }
@@ -397,9 +398,7 @@ impl AccountModule {
         if !providers::lock_setup_for_publication(tx, owner, id).await? {
             return Err(Error::ProviderSetupNotFound);
         }
-        let mut loaded = providers::setup(&mut *tx, owner, id)
-            .await?
-            .ok_or(Error::ProviderSetupNotFound)?;
+        let mut loaded = crate::started_setup(&mut *tx, context.actor(), owner, id).await?;
         settle_deadlines(
             tx,
             SetupActor::User { context, authority },
@@ -508,7 +507,7 @@ impl AccountModule {
                 .map_err(|_error| Error::AccountInput)?,
         ));
         let authorization_state = row.authorization_state;
-        let flow = flow_of(self.providers.outbound_policy, &loaded, context);
+        let flow = flow_of(self.providers.outbound_policy, &loaded);
         if authorization_state != SetupAuthorizationState::Pending || flow.is_err() {
             // Only an exact repeat of the accepted callback returns the committed
             // state; a callback for a superseded, expired, canceled, or exchanged
@@ -959,17 +958,11 @@ fn check_replacement(
 
 /// Resolves which flow a Setup serves right now, or why it serves none.
 ///
-/// A Setup awaiting authorization is driven only by the User who accepted its
-/// source. A ready Setup serves a flow when its pinned contract is OAuth; the
+/// A ready Setup serves a flow when its pinned contract is OAuth; the
 /// material's ownership is checked against the provisional row by the caller.
-fn flow_of(
-    policy: coral_outbound::DestinationPolicy,
-    loaded: &LoadedSetup,
-    context: &ChangeContext,
-) -> Result<Flow, Error> {
+fn flow_of(policy: coral_outbound::DestinationPolicy, loaded: &LoadedSetup) -> Result<Flow, Error> {
     match loaded.setup.state() {
         ProviderSetupState::AwaitingAuthorization => {
-            require_configuring_user(loaded, context)?;
             let contract = crate::configuration::effective_contract(policy, loaded)?;
             if !matches!(
                 contract.authentication(),
@@ -1019,14 +1012,6 @@ fn flow_of(
         | ProviderSetupState::Consumed(_)
         | ProviderSetupState::Expired
         | ProviderSetupState::Canceled => Err(Error::ProviderSetupNotApplicable),
-    }
-}
-
-/// Only the User who accepted the source drives its Authorization and discovery.
-fn require_configuring_user(loaded: &LoadedSetup, context: &ChangeContext) -> Result<(), Error> {
-    match &loaded.actor_user_id {
-        Some(user) if user == context.actor().user_id() => Ok(()),
-        _ => Err(Error::AccountNotFound),
     }
 }
 

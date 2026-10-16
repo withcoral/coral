@@ -359,7 +359,7 @@ async fn create_provider_returns_the_reef_page_that_finishes_its_setup() {
                     "status": "needs_sign_in",
                     "url": format!(
                         "{TEST_REEF}/workspaces/{}/providers/new?setup={setup}&namespace=weather\
-                         &operationsAccepted=1&account=fixed",
+                         &account=fixed",
                         scope.workspace_id,
                     ),
                     "namespace": "weather",
@@ -1155,8 +1155,8 @@ async fn the_program_configures_how_a_person_signs_in() {
         ),
         // Device code never uses PKCE, whatever the Program wrote.
         ("fixed", device, Some("&account=fixed")),
-        // Only the person can give a confidential application's secret, so even
-        // a caller route that Coral could publish needs them.
+        // Each person's own Account needs a sign-in too, and only the person
+        // can give a confidential application's secret.
         (
             "caller",
             confidential,

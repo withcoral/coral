@@ -439,27 +439,6 @@ async fn protected_update(borrow: bool, route: CredentialRoute) {
         .await
         .unwrap();
     assert!(confirmation.errors.is_empty());
-    if route == CredentialRoute::Caller {
-        let other = organization_user(
-            harness.database.clone(),
-            "user:other-update-owner",
-            OrganizationRole::Owner,
-        )
-        .await;
-        crate::tests::join_as_owner(&harness.workspaces, &other, &owner).await;
-        assert!(matches!(
-            harness
-                .accounts
-                .discover_setup_with_account(
-                    &change_context(other, 10, '3'),
-                    &owner,
-                    replacement.id(),
-                    confirmation.revision
-                )
-                .await,
-            Err(Error::AccountRequired)
-        ));
-    }
     let reserved = if borrow {
         harness
             .accounts
@@ -1818,7 +1797,7 @@ impl Configured {
 
 // Catches: callers each deciding for themselves whether a Setup needs a person,
 // a route that does not suit the source getting through to Publication, or
-// Coral publishing an application whose secret only a person can give.
+// Coral publishing a Provider that needs an Account before anyone signs in.
 #[tokio::test]
 async fn publishability_says_who_can_publish_a_setup_under_a_route() {
     use crate::{PublishabilityRejection as R, SetupPublishability as P};
@@ -1857,11 +1836,12 @@ async fn publishability_says_who_can_publish_a_setup_under_a_route() {
             CredentialRoute::Fixed,
             P::Person,
         ),
+        // Each person's own Account still needs someone to sign in first.
         (
             &bearer,
             Configured::AsSuggested,
             CredentialRoute::Caller,
-            P::Coral,
+            P::Person,
         ),
         (
             &oauth,
@@ -2176,7 +2156,8 @@ async fn secret_entry_authorizes_an_openapi_bearer_setup_for_its_configuring_use
             .await,
         Err(Error::ProviderSetupNotApplicable)
     ));
-    // A second Owner cannot read, replace, or promote another User's provisional secret.
+    // Only the User who started a Setup acts on it. To a second Owner it does
+    // not exist, so they cannot read, replace, end or promote its secret.
     let other = organization_user(
         harness.database.clone(),
         "user:openapi-bearer-owner",
@@ -2184,55 +2165,149 @@ async fn secret_entry_authorizes_an_openapi_bearer_setup_for_its_configuring_use
     )
     .await;
     crate::tests::join_as_owner(&harness.workspaces, &other, &scope).await;
-    assert!(
-        !harness
-            .providers
-            .setup_authentication(&other, &scope, setup.id(), 13)
-            .await
-            .unwrap()
-            .authorized
-    );
-    assert!(matches!(
-        harness
-            .accounts
-            .authorize_setup(
-                &change_context(other.clone(), 14, '4'),
-                &scope,
-                setup.id(),
-                1,
-                coral_credentials::CredentialValues::token(
-                    Secret::new("other-canary".into()).unwrap()
-                ),
-            )
-            .await,
-        Err(Error::AccountNotFound)
-    ));
-    // Promoting it would publish the Setup, which only its configuring User can.
     let events_before = harness
         .providers
         .list_lifecycle_events(&owner, &scope)
         .await
         .unwrap();
-    let publication = harness
+    let review = harness
         .providers
-        .publish_workspace_provider(
-            &change_context(other.clone(), 15, '5'),
-            publication_request(
-                workspace.id(),
-                setup.id(),
-                "bearer",
-                CredentialRoute::Fixed,
-                "a0000000-0000-4000-8000-000000000006",
-            )
-            .with_account_grant(grant_id),
-        )
-        .await;
-    assert!(
-        matches!(publication, Err(Error::ProviderSetupNotFound)),
-        "{publication:?}"
-    );
-    assert!(!format!("{publication:?}{authorized:?}").contains(TOKEN));
-    // The refusal changed nothing: the configuring User still holds the sign-in.
+        .review_setup_configuration(&owner, &scope, setup.id())
+        .await
+        .unwrap();
+    let as_other = || change_context(other.clone(), 14, '4');
+    let canary = || CredentialValues::token(Secret::new("other-canary".into()).unwrap());
+    let client =
+        || crate::SetupOAuthClient::new("https://reef.example/callback".into(), None).unwrap();
+    let refusals: [(&str, Result<(), Error>); 12] = [
+        (
+            "get",
+            harness
+                .providers
+                .get_setup(&other, &scope, setup.id())
+                .await
+                .map(drop),
+        ),
+        (
+            "review",
+            harness
+                .providers
+                .review_setup_configuration(&other, &scope, setup.id())
+                .await
+                .map(drop),
+        ),
+        (
+            "inspect",
+            harness
+                .providers
+                .inspect_setup(&other, &scope, setup.id(), 13)
+                .await
+                .map(drop),
+        ),
+        (
+            "publishability",
+            harness
+                .providers
+                .setup_publishability(&other, &scope, setup.id(), CredentialRoute::Fixed)
+                .await
+                .map(drop),
+        ),
+        (
+            "confirm",
+            harness
+                .providers
+                .confirm_setup_configuration(
+                    &as_other(),
+                    &scope,
+                    setup.id(),
+                    review.revision,
+                    review.confirmed.clone().unwrap(),
+                )
+                .await
+                .map(drop),
+        ),
+        (
+            "automatic client",
+            harness
+                .accounts
+                .setup_automatic_client_available(&other, &scope, setup.id())
+                .await
+                .map(drop),
+        ),
+        (
+            "authorize",
+            harness
+                .accounts
+                .authorize_setup(&as_other(), &scope, setup.id(), 1, canary())
+                .await
+                .map(drop),
+        ),
+        (
+            "start sign-in",
+            harness
+                .accounts
+                .start_setup_authorization(
+                    &as_other(),
+                    &scope,
+                    setup.id(),
+                    review.revision,
+                    client(),
+                )
+                .await
+                .map(drop),
+        ),
+        (
+            "retry discovery",
+            harness
+                .accounts
+                .retry_setup_discovery(&as_other(), &scope, setup.id())
+                .await
+                .map(drop),
+        ),
+        (
+            "discover with account",
+            harness
+                .accounts
+                .discover_setup_with_account(&as_other(), &scope, setup.id(), review.revision)
+                .await
+                .map(drop),
+        ),
+        (
+            "cancel",
+            harness
+                .accounts
+                .cancel_setup(&as_other(), &scope, setup.id())
+                .await
+                .map(drop),
+        ),
+        (
+            "publish",
+            harness
+                .providers
+                .publish_workspace_provider(
+                    &as_other(),
+                    publication_request(
+                        workspace.id(),
+                        setup.id(),
+                        "bearer",
+                        CredentialRoute::Fixed,
+                        "a0000000-0000-4000-8000-000000000007",
+                    )
+                    .with_account_grant(grant_id),
+                )
+                .await
+                .map(drop),
+        ),
+    ];
+    for (action, refused) in refusals {
+        assert!(
+            matches!(refused, Err(Error::ProviderSetupNotFound)),
+            "{action}: {refused:?}"
+        );
+        assert!(!format!("{refused:?}").contains(TOKEN), "{action}");
+    }
+    assert!(!format!("{authorized:?}").contains(TOKEN));
+    // The refusals changed nothing: the configuring User still holds the sign-in.
     let kept = harness
         .providers
         .setup_authentication(&owner, &scope, setup.id(), 16)
@@ -2247,6 +2322,29 @@ async fn secret_entry_authorizes_an_openapi_bearer_setup_for_its_configuring_use
             .await
             .unwrap(),
         events_before
+    );
+    // Nor did the refused publication record its request: the configuring
+    // User publishes with the same one.
+    let published = harness
+        .providers
+        .publish_workspace_provider(
+            &change_context(owner.clone(), 13 + 50 * 60_000_000_000, '5'),
+            publication_request(
+                workspace.id(),
+                setup.id(),
+                "bearer",
+                CredentialRoute::Fixed,
+                "a0000000-0000-4000-8000-000000000007",
+            )
+            .with_account_grant(grant_id),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        published.outcome(),
+        ProviderPublicationOutcome::Succeeded,
+        "{:?}",
+        published.diagnostic()
     );
 }
 

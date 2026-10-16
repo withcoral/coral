@@ -265,19 +265,11 @@ async fn member_removal(removal: Removal, initially_shared: bool, shared: bool) 
         "removed caller has no event inspection authority"
     );
     assert_eq!(
-        h.providers
-            .get_setup(&owner, workspace.id(), update.setup_id())
+        crate::tests::stored_setup(&h.database, workspace.id(), update.setup_id())
             .await
-            .unwrap()
+            .setup
             .state(),
         ProviderSetupState::Canceled
-    );
-    assert!(
-        !h.providers
-            .setup_authentication(&owner, workspace.id(), update.setup_id(), 31)
-            .await
-            .unwrap()
-            .authorized
     );
     gate.release();
     let rejected = tokio::time::timeout(Duration::from_secs(5), publishing)

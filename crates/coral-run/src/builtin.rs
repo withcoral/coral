@@ -697,9 +697,10 @@ fn web_url(url: String) -> Result<String, InputProblem> {
     }
 }
 
-/// Reef's new-provider stepper for one Setup. The namespace, the Operations
-/// and the Credential Route are already chosen, so the person signs in and
-/// publishes. A valid namespace, a Setup id and a route need no URL encoding.
+/// Reef's new-provider stepper for one Setup. The namespace and the Credential
+/// Route are already chosen. The link opens on the Operations, so the person
+/// sees what the Program's Provider can do before signing in and publishing.
+/// A valid namespace, a Setup id and a route need no URL encoding.
 fn setup_path(
     workspace: &WorkspaceId,
     setup: &ProviderSetupId,
@@ -707,7 +708,7 @@ fn setup_path(
     route: CredentialRoute,
 ) -> String {
     let path = format!(
-        "/workspaces/{workspace}/providers/new?setup={setup}&namespace={}&operationsAccepted=1",
+        "/workspaces/{workspace}/providers/new?setup={setup}&namespace={}",
         namespace.as_str()
     );
     // Reef asks the account question only for a route that has an Account.

@@ -182,9 +182,7 @@ impl ProviderModule {
     ) -> Result<(repository::LoadedSetup, SetupConfigurationReview), Error> {
         self.check_owner_inspection_in_transaction(tx, actor, owner)
             .await?;
-        let loaded = repository::setup(&mut *tx, owner, id)
-            .await?
-            .ok_or(Error::ProviderSetupNotFound)?;
+        let loaded = crate::started_setup(&mut *tx, actor, owner, id).await?;
         let active_contract = update_contract(tx, &loaded).await?;
         let review = review_with_active(self.outbound_policy, &loaded, active_contract)?;
         Ok((loaded, review))
@@ -231,9 +229,7 @@ impl ProviderModule {
         self.workspaces
             .check_in_transaction(&mut tx, context.actor(), owner, WorkspaceAction::Configure)
             .await?;
-        let loaded = repository::setup(&mut tx, owner, id)
-            .await?
-            .ok_or(Error::ProviderSetupNotFound)?;
+        let loaded = crate::started_setup(&mut tx, context.actor(), owner, id).await?;
         tx.rollback().await?;
         require_editable(&loaded, context)?;
         check_preparation(self.outbound_policy, &loaded)?;

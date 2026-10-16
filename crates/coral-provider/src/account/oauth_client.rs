@@ -362,7 +362,7 @@ pub(crate) async fn require_configured(
 
 /// Whether the contract names a confidential OAuth application whose secret
 /// the Setup does not hold for that client ID. Only a person can give it.
-pub(crate) async fn client_secret_missing(
+async fn client_secret_missing(
     tx: &mut Transaction<'_>,
     owner: &WorkspaceId,
     setup: &crate::ProviderSetupId,
