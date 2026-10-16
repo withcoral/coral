@@ -8,7 +8,10 @@ use coral_db::{DatabaseSystem, Error, Transaction};
 use coral_functions::SavedFunctionId;
 use coral_provider::ProviderId;
 use coral_workspace::{Principal, WorkspaceId};
-use sea_query::{DeleteStatement, Expr, ExprTrait as _, Iden, OnConflict, Query, SimpleExpr};
+use sea_query::{
+    Alias, Asterisk, DeleteStatement, Expr, ExprTrait as _, Func, Iden, JoinType, OnConflict,
+    Query, SimpleExpr,
+};
 
 use super::IndexError;
 use crate::CallPath;
@@ -56,6 +59,17 @@ enum SearchIndexStates {
     State,
     AttemptedAtUnixNanos,
     Error,
+}
+
+/// The Postgres `search_stats` table and the columns the reconcile pass
+/// reads, for sea-query. Each row holds one Workspace's ranking totals and
+/// the watermark of the count that wrote them.
+#[derive(Iden)]
+enum SearchStats {
+    Table,
+    WorkspaceId,
+    CountedRows,
+    CountedMaxIndexedAt,
 }
 
 const OPERATION: &str = "operation";
@@ -817,18 +831,43 @@ pub(super) async fn statistics_watermarks(
     if transaction.system() != DatabaseSystem::Postgres {
         return Ok(Vec::new());
     }
+    let workspace_rows = Alias::new("workspace_rows");
+    let row_count = Alias::new("row_count");
+    let max_indexed_at = Alias::new("max_indexed_at");
     let rows: Vec<WatermarkColumns> = transaction
-        .fetch_all_sql(
-            "SELECT coalesce(e.workspace_id, s.workspace_id), \
-                 s.counted_rows, s.counted_max_indexed_at, \
-                 coalesce(e.row_count, 0), e.max_indexed_at \
-             FROM ( \
-                 SELECT workspace_id, count(*) AS row_count, \
-                     max(indexed_at_unix_nanos) AS max_indexed_at \
-                 FROM search_entities GROUP BY workspace_id \
-             ) AS e \
-             FULL JOIN search_stats AS s ON s.workspace_id = e.workspace_id",
-            sea_query::Values(Vec::new()),
+        .fetch_all(
+            Query::select()
+                .expr(Func::coalesce([
+                    Expr::col((workspace_rows.clone(), SearchEntities::WorkspaceId)),
+                    Expr::col((SearchStats::Table, SearchStats::WorkspaceId)),
+                ]))
+                .column((SearchStats::Table, SearchStats::CountedRows))
+                .column((SearchStats::Table, SearchStats::CountedMaxIndexedAt))
+                .expr(Func::coalesce([
+                    Expr::col((workspace_rows.clone(), row_count.clone())),
+                    Expr::val(0_i64),
+                ]))
+                .column((workspace_rows.clone(), max_indexed_at.clone()))
+                .from_subquery(
+                    Query::select()
+                        .column(SearchEntities::WorkspaceId)
+                        .expr_as(Expr::col(Asterisk).count(), row_count)
+                        .expr_as(
+                            Expr::col(SearchEntities::IndexedAtUnixNanos).max(),
+                            max_indexed_at,
+                        )
+                        .from(SearchEntities::Table)
+                        .group_by_col(SearchEntities::WorkspaceId)
+                        .to_owned(),
+                    workspace_rows.clone(),
+                )
+                .join(
+                    JoinType::FullOuterJoin,
+                    SearchStats::Table,
+                    Expr::col((SearchStats::Table, SearchStats::WorkspaceId))
+                        .equals((workspace_rows, SearchEntities::WorkspaceId)),
+                )
+                .to_owned(),
         )
         .await?;
     rows.into_iter()
