@@ -37,6 +37,7 @@ tokio-stream.workspace = true
 [dev-dependencies]
 coral-search = { workspace = true, features = ["test-fixtures"] }
 coral-provider = { workspace = true, features = ["test-fixtures"] }
+coral-db.workspace = true
 coral-outbound.workspace = true
 coral-test-support.workspace = true
 opentelemetry.workspace = true
