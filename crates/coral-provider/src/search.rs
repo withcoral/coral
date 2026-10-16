@@ -9,17 +9,15 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
 use coral_catalog::{
-    DeclarationIndexEntry, MaterializedOperation, OperationAvailability, OperationKey,
-    OperationPresentation, PreparedProviderCatalog, ProviderGenerationId, StoredDeclarationFields,
+    CatalogDiagnostic, DeclarationIndexEntry, MaterializedOperation, OperationAvailability,
+    OperationKey, OperationPresentation, PreparedDeclarationFields, ProviderGenerationId,
+    StoredDeclarationFields,
 };
 use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
 
 use crate::access::ProviderCallRoot;
-use crate::{
-    ActivatedGeneration, Error, OperationAuthoringMaterial, Provider, ProviderId, ProviderState,
-    repository,
-};
+use crate::{Error, OperationAuthoringMaterial, Provider, ProviderId, ProviderState, repository};
 
 /// Everything Universal Search may index about one Generation: the Provider's
 /// identity and one entry per structurally available Operation.
@@ -34,9 +32,7 @@ pub struct GenerationEntries {
 }
 
 impl GenerationEntries {
-    /// Names the Generation that publication wrote from the catalog that
-    /// `operations` were prepared from, once its terminal transaction assigns
-    /// the Generation id.
+    /// Names the Generation that `operations` were prepared from.
     #[must_use]
     pub fn new(
         provider: &Provider,
@@ -91,65 +87,6 @@ impl GenerationEntries {
     }
 }
 
-/// What publication prepares for Universal Search before its terminal write
-/// consumes the catalog. The caller builds the activated Generation's entries
-/// from it and the write's evidence, after its commit.
-#[derive(Debug)]
-pub struct EntryMaterial {
-    workspace_id: WorkspaceId,
-    call_root: ProviderCallRoot,
-    catalog: Result<(String, Vec<OperationEntry>), Error>,
-}
-
-impl EntryMaterial {
-    /// Prepares the material of a materialization outcome. A rejected catalog
-    /// activates no Generation, so its material is an error.
-    pub(crate) fn prepare(
-        workspace_id: WorkspaceId,
-        call_root: ProviderCallRoot,
-        materialized: &coral_catalog::MaterializationOutcome,
-    ) -> Self {
-        let catalog = match materialized {
-            coral_catalog::MaterializationOutcome::Ready(catalog) => {
-                prepare_operation_entries(catalog)
-                    .map(|operations| (catalog.display_name().to_string(), operations))
-            }
-            coral_catalog::MaterializationOutcome::Rejected(_) => Err(Error::CorruptData(
-                "a rejected catalog has no search entries".to_string(),
-            )),
-        };
-        Self {
-            workspace_id,
-            call_root,
-            catalog,
-        }
-    }
-
-    /// Returns the Workspace that owns the publication.
-    #[must_use]
-    pub const fn workspace_id(&self) -> &WorkspaceId {
-        &self.workspace_id
-    }
-
-    /// Builds the entries of the Generation one write activated.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::CorruptData`] when an available Operation had no
-    /// prepared declaration fields.
-    pub fn into_entries(self, activated: &ActivatedGeneration) -> Result<GenerationEntries, Error> {
-        let (display_name, operations) = self.catalog?;
-        Ok(GenerationEntries {
-            workspace_id: self.workspace_id,
-            provider_id: activated.provider().clone(),
-            call_root: self.call_root,
-            display_name,
-            generation_id: activated.generation().clone(),
-            operations,
-        })
-    }
-}
-
 /// What Universal Search may index about one structurally available Operation:
 /// typed fields, never JSON, and nothing secret.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,7 +94,7 @@ pub struct OperationEntry {
     key: OperationKey,
     relative_path: String,
     presentation: OperationPresentation,
-    declaration_fields: Vec<DeclarationIndexEntry>,
+    declaration_fields: PreparedDeclarationFields,
 }
 
 impl OperationEntry {
@@ -207,30 +144,24 @@ impl OperationEntry {
     /// Returns the readable declaration paths with the values the schema lists.
     #[must_use]
     pub fn declaration_fields(&self) -> &[DeclarationIndexEntry] {
-        &self.declaration_fields
+        self.declaration_fields.entries()
     }
-}
 
-/// Prepares one entry per structurally available Operation of a prepared
-/// catalog. Publication runs this before its terminal transaction consumes the
-/// catalog; it reads nothing, because materialization already prepared every
-/// Operation's declaration fields.
-///
-/// # Errors
-///
-/// Returns [`Error::CorruptData`] when an available Operation has no prepared
-/// declaration fields.
-pub fn prepare_operation_entries(
-    catalog: &PreparedProviderCatalog,
-) -> Result<Vec<OperationEntry>, Error> {
-    operation_entries(catalog.operations(), catalog.declaration_fields())
+    /// Returns the warnings left while preparing the declaration fields: a
+    /// bound that stopped the walk, or a schema it could not read. They
+    /// concern search only and never change the Operation's availability.
+    #[must_use]
+    pub fn search_warnings(&self) -> &[CatalogDiagnostic] {
+        self.declaration_fields.warnings()
+    }
 }
 
 /// Prepares the entries of the Provider's active Generation from what the
 /// catalog stores: its schema graph and its Operation rows, rebuilt by the
-/// current materialization rules. The search index's reconcile task runs this
-/// for a Generation that no notification indexed. `Ok(None)` means the
-/// Workspace has no such Provider.
+/// current materialization rules. The search index runs this after the commit
+/// that activated the Generation, and its reconcile task runs it for a
+/// Generation that no notification indexed. `Ok(None)` means the Workspace has
+/// no such Provider.
 ///
 /// The Generation is the one active when this reads, not one the caller names.
 /// When an update replaces the Generation after the caller listed the Provider,
@@ -269,7 +200,7 @@ pub async fn prepare_active_generation_entries_in_transaction(
 
 fn operation_entries(
     operations: &[MaterializedOperation],
-    declaration_fields: &BTreeMap<OperationKey, Vec<DeclarationIndexEntry>>,
+    declaration_fields: &BTreeMap<OperationKey, PreparedDeclarationFields>,
 ) -> Result<Vec<OperationEntry>, Error> {
     operations
         .iter()
@@ -429,7 +360,7 @@ impl HydratedOperation {
     }
 
     /// Returns the readable declaration paths with the values the schema
-    /// lists, as publication prepared them for indexing.
+    /// lists, as the index prepares them from the stored Generation.
     #[must_use]
     pub fn declaration_fields(&self) -> &[DeclarationIndexEntry] {
         &self.declaration_fields
@@ -462,7 +393,11 @@ impl LoadedGenerations {
             .lock()
             .expect("loaded generations mutex poisoned")
             .get(generation_id)
-            .map(|fields| fields.operation(operation))
+            .map(|fields| {
+                fields
+                    .operation(operation)
+                    .map(PreparedDeclarationFields::into_entries)
+            })
     }
 
     fn keep(&self, generation_id: ProviderGenerationId, fields: StoredDeclarationFields) {

@@ -126,9 +126,9 @@ const choosePolicyFilter = async (name: string) => {
   await user.click(await screen.findByRole('menuitemradio', { name }))
 }
 
-// The Apply button counts the selection, hidden rows included.
-const applyLabel = (hidden = false) =>
-  within(bulkForm(hidden)).getByRole('button', { name: /^Apply to/, hidden }).textContent
+// The bulk form counts the selection, hidden rows included.
+const selectionCount = (hidden = false) =>
+  within(bulkForm(hidden)).getByText(/ selected$/).textContent
 
 // Lets the router settle a submission's action and revalidation.
 async function settle() {
@@ -231,7 +231,7 @@ test('the rail filter narrows the table to the same providers', async () => {
   expect(screen.getByLabelText('Filter providers')).toHaveValue('Weather')
   expect(providerGroups()).toEqual(['Weather'])
   expect(rowNames()).toEqual(['getForecast'])
-  expect(applyLabel()).toBe('Apply to 1')
+  expect(selectionCount()).toBe('1 selected')
 
   await filterProviders('nothing')
   expect(providerGroups()).toEqual([])
@@ -247,11 +247,11 @@ test('selection survives filtering', async () => {
   renderPage()
   await user.click(checkbox('Select getForecast'))
   await user.click(checkbox('Select repos.get'))
-  expect(applyLabel()).toBe('Apply to 2')
+  expect(selectionCount()).toBe('2 selected')
 
   await filterOperations('forecast')
   expect(rowNames()).toEqual(['getForecast'])
-  expect(applyLabel()).toBe('Apply to 2')
+  expect(selectionCount()).toBe('2 selected')
   expect(document.body).toHaveTextContent('No operations match “forecast”.')
 
   await filterOperations('')
@@ -279,7 +279,7 @@ test('selection builds up across filters and the menu shows all of it', async ()
   await filterOperations('list')
   await user.click(all())
   expect(table()).toHaveTextContent('No operations match “list”. 1 selected operation is hidden.')
-  expect(applyLabel()).toBe('Apply to 3')
+  expect(selectionCount()).toBe('3 selected')
 
   await filterProviders('Weather')
   await user.click(within(table()).getByRole('button', { name: 'Show all selected operations' }))
@@ -293,14 +293,14 @@ test('selection builds up across filters and the menu shows all of it', async ()
   expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
 
   await choosePolicyFilter('All policies')
-  expect(applyLabel()).toBe('Apply to 2')
+  expect(selectionCount()).toBe('2 selected')
   await choosePolicyFilter('Selected (2)')
   expect(rowNames()).toEqual(['issues.list', 'getForecast'])
 
-  // The bulk form opens the same view from under any search.
+  // The menu opens the same view from under any search.
   await choosePolicyFilter('All policies')
   await filterOperations('nothing matches')
-  await user.click(within(bulkForm()).getByRole('button', { name: 'See selected operations' }))
+  await choosePolicyFilter('Selected (2)')
   expect(screen.getByLabelText('Filter operations')).toHaveValue('')
   expect(rowNames()).toEqual(['issues.list', 'getForecast'])
 })
@@ -326,22 +326,22 @@ test('selection rolls up to its provider and the header selects every match', as
   await user.click(checkbox('Select repos.get'))
   expect(checkbox('Select GitHub operations')).toBePartiallyChecked()
   expect(all()).toBePartiallyChecked()
-  expect(applyLabel()).toBe('Apply to 1')
+  expect(selectionCount()).toBe('1 selected')
 
   await user.click(checkbox('Select GitHub operations'))
   expect(checkbox('Select GitHub operations')).toBeChecked()
-  expect(applyLabel()).toBe('Apply to 2')
+  expect(selectionCount()).toBe('2 selected')
 
   await filterOperations('forecast')
   await user.click(all())
   await filterOperations('')
-  expect(applyLabel()).toBe('Apply to 3')
+  expect(selectionCount()).toBe('3 selected')
   expect(all()).toBeChecked()
   expect(all()).not.toBePartiallyChecked()
 
   await filterOperations('nothing matches')
   expect(all()).toBeDisabled()
-  expect(applyLabel()).toBe('Apply to 3')
+  expect(selectionCount()).toBe('3 selected')
 
   await filterOperations('')
   await user.click(all())
@@ -380,7 +380,7 @@ test('the drawer operation stays listed when the filter would hide it', async ()
   expect(rowNames()).toEqual(['repos.get', 'getForecast'])
 
   await user.click(checkbox('Select all matching operations', true))
-  expect(applyLabel(true)).toBe('Apply to 1')
+  expect(selectionCount(true)).toBe('1 selected')
   expect(checkbox('Select getForecast', true)).toBeChecked()
   expect(checkbox('Select repos.get', true)).not.toBeChecked()
 })
@@ -408,10 +408,10 @@ test('a mixed bulk outcome keeps only the failed operations selected', async () 
   renderPage({ action: mixedOutcome })
   await user.click(checkbox('Select getForecast'))
   await user.click(checkbox('Select repos.get'))
-  await user.click(within(bulkForm()).getByRole('button', { name: 'Apply to 2' }))
+  await user.click(within(bulkForm()).getByRole('button', { name: 'Apply' }))
   await settle()
 
-  expect(applyLabel()).toBe('Apply to 1')
+  expect(selectionCount()).toBe('1 selected')
   expect(checkbox('Select getForecast')).toBeChecked()
   expect(checkbox('Select repos.get')).not.toBeChecked()
   // The refused row says so; the saved row does not.
@@ -434,7 +434,7 @@ test('a selected row change in flight holds the bulk form', async () => {
   })
   await user.click(checkbox('Select repos.get'))
   await choosePolicy('repos.get', 'Disabled')
-  const apply = within(bulkForm()).getByRole('button', { name: 'Apply to 1' })
+  const apply = within(bulkForm()).getByRole('button', { name: 'Apply' })
   expect(apply).toBeDisabled()
 
   release()
@@ -516,7 +516,7 @@ test('a summary count filters the table to its operations until cleared', async 
     '0 of 1 operation',
   )
   await user.click(checkbox('Select all matching operations'))
-  expect(applyLabel()).toBe('Apply to 1')
+  expect(selectionCount()).toBe('1 selected')
   await user.click(within(bulkForm()).getByRole('button', { name: 'Clear selection' }))
 
   await choosePolicy('issues.list', 'Disabled')
@@ -567,8 +567,16 @@ test.each([
 // Catches: a row that does not open its drawer, a control click that does, or
 // a name click that the link and the row both navigate, which pushes two
 // history entries.
+// A click opens the row where the reader clicked it: the table does not scroll
+// the row to the top as it does for a shared link.
 test('clicking a row opens its operation, but its controls do not', async () => {
   const { router } = renderPage({ action: () => new Promise(() => {}) })
+  const port = screen.getByRole('table', { name: 'Operations' })
+  const scrolls: number[] = []
+  port.scrollTo = ((options: ScrollToOptions) => {
+    scrolls.push(options.top!)
+  }) as typeof port.scrollTo
+
   await user.click(within(rowOf('repos.get')).getByRole('link', { name: 'repos.get' }))
   expect(router.state.location.pathname).toBe(github.operations[1]!.path)
   await act(async () => router.navigate(-1))
@@ -578,6 +586,7 @@ test('clicking a row opens its operation, but its controls do not', async () => 
   expect(router.state.location.pathname).not.toMatch(/issues/)
   await user.click(within(rowOf('issues.list')).getAllByRole('cell')[1]!)
   expect(router.state.location.pathname).toBe(github.operations[0]!.path)
+  expect(scrolls).toEqual([])
 })
 
 // Catches: the browser's find taking the shortcut, which cannot reach the

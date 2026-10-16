@@ -240,7 +240,13 @@ function SidebarNavigation({
       )}
       data-sidebar-minimized={isMinimized}
     >
-      <div className={classNames(styles.header, isMinimized && styles.minimizedColumn)}>
+      <div
+        className={classNames(
+          styles.header,
+          isMinimized && styles.minimizedColumn,
+          isMinimized && !mobile && styles.minimizedHeader,
+        )}
+      >
         <Link
           to="/"
           className={classNames(styles.identity, isMinimized && styles.minimizedControl)}

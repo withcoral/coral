@@ -4,6 +4,13 @@ import { withOwnerSession } from '../../../../support/actors.ts'
 import { openApiDocument } from '../../../../support/provider-fixtures.ts'
 import { createWorkspace, publishWorkspaceProvider } from '../../../../support/providers.ts'
 
+/** The bulk form's Apply, while it counts this many selected operations. */
+const applyTo = (page: Page, count: number) =>
+  page
+    .getByRole('form', { name: 'Bulk policy', exact: true })
+    .filter({ hasText: new RegExp(`(^|\\D)${count} selected`) })
+    .getByRole('button', { name: 'Apply', exact: true })
+
 const row = (page: Page, name: string) =>
   page.getByRole('row').filter({
     has: page.getByRole('checkbox', { name: `Select ${name}`, exact: true }),
@@ -44,9 +51,7 @@ test('Drawer policy shares optimistic state and locks with the table', async (co
       // Selection survives the change; the bulk action is what waits.
       expect(await row(page, 'first').getByRole('checkbox').isChecked()).toBe(true)
       expect(await row(page, 'first').getByRole('checkbox').isDisabled()).toBe(false)
-      expect(await page.getByRole('button', { name: 'Apply to 1', exact: true }).isDisabled()).toBe(
-        true,
-      )
+      expect(await applyTo(page, 1).isDisabled()).toBe(true)
       expect(
         await row(page, 'first')
           .getByRole('radio', { name: 'Always allow', exact: true, checked: true })
@@ -170,17 +175,13 @@ test('Inline pending policy survives filtering, blocks overlaps, and allows unre
           .getByRole('checkbox', { name: 'Select all matching operations', exact: true })
           .check()
         expect(await row(page, 'first').getByRole('checkbox').isChecked()).toBe(true)
-        expect(
-          await page.getByRole('button', { name: 'Apply to 3', exact: true }).isDisabled(),
-        ).toBe(true)
+        expect(await applyTo(page, 3).isDisabled()).toBe(true)
         await page
           .getByRole('checkbox', { name: 'Select all matching operations', exact: true })
           .uncheck()
         await page.getByRole('checkbox', { name: 'Select Other operations', exact: true }).check()
         expect(await row(page, 'first').getByRole('checkbox').isChecked()).toBe(true)
-        expect(
-          await page.getByRole('button', { name: 'Apply to 3', exact: true }).isDisabled(),
-        ).toBe(true)
+        expect(await applyTo(page, 3).isDisabled()).toBe(true)
         await page.getByRole('checkbox', { name: 'Select Other operations', exact: true }).uncheck()
       })
       await step('Submit a disjoint inline mutation while the first is pending', async () => {
@@ -221,17 +222,13 @@ test('Bulk pending policy survives toolbar unmount and rolls back a rejection ou
       await step('Optimistically update and lock only the submitted bulk rows', async () => {
         await page.getByRole('checkbox', { name: 'Select first', exact: true }).check()
         await page.getByRole('checkbox', { name: 'Select second', exact: true }).check()
-        const bulk = page
-          .locator('form')
-          .filter({ has: page.getByRole('button', { name: 'Apply to 2', exact: true }) })
+        const bulk = page.getByRole('form', { name: 'Bulk policy', exact: true })
         await bulk.getByRole('button', { name: 'Needs approval', exact: true }).click()
         await page.getByRole('menuitemradio', { name: 'Always allow', exact: true }).click()
-        await bulk.getByRole('button', { name: 'Apply to 2', exact: true }).click()
+        await applyTo(page, 2).click()
         // The selection stays but holds still: a bulk save locks every
         // selection control until Coral answers.
-        expect(
-          await page.getByRole('button', { name: 'Apply to 2', exact: true }).isDisabled(),
-        ).toBe(true)
+        expect(await applyTo(page, 2).isDisabled()).toBe(true)
         for (const name of ['first', 'second']) {
           expect(await row(page, name).getByRole('checkbox').isChecked()).toBe(true)
           expect(await row(page, name).getByRole('checkbox').isDisabled()).toBe(true)
@@ -259,10 +256,7 @@ test('Bulk pending policy survives toolbar unmount and rolls back a rejection ou
             .getByRole('checkbox', { name: 'Select all matching operations', exact: true })
             .isDisabled(),
         ).toBe(true)
-        const bulk = page
-          .locator('form')
-          .filter({ has: page.getByRole('button', { name: 'Apply to 2', exact: true }) })
-        await bulk.getByRole('button', { name: 'Apply to 2', exact: true }).click({ force: true })
+        await applyTo(page, 2).click({ force: true })
         expect(await held.submitted.length).toBe(1)
         expect(await row(page, 'third').getAttribute('aria-busy')).toBe('false')
       })

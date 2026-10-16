@@ -98,6 +98,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     let paths = fields
         .get(&key)
         .expect("createProvider declaration fields")
+        .entries()
         .iter()
         .map(|entry| entry.path().as_str())
         .collect::<Vec<_>>();

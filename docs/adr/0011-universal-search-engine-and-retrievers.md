@@ -17,7 +17,9 @@ Search afterward with the entries the owner prepared, the Task command for Task-
 same identity, stores them in one table that search owns; a periodic reconcile task converges what a lost notification missed.
 Publication and save keep deciding what may be searched. Retrieval and ranking run inside the database on both backends, Postgres full-text search with an
 approximate BM25 in SQL and SQLite FTS5, with the same field weights; the app loads only a window per retriever
-and computes evidence over it.
+and computes evidence over it. ADR 0017 replaces the sentence on the entries the owner prepared: the decision is
+that search prepares its entries from the stored Generation after the commit (#2463 carries it out), and no search
+bound changes an Operation's availability.
 
 ## Why a seam per kind, not branches
 

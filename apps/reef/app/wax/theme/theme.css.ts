@@ -13,6 +13,8 @@ export const staticUtilities = {
  */
 export const animation = {
   colorTransition: '0.2s ease background-color, 0.2s ease color, 0.2s ease box-shadow',
+  // An element that swaps in for another fades on the same beat as a colour change.
+  fadeTransition: '0.2s ease opacity',
   // Panel reveal (transitions.dev) without its fade: panels move on this ease
   // and cross-blur from `blur` to sharp.
   panel: {
@@ -118,6 +120,8 @@ export const theme = createThemeContract({
     success: '',
     successBackground: '',
     tertiary: '',
+    /** Readable text that recedes, such as navigation beside the page it frames. */
+    muted: '',
     warning: '',
     warningBackground: '',
   },
@@ -168,6 +172,8 @@ export const theme = createThemeContract({
     },
   },
   stroke: {
+    /** A control's own outline, such as a checkbox's: at least 3:1 on the page (WCAG 1.4.11). */
+    control: '',
     floating: '',
     focused: '',
     mainContent: '',
