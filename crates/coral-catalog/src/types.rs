@@ -309,7 +309,8 @@ impl CatalogDiagnostic {
 }
 
 /// Provider-scoped stable key for one materialized Operation.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct OperationKey(String);
 
 impl OperationKey {
@@ -331,6 +332,20 @@ impl OperationKey {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl TryFrom<String> for OperationKey {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<OperationKey> for String {
+    fn from(key: OperationKey) -> Self {
+        key.0
     }
 }
 
@@ -1303,6 +1318,7 @@ fn encode_sha256(digest: impl IntoIterator<Item = u8>) -> String {
 }
 
 /// Fully prepared catalog package produced outside a write transaction.
+#[derive(Clone)]
 pub struct PreparedProviderCatalog {
     display_name: String,
     schema_graph: SchemaGraph,
@@ -1321,13 +1337,16 @@ pub(crate) struct PreparedCatalogParts {
 }
 
 impl PreparedProviderCatalog {
+    /// Holds `operations` in Operation Key order, the order storage returns
+    /// them in, so a stored Generation's fingerprint matches the prepared one.
     pub(crate) fn new(
         display_name: String,
         schema_graph: SchemaGraph,
         schema_graph_json: String,
-        operations: Vec<MaterializedOperation>,
+        mut operations: Vec<MaterializedOperation>,
         shared_types: SharedTypes,
     ) -> Self {
+        operations.sort_by(|left, right| left.key().cmp(right.key()));
         let typescript_view = operations
             .iter()
             .flat_map(|operation| operation.typescript_declaration().lines())

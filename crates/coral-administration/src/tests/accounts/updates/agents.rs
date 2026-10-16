@@ -81,7 +81,7 @@ async fn agent_update(shared: bool, removal_first: bool) {
             .unwrap()
             .unwrap();
     tx.commit().await.unwrap();
-    let providers = ProviderModule::new(
+    let providers = ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         database,

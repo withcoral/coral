@@ -27,7 +27,7 @@ async fn provisional_credentials_roll_back_with_authority_and_cannot_be_promoted
             .await
             .unwrap();
         join_as_owner(&workspaces, &owner, workspace.id()).await;
-        let providers = ProviderModule::new(
+        let providers = ProviderModule::with_running_catalog(
             coral_outbound::DestinationPolicy::default()
                 .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             database.clone(),

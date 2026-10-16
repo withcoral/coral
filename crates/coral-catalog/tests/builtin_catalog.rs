@@ -5,35 +5,32 @@
 )]
 
 use coral_catalog::{
-    BuiltinOperation, Error, ExecutionBinding, OperationAvailability, OperationHints, OperationKey,
+    BuiltinCatalog, BuiltinOperation, Error, ExecutionBinding, OperationAvailability,
+    OperationHints, OperationKey,
 };
 use coral_test_support::TestDatabase;
 use sea_query::{Alias, Expr, ExprTrait as _, Query};
 use sha2::{Digest as _, Sha256};
 use std::fmt::Write as _;
 
-/// Publishes one Generation of the Built-in catalog, prepared before it.
-async fn publish_builtin(
-    transaction: &mut coral_db::Transaction<'_>,
-    created_at_unix_nanos: i64,
-) -> coral_catalog::ProviderGenerationId {
-    let catalog = coral_catalog::prepare_builtin_catalog().expect("prepare the Built-in catalog");
-    coral_catalog::publish_builtin_generation_in_transaction(
-        transaction,
-        catalog,
-        created_at_unix_nanos,
-    )
-    .await
-    .expect("publish a Built-in Generation")
-}
-
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Generation's read-back checks every facet Coral stores for the catalog"
+)]
 async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     let fixture = TestDatabase::new(coral_catalog::migrator()).await.unwrap();
     let database = fixture.database();
+    let catalog = BuiltinCatalog::running().unwrap();
     let mut transaction = database.begin().await.unwrap();
-    let first = publish_builtin(&mut transaction, 1).await;
-    let second = publish_builtin(&mut transaction, 2).await;
+    let first =
+        coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, &catalog, 1)
+            .await
+            .unwrap();
+    let second =
+        coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, &catalog, 2)
+            .await
+            .unwrap();
     transaction.commit().await.unwrap();
     assert_ne!(first, second, "each Workspace gets its own Generation");
 
@@ -55,7 +52,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     let ExecutionBinding::Builtin(binding) = operation.execution_binding() else {
         panic!("a built-in Operation has a built-in Execution Binding");
     };
-    assert_eq!(binding.operation(), BuiltinOperation::CreateProvider);
+    assert_eq!(binding.operation(), Some(BuiltinOperation::CreateProvider));
 
     let declaration =
         coral_catalog::authoring_declaration_in_transaction(&mut transaction, &first, operation)
@@ -139,9 +136,16 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
 async fn a_builtin_generation_pins_its_catalog_identity_and_decodes_any_well_formed_one() {
     let fixture = TestDatabase::new(coral_catalog::migrator()).await.unwrap();
     let database = fixture.database();
+    let catalog = BuiltinCatalog::running().unwrap();
     let mut transaction = database.begin().await.unwrap();
-    let first = publish_builtin(&mut transaction, 1).await;
-    let second = publish_builtin(&mut transaction, 2).await;
+    let first =
+        coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, &catalog, 1)
+            .await
+            .unwrap();
+    let second =
+        coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, &catalog, 2)
+            .await
+            .unwrap();
     transaction.commit().await.unwrap();
 
     let mut transaction = database.begin_read_snapshot().await.unwrap();
@@ -151,6 +155,7 @@ async fn a_builtin_generation_pins_its_catalog_identity_and_decodes_any_well_for
         pinned,
         "one catalog pins one identity"
     );
+    assert_eq!(pinned, catalog.identity().as_str());
     transaction.rollback().await.unwrap();
     let digest = pinned
         .strip_prefix("coral-admin-catalog:")
@@ -201,6 +206,60 @@ async fn a_builtin_generation_pins_its_catalog_identity_and_decodes_any_well_for
             );
         }
     }
+}
+
+// Catches: a Workspace whose Generation already holds the served catalog
+// taking a new Generation at every boot, one that holds another catalog
+// keeping it, or a corrupt Generation passing as current.
+#[tokio::test]
+async fn a_builtin_generation_pins_its_own_catalog_and_no_other() {
+    let fixture = TestDatabase::new(coral_catalog::migrator()).await.unwrap();
+    let database = fixture.database();
+    let running = BuiltinCatalog::running().unwrap();
+    let other =
+        BuiltinCatalog::with_unknown_operations([("archiveThings", OperationHints::default())])
+            .unwrap();
+    let mut transaction = database.begin().await.unwrap();
+    let generation =
+        coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, &running, 1)
+            .await
+            .unwrap();
+    transaction.commit().await.unwrap();
+
+    let mut transaction = database.begin_read_snapshot().await.unwrap();
+    for (catalog, pins) in [(&running, true), (&other, false)] {
+        assert_eq!(
+            coral_catalog::builtin_generation_pins_in_transaction(
+                &mut transaction,
+                catalog,
+                &generation,
+            )
+            .await
+            .unwrap(),
+            pins,
+            "{}",
+            catalog.identity()
+        );
+    }
+    transaction.rollback().await.unwrap();
+
+    // A pinned identity that disagrees with the Generation's digest is corrupt.
+    fixture
+        .execute_fixture_sql(&format!(
+            "UPDATE provider_generations SET input_digest = '{}' WHERE id = '{generation}'",
+            sha256_hex("another catalog")
+        ))
+        .await
+        .unwrap();
+    let mut transaction = database.begin_read_snapshot().await.unwrap();
+    let corrupt = coral_catalog::builtin_generation_pins_in_transaction(
+        &mut transaction,
+        &running,
+        &generation,
+    )
+    .await;
+    transaction.rollback().await.unwrap();
+    assert!(matches!(corrupt, Err(Error::CorruptData(_))), "{corrupt:?}");
 }
 
 async fn pinned_input(

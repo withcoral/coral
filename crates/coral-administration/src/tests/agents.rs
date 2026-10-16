@@ -103,7 +103,7 @@ async fn deleting_an_agent_keeps_authorization_history_and_sibling_accounts() {
         sibling_completed.account_id,
         "a sibling Agent keeps its Account"
     );
-    let events = coral_provider::ProviderModule::new(
+    let events = coral_provider::ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default(),
         database,
         workspaces,

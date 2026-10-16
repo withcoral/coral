@@ -155,7 +155,7 @@ async fn offboarding_serializes_prepared_catalog_updates_replacements_and_settin
 )]
 async fn removal_wins(removal: Removal, initially_shared: bool, shared: bool) {
     let mut f = AccountFixture::new().await;
-    let providers = ProviderModule::new(
+    let providers = ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         f.db.database(),
@@ -287,7 +287,7 @@ async fn publication_before_offboarding_preserves_shared_accounts_but_retires_ca
     for removal in [Removal::Workspace, Removal::Organization] {
         for (initially_shared, shared) in SETTINGS {
             let f = AccountFixture::new().await;
-            let providers = ProviderModule::new(
+            let providers = ProviderModule::with_running_catalog(
                 coral_outbound::DestinationPolicy::default()
                     .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
                 f.db.database(),

@@ -41,7 +41,7 @@ async fn harness() -> (
         .await
         .expect("create domain test database");
     let workspaces = WorkspaceModule::new(db.database());
-    let providers = ProviderModule::new(
+    let providers = ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         db.database(),

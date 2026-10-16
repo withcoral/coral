@@ -65,7 +65,7 @@ impl Fixture {
             )
             .await
             .unwrap();
-        let providers = ProviderModule::new(
+        let providers = ProviderModule::with_running_catalog(
             coral_outbound::DestinationPolicy::default(),
             database.clone(),
             workspaces.clone(),

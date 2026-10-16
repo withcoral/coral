@@ -1332,7 +1332,7 @@ async fn test_modules() -> (
         .expect("create policy test database");
     let database = fixture.database();
     let workspaces = WorkspaceModule::new(database.clone());
-    let providers = ProviderModule::new(
+    let providers = ProviderModule::with_running_catalog(
         DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         database.clone(),
         workspaces.clone(),

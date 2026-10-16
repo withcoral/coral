@@ -75,7 +75,6 @@ impl AdminScope {
         )
         .await;
         let (workspace_id, owner) = fixture.user_scope(user, "Add a provider").await;
-        let catalog = coral_provider::prepare_builtin_catalog().unwrap();
         let mut fixture = fixture;
         fixture.runs = fixture
             .runs
@@ -88,7 +87,6 @@ impl AdminScope {
                 &mut transaction,
                 &change(owner.authenticated_user().unwrap().clone(), 11, '2'),
                 &workspace_id,
-                catalog,
             )
             .await
             .expect("install the Built-in Provider");
@@ -936,6 +934,73 @@ async fn invalid_input_fails_before_storage_approval_fetch_or_setup() {
     assert_eq!(scope.lifecycle_events().await.len(), before);
 }
 
+// Catches: an older Coral that a rolling deploy runs beside a newer one
+// failing an Invocation as corrupt data, or asking an Owner to approve an
+// Operation it cannot perform, after the newer Coral updated at boot.
+#[tokio::test]
+async fn an_operation_this_version_does_not_perform_fails_before_approval() {
+    let scope = AdminScope::new("user:unknown-operation").await;
+    let newer_catalog = coral_catalog::BuiltinCatalog::with_unknown_operations([(
+        "listThings",
+        coral_catalog::OperationHints::default(),
+    )])
+    .expect("the newer catalog prepares");
+    let newer = ProviderModule::new(
+        coral_outbound::DestinationPolicy::default(),
+        scope.fixture.database.clone(),
+        scope.fixture.workspaces.clone(),
+        newer_catalog,
+    );
+    // A process of the newer Coral boots and updates the Workspace.
+    let [outdated] = newer
+        .outdated_builtin_generations()
+        .await
+        .unwrap()
+        .try_into()
+        .expect("the Workspace's Built-in Provider pins the older catalog");
+    let mut transaction = scope.fixture.database.begin().await.unwrap();
+    assert!(
+        newer
+            .update_builtin_catalog_in_transaction(&mut transaction, &outdated, 20)
+            .await
+            .unwrap(),
+        "the newer Coral publishes its catalog"
+    );
+    transaction.commit().await.unwrap();
+
+    let run = scope
+        .start(
+            &scope.owner,
+            submission(
+                "
+                try {
+                    return await coral.workspace.listThings({});
+                } catch (error) {
+                    if (!(error instanceof coral.OperationError)) throw error;
+                    return error.code;
+                }
+            ",
+            ),
+        )
+        .await;
+
+    assert_final_code(
+        &scope.terminal(&scope.owner, &run).await,
+        "operation_unavailable",
+    );
+    assert!(
+        scope
+            .fixture
+            .approvals()
+            .list_for_run(&scope.owner, &scope.workspace_id, &run)
+            .await
+            .unwrap()
+            .is_empty(),
+        "no approval request"
+    );
+    assert!(!scope.recorded_an_invocation(&run).await);
+}
+
 // Catches: a header named for a credential carrying its value through the
 // Program, or a service header such as `Idempotency-Key` rejected because a
 // credential word appears inside its name.
@@ -1366,7 +1431,7 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
         DestinationPolicy::default(),
         scope.fixture.database.clone(),
         scope.fixture.workspaces.clone(),
-        coral_provider::ProviderModule::new(
+        coral_provider::ProviderModule::with_running_catalog(
             DestinationPolicy::default(),
             scope.fixture.database.clone(),
             scope.fixture.workspaces.clone(),

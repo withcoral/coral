@@ -24,7 +24,7 @@ impl Fixture {
         let db = fixture().await;
         let database = db.database();
         let workspaces = WorkspaceModule::new(database.clone());
-        let providers = ProviderModule::new(
+        let providers = ProviderModule::with_running_catalog(
             coral_outbound::DestinationPolicy::default(),
             database.clone(),
             workspaces.clone(),

@@ -86,7 +86,11 @@ impl Fixture {
             loopback,
             database.clone(),
             workspaces.clone(),
-            coral_provider::ProviderModule::new(loopback, database.clone(), workspaces.clone()),
+            coral_provider::ProviderModule::with_running_catalog(
+                loopback,
+                database.clone(),
+                workspaces.clone(),
+            ),
             coral_run::IsolateLimits::default(),
         )
         .unwrap();
@@ -116,7 +120,7 @@ impl Fixture {
     /// filter by it.
     async fn publish_provider(&self, namespace: &str) {
         let database = self.test_database.database();
-        coral_provider::ProviderModule::new(
+        coral_provider::ProviderModule::with_running_catalog(
             coral_outbound::DestinationPolicy::default(),
             database.clone(),
             WorkspaceModule::new(database),

@@ -666,8 +666,14 @@ pub(crate) async fn start_server(
     let readiness = EngineReadiness::from_database(Arc::clone(&database));
     let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
     let tasks = coral_task::TaskModule::new(database.clone(), workspaces.clone());
-    let providers =
-        coral_provider::ProviderModule::new(policy, database.clone(), workspaces.clone());
+    let builtin_catalog = coral_catalog::BuiltinCatalog::running()
+        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+    let providers = coral_provider::ProviderModule::new(
+        policy,
+        database.clone(),
+        workspaces.clone(),
+        builtin_catalog,
+    );
     let accounts = vault.map(|vault| {
         let accounts = coral_provider::account::AccountModule::new(providers.clone(), vault)
             .with_client_bootstrap_policy(client_bootstrap_policy);
@@ -685,6 +691,19 @@ pub(crate) async fn start_server(
         providers.clone(),
         search_index.clone(),
     );
+    // Every Workspace's Built-in Provider takes this process's catalog before
+    // the process takes requests. A rollback moves Workspaces back the same way.
+    let booted_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
+        .ok_or_else(|| AppError::FailedPrecondition("system clock is out of range".into()))?;
+    provider_workflow
+        .update_builtin_catalogs(booted_at)
+        .await
+        .map_err(|error| {
+            AppError::FailedPrecondition(format!("Built-in Provider update failed: {error}"))
+        })?;
     // createProvider publishes through the same workflow as Reef.
     let mut runs = coral_run::RunModule::new(
         policy,

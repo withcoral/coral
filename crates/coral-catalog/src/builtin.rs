@@ -5,6 +5,9 @@
 //! MCP snapshot exists. The Generation pins this catalog's identity instead,
 //! so each Workspace's Generation records which definition it materialized.
 
+use std::fmt;
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -24,38 +27,48 @@ pub const BUILTIN_PROVIDER_DISPLAY_NAME: &str = "Coral";
 const CATALOG_IDENTITY_PREFIX: &str = "coral-admin-catalog:";
 pub(crate) const MATERIALIZER_VERSION: &str = "coral-admin-catalog-v1";
 
-/// The Built-in Provider's catalog package and the identity its Generation
-/// pins, prepared outside a write transaction.
-pub struct PreparedBuiltinCatalog {
-    pub(crate) catalog: PreparedProviderCatalog,
-    pub(crate) identity: String,
+/// The identity a built-in Generation pins: the prefix and the catalog's
+/// fingerprint. A Coral version that changes the catalog pins a different
+/// identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltinCatalogIdentity(String);
+
+impl BuiltinCatalogIdentity {
+    fn of(catalog: &PreparedProviderCatalog) -> Self {
+        Self(format!(
+            "{CATALOG_IDENTITY_PREFIX}{}",
+            catalog.fingerprint().as_str()
+        ))
+    }
+
+    /// Reads a pinned identity; `None` for a malformed one. It accepts any
+    /// fingerprint, because another Coral version pins its own catalog's identity.
+    pub(crate) fn parse(pinned: &str) -> Option<Self> {
+        pinned
+            .strip_prefix(CATALOG_IDENTITY_PREFIX)
+            .is_some_and(crate::types::is_lowercase_sha256)
+            .then(|| Self(pinned.to_owned()))
+    }
+
+    /// Returns the identity as a Generation stores it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
-/// Returns the identity a Generation of `catalog` pins: the prefix and the
-/// catalog's fingerprint. A Coral version that changes the catalog pins a
-/// different identity.
-fn catalog_identity(catalog: &PreparedProviderCatalog) -> String {
-    format!(
-        "{CATALOG_IDENTITY_PREFIX}{}",
-        catalog.fingerprint().as_str()
-    )
+impl fmt::Display for BuiltinCatalogIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
 }
 
-/// Reports whether `pinned` is a well-formed catalog identity. It accepts any
-/// fingerprint, because another Coral version pins its own catalog's identity.
-pub(crate) fn is_catalog_identity(pinned: &str) -> bool {
-    pinned
-        .strip_prefix(CATALOG_IDENTITY_PREFIX)
-        .is_some_and(crate::types::is_lowercase_sha256)
-}
-
-/// One Coral-owned Operation that Coral performs itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// One Coral-owned Operation that this Coral version performs itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinOperation {
     /// Creates a Provider from an OpenAPI document or URL, or an MCP server URL.
     /// Coral publishes it when nobody needs to sign in; otherwise a person
     /// finishes it in Reef.
-    #[serde(rename = "createProvider")]
     CreateProvider,
 }
 
@@ -69,22 +82,108 @@ impl BuiltinOperation {
             Self::CreateProvider => "createProvider",
         }
     }
+
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|operation| operation.key() == key)
+    }
+}
+
+/// The Built-in Provider's catalog that a Coral process serves, and the
+/// identity each Generation of it pins. Bootstrap prepares it once. Workspace
+/// creation and the update at boot publish it.
+#[derive(Clone)]
+pub struct BuiltinCatalog(Arc<PreparedBuiltinCatalog>);
+
+struct PreparedBuiltinCatalog {
+    prepared: PreparedProviderCatalog,
+    identity: BuiltinCatalogIdentity,
+}
+
+impl BuiltinCatalog {
+    /// Prepares the catalog this Coral version defines.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid built-in definition.
+    pub fn running() -> Result<Self, Error> {
+        Self::from_definitions(BuiltinOperation::ALL.into_iter().map(definition).collect())
+    }
+
+    /// Prepares this Coral version's catalog plus Operations it does not
+    /// perform, as another Coral version could publish them. Each extra
+    /// Operation takes an object and returns one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid built-in definition.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn with_unknown_operations(
+        extra: impl IntoIterator<Item = (&'static str, OperationHints)>,
+    ) -> Result<Self, Error> {
+        let mut definitions: Vec<Definition> =
+            BuiltinOperation::ALL.into_iter().map(definition).collect();
+        definitions.extend(extra.into_iter().map(|(key, hints)| Definition {
+            key,
+            summary: "An Operation another Coral version defines",
+            presentation: OperationPresentation::new(
+                None,
+                "An Operation another Coral version defines.".to_string(),
+                false,
+                Vec::new(),
+                None,
+            ),
+            hints,
+            input: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            output: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+        }));
+        Self::from_definitions(definitions)
+    }
+
+    fn from_definitions(definitions: Vec<Definition>) -> Result<Self, Error> {
+        let prepared = prepare(definitions)
+            .map_err(|diagnostic| Error::InvalidInput(diagnostic.message().to_string()))?;
+        let identity = BuiltinCatalogIdentity::of(&prepared);
+        Ok(Self(Arc::new(PreparedBuiltinCatalog {
+            prepared,
+            identity,
+        })))
+    }
+
+    /// Returns the identity a Generation of this catalog pins.
+    #[must_use]
+    pub fn identity(&self) -> &BuiltinCatalogIdentity {
+        &self.0.identity
+    }
+
+    pub(crate) fn prepared(&self) -> PreparedProviderCatalog {
+        self.0.prepared.clone()
+    }
 }
 
 /// A Built-in Provider Operation's Execution Binding. It names the
 /// Coral-owned Operation and carries no destination, credential, or routing data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuiltinExecutionBinding {
-    operation: BuiltinOperation,
+    /// The Operation Key. Another Coral version may name an Operation that
+    /// this version does not perform.
+    operation: OperationKey,
     input_schema: SchemaId,
     output_schema: SchemaId,
 }
 
 impl BuiltinExecutionBinding {
-    /// Returns the Coral-owned Operation this binding names.
+    /// Returns the Coral-owned Operation this binding names, or `None` when
+    /// another Coral version published an Operation this version does not
+    /// perform.
     #[must_use]
-    pub const fn operation(&self) -> BuiltinOperation {
-        self.operation
+    pub fn operation(&self) -> Option<BuiltinOperation> {
+        BuiltinOperation::from_key(self.operation.as_str())
+    }
+
+    pub(crate) const fn operation_key(&self) -> &OperationKey {
+        &self.operation
     }
 
     /// Returns the authoritative input-schema root.
@@ -117,7 +216,7 @@ impl BuiltinExecutionBinding {
 }
 
 struct Definition {
-    operation: BuiltinOperation,
+    key: &'static str,
     summary: &'static str,
     presentation: OperationPresentation,
     hints: OperationHints,
@@ -132,7 +231,7 @@ struct Definition {
 fn definition(operation: BuiltinOperation) -> Definition {
     match operation {
         BuiltinOperation::CreateProvider => Definition {
-            operation,
+            key: operation.key(),
             summary: "Create a Provider from an OpenAPI document or URL, or an MCP server URL",
             presentation: OperationPresentation::new(
                 Some("Create provider".to_string()),
@@ -464,18 +563,18 @@ fn definition(operation: BuiltinOperation) -> Definition {
     }
 }
 
-/// Prepares the complete Built-in Provider catalog package and its identity.
-pub(crate) fn prepare() -> Result<PreparedBuiltinCatalog, CatalogDiagnostic> {
+/// Prepares the complete Built-in Provider catalog package of `definitions`.
+fn prepare(definitions: Vec<Definition>) -> Result<PreparedProviderCatalog, CatalogDiagnostic> {
     let mut schemas = SchemaGraphAccumulator::new(SchemaSemantics::JsonSchema2020_12);
     let mut drafts = Vec::new();
-    for operation in BuiltinOperation::ALL {
-        let definition = definition(operation);
-        let input_schema =
-            schemas.add_embedded_schema(&schema_source(operation, "input"), &definition.input)?;
-        let output_schema =
-            schemas.add_embedded_schema(&schema_source(operation, "output"), &definition.output)?;
+    for definition in definitions {
+        let input_schema = schemas
+            .add_embedded_schema(&schema_source(definition.key, "input"), &definition.input)?;
+        let output_schema = schemas
+            .add_embedded_schema(&schema_source(definition.key, "output"), &definition.output)?;
         let binding = BuiltinExecutionBinding {
-            operation,
+            operation: OperationKey::parse(definition.key)
+                .map_err(|_error| invalid("a built-in Operation Key is invalid"))?,
             input_schema,
             output_schema,
         };
@@ -489,9 +588,8 @@ pub(crate) fn prepare() -> Result<PreparedBuiltinCatalog, CatalogDiagnostic> {
     let mut shared_types = SharedTypes::default();
     let mut operations = Vec::with_capacity(drafts.len());
     for (definition, binding) in drafts {
-        let key = OperationKey::parse(definition.operation.key())
-            .map_err(|_error| invalid("a built-in Operation Key is invalid"))?;
-        let relative_path = definition.operation.key().to_string();
+        let key = binding.operation_key().clone();
+        let relative_path = definition.key.to_string();
         let (declaration, type_references) = project(
             &relative_path,
             &binding,
@@ -531,17 +629,13 @@ pub(crate) fn prepare() -> Result<PreparedBuiltinCatalog, CatalogDiagnostic> {
             "[]".to_string(),
         ));
     }
-    let catalog = PreparedProviderCatalog::new(
+    Ok(PreparedProviderCatalog::new(
         BUILTIN_PROVIDER_DISPLAY_NAME.to_string(),
         schema_graph,
         schema_graph_json,
         operations,
         shared_types,
-    );
-    Ok(PreparedBuiltinCatalog {
-        identity: catalog_identity(&catalog),
-        catalog,
-    })
+    ))
 }
 
 /// Names every schema of the built-in graph for projection.
@@ -576,8 +670,8 @@ fn project(
     Ok((declaration, type_references))
 }
 
-fn schema_source(operation: BuiltinOperation, direction: &str) -> String {
-    format!("builtin:{}:{direction}", operation.key())
+fn schema_source(key: &str, direction: &str) -> String {
+    format!("builtin:{key}:{direction}")
 }
 
 fn encode(schema: &Value) -> Result<String, CatalogDiagnostic> {

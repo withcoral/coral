@@ -4,6 +4,7 @@ use coral_workspace::{
     AgentDisplayName, AuthenticatedPrincipal, OrganizationRole, WorkspaceDisplayName, WorkspaceRole,
 };
 
+use coral_catalog::{BuiltinCatalog, OperationHints};
 use coral_credentials::Secret;
 
 use super::tests::{
@@ -12,9 +13,9 @@ use super::tests::{
 };
 use crate::access::CredentialRoute;
 use crate::{
-    Error, LifecycleAction, ManagementRequestId, OpenApiDocument, ProviderCallRoot,
-    ProviderDisplayName, ProviderRegenerationRequest, ProviderSetupInputKind, ProviderSetupSource,
-    ProviderState,
+    Error, LifecycleAction, LifecycleActor, ManagementRequestId, OpenApiDocument, ProviderCallRoot,
+    ProviderDisplayName, ProviderModule, ProviderRegenerationRequest, ProviderSetupInputKind,
+    ProviderSetupSource, ProviderState,
 };
 
 #[tokio::test]
@@ -29,12 +30,7 @@ async fn only_users_with_effective_owner_authority_discover_and_call_the_builtin
         .unwrap();
     let mut transaction = database.begin().await.unwrap();
     providers
-        .install_builtin_in_transaction(
-            &mut transaction,
-            &context,
-            workspace.id(),
-            crate::prepare_builtin_catalog().unwrap(),
-        )
+        .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -113,12 +109,7 @@ async fn a_workspace_has_one_builtin_provider_beside_an_owner_provider_named_wor
         .unwrap();
     let mut transaction = database.begin().await.unwrap();
     let builtin = providers
-        .install_builtin_in_transaction(
-            &mut transaction,
-            &context,
-            workspace.id(),
-            crate::prepare_builtin_catalog().unwrap(),
-        )
+        .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -138,12 +129,7 @@ async fn a_workspace_has_one_builtin_provider_beside_an_owner_provider_named_wor
     let mut transaction = database.begin().await.unwrap();
     assert!(matches!(
         providers
-            .install_builtin_in_transaction(
-                &mut transaction,
-                &context,
-                workspace.id(),
-                crate::prepare_builtin_catalog().unwrap(),
-            )
+            .install_builtin_in_transaction(&mut transaction, &context, workspace.id(),)
             .await,
         Err(Error::ProviderCallRootConflict)
     ));
@@ -182,7 +168,6 @@ async fn a_member_cannot_install_the_builtin_provider() {
             &mut transaction,
             &change_context(member, 11, '2'),
             workspace.id(),
-            crate::prepare_builtin_catalog().unwrap(),
         )
         .await;
     assert!(
@@ -232,12 +217,7 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider() {
         .unwrap();
     let mut transaction = database.begin().await.unwrap();
     let builtin = providers
-        .install_builtin_in_transaction(
-            &mut transaction,
-            &context,
-            workspace.id(),
-            crate::prepare_builtin_catalog().unwrap(),
-        )
+        .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -389,10 +369,9 @@ async fn only_a_provider_an_owner_adds_has_a_source_to_inspect() {
         .create(&context, WorkspaceDisplayName::parse("Builtin").unwrap())
         .await
         .unwrap();
-    let catalog = crate::prepare_builtin_catalog().unwrap();
     let mut transaction = database.begin().await.unwrap();
     let builtin = providers
-        .install_builtin_in_transaction(&mut transaction, &context, workspace.id(), catalog)
+        .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -422,4 +401,264 @@ async fn only_a_provider_an_owner_adds_has_a_source_to_inspect() {
         (None, ProviderSetupInputKind::OpenApi),
         "an uploaded OpenAPI document has no URL"
     );
+}
+
+/// Catalog B: this Coral version's Operations plus a read-only one it does
+/// not perform, as a later Coral version could define.
+fn catalog_b() -> BuiltinCatalog {
+    BuiltinCatalog::with_unknown_operations([(
+        "listThings",
+        OperationHints::new(Some(true), None, None, None),
+    )])
+    .unwrap()
+}
+
+/// `keys` plus catalog B's `listThings`, in Operation Key order.
+fn with_list_things(keys: &[String]) -> Vec<String> {
+    let mut keys = keys.to_vec();
+    keys.push("listThings".to_string());
+    keys.sort();
+    keys
+}
+
+fn running() -> BuiltinCatalog {
+    BuiltinCatalog::running().unwrap()
+}
+
+/// A Provider Module over the same database that serves `catalog`, as a
+/// process of another Coral version would.
+fn serving(providers: &ProviderModule, catalog: BuiltinCatalog) -> ProviderModule {
+    ProviderModule::new(
+        coral_outbound::DestinationPolicy::default(),
+        providers.database.clone(),
+        providers.workspaces.clone(),
+        catalog,
+    )
+}
+
+/// A Workspace created at time 10 by `owner` with this Coral version's catalog.
+struct BuiltinWorkspace {
+    fixture: coral_test_support::TestDatabase,
+    workspaces: coral_workspace::WorkspaceModule,
+    providers: ProviderModule,
+    owner: coral_workspace::AuthenticatedUser,
+    workspace: coral_workspace::Workspace,
+    builtin: crate::Provider,
+}
+
+impl BuiltinWorkspace {
+    async fn new() -> Self {
+        let (fixture, workspaces, providers) = test_modules().await;
+        let database = fixture.database();
+        let owner =
+            organization_user(database.clone(), "user:owner", OrganizationRole::Member).await;
+        let context = change_context(owner.clone(), 10, '1');
+        let workspace = workspaces
+            .create(&context, WorkspaceDisplayName::parse("Builtin").unwrap())
+            .await
+            .unwrap();
+        let mut transaction = database.begin().await.unwrap();
+        let builtin = providers
+            .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        Self {
+            fixture,
+            workspaces,
+            providers,
+            owner,
+            workspace,
+            builtin,
+        }
+    }
+
+    async fn current(&self) -> crate::Provider {
+        self.providers
+            .inspect_provider(&self.owner, self.workspace.id(), self.builtin.id())
+            .await
+            .unwrap()
+    }
+
+    /// A process that serves `served` boots at `at`: it replaces each outdated
+    /// Generation in its own transaction. Returns the Providers it updated.
+    async fn boot(&self, served: &BuiltinCatalog, at: i64) -> Vec<crate::ProviderId> {
+        let process = serving(&self.providers, served.clone());
+        let database = self.fixture.database();
+        let mut updated = Vec::new();
+        for outdated in process.outdated_builtin_generations().await.unwrap() {
+            let mut transaction = database.begin().await.unwrap();
+            if process
+                .update_builtin_catalog_in_transaction(&mut transaction, &outdated, at)
+                .await
+                .unwrap()
+            {
+                updated.push(outdated.provider_id().clone());
+            }
+            transaction.commit().await.unwrap();
+        }
+        updated
+    }
+
+    /// The Operation Keys the Built-in Provider serves.
+    async fn keys(&self) -> Vec<String> {
+        self.providers
+            .inspect_catalog_page(
+                &self.owner,
+                self.workspace.id(),
+                self.builtin.id(),
+                None,
+                100,
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|operation| operation.key.as_str().to_string())
+            .collect()
+    }
+
+    async fn events(&self) -> Vec<crate::AdministrativeLifecycleEvent> {
+        self.providers
+            .list_lifecycle_events(&self.owner, self.workspace.id())
+            .await
+            .unwrap()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Arranged {
+    Active,
+    Disabled,
+    Archived,
+}
+
+/// Each boot moves the Built-in Provider to the booting Coral's catalog once,
+/// forward or back, in any Provider or Workspace state, and records one
+/// `provider.updated` event with Coral as actor. A boot with the catalog the
+/// Workspace already pins changes nothing, and an Owner-added Provider never
+/// updates.
+#[tokio::test]
+async fn each_boot_moves_the_builtin_provider_to_the_booting_catalog_once() {
+    for arranged_as in [Arranged::Active, Arranged::Disabled, Arranged::Archived] {
+        let arranged = BuiltinWorkspace::new().await;
+        let context = change_context(arranged.owner.clone(), 15, '2');
+        publish_provider(
+            &arranged.providers,
+            &context,
+            arranged.workspace.id(),
+            CREDENTIAL_FREE_OPENAPI,
+            "weather",
+            CredentialRoute::None,
+        )
+        .await;
+        match arranged_as {
+            Arranged::Active => {}
+            Arranged::Disabled => {
+                arranged
+                    .providers
+                    .disable_provider(
+                        &context.clone().with_etag(&arranged.builtin.etag()).unwrap(),
+                        arranged.workspace.id(),
+                        arranged.builtin.id(),
+                    )
+                    .await
+                    .unwrap();
+            }
+            Arranged::Archived => {
+                arranged
+                    .workspaces
+                    .archive(&context, arranged.workspace.id())
+                    .await
+                    .unwrap();
+            }
+        }
+        let state = arranged.current().await.state();
+        let before = arranged.events().await.len();
+        assert!(
+            arranged.boot(&running(), 20).await.is_empty(),
+            "{arranged_as:?}: the Workspace already pins this catalog"
+        );
+        let running_keys = arranged.keys().await;
+
+        // A newer Coral boots, then a rollback boots this one again.
+        for (served, at, keys) in [
+            (catalog_b(), 30, with_list_things(&running_keys)),
+            (running(), 40, running_keys.clone()),
+        ] {
+            assert_eq!(
+                arranged.boot(&served, at).await,
+                [arranged.builtin.id().clone()],
+                "{arranged_as:?}"
+            );
+            assert_eq!(arranged.keys().await, keys, "{arranged_as:?}");
+            assert!(
+                arranged.boot(&served, at + 1).await.is_empty(),
+                "{arranged_as:?}: the next boot finds the catalog pinned"
+            );
+        }
+
+        assert_eq!(arranged.current().await.state(), state, "{arranged_as:?}");
+        let events = arranged.events().await;
+        let Some(updates @ [_, _]) = events.get(before..) else {
+            panic!("{arranged_as:?}: each move records one event: {events:?}");
+        };
+        for event in updates {
+            assert_eq!(event.action(), LifecycleAction::ProviderUpdated);
+            assert!(matches!(event.actor(), LifecycleActor::Coral), "{event:?}");
+            assert_eq!(event.target_id(), arranged.builtin.id().to_string());
+            assert_eq!(
+                event.changed_field_paths(),
+                ["provider.active_generation", "catalog"]
+            );
+        }
+    }
+}
+
+/// Two processes that boot together each try the update; one replaces the
+/// Generation, and the other then finds another one active.
+#[tokio::test]
+async fn two_processes_that_boot_together_activate_one_generation() {
+    let arranged = BuiltinWorkspace::new().await;
+    let before = arranged.events().await.len();
+    let keys = with_list_things(&arranged.keys().await);
+    let first = serving(&arranged.providers, catalog_b());
+    let peer = std::sync::Arc::new(arranged.fixture.connect_peer().await.unwrap());
+    let second = ProviderModule::new(
+        coral_outbound::DestinationPolicy::default(),
+        peer.clone(),
+        coral_workspace::WorkspaceModule::new(peer.clone()),
+        catalog_b(),
+    );
+    let [outdated] = first
+        .outdated_builtin_generations()
+        .await
+        .unwrap()
+        .try_into()
+        .expect("the Built-in Provider pins the running catalog");
+    let update = |process: &ProviderModule, database: std::sync::Arc<coral_db::Database>, at| {
+        let process = process.clone();
+        let outdated = outdated.clone();
+        async move {
+            let mut transaction = database.begin().await.unwrap();
+            let replaced = process
+                .update_builtin_catalog_in_transaction(&mut transaction, &outdated, at)
+                .await
+                .unwrap();
+            transaction.commit().await.unwrap();
+            replaced
+        }
+    };
+
+    let (left, right) = tokio::join!(
+        update(&first, arranged.fixture.database(), 20),
+        update(&second, peer, 21),
+    );
+
+    assert_eq!(
+        [left, right].iter().filter(|replaced| **replaced).count(),
+        1,
+        "{left:?} {right:?}"
+    );
+    assert_eq!(arranged.keys().await, keys);
+    assert_eq!(arranged.events().await.len(), before + 1);
 }

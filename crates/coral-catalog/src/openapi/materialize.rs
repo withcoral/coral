@@ -202,7 +202,6 @@ fn finish_operations(
             diagnostics_json,
         ));
     }
-    operations.sort_by(|left, right| left.key().cmp(right.key()));
     Ok((operations, shared_types))
 }
 

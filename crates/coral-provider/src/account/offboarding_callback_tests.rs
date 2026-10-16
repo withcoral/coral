@@ -27,7 +27,7 @@ async fn test_modules() -> (
         .await
         .unwrap();
     let workspaces = coral_workspace::WorkspaceModule::new(db.database());
-    let providers = crate::ProviderModule::new(
+    let providers = crate::ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         db.database(),

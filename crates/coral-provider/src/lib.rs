@@ -71,11 +71,10 @@ pub use account::{
     OAuthClientAuthentication, OAuthClientConfiguration, ProviderSetupInspection,
     SetupAuthentication, SetupAuthorization, SetupAuthorizationState, SetupOAuthClient,
 };
-pub use builtin::prepare_builtin_catalog;
 pub use coral_catalog::{
     CatalogDiagnostic as PublicationDiagnostic, MCP_DISCOVERY_SNAPSHOT_MAX_BYTES,
-    McpDiscoverySnapshot, OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument, PreparedBuiltinCatalog,
-    ProviderSetupInputDigest, ProviderSetupInputKind,
+    McpDiscoverySnapshot, OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument, ProviderSetupInputDigest,
+    ProviderSetupInputKind,
 };
 pub use error::Error;
 pub mod history_repository;
@@ -122,17 +121,20 @@ pub struct ProviderModule {
     preparation: configuration::preparation::Preparation,
     outbound_policy: coral_outbound::DestinationPolicy,
     consent: account::consent::Issuer,
+    builtin_catalog: coral_catalog::BuiltinCatalog,
     #[cfg(test)]
     publication_observer: Arc<dyn PublicationObserver>,
 }
 
 impl ProviderModule {
-    /// Builds the Module with the bootstrap-selected outbound policy.
+    /// Builds the Module with the bootstrap-selected outbound policy and the
+    /// Built-in Provider catalog that this process serves.
     #[must_use]
     pub fn new(
         outbound_policy: coral_outbound::DestinationPolicy,
         database: Arc<Database>,
         workspaces: WorkspaceModule,
+        builtin_catalog: coral_catalog::BuiltinCatalog,
     ) -> Self {
         Self {
             database,
@@ -141,9 +143,27 @@ impl ProviderModule {
             preparation: configuration::preparation::Preparation::new(),
             outbound_policy,
             consent: account::consent::Issuer::default(),
+            builtin_catalog,
             #[cfg(test)]
             publication_observer: Arc::new(NoopPublicationObserver),
         }
+    }
+
+    /// Builds the Module with the Built-in catalog this Coral version defines.
+    ///
+    /// # Panics
+    ///
+    /// Panics when that catalog is invalid.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub fn with_running_catalog(
+        outbound_policy: coral_outbound::DestinationPolicy,
+        database: Arc<Database>,
+        workspaces: WorkspaceModule,
+    ) -> Self {
+        let catalog =
+            coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares");
+        Self::new(outbound_policy, database, workspaces, catalog)
     }
 
     #[cfg(test)]
@@ -161,6 +181,8 @@ impl ProviderModule {
             outbound_policy: coral_outbound::DestinationPolicy::default()
                 .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             consent: account::consent::Issuer::default(),
+            builtin_catalog: coral_catalog::BuiltinCatalog::running()
+                .expect("the built-in catalog prepares"),
             publication_observer,
         }
     }
