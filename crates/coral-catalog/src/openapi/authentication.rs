@@ -87,24 +87,14 @@ pub(super) fn scopes(values: &[String]) -> Result<Vec<String>, CatalogDiagnostic
 }
 
 pub(super) fn endpoint(value: &str) -> Result<String, CatalogDiagnostic> {
-    if value.len() > 2048 || value.chars().any(char::is_control) || value.contains('\\') {
-        return Err(invalid());
-    }
-    let url = url::Url::parse(value).map_err(|_error| invalid())?;
     // Shape validation only. Materialization applies the resolved outbound
     // policy to the resulting credential contract's destinations.
-    if !matches!(url.scheme(), "http" | "https")
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.fragment().is_some()
-        || url
-            .query_pairs()
-            .any(|(name, _)| crate::oauth_parameter_is_reserved(&name))
-    {
+    if !crate::oauth_endpoint_is_valid(value) {
         return Err(invalid());
     }
-    Ok(url.to_string())
+    url::Url::parse(value)
+        .map(|url| url.to_string())
+        .map_err(|_error| invalid())
 }
 
 fn invalid() -> CatalogDiagnostic {

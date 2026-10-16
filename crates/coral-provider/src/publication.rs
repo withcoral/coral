@@ -266,6 +266,10 @@ impl ProviderModule {
         )))
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one preflight keeps replay, the row lock, and the regeneration baseline in order"
+    )]
     async fn publication_preflight(
         &self,
         context: &ChangeContext,
@@ -366,6 +370,8 @@ impl ProviderModule {
         let loaded = provider_repository::setup(&mut transaction, &owner, command.setup_id())
             .await?
             .ok_or(Error::ProviderSetupNotFound)?;
+        // Before anything reads the source on another User's behalf.
+        require_setup_user(&loaded, context)?;
         require_ready(&loaded.setup)?;
         if let Command::Regenerate { request, .. } = &command {
             validate_regeneration_setup(request, &loaded)?;
@@ -446,6 +452,7 @@ impl ProviderModule {
         let current_setup = provider_repository::setup(&mut *transaction, &owner, &setup_id)
             .await?
             .ok_or(Error::ProviderSetupNotFound)?;
+        require_setup_user(&current_setup, context)?;
         require_ready(&current_setup.setup)?;
         if current_setup.setup_input.as_ref() != Some(&setup_input) {
             return Err(Error::EtagMismatch);
@@ -700,6 +707,19 @@ async fn lock_setup(
         Ok(())
     } else {
         Err(Error::ProviderSetupNotFound)
+    }
+}
+
+/// Only the User who started a Setup publishes it, so its id, which a Reef
+/// link may carry, authorizes nobody else. To anyone else the Setup does not
+/// exist.
+fn require_setup_user(
+    loaded: &provider_repository::LoadedSetup,
+    context: &ChangeContext,
+) -> Result<(), Error> {
+    match &loaded.actor_user_id {
+        Some(user) if user == context.actor().user_id() => Ok(()),
+        _ => Err(Error::ProviderSetupNotFound),
     }
 }
 

@@ -147,13 +147,13 @@ fn definition(operation: BuiltinOperation) -> Definition {
                     "Choose credentialRoute to match the source: none when it needs no \
                      credential, fixed for one shared account, caller for each person's own \
                      account. A route that does not match the source fails with invalid_input. \
-                     Give displayName, servers, authentication or requestHeaders only to \
-                     override what the source suggests. Never pass a secret or a literal \
-                     credential value: Coral stores your arguments, and Workspace Owners can \
-                     see them. When status is published, call the Provider's Operations under \
-                     coral.providers.<namespace>. When status is needs_sign_in, show the person \
-                     the returned url. To check later whether it is published, search with its \
-                     namespace as provider."
+                     Give displayName, servers, authentication, credentialFields or \
+                     requestHeaders only to override what the source suggests. Never pass a \
+                     secret or a literal credential value: Coral stores your arguments, and \
+                     Workspace Owners can see them. When status is published, call the \
+                     Provider's Operations under coral.providers.<namespace>. When status is \
+                     needs_sign_in, show the person the returned url. To check later whether \
+                     it is published, search with its namespace as provider."
                         .to_string(),
                 ),
             ),
@@ -181,15 +181,11 @@ fn definition(operation: BuiltinOperation) -> Definition {
                         "description": "Server choice per server declaration, keyed by declaration pointer such as #/servers. Omit it to use the source's server. If the source declares none, or a server variable has no default, the call fails with invalid_input: find the value in the source's documentation or ask the user, then pass it here.",
                         "additionalProperties": { "$ref": "#/$defs/ServerSelection" }
                     },
-                    "authentication": {
+                    "authentication": { "$ref": "#/$defs/Authentication" },
+                    "credentialFields": {
                         "type": "object",
-                        "description": "The authentication method and its non-secret settings, such as header names, OAuth endpoints and scopes. Omit it to use the method the source declares. Never include a secret or a literal value.",
-                        "required": ["method"],
-                        "properties": {
-                            "method": {
-                                "enum": ["none", "bearer", "header_credentials", "basic_auth", "query_credentials", "oauth_device_code", "oauth_authorization_code"]
-                            }
-                        }
+                        "description": "The values a person enters when they sign in, keyed by field name, such as token. Omit it to use the source's fields. Give it when authentication names a field the source does not declare. Never include a value.",
+                        "additionalProperties": { "$ref": "#/$defs/CredentialField" }
                     },
                     "requestHeaders": {
                         "type": "object",
@@ -199,6 +195,165 @@ fn definition(operation: BuiltinOperation) -> Definition {
                 },
                 "additionalProperties": false,
                 "$defs": {
+                    "CredentialField": {
+                        "type": "object",
+                        "required": ["label", "sensitive"],
+                        "properties": {
+                            "label": { "type": "string", "description": "The name of the box the person fills in." },
+                            "description": { "type": "string", "description": "Help text." },
+                            "sensitive": { "type": "boolean", "description": "Masks the value while it is typed." }
+                        },
+                        "additionalProperties": false
+                    },
+                    "Authentication": {
+                        "description": "The authentication method and its non-secret settings. Omit it to use the method the source declares. Never include a secret or a literal value: a header, query parameter or Basic part names a field from credentialFields. The one literal is empty, for a Basic or query part the service leaves blank.",
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "required": ["method"],
+                                "properties": { "method": { "enum": ["none", "bearer"] } },
+                                "additionalProperties": false
+                            },
+                            {
+                                "type": "object",
+                                "required": ["method", "headers"],
+                                "properties": {
+                                    "method": { "const": "header_credentials" },
+                                    "headers": {
+                                        "type": "object",
+                                        "description": "Header name to the field it sends.",
+                                        "additionalProperties": { "$ref": "#/$defs/HeaderField" }
+                                    }
+                                },
+                                "additionalProperties": false
+                            },
+                            {
+                                "type": "object",
+                                "required": ["method", "username", "password"],
+                                "properties": {
+                                    "method": { "const": "basic_auth" },
+                                    "username": { "$ref": "#/$defs/CredentialPart" },
+                                    "password": { "$ref": "#/$defs/CredentialPart" }
+                                },
+                                "additionalProperties": false
+                            },
+                            {
+                                "type": "object",
+                                "required": ["method", "parameters"],
+                                "properties": {
+                                    "method": { "const": "query_credentials" },
+                                    "parameters": {
+                                        "type": "object",
+                                        "description": "Query parameter name to the field it sends.",
+                                        "additionalProperties": { "$ref": "#/$defs/CredentialPart" }
+                                    }
+                                },
+                                "additionalProperties": false
+                            },
+                            {
+                                "type": "object",
+                                "required": ["method", "device_authorization_url", "token_url", "scopes"],
+                                "properties": {
+                                    "method": { "const": "oauth_device_code" },
+                                    "device_authorization_url": { "type": "string" },
+                                    "token_url": { "type": "string" },
+                                    "scopes": { "type": "array", "items": { "type": "string" } },
+                                    "scope_format": { "$ref": "#/$defs/ScopeFormat" },
+                                    "client": { "$ref": "#/$defs/DeviceOAuthClient" }
+                                },
+                                "additionalProperties": false
+                            },
+                            {
+                                "type": "object",
+                                "required": ["method", "authorization_url", "token_url", "scopes"],
+                                "properties": {
+                                    "method": { "const": "oauth_authorization_code" },
+                                    "authorization_url": { "type": "string" },
+                                    "token_url": { "type": "string" },
+                                    "scopes": { "type": "array", "items": { "type": "string" } },
+                                    "scope_format": { "$ref": "#/$defs/ScopeFormat" },
+                                    "client": { "$ref": "#/$defs/OAuthClient" }
+                                },
+                                "additionalProperties": false
+                            }
+                        ]
+                    },
+                    "HeaderField": {
+                        "type": "object",
+                        "required": ["source", "field"],
+                        "properties": {
+                            "source": { "const": "field" },
+                            "field": { "type": "string", "description": "A field from credentialFields." },
+                            "prefix": { "type": "string", "description": "Non-secret text sent before the value, such as Bot . Never a credential." }
+                        },
+                        "additionalProperties": false
+                    },
+                    "CredentialPart": {
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "required": ["source", "field"],
+                                "properties": {
+                                    "source": { "const": "field" },
+                                    "field": { "type": "string", "description": "A field from credentialFields." }
+                                },
+                                "additionalProperties": false
+                            },
+                            {
+                                "type": "object",
+                                "required": ["source", "value"],
+                                "description": "A part the service leaves blank, such as a Basic password.",
+                                "properties": {
+                                    "source": { "const": "literal" },
+                                    "value": { "const": "" }
+                                },
+                                "additionalProperties": false
+                            }
+                        ]
+                    },
+                    "ScopeFormat": {
+                        "enum": ["space", "comma"],
+                        "description": "How scopes are joined in the request. Omit it for space."
+                    },
+                    "OAuthClient": {
+                        "type": "object",
+                        "description": "An OAuth application registered with the service. Omit it to let Coral register one, when the service allows it. A confidential application never takes its secret here: the person enters it when they sign in.",
+                        "required": ["client_id"],
+                        "properties": {
+                            "client_id": { "type": "string" },
+                            "authentication": {
+                                "enum": ["none", "client_secret_basic", "client_secret_post"],
+                                "description": "How the application authenticates at the token endpoint. Omit it, or give none, for a public application."
+                            },
+                            "pkce": {
+                                "enum": ["s256", "disabled"],
+                                "description": "Authorization-code protection. Omit it for s256."
+                            },
+                            "authorization_parameters": {
+                                "type": "object",
+                                "description": "Non-secret authorization options, such as access_type.",
+                                "additionalProperties": { "type": "string" }
+                            }
+                        },
+                        "additionalProperties": false
+                    },
+                    "DeviceOAuthClient": {
+                        "type": "object",
+                        "description": "An OAuth application registered with the service. A confidential application never takes its secret here: the person enters it when they sign in. Device authorization takes no authorization parameters.",
+                        "required": ["client_id"],
+                        "properties": {
+                            "client_id": { "type": "string" },
+                            "authentication": {
+                                "enum": ["none", "client_secret_basic", "client_secret_post"],
+                                "description": "How the application authenticates at the token endpoint. Omit it, or give none, for a public application."
+                            },
+                            "pkce": {
+                                "enum": ["s256", "disabled"],
+                                "description": "Device code never uses it."
+                            }
+                        },
+                        "additionalProperties": false
+                    },
                     "ServerSelection": {
                         "oneOf": [
                             {

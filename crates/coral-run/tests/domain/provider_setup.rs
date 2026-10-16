@@ -178,6 +178,18 @@ impl AdminScope {
             .any(|entry| matches!(entry, crate::RunEntry::Invocation(_)))
     }
 
+    /// The configuration confirmed for the latest Setup.
+    async fn last_confirmed_configuration(&self) -> coral_catalog::ProviderConfiguration {
+        let setup = self.created_setups().await.pop().expect("a Setup");
+        self.fixture
+            .providers
+            .review_setup_configuration(&self.owner_user(), &self.workspace_id, &setup)
+            .await
+            .expect("review the Setup")
+            .confirmed
+            .expect("a confirmed configuration")
+    }
+
     /// Every Setup created so far, from its creation evidence.
     async fn created_setups(&self) -> Vec<ProviderSetupId> {
         self.lifecycle_events()
@@ -272,7 +284,8 @@ async fn create_provider_returns_the_reef_page_that_finishes_its_setup() {
                 "data": {
                     "status": "needs_sign_in",
                     "url": format!(
-                        "{TEST_REEF}/workspaces/{}/providers/new?setup={setup}&namespace=weather",
+                        "{TEST_REEF}/workspaces/{}/providers/new?setup={setup}&namespace=weather\
+                         &operationsAccepted=1&account=fixed",
                         scope.workspace_id,
                     ),
                     "namespace": "weather",
@@ -792,6 +805,7 @@ async fn invalid_input_fails_before_storage_approval_fetch_or_setup() {
     let server = private_document_server().await;
     let fetchable = url_source(&server);
     let arguments = |namespace: &str, source: &serde_json::Value| serde_json::json!({ "namespace": namespace, "source": source, "credentialRoute": "fixed" });
+    let authenticated = |authentication: serde_json::Value| serde_json::json!({ "namespace": "weather", "source": fetchable, "credentialRoute": "fixed", "authentication": authentication });
     let before = scope.lifecycle_events().await.len();
     for arguments in [
         arguments("not-an-identifier", &fetchable),
@@ -818,15 +832,47 @@ async fn invalid_input_fails_before_storage_approval_fetch_or_setup() {
             "weather",
             &serde_json::json!({ "kind": "mcp_url", "url": "https://weather.example/mcp#tools" }),
         ),
-        serde_json::json!({
-            "namespace": "weather",
-            "source": fetchable,
-            "credentialRoute": "fixed",
-            "authentication": {
-                "method": "header_credentials",
-                "headers": { "x-weather-key": { "source": "literal", "value": "secret" } },
+        authenticated(serde_json::json!({
+            "method": "header_credentials",
+            "headers": { "x-weather-key": { "source": "literal", "value": "secret" } },
+        })),
+        // Device authorization takes no authorization parameters.
+        authenticated(serde_json::json!({
+            "method": "oauth_device_code",
+            "device_authorization_url": "https://weather.example/device",
+            "token_url": "https://weather.example/token",
+            "scopes": [],
+            "client": {
+                "client_id": "weather-app",
+                "authorization_parameters": { "audience": "weather" },
             },
-        }),
+        })),
+        // An OAuth endpoint or parameter that could carry a credential.
+        authenticated(serde_json::json!({
+            "method": "oauth_authorization_code",
+            "authorization_url": "https://user:secret@weather.example/authorize",
+            "token_url": "https://weather.example/token",
+            "scopes": [],
+        })),
+        authenticated(serde_json::json!({
+            "method": "oauth_authorization_code",
+            "authorization_url": "https://weather.example/authorize",
+            "token_url": "https://weather.example/token?client_secret=secret",
+            "scopes": [],
+        })),
+        authenticated(serde_json::json!({
+            "method": "oauth_authorization_code",
+            "authorization_url": "https://weather.example/authorize",
+            "token_url": "https://weather.example/token",
+            "scopes": [],
+            "client": {
+                "client_id": "weather-app",
+                "authorization_parameters": { "client_secret": "secret" },
+            },
+        })),
+        // A credential field takes no value: a person enters it when they sign in.
+        serde_json::json!({ "namespace": "weather", "source": fetchable, "credentialRoute": "fixed",
+            "credentialFields": { "token": { "label": "Bot token", "sensitive": true, "value": "secret" } } }),
     ] {
         // createProvider waits for approval by default; input it can judge alone never does.
         let run = scope.start(&scope.owner, create_provider(&arguments)).await;
@@ -898,6 +944,112 @@ async fn credential_headers_are_rejected_by_their_exact_name() {
                 scope.created_setups().await.is_empty(),
                 "{header}: no Setup"
             );
+        }
+    }
+}
+
+// Catches: a Program unable to configure how a person signs in as Reef's
+// configuration step does, a link that opens the wrong account question, or
+// Coral publishing an application whose secret only a person can give.
+#[tokio::test]
+async fn the_program_configures_how_a_person_signs_in() {
+    let scope = AdminScope::new("user:sign-in-configuration").await;
+    scope.set_access(OperationAccessState::Enabled).await;
+    let bot_header = serde_json::json!({
+        "method": "header_credentials",
+        "headers": { "authorization": { "source": "field", "field": "token", "prefix": "Bot " } },
+    });
+    let bot_token = serde_json::json!({ "token": { "label": "Bot token", "sensitive": true } });
+    let bot = serde_json::json!({ "authentication": bot_header, "credentialFields": bot_token });
+    let device = serde_json::json!({ "authentication": {
+        "method": "oauth_device_code",
+        "device_authorization_url": "https://weather.example/device",
+        "token_url": "https://weather.example/token",
+        "scopes": [],
+        "client": { "client_id": "weather-app" },
+    } });
+    let confidential = serde_json::json!({ "authentication": {
+        "method": "oauth_authorization_code",
+        "authorization_url": "https://weather.example/authorize",
+        "token_url": "https://weather.example/token",
+        "scopes": ["read"],
+        "client": {
+            "client_id": "weather-app",
+            "authentication": "client_secret_post",
+        },
+    } });
+    for (index, (route, choices, question)) in [
+        ("fixed", bot, Some("&account=fixed")),
+        // The source declares no field for the header to send.
+        (
+            "fixed",
+            serde_json::json!({ "authentication": bot_header }),
+            None,
+        ),
+        // Device code never uses PKCE, whatever the Program wrote.
+        ("fixed", device, Some("&account=fixed")),
+        // Only the person can give a confidential application's secret, so even
+        // a caller route that Coral could publish needs them.
+        (
+            "caller",
+            confidential,
+            Some("&account=caller&accountReview=1"),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut arguments = serde_json::json!({
+            "namespace": format!("weather{index}"),
+            "source": document_source(),
+            "credentialRoute": route,
+        });
+        arguments
+            .as_object_mut()
+            .unwrap()
+            .extend(choices.as_object().unwrap().clone());
+        let run = scope.start(&scope.owner, create_provider(&arguments)).await;
+        let value = final_value(&scope.terminal(&scope.owner, &run).await);
+        let Some(question) = question else {
+            assert_eq!(value, serde_json::json!("invalid_input"), "{arguments}");
+            continue;
+        };
+        assert_eq!(
+            value.pointer("/data/status"),
+            Some(&serde_json::json!("needs_sign_in")),
+            "{arguments}: {value}"
+        );
+        let link = value
+            .pointer("/data/url")
+            .and_then(serde_json::Value::as_str);
+        assert!(
+            link.is_some_and(|link| link.ends_with(question)),
+            "{arguments}: {value}"
+        );
+        let configuration = scope.last_confirmed_configuration().await;
+        match configuration.authentication.expect("a method") {
+            coral_catalog::AuthenticationConfiguration::HeaderCredentials { .. } => {
+                let field = configuration
+                    .credential_fields
+                    .get("token")
+                    .expect("the token field");
+                assert_eq!((field.label.as_str(), field.sensitive), ("Bot token", true));
+            }
+            coral_catalog::AuthenticationConfiguration::OAuthDeviceCode { client, .. } => {
+                let client = client.expect("the Program's application");
+                assert_eq!(client.client_id, "weather-app");
+                assert_eq!(client.pkce, coral_catalog::OAuthPkcePolicy::Disabled);
+            }
+            coral_catalog::AuthenticationConfiguration::OAuthAuthorizationCode {
+                client, ..
+            } => {
+                let client = client.expect("the Program's application");
+                assert_eq!(
+                    client.authentication,
+                    coral_catalog::OAuthClientAuthenticationMethod::ClientSecretPost
+                );
+            }
+            other => panic!("unexpected method {other:?}"),
         }
     }
 }

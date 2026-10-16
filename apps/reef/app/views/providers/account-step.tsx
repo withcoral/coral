@@ -15,6 +15,7 @@ import { usePublication } from './publication-form'
 import {
   accountSummary,
   ContinueSignIn,
+  CredentialDestination,
   SetupFields,
   SignInProgress,
   SignInStatus,
@@ -107,6 +108,7 @@ export function AccountStep({
     )
   }
   const formId = useId()
+  const secretId = useId()
   const secretFormId = useId()
   const [confirming, setConfirming] = useState(false)
   const method = setup.credentialMethod
@@ -263,7 +265,20 @@ export function AccountStep({
               </div>
             </Radio.Group>
           </div>
-          {oauth && signingIn && <OAuthApplicationBlock setup={setup} callbackUrl={callbackUrl} />}
+          {oauth && signingIn && (
+            <OAuthApplicationBlock
+              setup={setup}
+              callbackUrl={callbackUrl}
+              clientSecretInput={
+                <>
+                  <Typography.BodySmallStrong as="label" htmlFor={secretId}>
+                    Client secret
+                  </Typography.BodySmallStrong>
+                  <Inputs.CredentialInput id={secretId} name="clientSecret" required />
+                </>
+              }
+            />
+          )}
         </Form>
       )}
     </>
@@ -300,6 +315,7 @@ export function AccountStep({
                 <CredentialFields fields={setup.credentialFields}>
                   {(input) => <Inputs.CredentialInput {...input} />}
                 </CredentialFields>
+                <CredentialDestination setup={setup} />
                 {documentationUrl && (
                   <Button.ExternalLink href={documentationUrl} className={styles.inlineControl}>
                     Find your credentials in the{' '}

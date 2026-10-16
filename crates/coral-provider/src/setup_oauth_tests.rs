@@ -3267,6 +3267,108 @@ async fn confidential_setup_authenticates_with_the_organization_owners_applicati
     Box::pin(confidential_application_lifecycle(true)).await;
 }
 
+/// An agent's createProvider confirms a confidential application without its
+/// secret, which it never sees. Sign-in refuses to start until the person gives
+/// the secret, and then seals it with the flow, as configuration would have.
+#[tokio::test]
+async fn an_application_secret_can_follow_confirmation_and_arrives_with_the_sign_in() {
+    use crate::{OAuthClientAuthentication, OAuthClientConfiguration};
+    let api = OAuthApi::start().await;
+    let harness = harness(None).await;
+    let (actor, workspace) = workspace_owner(&harness, "user:secret-follows").await;
+    let owner = workspace.id().clone();
+    let context = change_context(actor.clone(), 10, '1');
+    let setup = harness
+        .providers
+        .prepare_openapi_fixture(&context, &owner, api.document("Confidential"))
+        .await
+        .unwrap();
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(header(
+            "authorization",
+            "Basic b3duZXIlM0FhcHArJTJCOnNlY3JldCUzQSUyQislMjZjYW5hcnk=",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": ACCESS, "token_type": "Bearer", "refresh_token": REFRESH,
+            "scope": "read write", "expires_in": 3600
+        })))
+        .with_priority(2)
+        .mount(&api.server)
+        .await;
+    let review = harness
+        .providers
+        .review_setup_configuration(&actor, &owner, setup.id())
+        .await
+        .unwrap();
+    let application = coral_catalog::OAuthClientPolicy {
+        bootstrap: OAuthClientBootstrap::Manual,
+        client_id: "owner:app +".into(),
+        authentication: coral_catalog::OAuthClientAuthenticationMethod::ClientSecretBasic,
+        pkce: coral_catalog::OAuthPkcePolicy::S256,
+        authorization_parameters: std::collections::BTreeMap::new(),
+    };
+    let mut configuration = review.confirmed.unwrap();
+    configuration.authentication = configuration
+        .authentication
+        .map(|method| method.with_oauth_client(&application));
+    let confirmed = harness
+        .providers
+        .confirm_setup_configuration(&context, &owner, setup.id(), review.revision, configuration)
+        .await
+        .unwrap();
+    assert!(confirmed.errors.is_empty(), "{:?}", confirmed.errors);
+
+    let without_secret = harness
+        .accounts
+        .start_setup_authorization(
+            &context,
+            &owner,
+            setup.id(),
+            confirmed.revision,
+            self::client(),
+        )
+        .await;
+    assert!(
+        matches!(without_secret, Err(Error::OAuthClientConfiguration)),
+        "{without_secret:?}"
+    );
+
+    let started = harness
+        .accounts
+        .start_setup_authorization(
+            &context,
+            &owner,
+            setup.id(),
+            confirmed.revision,
+            SetupOAuthClient::application(
+                "https://reef.example/provider-setup/oauth/callback".into(),
+                OAuthClientConfiguration::new(
+                    "owner:app +".into(),
+                    OAuthClientAuthentication::ClientSecretBasic {
+                        secret: Some(Secret::new("secret:+ &canary".into()).unwrap()),
+                    },
+                ),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let navigation = started.authorization.unwrap().authorization_url.unwrap();
+    assert!(!navigation.contains("canary"));
+    let completed = harness
+        .accounts
+        .complete_setup_authorization(
+            &context,
+            None,
+            &state_of(&navigation),
+            Secret::new(CODE.into()).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(completed.authentication.authorized);
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one application lifecycle covers secure restart, publication, rejection and rotation recovery"

@@ -993,6 +993,21 @@ fn bearer_openapi(server: &MockServer) -> String {
     .to_string()
 }
 
+fn oauth_openapi(server: &MockServer) -> String {
+    json!({
+        "openapi": "3.1.0", "info": {"title": "OAuth", "version": "1"},
+        "servers": [{"url": server.uri()}],
+        "security": [{"oauth": ["read"]}],
+        "components": {"securitySchemes": {"oauth": {"type": "oauth2", "flows": {"authorizationCode": {
+            "authorizationUrl": format!("{}/authorize", server.uri()),
+            "tokenUrl": format!("{}/token", server.uri()),
+            "scopes": {"read": "Read"}
+        }}}}},
+        "paths": {"/data": {"get": {"operationId": "getData", "responses": {"200": {"description": "Data"}}}}}
+    })
+    .to_string()
+}
+
 fn header_keys_openapi(server: &MockServer) -> String {
     json!({
         "openapi": "3.1.0", "info": {"title": "Header keys", "version": "1"},
@@ -1727,65 +1742,146 @@ async fn route_none_with_a_sealed_credential_fails_publication_and_scrubs_it() {
     ));
 }
 
+/// How a Setup in [`publishability_says_who_can_publish_a_setup_under_a_route`]
+/// is configured.
+#[derive(Debug, Clone, Copy)]
+enum Configured {
+    /// Nothing is confirmed yet.
+    No,
+    /// The source's suggestion is confirmed.
+    AsSuggested,
+    /// A confidential OAuth application is confirmed, and nobody has entered
+    /// its secret.
+    WithConfidentialApplication,
+}
+
+impl Configured {
+    /// Prepares a Setup from `document` and configures it this way.
+    async fn prepare(
+        self,
+        harness: &Harness,
+        owner: &coral_workspace::AuthenticatedUser,
+        scope: &coral_workspace::WorkspaceId,
+        document: crate::OpenApiDocument,
+    ) -> crate::ProviderSetup {
+        let context = change_context(owner.clone(), 10, '1');
+        if let Self::AsSuggested = self {
+            return harness
+                .providers
+                .prepare_openapi_fixture(&context, scope, document)
+                .await
+                .unwrap();
+        }
+        let setup = harness
+            .providers
+            .prepare_setup(
+                &context,
+                scope,
+                ProviderSetupSource::OpenApiDocument(document),
+                None,
+            )
+            .await
+            .unwrap();
+        if let Self::WithConfidentialApplication = self {
+            let review = harness
+                .providers
+                .review_setup_configuration(owner, scope, setup.id())
+                .await
+                .unwrap();
+            let application = coral_catalog::OAuthClientPolicy {
+                bootstrap: coral_catalog::OAuthClientBootstrap::Manual,
+                client_id: "weather-app".into(),
+                authentication: coral_catalog::OAuthClientAuthenticationMethod::ClientSecretPost,
+                pkce: coral_catalog::OAuthPkcePolicy::S256,
+                authorization_parameters: std::collections::BTreeMap::new(),
+            };
+            let mut configuration = review.document.unwrap().suggested;
+            configuration.authentication = configuration
+                .authentication
+                .map(|method| method.with_oauth_client(&application));
+            let confirmed = harness
+                .providers
+                .confirm_setup_configuration(
+                    &context,
+                    scope,
+                    setup.id(),
+                    review.revision,
+                    configuration,
+                )
+                .await
+                .unwrap();
+            assert!(confirmed.errors.is_empty(), "{:?}", confirmed.errors);
+        }
+        setup
+    }
+}
+
 // Catches: callers each deciding for themselves whether a Setup needs a person,
-// or a route that does not suit the source getting through to Publication.
+// a route that does not suit the source getting through to Publication, or
+// Coral publishing an application whose secret only a person can give.
 #[tokio::test]
 async fn publishability_says_who_can_publish_a_setup_under_a_route() {
     use crate::{PublishabilityRejection as R, SetupPublishability as P};
     let server = MockServer::start().await;
     let open = crate::tests::CREDENTIAL_FREE_OPENAPI.to_string();
     let bearer = bearer_openapi(&server);
-    for (document, confirmed, route, expected) in [
-        (&open, true, CredentialRoute::None, P::Coral),
+    let oauth = oauth_openapi(&server);
+    for (document, configured, route, expected) in [
         (
             &open,
-            true,
+            Configured::AsSuggested,
+            CredentialRoute::None,
+            P::Coral,
+        ),
+        (
+            &open,
+            Configured::AsSuggested,
             CredentialRoute::Fixed,
             P::Rejected(R::SourceNeedsNoCredential),
         ),
         (
             &open,
-            true,
+            Configured::AsSuggested,
             CredentialRoute::Caller,
             P::Rejected(R::SourceNeedsNoCredential),
         ),
         (
             &bearer,
-            true,
+            Configured::AsSuggested,
             CredentialRoute::None,
             P::Rejected(R::SourceNeedsCredential),
         ),
-        (&bearer, true, CredentialRoute::Fixed, P::Person),
-        (&bearer, true, CredentialRoute::Caller, P::Coral),
+        (
+            &bearer,
+            Configured::AsSuggested,
+            CredentialRoute::Fixed,
+            P::Person,
+        ),
+        (
+            &bearer,
+            Configured::AsSuggested,
+            CredentialRoute::Caller,
+            P::Coral,
+        ),
+        (
+            &oauth,
+            Configured::WithConfidentialApplication,
+            CredentialRoute::Caller,
+            P::Person,
+        ),
         (
             &open,
-            false,
+            Configured::No,
             CredentialRoute::None,
             P::Rejected(R::NotConfigured),
         ),
     ] {
         let harness = harness().await;
         let (owner, workspace) = workspace_owner(&harness, "user:publishability").await;
-        let context = change_context(owner.clone(), 10, '1');
         let document = crate::OpenApiDocument::parse(document).unwrap();
-        let setup = if confirmed {
-            harness
-                .providers
-                .prepare_openapi_fixture(&context, workspace.id(), document)
-                .await
-                .unwrap()
-        } else {
-            harness
-                .providers
-                .prepare_setup(
-                    &context,
-                    workspace.id(),
-                    ProviderSetupSource::OpenApiDocument(document),
-                    None,
-                )
-                .await
-                .unwrap()
-        };
+        let setup = configured
+            .prepare(&harness, &owner, workspace.id(), document)
+            .await;
         assert_eq!(
             harness
                 .providers
@@ -1793,7 +1889,7 @@ async fn publishability_says_who_can_publish_a_setup_under_a_route() {
                 .await
                 .unwrap(),
             expected,
-            "{route:?} confirmed: {confirmed}"
+            "{route:?} {configured:?}"
         );
     }
 }
@@ -2111,6 +2207,12 @@ async fn secret_entry_authorizes_an_openapi_bearer_setup_for_its_configuring_use
             .await,
         Err(Error::AccountNotFound)
     ));
+    // Promoting it would publish the Setup, which only its configuring User can.
+    let events_before = harness
+        .providers
+        .list_lifecycle_events(&owner, &scope)
+        .await
+        .unwrap();
     let publication = harness
         .providers
         .publish_workspace_provider(
@@ -2124,11 +2226,28 @@ async fn secret_entry_authorizes_an_openapi_bearer_setup_for_its_configuring_use
             )
             .with_account_grant(grant_id),
         )
+        .await;
+    assert!(
+        matches!(publication, Err(Error::ProviderSetupNotFound)),
+        "{publication:?}"
+    );
+    assert!(!format!("{publication:?}{authorized:?}").contains(TOKEN));
+    // The refusal changed nothing: the configuring User still holds the sign-in.
+    let kept = harness
+        .providers
+        .setup_authentication(&owner, &scope, setup.id(), 16)
         .await
         .unwrap();
-    assert_eq!(publication.outcome(), ProviderPublicationOutcome::Failed);
-    assert_eq!(publication.diagnostic().unwrap().code(), "account_required");
-    assert!(!format!("{publication:?}{authorized:?}").contains(TOKEN));
+    assert!(kept.authorized);
+    assert_eq!(kept.provisional_grant_id, Some(grant_id));
+    assert_eq!(
+        harness
+            .providers
+            .list_lifecycle_events(&owner, &scope)
+            .await
+            .unwrap(),
+        events_before
+    );
 }
 
 #[tokio::test]
@@ -2137,18 +2256,7 @@ async fn secret_entry_rejects_credential_free_and_oauth_contracts() {
     let (owner, workspace) = workspace_owner(&harness, "user:secret-shape").await;
     let scope = workspace.id().clone();
     let server = MockServer::start().await;
-    let oauth = json!({
-        "openapi": "3.1.0", "info": {"title": "OAuth", "version": "1"},
-        "servers": [{"url": server.uri()}],
-        "security": [{"oauth": ["read"]}],
-        "components": {"securitySchemes": {"oauth": {"type": "oauth2", "flows": {"authorizationCode": {
-            "authorizationUrl": format!("{}/authorize", server.uri()),
-            "tokenUrl": format!("{}/token", server.uri()),
-            "scopes": {"read": "Read"}
-        }}}}},
-        "paths": {"/data": {"get": {"operationId": "getData", "responses": {"200": {"description": "Data"}}}}}
-    })
-    .to_string();
+    let oauth = oauth_openapi(&server);
     for (document, contract) in [
         (credential_free_openapi(&server), "credential-free"),
         (oauth, "OAuth"),

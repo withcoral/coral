@@ -425,9 +425,8 @@ pub(super) fn application_input(
         }
     };
     let pkce = match wire::OAuthPkcePolicy::try_from(application.pkce) {
-        Ok(wire::OAuthPkcePolicy::Unspecified | wire::OAuthPkcePolicy::S256) => {
-            coral_catalog::OAuthPkcePolicy::S256
-        }
+        Ok(wire::OAuthPkcePolicy::Unspecified) => coral_catalog::OAuthPkcePolicy::default(),
+        Ok(wire::OAuthPkcePolicy::S256) => coral_catalog::OAuthPkcePolicy::S256,
         Ok(wire::OAuthPkcePolicy::Disabled) => coral_catalog::OAuthPkcePolicy::Disabled,
         Err(_) => return Err(super::invalid("unknown PKCE policy")),
     };

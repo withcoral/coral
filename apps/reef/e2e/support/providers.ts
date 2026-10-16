@@ -515,7 +515,7 @@ export async function openDialog(page: Page, trigger: Locator) {
  * in the confirmation, the same place OAuth confirms before it leaves for the
  * service; an API key would be labelled by its own header.
  */
-async function connectSharedAccount(page: Page, secret: string) {
+export async function connectSharedAccount(page: Page, secret: string) {
   const dialog = await openDialog(
     page,
     page.getByRole('button', { name: 'Connect the shared account', exact: true }),
