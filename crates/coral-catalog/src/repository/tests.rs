@@ -87,9 +87,13 @@ async fn catalog_preserves_retained_generations_and_operations() {
                 shared_types_named += 1;
             }
             assert_eq!(
-                load_authoring_declaration(&mut transaction, &generation_id, operation)
-                    .await
-                    .unwrap(),
+                crate::authoring_declaration_in_transaction(
+                    &mut transaction,
+                    &generation_id,
+                    operation
+                )
+                .await
+                .unwrap(),
                 declaration
             );
         }

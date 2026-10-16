@@ -593,7 +593,7 @@ pub(crate) struct SharedType {
 ///
 /// An Operation's declaration names these types instead of declaring them.
 /// Its complete declaration is its own text plus every shared type it
-/// reaches; see [`compose_declaration`].
+/// reaches; see [`TypeClosure`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SharedTypes(BTreeMap<String, SharedType>);
 
@@ -618,30 +618,80 @@ impl SharedTypes {
     /// The complete declaration of an Operation whose own text is
     /// `declaration` and which names `references` directly.
     pub(crate) fn compose(&self, declaration: &str, references: &[String]) -> String {
-        let mut reached = BTreeMap::new();
-        let mut pending = references.iter().map(String::as_str).collect::<Vec<_>>();
-        while let Some(name) = pending.pop() {
-            if reached.contains_key(name) {
-                continue;
+        let mut closure = TypeClosure::new(references);
+        loop {
+            let names = closure.pending();
+            if names.is_empty() {
+                break;
             }
-            if let Some(shared) = self.0.get(name) {
-                reached.insert(name, shared.declaration.as_str());
-                pending.extend(shared.references.iter().map(String::as_str));
-            }
+            let found = names
+                .iter()
+                .filter_map(|name| Some((name.clone(), self.0.get(name)?.clone())))
+                .collect();
+            closure
+                .reach(&names, found)
+                .expect("materialization declares every shared type an Operation names");
         }
-        compose_declaration(reached.into_values(), declaration)
+        closure.compose(declaration)
     }
 }
 
-/// An Operation's complete declaration: the shared types it reaches, in name
-/// order, then its own text.
-pub(crate) fn compose_declaration<'a>(
-    shared: impl IntoIterator<Item = &'a str>,
-    declaration: &str,
-) -> String {
-    let mut lines = shared.into_iter().collect::<Vec<_>>();
-    lines.push(declaration);
-    lines.join("\n")
+/// The shared types one Operation reaches, found level by level from the
+/// names its own declaration names. Each level looks up only names not yet
+/// reached, so a cycle ends the walk.
+pub(crate) struct TypeClosure {
+    reached: BTreeMap<String, String>,
+    pending: Vec<String>,
+}
+
+impl TypeClosure {
+    pub(crate) fn new(references: &[String]) -> Self {
+        Self {
+            reached: BTreeMap::new(),
+            pending: references.to_vec(),
+        }
+    }
+
+    /// The names to look up next, each once. Empty when the walk is done.
+    pub(crate) fn pending(&mut self) -> Vec<String> {
+        let mut names = std::mem::take(&mut self.pending);
+        names.sort();
+        names.dedup();
+        names.retain(|name| !self.reached.contains_key(name));
+        names
+    }
+
+    /// Records the shared types found for the `requested` names and queues
+    /// the names they reference.
+    ///
+    /// # Errors
+    ///
+    /// Corrupt data when a requested name has no shared type.
+    pub(crate) fn reach(
+        &mut self,
+        requested: &[String],
+        found: Vec<(String, SharedType)>,
+    ) -> Result<(), crate::Error> {
+        for (name, shared) in found {
+            self.pending.extend(shared.references);
+            self.reached.insert(name, shared.declaration);
+        }
+        if requested.iter().all(|name| self.reached.contains_key(name)) {
+            Ok(())
+        } else {
+            Err(crate::Error::CorruptData(
+                "an Operation names a missing shared type".to_string(),
+            ))
+        }
+    }
+
+    /// The complete declaration: the reached types in name order, then the
+    /// Operation's own `declaration`.
+    pub(crate) fn compose(self, declaration: &str) -> String {
+        let mut lines = self.reached.into_values().collect::<Vec<_>>();
+        lines.push(declaration.to_string());
+        lines.join("\n")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

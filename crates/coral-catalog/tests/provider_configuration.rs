@@ -931,20 +931,10 @@ fn destination_binding_waits_for_final_authoring_availability() {
     let mut configuration = document.configuration_review().unwrap().suggested;
     configuration.authentication = Some(AuthenticationConfiguration::Bearer);
     let catalog = prepared(&document.configure(configuration).unwrap());
-    let diagnostic = catalog.operations()[1].diagnostic().unwrap();
     assert_eq!(
-        diagnostic.code(),
+        catalog.operations()[1].diagnostic().unwrap().code(),
         "operation_authoring_description_too_large"
     );
-    let observed = diagnostic
-        .message()
-        .strip_prefix("the Operation Authoring Description is ")
-        .and_then(|rest| rest.strip_suffix(" bytes, over the discovery limit of 262144 bytes"))
-        .and_then(|bytes| bytes.parse::<usize>().ok())
-        .unwrap_or_else(|| panic!("unexpected message: {}", diagnostic.message()));
-    // The 1,400 quoted literals joined by " | " are 291,487 bytes, plus the
-    // fixed 8 KiB allowance; the callable and result types add a little.
-    assert!((299_679..302_000).contains(&observed), "{observed}");
     assert_eq!(catalog.credential_contract(), baseline);
 }
 

@@ -327,7 +327,16 @@ pub async fn authoring_declaration_in_transaction(
     generation_id: &ProviderGenerationId,
     operation: &MaterializedOperation,
 ) -> Result<String, Error> {
-    repository::load_authoring_declaration(transaction, generation_id, operation).await
+    let mut closure = schema::TypeClosure::new(operation.type_references());
+    loop {
+        let names = closure.pending();
+        if names.is_empty() {
+            break;
+        }
+        let found = repository::load_shared_types(transaction, generation_id, &names).await?;
+        closure.reach(&names, found)?;
+    }
+    Ok(closure.compose(operation.typescript_declaration()))
 }
 
 /// Reads hints and the HTTP method for 1–100 exact keys without loading

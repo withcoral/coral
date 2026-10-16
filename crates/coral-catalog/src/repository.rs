@@ -67,8 +67,10 @@ enum ProviderGenerationTypes {
     ReferencesJson,
 }
 
-/// Shared types written per statement, within every database's bind limit.
-const TYPE_ROWS_PER_STATEMENT: usize = 256;
+/// Shared types written per insert, within every database's bind limit.
+const SHARED_TYPE_ROWS_PER_INSERT: usize = 256;
+/// Shared type names looked up per select, within every database's bind limit.
+const SHARED_TYPE_NAMES_PER_SELECT: usize = 256;
 
 #[derive(Debug, FromRow)]
 struct GenerationRow {
@@ -430,7 +432,7 @@ async fn insert_shared_types(
     shared_types: &crate::schema::SharedTypes,
 ) -> Result<(), Error> {
     let rows = shared_types.iter().collect::<Vec<_>>();
-    for chunk in rows.chunks(TYPE_ROWS_PER_STATEMENT) {
+    for chunk in rows.chunks(SHARED_TYPE_ROWS_PER_INSERT) {
         let mut statement = Query::insert()
             .into_table(ProviderGenerationTypes::Table)
             .columns([
@@ -456,67 +458,55 @@ async fn insert_shared_types(
     Ok(())
 }
 
-/// Loads an Operation's complete declaration: its own text and every shared
-/// type of its Generation that it reaches.
-pub(super) async fn load_authoring_declaration(
+/// Loads the shared types of one Generation with the given names. A name with
+/// no shared type is left out.
+pub(super) async fn load_shared_types(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-    operation: &MaterializedOperation,
-) -> Result<String, Error> {
+    names: &[String],
+) -> Result<Vec<(String, crate::schema::SharedType)>, Error> {
     #[derive(FromRow)]
     struct TypeRow {
         name: String,
         declaration: String,
         references_json: String,
     }
-    let mut reached = std::collections::BTreeMap::<String, String>::new();
-    let mut pending = operation.type_references().to_vec();
-    while !pending.is_empty() {
-        pending.sort();
-        pending.dedup();
-        pending.retain(|name| !reached.contains_key(name));
-        let mut next = Vec::new();
-        for chunk in pending.chunks(TYPE_ROWS_PER_STATEMENT) {
-            let rows: Vec<TypeRow> = transaction
-                .fetch_all(
-                    Query::select()
-                        .columns([
-                            ProviderGenerationTypes::Name,
-                            ProviderGenerationTypes::Declaration,
-                            ProviderGenerationTypes::ReferencesJson,
-                        ])
-                        .from(ProviderGenerationTypes::Table)
-                        .and_where(
-                            Expr::col(ProviderGenerationTypes::ProviderGenerationId)
-                                .eq(generation_id.to_string()),
-                        )
-                        .and_where(
-                            Expr::col(ProviderGenerationTypes::Name)
-                                .is_in(chunk.iter().map(String::as_str)),
-                        )
-                        .to_owned(),
-                )
-                .await?;
-            if rows.len() != chunk.len() {
-                return Err(Error::CorruptData(
-                    "Materialized Operation names a missing shared type".to_string(),
-                ));
-            }
-            for row in rows {
-                let references: Vec<String> =
-                    serde_json::from_str(&row.references_json).map_err(|_error| {
-                        Error::CorruptData("shared type references are not valid JSON".to_string())
-                    })?;
-                next.extend(references);
-                reached.insert(row.name, row.declaration);
-            }
+    let mut shared_types = Vec::with_capacity(names.len());
+    for chunk in names.chunks(SHARED_TYPE_NAMES_PER_SELECT) {
+        let rows: Vec<TypeRow> = transaction
+            .fetch_all(
+                Query::select()
+                    .columns([
+                        ProviderGenerationTypes::Name,
+                        ProviderGenerationTypes::Declaration,
+                        ProviderGenerationTypes::ReferencesJson,
+                    ])
+                    .from(ProviderGenerationTypes::Table)
+                    .and_where(
+                        Expr::col(ProviderGenerationTypes::ProviderGenerationId)
+                            .eq(generation_id.to_string()),
+                    )
+                    .and_where(
+                        Expr::col(ProviderGenerationTypes::Name)
+                            .is_in(chunk.iter().map(String::as_str)),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+        for row in rows {
+            let references = serde_json::from_str(&row.references_json).map_err(|_error| {
+                Error::CorruptData("shared type references are not valid JSON".to_string())
+            })?;
+            shared_types.push((
+                row.name,
+                crate::schema::SharedType {
+                    declaration: row.declaration,
+                    references,
+                },
+            ));
         }
-        pending = next;
     }
-    Ok(crate::schema::compose_declaration(
-        reached.values().map(String::as_str),
-        operation.typescript_declaration(),
-    ))
+    Ok(shared_types)
 }
 
 #[expect(

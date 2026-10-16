@@ -908,6 +908,13 @@ components:
         content:
           type: string
           format: binary
+        owner:
+          $ref: "#/components/schemas/User"
+    User:
+      type: object
+      properties:
+        name:
+          type: string
 "##,
     );
     assert_eq!(prepared.operations().len(), 2);
@@ -921,8 +928,15 @@ components:
         let declaration = prepared.authoring_declaration(operation);
         assert_strict_compiling_declaration(&declaration);
         assert!(
-            declaration
-                .contains(r#"type Attachment = ({ "content"?: BinaryValue; "size"?: number }"#),
+            declaration.contains(
+                r#"type Attachment = ({ "content"?: BinaryValue; "owner"?: User; "size"?: number }"#
+            ),
+            "{}: {declaration}",
+            operation.key().as_str()
+        );
+        // `User` is reached only through `Attachment`.
+        assert!(
+            !own.contains("User") && declaration.contains(r#"type User = ({ "name"?: string }"#),
             "{}: {declaration}",
             operation.key().as_str()
         );
@@ -940,6 +954,53 @@ components:
             operation.key().as_str()
         );
     }
+}
+
+/// The diagnostic of an Operation over the discovery limit states its size
+/// and the limit, and the size grows by exactly what the Operation adds.
+#[test]
+fn an_operation_over_the_discovery_limit_reports_its_size_and_the_limit() {
+    let sizes = |literals: usize| {
+        let values = (0..literals)
+            .map(|n| format!("{n:04}{}", "x".repeat(200)))
+            .collect::<Vec<_>>();
+        let document = serde_json::json!({
+            "openapi": "3.1.0",
+            "info": {"title": "Large", "version": "1"},
+            "servers": [{"url": "https://api.example.test"}],
+            "paths": {"/large": {"get": {
+                "operationId": "large",
+                "responses": {"200": {
+                    "description": "OK",
+                    "content": {"application/json": {"schema": {"type": "string", "enum": values}}}
+                }}
+            }}}
+        });
+        let prepared = ready(&document.to_string());
+        let operation = &prepared.operations()[0];
+        assert_eq!(operation.availability(), OperationAvailability::Unavailable);
+        let diagnostic = operation.diagnostic().expect("too large");
+        assert_eq!(
+            diagnostic.code(),
+            "operation_authoring_description_too_large"
+        );
+        let numbers = diagnostic
+            .message()
+            .split(|character: char| !character.is_ascii_digit())
+            .filter_map(|digits| digits.parse::<usize>().ok())
+            .collect::<Vec<_>>();
+        let [observed, limit] = numbers[..] else {
+            panic!("{}", diagnostic.message());
+        };
+        assert_eq!(
+            limit,
+            coral_catalog::OPERATION_AUTHORING_DESCRIPTION_MAX_BYTES
+        );
+        assert!(observed > limit, "{observed}");
+        observed
+    };
+    // One more 204-character literal adds its quotes and a " | " separator.
+    assert_eq!(sizes(1_401) - sizes(1_400), 204 + 2 + 3);
 }
 
 /// OpenAPI 3.0's `nullable` admits null. OpenAPI 3.1 gives it no meaning, so
