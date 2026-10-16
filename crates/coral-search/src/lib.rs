@@ -25,6 +25,8 @@
 //! - [`UniversalSearchModule::inspect_provider_readiness`] derives caller readiness
 //!   from the Operation eligibility rule discovery uses, without reading Saved
 //!   Functions or the index.
+//! - [`UniversalSearchModule::inspect_search_index_states`] reports whether
+//!   the index holds each Provider's active Generation, apart from readiness.
 //! - [`migrator`] adds the search index's portable tables to the shared chain,
 //!   and [`prepare_storage`] checks the database features and applies the
 //!   backend-specific search stream at boot.
@@ -81,7 +83,7 @@ pub use types::{
     SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX, SEARCH_EVIDENCE_PATH_MAX_BYTES,
     SEARCH_EVIDENCE_PATHS_MAX, SEARCH_PAGE_MAX_BYTES, SEARCH_QUERY_MAX_BYTES,
     SEARCH_RESULT_LIMIT_MAX, SavedFunctionAuthoringDescription, SearchCursor, SearchEvidence,
-    SearchHit, SearchInput, SearchLimit, SearchPage, SearchQuery, SearchRequest,
+    SearchHit, SearchIndexState, SearchInput, SearchLimit, SearchPage, SearchQuery, SearchRequest,
 };
 
 /// How many ranked Search Entities each retriever hands the engine. The

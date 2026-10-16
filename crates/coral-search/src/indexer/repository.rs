@@ -3,7 +3,7 @@
 //! Every function joins the caller's transaction; [`crate::SearchIndex`] owns
 //! when each transaction begins, commits, or rolls back.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use coral_catalog::{OperationKey, ProviderGenerationId};
 use coral_db::{DatabaseSystem, Error, Transaction};
@@ -16,7 +16,7 @@ use sea_query::{
 };
 
 use super::IndexError;
-use crate::CallPath;
+use crate::{CallPath, SearchIndexState};
 
 /// The `search_entities` table and its columns, for sea-query. Each row is
 /// one Search Entity that indexed: an Operation or a Saved Function.
@@ -687,6 +687,40 @@ pub(super) async fn recorded_generations(
                 })
             },
         )
+        .collect()
+}
+
+/// Reads the outcome each of a Workspace's Generation state rows records,
+/// keyed by Generation. A Generation no attempt has reached has no entry.
+pub(crate) async fn generation_outcomes_in_workspace(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+) -> Result<HashMap<ProviderGenerationId, SearchIndexState>, crate::Error> {
+    let rows: Vec<(String, String)> = transaction
+        .fetch_all(
+            Query::select()
+                .columns([
+                    SearchIndexStates::ProviderGenerationId,
+                    SearchIndexStates::State,
+                ])
+                .from(SearchIndexStates::Table)
+                .and_where(Expr::col(SearchIndexStates::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(Expr::col(SearchIndexStates::Kind).eq(OPERATION))
+                .to_owned(),
+        )
+        .await?;
+    rows.into_iter()
+        .map(|(generation_id, state)| {
+            let generation_id = ProviderGenerationId::parse(&generation_id)
+                .map_err(|_error| crate::Error::ServiceUnavailable)?;
+            // The state check admits only `complete` and `failed`.
+            let state = if state == COMPLETE {
+                SearchIndexState::Indexed
+            } else {
+                SearchIndexState::Failed
+            };
+            Ok((generation_id, state))
+        })
         .collect()
 }
 

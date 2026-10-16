@@ -1025,6 +1025,78 @@ async fn an_inert_index_writes_nothing_when_notified() {
     assert_eq!(world.states().await, []);
 }
 
+#[tokio::test]
+async fn search_index_states_follow_each_providers_active_generation() {
+    use crate::SearchIndexState::{Failed, Indexed, Pending};
+
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    assert_eq!(
+        world.search_index_states(None).await,
+        BTreeMap::from([(world.tracer.clone(), Pending), (ledger.clone(), Pending)]),
+        "a Generation no attempt has reached"
+    );
+
+    world.reject_complete_states().await;
+    world.index.reconcile().await;
+    world.allow_complete_states().await;
+    assert_eq!(
+        world.search_index_states(None).await,
+        BTreeMap::from([(world.tracer.clone(), Failed), (ledger.clone(), Failed)])
+    );
+
+    notify(&world.index, &world.stored_entries(&world.tracer).await);
+    world.index.settled().await;
+    assert_eq!(
+        world.search_index_states(None).await,
+        BTreeMap::from([(world.tracer.clone(), Indexed), (ledger.clone(), Failed)])
+    );
+
+    world
+        .modules
+        .regenerate_workspace_provider(
+            &change(world.user.clone(), 60, '6'),
+            &world.workspace,
+            &ledger,
+            &serde_json::from_str(&LEDGER.replace("List ledger entries", "List every entry"))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(
+        world.search_index_states(None).await,
+        BTreeMap::from([(world.tracer.clone(), Indexed), (ledger.clone(), Pending)]),
+        "a superseded Generation's failure is not the Provider's state"
+    );
+    assert_eq!(
+        world.search_index_states(Some(&world.tracer)).await,
+        BTreeMap::from([(world.tracer.clone(), Indexed)])
+    );
+}
+
+#[tokio::test]
+async fn search_index_states_require_workspace_inspection() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let outsider = organization_user(world.modules.search.database.clone(), "user:outsider").await;
+
+    let denied = world
+        .modules
+        .search
+        .inspect_search_index_states(&outsider, &world.workspace, None)
+        .await;
+
+    assert!(
+        matches!(
+            denied,
+            Err(crate::Error::Workspace(
+                coral_workspace::Error::WorkspaceNotFound
+            ))
+        ),
+        "{denied:?}"
+    );
+}
+
 /// Notifies the index that the Generation the entries name became active, as
 /// publication does after its commit: with the ids alone.
 fn notify(index: &SearchIndex, entries: &GenerationEntries) {
@@ -1106,6 +1178,18 @@ impl World {
             .map(|active| active.provider().clone())
             .find(|candidate| candidate.id() == provider)
             .expect("active Provider")
+    }
+
+    /// Each Provider's search index state, as the owner inspects it.
+    async fn search_index_states(
+        &self,
+        provider: Option<&coral_provider::ProviderId>,
+    ) -> BTreeMap<coral_provider::ProviderId, crate::SearchIndexState> {
+        self.modules
+            .search
+            .inspect_search_index_states(&self.user, &self.workspace, provider)
+            .await
+            .expect("inspect the search index states")
     }
 
     /// Publishes a second Provider, "ledger", from [`LEDGER`].

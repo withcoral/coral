@@ -362,6 +362,10 @@ failed, how many results the kind returned, and whether more remain. A kind that
 skipped, not incomplete. A page states coverage only for a kind whose results may be missing. Coverage describes one
 page at the time of the search, not the current catalog.
 
+**Search Index State**: Whether Universal Search has indexed a Provider's active Generation: pending until the first
+attempt, then indexed or failed. A superseded Generation's state is never the Provider's. Reef shows a failure on the
+Provider and its Operations. The state never changes what a caller may invoke. _Avoid_: search readiness, index health
+
 **Description Snippet**: The bounded window of an Entity's description that a Search Hit shows: around the first
 matched query term when the description matched, otherwise its beginning.
 

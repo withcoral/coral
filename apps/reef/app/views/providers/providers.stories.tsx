@@ -86,6 +86,7 @@ const github: ProviderView = {
   account: 'Individual accounts',
   blockers: [],
   personalAccountAction: null,
+  searchIndexFailed: false,
   readyCount: 3,
   totalCount: 4,
   etag: 'prov-etag',
@@ -100,6 +101,7 @@ const weather: ProviderView = {
   account: 'No account',
   blockers: [],
   personalAccountAction: null,
+  searchIndexFailed: false,
   readyCount: 1,
   totalCount: 1,
   etag: 'prov-etag-2',
@@ -331,6 +333,28 @@ export const TreeUnavailableOperationSelected: Story = {
       selectedOperation="issues.close"
     />
   ),
+}
+// Search failed to index GitHub's active Generation. Its heading and its
+// operations say so; Weather, which search indexed, says nothing.
+export const TreeSearchIndexFailed: Story = {
+  render: () => (
+    <WorkspaceProvidersPage
+      {...treeProps}
+      providers={[{ ...github, searchIndexFailed: true }, weather]}
+      selectedProvider="prov-github"
+      selectedOperation="issues.create"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getAllByText('Not in search', { exact: true })).toHaveLength(1)
+    const drawer = within(
+      await within(canvasElement.ownerDocument.body).findByRole('dialog', {
+        name: 'issues.create',
+      }),
+    )
+    await expect(drawer.getByText(/Search cannot find this operation\./)).toBeVisible()
+  },
 }
 export const TreeAsMember: Story = {
   render: () => (

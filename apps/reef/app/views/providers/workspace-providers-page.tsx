@@ -1096,6 +1096,14 @@ const TableSections = memo(function TableSections({
               <Typography.BodyStrong as="span">
                 {providerLabel(section.provider)}
               </Typography.BodyStrong>
+              {section.provider.searchIndexFailed && (
+                <Tooltip content="Search cannot find these operations. Agents can still call them.">
+                  <Pill size="small" color="amber">
+                    <Icon name="SearchX" size="14" color="inherit" />
+                    Not in search
+                  </Pill>
+                </Tooltip>
+              )}
             </>
           }
           members={section.operations}
@@ -1766,6 +1774,11 @@ function OperationDetailsDrawer({
                   />
                 )}
               </div>
+              {provider?.searchIndexFailed && (
+                <Banner variant="info" title="Not in search">
+                  Search cannot find this operation. Agents can still call it.
+                </Banner>
+              )}
               {!operation.available && (
                 <Banner variant="warning" title="Unavailable">
                   {operation.reasons.join(' ') || 'Coral did not provide a reason.'}

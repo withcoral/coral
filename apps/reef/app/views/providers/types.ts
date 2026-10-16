@@ -85,6 +85,8 @@ export interface ProviderView {
   blockers: string[]
   /** What you must do with your own account before you call the provider, if anything. */
   personalAccountAction: string | null
+  /** Search could not index the provider's operations. Calls still work. */
+  searchIndexFailed: boolean
   readyCount: number
   totalCount: number
   etag: string

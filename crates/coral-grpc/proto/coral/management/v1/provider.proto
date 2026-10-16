@@ -98,6 +98,19 @@ enum ProviderBlocker {
   PROVIDER_BLOCKER_ACCOUNT_SETTING_INCOMPATIBLE = 7;
 }
 
+// Whether search has indexed the Provider's active Generation. Information
+// only: it never changes what a caller may invoke.
+enum SearchIndexState {
+  // Not supplied, not recognized by this client, or not read.
+  SEARCH_INDEX_STATE_UNSPECIFIED = 0;
+  // No indexing attempt has reached the active Generation yet.
+  SEARCH_INDEX_STATE_PENDING = 1;
+  // Search holds the active Generation's Operations.
+  SEARCH_INDEX_STATE_INDEXED = 2;
+  // The last attempt failed: search cannot find the Operations until a retry succeeds.
+  SEARCH_INDEX_STATE_FAILED = 3;
+}
+
 // One Provider at workspaces/{workspace}/providers/{provider}.
 message Provider {
   // Canonical resource name containing the immutable Workspace and Provider IDs.
@@ -116,6 +129,8 @@ message Provider {
   int64 account_setting_version = 8;
   // Derived configuration and inspected-Agent blockers from one read snapshot.
   repeated ProviderBlocker blockers = 9;
+  // Search state of the active Generation, read apart from the blockers.
+  SearchIndexState search_index = 10;
 }
 
 // Lists Providers owned by one authorized Workspace.

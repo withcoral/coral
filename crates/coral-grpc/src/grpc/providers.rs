@@ -11,6 +11,7 @@ use coral_provider::{
     self as domain, ManagementRequestId, ProviderId, ProviderSetupId, WorkspaceId,
 };
 use coral_workspace::AuthenticatedUser;
+use std::collections::BTreeMap;
 use tonic::{Request, Response, Status};
 use wire::create_provider_setup_request::Input;
 mod configuration;
@@ -43,6 +44,7 @@ pub(super) fn provider_name(provider: &domain::Provider) -> String {
 pub(super) fn provider_view(
     provider: &domain::Provider,
     blockers: &[domain::access::ProviderBlocker],
+    search_index: Option<coral_search::SearchIndexState>,
 ) -> wire::Provider {
     let kind = match provider.credential_route() {
         CredentialRoute::None => wire::credential_route::Kind::None,
@@ -87,6 +89,13 @@ pub(super) fn provider_view(
                 .into()
             })
             .collect(),
+        search_index: match search_index {
+            None => wire::SearchIndexState::Unspecified,
+            Some(coral_search::SearchIndexState::Pending) => wire::SearchIndexState::Pending,
+            Some(coral_search::SearchIndexState::Indexed) => wire::SearchIndexState::Indexed,
+            Some(coral_search::SearchIndexState::Failed) => wire::SearchIndexState::Failed,
+        }
+        .into(),
     }
 }
 
@@ -793,11 +802,13 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
     ) -> Result<Response<wire::ListProvidersResponse>, Status> {
         let user = self.management_user(&request).await?;
         let req = request.into_inner();
+        let workspace = scope(&req.parent)?;
         let inspections = self
             .provider_readiness
-            .inspect_provider_readiness(&user, &scope(&req.parent)?)
+            .inspect_provider_readiness(&user, &workspace)
             .await
             .map_err(readiness_error)?;
+        let search_index = self.search_index_states(&user, &workspace, None).await;
         let (inspections, next_page_token) = page(
             inspections,
             req.page_size,
@@ -808,7 +819,13 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         Ok(Response::new(wire::ListProvidersResponse {
             providers: inspections
                 .iter()
-                .map(|inspection| provider_view(&inspection.provider, &inspection.blockers))
+                .map(|inspection| {
+                    provider_view(
+                        &inspection.provider,
+                        &inspection.blockers,
+                        search_index.get(inspection.provider.id()).copied(),
+                    )
+                })
                 .collect(),
             next_page_token,
         }))
@@ -995,7 +1012,29 @@ impl GrpcServices {
             .inspect_provider_readiness_for(actor, workspace, id)
             .await
             .map_err(readiness_error)?;
-        Ok(provider_view(&inspection.provider, &inspection.blockers))
+        let search_index = self.search_index_states(actor, workspace, Some(id)).await;
+        Ok(provider_view(
+            &inspection.provider,
+            &inspection.blockers,
+            search_index.get(id).copied(),
+        ))
+    }
+
+    /// Search state is information only (ADR 0017): a failed read leaves the
+    /// state unspecified rather than failing the Provider read.
+    async fn search_index_states(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace: &WorkspaceId,
+        provider: Option<&ProviderId>,
+    ) -> BTreeMap<ProviderId, coral_search::SearchIndexState> {
+        self.provider_readiness
+            .inspect_search_index_states(actor, workspace, provider)
+            .await
+            .unwrap_or_else(|failure| {
+                tracing::warn!(error = %failure, "failed to read Provider search index states");
+                BTreeMap::new()
+            })
     }
 }
 

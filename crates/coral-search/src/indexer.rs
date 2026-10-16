@@ -9,6 +9,8 @@ pub(crate) mod functions;
 pub(crate) mod operations;
 mod repository;
 
+pub(crate) use repository::generation_outcomes_in_workspace;
+
 #[cfg(any(test, feature = "test-fixtures"))]
 pub(crate) use repository::{generation_states_in_workspace, operation_rows_in_workspace};
 

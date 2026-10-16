@@ -34,7 +34,7 @@ pub use search::{
     ActiveGeneration, ActiveProvider, GenerationEntries, HydratedOperation, LoadedGenerations,
     OperationEntry, active_generations_in_transaction, active_providers_in_transaction,
     hydrate_operation_in_transaction, operation_material_by_relative_path_in_transaction,
-    prepare_active_generation_entries_in_transaction,
+    prepare_active_generation_entries_in_transaction, workspace_active_generations_in_transaction,
 };
 #[cfg(test)]
 mod search_tests;

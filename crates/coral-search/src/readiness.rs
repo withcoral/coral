@@ -1,12 +1,12 @@
 //! Focused inspection shares Operation eligibility with discovery, not its mixed
 //! candidate set. Each interface owns one snapshot and its exact inspection scope.
-use crate::{Error, ProviderId, UniversalSearchModule, eligibility};
+use crate::{Error, ProviderId, SearchIndexState, UniversalSearchModule, eligibility, indexer};
 use coral_db::Transaction;
 use coral_provider::access::{AgentProviderInspection, ProviderReadiness};
 use coral_workspace::{
     AuthenticatedUser, PrincipalId, WorkspaceAction, WorkspaceId, WorkspaceState,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 impl UniversalSearchModule {
     /// Inspects the User's Providers in one consistent snapshot, without Saved
@@ -77,6 +77,42 @@ impl UniversalSearchModule {
         }
         tx.rollback().await?;
         Ok(inspections)
+    }
+
+    /// Reports whether search has indexed each Provider's active Generation,
+    /// or only the one Provider the filter names. A superseded Generation's
+    /// state is never a Provider's. Information only: the state never changes
+    /// what a caller may invoke (ADR 0017), so readiness reads it separately.
+    /// # Errors
+    /// Requires Workspace inspection authority; archived Workspaces remain inspectable.
+    pub async fn inspect_search_index_states(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace: &WorkspaceId,
+        provider_filter: Option<&ProviderId>,
+    ) -> Result<BTreeMap<ProviderId, SearchIndexState>, Error> {
+        let mut tx = self.database.begin_read_snapshot().await?;
+        self.workspaces
+            .check_in_transaction(&mut tx, actor, workspace, WorkspaceAction::Inspect)
+            .await?;
+        let generations = coral_provider::workspace_active_generations_in_transaction(
+            &mut tx,
+            workspace,
+            provider_filter,
+        )
+        .await?;
+        let outcomes = indexer::generation_outcomes_in_workspace(&mut tx, workspace).await?;
+        tx.rollback().await?;
+        Ok(generations
+            .into_iter()
+            .map(|active| {
+                let state = outcomes
+                    .get(active.generation_id())
+                    .copied()
+                    .unwrap_or(SearchIndexState::Pending);
+                (active.provider_id().clone(), state)
+            })
+            .collect())
     }
 
     async fn provider_readiness(
