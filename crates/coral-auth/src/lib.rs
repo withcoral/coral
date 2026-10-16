@@ -59,11 +59,11 @@ fn external_user_id(value: &str) -> Result<UserId, ()> {
     Ok(id)
 }
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+static MIGRATOR: coral_db::MigrationPlan = coral_db::migration_plan!();
 
 /// Returns the authentication Module's domain-owned migration plan.
 #[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
+pub const fn migrator() -> &'static coral_db::MigrationPlan {
     &MIGRATOR
 }
 
@@ -223,7 +223,7 @@ mod tests {
     use super::{LoginProvisioning, UserDirectory, VerifiedOidcLogin};
     use coral_test_support::TestDatabase;
 
-    fn test_migrator() -> sqlx::migrate::Migrator {
+    fn test_migrator() -> coral_test_support::MigrationPlan {
         coral_test_support::combined_migrator(&[coral_workspace::migrator(), super::migrator()])
     }
 

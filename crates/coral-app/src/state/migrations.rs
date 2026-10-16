@@ -1,29 +1,36 @@
 //! Application composition of the marker and domain-owned migration plans.
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+use coral_db::{DatabaseSystem, MigrationPlan};
+use sqlx::migrate::{Migration, Migrator};
+
+static MIGRATOR: MigrationPlan = coral_db::migration_plan!();
 
 /// Applies every current domain-owned migration as one validated plan.
 ///
 /// The app contributes only the fresh-state marker. Domain plans live beside
-/// their owning Modules and use globally unique versions because they share one
-/// `SQLx` ledger. Combining them before execution preserves strict
-/// missing-migration validation on later startups.
+/// their owning Modules and use globally unique versions because they share
+/// one `SQLx` ledger per database. Combining them before execution preserves
+/// strict missing-migration validation on later startups.
 pub(crate) async fn migrate_current(database: &coral_db::Database) -> Result<(), coral_db::Error> {
     database.migrate(&current_migrator()).await
 }
 
 /// The app marker and every domain plan, combined into one plan ordered by version.
-pub(crate) fn current_migrator() -> sqlx::migrate::Migrator {
-    sqlx::migrate::Migrator::with_migrations(
-        current_migrations()
-            .into_iter()
-            .cloned()
-            .collect::<Vec<_>>(),
+pub(crate) fn current_migrator() -> MigrationPlan {
+    let combined = |system| {
+        Migrator::with_migrations(current_migrations(system).into_iter().cloned().collect())
+    };
+    MigrationPlan::new(
+        combined(DatabaseSystem::Postgres),
+        combined(DatabaseSystem::Sqlite),
     )
 }
 
-pub(super) fn rows_match_known_migration_prefix(rows: &[(i64, Vec<u8>, bool)]) -> bool {
-    let migrations = current_migrations();
+pub(super) fn rows_match_known_migration_prefix(
+    rows: &[(i64, Vec<u8>, bool)],
+    system: DatabaseSystem,
+) -> bool {
+    let migrations = current_migrations(system);
     !rows.is_empty()
         && rows.len() <= migrations.len()
         && rows
@@ -36,19 +43,26 @@ pub(super) fn rows_match_known_migration_prefix(rows: &[(i64, Vec<u8>, bool)]) -
             })
 }
 
-fn current_migrations() -> Vec<&'static sqlx::migrate::Migration> {
-    let mut migrations = MIGRATOR
-        .migrations
-        .iter()
-        .chain(coral_auth::migrator().migrations.iter())
-        .chain(coral_workspace::migrator().migrations.iter())
-        .chain(coral_task::migrator().migrations.iter())
-        .chain(coral_catalog::migrator().migrations.iter())
-        .chain(coral_provider::migrator().migrations.iter())
-        .chain(coral_policy::migrator().migrations.iter())
-        .chain(coral_run::migrator().migrations.iter())
-        .chain(coral_functions::migrator().migrations.iter())
-        .chain(coral_search::migrator().migrations.iter())
+/// The app marker and every domain plan.
+fn plans() -> [&'static MigrationPlan; 10] {
+    [
+        &MIGRATOR,
+        coral_auth::migrator(),
+        coral_workspace::migrator(),
+        coral_task::migrator(),
+        coral_catalog::migrator(),
+        coral_provider::migrator(),
+        coral_policy::migrator(),
+        coral_run::migrator(),
+        coral_functions::migrator(),
+        coral_search::migrator(),
+    ]
+}
+
+fn current_migrations(system: DatabaseSystem) -> Vec<&'static Migration> {
+    let mut migrations = plans()
+        .into_iter()
+        .flat_map(|plan| plan.for_system(system).migrations.iter())
         .collect::<Vec<_>>();
     migrations.sort_by_key(|migration| migration.version);
     migrations
@@ -56,35 +70,41 @@ fn current_migrations() -> Vec<&'static sqlx::migrate::Migration> {
 
 #[cfg(test)]
 mod tests {
+    use coral_db::DatabaseSystem;
+
     use super::{current_migrations, rows_match_known_migration_prefix};
+
+    const SYSTEMS: [DatabaseSystem; 2] = [DatabaseSystem::Postgres, DatabaseSystem::Sqlite];
 
     #[test]
     fn migration_rows_allow_pending_suffix_and_reject_drift() {
-        let current_rows = current_rows();
-        assert!(rows_match_known_migration_prefix(&current_rows));
+        for system in SYSTEMS {
+            let current_rows = current_rows(system);
+            assert!(rows_match_known_migration_prefix(&current_rows, system));
 
-        let mut pending_suffix = current_rows.clone();
-        pending_suffix.pop();
-        assert!(rows_match_known_migration_prefix(&pending_suffix));
-        assert!(!rows_match_known_migration_prefix(&[]));
+            let mut pending_suffix = current_rows.clone();
+            pending_suffix.pop();
+            assert!(rows_match_known_migration_prefix(&pending_suffix, system));
+            assert!(!rows_match_known_migration_prefix(&[], system));
 
-        let mut missing_first = current_rows.clone();
-        missing_first.remove(0);
-        assert!(!rows_match_known_migration_prefix(&missing_first));
+            let mut missing_first = current_rows.clone();
+            missing_first.remove(0);
+            assert!(!rows_match_known_migration_prefix(&missing_first, system));
 
-        let mut failed_row = current_rows.clone();
-        failed_row
-            .first_mut()
-            .expect("at least one embedded migration")
-            .2 = false;
-        assert!(!rows_match_known_migration_prefix(&failed_row));
+            let mut failed_row = current_rows.clone();
+            failed_row
+                .first_mut()
+                .expect("at least one embedded migration")
+                .2 = false;
+            assert!(!rows_match_known_migration_prefix(&failed_row, system));
 
-        let mut bad_checksum = current_rows;
-        bad_checksum
-            .first_mut()
-            .expect("at least one embedded migration")
-            .1 = b"not the embedded checksum".to_vec();
-        assert!(!rows_match_known_migration_prefix(&bad_checksum));
+            let mut bad_checksum = current_rows;
+            bad_checksum
+                .first_mut()
+                .expect("at least one embedded migration")
+                .1 = b"not the embedded checksum".to_vec();
+            assert!(!rows_match_known_migration_prefix(&bad_checksum, system));
+        }
     }
 
     #[tokio::test]
@@ -100,17 +120,19 @@ mod tests {
 
     #[test]
     fn domain_migration_versions_are_globally_unique() {
-        let migrations = current_migrations();
-        for (left, right) in migrations.iter().zip(migrations.iter().skip(1)) {
-            assert_ne!(
-                left.version, right.version,
-                "domain migration versions share one SQLx ledger"
-            );
+        for system in SYSTEMS {
+            let migrations = current_migrations(system);
+            for (left, right) in migrations.iter().zip(migrations.iter().skip(1)) {
+                assert_ne!(
+                    left.version, right.version,
+                    "domain migration versions share one SQLx ledger"
+                );
+            }
         }
     }
 
-    fn current_rows() -> Vec<(i64, Vec<u8>, bool)> {
-        current_migrations()
+    fn current_rows(system: DatabaseSystem) -> Vec<(i64, Vec<u8>, bool)> {
+        current_migrations(system)
             .into_iter()
             .map(|migration| {
                 (

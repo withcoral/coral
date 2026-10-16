@@ -305,10 +305,12 @@ mod tests {
 
     /// A database with no schema, standing in for one Coral cannot write.
     async fn unmigrated_database() -> (Arc<Database>, TestDatabase) {
-        database_with(&sqlx::migrate::Migrator::with_migrations(Vec::new())).await
+        database_with(&coral_test_support::combined_migrator(&[])).await
     }
 
-    async fn database_with(migrator: &sqlx::migrate::Migrator) -> (Arc<Database>, TestDatabase) {
+    async fn database_with(
+        migrator: &coral_test_support::MigrationPlan,
+    ) -> (Arc<Database>, TestDatabase) {
         let fixture = TestDatabase::new(migrator).await.expect("test database");
         (fixture.database(), fixture)
     }

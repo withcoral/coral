@@ -1,6 +1,6 @@
 //! Universal Search's own storage at boot.
 //!
-//! The shared migration chain creates the portable search tables. Each backend
+//! Each database's migration chain creates the same search tables. Each backend
 //! then needs text-search objects of its own: generated vectors, trigram
 //! indexes and statistics tables on Postgres, an FTS5 table and its triggers on
 //! `SQLite`. They live in one search-owned stream per backend with its own
@@ -67,7 +67,7 @@ pub enum StorageError {
 /// Checks the database features Universal Search needs, then brings the
 /// backend's search stream up to this binary's version.
 ///
-/// Process bootstrap calls this once, right after the shared migration chain,
+/// Process bootstrap calls this once, right after the migration chain,
 /// before any Module serves. Each missing step runs once, in its own
 /// transaction together with its ledger row: under a transaction-scoped
 /// advisory lock on Postgres, in an immediate transaction on `SQLite`.

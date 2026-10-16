@@ -835,7 +835,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "sqlx",
  "thiserror",
  "tokio",
  "tower",

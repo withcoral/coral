@@ -50,17 +50,24 @@
 - For Workspace-owned data, every externally influenced read or write must
   match both the Workspace and entity identity, even when the entity ID is
   globally unique.
-- Each domain crate owns its tables' migrations in `crates/<crate>/migrations`.
-  `crates/coral-app/src/state/migrations.rs` merges them into the one shared
-  chain.
+- Each domain crate owns its tables' migrations, one folder per database:
+  `crates/<crate>/migrations/postgres` and `crates/<crate>/migrations/sqlite`.
+  Give a migration the same file name in both, and the same SQL unless the
+  databases need different statements.
+  `crates/coral-app/src/state/migrations.rs` merges each database's folders
+  into that database's chain.
 - Change a schema only by adding a migration. Never edit, rename, or delete a
   migration or search stream step that is on `main`: databases created from an
   earlier `main` must keep booting. `scripts/check-migrations.sh` checks this.
   Keep the fence that rejects state written by Coral 0.x.
-- Keep schemas portable across SQLite and Postgres and fail on schema drift;
-  do not use `IF NOT EXISTS` to hide unexpected state.
-- The search-owned backend streams in `crates/coral-search/streams` are the one
-  sanctioned exception to the single shared migration chain. Postgres and
+- Keep both databases' schemas equivalent and fail on schema drift; do not use
+  `IF NOT EXISTS` to hide unexpected state.
+- SQLite cannot alter a constraint, so its migration rebuilds the table:
+  create the new table, copy every row, drop the old table, rename the new one.
+  `Database::migrate` runs SQLite migrations with foreign keys off, so the drop
+  deletes no referencing rows, and checks every foreign key afterward.
+- The search-owned backend streams in `crates/coral-search/streams` keep their
+  own ledger beside the migration chains. Postgres and
   SQLite retrieve and rank search results with different features: generated
   `tsvector` columns, `pg_trgm` indexes and statistics tables on Postgres, and
   an FTS5 table that triggers fill on SQLite. No one backend-agnostic set of
