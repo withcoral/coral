@@ -224,7 +224,7 @@ _Avoid_: Source, Upstream Service, Provider Definition, provider account
 _In Reef_: "provider"; revoke and restore are "Disable" and "Enable"; hard deletion is "Remove"
 
 **Built-in Provider**: The one Provider in every Workspace whose Operation catalog Coral itself defines and whose
-Operations Coral itself performs, with no upstream dispatch. Its Call Root is `coral.admin`. It shares search, describe,
+Operations Coral itself performs, with no upstream dispatch. Its Call Root is `coral.workspace`. It shares search, describe,
 Operation Access State, Approval Requests, and Operation Invocation records with every other Provider. Only a User with
 effective Workspace Owner authority can discover or invoke its Operations; members and Agent Principals cannot. An
 Owner can disable and enable it and set its Operation policy, but nobody can rename, reconfigure, or remove it, and it
@@ -236,8 +236,8 @@ _In Reef_: "Coral", with the Coral logo, listed first
 name Reef shows and accepts. It is one segment of the Provider's Call Root. _Avoid_: Call Root, display name
 
 **Provider Call Root**: The complete, immutable, Workspace-unique JavaScript path under which one Provider's Operations
-are called: `coral.providers.<provider-namespace>` for an Owner-created Provider and `coral.admin` for the Built-in
-Provider. Uniqueness applies to the Call Root, so a Provider named `admin` (`coral.providers.admin`) never clashes with
+are called: `coral.providers.<provider-namespace>` for an Owner-created Provider and `coral.workspace` for the Built-in
+Provider. Uniqueness applies to the Call Root, so a Provider named `workspace` (`coral.providers.workspace`) never clashes with
 the Built-in Provider. _Avoid_: namespace, prefix
 
 **Operation**: A single callable action exposed by an Upstream Service, or by Coral for the Built-in Provider, through a
@@ -636,7 +636,7 @@ and it creates no separate durable Run or Invocation record. Its type informatio
 runtime TypeScript semantics. _Avoid_: UDF, Operation, tool, Saved Function JSON Schema, dynamic function lookup
 
 **Coral Program**: Principal-authored TypeScript lowered to JavaScript and executed by a Coral-owned, secret-free
-runtime against schema-typed Provider Operations under their Call Roots (`coral.providers` and `coral.admin`) and Saved
+runtime against schema-typed Provider Operations under their Call Roots (`coral.providers` and `coral.workspace`) and Saved
 Functions under `coral.functions`.
 JavaScript remains valid source, and type information guides authoring without gating admission. It receives Operation
 Results, catchable Operation Errors, `coral.emit`, and a bounded global `console`; Run cancellation and deadlines remain
