@@ -197,7 +197,8 @@ export const lightThemeValues = {
     },
   },
   sidebar: {
-    badge: { background: paletteLight.Red['11'], content: staticUtilities.white },
+    // The primary button's colors: a pending action is your next step, not an error.
+    badge: { background: paletteLight.CoralGreen['09'], content: paletteLight.CoralGreen['12'] },
     button: {
       hover: paletteLight.GrayAlpha['02'],
       selected: paletteLight.GrayAlpha['03'],

@@ -36,6 +36,10 @@ const POSTGRES_STREAM: Stream = Stream {
             version: 2,
             script: include_str!("../../streams/postgres/0002_split_camel_case_names.sql"),
         },
+        StreamStep {
+            version: 3,
+            script: include_str!("../../streams/postgres/0003_statistics_watermark.sql"),
+        },
     ],
 };
 
