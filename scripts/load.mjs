@@ -43,6 +43,7 @@ import { execFile, spawn } from 'node:child_process'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { LocalPostgres } from './postgres.ts'
 
@@ -51,7 +52,7 @@ const env = { ...process.env }
 const CELLS = ['fanout', 'emit', 'concurrent']
 const LARGE_EMIT_BYTES = 64 * 1024
 
-async function parseArgs(argv) {
+export async function parseArgs(argv) {
   const options = {
     backend: 'postgres',
     cells: CELLS,
@@ -75,7 +76,7 @@ async function parseArgs(argv) {
     }
     /** A non-negative integer, or at least `min`. */
     const integer = (value, min = 0) => {
-      const n = Number(value)
+      const n = value.trim() === '' ? Number.NaN : Number(value)
       if (!Number.isInteger(n) || n < min) throw new Error(`${flag} needs an integer of at least ${min}, got ${JSON.stringify(value)}`)
       return n
     }
@@ -143,7 +144,7 @@ async function parseArgs(argv) {
 }
 
 /** A toxiproxy container in front of the local Postgres, owned by this script. */
-class Toxiproxy {
+export class Toxiproxy {
   constructor(env) {
     this.env = env
     this.container = env.LOAD_TOXIPROXY_CONTAINER || 'coral-load-toxiproxy'
@@ -268,18 +269,9 @@ function runTest(test, cellEnv, release) {
   })
 }
 
-// An interrupted run still closes the database and clears the proxy latency:
-// stop the cell, remember the signal, and let the main flow reach `finally`.
-for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.once(signal, () => {
-    interrupted = signal
-    console.error(`\n${signal}: stopping the current cell and cleaning up`)
-    currentCell?.kill('SIGTERM')
-  })
-}
 
 /** The cells one latency step runs: test name, report file stem, knobs, and a line for the log. */
-function plan(options, latency) {
+export function plan(options, latency) {
   const cells = []
   for (const cell of options.cells) {
     if (cell === 'fanout') {
@@ -446,7 +438,7 @@ function summarizeConcurrent(reports) {
   return table(header, rows)
 }
 
-function summarize(reports, options) {
+export function summarize(reports, options) {
   const sections = [
     ['Fan-out', 'fanout', summarizeFanOut],
     ['Emit', 'emit', summarizeEmit],
@@ -465,75 +457,89 @@ function summarize(reports, options) {
   return parts.join('\n')
 }
 
-let options
-try {
-  options = await parseArgs(process.argv.slice(2))
-} catch (error) {
-  console.error(`${error.message}\nSee node scripts/load.mjs --help`)
-  process.exit(2)
-}
-const stamp = new Date().toISOString().replaceAll(/[:.]/g, '-')
-const out = resolve(options.out || `target/load/${stamp}`)
-await mkdir(out, { recursive: true })
-
-let database
-let toxiproxy
-const reports = []
-try {
-  if (options.backend === 'postgres') {
-    const postgres = new LocalPostgres(env)
-    database = await postgres.provision(env.CORAL_TEST_POSTGRES_URL)
-    if (options.latency.some((ms) => ms > 0)) {
-      toxiproxy = new Toxiproxy(env)
-      await toxiproxy.start(database.url)
-    }
-  }
-  for (const latency of options.latency) {
-    if (toxiproxy) await toxiproxy.setLatency(latency)
-    const label = [options.label, latency > 0 ? `+${latency}ms` : ''].filter(Boolean).join(' ')
-    for (const cell of plan(options, latency)) {
-      const report = `${out}/${cell.stem}.json`
-      const cellEnv = {
-        ...env,
-        ...cell.knobs,
-        CORAL_LOAD_REPORT: report,
-        CORAL_LOAD_LABEL: label,
-      }
-      if (options.backend === 'postgres') {
-        cellEnv.CORAL_TEST_DATABASE = 'postgres'
-        cellEnv.CORAL_TEST_POSTGRES_URL = latency > 0 ? toxiproxy.url(database.url) : database.url
-        cellEnv.CORAL_LOAD_SAMPLER_URL = database.url
-      } else {
-        delete cellEnv.CORAL_TEST_DATABASE
-        delete cellEnv.CORAL_TEST_POSTGRES_URL
-        delete cellEnv.CORAL_LOAD_SAMPLER_URL
-      }
-      console.error(`\n### cell: ${options.backend}, ${cell.title}, +${latency} ms\n`)
-      const code = await runTest(cell.test, cellEnv, options.release)
-      if (interrupted) throw new Error(`interrupted by ${interrupted} during cell ${cell.stem}`)
-      if (code !== 0) throw new Error(`load cell ${cell.stem} failed with exit code ${code}`)
-      reports.push(JSON.parse(await readFile(report, 'utf8')))
-    }
-  }
-  const summary = summarize(reports, options)
-  await writeFile(`${out}/summary.md`, `${summary}\n`)
-  await writeFile(`${out}/summary.json`, JSON.stringify(reports, null, 2))
-  console.log(`\n${summary}\n\nreports: ${out}`)
-} catch (error) {
-  console.error(error.message)
-  process.exitCode = 1
-} finally {
-  if (toxiproxy) {
-    try {
-      await toxiproxy.setLatency(0)
-    } catch {
-      /* the container may already be gone */
-    }
-  }
+/** Runs the matrix for the given argv; the module's exports stay importable by tests. */
+export async function main(argv) {
+  let options
   try {
-    await database?.close()
+    options = await parseArgs(argv)
+  } catch (error) {
+    console.error(`${error.message}\nSee node scripts/load.mjs --help`)
+    process.exit(2)
+  }
+  // An interrupted run still closes the database and clears the proxy latency:
+  // stop the cell, remember the signal, and let the flow below reach `finally`.
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.once(signal, () => {
+      interrupted = signal
+      console.error(`\n${signal}: stopping the current cell and cleaning up`)
+      currentCell?.kill('SIGTERM')
+    })
+  }
+  const stamp = new Date().toISOString().replaceAll(/[:.]/g, '-')
+  const out = resolve(options.out || `target/load/${stamp}`)
+  await mkdir(out, { recursive: true })
+
+  let database
+  let toxiproxy
+  const reports = []
+  try {
+    if (options.backend === 'postgres') {
+      const postgres = new LocalPostgres(env)
+      database = await postgres.provision(env.CORAL_TEST_POSTGRES_URL)
+      if (options.latency.some((ms) => ms > 0)) {
+        toxiproxy = new Toxiproxy(env)
+        await toxiproxy.start(database.url)
+      }
+    }
+    for (const latency of options.latency) {
+      if (toxiproxy) await toxiproxy.setLatency(latency)
+      const label = [options.label, latency > 0 ? `+${latency}ms` : ''].filter(Boolean).join(' ')
+      for (const cell of plan(options, latency)) {
+        const report = `${out}/${cell.stem}.json`
+        const cellEnv = {
+          ...env,
+          ...cell.knobs,
+          CORAL_LOAD_REPORT: report,
+          CORAL_LOAD_LABEL: label,
+        }
+        if (options.backend === 'postgres') {
+          cellEnv.CORAL_TEST_DATABASE = 'postgres'
+          cellEnv.CORAL_TEST_POSTGRES_URL = latency > 0 ? toxiproxy.url(database.url) : database.url
+          cellEnv.CORAL_LOAD_SAMPLER_URL = database.url
+        } else {
+          delete cellEnv.CORAL_TEST_DATABASE
+          delete cellEnv.CORAL_TEST_POSTGRES_URL
+          delete cellEnv.CORAL_LOAD_SAMPLER_URL
+        }
+        console.error(`\n### cell: ${options.backend}, ${cell.title}, +${latency} ms\n`)
+        const code = await runTest(cell.test, cellEnv, options.release)
+        if (interrupted) throw new Error(`interrupted by ${interrupted} during cell ${cell.stem}`)
+        if (code !== 0) throw new Error(`load cell ${cell.stem} failed with exit code ${code}`)
+        reports.push(JSON.parse(await readFile(report, 'utf8')))
+      }
+    }
+    const summary = summarize(reports, options)
+    await writeFile(`${out}/summary.md`, `${summary}\n`)
+    await writeFile(`${out}/summary.json`, JSON.stringify(reports, null, 2))
+    console.log(`\n${summary}\n\nreports: ${out}`)
   } catch (error) {
     console.error(error.message)
     process.exitCode = 1
+  } finally {
+    if (toxiproxy) {
+      try {
+        await toxiproxy.setLatency(0)
+      } catch {
+        /* the container may already be gone */
+      }
+    }
+    try {
+      await database?.close()
+    } catch (error) {
+      console.error(error.message)
+      process.exitCode = 1
+    }
   }
 }
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) await main(process.argv.slice(2))
