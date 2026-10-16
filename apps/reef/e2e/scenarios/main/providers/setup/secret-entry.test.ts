@@ -95,7 +95,7 @@ test('Secret entry with one shared account, then each person’s own account', a
         .click()
       await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/providers`)
       const rail = page.getByRole('navigation', { name: 'installed providers', exact: true })
-      await expect.poll(() => rail.getByRole('link', { name: / settings$/ }).count()).toBe(2)
+      await expect.poll(() => rail.getByRole('link', { name: / settings$/ }).count()).toBe(1)
       // The provider left is the one where each caller uses their own account.
       await openProviderSettings(page)
       await page

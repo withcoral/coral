@@ -242,9 +242,6 @@ export async function nextPublication(page: Page) {
 
 /** Every workspace also holds the Built-in Provider, which Coral adds itself. */
 const BUILTIN_CALL_ROOT = 'coral.admin'
-const BUILTIN_GEAR = 'Coral settings'
-/** Every gear in the rail but the Built-in Provider's. */
-const ADDED_GEAR = /^(?!Coral settings$).+ settings$/
 
 /** The providers the workspace added, without the Built-in Provider. */
 export function addedProviders<P extends { callRoot: string }>(providers: readonly P[]) {
@@ -269,16 +266,15 @@ export async function openProviderSettings(page: Page) {
   await page.waitForURL((url) => /\/providers(?:\/(?!new(?:\/|$))[^/?#]+)?$/.test(url.pathname))
   const routed = /\/providers\/([^/?#]+)/.exec(new URL(page.url()).pathname)?.[1]
   // The bare list route selects its first provider implicitly, which can be
-  // the Built-in Provider. Each gear links to its provider's settings route,
-  // beside the provider in the rail. Wait for the routed gear before reading
-  // whose it is, so a rail that has not rendered yet cannot redirect the click.
+  // the Built-in Provider. Each added provider's gear links to its settings
+  // route, beside the provider in the rail; Coral has no gear. Wait for the
+  // rail's gears before looking for the routed one, so a rail that has not
+  // rendered yet cannot redirect the click.
   const rail = page.getByRole('navigation', { name: 'installed providers', exact: true })
-  let gear = routed ? rail.locator(`a[href$="/providers/${routed}/settings"]`) : null
-  if (gear) await gear.waitFor()
-  const builtin = gear
-    ? await gear.and(rail.getByRole('link', { name: BUILTIN_GEAR, exact: true })).count()
-    : 0
-  if (!gear || builtin) gear = rail.getByRole('link', { name: ADDED_GEAR }).first()
+  const gears = rail.getByRole('link', { name: / settings$/ })
+  await gears.first().waitFor()
+  const routedGear = routed ? rail.locator(`a[href$="/providers/${routed}/settings"]`) : null
+  const gear = routedGear && (await routedGear.count()) ? routedGear : gears.first()
   await gear.click()
   await page.waitForURL((url) => url.pathname.endsWith('/settings'))
   await breadcrumb(page, 'Settings').waitFor()
