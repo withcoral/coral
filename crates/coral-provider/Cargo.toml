@@ -40,6 +40,7 @@ uuid = { workspace = true, features = ["v5"] }
 zeroize.workspace = true
 
 [dev-dependencies]
+coral-workspace = { workspace = true, features = ["test-fixtures"] }
 # Integration tests build this library without `cfg(test)`.
 coral-provider = { workspace = true, features = ["test-fixtures"] }
 coral-administration.workspace = true

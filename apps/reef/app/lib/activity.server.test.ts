@@ -298,6 +298,7 @@ function catalog(
               providers: (options.namespaces ?? []).map((namespace) => ({
                 name: `${workspace}/providers/${githubProvider}`,
                 namespace,
+                callRoot: `coral.providers.${namespace}`,
               })),
             },
       listOperations: () => ({
@@ -1122,6 +1123,20 @@ describe('hierarchical activity through the private server interface', () => {
         (path) => `/${workspace}/providers/${githubProvider}/ops/pulls.${path}`,
       ),
     )
+  })
+  it.each([
+    ['its provider is current', ['github'], 'pulls.checkIfMerged'],
+    ['its provider is gone', ['linear'], 'coral.providers.github.pulls.checkIfMerged'],
+  ])('titles an untitled Operation hit by its path when %s', async (_, namespaces, title) => {
+    const response = JSON.parse(stored.complete) as { hits: { title: string | null }[] }
+    response.hits[0]!.title = null
+    const { api } = coral(
+      list(),
+      interactionDetail({ response: JSON.stringify(response) }),
+      catalog({ namespaces }),
+    )
+    const page = await loadActivity(request({ record: interaction, tree: '1' }), api, { scope })
+    expect(searchHits(page)[0]?.title).toBe(title)
   })
   it.each([
     ['its provider is gone', catalog({ namespaces: ['linear'] })],

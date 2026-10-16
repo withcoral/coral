@@ -148,7 +148,7 @@ impl ProviderSetupInputDigest {
         Self::of_bytes(input.as_str().as_bytes())
     }
 
-    fn of_bytes(bytes: &[u8]) -> Self {
+    pub(crate) fn of_bytes(bytes: &[u8]) -> Self {
         Self(encode_sha256(Sha256::digest(bytes)))
     }
 
@@ -158,11 +158,7 @@ impl ProviderSetupInputDigest {
     ///
     /// Returns [`Error::CorruptData`] when the value is not SHA-256 shaped.
     pub fn parse(value: String) -> Result<Self, Error> {
-        if value.len() != 64
-            || !value
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
+        if !is_lowercase_sha256(&value) {
             return Err(Error::CorruptData(
                 "Provider Setup input digest is not lowercase SHA-256".to_string(),
             ));
@@ -1047,7 +1043,7 @@ impl MaterializedOperation {
         };
         let hints = match execution_binding {
             ExecutionBinding::Http(_) => OperationHints::default(),
-            ExecutionBinding::Mcp(_) => hints,
+            ExecutionBinding::Mcp(_) | ExecutionBinding::Builtin(_) => hints,
         };
         Self {
             key,
@@ -1109,7 +1105,7 @@ impl MaterializedOperation {
     pub const fn http_method(&self) -> Option<crate::HttpMethod> {
         match &self.execution_binding {
             ExecutionBinding::Http(binding) => Some(binding.method()),
-            ExecutionBinding::Mcp(_) => None,
+            ExecutionBinding::Mcp(_) | ExecutionBinding::Builtin(_) => None,
         }
     }
 
@@ -1146,6 +1142,7 @@ impl MaterializedOperation {
                 binding.set_credential_contract(contract);
                 self.binding_json = binding.to_storage_json()?;
             }
+            ExecutionBinding::Builtin(_) => {}
         }
         Ok(self)
     }
@@ -1265,6 +1262,10 @@ impl ProviderGenerationFingerprint {
         }
         Self(encode_sha256(hasher.finalize()))
     }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 const fn hint_fingerprint(hint: Option<bool>) -> &'static str {
@@ -1278,6 +1279,14 @@ const fn hint_fingerprint(hint: Option<bool>) -> &'static str {
 fn fingerprint_text(hasher: &mut Sha256, value: &str) {
     hasher.update(value.len().to_be_bytes());
     hasher.update(value.as_bytes());
+}
+
+/// Reports whether `value` is SHA-256 evidence as [`encode_sha256`] writes it.
+pub(crate) fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn encode_sha256(digest: impl IntoIterator<Item = u8>) -> String {
@@ -1428,6 +1437,7 @@ impl PreparedProviderCatalog {
                     .first()
                     .map(|slot| slot.contract().clone()),
                 ExecutionBinding::Mcp(binding) => Some(binding.credential_contract().clone()),
+                ExecutionBinding::Builtin(_) => None,
             })
             .unwrap_or(crate::ProviderCredentialContract::NONE)
     }

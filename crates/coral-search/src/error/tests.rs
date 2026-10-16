@@ -1,22 +1,22 @@
 use super::{DECLARED_NAMES_SHOWN, Error, undeclared_types_message};
-use crate::ProviderNamespace;
+use crate::ProviderCallRoot;
 
 #[test]
-fn an_unknown_namespace_is_refused_with_only_the_searchable_namespaces() {
+fn an_unknown_provider_filter_is_refused_with_only_the_searchable_namespaces() {
     for (searchable, message) in [
         (
-            &["github", "weather"][..],
-            "No Provider you can search has this namespace. Use one of: github, weather.",
+            &["coral.workspace", "coral.providers.github"][..],
+            "No Provider you can search has this namespace. Use one of: coral.workspace, github.",
         ),
         (
             &[],
             "No Provider you can search has this namespace. You can search no Provider.",
         ),
     ] {
-        let error = Error::UnknownProviderNamespace {
+        let error = Error::UnknownProviderCallRoot {
             searchable: searchable
                 .iter()
-                .map(|namespace| ProviderNamespace::parse(namespace).unwrap())
+                .map(|root| ProviderCallRoot::parse(root).unwrap())
                 .collect(),
         };
         assert_eq!(

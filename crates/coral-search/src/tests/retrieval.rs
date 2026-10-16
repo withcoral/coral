@@ -8,7 +8,7 @@ use coral_catalog::OperationKey;
 use coral_db::DatabaseSystem;
 use coral_policy::{OperationAccessState, OperationPolicyTarget};
 use coral_provider::ProviderId;
-use coral_provider::access::ProviderNamespace;
+use coral_provider::access::ProviderCallRoot;
 use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceId};
 
 use super::{TestModules, change, organization_user};
@@ -220,7 +220,7 @@ async fn a_mixed_query_fuses_each_kinds_ranking_by_position() {
 
     // The Provider filter narrows Operations only: Saved Functions stay, for
     // a query and for a listing.
-    let github = ProviderNamespace::parse("github").unwrap();
+    let github = ProviderCallRoot::parse("coral.providers.github").unwrap();
     let filtered = corpus.search(issues.with_provider(github.clone())).await;
     assert_eq!(paths(&filtered), paths(&page));
     assert_eq!(
@@ -387,18 +387,26 @@ async fn hits_leave_out_what_the_caller_may_not_see() {
         "neither a disabled Operation nor another Principal's Saved Function ranks"
     );
 
-    let weather =
-        Corpus::query("forecast").with_provider(ProviderNamespace::parse("weather").unwrap());
+    let weather = Corpus::query("forecast")
+        .with_provider(ProviderCallRoot::parse("coral.providers.weather").unwrap());
     assert_eq!(
         paths(&corpus.search(weather).await),
         ["coral.providers.weather.getForecast"],
         "the User may see the caller-route Provider"
     );
-    // A namespace the caller cannot search is refused, and the refusal lists
-    // only the namespaces the caller can search: those `start_task` shows.
-    for (principal, namespace, searchable) in [
-        (&corpus.principal, "absent", &["github", "weather"][..]),
-        (&agent, "weather", &["github"]),
+    // A Call Root the caller cannot search is refused, and the refusal lists
+    // only the Call Roots the caller can search: those `start_task` shows.
+    for (principal, call_root, searchable) in [
+        (
+            &corpus.principal,
+            "coral.providers.absent",
+            &["coral.providers.github", "coral.providers.weather"][..],
+        ),
+        (
+            &agent,
+            "coral.providers.weather",
+            &["coral.providers.github"],
+        ),
     ] {
         let shown = corpus
             .modules
@@ -409,7 +417,7 @@ async fn hits_leave_out_what_the_caller_may_not_see() {
         assert_eq!(
             shown
                 .iter()
-                .map(ProviderNamespace::as_str)
+                .map(ProviderCallRoot::as_str)
                 .collect::<Vec<_>>(),
             searchable
         );
@@ -420,17 +428,17 @@ async fn hits_leave_out_what_the_caller_may_not_see() {
                 .search(
                     principal,
                     &corpus.workspace,
-                    &request.with_provider(ProviderNamespace::parse(namespace).unwrap()),
+                    &request.with_provider(ProviderCallRoot::parse(call_root).unwrap()),
                 )
                 .await
-                .expect_err("an unknown namespace is refused");
+                .expect_err("an unknown Call Root is refused");
             assert!(
                 matches!(
                     &error,
-                    crate::Error::UnknownProviderNamespace { searchable: listed }
-                        if listed.iter().map(ProviderNamespace::as_str).eq(searchable.iter().copied())
+                    crate::Error::UnknownProviderCallRoot { searchable: listed }
+                        if listed.iter().map(ProviderCallRoot::as_str).eq(searchable.iter().copied())
                 ),
-                "{namespace}: {error:?}"
+                "{call_root}: {error:?}"
             );
         }
     }
@@ -451,7 +459,7 @@ async fn a_filtered_search_reads_only_the_named_provider() {
         .execute_fixture_sql(
             "UPDATE provider_generations SET credential_contract = 'not a contract' \
              WHERE id IN (SELECT active_generation_id FROM provider_records \
-                          WHERE namespace = 'weather')",
+                          WHERE namespace = 'coral.providers.weather')",
         )
         .await
         .unwrap();
@@ -470,7 +478,7 @@ async fn a_filtered_search_reads_only_the_named_provider() {
         ),
         "the fault reaches a search of every Provider"
     );
-    let github = ProviderNamespace::parse("github").unwrap();
+    let github = ProviderCallRoot::parse("coral.providers.github").unwrap();
     for request in [Corpus::query("issues"), SearchRequest::list()] {
         let page = corpus.search(request.with_provider(github.clone())).await;
         assert!(

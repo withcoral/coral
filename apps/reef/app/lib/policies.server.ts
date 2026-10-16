@@ -1,5 +1,6 @@
 import { data, type RouterContextProvider } from 'react-router'
 import { OperationAccessState } from '@/generated/coral/management/v1/policy_pb'
+import { operationCallPath } from './call-root'
 import { formContext, privateHeaders, field } from './management.server'
 import { providerName, listAllOperations } from './providers.server'
 import { authorizedWorkspace } from './workspace-route.server'
@@ -65,7 +66,7 @@ export async function loadPolicy(
         throw new Response('Policy unavailable', { status: 503, headers: privateHeaders })
       return {
         name: o.name,
-        path: `coral.providers.${provider.namespace}.${o.relativePath}`,
+        path: operationCallPath(provider.callRoot, o.relativePath),
         state: state(policy.accessState),
         explicit: policy.explicit,
         available: o.available,

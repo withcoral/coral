@@ -6,6 +6,7 @@ import {
 import { managementClients } from '../../../../support/management.ts'
 import { bearerMcpServer } from '../../../../support/provider-fixtures.ts'
 import {
+  addedProviders,
   acceptOperations,
   chooseAccount,
   closeProviderSettings,
@@ -63,8 +64,9 @@ export async function bearerDiscovery(context: TestContext) {
         .getByText('Connected', { exact: true })
         .waitFor()
       const api = managementClients(accessToken)
-      const providers = (await api.providers.listProviders({ parent: `workspaces/${workspace}` }))
-        .providers
+      const providers = addedProviders(
+        (await api.providers.listProviders({ parent: `workspaces/${workspace}` })).providers,
+      )
       const shared = (
         await api.accounts.getProviderAccount({
           parent: `workspaces/${workspace}`,
@@ -190,11 +192,11 @@ export async function discoveryCredentialScope(
         await page.getByRole('button', { name: 'Add provider', exact: true }).click()
         if (choice === 'replaced') {
           await page.getByText('Not added', { exact: true }).waitFor()
-          expect((await api.providers.listProviders({ parent })).providers).toHaveLength(0)
+          expect((await api.providers.listProviders({ parent })).providers).toHaveLength(1)
         } else {
           await waitForPublication(page)
           const listed = await api.providers.listProviders({ parent })
-          expect(listed.providers).toHaveLength(1)
+          expect(listed.providers).toHaveLength(2)
           // Choosing individual accounts never silently promotes discovery credentials.
           // Explicit optional User retention has its own journey.
           for (const scope of [ProviderAccountScope.SHARED, ProviderAccountScope.USER]) {
@@ -202,7 +204,7 @@ export async function discoveryCredentialScope(
               (
                 await api.accounts.getProviderAccount({
                   parent,
-                  provider: listed.providers[0].name,
+                  provider: addedProviders(listed.providers)[0].name,
                   scope,
                 })
               ).account,

@@ -364,12 +364,7 @@ async fn active_provider_reads_skip_disabled_providers_and_other_workspaces() {
         read.iter()
             .map(|provider| (
                 provider.provider().id().clone(),
-                provider
-                    .provider()
-                    .access()
-                    .namespace()
-                    .as_str()
-                    .to_string(),
+                provider.provider().access().call_root().name().to_string(),
                 provider.provider().display_name().to_string(),
                 provider.generation_id().clone(),
             ))

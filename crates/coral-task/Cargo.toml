@@ -23,6 +23,7 @@ thiserror.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+coral-workspace = { workspace = true, features = ["test-fixtures"] }
 coral-administration.workspace = true
 coral-outbound.workspace = true
 coral-catalog.workspace = true

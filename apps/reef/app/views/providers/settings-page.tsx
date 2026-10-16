@@ -325,8 +325,7 @@ function Removal({ provider, form }: { provider: ProviderSettingsView; form: For
             <ul className={styles.bulletList}>
               <Typography.Body as="li">{provider.displayName}</Typography.Body>
               <Typography.Body as="li">
-                The namespace{' '}
-                <Typography.CodeInline>coral.providers.{provider.namespace}</Typography.CodeInline>
+                The namespace <Typography.CodeInline>{provider.callRoot}</Typography.CodeInline>
               </Typography.Body>
               <Typography.Body as="li">Every connected account</Typography.Body>
             </ul>

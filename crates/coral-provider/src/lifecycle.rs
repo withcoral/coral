@@ -26,14 +26,15 @@ impl ProviderModule {
         let authority_source = self
             .check_owner_configuration_in_transaction(tx, actor, owner)
             .await?;
-        if !repository::hold_provider_in_transaction(tx, owner, provider).await? {
-            return Err(Error::ProviderNotFound);
-        }
-        repository::provider_in_transaction(tx, owner, provider)
-            .await?
-            .ok_or(Error::ProviderNotFound)?
-            .provider
-            .check_etag(context)?;
+        let current = crate::change::hold_for_change(
+            tx,
+            owner,
+            provider,
+            crate::change::ProviderChange::Delete,
+        )
+        .await?
+        .provider;
+        current.check_etag(context)?;
         let workspace = owner;
         {
             account::delete_workspace_provider_current_in_transaction(

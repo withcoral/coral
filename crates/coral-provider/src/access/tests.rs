@@ -122,7 +122,7 @@ async fn route_etag_race_has_one_winner_and_no_op_preserves_version_and_evidence
         other => panic!("exactly one route change must commit: {other:?}"),
     };
     assert_eq!(updated.version(), 2);
-    assert_eq!(updated.namespace(), provider.namespace());
+    assert_eq!(updated.call_root(), provider.call_root());
     let events = providers
         .list_lifecycle_events(&owner, workspace.id())
         .await
@@ -177,11 +177,213 @@ async fn route_etag_race_has_one_winner_and_no_op_preserves_version_and_evidence
 }
 
 #[test]
-fn provider_namespace_rejects_thenable_segment() {
-    assert!(matches!(
-        ProviderNamespace::parse("then"),
-        Err(Error::InvalidInput(_))
-    ));
+fn call_root_parsing_accepts_owner_namespaces_and_only_the_builtin_coral_root() {
+    enum Parsed<'a> {
+        Owner(&'a str),
+        Builtin,
+        Rejected,
+    }
+    let segment = "a".repeat(128);
+    let long = format!("coral.providers.{segment}");
+    for (value, expected) in [
+        ("coral.providers.github", Parsed::Owner("github")),
+        ("coral.providers.$_g1", Parsed::Owner("$_g1")),
+        ("coral.providers.workspace", Parsed::Owner("workspace")),
+        (long.as_str(), Parsed::Owner(segment.as_str())),
+        ("coral.workspace", Parsed::Builtin),
+        // Coral defines no other root, so none parses.
+        ("coral.billing", Parsed::Rejected),
+        ("coral.functions", Parsed::Rejected),
+        ("coral.emit", Parsed::Rejected),
+        ("coral.OperationError", Parsed::Rejected),
+        (&format!("{long}a"), Parsed::Rejected),
+        ("coral.workspace.", Parsed::Rejected),
+        ("coral.workspace.tools", Parsed::Rejected),
+        ("github", Parsed::Rejected),
+        ("coral", Parsed::Rejected),
+        ("providers.github", Parsed::Rejected),
+        ("coral.providers", Parsed::Rejected),
+        ("coral.providers.", Parsed::Rejected),
+        ("coral..github", Parsed::Rejected),
+        ("coral.providers.1github", Parsed::Rejected),
+        ("coral.providers.git-hub", Parsed::Rejected),
+        ("coral.providers.gitHüb", Parsed::Rejected),
+        ("coral.providers.then", Parsed::Rejected),
+        ("coral.providers.__proto__", Parsed::Rejected),
+        ("coral.providers.constructor", Parsed::Rejected),
+        ("coral.prototype.github", Parsed::Rejected),
+        ("coral.providers.weather.v2", Parsed::Rejected),
+        ("coral.functions.github", Parsed::Rejected),
+    ] {
+        let parsed = ProviderCallRoot::parse(value);
+        match expected {
+            Parsed::Owner(expected) => {
+                let Ok(ProviderCallRoot::Owner(namespace)) = &parsed else {
+                    panic!("{value}: {parsed:?}");
+                };
+                assert_eq!(namespace.as_str(), expected, "{value}");
+            }
+            Parsed::Builtin => assert!(
+                matches!(parsed, Ok(ProviderCallRoot::Builtin)),
+                "{value}: {parsed:?}"
+            ),
+            Parsed::Rejected => assert!(
+                matches!(parsed, Err(Error::InvalidInput(_))),
+                "{value} must be rejected: {parsed:?}"
+            ),
+        }
+        if let Ok(root) = parsed {
+            assert_eq!(root.as_str(), value, "a parsed root keeps its exact text");
+        }
+    }
+}
+
+#[tokio::test]
+async fn workspace_uniqueness_and_invocation_follow_the_stored_call_root() {
+    let (db, workspaces, providers) = test_modules().await;
+    let owner = organization_user(db.database(), "user:call-roots", OrganizationRole::Owner).await;
+    for (case, (first, second, conflicts)) in [
+        ("workspace", "workspace", true),
+        ("workspace", "weather", false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let tick = 100 * (i64::try_from(case).unwrap() + 1);
+        let context = change_context(owner.clone(), tick, 'a');
+        let workspace = workspaces
+            .create(&context, WorkspaceDisplayName::parse("Roots").unwrap())
+            .await
+            .unwrap();
+        let mut published = Vec::new();
+        for (offset, namespace) in [(1, first), (2, second)] {
+            let context = change_context(owner.clone(), tick + offset, 'b');
+            let setup = providers
+                .prepare_openapi_fixture(
+                    &context,
+                    workspace.id(),
+                    crate::OpenApiDocument::parse(CREDENTIAL_FREE_OPENAPI).unwrap(),
+                )
+                .await
+                .unwrap();
+            let publication = providers
+                .publish_workspace_provider(
+                    &context,
+                    crate::WorkspaceProviderPublicationRequest::new(
+                        authorization_request(),
+                        workspace.id().clone(),
+                        setup.id().clone(),
+                        ProviderNamespace::parse(namespace).unwrap(),
+                        CredentialRoute::None,
+                    ),
+                )
+                .await
+                .unwrap();
+            published.push(publication);
+        }
+        let [earlier, later] = <[_; 2]>::try_from(published).unwrap();
+        assert_eq!(
+            later.diagnostic().map(crate::PublicationDiagnostic::code),
+            conflicts.then_some("provider_namespace_conflict"),
+            "{second} after {first}"
+        );
+        let database = db.database();
+        let mut transaction = database.begin().await.unwrap();
+        for (namespace, publication) in [(first, &earlier), (second, &later)] {
+            let call_path = format!("coral.providers.{namespace}.getForecast");
+            let resolved = crate::resolve_owner_operation_in_transaction(
+                &mut transaction,
+                workspace.id(),
+                &call_path,
+            )
+            .await
+            .unwrap()
+            .map(|target| target.provider_access().id().clone());
+            let owner = publication
+                .published_provider()
+                .or(earlier.published_provider())
+                .map(|provider| provider.id().clone());
+            assert_eq!(resolved, owner, "{call_path} after {first}");
+        }
+        transaction.rollback().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn exact_provider_reads_report_an_unparseable_stored_call_root_as_corrupt() {
+    let (db, workspaces, providers) = test_modules().await;
+    let owner = organization_user(db.database(), "user:stored-root", OrganizationRole::Owner).await;
+    let context = change_context(owner.clone(), 10, 'a');
+    let workspace = workspaces
+        .create(&context, WorkspaceDisplayName::parse("Stored").unwrap())
+        .await
+        .unwrap();
+    let provider = publish_provider(
+        &providers,
+        &context,
+        workspace.id(),
+        CREDENTIAL_FREE_OPENAPI,
+        "legacy",
+        CredentialRoute::None,
+    )
+    .await;
+    // A database created before Call Roots stores the bare namespace.
+    db.execute_fixture_sql(&format!(
+        "UPDATE provider_records SET namespace = 'legacy' WHERE id = '{}'",
+        provider.id()
+    ))
+    .await
+    .unwrap();
+    let inspected = providers
+        .inspect_provider(&owner, workspace.id(), provider.id())
+        .await;
+    assert!(
+        matches!(inspected, Err(Error::CorruptData(_))),
+        "{inspected:?}"
+    );
+    let database = db.database();
+    let mut transaction = database.begin_read_snapshot().await.unwrap();
+    let access =
+        crate::access::exact_in_transaction(&mut transaction, workspace.id(), provider.id()).await;
+    assert!(matches!(access, Err(Error::CorruptData(_))), "{access:?}");
+    transaction.rollback().await.unwrap();
+}
+
+#[test]
+fn only_one_call_root_owns_a_call_path_and_splits_it() {
+    for (call_path, split) in [
+        (
+            "coral.providers.github.repos.get",
+            Some(("coral.providers.github", "repos.get")),
+        ),
+        (
+            "coral.workspace.createProvider",
+            Some(("coral.workspace", "createProvider")),
+        ),
+        (
+            "coral.workspace.providers.create",
+            Some(("coral.workspace", "providers.create")),
+        ),
+        (
+            "coral.providers.workspace.create",
+            Some(("coral.providers.workspace", "create")),
+        ),
+        ("coral.providers.github", None),
+        ("coral.providers.github.", None),
+        ("coral.providers.github..get", None),
+        ("coral.providers.github.get\n", None),
+        ("coral.functions.github.get", None),
+        ("coral.workspace", None),
+        ("github.repos.get", None),
+    ] {
+        assert_eq!(
+            ProviderCallRoot::split_call_path(call_path)
+                .as_ref()
+                .map(|(root, relative)| (root.as_str(), *relative)),
+            split,
+            "{call_path:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -543,12 +745,7 @@ async fn agent_inspection_shows_each_settings_account_for_that_agent_only() {
                     }
                 };
                 (
-                    inspection
-                        .readiness
-                        .provider
-                        .namespace()
-                        .as_str()
-                        .to_owned(),
+                    inspection.readiness.provider.call_root().name().to_owned(),
                     (account, inspection.readiness.blockers),
                 )
             })

@@ -1,6 +1,6 @@
 //! Workspace-owned Provider publication, configuration, lifecycle and dispatch authority.
 //!
-//! One immutable Provider identity and namespace owns its catalog, credential route,
+//! One immutable Provider identity and Call Root owns its catalog, credential route,
 //! policy address and lifecycle. Publication materializes outside the write transaction,
 //! then commits configuration, provisional credential promotion, request replay evidence
 //! and lifecycle events atomically. Retained generations survive compatible catalog
@@ -15,6 +15,10 @@ pub mod access;
 pub mod account;
 #[cfg(test)]
 mod account_tests;
+mod builtin;
+#[cfg(test)]
+mod builtin_tests;
+mod change;
 #[cfg(test)]
 mod credential_lifecycle_tests;
 mod error;
@@ -54,18 +58,19 @@ use std::sync::Arc;
 
 use coral_db::Database;
 use coral_workspace::{
-    AuthenticatedUser, AuthoritySource, ChangeContext, WorkspaceAction, WorkspaceEvidence,
-    WorkspaceModule, WorkspaceRole,
+    AuthenticatedPrincipal, AuthenticatedUser, AuthoritySource, ChangeContext, WorkspaceAction,
+    WorkspaceEvidence, WorkspaceModule, WorkspaceRole,
 };
 
 pub use account::{
     OAuthClientAuthentication, OAuthClientConfiguration, ProviderSetupInspection,
     SetupAuthentication, SetupAuthorization, SetupAuthorizationState, SetupOAuthClient,
 };
+pub use builtin::prepare_builtin_catalog;
 pub use coral_catalog::{
     CatalogDiagnostic as PublicationDiagnostic, MCP_DISCOVERY_SNAPSHOT_MAX_BYTES,
-    McpDiscoverySnapshot, OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument, ProviderSetupInputDigest,
-    ProviderSetupInputKind,
+    McpDiscoverySnapshot, OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument, PreparedBuiltinCatalog,
+    ProviderSetupInputDigest, ProviderSetupInputKind,
 };
 pub use error::Error;
 pub mod history_repository;
@@ -83,7 +88,7 @@ pub use types::{
     ProviderSetupState, ProviderState, ResolvedInvocationOperation,
 };
 
-pub use access::{CredentialRoute, ProviderAccess, ProviderNamespace};
+pub use access::{CredentialRoute, ProviderAccess, ProviderCallRoot, ProviderNamespace};
 use account::setup as setup_credentials;
 use coral_catalog::{MaterializedOperation, OperationKey, ProviderSetupInput};
 use publication::materialization::{CatalogMaterializer, Materializer};
@@ -255,13 +260,14 @@ impl ProviderModule {
             .check_owner_configuration_in_transaction(&mut transaction, context.actor(), owner)
             .await?;
         let update = if let Some(target) = update_target {
-            if !repository::hold_provider_in_transaction(&mut transaction, owner, target).await? {
-                return Err(Error::ProviderNotFound);
-            }
             Some(
-                repository::provider_in_transaction(&mut transaction, owner, target)
-                    .await?
-                    .ok_or(Error::ProviderNotFound)?,
+                change::hold_for_change(
+                    &mut transaction,
+                    owner,
+                    target,
+                    change::ProviderChange::Reconfigure,
+                )
+                .await?,
             )
         } else {
             None
@@ -456,12 +462,13 @@ impl ProviderModule {
             require_owner(&evidence)?;
             (Some(workspace_id), evidence.authority_source())
         };
-        if !repository::hold_provider_in_transaction(&mut transaction, owner, provider_id).await? {
-            return Err(Error::ProviderNotFound);
-        }
-        let stored = repository::provider_in_transaction(&mut transaction, owner, provider_id)
-            .await?
-            .ok_or(Error::ProviderNotFound)?;
+        let stored = change::hold_for_change(
+            &mut transaction,
+            owner,
+            provider_id,
+            change::ProviderChange::SetState,
+        )
+        .await?;
         stored.provider.check_etag(context)?;
         match (stored.provider.state(), next_state) {
             (ProviderState::Disabled, ProviderState::Disabled) => {
@@ -662,11 +669,80 @@ pub async fn operation_hints_and_methods_batch_in_transaction(
     .await?)
 }
 
+/// The Principal that asks Invocation admission to call an Operation.
+///
+/// It carries what admission needs to load the Principal's Workspace authority
+/// when a Call Root's rule reads it.
+#[derive(Clone, Copy)]
+pub struct InvocationCaller<'a> {
+    workspaces: &'a WorkspaceModule,
+    actor: &'a AuthenticatedPrincipal,
+    now_unix_nanos: i64,
+}
+
+impl<'a> InvocationCaller<'a> {
+    /// Names the caller and the admission time.
+    #[must_use]
+    pub const fn new(
+        workspaces: &'a WorkspaceModule,
+        actor: &'a AuthenticatedPrincipal,
+        now_unix_nanos: i64,
+    ) -> Self {
+        Self {
+            workspaces,
+            actor,
+            now_unix_nanos,
+        }
+    }
+
+    /// Applies [`account::reaches_call_root`], the rule discovery applies. Only
+    /// the Built-in Call Root reads Workspace authority, so other roots take no
+    /// Workspace hold.
+    async fn reaches(
+        self,
+        transaction: &mut coral_db::Transaction<'_>,
+        workspace_id: &WorkspaceId,
+        call_root: &ProviderCallRoot,
+    ) -> Result<bool, Error> {
+        match call_root {
+            ProviderCallRoot::Owner(_) => Ok(true),
+            ProviderCallRoot::Builtin => match self
+                .workspaces
+                .check_dispatch_in_transaction(
+                    transaction,
+                    self.actor,
+                    workspace_id,
+                    self.now_unix_nanos,
+                )
+                .await
+            {
+                Ok(authority) => Ok(account::reaches_call_root(
+                    call_root,
+                    self.actor.principal(),
+                    &authority,
+                )),
+                Err(
+                    coral_workspace::Error::WorkspaceNotFound
+                    | coral_workspace::Error::PermissionDenied(_)
+                    | coral_workspace::Error::WorkspaceArchived
+                    | coral_workspace::Error::AgentNotFound
+                    | coral_workspace::Error::AgentDisabled
+                    | coral_workspace::Error::AgentRegistrationExpired,
+                ) => Ok(false),
+                Err(error) => Err(error.into()),
+            },
+        }
+    }
+}
+
 /// Atomically resolves one active Call Path for Invocation admission.
 ///
 /// The caller owns the transaction that creates the durable Invocation and its
-/// started Event. `Ok(None)` means the namespace or Operation-relative path is
-/// not currently callable and therefore no Invocation should be created.
+/// started Event. The Provider whose stored Call Root starts `call_path` owns
+/// it. `Ok(None)` means no current Provider Call Root or
+/// Operation-relative path matches, or `caller` cannot reach the Call Root, so
+/// no Invocation should be created. Both look the same, so a caller cannot
+/// learn of an Operation it cannot discover.
 ///
 /// # Errors
 ///
@@ -674,11 +750,60 @@ pub async fn operation_hints_and_methods_batch_in_transaction(
 pub async fn resolve_invocation_operation_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
-    namespace: &access::ProviderNamespace,
+    caller: InvocationCaller<'_>,
+    call_path: &str,
+) -> Result<Option<ResolvedInvocationOperation>, Error> {
+    let Some((call_root, relative_path)) = access::ProviderCallRoot::split_call_path(call_path)
+    else {
+        return Ok(None);
+    };
+    // Hold Workspace authority before the Provider, the order the dispatch fence uses.
+    if !caller
+        .reaches(transaction, workspace_id, &call_root)
+        .await?
+    {
+        return Ok(None);
+    }
+    resolve_reached_operation(transaction, workspace_id, &call_root, relative_path).await
+}
+
+/// Resolves a Call Path under an Owner-added Provider's Call Root for test
+/// fixtures. Every Principal reaches such a root, so admission reads no caller
+/// for it. Use [`resolve_invocation_operation_in_transaction`] for the Built-in
+/// Provider.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-package failure.
+///
+/// # Panics
+///
+/// Panics when `call_path` is under the Built-in Call Root.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub async fn resolve_owner_operation_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    call_path: &str,
+) -> Result<Option<ResolvedInvocationOperation>, Error> {
+    let Some((call_root, relative_path)) = access::ProviderCallRoot::split_call_path(call_path)
+    else {
+        return Ok(None);
+    };
+    assert!(
+        matches!(call_root, ProviderCallRoot::Owner(_)),
+        "{call_path} needs a caller"
+    );
+    resolve_reached_operation(transaction, workspace_id, &call_root, relative_path).await
+}
+
+async fn resolve_reached_operation(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    call_root: &ProviderCallRoot,
     relative_path: &str,
 ) -> Result<Option<ResolvedInvocationOperation>, Error> {
     let Some(observed_provider) =
-        crate::access::by_namespace_in_transaction(transaction, workspace_id, namespace).await?
+        crate::access::by_call_root_in_transaction(transaction, workspace_id, call_root).await?
     else {
         return Ok(None);
     };
@@ -703,7 +828,9 @@ pub async fn resolve_invocation_operation_in_transaction(
     else {
         return Ok(None);
     };
-    if provider_access.namespace() != namespace || provider_access.id() != observed_provider.id() {
+    if provider_access.call_root() != observed_provider.call_root()
+        || provider_access.id() != observed_provider.id()
+    {
         return Ok(None);
     }
     let Some(generation_id) = crate::runtime::active_generation_in_transaction(

@@ -12,9 +12,11 @@ pub(super) enum EventFault {
     AgentDeleted,
     SetupCanceled,
     OrganizationMembershipRemoved,
+    WorkspaceCreated,
+    BuiltinProviderCreated,
 }
 impl EventFault {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 9] = [
         Self::AuthorizationCompleted,
         Self::AccountDeleted,
         Self::FunctionDeleted,
@@ -22,6 +24,8 @@ impl EventFault {
         Self::AgentDeleted,
         Self::SetupCanceled,
         Self::OrganizationMembershipRemoved,
+        Self::WorkspaceCreated,
+        Self::BuiltinProviderCreated,
     ];
 
     const fn target(self) -> (&'static str, &'static str, char) {
@@ -49,12 +53,21 @@ impl EventFault {
                 "organization_membership.removed",
                 '9',
             ),
+            Self::WorkspaceCreated => ("workspace_lifecycle_events", "workspace.created", '7'),
+            Self::BuiltinProviderCreated => (
+                "provider_lifecycle_events",
+                "provider.builtin_installed",
+                '6',
+            ),
         }
     }
 
     pub(super) fn assert_error(self, error: &crate::Error) {
         let matches = match self {
-            Self::AuthorizationCompleted | Self::AccountDeleted | Self::SetupCanceled => {
+            Self::AuthorizationCompleted
+            | Self::AccountDeleted
+            | Self::SetupCanceled
+            | Self::BuiltinProviderCreated => {
                 matches!(
                     error,
                     crate::Error::Provider(coral_provider::Error::Database(_))
@@ -66,7 +79,10 @@ impl EventFault {
                     crate::Error::Functions(coral_functions::Error::Database(_))
                 )
             }
-            Self::MembershipRemoved | Self::AgentDeleted | Self::OrganizationMembershipRemoved => {
+            Self::MembershipRemoved
+            | Self::AgentDeleted
+            | Self::OrganizationMembershipRemoved
+            | Self::WorkspaceCreated => {
                 matches!(
                     error,
                     crate::Error::Workspace(coral_workspace::Error::Database(_))

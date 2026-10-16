@@ -213,12 +213,13 @@ impl AccountModule {
             .providers
             .check_owner_configuration_in_transaction(&mut tx, context.actor(), owner)
             .await?;
-        if !crate::repository::hold_provider_in_transaction(&mut tx, owner, provider).await? {
-            return Err(Error::ProviderNotFound);
-        }
-        let active = crate::repository::provider_in_transaction(&mut tx, owner, provider)
-            .await?
-            .ok_or(Error::ProviderNotFound)?;
+        let active = crate::change::hold_for_change(
+            &mut tx,
+            owner,
+            provider,
+            crate::change::ProviderChange::RotateOAuthClientSecret,
+        )
+        .await?;
         let contract =
             coral_catalog::credential_contract_in_transaction(&mut tx, &active.generation_id)
                 .await?;

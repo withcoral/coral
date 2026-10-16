@@ -151,6 +151,194 @@ async fn coral_failure_is_coded_and_durable_before_program_continues() {
     }
 }
 
+/// A Workspace whose Owner has just installed the Built-in Provider.
+async fn builtin_scope(
+    fixture: &TestModules,
+    user: &str,
+) -> (coral_workspace::WorkspaceId, AuthenticatedPrincipal) {
+    let (workspace_id, owner) = fixture.user_scope(user, "Call Coral admin").await;
+    let owner_user = owner.authenticated_user().expect("User").clone();
+    let mut transaction = fixture.database.begin().await.unwrap();
+    fixture
+        .providers
+        .install_builtin_in_transaction(
+            &mut transaction,
+            &change(owner_user, 11, '2'),
+            &workspace_id,
+            coral_provider::prepare_builtin_catalog().unwrap(),
+        )
+        .await
+        .expect("install the Built-in Provider");
+    transaction.commit().await.unwrap();
+    (workspace_id, owner)
+}
+
+#[tokio::test]
+async fn builtin_create_provider_waits_for_approval_by_default() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let (workspace_id, owner) = builtin_scope(&fixture, "user:builtin-policy").await;
+    let mut transaction = fixture.database.begin().await.unwrap();
+    let target = coral_provider::resolve_invocation_operation_in_transaction(
+        &mut transaction,
+        &workspace_id,
+        coral_provider::InvocationCaller::new(&fixture.workspaces, &owner, 12),
+        "coral.workspace.createProvider",
+    )
+    .await
+    .unwrap()
+    .expect("the Built-in Operation resolves");
+    let decision = coral_policy::invocation_decision_in_transaction(
+        &mut transaction,
+        &OperationPolicyTarget::new(
+            workspace_id.clone(),
+            target.provider_access().id().clone(),
+            target.operation().key().clone(),
+        ),
+        target.operation().hints(),
+        target.operation().http_method(),
+    )
+    .await
+    .unwrap();
+    transaction.rollback().await.unwrap();
+    // createProvider declares no read-only hint, so it takes the cautious default.
+    assert_eq!(
+        decision.access_state(),
+        OperationAccessState::ApprovalRequired
+    );
+}
+
+#[tokio::test]
+async fn builtin_operation_fails_safely_for_an_owner_and_is_concealed_from_a_member() {
+    let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
+    let fixture = TestModules::with_upstream(
+        Arc::new(
+            crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
+                .expect("V8 engine"),
+        ),
+        upstream.clone(),
+    )
+    .await;
+    let (workspace_id, owner) = builtin_scope(&fixture, "user:builtin-caller").await;
+    let member = organization_user(
+        fixture.database.clone(),
+        "user:builtin-member",
+        OrganizationRole::Member,
+    )
+    .await;
+    fixture
+        .workspaces
+        .set_membership(
+            &change(owner.authenticated_user().expect("User").clone(), 12, '3'),
+            &workspace_id,
+            &member,
+            WorkspaceRole::Member,
+        )
+        .await
+        .unwrap();
+
+    // An Owner reaches the Operation, which fails without upstream contact. A
+    // Member gets the same answer as for a path that does not exist.
+    for (principal, code, invoked) in [
+        (owner, "operation_unavailable", true),
+        (
+            AuthenticatedPrincipal::user(member),
+            "operation_not_found",
+            false,
+        ),
+    ] {
+        let accepted = fixture
+            .runs
+            .start(
+                &principal,
+                &workspace_id,
+                submission(
+                    r#"
+            try {
+                await coral.workspace.createProvider({
+                    namespace: "weather",
+                    source: { kind: "openapi_url", url: "https://weather.example/openapi.json" },
+                });
+            } catch (error) {
+                if (!(error instanceof coral.OperationError)) throw error;
+                return error.code;
+            }
+        "#,
+                ),
+            )
+            .await
+            .expect("accept Program");
+        let terminal =
+            wait_for_terminal(&fixture.runs, &principal, &workspace_id, accepted.run_id()).await;
+        assert!(
+            matches!(
+                terminal.terminal_outcome(),
+                Some(RunTerminalOutcome::Succeeded {
+                    final_value: FinalValue::Present(value)
+                }) if value.as_json() == &serde_json::json!(code)
+            ),
+            "{principal:?}: {terminal:?}"
+        );
+        let events =
+            retained_events(&fixture.runs, &principal, &workspace_id, terminal.run_id()).await;
+        assert_eq!(
+            events
+                .iter()
+                .any(|event| matches!(event.kind(), RunEventKind::InvocationStarted { .. })),
+            invoked,
+            "{principal:?}: {events:?}"
+        );
+    }
+    assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn program_calls_a_provider_named_workspace_at_its_owner_call_root() {
+    let fixture = TestModules::with_upstream(
+        Arc::new(
+            crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
+                .expect("V8 engine"),
+        ),
+        Arc::new(ScriptedUpstream::json(
+            200,
+            serde_json::json!({"temperature": 21}),
+        )),
+    )
+    .await;
+    let operation = fixture
+        .user_operation_under(
+            "user:workspace-namespace",
+            "Call the workspace Provider",
+            "https://upstream.example",
+            "workspace",
+        )
+        .await;
+    let accepted = fixture
+        .runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission("return (await coral.providers.workspace.getForecast()).data.temperature;"),
+        )
+        .await
+        .expect("accept Program");
+    let terminal = wait_for_terminal(
+        &fixture.runs,
+        &operation.principal,
+        &operation.workspace_id,
+        accepted.run_id(),
+    )
+    .await;
+    assert!(
+        matches!(
+            terminal.terminal_outcome(),
+            Some(RunTerminalOutcome::Succeeded {
+                final_value: FinalValue::Present(value)
+            }) if value.as_json() == &serde_json::json!(21)
+        ),
+        "{terminal:?}"
+    );
+}
+
 #[tokio::test]
 async fn terminal_persistence_failure_settles_neither_invocation_promise_nor_run() {
     let upstream = Arc::new(ScriptedUpstream::json(

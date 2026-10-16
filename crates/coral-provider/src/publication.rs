@@ -7,7 +7,7 @@
 //! transaction and returns evidence of what it changed; the caller commits.
 //! Commands retain exact creation or regeneration evidence. Workspace owns authority;
 //! Catalog owns materialization and immutable Generations. Provider prepares its
-//! immutable namespace and promotes provisional credentials in the final transaction.
+//! immutable Call Root and promotes provisional credentials in the final transaction.
 //! Every terminal transaction scrubs remaining provisional credentials.
 //!
 //! Safe structural/domain failures consume the Setup with a failed terminal result.
@@ -274,7 +274,7 @@ impl ProviderModule {
             transaction.rollback().await?;
             return Ok(Preflight::Replay(terminal));
         }
-        // Creation and regeneration share the exact Workspace's request namespace.
+        // Creation and regeneration share the exact Workspace's request Call Root.
         // Re-read after a key appears: a concurrent exact request may
         // have committed since the first read (Postgres READ COMMITTED).
         if repository::request_key_exists(&mut transaction, &command).await? {
@@ -296,14 +296,16 @@ impl ProviderModule {
                 if !provider_exists {
                     return Err(Error::ProviderNotFound);
                 }
-                let provider = provider_repository::provider_in_transaction(
+                let provider = crate::change::load_for_change(
                     &mut transaction,
                     &owner,
                     request.provider_id(),
+                    crate::change::ProviderChange::Regenerate,
                 )
-                .await?
-                .filter(|stored| stored.provider.state() == ProviderState::Active)
-                .ok_or(Error::ProviderNotFound)?;
+                .await?;
+                if provider.provider.state() != ProviderState::Active {
+                    return Err(Error::ProviderNotFound);
+                }
                 // The terminal transaction checks the etag after settling an
                 // irreversibly stale account decision and its provisional material.
                 Command::Regenerate {
@@ -1029,7 +1031,7 @@ impl ProviderModule {
             transaction,
             request.workspace_id(),
             provider_id.clone(),
-            request.namespace().clone(),
+            request.call_root(),
             request.credential_route(),
         )
         .await?
@@ -1054,12 +1056,10 @@ impl ProviderModule {
                 }
                 MaterializationOutcome::Rejected(diagnostic) => Err(diagnostic),
             },
-            access::PreparedProviderAccess::NamespaceConflict => {
-                Err(PublicationDiagnostic::stable(
-                    "provider_namespace_conflict",
-                    "the requested Provider namespace is already in use",
-                ))
-            }
+            access::PreparedProviderAccess::CallRootConflict => Err(PublicationDiagnostic::stable(
+                "provider_namespace_conflict",
+                "the requested Provider namespace is already in use",
+            )),
         };
         let publication_id = ProviderPublicationId::generate();
         let (publication, evidence) = match prepared {

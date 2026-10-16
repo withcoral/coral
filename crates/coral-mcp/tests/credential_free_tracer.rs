@@ -513,7 +513,7 @@ async fn handshakes_carry_instructions_and_no_readable_resources_on_every_versio
             "`wait`",
             "`next_cursor`",
             "`run_status_url`",
-            "`coral.providers.<namespace>",
+            "complete literal Call Path",
             "`fetch`",
             "`required_actor`",
         ] {
@@ -1096,6 +1096,7 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
         structured(&described)["call_path"],
         "coral.providers.weather.getForecast"
     );
+    assert_eq!(structured(&described)["provider_access"], "weather");
     assert!(
         structured(&described)["typescript_declaration"]
             .as_str()

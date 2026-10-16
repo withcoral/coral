@@ -53,9 +53,13 @@ impl ProviderModule {
             .check_in_transaction(&mut tx, context.actor(), owner, WorkspaceAction::Configure)
             .await?;
         if let Some(target) = update_target {
-            repository::provider_in_transaction(&mut tx, owner, target)
-                .await?
-                .ok_or(Error::ProviderNotFound)?;
+            crate::change::load_for_change(
+                &mut tx,
+                owner,
+                target,
+                crate::change::ProviderChange::Reconfigure,
+            )
+            .await?;
         }
         let (current_input, current_url) = if source == ProviderSetupSource::Current {
             let target = update_target.ok_or(Error::ProviderSetupNotApplicable)?;

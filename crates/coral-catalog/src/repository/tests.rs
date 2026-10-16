@@ -46,7 +46,7 @@ async fn catalog_preserves_retained_generations_and_operations() {
             .collect::<Vec<_>>();
         let generation_id = publish_generation(
             &mut transaction,
-            input,
+            GenerationInput::Setup(input),
             &ProviderSetupInputDigest::of_setup_input(input),
             prepared,
             "persistence-fixture",
@@ -174,7 +174,7 @@ async fn summary_fixture(
     assert!(expected.len() > 3);
     let generation = publish_generation(
         tx,
-        &input,
+        GenerationInput::Setup(&input),
         &ProviderSetupInputDigest::of_setup_input(&input),
         prepared,
         "summary-page-fixture",

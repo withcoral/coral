@@ -79,11 +79,10 @@ pub(super) async fn evidence(
     principal: &coral_workspace::Principal,
 ) -> account::CredentialEvidence {
     let mut tx = h.database.begin().await.unwrap();
-    let target = crate::resolve_invocation_operation_in_transaction(
+    let target = crate::resolve_owner_operation_in_transaction(
         &mut tx,
         workspace,
-        &ProviderNamespace::parse(namespace).unwrap(),
-        "getPrivateForecast",
+        &format!("coral.providers.{namespace}.getPrivateForecast"),
     )
     .await
     .unwrap()

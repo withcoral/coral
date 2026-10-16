@@ -28,6 +28,8 @@ pub struct Dependencies {
     pub providers: coral_provider::ProviderModule,
     /// Provider publication, removal, and rename, one owned transaction each.
     pub provider_workflow: coral_administration::ProviderWorkflow,
+    /// Workspace creation with its Built-in Provider, in one owned transaction.
+    pub workspace_workflow: coral_administration::WorkspaceWorkflow,
     /// Provider readiness inspection.
     /// Discovery supplies current policy and Operation readiness evidence.
     pub provider_readiness: coral_search::UniversalSearchModule,
@@ -72,6 +74,7 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
         workspaces: dependencies.workspaces,
         providers: dependencies.providers,
         provider_workflow: dependencies.provider_workflow,
+        workspace_workflow: dependencies.workspace_workflow,
         provider_readiness: dependencies.provider_readiness,
         policies: dependencies.policies,
         accounts: dependencies.accounts,
@@ -177,6 +180,7 @@ struct GrpcServices {
     workspaces: WorkspaceModule,
     providers: coral_provider::ProviderModule,
     provider_workflow: coral_administration::ProviderWorkflow,
+    workspace_workflow: coral_administration::WorkspaceWorkflow,
     provider_readiness: coral_search::UniversalSearchModule,
     policies: coral_policy::OperationPolicyModule,
     accounts: Option<coral_provider::account::AccountModule>,

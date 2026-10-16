@@ -135,13 +135,14 @@ impl ProviderModule {
         let authority = self
             .check_owner_configuration_in_transaction(tx, context.actor(), workspace)
             .await?;
-        if !repository::hold_provider_in_transaction(tx, workspace, id).await? {
-            return Err(Error::ProviderNotFound);
-        }
-        let current = repository::provider_in_transaction(tx, workspace, id)
-            .await?
-            .ok_or(Error::ProviderNotFound)?
-            .provider;
+        let current = crate::change::hold_for_change(
+            tx,
+            workspace,
+            id,
+            crate::change::ProviderChange::Rename,
+        )
+        .await?
+        .provider;
         current.check_etag(context)?;
         if current.display_name() == display_name.as_str() {
             return Ok(current);

@@ -16,8 +16,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use coral_policy::{OperationAccessState, OperationPolicyTarget};
-use coral_provider::access::ProviderNamespace;
-use coral_provider::{InvocationOperationVerification, ResolvedInvocationOperation};
+use coral_provider::{
+    InvocationCaller, InvocationOperationVerification, ResolvedInvocationOperation,
+};
 use coral_upstream::{McpRejection, McpResources, ReadyDispatch, UpstreamOutcome};
 use coral_workspace::{AuthenticatedPrincipal, Principal, PrincipalWorkspaceEvidence};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
@@ -252,8 +253,7 @@ impl OperationInvoker {
                     coral_value::ValueError::TooLarge => CoralFailure::InputTooLarge,
                 })
             })?;
-        let address = CallPath::parse(call_path)?;
-        let (mut admitted, policy) = self.admit(call_path, &address, arguments_json).await?;
+        let (mut admitted, policy) = self.admit(call_path, arguments_json).await?;
         if policy == OperationAccessState::Disabled {
             return Err(self
                 .finish_failure(&admitted, CoralFailure::OperationDisabled)
@@ -414,7 +414,6 @@ impl OperationInvoker {
     async fn admit(
         &self,
         call_path: &str,
-        address: &CallPath,
         arguments_json: String,
     ) -> Result<(AdmittedInvocation, OperationAccessState), Error> {
         let mut transaction = self.database.begin().await?;
@@ -435,8 +434,8 @@ impl OperationInvoker {
         let Some(target) = coral_provider::resolve_invocation_operation_in_transaction(
             &mut transaction,
             &self.workspace_id,
-            &address.namespace,
-            &address.relative_path,
+            InvocationCaller::new(&self.workspaces, &self.actor, admitted_at),
+            call_path,
         )
         .await?
         else {
@@ -1135,34 +1134,6 @@ fn policy_target(
         target.provider_access().id().clone(),
         target.operation().key().clone(),
     )
-}
-
-struct CallPath {
-    namespace: ProviderNamespace,
-    relative_path: String,
-}
-
-impl CallPath {
-    fn parse(value: &str) -> Result<Self, Error> {
-        let Some(provider_path) = value.strip_prefix("coral.providers.") else {
-            return Err(Error::InvocationRejected(CoralFailure::OperationNotFound));
-        };
-        let Some((namespace, relative_path)) = provider_path.split_once('.') else {
-            return Err(Error::InvocationRejected(CoralFailure::OperationNotFound));
-        };
-        if relative_path.is_empty()
-            || relative_path.chars().any(char::is_control)
-            || relative_path.split('.').any(str::is_empty)
-        {
-            return Err(Error::InvocationRejected(CoralFailure::OperationNotFound));
-        }
-        let namespace = ProviderNamespace::parse(namespace)
-            .map_err(|_error| Error::InvocationRejected(CoralFailure::OperationNotFound))?;
-        Ok(Self {
-            namespace,
-            relative_path: relative_path.to_string(),
-        })
-    }
 }
 
 pub(super) struct AdmittedInvocation {

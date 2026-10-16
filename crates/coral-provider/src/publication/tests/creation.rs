@@ -12,7 +12,7 @@ fn retention_request(
         ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
         setup.owner().clone(),
         setup.id().clone(),
-        ProviderNamespace::parse("retention").unwrap(),
+        crate::ProviderNamespace::parse("retention").unwrap(),
         route,
     )
 }

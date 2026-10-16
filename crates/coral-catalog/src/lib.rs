@@ -13,6 +13,11 @@
 //! to its own terminal transaction.
 
 mod binding;
+mod builtin;
+pub use builtin::{
+    BUILTIN_PROVIDER_DISPLAY_NAME, BuiltinExecutionBinding, BuiltinOperation,
+    PreparedBuiltinCatalog,
+};
 mod configuration;
 pub use configuration::{
     ConfigurationFieldError, CredentialField, DISPLAY_NAME_MAX_BYTES, ProviderConfiguration,
@@ -56,7 +61,9 @@ pub async fn setup_input_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     generation_id: &ProviderGenerationId,
 ) -> Result<ProviderSetupInput, Error> {
-    repository::load_setup_input(transaction, generation_id).await
+    repository::load_setup_input(transaction, generation_id)
+        .await?
+        .ok_or_else(no_setup_input)
 }
 
 /// Reads only the source kind for an owner-authorized Provider inspection.
@@ -66,7 +73,14 @@ pub async fn setup_input_kind_in_transaction(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
 ) -> Result<ProviderSetupInputKind, Error> {
-    repository::load_setup_input_kind(transaction, generation_id).await
+    repository::load_setup_input_kind(transaction, generation_id)
+        .await?
+        .ok_or_else(no_setup_input)
+}
+
+/// The Built-in Provider's Generation pins Coral's own catalog, not a Setup input.
+fn no_setup_input() -> Error {
+    Error::InvalidInput("the Built-in Provider has no Setup input".to_string())
 }
 
 mod credentials;
@@ -139,6 +153,7 @@ pub fn materialize(
             match operation.execution_binding() {
                 ExecutionBinding::Http(binding) => binding.server_url(),
                 ExecutionBinding::Mcp(binding) => Some(binding.server_url()),
+                ExecutionBinding::Builtin(_) => None,
             }
         });
         if let Err(diagnostic) =
@@ -215,10 +230,44 @@ pub async fn publish_generation_in_transaction(
 ) -> Result<ProviderGenerationId, Error> {
     repository::publish_generation(
         transaction,
-        setup_input,
+        repository::GenerationInput::Setup(setup_input),
         input_digest,
         prepared,
         materializer_version(setup_input.kind()),
+        created_at_unix_nanos,
+    )
+    .await
+}
+
+/// Prepares the Built-in Provider's Coral-defined catalog outside a write
+/// transaction, for [`publish_builtin_generation_in_transaction`].
+///
+/// # Errors
+///
+/// Returns an invalid built-in definition.
+pub fn prepare_builtin_catalog() -> Result<PreparedBuiltinCatalog, Error> {
+    builtin::prepare().map_err(|diagnostic| Error::InvalidInput(diagnostic.message().to_string()))
+}
+
+/// Publishes one Workspace's own Generation of the Built-in Provider's
+/// Coral-defined catalog. The caller owns the transaction and commits the
+/// Provider that selects it atomically with this facet.
+///
+/// # Errors
+///
+/// Returns a persistence failure.
+pub async fn publish_builtin_generation_in_transaction(
+    transaction: &mut Transaction<'_>,
+    prepared: PreparedBuiltinCatalog,
+    created_at_unix_nanos: i64,
+) -> Result<ProviderGenerationId, Error> {
+    let PreparedBuiltinCatalog { catalog, identity } = prepared;
+    repository::publish_generation(
+        transaction,
+        repository::GenerationInput::Builtin(&identity),
+        &ProviderSetupInputDigest::of_bytes(identity.as_bytes()),
+        catalog,
+        builtin::MATERIALIZER_VERSION,
         created_at_unix_nanos,
     )
     .await

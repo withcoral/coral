@@ -6,6 +6,7 @@ mod provisional;
 mod repository;
 mod search_eval;
 mod setup;
+mod workspaces;
 
 use super::*;
 use coral_functions::{

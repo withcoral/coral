@@ -10,6 +10,7 @@ import {
 import { collectDataResponses } from '../../../../support/data-responses.ts'
 import { oauthMcpServer } from '../../../../support/provider-fixtures.ts'
 import {
+  addedProviders,
   acceptOperations,
   checkRadio,
   chooseAccount,
@@ -99,7 +100,7 @@ export async function sharedAccountAtomicity(context: TestContext) {
       expect(new URL(page.url()).pathname).toBe(`${providerPath}/settings`)
       active.knobs.issuerPath = undefined
     })
-    const provider = (await api.providers.listProviders({ parent })).providers[0]
+    const [provider] = addedProviders((await api.providers.listProviders({ parent })).providers)
     const inspectAccount = () =>
       api.accounts.getProviderAccount({
         parent,

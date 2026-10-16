@@ -10,6 +10,7 @@ const provider: ProviderSettingsView = {
   id: '00000000-0000-4000-8000-000000000001',
   displayName: 'GitLab.com',
   namespace: 'gitlab',
+  callRoot: 'coral.providers.gitlab',
   etag: 'provider-etag',
   path: '/workspaces/demo/providers/00000000-0000-4000-8000-000000000001',
   account: 'caller',

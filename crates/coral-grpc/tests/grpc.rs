@@ -221,6 +221,12 @@ impl Fixture {
                     providers.clone(),
                     search_index.clone(),
                 ),
+                workspace_workflow: coral_administration::WorkspaceWorkflow::new(
+                    database.clone(),
+                    workspaces.clone(),
+                    providers.clone(),
+                    search_index.clone(),
+                ),
                 workspaces: workspaces.clone(),
                 tasks: tasks.clone(),
                 saved_functions: coral_functions::SavedFunctionInspection::new(

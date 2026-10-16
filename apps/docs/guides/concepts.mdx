@@ -36,7 +36,7 @@ Workspace [members](#principals) share its [providers](#providers) and policy.
 
 A **provider** is a workspace-owned set of [operations](#operations) for an upstream service such as GitHub or Linear. Add one from Coral's provider catalog, or from your own OpenAPI document or MCP server.
 
-Each provider carries:
+Each provider you add carries:
 
 - an immutable **namespace**, unique in the workspace, that prefixes every [call path](#operations)
 - an [**account setting**](#account-setting)
@@ -44,15 +44,25 @@ Each provider carries:
 
 You can add a provider multiple times, each under its own namespace, to give the same operations a different account setting and policy.
 
+### Coral admin
+
+Every [workspace](#workspaces) also has one built-in provider, **Coral admin**. Coral defines its operations and performs them itself, without an upstream service.
+
+- Its call paths begin with `coral.workspace`, not with a namespace.
+- Only workspace owners can find and call its operations. Members and agents cannot see them.
+- Workspace owners can only disable it, enable it, and set its [policy](#operation-policy) under **Providers** in the [Coral UI](#coral-ui). Nobody can rename or remove it. It has no [accounts](#account-setting).
+
 ## Operations
 
 An **operation** is a single action exposed by a [provider](#providers). It has named inputs and returns one result.
 
-[Programs](#programs) call an operation by its **call path**, which always begins with the [provider](#providers) namespace:
+[Programs](#programs) call an operation by its **call path**, which begins with `coral.providers` and the [provider](#providers) namespace:
 
 ```ts
 await coral.providers.github.actions.addRepoAccess({ repo, user });
 ```
+
+Call paths of the [Coral admin](#coral-admin) provider begin with `coral.workspace` instead.
 
 ## Account setting
 

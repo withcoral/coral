@@ -1,3 +1,4 @@
+mod builtin;
 mod describe;
 mod index;
 mod retrieval;
@@ -325,7 +326,10 @@ async fn describe_returns_exact_descriptions_and_only_owned_source() {
         operation.guidance(),
         Some("Use a stable location identifier when one is available.")
     );
-    assert_eq!(operation.provider_namespace().as_str(), "weather");
+    assert_eq!(
+        operation.provider_call_root().as_str(),
+        "coral.providers.weather"
+    );
     assert_eq!(operation.provider_id(), &scope.published.provider_id);
     let declaration = operation.typescript_declaration();
     assert!(
@@ -833,8 +837,9 @@ async fn provider_declaration_paths_match_the_authoritative_typescript_surface()
         .search(
             &principal,
             &workspace_id,
-            &SearchRequest::query(SearchQuery::parse("input").expect("query"))
-                .with_provider(crate::ProviderNamespace::parse("argumentless").expect("namespace")),
+            &SearchRequest::query(SearchQuery::parse("input").expect("query")).with_provider(
+                crate::ProviderCallRoot::parse("coral.providers.argumentless").expect("namespace"),
+            ),
         )
         .await
         .expect("search argumentless Operation");
@@ -1901,8 +1906,9 @@ async fn provider_filter_selects_one_provider_and_keeps_saved_functions() {
         .search(
             &principal,
             &workspace_id,
-            &SearchRequest::list()
-                .with_provider(crate::ProviderNamespace::parse("weather").expect("namespace")),
+            &SearchRequest::list().with_provider(
+                crate::ProviderCallRoot::parse("coral.providers.weather").expect("namespace"),
+            ),
         )
         .await
         .expect("filter by stable Provider");
@@ -1979,8 +1985,9 @@ async fn pages_complete_current_results_with_query_bound_non_authorizing_cursors
         .search(
             &principal,
             &workspace_id,
-            &SearchRequest::list()
-                .with_provider(crate::ProviderNamespace::parse("weather").expect("namespace")),
+            &SearchRequest::list().with_provider(
+                crate::ProviderCallRoot::parse("coral.providers.weather").expect("namespace"),
+            ),
         )
         .await
         .expect("Provider-filtered page");
@@ -2034,7 +2041,10 @@ async fn pages_complete_current_results_with_query_bound_non_authorizing_cursors
                 &workspace_id,
                 &SearchRequest::list()
                     .with_limit(one)
-                    .with_provider(crate::ProviderNamespace::parse("weather").expect("namespace"))
+                    .with_provider(
+                        crate::ProviderCallRoot::parse("coral.providers.weather")
+                            .expect("namespace")
+                    )
                     .with_cursor(cursor.clone()),
             )
             .await,
@@ -2176,8 +2186,10 @@ async fn forged_cursor_positions_are_invalid_and_a_far_cursor_is_an_empty_page()
 fn describe_requires_one_complete_safe_call_path() {
     for invalid in [
         "weather.getForecast",
-        "coral.providers.weather",
+        "coral.weather",
         "coral.functions",
+        "coral.providers.weather",
+        "coral.emit.value",
         "coral.providers.weather.bad-segment",
         "coral.functions.internal.bad-segment",
     ] {
@@ -2185,6 +2197,7 @@ fn describe_requires_one_complete_safe_call_path() {
     }
     for valid in [
         "coral.providers.weather.getForecast",
+        "coral.workspace.createProvider",
         "coral.functions.internal.formatForecast",
         "coral.functions.天気.予報",
     ] {
@@ -3337,7 +3350,7 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
             Err(Error::Workspace(coral_workspace::Error::WorkspaceArchived))
         ));
         // A Task still starts in an archived Workspace, and its result names
-        // the namespaces, as an inspection of the Workspace may.
+        // the Call Roots, as an inspection of the Workspace may.
         assert_eq!(
             fixture
                 .search
@@ -3345,9 +3358,9 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
                 .await
                 .unwrap()
                 .iter()
-                .map(crate::ProviderNamespace::as_str)
+                .map(crate::ProviderCallRoot::as_str)
                 .collect::<Vec<_>>(),
-            ["weather", "weatherAgain"]
+            ["coral.providers.weather", "coral.providers.weatherAgain"]
         );
     }
     fixture
@@ -3883,10 +3896,7 @@ impl TestModules {
                 .await
                 .unwrap();
             for inspection in inspections {
-                let prefix = format!(
-                    "coral.providers.{}.",
-                    inspection.provider.namespace().as_str()
-                );
+                let prefix = format!("{}.", inspection.provider.call_root().as_str());
                 // A User's personal Account is not readiness, so it agrees with discovery.
                 assert_eq!(
                     inspection.blockers.is_empty(),

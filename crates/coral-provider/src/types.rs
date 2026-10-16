@@ -9,7 +9,7 @@ use coral_telemetry::TraceId;
 use coral_workspace::{AuthoritySource, UserId};
 use uuid::Uuid;
 
-use crate::access::{ProviderAccess, ProviderNamespace};
+use crate::access::{ProviderAccess, ProviderCallRoot};
 use crate::{Error, ProviderPublicationId};
 
 macro_rules! uuid_id {
@@ -323,10 +323,10 @@ impl Provider {
     pub const fn owner(&self) -> &WorkspaceId {
         self.workspace_id()
     }
-    /// Immutable Program namespace.
+    /// Immutable Provider Call Root.
     #[must_use]
-    pub const fn namespace(&self) -> &crate::ProviderNamespace {
-        self.access.namespace()
+    pub const fn call_root(&self) -> &crate::ProviderCallRoot {
+        self.access.call_root()
     }
     /// Current configured credential route.
     #[must_use]
@@ -421,7 +421,7 @@ impl ProviderSearchCatalog {
         self.active.provider().display_name()
     }
 
-    /// Returns this Provider's immutable namespace and account-setting evidence.
+    /// Returns this Provider's immutable Call Root and account-setting evidence.
     #[must_use]
     pub fn access(&self) -> &ProviderAccess {
         self.active.provider().access()
@@ -441,7 +441,7 @@ impl ProviderSearchCatalog {
 /// schema authority, account metadata, or credential evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationAuthoringMaterial {
-    provider_namespace: ProviderNamespace,
+    provider_call_root: ProviderCallRoot,
     provider_id: ProviderId,
     provider_display_name: String,
     operation_key: coral_catalog::OperationKey,
@@ -463,7 +463,7 @@ impl OperationAuthoringMaterial {
         typescript_declaration: String,
     ) -> Self {
         Self {
-            provider_namespace: provider_access.namespace().clone(),
+            provider_call_root: provider_access.call_root().clone(),
             provider_id: provider.id().clone(),
             provider_display_name: provider.display_name().to_string(),
             operation_key: operation.key().clone(),
@@ -476,10 +476,10 @@ impl OperationAuthoringMaterial {
         }
     }
 
-    /// Returns the immutable Provider namespace.
+    /// Returns the immutable Provider Call Root.
     #[must_use]
-    pub const fn provider_namespace(&self) -> &ProviderNamespace {
-        &self.provider_namespace
+    pub const fn provider_call_root(&self) -> &ProviderCallRoot {
+        &self.provider_call_root
     }
 
     /// Returns the underlying Provider identity without a Generation selector.
@@ -620,6 +620,8 @@ pub enum LifecycleAction {
     SetupExpired,
     /// One synchronous Publication reached a terminal outcome.
     PublicationCompleted,
+    /// Coral created the Workspace's Built-in Provider, which has no Publication.
+    BuiltinProviderInstalled,
     /// A Provider owner revoked later admission and dispatch.
     ProviderDisabled,
     /// A Provider owner restored later admission and dispatch.

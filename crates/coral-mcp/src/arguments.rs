@@ -19,7 +19,7 @@ const DESCRIBE_INTENT_DESCRIPTION: &str =
     "What the search result did not show that you need from this declaration.";
 const FUNCTION_PATH_DESCRIPTION: &str =
     "Dotted path under coral.functions, without that prefix, such as reports.summarize.";
-const SEARCH_TOOL_DESCRIPTION: &str = "Search current visible Operations and Saved Functions. In `query`, give keywords for the capability you need. Leave out people, record titles, IDs, dates and other record values. Each result is a summary with a signature line. Call a read directly when its signature line is complete. Call describe first when the line was cut, its input names a type you do not see, or before a write. When the user names the service, pass its namespace in `provider`. Otherwise, leave `provider` out. `start_task` lists the namespaces you can search. The filter narrows Operations to one Provider; Saved Functions stay. A page lists `retriever_statuses` only when results may be missing; retry shortly or list without a query.";
+const SEARCH_TOOL_DESCRIPTION: &str = "Search current visible Operations and Saved Functions. In `query`, give keywords for the capability you need. Leave out people, record titles, IDs, dates and other record values. Each result is a summary with a signature line. Call a read directly when its signature line is complete. Call describe first when the line was cut, its input names a type you do not see, or before a write. When the user names the service, pass its namespace in `provider`, or `coral.workspace` for Coral's own operations. Otherwise, leave `provider` out. `start_task` lists the namespaces you can search. The filter narrows Operations to one Provider; Saved Functions stay. A page lists `retriever_statuses` only when results may be missing; retry shortly or list without a query.";
 const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or wait on this Run. Without it, the response returns the Run's events from the start.";
 pub(crate) const DEFAULT_RUN_TIMEOUT_MS: u64 = 900_000;
 pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 10_000;
@@ -63,8 +63,8 @@ pub(crate) struct SearchArguments {
     pub(crate) query: Option<String>,
     #[schemars(
         length(min = 1, max = 128),
-        regex(pattern = r"^[A-Za-z_$][A-Za-z0-9_$]*$"),
-        description = "Namespace from coral.providers.<namespace>.<operation>, as listed by start_task. Omit unless the user names the service."
+        regex(pattern = r"^([A-Za-z_$][A-Za-z0-9_$]*|coral\.workspace)$"),
+        description = "Namespace from coral.providers.<namespace>.<operation>, as listed by start_task, or coral.workspace for Coral's own operations. Omit unless the user names the service."
     )]
     pub(crate) provider: Option<String>,
     #[schemars(
@@ -97,7 +97,7 @@ pub(crate) struct DescribeArguments {
     pub(crate) intent: String,
     #[schemars(
         length(min = 1),
-        description = "Complete Call Path: coral.providers.<namespace>.<operation> or coral.functions.<path>."
+        description = "Complete Call Path: coral.providers.<namespace>.<operation>, coral.workspace.<operation> or coral.functions.<path>."
     )]
     pub(crate) path: String,
     #[schemars(

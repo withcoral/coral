@@ -10,7 +10,7 @@ use coral_workspace::{
     AuthenticatedUser, ChangeContext, OrganizationRole, WorkspaceDisplayName, WorkspaceModule,
 };
 
-use crate::access::{CredentialRoute, ProviderNamespace};
+use crate::access::{CredentialRoute, ProviderCallRoot};
 use crate::account::AccountModule;
 use crate::{
     LifecycleAction, LifecycleOutcome, ManagementRequestId, OpenApiDocument, ProviderModule,
@@ -114,7 +114,7 @@ pub(crate) async fn publish_provider(
                 ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                 workspace.clone(),
                 setup.id().clone(),
-                ProviderNamespace::parse(namespace).unwrap(),
+                crate::ProviderNamespace::parse(namespace).unwrap(),
                 route,
             ),
         )
@@ -128,18 +128,17 @@ pub(crate) async fn publish_provider(
 pub(crate) async fn retained_operation(
     providers: &ProviderModule,
     workspace_id: &coral_workspace::WorkspaceId,
-    namespace: &ProviderNamespace,
+    call_root: &ProviderCallRoot,
 ) -> crate::ResolvedInvocationOperation {
     let mut transaction = providers
         .database
         .begin()
         .await
         .expect("begin Invocation resolution");
-    let retained = crate::resolve_invocation_operation_in_transaction(
+    let retained = crate::resolve_owner_operation_in_transaction(
         &mut transaction,
         workspace_id,
-        namespace,
-        "getForecast",
+        &format!("{}.getForecast", call_root.as_str()),
     )
     .await
     .expect("resolve Invocation Operation")
@@ -191,8 +190,8 @@ pub(crate) async fn operation_authoring_paths(
         .flat_map(|catalog| {
             catalog.operations().iter().map(|operation| {
                 format!(
-                    "coral.providers.{}.{}",
-                    catalog.access().namespace().as_str(),
+                    "{}.{}",
+                    catalog.access().call_root().as_str(),
                     operation.relative_path()
                 )
             })
@@ -211,7 +210,7 @@ pub(crate) fn publication_request(
         ManagementRequestId::parse(request_id).expect("request id"),
         workspace_id.clone(),
         setup_id.clone(),
-        ProviderNamespace::parse(namespace).expect("namespace"),
+        crate::ProviderNamespace::parse(namespace).expect("namespace"),
         route,
     )
 }
