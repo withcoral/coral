@@ -93,7 +93,7 @@ async fn creating_a_workspace_creates_its_builtin_provider_with_the_creator_as_a
         )
         .await
         .unwrap();
-    assert_eq!(provider.call_root().as_str(), "coral.admin");
+    assert_eq!(provider.call_root().as_str(), "coral.workspace");
 
     // The commit notified search; no reconcile pass ran.
     let indexed = indexed_operations(&f.db.database(), workspace.id())
@@ -107,7 +107,7 @@ async fn creating_a_workspace_creates_its_builtin_provider_with_the_creator_as_a
                 operation.provider_name.as_str()
             ))
             .collect::<Vec<_>>(),
-        [("coral.admin.createProvider", "admin Coral")]
+        [("coral.workspace.createProvider", "workspace Coral")]
     );
 }
 

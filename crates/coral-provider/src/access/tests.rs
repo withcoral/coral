@@ -188,17 +188,17 @@ fn call_root_parsing_accepts_owner_namespaces_and_only_the_builtin_coral_root() 
     for (value, expected) in [
         ("coral.providers.github", Parsed::Owner("github")),
         ("coral.providers.$_g1", Parsed::Owner("$_g1")),
-        ("coral.providers.admin", Parsed::Owner("admin")),
+        ("coral.providers.workspace", Parsed::Owner("workspace")),
         (long.as_str(), Parsed::Owner(segment.as_str())),
-        ("coral.admin", Parsed::Builtin),
+        ("coral.workspace", Parsed::Builtin),
         // Coral defines no other root, so none parses.
         ("coral.billing", Parsed::Rejected),
         ("coral.functions", Parsed::Rejected),
         ("coral.emit", Parsed::Rejected),
         ("coral.OperationError", Parsed::Rejected),
         (&format!("{long}a"), Parsed::Rejected),
-        ("coral.admin.", Parsed::Rejected),
-        ("coral.admin.tools", Parsed::Rejected),
+        ("coral.workspace.", Parsed::Rejected),
+        ("coral.workspace.tools", Parsed::Rejected),
         ("github", Parsed::Rejected),
         ("coral", Parsed::Rejected),
         ("providers.github", Parsed::Rejected),
@@ -242,10 +242,12 @@ fn call_root_parsing_accepts_owner_namespaces_and_only_the_builtin_coral_root() 
 async fn workspace_uniqueness_and_invocation_follow_the_stored_call_root() {
     let (db, workspaces, providers) = test_modules().await;
     let owner = organization_user(db.database(), "user:call-roots", OrganizationRole::Owner).await;
-    for (case, (first, second, conflicts)) in
-        [("admin", "admin", true), ("admin", "weather", false)]
-            .into_iter()
-            .enumerate()
+    for (case, (first, second, conflicts)) in [
+        ("workspace", "workspace", true),
+        ("workspace", "weather", false),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let tick = 100 * (i64::try_from(case).unwrap() + 1);
         let context = change_context(owner.clone(), tick, 'a');
@@ -355,23 +357,23 @@ fn only_one_call_root_owns_a_call_path_and_splits_it() {
             Some(("coral.providers.github", "repos.get")),
         ),
         (
-            "coral.admin.createProvider",
-            Some(("coral.admin", "createProvider")),
+            "coral.workspace.createProvider",
+            Some(("coral.workspace", "createProvider")),
         ),
         (
-            "coral.admin.providers.create",
-            Some(("coral.admin", "providers.create")),
+            "coral.workspace.providers.create",
+            Some(("coral.workspace", "providers.create")),
         ),
         (
-            "coral.providers.admin.create",
-            Some(("coral.providers.admin", "create")),
+            "coral.providers.workspace.create",
+            Some(("coral.providers.workspace", "create")),
         ),
         ("coral.providers.github", None),
         ("coral.providers.github.", None),
         ("coral.providers.github..get", None),
         ("coral.providers.github.get\n", None),
         ("coral.functions.github.get", None),
-        ("coral.admin", None),
+        ("coral.workspace", None),
         ("github.repos.get", None),
     ] {
         assert_eq!(

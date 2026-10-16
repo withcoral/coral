@@ -3,7 +3,7 @@
 use super::*;
 use coral_workspace::WorkspaceRole;
 
-const CREATE_PROVIDER: &str = "coral.admin.createProvider";
+const CREATE_PROVIDER: &str = "coral.workspace.createProvider";
 
 #[tokio::test]
 async fn search_and_describe_hide_builtin_operations_from_a_member() {

@@ -29,7 +29,7 @@ it('leaves the Built-in Provider out of the overview, so a new workspace offers 
           {
             name: `${parent}/providers/builtin`,
             displayName: 'Coral',
-            callRoot: 'coral.admin',
+            callRoot: 'coral.workspace',
             state: ProviderState.ACTIVE,
           },
           {

@@ -372,7 +372,7 @@ test('the built-in provider offers no change', async () => {
       builtin: true,
       displayName: 'Coral',
       namespace: '',
-      callRoot: 'coral.admin',
+      callRoot: 'coral.workspace',
       account: 'none',
     },
   })
