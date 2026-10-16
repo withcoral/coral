@@ -22,6 +22,7 @@ import type {
   OperationView,
   ProviderSettingsView,
   ProviderView,
+  SearchIndexView,
 } from '@/views/providers/types'
 import type { PersonalAccountState } from '@/views/accounts/types'
 import { accountLabels } from '@/views/providers/account-labels'
@@ -219,10 +220,20 @@ const searchIndexFailureReasons: Partial<Record<SearchIndexFailureReason, string
   [SearchIndexFailureReason.DATABASE]: 'Search cannot use its database.',
 }
 
-/** Why search could not index the provider, or null when it did not fail. */
-export function searchIndexFailure(provider: Provider): string | null {
-  if (provider.searchIndexState !== SearchIndexState.FAILED) return null
-  return searchIndexFailureReasons[provider.searchIndexFailureReason] ?? 'No reason recorded.'
+/** Whether search can find the provider's operations; null when it can, or Coral sent no state. */
+export function searchIndexView(provider: Provider): SearchIndexView | null {
+  switch (provider.searchIndexState) {
+    case SearchIndexState.PENDING:
+      return { state: 'pending' }
+    case SearchIndexState.FAILED:
+      return {
+        state: 'failed',
+        reason:
+          searchIndexFailureReasons[provider.searchIndexFailureReason] ?? 'No reason recorded.',
+      }
+    default:
+      return null
+  }
 }
 
 export async function providerView(
@@ -265,7 +276,7 @@ export async function providerView(
     account: accountLabel(provider.credentialRoute),
     blockers: provider.blockers.map(blockerLabel),
     personalAccountAction: personalAccountAction(provider, personalAccounts),
-    searchIndexFailure: searchIndexFailure(provider),
+    searchIndex: searchIndexView(provider),
     readyCount: ops.filter((o) => o.available).length,
     totalCount: ops.length,
     etag: provider.etag,

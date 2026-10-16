@@ -8,7 +8,7 @@ import {
   SearchIndexState,
 } from '@/generated/coral/management/v1/provider_pb'
 import type { PersonalAccountState } from '@/views/accounts/types'
-import { personalAccountAction, providerFailure, searchIndexFailure } from './providers.server'
+import { personalAccountAction, providerFailure, searchIndexView } from './providers.server'
 
 const name = 'workspaces/w/providers/p'
 
@@ -62,32 +62,53 @@ it.each([
   expect(result.data).toEqual({ error: message, credential: null })
 })
 
-// Catches: a provider that search indexed showing a failure, or a failure
-// showing no reason because its kind is missing from the map.
+// Catches: a provider that search indexed showing a notice, a pending
+// provider showing none, or a failure showing no reason because its kind is
+// missing from the map.
 it.each([
   [SearchIndexState.INDEXED, SearchIndexFailureReason.UNSPECIFIED, null],
-  [SearchIndexState.PENDING, SearchIndexFailureReason.UNSPECIFIED, null],
   [SearchIndexState.UNSPECIFIED, SearchIndexFailureReason.UNSPECIFIED, null],
+  [SearchIndexState.PENDING, SearchIndexFailureReason.UNSPECIFIED, { state: 'pending' }],
   [
     SearchIndexState.FAILED,
     SearchIndexFailureReason.INVALID_ENTRY,
-    'One of the operations cannot become a search entry.',
+    { state: 'failed', reason: 'One of the operations cannot become a search entry.' },
   ],
-  [SearchIndexState.FAILED, SearchIndexFailureReason.TIMED_OUT, 'Indexing took too long.'],
-  [SearchIndexState.FAILED, SearchIndexFailureReason.CLOCK, 'The server clock is wrong.'],
-  [SearchIndexState.FAILED, SearchIndexFailureReason.CORRUPT, 'The search index is damaged.'],
+  [
+    SearchIndexState.FAILED,
+    SearchIndexFailureReason.TIMED_OUT,
+    { state: 'failed', reason: 'Indexing took too long.' },
+  ],
+  [
+    SearchIndexState.FAILED,
+    SearchIndexFailureReason.CLOCK,
+    { state: 'failed', reason: 'The server clock is wrong.' },
+  ],
+  [
+    SearchIndexState.FAILED,
+    SearchIndexFailureReason.CORRUPT,
+    { state: 'failed', reason: 'The search index is damaged.' },
+  ],
   [
     SearchIndexState.FAILED,
     SearchIndexFailureReason.PROVIDER,
-    "Search cannot read the provider's operations.",
+    { state: 'failed', reason: "Search cannot read the provider's operations." },
   ],
-  [SearchIndexState.FAILED, SearchIndexFailureReason.DATABASE, 'Search cannot use its database.'],
-  [SearchIndexState.FAILED, SearchIndexFailureReason.UNSPECIFIED, 'No reason recorded.'],
-])('reads search index state %s with reason %s as %s', (state, reason, failure) => {
+  [
+    SearchIndexState.FAILED,
+    SearchIndexFailureReason.DATABASE,
+    { state: 'failed', reason: 'Search cannot use its database.' },
+  ],
+  [
+    SearchIndexState.FAILED,
+    SearchIndexFailureReason.UNSPECIFIED,
+    { state: 'failed', reason: 'No reason recorded.' },
+  ],
+])('reads search index state %s with reason %s', (state, reason, view) => {
   const provider = create(ProviderSchema, {
     name,
     searchIndexState: state,
     searchIndexFailureReason: reason,
   })
-  expect(searchIndexFailure(provider)).toBe(failure)
+  expect(searchIndexView(provider)).toEqual(view)
 })

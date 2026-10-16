@@ -86,7 +86,7 @@ const github: ProviderView = {
   account: 'Individual accounts',
   blockers: [],
   personalAccountAction: null,
-  searchIndexFailure: null,
+  searchIndex: null,
   readyCount: 3,
   totalCount: 4,
   etag: 'prov-etag',
@@ -101,7 +101,7 @@ const weather: ProviderView = {
   account: 'No account',
   blockers: [],
   personalAccountAction: null,
-  searchIndexFailure: null,
+  searchIndex: null,
   readyCount: 1,
   totalCount: 1,
   etag: 'prov-etag-2',
@@ -340,7 +340,10 @@ export const TreeSearchIndexFailed: Story = {
   render: () => (
     <WorkspaceProvidersPage
       {...treeProps}
-      providers={[{ ...github, searchIndexFailure: 'Indexing took too long.' }, weather]}
+      providers={[
+        { ...github, searchIndex: { state: 'failed', reason: 'Indexing took too long.' } },
+        weather,
+      ]}
       selectedProvider="prov-github"
       selectedOperation="issues.create"
     />
@@ -361,12 +364,37 @@ export const TreeSearchIndexFailureReason: Story = {
   render: () => (
     <WorkspaceProvidersPage
       {...treeProps}
-      providers={[{ ...github, searchIndexFailure: 'Indexing took too long.' }, weather]}
+      providers={[
+        { ...github, searchIndex: { state: 'failed', reason: 'Indexing took too long.' } },
+        weather,
+      ]}
     />
   ),
   play: async ({ canvasElement }) => {
     await userEvent.hover(within(canvasElement).getByText('Not in search', { exact: true }))
     await waitFor(() => expect(screen.getByText(/Reason: Indexing took too long\./)).toBeVisible())
+  },
+}
+// Search has not finished indexing GitHub's active Generation yet.
+export const TreeSearchIndexPending: Story = {
+  render: () => (
+    <WorkspaceProvidersPage
+      {...treeProps}
+      providers={[{ ...github, searchIndex: { state: 'pending' } }, weather]}
+      selectedProvider="prov-github"
+      selectedOperation="issues.create"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getAllByText('Indexing…', { exact: true })).toHaveLength(1)
+    await expect(canvas.queryByText('Not in search', { exact: true })).toBeNull()
+    const drawer = within(
+      await within(canvasElement.ownerDocument.body).findByRole('dialog', {
+        name: 'issues.create',
+      }),
+    )
+    await expect(drawer.getByText(/Search cannot find this operation yet\./)).toBeVisible()
   },
 }
 export const TreeAsMember: Story = {
