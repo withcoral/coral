@@ -1,52 +1,47 @@
-//! Termination intent and the first-wins terminal Run write.
+//! Termination intent and the terminal Run write, each one chunk commit.
 
 use coral_db::Transaction;
-use sea_query::{Expr, ExprTrait as _, Query};
+use sea_query::Expr;
 
-use super::ProgramRunRecords;
-use super::events::{NewEvent, insert_event};
-use crate::lifecycle::{RunRecord, RunTermination, RunTerminationKind};
-use crate::{Error, FinalValue, RunState, RunTerminalOutcome};
+use super::ledger::commit_chunk_with;
+use super::{Chunk, NewEvent, ProgramRunRecords};
+use crate::lifecycle::{RunRecord, RunTermination};
+use crate::{Error, FinalValue, RunTerminalOutcome};
 
+/// Records termination intent, and `cancellation.requested` when a Principal
+/// asked for it, as one chunk built on `run` under the Run hold.
+///
+/// # Errors
+///
+/// Returns the chunk commit's claim or head mismatch; the caller decided in
+/// memory that no termination is recorded yet.
 pub(crate) async fn request_termination(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
     request: &crate::lifecycle::RequestedTermination<'_>,
-) -> Result<bool, Error> {
+) -> Result<(), Error> {
     let RunTermination {
         kind,
         started_at_unix_nanos,
         deadline_at_unix_nanos,
     } = request.termination;
-    let next_event_sequence = i64::try_from(request.next_event_sequence)
-        .map_err(|_error| Error::CorruptData("Run Event sequence overflowed".to_string()))?;
-    let mut statement = Query::update();
-    statement
-        .table(ProgramRunRecords::Table)
-        .values([
-            (
-                ProgramRunRecords::TerminationKind,
-                Expr::val(kind.as_storage_str()),
-            ),
-            (
-                ProgramRunRecords::TerminationStartedAtUnixNanos,
-                Expr::val(started_at_unix_nanos),
-            ),
-            (
-                ProgramRunRecords::TerminationDeadlineAtUnixNanos,
-                Expr::val(deadline_at_unix_nanos),
-            ),
-            (
-                ProgramRunRecords::NextEventSequence,
-                Expr::val(next_event_sequence),
-            ),
-        ])
-        .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(run.workspace_id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::Id).eq(run.id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::State).eq(RunState::Running.as_storage_str()))
-        .and_where(Expr::col(ProgramRunRecords::TerminationKind).is_null());
+    let mut values = vec![
+        (
+            ProgramRunRecords::TerminationKind,
+            Expr::val(kind.as_storage_str()),
+        ),
+        (
+            ProgramRunRecords::TerminationStartedAtUnixNanos,
+            Expr::val(started_at_unix_nanos),
+        ),
+        (
+            ProgramRunRecords::TerminationDeadlineAtUnixNanos,
+            Expr::val(deadline_at_unix_nanos),
+        ),
+    ];
+    let mut chunk = Chunk::new(run, run.execution_claim_id.as_deref());
     if let Some(requester) = request.requester {
-        statement.values([
+        values.extend([
             (
                 ProgramRunRecords::CancellationRequestedAtUnixNanos,
                 Expr::val(started_at_unix_nanos),
@@ -60,20 +55,15 @@ pub(crate) async fn request_termination(
                 Expr::val(requester.kind().as_storage_str()),
             ),
         ]);
+        chunk = chunk.event(
+            NewEvent::CancellationRequested(requester),
+            started_at_unix_nanos,
+        );
     }
     if request.release_worker_claim {
-        statement.values([
-            (
-                ProgramRunRecords::WorkerClaimId,
-                Expr::val(Option::<String>::None),
-            ),
-            (
-                ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
-                Expr::val(Option::<i64>::None),
-            ),
-        ]);
+        values.extend(released_worker_claim());
     }
-    Ok(transaction.execute(statement).await? == 1)
+    commit_chunk_with(transaction, chunk, values).await
 }
 
 pub(crate) async fn finish_unstarted_run(
@@ -81,15 +71,8 @@ pub(crate) async fn finish_unstarted_run(
     run: &RunRecord,
     outcome: &RunTerminalOutcome,
     terminal_at_unix_nanos: i64,
-) -> Result<bool, Error> {
-    finish_terminal_run(
-        transaction,
-        run,
-        ExecutionFence::Unstarted,
-        outcome,
-        terminal_at_unix_nanos,
-    )
-    .await
+) -> Result<(), Error> {
+    finish_terminal_run(transaction, run, None, outcome, terminal_at_unix_nanos).await
 }
 
 /// Persists the caller-selected outcome and terminal Event under the Run hold.
@@ -100,47 +83,43 @@ pub(crate) async fn finish_run(
     claim_id: &str,
     outcome: &RunTerminalOutcome,
     terminal_at_unix_nanos: i64,
-) -> Result<bool, Error> {
+) -> Result<(), Error> {
     finish_terminal_run(
         transaction,
         run,
-        ExecutionFence::Claimed(claim_id),
+        Some(claim_id),
         outcome,
         terminal_at_unix_nanos,
     )
     .await
 }
 
+/// Ends a Run whose termination `run` records, under whichever claim it holds.
 pub(crate) async fn finish_termination(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
-    kind: RunTerminationKind,
     outcome: &RunTerminalOutcome,
     terminal_at_unix_nanos: i64,
-) -> Result<bool, Error> {
+) -> Result<(), Error> {
     finish_terminal_run(
         transaction,
         run,
-        ExecutionFence::Termination(kind),
+        run.execution_claim_id.as_deref(),
         outcome,
         terminal_at_unix_nanos,
     )
     .await
 }
 
-enum ExecutionFence<'a> {
-    Unstarted,
-    Claimed(&'a str),
-    Termination(RunTerminationKind),
-}
-
+/// The terminal chunk: the outcome, a released worker claim, and `run.ended`.
+/// No Event follows it, because every later chunk is built on a head it moved.
 async fn finish_terminal_run(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
-    fence: ExecutionFence<'_>,
+    execution_claim_id: Option<&str>,
     outcome: &RunTerminalOutcome,
     terminal_at_unix_nanos: i64,
-) -> Result<bool, Error> {
+) -> Result<(), Error> {
     let (failure_code, failure_message, final_value_json) = terminal_fields(outcome);
     let final_value_bytes = final_value_json.as_deref().map_or(0, str::len);
     let failure_error_json = match outcome {
@@ -153,80 +132,48 @@ async fn finish_terminal_run(
             })?,
         _ => None,
     };
-    let next_event_sequence = run
-        .next_event_sequence
-        .checked_add(1)
-        .and_then(|value| i64::try_from(value).ok())
-        .ok_or_else(|| Error::CorruptData("Run Event sequence overflowed".to_string()))?;
-    let mut statement = Query::update();
-    statement
-        .table(ProgramRunRecords::Table)
-        .values([
-            (
-                ProgramRunRecords::State,
-                Expr::val(outcome.state().as_storage_str()),
-            ),
-            (
-                ProgramRunRecords::TerminalAtUnixNanos,
-                Expr::val(terminal_at_unix_nanos),
-            ),
-            (ProgramRunRecords::FailureCode, Expr::val(failure_code)),
-            (
-                ProgramRunRecords::FailureMessage,
-                Expr::val(failure_message),
-            ),
-            (
-                ProgramRunRecords::FailureErrorJson,
-                Expr::val(failure_error_json),
-            ),
-            (
-                ProgramRunRecords::FinalValueJson,
-                Expr::val(final_value_json),
-            ),
-            (
-                ProgramRunRecords::WorkerClaimId,
-                Expr::val(Option::<String>::None),
-            ),
-            (
-                ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
-                Expr::val(Option::<i64>::None),
-            ),
-            (
-                ProgramRunRecords::NextEventSequence,
-                Expr::val(next_event_sequence),
-            ),
-        ])
-        .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(run.workspace_id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::Id).eq(run.id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::State).eq(RunState::Running.as_storage_str()));
-    match fence {
-        ExecutionFence::Unstarted => {
-            statement.and_where(Expr::col(ProgramRunRecords::ExecutionClaimId).is_null());
-        }
-        ExecutionFence::Claimed(claim_id) => {
-            statement
-                .and_where(Expr::col(ProgramRunRecords::TerminationKind).is_null())
-                .and_where(Expr::col(ProgramRunRecords::ExecutionClaimId).eq(claim_id))
-                .and_where(Expr::col(ProgramRunRecords::WorkerClaimId).eq(claim_id));
-        }
-        ExecutionFence::Termination(kind) => {
-            statement
-                .and_where(Expr::col(ProgramRunRecords::TerminationKind).eq(kind.as_storage_str()));
-        }
-    }
-    if transaction.execute(statement).await? != 1 {
-        return Ok(false);
-    }
-    insert_event(
-        transaction,
-        &run.workspace_id,
-        &run.id,
-        run.next_event_sequence,
+    let mut values = vec![
+        (
+            ProgramRunRecords::State,
+            Expr::val(outcome.state().as_storage_str()),
+        ),
+        (
+            ProgramRunRecords::TerminalAtUnixNanos,
+            Expr::val(terminal_at_unix_nanos),
+        ),
+        (ProgramRunRecords::FailureCode, Expr::val(failure_code)),
+        (
+            ProgramRunRecords::FailureMessage,
+            Expr::val(failure_message),
+        ),
+        (
+            ProgramRunRecords::FailureErrorJson,
+            Expr::val(failure_error_json),
+        ),
+        (
+            ProgramRunRecords::FinalValueJson,
+            Expr::val(final_value_json),
+        ),
+    ];
+    values.extend(released_worker_claim());
+    let chunk = Chunk::new(run, execution_claim_id).event(
         NewEvent::Ended(outcome.state(), final_value_bytes),
         terminal_at_unix_nanos,
-    )
-    .await?;
-    Ok(true)
+    );
+    commit_chunk_with(transaction, chunk, values).await
+}
+
+fn released_worker_claim() -> [(ProgramRunRecords, Expr); 2] {
+    [
+        (
+            ProgramRunRecords::WorkerClaimId,
+            Expr::val(Option::<String>::None),
+        ),
+        (
+            ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
+            Expr::val(Option::<i64>::None),
+        ),
+    ]
 }
 
 type TerminalFields = (Option<String>, Option<String>, Option<String>);

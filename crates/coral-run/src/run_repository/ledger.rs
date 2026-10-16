@@ -1,0 +1,186 @@
+//! The Run Ledger head and the one chunk-commit write path (ADR 0018).
+//!
+//! A chunk is everything one Run write carries: its Events, the Run Output
+//! Budget total after them, and, once the Run Owner writes them, the worker
+//! lease renewal.
+//! [`commit_chunk`] writes it in the caller's transaction under one predicate,
+//! the execution claim id and the head the chunk was built on, and moves the
+//! head by one. The Run-scoped rows a chunk carries (Invocation rows, Approval
+//! Request rows) join the same transaction through their owning repositories;
+//! the Run row's own changes (termination intent, the terminal outcome) ride in
+//! the head update through [`commit_chunk_with`].
+
+use coral_db::Transaction;
+use coral_workspace::WorkspaceId;
+use sea_query::{Expr, ExprTrait as _, Query};
+
+use super::events::{NewEvent, insert_events};
+use super::{ProgramRunRecords, RunRecord};
+use crate::{Error, RunId};
+
+/// One Event of a chunk and when it occurred.
+pub(crate) struct ChunkEvent<'a> {
+    pub(crate) event: NewEvent<'a>,
+    pub(crate) occurred_at_unix_nanos: i64,
+}
+
+/// One Run Ledger write, built on the Run as its writer read it.
+pub(crate) struct Chunk<'a> {
+    workspace_id: &'a WorkspaceId,
+    run_id: &'a RunId,
+    /// The execution claim id the chunk was built on. `None` before execution
+    /// starts: acceptance leaves the claim unset until the worker's start mark.
+    execution_claim_id: Option<&'a str>,
+    /// The Run Ledger head the chunk was built on.
+    head: u64,
+    events: Vec<ChunkEvent<'a>>,
+    /// The Run Output Budget total after this chunk, written as a plain value.
+    output_bytes: usize,
+    /// Renews the worker lease to this instant when the writer holds the lease.
+    lease_until_unix_nanos: Option<i64>,
+}
+
+impl<'a> Chunk<'a> {
+    /// Starts a chunk on `run` as the writer read it under its hold, predicated
+    /// on `execution_claim_id`: the worker's own claim, or the claim on the row
+    /// for writers outside the worker.
+    pub(crate) fn new(run: &'a RunRecord, execution_claim_id: Option<&'a str>) -> Self {
+        Self {
+            workspace_id: &run.workspace_id,
+            run_id: &run.id,
+            execution_claim_id,
+            head: run.chunk_sequence,
+            events: Vec::new(),
+            output_bytes: run.accumulated_output_bytes,
+            lease_until_unix_nanos: None,
+        }
+    }
+
+    /// Appends an Event after the ones already in the chunk.
+    pub(crate) fn event(mut self, event: NewEvent<'a>, occurred_at_unix_nanos: i64) -> Self {
+        self.events.push(ChunkEvent {
+            event,
+            occurred_at_unix_nanos,
+        });
+        self
+    }
+
+    /// Sets the Run Output Budget total this chunk records.
+    pub(crate) const fn output_bytes(mut self, total: usize) -> Self {
+        self.output_bytes = total;
+        self
+    }
+
+    /// Renews the worker lease to `until_unix_nanos` when the Run row still
+    /// holds this chunk's claim as its worker claim.
+    ///
+    /// No writer renews yet: today a starved heartbeat lets the lease lapse and
+    /// the next write self-interrupts the Run, which is what ends a burst that
+    /// exhausts the pool. The Run Owner renews on every chunk once it also
+    /// owns the suspect and self-interrupt rule (slices 2 and 3).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the Run Owner is the first writer to renew per chunk"
+        )
+    )]
+    pub(crate) const fn renew_lease(mut self, until_unix_nanos: i64) -> Self {
+        self.lease_until_unix_nanos = Some(until_unix_nanos);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn built_on_head(mut self, head: u64) -> Self {
+        self.head = head;
+        self
+    }
+}
+
+/// Commits `chunk` in `transaction`: asserts the claim and the head, moves the
+/// head by one, writes the output total, renews the lease, and appends the
+/// Events after the Run's last one. The caller commits the transaction.
+///
+/// # Errors
+///
+/// [`Error::ClaimMismatch`] when the Run row holds another execution claim,
+/// [`Error::HeadMismatch`] when it holds the claim but the head has moved.
+/// Neither writes anything.
+pub(crate) async fn commit_chunk(
+    transaction: &mut Transaction<'_>,
+    chunk: Chunk<'_>,
+) -> Result<(), Error> {
+    commit_chunk_with(transaction, chunk, Vec::new()).await
+}
+
+/// [`commit_chunk`] with further Run row columns written in the head update.
+pub(super) async fn commit_chunk_with(
+    transaction: &mut Transaction<'_>,
+    chunk: Chunk<'_>,
+    run_values: Vec<(ProgramRunRecords, Expr)>,
+) -> Result<(), Error> {
+    let head = i64::try_from(chunk.head)
+        .map_err(|_error| Error::CorruptData("Run Ledger head overflowed".to_string()))?;
+    let next_head = head
+        .checked_add(1)
+        .ok_or_else(|| Error::CorruptData("Run Ledger head overflowed".to_string()))?;
+    let output_bytes = i64::try_from(chunk.output_bytes)
+        .map_err(|_error| Error::CorruptData("Run output bytes overflowed".to_string()))?;
+    let mut statement = Query::update();
+    statement
+        .table(ProgramRunRecords::Table)
+        .values([
+            (ProgramRunRecords::ChunkSequence, Expr::val(next_head)),
+            (
+                ProgramRunRecords::AccumulatedOutputBytes,
+                Expr::val(output_bytes),
+            ),
+        ])
+        .values(run_values)
+        .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(chunk.workspace_id.to_string()))
+        .and_where(Expr::col(ProgramRunRecords::Id).eq(chunk.run_id.to_string()))
+        .and_where(Expr::col(ProgramRunRecords::ChunkSequence).eq(head));
+    match chunk.execution_claim_id {
+        Some(claim_id) => {
+            statement.and_where(Expr::col(ProgramRunRecords::ExecutionClaimId).eq(claim_id));
+            if let Some(until) = chunk.lease_until_unix_nanos {
+                statement.value(
+                    ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
+                    Expr::case(
+                        Expr::col(ProgramRunRecords::WorkerClaimId).eq(claim_id),
+                        Expr::val(until),
+                    )
+                    .finally(Expr::col(ProgramRunRecords::WorkerClaimExpiresAtUnixNanos)),
+                );
+            }
+        }
+        None => {
+            statement.and_where(Expr::col(ProgramRunRecords::ExecutionClaimId).is_null());
+        }
+    }
+    if transaction.execute(statement).await? != 1 {
+        return Err(rejection(transaction, &chunk).await?);
+    }
+    insert_events(transaction, chunk.workspace_id, chunk.run_id, &chunk.events).await
+}
+
+/// Reads why the head update matched no row. Under the Run hold the row cannot
+/// change between the update and this read.
+async fn rejection(transaction: &mut Transaction<'_>, chunk: &Chunk<'_>) -> Result<Error, Error> {
+    let row: Option<(Option<String>,)> = transaction
+        .fetch_optional(
+            Query::select()
+                .column(ProgramRunRecords::ExecutionClaimId)
+                .from(ProgramRunRecords::Table)
+                .and_where(
+                    Expr::col(ProgramRunRecords::WorkspaceId).eq(chunk.workspace_id.to_string()),
+                )
+                .and_where(Expr::col(ProgramRunRecords::Id).eq(chunk.run_id.to_string()))
+                .to_owned(),
+        )
+        .await?;
+    Ok(match row {
+        Some((claim_id,)) if claim_id.as_deref() == chunk.execution_claim_id => Error::HeadMismatch,
+        Some(_) | None => Error::ClaimMismatch,
+    })
+}

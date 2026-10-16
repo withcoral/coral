@@ -6,8 +6,8 @@ use coral_workspace::WorkspaceId;
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
 use sqlx::FromRow;
 
-use super::ProgramRunRecords;
-use super::events::{NewEvent, insert_event};
+use super::events::{NewEvent, insert_events};
+use super::{ChunkEvent, ProgramRunRecords};
 use crate::engine::ProgramPackage;
 use crate::types::AcceptedRun;
 use crate::{
@@ -88,6 +88,7 @@ pub(crate) async fn insert_acceptance(
             ProgramRunRecords::ValueLimitsJson,
             ProgramRunRecords::NextEventSequence,
             ProgramRunRecords::AccumulatedOutputBytes,
+            ProgramRunRecords::ChunkSequence,
         ])
         .values_panic([
             Expr::val(run.id.to_string()),
@@ -99,7 +100,9 @@ pub(crate) async fn insert_acceptance(
             Expr::val(run.deadline_at_unix_nanos),
             Expr::val(run.shutdown_grace_nanos),
             Expr::val(serde_json::to_string(&run.value_limits).map_err(Error::ProgramValueJson)?),
+            // The previous release's Event counter; nothing in this release reads it.
             Expr::val(2_i64),
+            Expr::val(0_i64),
             Expr::val(0_i64),
         ])
         .to_owned();
@@ -145,13 +148,16 @@ pub(crate) async fn insert_acceptance(
         insert_run_snapshot(transaction, run, snapshot).await?;
     }
 
-    insert_event(
+    // Acceptance creates the Run Ledger at head 0 with its first Event. There
+    // is no claim to predicate on yet; the row insert itself is the write fence.
+    insert_events(
         transaction,
         &run.workspace_id,
         &run.id,
-        1,
-        NewEvent::Started,
-        run.accepted_at_unix_nanos,
+        &[ChunkEvent {
+            event: NewEvent::Started,
+            occurred_at_unix_nanos: run.accepted_at_unix_nanos,
+        }],
     )
     .await
 }

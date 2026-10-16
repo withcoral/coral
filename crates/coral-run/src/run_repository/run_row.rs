@@ -36,8 +36,11 @@ pub(super) struct RunRow {
     failure_error_json: Option<String>,
     final_value_json: Option<String>,
     value_limits_json: String,
-    next_event_sequence: i64,
     accumulated_output_bytes: i64,
+    chunk_sequence: i64,
+    /// Read beside the row in a read snapshot; absent under `hold_run`.
+    #[sqlx(default)]
+    last_event_sequence: Option<i64>,
 }
 
 impl RunFailureCode {
@@ -101,10 +104,13 @@ impl RunRow {
         let principal_kind = principal_kind_from_storage(&self.principal_kind)?;
         let principal = Principal::from_parts(principal_id, principal_kind);
         let state = RunState::from_storage_str(&self.state)?;
-        let next_event_sequence = u64::try_from(self.next_event_sequence)
-            .ok()
-            .filter(|sequence| *sequence >= 2)
-            .ok_or_else(|| Error::CorruptData("Run has invalid Event sequence".to_string()))?;
+        let chunk_sequence = u64::try_from(self.chunk_sequence)
+            .map_err(|_error| Error::CorruptData("Run has invalid Ledger head".to_string()))?;
+        let last_event_sequence = self
+            .last_event_sequence
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_error| Error::CorruptData("Run has invalid Event sequence".to_string()))?;
 
         if self.deadline_at_unix_nanos < self.accepted_at_unix_nanos
             || self.shutdown_grace_nanos <= 0
@@ -181,7 +187,8 @@ impl RunRow {
             execution_started_at_unix_nanos: self.execution_started_at_unix_nanos,
             termination,
             shutdown_grace_nanos: self.shutdown_grace_nanos,
-            next_event_sequence,
+            chunk_sequence,
+            last_event_sequence,
             accumulated_output_bytes,
             terminal_outcome,
             terminal_at_unix_nanos: self.terminal_at_unix_nanos,
