@@ -1669,6 +1669,28 @@ function PolicySummary({
   const unavailable = provider.totalCount - provider.readyCount
   return (
     <>
+      {provider.searchIndex?.state === 'pending' && (
+        <Tooltip content="Search cannot find these operations yet. Agents can still call them.">
+          <span className={styles.inlineTooltipTarget} tabIndex={0}>
+            <Pill size="small" color="gray">
+              <Icon name="Hourglass" size="14" color="inherit" />
+              Indexing…
+            </Pill>
+          </span>
+        </Tooltip>
+      )}
+      {provider.searchIndex?.state === 'failed' && (
+        <Tooltip
+          content={`Search cannot find these operations. Agents can still call them. Reason: ${provider.searchIndex.reason}`}
+        >
+          <span className={styles.inlineTooltipTarget} tabIndex={0}>
+            <Pill size="small" color="amber">
+              <Icon name="SearchX" size="14" color="inherit" />
+              Not in search
+            </Pill>
+          </span>
+        </Tooltip>
+      )}
       {unavailable > 0 && (
         <Tooltip content="Show only unavailable operations.">
           <Button.Container
@@ -1766,6 +1788,16 @@ function OperationDetailsDrawer({
                   />
                 )}
               </div>
+              {provider?.searchIndex?.state === 'pending' && (
+                <Banner variant="info" title="Indexing…">
+                  Search cannot find this operation yet. Agents can still call it.
+                </Banner>
+              )}
+              {provider?.searchIndex?.state === 'failed' && (
+                <Banner variant="info" title="Not in search">
+                  Search cannot find this operation. Agents can still call it.
+                </Banner>
+              )}
               {!operation.available && (
                 <Banner variant="warning" title="Unavailable">
                   {operation.reasons.join(' ') || 'Coral did not provide a reason.'}

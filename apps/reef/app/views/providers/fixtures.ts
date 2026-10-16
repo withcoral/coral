@@ -50,6 +50,7 @@ export function provider(
     account: 'No account',
     blockers: [],
     personalAccountAction: null,
+    searchIndex: null,
     readyCount: operations.length,
     totalCount: operations.length,
     etag: 'etag',
