@@ -700,36 +700,43 @@ pub(super) async fn recorded_generations(
         .collect()
 }
 
-/// Reads the outcome each of a Workspace's Generation state rows records,
-/// keyed by Generation. A Generation no attempt has reached has no entry.
+/// Reads the outcome each of a Workspace's Generation state rows records, or
+/// only the one Provider's, keyed by Generation. A Generation no attempt has
+/// reached has no entry.
 pub(crate) async fn generation_outcomes_in_workspace(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-) -> Result<HashMap<ProviderGenerationId, SearchIndexState>, crate::Error> {
-    let rows: Vec<(String, String, Option<String>)> = transaction
-        .fetch_all(
-            Query::select()
-                .columns([
-                    SearchIndexStates::ProviderGenerationId,
-                    SearchIndexStates::State,
-                    SearchIndexStates::ErrorKind,
-                ])
-                .from(SearchIndexStates::Table)
-                .and_where(Expr::col(SearchIndexStates::WorkspaceId).eq(workspace_id.to_string()))
-                .and_where(Expr::col(SearchIndexStates::Kind).eq(OPERATION))
-                .to_owned(),
-        )
-        .await?;
+    provider_filter: Option<&ProviderId>,
+) -> Result<HashMap<ProviderGenerationId, SearchIndexState>, IndexError> {
+    let mut query = Query::select()
+        .columns([
+            SearchIndexStates::ProviderGenerationId,
+            SearchIndexStates::State,
+            SearchIndexStates::ErrorKind,
+        ])
+        .from(SearchIndexStates::Table)
+        .and_where(Expr::col(SearchIndexStates::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(SearchIndexStates::Kind).eq(OPERATION))
+        .to_owned();
+    if let Some(provider_id) = provider_filter {
+        query.and_where(Expr::col(SearchIndexStates::ProviderId).eq(provider_id.to_string()));
+    }
+    let rows: Vec<(String, String, Option<String>)> = transaction.fetch_all(query).await?;
     rows.into_iter()
         .map(|(generation_id, state, error_kind)| {
-            let generation_id = ProviderGenerationId::parse(&generation_id)
-                .map_err(|_error| crate::Error::ServiceUnavailable)?;
+            let generation_id = ProviderGenerationId::parse(&generation_id).map_err(|_error| {
+                IndexError::Corrupt("a search index state row has an invalid Generation id")
+            })?;
             let state = match (state.as_str(), error_kind.as_deref()) {
                 (COMPLETE, None) => SearchIndexState::Indexed,
                 (FAILED, kind) => SearchIndexState::Failed {
                     reason: kind.and_then(parse_failure_kind),
                 },
-                _ => return Err(crate::Error::ServiceUnavailable),
+                _ => {
+                    return Err(IndexError::Corrupt(
+                        "a search index state row has an invalid state",
+                    ));
+                }
             };
             Ok((generation_id, state))
         })

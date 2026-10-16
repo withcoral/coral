@@ -1673,10 +1673,12 @@ function PolicySummary({
         <Tooltip
           content={`Search cannot find these operations. Agents can still call them. Reason: ${provider.searchIndexFailure}`}
         >
-          <Pill size="small" color="amber">
-            <Icon name="SearchX" size="14" color="inherit" />
-            Not in search
-          </Pill>
+          <span className={styles.inlineTooltipTarget} tabIndex={0}>
+            <Pill size="small" color="amber">
+              <Icon name="SearchX" size="14" color="inherit" />
+              Not in search
+            </Pill>
+          </span>
         </Tooltip>
       )}
       {unavailable > 0 && (

@@ -8,3 +8,8 @@
 -- migration; on SQLite, changing a CHECK means rebuilding the table.
 ALTER TABLE search_index_states
     ADD COLUMN error_kind TEXT;
+
+-- A single Provider's read finds its state rows without scanning the
+-- Workspace's.
+CREATE INDEX search_index_states_provider_idx
+    ON search_index_states (workspace_id, kind, provider_id);

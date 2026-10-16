@@ -1145,6 +1145,8 @@ async fn search_index_states_require_workspace_inspection() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let outsider = organization_user(world.modules.search.database.clone(), "user:outsider").await;
+    world.fail_an_attempt().await;
+    let before = world.states().await;
 
     let denied = world
         .modules
@@ -1161,6 +1163,7 @@ async fn search_index_states_require_workspace_inspection() {
         ),
         "{denied:?}"
     );
+    assert_eq!(world.states().await, before, "the denial changed nothing");
 }
 
 /// Notifies the index that the Generation the entries name became active, as

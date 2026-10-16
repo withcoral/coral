@@ -68,7 +68,19 @@ it.each([
   [SearchIndexState.INDEXED, SearchIndexFailureReason.UNSPECIFIED, null],
   [SearchIndexState.PENDING, SearchIndexFailureReason.UNSPECIFIED, null],
   [SearchIndexState.UNSPECIFIED, SearchIndexFailureReason.UNSPECIFIED, null],
+  [
+    SearchIndexState.FAILED,
+    SearchIndexFailureReason.INVALID_ENTRY,
+    'One of the operations cannot become a search entry.',
+  ],
   [SearchIndexState.FAILED, SearchIndexFailureReason.TIMED_OUT, 'Indexing took too long.'],
+  [SearchIndexState.FAILED, SearchIndexFailureReason.CLOCK, 'The server clock is wrong.'],
+  [SearchIndexState.FAILED, SearchIndexFailureReason.CORRUPT, 'The search index is damaged.'],
+  [
+    SearchIndexState.FAILED,
+    SearchIndexFailureReason.PROVIDER,
+    "Search cannot read the provider's operations.",
+  ],
   [SearchIndexState.FAILED, SearchIndexFailureReason.DATABASE, 'Search cannot use its database.'],
   [SearchIndexState.FAILED, SearchIndexFailureReason.UNSPECIFIED, 'No reason recorded.'],
 ])('reads search index state %s with reason %s as %s', (state, reason, failure) => {
