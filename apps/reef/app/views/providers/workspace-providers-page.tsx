@@ -797,18 +797,21 @@ function ProvidersTableScreen({
                       <Button.Icon name="ListFilter" />
                     </Button.Container>
                   </Tooltip>
-                  <Button.Container
-                    as={Link}
-                    className={styles.providerRailAction}
-                    id={providerSettingsDomId(provider.id)}
-                    to={`${provider.path}/settings`}
-                    preventScrollReset
-                    variant="bare"
-                    size="22"
-                    ariaLabel={`${providerLabel(provider)} settings`}
-                  >
-                    <Button.Icon name="Settings" />
-                  </Button.Container>
+                  {/* Coral has no settings: nobody renames, reconfigures, or removes it. */}
+                  {!provider.builtin && (
+                    <Button.Container
+                      as={Link}
+                      className={styles.providerRailAction}
+                      id={providerSettingsDomId(provider.id)}
+                      to={`${provider.path}/settings`}
+                      preventScrollReset
+                      variant="bare"
+                      size="22"
+                      ariaLabel={`${providerLabel(provider)} settings`}
+                    >
+                      <Button.Icon name="Settings" />
+                    </Button.Container>
+                  )}
                 </>
               }
             />
