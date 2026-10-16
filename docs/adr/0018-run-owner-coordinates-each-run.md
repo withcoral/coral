@@ -10,8 +10,8 @@ Run is terminal and is the only writer of that Run's **Run Ledger**. Every Run-s
 in one short transaction whose predicate is the Run's execution claim id and the ledger head it was built on. Once a Run
 is claimed, only two transitions wait for the database: the chunk commit and the **Dispatch Fence**, which rides inside
 a chunk commit; the claim itself is written in the acceptance transaction, renewed by every commit, and taken over only
-by the recovery sweep below. Admit, wait, settle, decide and cancel are owner memory. Nothing holds a connection while a
-Program waits for a human, a credential refresh, or an upstream call.
+by recovery: the expired-lease sweep or the owner's supervisor, both below. Admit, wait, settle, decide and cancel are
+owner memory. Nothing holds a connection while a Program waits for a human, a credential refresh, or an upstream call.
 
 This replaces the shape where a `hold_run` row lock on the Run row served as the Run's work queue, serial Event ledger
 and live authority fence at once, with compare-and-set counters (`next_event_sequence`, `accumulated_output_bytes`) as
