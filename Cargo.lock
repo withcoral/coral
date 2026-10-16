@@ -776,6 +776,7 @@ dependencies = [
  "coral-auth",
  "coral-catalog",
  "coral-credentials",
+ "coral-db",
  "coral-functions",
  "coral-outbound",
  "coral-policy",
