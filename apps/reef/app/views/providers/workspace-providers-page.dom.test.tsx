@@ -185,14 +185,14 @@ test('operation groups sort alphabetically without regard to case', () => {
 })
 
 // Catches: Coral's Built-in Provider sorted among the providers you add,
-// instead of leading the rail and the table.
-test('the built-in provider leads the providers you add', () => {
+// instead of leading the rail and the table, or linking to settings it does
+// not have.
+test('the built-in provider leads the providers you add and has no settings', () => {
   const coral = builtinProvider('00000000-0000-4000-8000-000000000003')
   const arcade = provider('00000000-0000-4000-8000-000000000004', 'Arcade', 'arcade')
   renderPage({ providers: [weather, arcade, coral, github] })
   const gears = screen.getAllByRole('link', { name: / settings$/ })
   expect(gears.map((gear) => gear.getAttribute('aria-label'))).toEqual([
-    'Coral settings',
     'Arcade settings',
     'GitHub settings',
     'Weather settings',
