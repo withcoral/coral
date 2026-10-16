@@ -461,10 +461,13 @@ pub struct OperationAuthoringMaterial {
 }
 
 impl OperationAuthoringMaterial {
+    /// `typescript_declaration` is the Operation's complete declaration, from
+    /// [`coral_catalog::authoring_declaration_in_transaction`].
     pub(crate) fn new(
         provider_access: &ProviderAccess,
         provider: &Provider,
         operation: &MaterializedOperation,
+        typescript_declaration: String,
     ) -> Self {
         Self {
             provider_call_root: provider_access.call_root().clone(),
@@ -476,7 +479,7 @@ impl OperationAuthoringMaterial {
             presentation: operation.presentation().clone(),
             hints: operation.hints(),
             http_method: operation.http_method(),
-            typescript_declaration: operation.typescript_declaration().to_string(),
+            typescript_declaration,
         }
     }
 

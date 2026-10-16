@@ -448,11 +448,15 @@ pub async fn hydrate_operation_in_transaction(
             .ok_or(Error::CorruptData(
                 "a loaded Generation is missing from the request".into(),
             ))??;
+    let declaration =
+        coral_catalog::authoring_declaration_in_transaction(transaction, generation_id, &operation)
+            .await?;
     Ok(Some(HydratedOperation {
         material: OperationAuthoringMaterial::new(
             provider.provider().access(),
             provider.provider(),
             &operation,
+            declaration,
         ),
         declaration_fields,
     }))
@@ -472,18 +476,25 @@ pub async fn operation_material_by_relative_path_in_transaction(
     provider: &ActiveProvider,
     relative_path: &str,
 ) -> Result<Option<OperationAuthoringMaterial>, Error> {
-    Ok(coral_catalog::operation_by_relative_path_in_transaction(
+    let Some(operation) = coral_catalog::operation_by_relative_path_in_transaction(
         transaction,
         provider.generation_id(),
         relative_path,
     )
     .await?
-    .filter(|operation| operation.availability() == OperationAvailability::Available)
-    .map(|operation| {
-        OperationAuthoringMaterial::new(
-            provider.provider().access(),
-            provider.provider(),
-            &operation,
-        )
-    }))
+    .filter(|operation| operation.availability() == OperationAvailability::Available) else {
+        return Ok(None);
+    };
+    let declaration = coral_catalog::authoring_declaration_in_transaction(
+        transaction,
+        provider.generation_id(),
+        &operation,
+    )
+    .await?;
+    Ok(Some(OperationAuthoringMaterial::new(
+        provider.provider().access(),
+        provider.provider(),
+        &operation,
+        declaration,
+    )))
 }

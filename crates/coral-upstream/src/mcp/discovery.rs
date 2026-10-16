@@ -2,13 +2,15 @@
 //! Raw tool definitions survive SDK decoding, and an authentication challenge is
 //! returned as typed evidence instead of being collapsed into a request failure.
 
+use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
 
-use rmcp::ServiceExt as _;
 use rmcp::model::{ClientConfig, PaginatedRequestParams};
+use rmcp::service::RunningService;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::common::client_side_sse::NeverRetry;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use rmcp::{RoleClient, ServiceExt as _};
 use serde_json::{Value, json};
 
 use super::transport::{Captured, McpHttpClient};
@@ -261,39 +263,11 @@ async fn discover(
         }
         let mut tools = Vec::new();
         if initialization.pointer("/capabilities/tools").is_some() {
-            let mut cursor: Option<String> = None;
-            let mut seen = std::collections::HashSet::new();
-            loop {
-                let params = cursor.take().map(|cursor| {
-                    let mut params = PaginatedRequestParams::default();
-                    params.cursor = Some(cursor);
-                    params
-                });
-                if client.list_tools(params).await.is_err() {
-                    return Err(failure(&captured));
-                }
-                let page = take(&captured)?;
-                tools.extend(
-                    page.get("tools")
-                        .and_then(Value::as_array)
-                        .ok_or(Error::McpResult)?
-                        .iter()
-                        .cloned(),
-                );
-                if seen.len() >= MAX_DISCOVERY_PAGES {
-                    return Err(Error::ResultTooLarge);
-                }
-                cursor = match page.get("nextCursor") {
-                    None => None,
-                    Some(Value::String(next)) if !next.is_empty() && seen.insert(next.clone()) => {
-                        Some(next.clone())
-                    }
-                    Some(_) => return Err(Error::McpResult),
-                };
-                if cursor.is_none() {
-                    break;
-                }
-            }
+            visit_tool_pages(&client, &captured, |page| {
+                tools.extend(page);
+                ControlFlow::Continue(())
+            })
+            .await?;
         }
         snapshot(initialization, tools, url, contract)
     }
@@ -306,6 +280,49 @@ fn failure(slot: &Mutex<Option<Captured>>) -> Error {
     match slot.lock().ok().and_then(|mut slot| slot.take()) {
         Some(captured) => captured.into_result().err().unwrap_or(Error::McpRequest),
         None => Error::McpRequest,
+    }
+}
+
+/// Walks every `tools/list` page in order and hands each page's tools to
+/// `visit`, which can end the walk early.
+pub(super) async fn visit_tool_pages(
+    client: &RunningService<RoleClient, ClientConfig>,
+    captured: &Mutex<Option<Captured>>,
+    mut visit: impl FnMut(Vec<Value>) -> ControlFlow<()>,
+) -> Result<(), Error> {
+    let mut cursor: Option<String> = None;
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        let params = cursor.take().map(|cursor| {
+            let mut params = PaginatedRequestParams::default();
+            params.cursor = Some(cursor);
+            params
+        });
+        if client.list_tools(params).await.is_err() {
+            return Err(failure(captured));
+        }
+        let page = take(captured)?;
+        let tools = page
+            .get("tools")
+            .and_then(Value::as_array)
+            .ok_or(Error::McpResult)?
+            .clone();
+        if visit(tools).is_break() {
+            return Ok(());
+        }
+        if seen.len() >= MAX_DISCOVERY_PAGES {
+            return Err(Error::ResultTooLarge);
+        }
+        cursor = match page.get("nextCursor") {
+            None => None,
+            Some(Value::String(next)) if !next.is_empty() && seen.insert(next.clone()) => {
+                Some(next.clone())
+            }
+            Some(_) => return Err(Error::McpResult),
+        };
+        if cursor.is_none() {
+            return Ok(());
+        }
     }
 }
 
