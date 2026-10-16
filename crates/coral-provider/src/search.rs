@@ -312,6 +312,36 @@ pub async fn active_generations_in_transaction(
     repository::active_generations(transaction).await
 }
 
+/// Reads the active Generation of each of a Workspace's Providers, or of the
+/// one Provider the filter names, for the search index's state read.
+///
+/// Disabled Providers are included, as in [`active_generations_in_transaction`].
+/// The caller checks Workspace authority. This facet reads no Operation catalog.
+///
+/// # Errors
+///
+/// Returns a shared persistence or corrupt Provider failure.
+pub async fn workspace_active_generations_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    provider_filter: Option<&ProviderId>,
+) -> Result<Vec<ActiveGeneration>, Error> {
+    Ok(
+        repository::management_providers(transaction, workspace_id, provider_filter)
+            .await?
+            .into_iter()
+            .map(|stored| {
+                ActiveGeneration::new(
+                    workspace_id.clone(),
+                    stored.provider.id().clone(),
+                    stored.generation_id,
+                    stored.provider.display_name().to_owned(),
+                )
+            })
+            .collect(),
+    )
+}
+
 /// Reads a Workspace's Active Providers with their active Generations.
 ///
 /// This facet reads no Operation catalog, so it stays cheap for a Workspace

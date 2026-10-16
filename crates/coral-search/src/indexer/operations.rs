@@ -217,6 +217,7 @@ pub(crate) async fn record_failed_attempt(
     .await?;
     let state = AttemptState::Failed {
         error: error.to_string(),
+        failure: error.failure(),
     };
     repository::write_generation_state(
         transaction,

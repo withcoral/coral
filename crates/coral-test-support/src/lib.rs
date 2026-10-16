@@ -137,6 +137,21 @@ impl TestDatabase {
             .map_err(Into::into)
     }
 
+    /// Opens a peer handle that waits at most `writer_wait` for the `SQLite`
+    /// writer before a write fails as busy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the selected Adapter cannot open another handle.
+    pub async fn connect_peer_with_writer_wait(
+        &self,
+        writer_wait: std::time::Duration,
+    ) -> Result<Database, TestDatabaseError> {
+        Database::connect_with_writer_wait(self.options.clone(), writer_wait)
+            .await
+            .map_err(Into::into)
+    }
+
     /// Runs raw SQL against this fixture's isolated storage on a separate connection.
     ///
     /// Fault-injection tests use this to install or remove a trigger after the

@@ -43,6 +43,7 @@ pub(super) fn provider_name(provider: &domain::Provider) -> String {
 pub(super) fn provider_view(
     provider: &domain::Provider,
     blockers: &[domain::access::ProviderBlocker],
+    search_index: Option<coral_search::SearchIndexState>,
 ) -> wire::Provider {
     let kind = match provider.credential_route() {
         CredentialRoute::None => wire::credential_route::Kind::None,
@@ -87,6 +88,34 @@ pub(super) fn provider_view(
                 .into()
             })
             .collect(),
+        search_index_state: match search_index {
+            None => wire::SearchIndexState::Unspecified,
+            Some(coral_search::SearchIndexState::Pending) => wire::SearchIndexState::Pending,
+            Some(coral_search::SearchIndexState::Indexed) => wire::SearchIndexState::Indexed,
+            Some(coral_search::SearchIndexState::Failed { .. }) => wire::SearchIndexState::Failed,
+        }
+        .into(),
+        search_index_failure_reason: match search_index {
+            Some(coral_search::SearchIndexState::Failed {
+                reason: Some(reason),
+            }) => search_index_failure_reason(reason),
+            _ => wire::SearchIndexFailureReason::Unspecified,
+        }
+        .into(),
+    }
+}
+
+const fn search_index_failure_reason(
+    reason: coral_search::SearchIndexFailure,
+) -> wire::SearchIndexFailureReason {
+    use coral_search::SearchIndexFailure as Failure;
+    match reason {
+        Failure::InvalidEntry => wire::SearchIndexFailureReason::InvalidEntry,
+        Failure::TimedOut => wire::SearchIndexFailureReason::TimedOut,
+        Failure::Clock => wire::SearchIndexFailureReason::Clock,
+        Failure::Corrupt => wire::SearchIndexFailureReason::Corrupt,
+        Failure::Provider => wire::SearchIndexFailureReason::Provider,
+        Failure::Database => wire::SearchIndexFailureReason::Database,
     }
 }
 
@@ -793,9 +822,15 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
     ) -> Result<Response<wire::ListProvidersResponse>, Status> {
         let user = self.management_user(&request).await?;
         let req = request.into_inner();
+        let workspace = scope(&req.parent)?;
         let inspections = self
             .provider_readiness
-            .inspect_provider_readiness(&user, &scope(&req.parent)?)
+            .inspect_provider_readiness(&user, &workspace)
+            .await
+            .map_err(readiness_error)?;
+        let search_index = self
+            .provider_readiness
+            .inspect_search_index_states(&user, &workspace, None)
             .await
             .map_err(readiness_error)?;
         let (inspections, next_page_token) = page(
@@ -808,7 +843,13 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         Ok(Response::new(wire::ListProvidersResponse {
             providers: inspections
                 .iter()
-                .map(|inspection| provider_view(&inspection.provider, &inspection.blockers))
+                .map(|inspection| {
+                    provider_view(
+                        &inspection.provider,
+                        &inspection.blockers,
+                        search_index.get(inspection.provider.id()).copied(),
+                    )
+                })
                 .collect(),
             next_page_token,
         }))
@@ -995,7 +1036,16 @@ impl GrpcServices {
             .inspect_provider_readiness_for(actor, workspace, id)
             .await
             .map_err(readiness_error)?;
-        Ok(provider_view(&inspection.provider, &inspection.blockers))
+        let search_index = self
+            .provider_readiness
+            .inspect_search_index_states(actor, workspace, Some(id))
+            .await
+            .map_err(readiness_error)?;
+        Ok(provider_view(
+            &inspection.provider,
+            &inspection.blockers,
+            search_index.get(id).copied(),
+        ))
     }
 }
 
