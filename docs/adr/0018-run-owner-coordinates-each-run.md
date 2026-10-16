@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # One Run Owner per Run writes the Run Ledger; the database holds no Run work queue
