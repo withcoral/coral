@@ -180,6 +180,10 @@ fn safe_segment(mut segment: String) -> String {
     segment
 }
 
+/// Whether a stored or carried-forward path has the shape every assigned path
+/// has: dotted ASCII JavaScript identifiers. Naming rules, such as which
+/// segments `safe_segment` escapes, apply only when a path is assigned. They
+/// change over time, and a path an earlier rule assigned stays valid.
 pub(super) fn valid_relative_path(value: &str) -> bool {
     !value.is_empty()
         && value.split('.').all(|segment| {
@@ -190,7 +194,6 @@ pub(super) fn valid_relative_path(value: &str) -> bool {
                 && segment
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$'))
-                && !call_path_segment_is_reserved(segment)
         })
 }
 
@@ -257,8 +260,24 @@ mod tests {
             assert_eq!(path(key), expected, "{key}");
             assert!(valid_relative_path(expected), "{expected}");
         }
-        for invalid in ["then", "a.__proto__", "2fa"] {
-            assert!(!valid_relative_path(invalid), "{invalid}");
+        for malformed in ["", "2fa", "a..b", "a.b-c"] {
+            assert!(!valid_relative_path(malformed), "{malformed}");
+        }
+    }
+
+    /// Naming rules change; a path an earlier rule assigned must still carry
+    /// forward, even one whose segment a later rule reserves or escapes.
+    #[test]
+    fn paths_assigned_under_earlier_naming_rules_carry_forward() {
+        for (key, earlier) in [("items/then", "items.then"), ("pulls/get", "pulls._get")] {
+            let key = OperationKey::parse(key).expect("test key");
+            let previous = OperationPathAssignment {
+                key: key.clone(),
+                relative_path: earlier.to_string(),
+            };
+            let assigned =
+                assign_operation_paths([&key].into_iter(), &[previous]).expect("assignment");
+            assert_eq!(assigned.get(&key).map(String::as_str), Some(earlier));
         }
     }
 
