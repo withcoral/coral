@@ -10,7 +10,7 @@ use coral_workspace::{
     WorkspaceModule,
 };
 
-const ADDED: &str = "coral.admin.listThings";
+const ADDED: &str = "coral.workspace.listThings";
 
 /// Catalog B: this Coral version's Operations plus a read-only one it does
 /// not perform, as a later Coral version could define.
@@ -99,7 +99,7 @@ impl Fixture {
             .await
             .unwrap()
             .into_iter()
-            .find(|provider| provider.call_root().as_str() == "coral.admin")
+            .find(|provider| provider.call_root().as_str() == "coral.workspace")
             .expect("the Workspace has its Built-in Provider")
     }
 

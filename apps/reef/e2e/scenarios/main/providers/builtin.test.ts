@@ -43,7 +43,7 @@ test('Coral leads the providers page for owners, offers nothing to change, stops
     'alpha',
   )
   const coral = (await api.providers.listProviders({ parent: workspace.name })).providers.find(
-    (provider) => provider.callRoot === 'coral.admin',
+    (provider) => provider.callRoot === 'coral.workspace',
   )!
   const providersPage = `/${workspace.name}/providers`
   await withBrowserSession(
@@ -75,7 +75,7 @@ test('Coral leads the providers page for owners, offers nothing to change, stops
           await observeRun(
             runner,
             await runner.exec(
-              'try { await coral.admin.listProviders({}); return "listed"; } catch (error) { return error.code; }',
+              'try { await coral.workspace.listProviders({}); return "listed"; } catch (error) { return error.code; }',
             ),
           )
         ).update.final_value

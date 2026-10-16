@@ -41,7 +41,7 @@ async function pauseForApproval(
   }
   const runner = programRunner(page, target, id, { taskIntent: 'Add the weather provider' })
   const started = await runner.exec(
-    `try { return await coral.admin.createProvider(${JSON.stringify(call)}); } catch (error) { return error.code; }`,
+    `try { return await coral.workspace.createProvider(${JSON.stringify(call)}); } catch (error) { return error.code; }`,
   )
   expect(started.isError).not.toBe(true)
   let paused = started.structuredContent
@@ -56,9 +56,11 @@ async function pauseForApproval(
 /** Opens the paused call's review from the link the Program got. */
 async function openReview(page: Page, paused: RunUpdate) {
   await page.goto(paused.required_actions[0].run_status_url)
-  await page.getByRole('link', { name: 'Review coral.admin.createProvider', exact: true }).click()
+  await page
+    .getByRole('link', { name: 'Review coral.workspace.createProvider', exact: true })
+    .click()
   const review = page.getByRole('region', {
-    name: 'Review coral.admin.createProvider',
+    name: 'Review coral.workspace.createProvider',
     exact: true,
   })
   await review.getByRole('button', { name: 'Approve this call', exact: true }).waitFor()

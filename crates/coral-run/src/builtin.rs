@@ -506,7 +506,7 @@ async fn list_providers(host: &BuiltinHost<'_>) -> Result<serde_json::Value, Err
 }
 
 /// One `listProviders` entry. The Built-in Provider has no namespace: its
-/// Operations are under `coral.admin`.
+/// Operations are under `coral.workspace`.
 fn listed_provider(published: &PublishedProvider) -> serde_json::Value {
     let provider = &published.provider;
     let namespace = match provider.call_root() {
@@ -523,7 +523,7 @@ fn listed_provider(published: &PublishedProvider) -> serde_json::Value {
     serde_json::Value::Object(entry)
 }
 
-/// Whether a recorded Call Path is `coral.admin.createProvider`.
+/// Whether a recorded Call Path is `coral.workspace.createProvider`.
 pub(crate) fn names_create_provider(call_path: &str) -> bool {
     call_path
         .strip_prefix(coral_provider::access::ProviderCallRoot::Builtin.as_str())

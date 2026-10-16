@@ -17,7 +17,7 @@ export const workspaceView: WorkspaceView = {
 
 /** An available operation of `owner` that needs approval, in `group`. */
 export function operation(owner: ProviderView, relativePath: string, group = ''): OperationView {
-  const callRoot = owner.builtin ? 'coral.admin' : `coral.providers.${owner.namespace}`
+  const callRoot = owner.builtin ? 'coral.workspace' : `coral.providers.${owner.namespace}`
   return {
     name: `workspaces/demo/providers/${owner.id}/operations/${relativePath}`,
     relativePath,
@@ -64,7 +64,7 @@ export function provider(
   return view
 }
 
-/** Coral's Built-in Provider, with its operations under `coral.admin`. */
+/** Coral's Built-in Provider, with its operations under `coral.workspace`. */
 export function builtinProvider(id: string): ProviderView {
   const view: ProviderView = { ...provider(id, 'Coral', ''), builtin: true }
   view.operations = [operation(view, 'createProvider'), operation(view, 'listProviders')]

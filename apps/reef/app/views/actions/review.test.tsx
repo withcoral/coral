@@ -83,7 +83,7 @@ describe('exact approval review', () => {
   it('collapses an inline OpenAPI document below the arguments', () => {
     const detail = {
       ...approval,
-      callPath: 'coral.admin.createProvider',
+      callPath: 'coral.workspace.createProvider',
       arguments: JSON.stringify({
         namespace: 'weather',
         source: { kind: 'openapi_document', document: 'openapi: 3.1.0' },

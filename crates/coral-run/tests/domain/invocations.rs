@@ -191,7 +191,7 @@ async fn builtin_create_provider_waits_for_approval_by_default() {
         &mut transaction,
         &workspace_id,
         coral_provider::InvocationCaller::new(&fixture.workspaces, &owner, 12),
-        "coral.admin.createProvider",
+        "coral.workspace.createProvider",
     )
     .await
     .unwrap()
@@ -217,7 +217,7 @@ async fn builtin_create_provider_waits_for_approval_by_default() {
 }
 
 #[tokio::test]
-async fn program_calls_a_provider_named_admin_at_its_owner_call_root() {
+async fn program_calls_a_provider_named_workspace_at_its_owner_call_root() {
     let fixture = TestModules::with_upstream(
         Arc::new(
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
@@ -231,10 +231,10 @@ async fn program_calls_a_provider_named_admin_at_its_owner_call_root() {
     .await;
     let operation = fixture
         .user_operation_under(
-            "user:admin-namespace",
-            "Call the admin Provider",
+            "user:workspace-namespace",
+            "Call the workspace Provider",
             "https://upstream.example",
-            "admin",
+            "workspace",
         )
         .await;
     let accepted = fixture
@@ -242,7 +242,7 @@ async fn program_calls_a_provider_named_admin_at_its_owner_call_root() {
         .start(
             &operation.principal,
             &operation.workspace_id,
-            submission("return (await coral.providers.admin.getForecast()).data.temperature;"),
+            submission("return (await coral.providers.workspace.getForecast()).data.temperature;"),
         )
         .await
         .expect("accept Program");

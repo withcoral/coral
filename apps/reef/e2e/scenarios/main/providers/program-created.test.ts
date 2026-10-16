@@ -32,7 +32,7 @@ async function programWorkspace(
   })
   await step("Let the owner's Programs create providers without approval", async () => {
     const builtin = (await api.providers.listProviders({ parent: workspace.name })).providers.find(
-      (provider) => provider.callRoot === 'coral.admin',
+      (provider) => provider.callRoot === 'coral.workspace',
     )!
     const catalog = await api.providers.listOperations({ parent: builtin.name })
     await api.policies.updateOperationPolicies({
@@ -68,7 +68,7 @@ test("A workspace owner's Program adds a provider that needs no sign-in, and Cor
       }
       const { update } = await observeRun(
         runner,
-        await runner.exec(`return await coral.admin.createProvider(${JSON.stringify(call)});`),
+        await runner.exec(`return await coral.workspace.createProvider(${JSON.stringify(call)});`),
       )
       expect(update.required_actions).toEqual([])
       expect(update.final_value).toMatchObject({
@@ -120,7 +120,7 @@ test("A workspace owner's Program adds a provider with a shared account, and you
     await step('The Program gets a link where you sign in', async () => {
       const { update } = await observeRun(
         runner,
-        await runner.exec(`return await coral.admin.createProvider(${JSON.stringify(call)});`),
+        await runner.exec(`return await coral.workspace.createProvider(${JSON.stringify(call)});`),
       )
       expect(update.required_actions).toEqual([])
       const { data } = (update.final_value as { value: { data: { status: string; url: string } } })
@@ -184,7 +184,7 @@ test("A workspace owner's Program prepares a confidential OAuth application, and
     await step('The Program gets a link where you sign in', async () => {
       const { update } = await observeRun(
         runner,
-        await runner.exec(`return await coral.admin.createProvider(${JSON.stringify(call)});`),
+        await runner.exec(`return await coral.workspace.createProvider(${JSON.stringify(call)});`),
       )
       run = `${workspace.name}/runs/${update.run_id}`
       const { data } = (update.final_value as { value: { data: { status: string; url: string } } })
@@ -274,7 +274,9 @@ test("Another owner finds nothing at an owner's sign-in link, and the owner who 
       await step("Alice's Program gets a link where she signs in", async () => {
         const { update } = await observeRun(
           runner,
-          await runner.exec(`return await coral.admin.createProvider(${JSON.stringify(call)});`),
+          await runner.exec(
+            `return await coral.workspace.createProvider(${JSON.stringify(call)});`,
+          ),
         )
         link = (update.final_value as { value: { data: { url: string } } }).value.data.url
       })

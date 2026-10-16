@@ -139,7 +139,7 @@ const coralOperations = ['createProvider', 'listProviders'].map((key) => ({
   ...weather.operations[0]!,
   name: `providers/prov-coral/operations/${key}`,
   relativePath: key,
-  callPath: `coral.admin.${key}`,
+  callPath: `coral.workspace.${key}`,
   path: `/workspaces/demo/providers/prov-coral/ops/${key}`,
 }))
 const coral: ProviderView = {
