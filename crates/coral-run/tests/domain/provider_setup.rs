@@ -1,4 +1,4 @@
-//! `coral.admin.createProvider` prepares and configures a Provider Setup. Coral
+//! `coral.workspace.createProvider` prepares and configures a Provider Setup. Coral
 //! publishes it when nobody needs to sign in; otherwise the call returns the
 //! Reef page where a person finishes it. The call never waits for that person.
 use super::*;
@@ -14,7 +14,7 @@ fn create_provider(arguments: &serde_json::Value) -> RunSubmission {
     submission(
         &"
         try {
-            return await coral.admin.createProvider(ARGUMENTS);
+            return await coral.workspace.createProvider(ARGUMENTS);
         } catch (error) {
             if (!(error instanceof coral.OperationError)) throw error;
             return error.code;
@@ -94,7 +94,7 @@ impl AdminScope {
             &mut transaction,
             &self.workspace_id,
             coral_provider::InvocationCaller::new(&self.fixture.workspaces, &self.owner, 12),
-            "coral.admin.createProvider",
+            "coral.workspace.createProvider",
         )
         .await
         .unwrap()
