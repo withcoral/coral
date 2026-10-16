@@ -25,18 +25,24 @@ const CURRENT: &str = r#"{"openapi":"3.0.3","info":{"title":"Weather","version":
 const FORECAST_PATH: &str = "coral.providers.weather.getForecast";
 const CURRENT_PATH: &str = "coral.providers.weather.getCurrentWeather";
 
-struct Fixture {
+pub(super) struct Fixture {
     db: TestDatabase,
-    owner: AuthenticatedUser,
+    pub(super) owner: AuthenticatedUser,
     workspace: WorkspaceId,
     providers: ProviderModule,
-    workflow: ProviderWorkflow,
-    index: SearchIndex,
+    pub(super) workflow: ProviderWorkflow,
+    pub(super) index: SearchIndex,
     search: UniversalSearchModule,
 }
 
 impl Fixture {
     async fn new() -> Self {
+        Self::with_write_limit(None).await
+    }
+
+    /// A fixture whose index writes may run for `write_limit`, or for the
+    /// index's default when `None`.
+    pub(super) async fn with_write_limit(write_limit: Option<std::time::Duration>) -> Self {
         // Search applies Operation access rules, so the schema includes Policy.
         let db = TestDatabase::new(&coral_test_support::combined_migrator(&[
             coral_workspace::migrator(),
@@ -64,7 +70,10 @@ impl Fixture {
             database.clone(),
             workspaces.clone(),
         );
-        let index = SearchIndex::new(database.clone(), std::time::Duration::from_mins(5));
+        let mut index = SearchIndex::new(database.clone(), std::time::Duration::from_mins(5));
+        if let Some(limit) = write_limit {
+            index = index.with_write_limit(limit);
+        }
         Self {
             workflow: ProviderWorkflow::new(database.clone(), providers.clone(), index.clone()),
             search: UniversalSearchModule::new(database, workspaces),
@@ -76,7 +85,7 @@ impl Fixture {
         }
     }
 
-    async fn setup(&self, document: &str) -> ProviderSetupId {
+    pub(super) async fn setup(&self, document: &str) -> ProviderSetupId {
         self.providers
             .prepare_openapi_fixture(
                 &change(&self.owner),
@@ -89,7 +98,7 @@ impl Fixture {
             .clone()
     }
 
-    fn creation(&self, setup: &ProviderSetupId) -> WorkspaceProviderPublicationRequest {
+    pub(super) fn creation(&self, setup: &ProviderSetupId) -> WorkspaceProviderPublicationRequest {
         WorkspaceProviderPublicationRequest::new(
             ManagementRequestId::parse(&coral_test_support::fixture_request_id()).unwrap(),
             self.workspace.clone(),
@@ -125,14 +134,14 @@ impl Fixture {
         publication.published_provider().unwrap().id().clone()
     }
 
-    async fn generations(&self) -> Vec<IndexedGeneration> {
+    pub(super) async fn generations(&self) -> Vec<IndexedGeneration> {
         indexed_generations(&self.db.database(), &self.workspace)
             .await
             .unwrap()
     }
 
     /// The indexed Operations as `(Call Path, Provider name)`.
-    async fn operations(&self) -> Vec<(String, String)> {
+    pub(super) async fn operations(&self) -> Vec<(String, String)> {
         indexed_operations(&self.db.database(), &self.workspace)
             .await
             .unwrap()
@@ -142,7 +151,7 @@ impl Fixture {
     }
 
     /// The Operation hits a query finds, as `(Call Path, Provider display name)`.
-    async fn found(&self, text: &str) -> Vec<(String, String)> {
+    pub(super) async fn found(&self, text: &str) -> Vec<(String, String)> {
         self.search
             .search(
                 &AuthenticatedPrincipal::user(self.owner.clone()),

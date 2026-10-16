@@ -194,7 +194,7 @@ test('Agent credential issuance, rotation, disablement, expiry and destructive c
           expect(response?.status()).toBe(200)
           await breadcrumb(page, 'Automation').waitFor()
           await page
-            .getByText('This agent cannot start new work. Inspect its retained activity.', {
+            .getByText('This agent cannot start new work', {
               exact: true,
             })
             .waitFor()

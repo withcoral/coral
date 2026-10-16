@@ -35,11 +35,10 @@ mod configuration_tests;
 mod repository;
 mod search;
 pub use search::{
-    ActiveGeneration, ActiveProvider, EntryMaterial, GenerationEntries, HydratedOperation,
-    LoadedGenerations, OperationEntry, active_generations_in_transaction,
-    active_providers_in_transaction, hydrate_operation_in_transaction,
-    operation_material_by_relative_path_in_transaction,
-    prepare_active_generation_entries_in_transaction, prepare_operation_entries,
+    ActiveGeneration, ActiveProvider, GenerationEntries, HydratedOperation, LoadedGenerations,
+    OperationEntry, active_generations_in_transaction, active_providers_in_transaction,
+    hydrate_operation_in_transaction, operation_material_by_relative_path_in_transaction,
+    prepare_active_generation_entries_in_transaction,
 };
 mod program_setup;
 #[cfg(test)]

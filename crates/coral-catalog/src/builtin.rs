@@ -5,7 +5,6 @@
 //! MCP snapshot exists. The Generation pins this catalog's identity instead,
 //! so each Workspace's Generation records which definition it materialized.
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -16,7 +15,6 @@ use crate::schema::{
     Direction, ProjectionOptions, SchemaGraphAccumulator, TypeScriptNames, TypeScriptProjector,
     canonicalize, render_callable_declaration,
 };
-use crate::search::prepare_operation_declaration_fields;
 use crate::{
     CatalogDiagnostic, Error, ExecutionBinding, MaterializedOperation, OperationHints,
     OperationKey, OperationPresentation, PreparedProviderCatalog, SchemaGraph, SchemaId,
@@ -239,8 +237,8 @@ fn definition(operation: BuiltinOperation) -> Definition {
                 Some("Create provider".to_string()),
                 "Create a Provider in this Workspace from an OpenAPI document, an OpenAPI \
                  document URL, or an MCP server URL. Coral publishes it when nobody needs to \
-                 sign in. Otherwise it returns a Reef link where a person finishes and \
-                 publishes it."
+                 sign in. Otherwise it returns a Coral UI link where a person finishes \
+                 and publishes it."
                     .to_string(),
                 false,
                 vec!["providers".to_string()],
@@ -553,8 +551,8 @@ fn definition(operation: BuiltinOperation) -> Definition {
                         "type": "object",
                         "required": ["status", "url", "namespace"],
                         "properties": {
-                            "status": { "const": "needs_sign_in", "description": "A person must finish the Provider in Reef." },
-                            "url": { "type": "string", "description": "The Reef page where a person finishes and publishes the Provider." },
+                            "status": { "const": "needs_sign_in", "description": "A person must finish the Provider in the Coral UI." },
+                            "url": { "type": "string", "description": "The Coral UI page where a person finishes and publishes the Provider." },
                             "namespace": { "type": "string", "description": "The requested Provider Namespace. The person can change it." }
                         },
                         "additionalProperties": false
@@ -588,7 +586,6 @@ fn prepare(definitions: Vec<Definition>) -> Result<PreparedProviderCatalog, Cata
         .map_err(|_error| invalid("the built-in schema graph cannot be encoded"))?;
     let type_names = typescript_names(&schema_graph);
     let mut operations = Vec::with_capacity(drafts.len());
-    let mut declaration_fields = BTreeMap::new();
     for (definition, binding) in drafts {
         let key = binding.operation_key().clone();
         let relative_path = definition.key.to_string();
@@ -604,13 +601,6 @@ fn prepare(definitions: Vec<Definition>) -> Result<PreparedProviderCatalog, Cata
             ));
         }
         let execution_binding = ExecutionBinding::Builtin(binding.clone());
-        let prepared = prepare_operation_declaration_fields(
-            &execution_binding,
-            binding.input_schema(),
-            true,
-            &schema_graph,
-        )?;
-        declaration_fields.insert(key.clone(), prepared.entries);
         operations.push(MaterializedOperation::new(
             key,
             relative_path,
@@ -634,7 +624,6 @@ fn prepare(definitions: Vec<Definition>) -> Result<PreparedProviderCatalog, Cata
         schema_graph,
         schema_graph_json,
         operations,
-        declaration_fields,
     ))
 }
 

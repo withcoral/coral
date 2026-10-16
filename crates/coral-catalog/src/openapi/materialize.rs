@@ -12,7 +12,6 @@ use crate::openapi::schema::{
 };
 use crate::paths::assign_operation_paths;
 use crate::schema::canonicalize;
-use crate::search::prepare_operation_declaration_fields;
 use crate::{
     CatalogDiagnostic, HttpContentBinding, HttpEncodingBinding, HttpExecutionBinding,
     HttpHeaderBinding, HttpMethod, HttpParameterBinding, HttpParameterLocation, HttpParameterStyle,
@@ -112,14 +111,9 @@ fn build_openapi(
             "the authoritative OpenAPI schema graph cannot be encoded",
         )
     })?;
-    let (operations, declaration_fields) = finish_operations(builds, &display_name, &schema_graph)?;
-    let catalog = PreparedProviderCatalog::new(
-        display_name,
-        schema_graph,
-        schema_graph_json,
-        operations,
-        declaration_fields,
-    );
+    let operations = finish_operations(builds, &display_name, &schema_graph)?;
+    let catalog =
+        PreparedProviderCatalog::new(display_name, schema_graph, schema_graph_json, operations);
     let Some(configuration) = configuration else {
         return Ok(catalog);
     };
@@ -140,21 +134,15 @@ fn build_openapi(
         })
 }
 
-type FinishedOperations = (
-    Vec<MaterializedOperation>,
-    BTreeMap<OperationKey, Vec<crate::DeclarationIndexEntry>>,
-);
-
 fn finish_operations(
     builds: Vec<OperationBuild>,
     display_name: &str,
     schema_graph: &crate::SchemaGraph,
-) -> Result<FinishedOperations, CatalogDiagnostic> {
+) -> Result<Vec<MaterializedOperation>, CatalogDiagnostic> {
     let mut operations = Vec::with_capacity(builds.len());
-    let mut declaration_fields = BTreeMap::new();
     let type_names = typescript_names(schema_graph);
     for mut build in builds {
-        let (declaration, input_declared) = match project_typescript(
+        let declaration = match project_typescript(
             &build.relative_path,
             &build.input_schema,
             &build.binding,
@@ -163,11 +151,11 @@ fn finish_operations(
         ) {
             Ok(projection) => {
                 build.diagnostics.extend(projection.diagnostics);
-                (projection.declaration, projection.input_declared)
+                projection.declaration
             }
             Err(diagnostic) => {
                 build.diagnostics.push(diagnostic);
-                (fallback_typescript(&build.relative_path), true)
+                fallback_typescript(&build.relative_path)
             }
         };
         if !crate::types::operation_description_fits(
@@ -180,24 +168,6 @@ fn finish_operations(
                 "operation_authoring_description_too_large",
                 "the complete Operation Authoring Description exceeds the discovery limit",
             ));
-        }
-        if !build
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.severity() == crate::CatalogDiagnosticSeverity::Error)
-        {
-            match prepare_operation_declaration_fields(
-                &crate::ExecutionBinding::Http(build.binding.clone()),
-                &build.input_schema,
-                input_declared,
-                schema_graph,
-            ) {
-                Ok(prepared) => {
-                    build.diagnostics.extend(prepared.diagnostic);
-                    declaration_fields.insert(build.key.clone(), prepared.entries);
-                }
-                Err(diagnostic) => build.diagnostics.push(diagnostic),
-            }
         }
         let binding_json = build.binding.to_storage_json().map_err(|_error| {
             diagnostic(
@@ -227,7 +197,7 @@ fn finish_operations(
             diagnostics_json,
         ));
     }
-    Ok((operations, declaration_fields))
+    Ok(operations)
 }
 
 pub(super) fn parse_document(document: &OpenApiDocument) -> Result<Value, CatalogDiagnostic> {

@@ -9,7 +9,7 @@ import { NameHeading } from './name-heading'
 const user = userEvent.setup()
 
 /** A workspace name heading that posts to the workspace route. `etag` is what the loader holds now. */
-function render() {
+function render({ pageTitle = false }: { pageTitle?: boolean } = {}) {
   const submissions: Array<{ form: FormData; respond: (result: object) => void }> = []
   let etag = 'etag-1'
   const { router } = renderRoute(
@@ -22,6 +22,7 @@ function render() {
         intent="rename"
         etag={etag}
         action="/workspaces/ops"
+        pageTitle={pageTitle}
       />
     ),
     {
@@ -49,6 +50,7 @@ function render() {
 }
 
 const input = () => screen.queryByRole('textbox', { name: 'Workspace name' })
+const title = () => screen.getByRole('heading', { level: 1, name: 'Operations' })
 
 // Catches: a rename silently overwriting a change made while the editor was open.
 test('a rename posts to the workspace route with the etag from when the editor opened', async () => {
@@ -75,4 +77,13 @@ test('Escape does not close the editor while the rename saves', async () => {
   expect(input()).toHaveAttribute('readonly')
   await act(async () => submissions[0]!.respond({ error: null, credential: null }))
   await vi.waitFor(() => expect(input()).toBeNull())
+})
+
+// Catches: a page titled by its name losing its h1 while the editor replaces it.
+test('a page title keeps its h1 while the editor is open', async () => {
+  render({ pageTitle: true })
+  expect(title()).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Edit workspace name' }))
+  expect(input()).toBeInTheDocument()
+  expect(title()).toBeInTheDocument()
 })

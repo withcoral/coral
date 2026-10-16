@@ -115,8 +115,12 @@ export function CatalogRailItem({
   onSelect: () => void
   leading?: ReactNode
   name: string
-  /** A count beside the name; omit it when `trailing` shows something in its place. */
+  /** A count beside the name. */
   count?: number
+  /**
+   * Controls at the entry's end. They show on the current entry and while an
+   * entry has the pointer or keyboard focus.
+   */
   trailing?: ReactNode
 }) {
   return (
@@ -139,7 +143,7 @@ export function CatalogRailItem({
         <span className={styles.railName}>{name}</span>
         {count !== undefined && <span className={styles.railCount}>{count}</span>}
       </Button.Container>
-      {trailing}
+      {trailing && <span className={styles.railTrailing}>{trailing}</span>}
     </div>
   )
 }
