@@ -85,9 +85,9 @@ export const railName = style({
 })
 export const railSubtitle = style({
   color: theme.content.secondary,
-  overflow: 'hidden',
+  // Wraps, like the name: two long namespaces often differ only at the end.
+  overflowWrap: 'anywhere',
   textAlign: 'start',
-  textOverflow: 'ellipsis',
   ...theme.typography.bodySmall,
 })
 // Metadata, so it reads as quietly as the table's own counts.
