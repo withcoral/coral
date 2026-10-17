@@ -456,6 +456,7 @@ it('lists your accounts and the run that waits on one', async () => {
       {
         provider,
         providerDisplayName: 'Linear',
+        providerNamespace: 'linear',
         account: { canConnect: true, canReconnect: false },
         pendingConnection: {
           state: AccountConnectionState.PENDING,
@@ -465,6 +466,7 @@ it('lists your accounts and the run that waits on one', async () => {
       {
         provider: `workspaces/${workspace}/providers/${agentId}`,
         providerDisplayName: 'GitHub',
+        providerNamespace: 'github',
         account: {
           account: {
             id: 'account',
@@ -483,6 +485,7 @@ it('lists your accounts and the run that waits on one', async () => {
   expect(view.accounts).toEqual([
     expect.objectContaining({
       name: 'Linear',
+      namespace: 'linear',
       state: 'not_connected',
       canConnect: true,
       waitingUntil: '2027-01-15T08:00:00.000Z',
@@ -491,6 +494,7 @@ it('lists your accounts and the run that waits on one', async () => {
     }),
     expect.objectContaining({
       name: 'GitHub',
+      namespace: 'github',
       state: 'connected',
       accountId: 'account',
       canDisconnect: true,

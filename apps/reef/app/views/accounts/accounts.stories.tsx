@@ -270,6 +270,11 @@ export const FilterYourAccounts: Story = {
     )
     await userEvent.click(await page.findByRole('menuitemradio', { name: 'All statuses' }))
     await providers(['GitHub'])
+    // The namespace tells apart providers that share a name, on screen and to a screen reader.
+    await expect(
+      canvas.getByRole('link', { name: 'GitHub (github) account details' }),
+    ).toBeVisible()
+    await expect(canvas.getByText('github')).toBeVisible()
   },
 }
 /** The table keeps its shape with no accounts, and points to the providers. */
