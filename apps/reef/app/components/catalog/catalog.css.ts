@@ -71,12 +71,24 @@ globalStyle(`${railItem}:has(> ${railLink}:focus-visible)`, {
   outline: `1px solid ${theme.button.primary.focus}`,
   outlineOffset: -1,
 })
-export const railName = style({
+// The name, with any subtitle stacked beneath it.
+export const railLabel = style({
+  display: 'flex',
   flex: '1 1 auto',
+  flexDirection: 'column',
   minWidth: 0,
+})
+export const railName = style({
   overflow: 'hidden',
   textAlign: 'start',
   textOverflow: 'ellipsis',
+})
+export const railSubtitle = style({
+  color: theme.content.secondary,
+  overflow: 'hidden',
+  textAlign: 'start',
+  textOverflow: 'ellipsis',
+  ...theme.typography.bodySmall,
 })
 // Metadata, so it reads as quietly as the table's own counts.
 export const railCount = style({

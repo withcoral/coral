@@ -81,6 +81,8 @@ message UserAccountInspection {
   GetProviderAccountResponse account = 3;
   // This User's pending request while a Run waits on the connection.
   AccountConnectionRequest pending_connection = 4;
+  // The Provider's immutable Program namespace.
+  string provider_namespace = 5;
 }
 
 // Owner selection never accepts another User identifier.

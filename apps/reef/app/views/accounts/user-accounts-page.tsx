@@ -108,9 +108,12 @@ export function UserAccountsPage({
           {shown.map((row) => (
             <Table.Row key={row.provider} to={row.detailPath}>
               <Table.Cell>
-                <Table.RowLink to={row.detailPath} aria-label={`${row.name} account details`}>
-                  {row.name}
-                </Table.RowLink>
+                <span className={styles.provider}>
+                  <Table.RowLink to={row.detailPath} aria-label={`${row.name} account details`}>
+                    {row.name}
+                  </Table.RowLink>
+                  <Typography.BodySmall color="tertiary">{row.namespace}</Typography.BodySmall>
+                </span>
               </Table.Cell>
               <Table.Cell>
                 <span className={styles.accountStatus}>

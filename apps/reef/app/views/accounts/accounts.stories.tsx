@@ -66,6 +66,7 @@ const personal: UserAccountsView = {
     {
       provider: 'workspaces/demo/providers/linear',
       name: 'Linear',
+      namespace: 'linear',
       state: 'not_connected',
       canConnect: true,
       canDisconnect: false,
@@ -77,6 +78,7 @@ const personal: UserAccountsView = {
     {
       provider: 'workspaces/demo/providers/github',
       name: 'GitHub',
+      namespace: 'github',
       state: 'connected',
       accountId: account.id,
       canConnect: false,
@@ -87,6 +89,7 @@ const personal: UserAccountsView = {
     {
       provider: 'workspaces/demo/providers/ledger',
       name: 'Ledger',
+      namespace: 'ledger',
       state: 'needs_reconnect',
       accountId: account.id,
       canConnect: true,

@@ -19,6 +19,8 @@ export const account = style({
   gap: '0.75rem',
   paddingBlock: '1rem',
 })
+// A provider's name with its namespace beneath it.
+export const provider = style({ display: 'flex', flexDirection: 'column', minWidth: 0 })
 export const reference = style({ overflowWrap: 'anywhere' })
 export const permissions = style({
   display: 'flex',
