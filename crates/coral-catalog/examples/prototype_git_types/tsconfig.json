@@ -1,0 +1,4 @@
+{
+  "extends": "./.coral/tsconfig.base.json",
+  "include": [".coral/coral.d.ts", ".coral/providers.d.ts", ".coral-check/shared.gen.d.ts", "functions/**/*.ts"]
+}
