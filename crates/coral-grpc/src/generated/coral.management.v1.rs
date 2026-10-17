@@ -3556,6 +3556,9 @@ pub struct UserAccountInspection {
     /// This User's pending request while a Run waits on the connection.
     #[prost(message, optional, tag = "4")]
     pub pending_connection: ::core::option::Option<AccountConnectionRequest>,
+    /// The Provider's immutable Program namespace.
+    #[prost(string, tag = "5")]
+    pub provider_namespace: ::prost::alloc::string::String,
 }
 /// An opaque Account reference with safe readiness, never upstream account metadata.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

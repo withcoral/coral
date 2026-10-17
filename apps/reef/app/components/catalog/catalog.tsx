@@ -107,6 +107,7 @@ export function CatalogRailItem({
   onSelect,
   leading,
   name,
+  subtitle,
   count,
   trailing,
 }: {
@@ -115,6 +116,8 @@ export function CatalogRailItem({
   onSelect: () => void
   leading?: ReactNode
   name: string
+  /** A second line beneath the name. */
+  subtitle?: string
   /** A count beside the name. */
   count?: number
   /**
@@ -140,7 +143,10 @@ export function CatalogRailItem({
         variant="bare"
       >
         {leading}
-        <span className={styles.railName}>{name}</span>
+        <span className={styles.railLabel}>
+          <span className={styles.railName}>{name}</span>
+          {subtitle && <span className={styles.railSubtitle}>{subtitle}</span>}
+        </span>
         {count !== undefined && <span className={styles.railCount}>{count}</span>}
       </Button.Container>
       {trailing && <span className={styles.railTrailing}>{trailing}</span>}

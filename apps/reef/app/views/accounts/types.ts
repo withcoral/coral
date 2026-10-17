@@ -66,6 +66,7 @@ export type PersonalAccountState = 'connected' | 'not_connected' | 'needs_reconn
 export interface UserAccountRow {
   provider: string
   name: string
+  namespace: string
   state: PersonalAccountState
   accountId?: string
   /** You can start a connection or a reconnect now. */
