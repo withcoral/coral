@@ -228,6 +228,7 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
                 .map(|value| wire::UserAccountInspection {
                     provider: format!("workspaces/{owner}/providers/{}", value.provider.id()),
                     provider_display_name: value.provider.display_name().to_owned(),
+                    provider_namespace: value.provider.namespace().as_str().into(),
                     account: Some(account_inspection_view(value.account)),
                     pending_connection: value
                         .pending_connection

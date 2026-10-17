@@ -775,6 +775,7 @@ function ProvidersTableScreen({
                 </>
               }
               name={providerLabel(provider)}
+              subtitle={provider.displayName ? provider.namespace : undefined}
               trailing={
                 <>
                   <Tooltip content={`Show only ${providerLabel(provider)}`}>

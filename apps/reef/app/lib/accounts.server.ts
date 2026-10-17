@@ -472,6 +472,7 @@ export async function loadUserAccounts(
       return {
         provider: row.provider,
         name: row.providerDisplayName,
+        namespace: row.providerNamespace,
         state: accountConnectionState(account),
         accountId: account?.id,
         canConnect: Boolean(current?.canConnect || current?.canReconnect),
