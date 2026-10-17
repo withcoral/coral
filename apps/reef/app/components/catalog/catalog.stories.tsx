@@ -7,7 +7,7 @@ import { Table } from '@/wax/components'
 import { CatalogLayout, CatalogRail, CatalogRailItem, CatalogToolbar } from './catalog'
 
 const groups = [
-  { name: 'finance', members: ['monthlyTotals', 'overdueInvoices'] },
+  { name: 'finance', subtitle: 'finance_reports', members: ['monthlyTotals', 'overdueInvoices'] },
   { name: 'linear', members: ['completedSince', 'issueBrief', 'myOpenIssues'] },
 ]
 
@@ -37,6 +37,7 @@ function Catalog() {
                 current={g.name === current}
                 onSelect={() => setCurrent(g.name)}
                 name={g.name}
+                subtitle={g.subtitle}
                 count={g.members.length}
               />
             ))}

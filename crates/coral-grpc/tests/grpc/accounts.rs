@@ -318,6 +318,7 @@ async fn list_user_accounts_projects_each_caller_provider_and_its_pending_connec
     };
     assert_eq!(row.provider, provider);
     assert_eq!(row.provider_display_name, "Weather");
+    assert_eq!(row.provider_namespace, "accounts");
     let account = row.account.as_ref().unwrap();
     assert!(account.account.is_none(), "listing allocates no Account");
     assert!(account.can_connect);

@@ -109,10 +109,13 @@ export function UserAccountsPage({
             <Table.Row key={row.provider} to={row.detailPath}>
               <Table.Cell>
                 <span className={styles.provider}>
-                  <Table.RowLink to={row.detailPath} aria-label={`${row.name} account details`}>
+                  <Table.RowLink
+                    to={row.detailPath}
+                    aria-label={`${row.name} (${row.namespace}) account details`}
+                  >
                     {row.name}
                   </Table.RowLink>
-                  <Typography.BodySmall color="tertiary">{row.namespace}</Typography.BodySmall>
+                  <Typography.BodySmall variant="tertiary">{row.namespace}</Typography.BodySmall>
                 </span>
               </Table.Cell>
               <Table.Cell>
