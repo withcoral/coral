@@ -148,10 +148,19 @@ declare namespace coral {
   /** A Principal's private Saved Functions are not in the repo. */
   const functions: any;
   function emit(value: unknown): Promise<void>;
+  /**
+   * Thrown for every response that is not a declared success: a non-2xx
+   * status, an MCP `isError` result, or a response that does not decode.
+   */
   class OperationError extends Error {
     private constructor();
     readonly code: string;
     readonly traceId?: string;
+    /** PROTOTYPE: the HTTP status, when the upstream responded. */
+    readonly status?: number;
+    /** PROTOTYPE: the decoded error body, or the raw value that did not decode. */
+    readonly data?: unknown;
+    readonly metadata?: unknown;
   }
 }
 

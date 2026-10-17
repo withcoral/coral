@@ -59,7 +59,8 @@ fn http_metadata(status: &str, media_type: &str, decode_diagnostics: &str) -> St
 /// and media type and decodes.
 fn http_result_declaration() -> String {
     format!(
-        "type {HTTP_RESULT}<Data, Status, MediaType> = {{ data: Data; metadata: {} }};",
+        // PROTOTYPE: `status` sits beside `data`, so checking it narrows `data`.
+        "type {HTTP_RESULT}<Data, Status, MediaType> = {{ status: Status; data: Data; metadata: {} }};",
         http_metadata("Status", "MediaType", "readonly []")
     )
 }
@@ -107,7 +108,17 @@ pub(super) fn project_typescript(
     let input = projector.project(input_schema, Direction::Input)?;
     let mut outputs = Vec::new();
     let mut ranges = BTreeSet::new();
-    for response in binding.responses() {
+    // PROTOTYPE: only success responses are returned; every other response,
+    // and any response that does not decode, throws `coral.OperationError`.
+    // `default` counts as a success only when no 2xx response is declared.
+    let declares_success = binding.responses().iter().any(|response| {
+        matches!(response.status(), HttpResponseStatus::Code(200..=299) | HttpResponseStatus::Range(2))
+    });
+    for response in binding.responses().iter().filter(|response| match response.status() {
+        HttpResponseStatus::Code(code) => (200..=299).contains(&code),
+        HttpResponseStatus::Range(range) => range == 2,
+        HttpResponseStatus::Default => !declares_success,
+    }) {
         if let HttpResponseStatus::Range(range) = response.status() {
             ranges.insert(range);
         }
@@ -131,11 +142,10 @@ pub(super) fn project_typescript(
     for range in ranges {
         result_declarations.push(status_range_declaration(range)?);
     }
-    if !outputs.is_empty() {
-        result_declarations.push(http_result_declaration());
+    result_declarations.push(http_result_declaration());
+    if outputs.is_empty() {
+        outputs.push(format!("{HTTP_RESULT}<unknown, number, string | null>"));
     }
-    result_declarations.push(http_unknown_result_declaration());
-    outputs.push(HTTP_UNKNOWN_RESULT.to_string());
     let output = outputs.join(" | ");
     let input_declared = !matches!(input.as_str(), "{}" | "Record<string, never>");
     let input_parameter = if input_declared {

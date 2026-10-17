@@ -1272,8 +1272,12 @@ impl<'a> TypeScriptProjector<'a> {
                     );
                 }
             }
+            // PROTOTYPE: list only documented fields, so a misspelled field is
+            // an error. A free-form object with no fields stays an open map.
             Some(Value::Bool(true)) | None => {
-                intersections.push("Record<string, unknown>".to_string());
+                if fields.is_empty() {
+                    intersections.push("Record<string, unknown>".to_string());
+                }
             }
             Some(additional) => {
                 let kind = self.project_guarded_schema(additional, direction)?;
