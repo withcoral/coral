@@ -55,7 +55,7 @@ pub(super) fn project_mcp_typescript(
         "{ contents: Array<McpResourceContents> }".to_string()
     } else {
         format!(
-            "{{ content: Array<McpContentBlock>; structuredContent?: {output}; isError?: boolean }}"
+            "{{ content: Array<McpContentBlock>; structuredContent?: {output}; isError?: false }}"
         )
     };
     declarations.push(render_callable_declaration(

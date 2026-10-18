@@ -13,7 +13,8 @@ Every failed Run should expose the available permitted error information so the 
 determine the appropriate correction. Rich runtime diagnostics
 must stay within what is visible inside the V8 isolate. Never expose unhandled Rust errors, host stacks, or internal
 causes. Host-side failures retain safe public classifications rather than acquiring private error details. Operation
-Errors retain their existing defined shape; this change does not expand the Operation error contract.
+Errors retain their existing defined shape; this change does not expand the Operation error contract. ADR 0019
+replaces that sentence: an Operation Error that carries an upstream response exposes its status and a bounded body.
 
 Authorized Run readers may receive bounded Program-controlled error messages, authored source locations, and a bounded
 chain of causes. Include bounded `AggregateError` members separately from its cause chain. Cycles and truncation must

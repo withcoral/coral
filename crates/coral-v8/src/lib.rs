@@ -171,6 +171,17 @@ pub enum OperationHostError {
         /// Optional lowercase W3C trace identifier; grants no authority.
         trace_id: Option<String>,
     },
+    /// Reject with a complete upstream outcome that is not a declared success,
+    /// after it is durable. The Program reads its `status`, `data` and
+    /// `metadata` from the `OperationError`.
+    Upstream {
+        /// Domain-owned stable `snake_case` code, never a Coral Failure code.
+        code: &'static str,
+        /// Safe domain message, never an upstream diagnostic.
+        message: &'static str,
+        /// The encoded Operation Result the Program does not receive.
+        outcome_json: String,
+    },
     /// Terminate Program execution without settling the Operation Promise.
     Fatal,
 }

@@ -14,7 +14,7 @@ use crate::{
 };
 
 /// Stable version of the bounded schema-faithful MCP profile materializer.
-pub(crate) const MATERIALIZER_VERSION: &str = "mcp-schema-faithful-search-profile-v2";
+pub(crate) const MATERIALIZER_VERSION: &str = "mcp-schema-faithful-search-profile-v3";
 const RESOURCE_READ_KEY: &str = "resources/read";
 const RESOURCE_READ_PATH: &str = "resources.read";
 

@@ -21,7 +21,7 @@ Coral runs TypeScript Programs that call the user's connected providers.
 - Only Operations reach the network; `fetch`, `setTimeout` and other ambient APIs are absent.
 - Keep credentials and account choice out of Program source; Coral supplies both.
 - Publish interim output with `await coral.emit(value)`. The Program's return value is the Final Value.
-- Each Operation Result is `{ data, metadata }`. Coral neither pages nor retries: follow continuation data in the Program.
+- Error responses throw `coral.OperationError` with their `data`. Coral never pages or retries: follow continuation data.
 
 ## Results
 - `isError: true` means Coral rejected the call. Fix what `code` and `message` name, then call again.

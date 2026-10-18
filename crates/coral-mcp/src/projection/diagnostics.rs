@@ -113,6 +113,16 @@ struct OperationError<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "str")]
     trace_id: Option<&'a str>,
+    /// HTTP status of the upstream response the Program did not receive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "u16")]
+    status: Option<u16>,
+    /// The start of that response's encoded data, at most 1 KiB.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "str")]
+    body: Option<&'a str>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    body_truncated: bool,
 }
 
 impl<'a> TryFrom<&'a coral_run::ProgramError> for ProgramError<'a> {
@@ -134,6 +144,9 @@ impl<'a> TryFrom<&'a coral_run::ProgramError> for ProgramError<'a> {
             operation: error.operation.as_ref().map(|operation| OperationError {
                 code: &operation.code,
                 trace_id: operation.trace_id.as_deref(),
+                status: operation.status,
+                body: operation.body.as_deref(),
+                body_truncated: operation.body_truncated,
             }),
             cause: error
                 .cause
@@ -158,5 +171,63 @@ impl<'a> TryFrom<&'a coral_run::ProgramError> for ProgramError<'a> {
             },
             circular: error.circular,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProgramError;
+
+    fn rejected(operation: coral_run::ProgramOperationError) -> serde_json::Value {
+        let error = coral_run::ProgramError {
+            name: "OperationError".to_string(),
+            message: "The upstream service returned an error".to_string(),
+            frames: Vec::new(),
+            operation: Some(operation),
+            cause: None,
+            errors: Vec::new(),
+            truncated: false,
+            cause_omitted: false,
+            omitted_errors: 0,
+            circular: false,
+        };
+        let Ok(projected) = ProgramError::try_from(&error) else {
+            panic!("projection");
+        };
+        serde_json::to_value(projected)
+            .expect("JSON")
+            .get("operation")
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn an_upstream_operation_error_projects_its_status_and_body() {
+        assert_eq!(
+            rejected(coral_run::ProgramOperationError {
+                code: "upstream_error".to_string(),
+                trace_id: None,
+                status: Some(404),
+                body: Some(r#"{"message":"missing"}"#.to_string()),
+                body_truncated: true,
+            }),
+            serde_json::json!({
+                "code": "upstream_error",
+                "status": 404,
+                "body": r#"{"message":"missing"}"#,
+                "body_truncated": true,
+            })
+        );
+        // A Coral Failure has no upstream evidence to project.
+        assert_eq!(
+            rejected(coral_run::ProgramOperationError {
+                code: "operation_not_found".to_string(),
+                trace_id: None,
+                status: None,
+                body: None,
+                body_truncated: false,
+            }),
+            serde_json::json!({"code": "operation_not_found"})
+        );
     }
 }

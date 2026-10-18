@@ -134,7 +134,7 @@ use coral_workspace::{
     AuthenticatedPrincipal, WorkspaceAction, WorkspaceId, WorkspaceModule, WorkspaceRole,
 };
 
-pub use coral_v8::{IsolateLimits, ProgramError};
+pub use coral_v8::{IsolateLimits, ProgramError, ProgramOperationError};
 pub use coral_value::ValueLimits;
 use engine::{Clock, ProgramEngine, SystemClock, V8ProgramEngine};
 pub use error::{CoralFailure, Error};

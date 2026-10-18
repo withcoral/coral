@@ -9,7 +9,10 @@ use serde_json::Value;
 use url::Url;
 
 use super::response_headers::{CredentialNames, safe_response_headers};
-use crate::{Error, ReadyHttpDispatch, is_json_media_type, media_type_essence, read_bounded_body};
+use crate::{
+    Error, OutcomeClass, ReadyHttpDispatch, is_json_media_type, media_type_essence,
+    read_bounded_body,
+};
 
 const MAX_REDIRECTS: usize = 10;
 
@@ -77,10 +80,12 @@ pub struct HttpOutcome {
     final_url: String,
     redirects: Vec<HttpRedirect>,
     decode_diagnostics: Vec<HttpDecodeDiagnostic>,
+    class: OutcomeClass,
 }
 
 impl HttpOutcome {
-    /// Builds a complete scripted response for a deterministic Adapter.
+    /// Builds a complete scripted response for a deterministic Adapter. A 2xx
+    /// status is a declared success; any other is an upstream error.
     #[must_use]
     pub const fn new(status: u16, data: Value) -> Self {
         Self {
@@ -92,10 +97,22 @@ impl HttpOutcome {
             final_url: String::new(),
             redirects: Vec::new(),
             decode_diagnostics: Vec::new(),
+            class: if is_success_code(status) {
+                OutcomeClass::Success
+            } else {
+                OutcomeClass::UpstreamError
+            },
         }
     }
 
-    /// Returns the complete HTTP Operation Result with mandatory metadata.
+    /// Returns whether this response is a declared success, or why it is not.
+    #[must_use]
+    pub const fn class(&self) -> OutcomeClass {
+        self.class
+    }
+
+    /// Returns the complete HTTP Operation Result: its status beside its data,
+    /// with mandatory metadata.
     #[must_use]
     pub fn operation_result(&self) -> Value {
         let redirects = self.redirects.iter().map(|redirect| serde_json::json!({
@@ -111,9 +128,10 @@ impl HttpOutcome {
             })
             .collect::<Vec<_>>();
         serde_json::json!({
+            "status": self.status,
             "data": self.data,
             "metadata": {
-                "kind": "http", "status": self.status, "headers": self.headers,
+                "kind": "http", "headers": self.headers,
                 "mediaType": self.media_type, "charset": self.charset, "finalUrl": self.final_url,
                 "redirects": redirects, "decodeDiagnostics": diagnostics,
             }
@@ -324,6 +342,13 @@ impl HttpUpstream {
                 &schema_graph,
                 limits,
             )?;
+            let class = classify(
+                status,
+                &responses,
+                !redirects.is_empty(),
+                !response_body.is_empty(),
+                &decode_diagnostics,
+            );
             let outcome = HttpOutcome {
                 status,
                 data,
@@ -333,6 +358,7 @@ impl HttpUpstream {
                 final_url: safe_url(&url),
                 redirects,
                 decode_diagnostics,
+                class,
             };
             let encoded =
                 serde_json::to_string(&outcome.operation_result()).map_err(Error::EncodeJson)?;
@@ -539,6 +565,63 @@ fn decode_response_body(
         );
     }
     Ok((data, diagnostics))
+}
+
+const fn is_success_code(status: u16) -> bool {
+    matches!(status, 200..=299)
+}
+
+/// Classifies one decoded response against the Operation's
+/// [`coral_catalog::declared_successes`].
+///
+/// The response must select a declared success first. After a followed
+/// redirect, a 2xx that no response describes is a success when the
+/// Operation declares none. Only then does its body matter, and only when it
+/// has one: a body that does not decode, or whose media type the success
+/// does not list, rejects the call. A schema mismatch never changes the class.
+fn classify(
+    status: u16,
+    responses: &[HttpResponseBinding],
+    redirected: bool,
+    body_present: bool,
+    diagnostics: &[HttpDecodeDiagnostic],
+) -> OutcomeClass {
+    if !is_success_code(status) {
+        return OutcomeClass::UpstreamError;
+    }
+    let successes = coral_catalog::declared_successes(responses);
+    let Some(response) = select_response(responses, status) else {
+        return if redirected && successes.is_empty() {
+            OutcomeClass::Success
+        } else {
+            OutcomeClass::UndeclaredResponse
+        };
+    };
+    if !successes
+        .iter()
+        .any(|success| std::ptr::eq(*success, response))
+    {
+        return OutcomeClass::UndeclaredResponse;
+    }
+    if !body_present {
+        return OutcomeClass::Success;
+    }
+    let reported = |codes: &[&str]| {
+        diagnostics
+            .iter()
+            .any(|diagnostic| codes.contains(&diagnostic.code))
+    };
+    if reported(&[
+        "malformed_content_type",
+        "malformed_body",
+        "unsupported_charset",
+    ]) {
+        OutcomeClass::UndecodableResponse
+    } else if !response.content().is_empty() && reported(&["undeclared_media_type"]) {
+        OutcomeClass::UndeclaredResponse
+    } else {
+        OutcomeClass::Success
+    }
 }
 
 fn select_response(responses: &[HttpResponseBinding], status: u16) -> Option<&HttpResponseBinding> {

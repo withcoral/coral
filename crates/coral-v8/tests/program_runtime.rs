@@ -767,7 +767,12 @@ fn saved_function_authoring_types_the_coral_host_root() {
                 return title;
             } catch (error) {
                 console.warn('report failed', error);
-                if (error instanceof coral.OperationError) return error.code;
+                if (error instanceof coral.OperationError) {
+                    if (error.status === 404) return 'missing';
+                    const body: unknown = error.data;
+                    const metadata: unknown = error.metadata;
+                    return error.code;
+                }
                 throw error;
             }
         }
@@ -1181,6 +1186,171 @@ impl ProgramHost for RejectingOperationHost {
     fn log(&self, _level: ConsoleLevel, _message: &str) -> Result<(), ProgramOutputHostError> {
         Err(ProgramOutputHostError::Fatal)
     }
+}
+
+/// Rejects every call with one complete upstream outcome.
+struct UpstreamRejectingHost {
+    outcome_json: String,
+}
+
+impl UpstreamRejectingHost {
+    fn new(outcome: &serde_json::Value) -> Arc<Self> {
+        Arc::new(Self {
+            outcome_json: outcome.to_string(),
+        })
+    }
+}
+
+impl ProgramHost for UpstreamRejectingHost {
+    fn invoke(
+        self: Arc<Self>,
+        _call_path: String,
+        _arguments_json: String,
+    ) -> coral_v8::OperationFuture {
+        Box::pin(async move {
+            Err(OperationHostError::Upstream {
+                code: "upstream_error",
+                message: "The upstream service returned an error",
+                outcome_json: self.outcome_json.clone(),
+            })
+        })
+    }
+
+    fn emit(&self, _value_json: &str) -> Result<(), ProgramOutputHostError> {
+        Err(ProgramOutputHostError::Fatal)
+    }
+
+    fn log(&self, _level: ConsoleLevel, _message: &str) -> Result<(), ProgramOutputHostError> {
+        Err(ProgramOutputHostError::Fatal)
+    }
+}
+
+#[test]
+fn an_upstream_operation_error_carries_its_outcome_read_only() {
+    let program = ProgramCompiler::new(IsolateLimits::default())
+        .expect("compiler")
+        .compile(
+            compilation_deadline(),
+            r#"
+            try {
+                await coral.providers.weather.getForecast();
+                return "unexpected resolution";
+            } catch (error) {
+                const replaceable = ["status", "data", "metadata"].filter((name) => {
+                    const field = Object.getOwnPropertyDescriptor(error, name);
+                    return field !== undefined && (field.writable || field.configurable);
+                });
+                return {
+                    isOperationError: error instanceof coral.OperationError,
+                    code: error.code,
+                    status: error.status ?? null,
+                    data: error.data,
+                    metadata: error.metadata,
+                    fields: Object.getOwnPropertyNames(error).sort(),
+                    replaceable,
+                };
+            }
+            "#,
+        )
+        .expect("compile");
+    let output = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(
+            &program,
+            UpstreamRejectingHost::new(&serde_json::json!({
+                "status": 404,
+                "data": {"message": "missing"},
+                "metadata": {"kind": "http", "mediaType": "application/json"},
+            })),
+        )
+        .expect("a caught upstream error lets the Program finish");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(output.final_value_json().expect("value"))
+            .expect("JSON"),
+        serde_json::json!({
+            "isOperationError": true,
+            "code": "upstream_error",
+            "status": 404,
+            "data": {"message": "missing"},
+            "metadata": {"kind": "http", "mediaType": "application/json"},
+            "fields": ["code", "data", "message", "metadata", "stack", "status"],
+            "replaceable": [],
+        })
+    );
+
+    // An MCP outcome has no HTTP status.
+    let output = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(
+            &program,
+            UpstreamRejectingHost::new(&serde_json::json!({
+                "data": {"content": [], "isError": true},
+                "metadata": {"kind": "mcp"},
+            })),
+        )
+        .expect("handled");
+    let value: serde_json::Value =
+        serde_json::from_str(output.final_value_json().expect("value")).expect("JSON");
+    assert_eq!(value.get("status"), Some(&serde_json::Value::Null));
+    assert_eq!(
+        value.get("fields").expect("fields"),
+        &serde_json::json!(["code", "data", "message", "metadata", "stack"])
+    );
+}
+
+#[test]
+fn an_uncaught_upstream_error_retains_its_status_and_a_bounded_body() {
+    let rejected = |data: serde_json::Value, source: &str| {
+        let program = ProgramCompiler::new(IsolateLimits::default())
+            .expect("compiler")
+            .compile(compilation_deadline(), source)
+            .expect("compile");
+        let error = ProgramExecutor::new(IsolateLimits::default())
+            .execute_with_host(
+                &program,
+                UpstreamRejectingHost::new(&serde_json::json!({
+                    "status": 422, "data": data, "metadata": {"kind": "http"},
+                })),
+            )
+            .expect_err("an uncaught upstream error fails the Program");
+        let Error::ProgramRejected(error) = error else {
+            panic!("{error}");
+        };
+        error.operation.expect("trusted Operation fields")
+    };
+
+    let operation = rejected(
+        serde_json::json!({"field": "city"}),
+        "return await coral.providers.weather.getForecast();",
+    );
+    assert_eq!(
+        operation,
+        coral_v8::ProgramOperationError {
+            code: "upstream_error".to_string(),
+            trace_id: None,
+            status: Some(422),
+            body: Some(r#"{"field":"city"}"#.to_string()),
+            body_truncated: false,
+        }
+    );
+
+    // The Program cannot replace what the diagnostics retain.
+    let operation = rejected(
+        serde_json::json!({"field": "city"}),
+        r#"try { await coral.providers.weather.getForecast(); }
+           catch (error) {
+             try { Object.defineProperty(error, "data", {value: "forged"}); } catch {}
+             throw error;
+           }"#,
+    );
+    assert_eq!(operation.body.as_deref(), Some(r#"{"field":"city"}"#));
+
+    let operation = rejected(
+        serde_json::json!("é".repeat(4096)),
+        "return await coral.providers.weather.getForecast();",
+    );
+    let body = operation.body.expect("body excerpt");
+    assert!(operation.body_truncated);
+    assert!(body.len() <= 1024, "{}", body.len());
+    assert!(body.starts_with("\"é"));
 }
 
 struct FatalOperationHost;

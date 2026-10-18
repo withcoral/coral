@@ -98,6 +98,11 @@ export interface ProgramError {
   frames: { source: string; line: number; column: number }[]
   operationCode: string
   operationTraceId: string
+  /** HTTP status of the upstream response that rejected the call, or 0. */
+  operationStatus: number
+  /** Start of that response's JSON-encoded data, or empty. */
+  operationBody: string
+  operationBodyTruncated: boolean
   cause: ProgramError | null
   errors: ProgramError[]
   truncated: boolean

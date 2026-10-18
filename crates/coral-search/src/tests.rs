@@ -330,10 +330,10 @@ async fn describe_returns_exact_descriptions_and_only_owned_source() {
     let declaration = operation.typescript_declaration();
     assert!(
         declaration.contains(
-            "export default function (): Promise<HttpResult<({ \"temperatureC\": number }"
+            "export default function (): Promise<HttpResult<{ \"temperatureC\": number }"
         )
     );
-    assert!(declaration.ends_with(", 200, \"application/json\"> | HttpUnknownResult>;"));
+    assert!(declaration.ends_with(", 200, \"application/json\">>;"));
     assert!(described_operation.saved_function_detail().is_none());
 
     let described_function = scope

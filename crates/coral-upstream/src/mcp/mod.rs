@@ -211,6 +211,17 @@ impl McpOutcome {
     pub const fn operation_result(&self) -> &Value {
         &self.result
     }
+
+    /// Returns [`OutcomeClass::UpstreamError`] for a tool result with
+    /// `isError: true`, and a success otherwise.
+    #[must_use]
+    pub fn class(&self) -> crate::OutcomeClass {
+        if self.result.pointer("/data/isError") == Some(&Value::Bool(true)) {
+            crate::OutcomeClass::UpstreamError
+        } else {
+            crate::OutcomeClass::Success
+        }
+    }
 }
 
 /// Whether the peer currently lists a tool by this name.

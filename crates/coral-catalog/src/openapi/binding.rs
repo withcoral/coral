@@ -421,6 +421,37 @@ pub enum HttpResponseStatus {
     Default,
 }
 
+impl HttpResponseStatus {
+    /// Returns whether this selector names a 2xx code or the `2XX` range.
+    #[must_use]
+    pub const fn is_success(self) -> bool {
+        match self {
+            Self::Code(code) => matches!(code, 200..=299),
+            Self::Range(range) => range == 2,
+            Self::Default => false,
+        }
+    }
+}
+
+/// Returns the responses an Operation declares as successes: each 2xx code
+/// and the `2XX` range, or `default` when no 2xx response is declared. A
+/// Program receives only these; every other response rejects its call.
+#[must_use]
+pub fn declared_successes(responses: &[HttpResponseBinding]) -> Vec<&HttpResponseBinding> {
+    let successes = responses
+        .iter()
+        .filter(|response| response.status().is_success())
+        .collect::<Vec<_>>();
+    if successes.is_empty() {
+        responses
+            .iter()
+            .filter(|response| response.status() == HttpResponseStatus::Default)
+            .collect()
+    } else {
+        successes
+    }
+}
+
 /// One complete declared HTTP response alternative.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpResponseBinding {

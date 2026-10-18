@@ -438,6 +438,18 @@ function ErrorDetail({ error }: { error: ProgramError }) {
           Coral operation code: {error.operationCode} · Trace: {error.operationTraceId}
         </Typography.Body>
       )}
+      {error.operationStatus > 0 && (
+        <Typography.Body>Upstream HTTP status: {error.operationStatus}</Typography.Body>
+      )}
+      {error.operationBody && (
+        <>
+          <Typography.BodySmallStrong>Upstream response body</Typography.BodySmallStrong>
+          <Native value={error.operationBody} format="json" />
+          {error.operationBodyTruncated && (
+            <Typography.Body>This is the start of the body.</Typography.Body>
+          )}
+        </>
+      )}
       {error.truncated && (
         <Typography.Body>Coral retained bounded diagnostic content.</Typography.Body>
       )}

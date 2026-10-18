@@ -778,7 +778,7 @@ async fn incomplete_tool_response_is_not_a_complete_outcome() {
 }
 
 #[tokio::test]
-async fn complete_tool_outcomes_preserve_content_structured_content_and_error_presence() {
+async fn complete_tool_outcomes_preserve_content_and_only_is_error_is_an_upstream_error() {
     for is_error in [None, Some(false), Some(true)] {
         let mut result = json!({
             "content": [
@@ -805,6 +805,15 @@ async fn complete_tool_outcomes_preserve_content_structured_content_and_error_pr
         assert_eq!(
             outcome.operation_result(),
             &json!({"data": result, "metadata": {"kind": "mcp", "_meta": meta}})
+        );
+        assert_eq!(
+            outcome.class(),
+            if is_error == Some(true) {
+                coral_upstream::OutcomeClass::UpstreamError
+            } else {
+                coral_upstream::OutcomeClass::Success
+            },
+            "isError {is_error:?}"
         );
         server.verify().await;
         // Count JSON-RPC posts only: a session close from an earlier test can land

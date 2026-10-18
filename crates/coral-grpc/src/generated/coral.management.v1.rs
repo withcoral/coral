@@ -5610,6 +5610,16 @@ pub struct ActivityProgramError {
     /// This error refers back to one of its own causes.
     #[prost(bool, tag = "11")]
     pub circular: bool,
+    /// HTTP status of the upstream response that rejected the Operation call,
+    /// or 0 when there was none.
+    #[prost(uint32, tag = "12")]
+    pub operation_status: u32,
+    /// Start of that response's JSON-encoded data, at most 1 KiB, or empty.
+    #[prost(string, tag = "13")]
+    pub operation_body: ::prost::alloc::string::String,
+    /// operation_body leaves out the rest of the data.
+    #[prost(bool, tag = "14")]
+    pub operation_body_truncated: bool,
 }
 /// An event or outcome that carries no data.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

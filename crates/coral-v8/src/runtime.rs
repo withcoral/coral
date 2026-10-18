@@ -277,12 +277,28 @@ fn drain_program_work(
                             message,
                             trace_id,
                         }) => {
-                            reject_coral_failure(
+                            reject_operation_error(
                                 scope,
                                 resolver,
                                 code,
                                 message,
                                 trace_id.as_deref(),
+                                None,
+                                &call_stack,
+                            );
+                        }
+                        Err(OperationHostError::Upstream {
+                            code,
+                            message,
+                            outcome_json,
+                        }) => {
+                            reject_operation_error(
+                                scope,
+                                resolver,
+                                code,
+                                message,
+                                None,
+                                Some(&outcome_json),
                                 &call_stack,
                             );
                         }
@@ -494,7 +510,7 @@ fn operation_callback(
                 "Operation input exceeds its limit",
             ),
         };
-        reject_coral_failure(scope, resolver, code, message, None, &call_stack);
+        reject_operation_error(scope, resolver, code, message, None, None, &call_stack);
         return;
     }
     let operation = host.invoke(path, arguments_json);
@@ -746,9 +762,18 @@ pub(crate) fn operation_error_fields(
     let fields = v8::Local::<v8::Array>::try_from(fields).ok()?;
     let code = fields.get_index(scope, 0)?;
     let trace = fields.get_index(scope, 1)?;
+    let status = fields.get_index(scope, 2)?;
+    let body = fields.get_index(scope, 3)?;
+    let body_truncated = fields.get_index(scope, 4)?;
     Some(crate::ProgramOperationError {
         code: code.to_rust_string_lossy(scope),
         trace_id: (!trace.is_undefined()).then(|| trace.to_rust_string_lossy(scope)),
+        status: status
+            .uint32_value(scope)
+            .filter(|_status| !status.is_undefined())
+            .and_then(|status| u16::try_from(status).ok()),
+        body: (!body.is_undefined()).then(|| body.to_rust_string_lossy(scope)),
+        body_truncated: body_truncated.is_true(),
     })
 }
 
@@ -796,12 +821,28 @@ fn resolve_operation_promise(
     let _settled = resolver.resolve(scope, value);
 }
 
-fn reject_coral_failure(
+/// Parses an encoded Operation Result within the Run's value limits.
+fn parse_operation_result<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    result_json: &str,
+) -> Option<v8::Local<'s, v8::Value>> {
+    let limits = scope
+        .get_slot::<ProgramHostSlot>()
+        .map_or_else(coral_value::ValueLimits::default, |slot| {
+            slot.host.value_limits()
+        });
+    limits.validate_json(result_json).ok()?;
+    let encoded = v8::String::new(scope, result_json)?;
+    v8::json::parse(scope, encoded)
+}
+
+fn reject_operation_error(
     scope: &mut v8::PinScope<'_, '_>,
     resolver: v8::Local<'_, v8::PromiseResolver>,
     code: &str,
     message: &str,
     trace_id: Option<&str>,
+    outcome_json: Option<&str>,
     call_stack: &str,
 ) {
     let exception = (|| {
@@ -817,15 +858,41 @@ fn reject_coral_failure(
             None => v8::undefined(scope).into(),
         };
         let stack = v8::String::new(scope, &format!("OperationError: {message}\n{call_stack}"))?;
+        let outcome: v8::Local<v8::Value> = match outcome_json {
+            Some(outcome_json) => parse_operation_result(scope, outcome_json)?,
+            None => v8::undefined(scope).into(),
+        };
         let receiver = v8::undefined(scope).into();
         let exception = factory.call(
             scope,
             receiver,
-            &[code.into(), message_value.into(), trace, stack.into()],
+            &[
+                code.into(),
+                message_value.into(),
+                trace,
+                stack.into(),
+                outcome,
+            ],
         )?;
         let object = v8::Local::<v8::Object>::try_from(exception).ok()?;
         let key = operation_fields_key(scope)?;
-        let fields = v8::Array::new_with_elements(scope, &[code.into(), trace]);
+        let (status, body, body_truncated) = outcome_json.map_or(
+            (None, None, false),
+            crate::program_error::operation_outcome_excerpt,
+        );
+        let status: v8::Local<v8::Value> = match status {
+            Some(status) => v8::Integer::new_from_unsigned(scope, u32::from(status)).into(),
+            None => v8::undefined(scope).into(),
+        };
+        let body: v8::Local<v8::Value> = match body {
+            Some(body) => v8::String::new(scope, &body)?.into(),
+            None => v8::undefined(scope).into(),
+        };
+        let body_truncated = v8::Boolean::new(scope, body_truncated).into();
+        let fields = v8::Array::new_with_elements(
+            scope,
+            &[code.into(), trace, status, body, body_truncated],
+        );
         if object.set_private(scope, key, fields.into()) != Some(true) {
             return None;
         }
@@ -849,7 +916,7 @@ fn reject_operation_promise(
         return;
     };
     let call_stack = capture_operation_call_stack(scope);
-    reject_coral_failure(scope, resolver, code, message, None, &call_stack);
+    reject_operation_error(scope, resolver, code, message, None, None, &call_stack);
     return_value.set(resolver.get_promise(scope).into());
 }
 

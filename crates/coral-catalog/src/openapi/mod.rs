@@ -11,10 +11,11 @@ pub use binding::{
     HttpContentBinding, HttpCredentialSlot, HttpEncodingBinding, HttpExecutionBinding,
     HttpHeaderBinding, HttpMethod, HttpParameterBinding, HttpParameterLocation, HttpParameterStyle,
     HttpRedirectPolicy, HttpRequestBodyBinding, HttpResponseBinding, HttpResponseStatus,
+    declared_successes,
 };
 pub use configuration::validate_openapi_configuration;
 pub use input::{OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument};
 pub(super) use materialize::{MATERIALIZER_VERSION, materialize};
 pub(crate) use projection::DECLARED_TYPE_NAMES;
-pub use projection::{HTTP_RESULT, HTTP_SUCCESS_STATUS, HTTP_UNKNOWN_RESULT};
+pub use projection::HTTP_RESULT;
 pub(crate) use projection::{declares_input, typescript_names};

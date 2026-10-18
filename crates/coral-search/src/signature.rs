@@ -36,8 +36,8 @@ pub(crate) const SIGNATURE_LINE_MAX_BYTES: usize = 512;
 #[derive(Clone, Copy)]
 pub(crate) enum Callable<'a> {
     /// A catalog-projected Operation: its result is a union of envelopes,
-    /// one per response: `{ data; metadata }` objects, or `HttpResult` and
-    /// `HttpUnknownResult` for an HTTP Operation.
+    /// one per declared success: `{ data; metadata }` objects, or
+    /// `HttpResult` for an HTTP Operation.
     Operation { leaf: &'a str },
     /// A Saved Function's compiler-emitted declaration with one default
     /// callable export.

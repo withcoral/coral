@@ -141,7 +141,7 @@ fn corpus_preserves_exact_schemas_annotations_and_result_field_presence() {
     );
     for field in [
         "content: Array<McpContentBlock>",
-        "isError?: boolean",
+        "isError?: false",
         "_meta?: McpSafeMeta",
     ] {
         assert!(structured.typescript_declaration().contains(field));

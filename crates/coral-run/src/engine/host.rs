@@ -82,6 +82,15 @@ impl coral_v8::ProgramHost for RunProgramHost {
                             trace_id: None,
                         }
                     }
+                    InvocationHostError::Upstream {
+                        code,
+                        message,
+                        outcome_json,
+                    } => coral_v8::OperationHostError::Upstream {
+                        code,
+                        message,
+                        outcome_json,
+                    },
                     InvocationHostError::Fatal(_private_error) => {
                         // V8 may still be running noncooperative JavaScript,
                         // rather than polling this Operation's completion.

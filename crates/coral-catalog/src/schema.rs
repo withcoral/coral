@@ -1272,8 +1272,16 @@ impl<'a> TypeScriptProjector<'a> {
                     );
                 }
             }
-            Some(Value::Bool(true)) | None => {
+            Some(Value::Bool(true)) => {
                 intersections.push("Record<string, unknown>".to_string());
+            }
+            // Undeclared extra properties still arrive at runtime, but the type
+            // lists only documented fields, so a misspelled read is an error.
+            // A free-form object with no fields stays an open map.
+            None => {
+                if fields.is_empty() {
+                    intersections.push("Record<string, unknown>".to_string());
+                }
             }
             Some(additional) => {
                 let kind = self.project_guarded_schema(additional, direction)?;
