@@ -122,7 +122,7 @@ async fn an_mcp_is_error_rejects_the_call_and_provider_bound_reads_survive_run_o
         panic!("MCP Program failed: {:?}", terminal.terminal_outcome());
     };
     let thrown = &value.as_json()["result"];
-    assert_eq!(thrown["code"], "upstream_error");
+    assert_eq!(thrown["code"], "error_response");
     assert_eq!(
         thrown["status"],
         Value::Null,

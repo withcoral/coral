@@ -778,7 +778,7 @@ async fn incomplete_tool_response_is_not_a_complete_outcome() {
 }
 
 #[tokio::test]
-async fn complete_tool_outcomes_preserve_content_and_only_is_error_is_an_upstream_error() {
+async fn complete_tool_outcomes_preserve_content_and_only_is_error_is_an_error_response() {
     for is_error in [None, Some(false), Some(true)] {
         let mut result = json!({
             "content": [
@@ -809,7 +809,7 @@ async fn complete_tool_outcomes_preserve_content_and_only_is_error_is_an_upstrea
         assert_eq!(
             outcome.class(),
             if is_error == Some(true) {
-                coral_upstream::OutcomeClass::UpstreamError
+                coral_upstream::OutcomeClass::ErrorResponse
             } else {
                 coral_upstream::OutcomeClass::Success
             },

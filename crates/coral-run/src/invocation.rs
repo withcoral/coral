@@ -142,8 +142,7 @@ pub(crate) enum InvocationHostError {
     Rejected(CoralFailure),
     /// A complete, durably retained upstream outcome that is not a declared success.
     Upstream {
-        code: &'static str,
-        message: &'static str,
+        rejection: crate::error::UpstreamRejection,
         outcome_json: String,
     },
     Fatal(Error),
@@ -399,11 +398,10 @@ impl OperationInvoker {
                 .await?);
         }
         self.finish_upstream(admitted, &result_json).await?;
-        match crate::error::upstream_rejection(outcome.class()) {
+        match crate::error::UpstreamRejection::of(outcome.class()) {
             None => Ok(result_json),
-            Some((code, message)) => Err(InvocationHostError::Upstream {
-                code,
-                message,
+            Some(rejection) => Err(InvocationHostError::Upstream {
+                rejection,
                 outcome_json: result_json,
             }),
         }

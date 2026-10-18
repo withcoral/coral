@@ -1209,7 +1209,7 @@ impl ProgramHost for UpstreamRejectingHost {
     ) -> coral_v8::OperationFuture {
         Box::pin(async move {
             Err(OperationHostError::Upstream {
-                code: "upstream_error",
+                code: "error_response",
                 message: "The upstream service returned an error",
                 outcome_json: self.outcome_json.clone(),
             })
@@ -1268,7 +1268,7 @@ fn an_upstream_operation_error_carries_its_outcome_read_only() {
             .expect("JSON"),
         serde_json::json!({
             "isOperationError": true,
-            "code": "upstream_error",
+            "code": "error_response",
             "status": 404,
             "data": {"message": "missing"},
             "metadata": {"kind": "http", "mediaType": "application/json"},
@@ -1297,7 +1297,7 @@ fn an_upstream_operation_error_carries_its_outcome_read_only() {
 }
 
 #[test]
-fn an_uncaught_upstream_error_retains_its_status_and_a_bounded_body() {
+fn an_uncaught_error_response_retains_its_status_and_a_bounded_body() {
     let rejected = |data: serde_json::Value, source: &str| {
         let program = ProgramCompiler::new(IsolateLimits::default())
             .expect("compiler")
@@ -1324,7 +1324,7 @@ fn an_uncaught_upstream_error_retains_its_status_and_a_bounded_body() {
     assert_eq!(
         operation,
         coral_v8::ProgramOperationError {
-            code: "upstream_error".to_string(),
+            code: "error_response".to_string(),
             trace_id: None,
             status: Some(422),
             body: Some(r#"{"field":"city"}"#.to_string()),

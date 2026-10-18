@@ -126,7 +126,8 @@ function rowStatus(row: ActivityRow): RowStatus {
           tone: row.requiresAction || row.state === 'unknown' ? 'warning' : 'neutral',
           label: row.state,
         }
-      // An upstream outcome is a response, not a Coral success judgment.
+      // An upstream outcome stays neutral whether the Program received it or caught it as an
+      // Operation Error; the Run shows which.
       return {
         tone:
           row.outcome === 'coral_failure'

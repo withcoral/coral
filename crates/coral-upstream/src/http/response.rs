@@ -100,7 +100,7 @@ impl HttpOutcome {
             class: if is_success_code(status) {
                 OutcomeClass::Success
             } else {
-                OutcomeClass::UpstreamError
+                OutcomeClass::ErrorResponse
             },
         }
     }
@@ -587,7 +587,7 @@ fn classify(
     diagnostics: &[HttpDecodeDiagnostic],
 ) -> OutcomeClass {
     if !is_success_code(status) {
-        return OutcomeClass::UpstreamError;
+        return OutcomeClass::ErrorResponse;
     }
     let successes = coral_catalog::declared_successes(responses);
     let Some(response) = select_response(responses, status) else {

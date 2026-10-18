@@ -462,7 +462,7 @@ async fn invocation_wire_rejects_an_mcp_is_error_and_keeps_its_native_data() {
         panic!("an uncaught isError fails the Run")
     };
     let error = failure.error.expect("Program error");
-    assert_eq!(error.operation_code, "upstream_error");
+    assert_eq!(error.operation_code, "error_response");
     assert_eq!(
         error.operation_status, 0,
         "an MCP outcome has no HTTP status"
@@ -1175,7 +1175,7 @@ async fn invocation_wire_rejects_an_http_error_status_with_its_evidence_and_keep
         panic!("an uncaught upstream error fails the Run")
     };
     let error = failure.error.as_ref().expect("Program error");
-    assert_eq!(error.operation_code, "upstream_error");
+    assert_eq!(error.operation_code, "error_response");
     assert_eq!(error.operation_status, 418);
     assert_eq!(error.operation_body, r#"{"private":[null,42]}"#);
     assert!(!error.operation_body_truncated);

@@ -801,20 +801,7 @@ fn resolve_operation_promise(
     resolver: v8::Local<'_, v8::PromiseResolver>,
     result_json: &str,
 ) {
-    let limits = scope
-        .get_slot::<ProgramHostSlot>()
-        .map_or_else(coral_value::ValueLimits::default, |slot| {
-            slot.host.value_limits()
-        });
-    if limits.validate_json(result_json).is_err() {
-        terminate_program_host(scope);
-        return;
-    }
-    let Some(encoded) = v8::String::new(scope, result_json) else {
-        terminate_program_host(scope);
-        return;
-    };
-    let Some(value) = v8::json::parse(scope, encoded) else {
+    let Some(value) = parse_operation_result(scope, result_json) else {
         terminate_program_host(scope);
         return;
     };

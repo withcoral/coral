@@ -29,8 +29,9 @@ at runtime. This reverses the v1 rule and the sentence of ADR 0001 that kept the
 - **A separate error class for upstream errors.** It keeps `OperationError` meaning "no response", but agents learn two
   names and catch the wrong one. One class with fields carries the same distinction: when the upstream answered,
   `data` is present and the outcome is known; without `data`, Coral received no response and the call may or may not
-  have taken effect. The codes stay distinct: `upstream_error`, `undeclared_response` and `undecodable_response` never
-  name a Coral Failure.
+  have taken effect. The codes stay distinct: `error_response`, `undeclared_response` and `undecodable_response` never
+  name a Coral Failure. An MCP `isError` result takes `error_response`, as an HTTP error status does; `metadata.kind`
+  and the absence of `status` tell them apart.
 - **Throw on a schema mismatch, or on a body for a success that declares no content.** Types would never lie, but an
   inaccurate OpenAPI document would make the Operation unusable until someone fixed it. Both stay Declared Successes,
   with their decode diagnostics in `metadata`, and a success that declares no content types `data` as `unknown`.

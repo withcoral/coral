@@ -678,7 +678,7 @@ async fn a_non_success_http_outcome_rejects_the_call_and_is_retained() {
         .error()
         .and_then(|error| error.operation.as_ref())
         .expect("trusted Operation error fields");
-    assert_eq!(operation.code, "upstream_error");
+    assert_eq!(operation.code, "error_response");
     assert_eq!(
         detail.summary.outcome,
         Some(crate::InvocationResultKind::UpstreamOutcome)
@@ -709,7 +709,7 @@ async fn a_non_success_http_outcome_rejects_the_call_and_is_retained() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_caught_upstream_error_carries_status_data_and_metadata() {
+async fn a_caught_error_response_carries_status_data_and_metadata() {
     let server = rejecting_forecast_server().await;
 
     let (outcome, _detail) = run_real_forecast(
@@ -743,7 +743,7 @@ async fn a_caught_upstream_error_carries_status_data_and_metadata() {
         value.as_json(),
         &serde_json::json!({
             "isOperationError": true,
-            "code": "upstream_error",
+            "code": "error_response",
             "status": 422,
             "data": {"temperature": 18},
             "kind": "http",

@@ -205,14 +205,14 @@ mod tests {
     fn an_upstream_operation_error_projects_its_status_and_body() {
         assert_eq!(
             rejected(coral_run::ProgramOperationError {
-                code: "upstream_error".to_string(),
+                code: "error_response".to_string(),
                 trace_id: None,
                 status: Some(404),
                 body: Some(r#"{"message":"missing"}"#.to_string()),
                 body_truncated: true,
             }),
             serde_json::json!({
-                "code": "upstream_error",
+                "code": "error_response",
                 "status": 404,
                 "body": r#"{"message":"missing"}"#,
                 "body_truncated": true,

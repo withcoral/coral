@@ -1030,7 +1030,7 @@ async fn each_outcome_is_a_declared_success_or_names_why_it_is_not() {
             status: 404,
             content_type: json,
             body: br#"{"message":"missing"}"#,
-            class: OutcomeClass::UpstreamError,
+            class: OutcomeClass::ErrorResponse,
         },
         ClassCase {
             name: "an undeclared 500",
@@ -1039,7 +1039,7 @@ async fn each_outcome_is_a_declared_success_or_names_why_it_is_not() {
             status: 500,
             content_type: None,
             body: b"",
-            class: OutcomeClass::UpstreamError,
+            class: OutcomeClass::ErrorResponse,
         },
         ClassCase {
             name: "a 2xx the Operation does not declare",
@@ -1075,7 +1075,7 @@ async fn each_outcome_is_a_declared_success_or_names_why_it_is_not() {
             status: 400,
             content_type: json,
             body: b"{}",
-            class: OutcomeClass::UpstreamError,
+            class: OutcomeClass::ErrorResponse,
         },
         ClassCase {
             name: "a status in a declared 2XX range",
@@ -1174,7 +1174,7 @@ async fn each_outcome_is_a_declared_success_or_names_why_it_is_not() {
             status: 404,
             content_type: None,
             body: b"",
-            class: OutcomeClass::UpstreamError,
+            class: OutcomeClass::ErrorResponse,
         },
     ] {
         let server = MockServer::start().await;

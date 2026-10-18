@@ -861,7 +861,7 @@ export const UpstreamOperationError: Story = {
             name: 'OperationError',
             message: 'The upstream service returned an error',
             frames: [{ source: 'Program', line: 1, column: 14 }],
-            operationCode: 'upstream_error',
+            operationCode: 'error_response',
             operationTraceId: '',
             operationStatus: 404,
             operationBody: '{"message":"No invoices for this account"',

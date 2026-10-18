@@ -54,7 +54,7 @@ pub enum OutcomeClass {
     Success,
     /// The upstream reported failure: a non-2xx HTTP status, or an MCP tool
     /// result with `isError: true`.
-    UpstreamError,
+    ErrorResponse,
     /// A 2xx status or media type that the Operation does not declare as a success.
     UndeclaredResponse,
     /// A body Coral could not decode: a malformed `Content-Type`, an

@@ -83,12 +83,11 @@ impl coral_v8::ProgramHost for RunProgramHost {
                         }
                     }
                     InvocationHostError::Upstream {
-                        code,
-                        message,
+                        rejection,
                         outcome_json,
                     } => coral_v8::OperationHostError::Upstream {
-                        code,
-                        message,
+                        code: rejection.code(),
+                        message: rejection.message(),
                         outcome_json,
                     },
                     InvocationHostError::Fatal(_private_error) => {
