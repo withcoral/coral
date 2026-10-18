@@ -220,17 +220,20 @@ impl Renderer<'_> {
                 }
                 rendered.join(" | ")
             }
+            // Each part keeps its name; inline objects share one marker, and an
+            // open record adds nothing a reader can use.
             Type::Intersection(parts) => {
-                if parts.iter().any(|part| {
-                    matches!(self.shallow_body(part, &mut seen.clone()), Type::Object(_))
-                }) {
+                let mut rendered = Vec::<String>::new();
+                for part in parts.iter().filter(|part| !is_open_record(part)) {
+                    let part = self.grouped(part, seen, object, opaque);
+                    if !rendered.contains(&part) {
+                        rendered.push(part);
+                    }
+                }
+                if rendered.is_empty() {
                     return object.to_string();
                 }
-                parts
-                    .iter()
-                    .map(|part| self.grouped(part, seen, object, opaque))
-                    .collect::<Vec<_>>()
-                    .join(" & ")
+                rendered.join(" & ")
             }
             Type::Array { element, readonly } => format!(
                 "{}{}[]",

@@ -50,6 +50,20 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
              export default function (): {result};"
         )
     };
+    let named_with_inline = {
+        let (aliases, result) =
+            http_result(&[("(Issue & { \"triage\"?: { \"type\"?: string } })", "200")]);
+        format!(
+            "{aliases}type Issue = {{ \"id\": number }};\nexport default function (): {result};"
+        )
+    };
+    let inline_only = {
+        let (aliases, result) = http_result(&[
+            ("({ \"a\"?: string } & { \"b\"?: string })", "200"),
+            ("(Record<string, unknown> & Record<string, unknown>)", "201"),
+        ]);
+        format!("{aliases}export default function (): {result};")
+    };
     let default_only = {
         let (aliases, result) = http_result(&[("Thing", "number")]);
         format!(
@@ -96,6 +110,16 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
             status_range.as_str(),
             Callable::Operation { leaf: "names" },
             "names(): Promise<{ data: Array<Name> }>",
+        ),
+        (
+            named_with_inline.as_str(),
+            Callable::Operation { leaf: "update" },
+            "update(): Promise<{ data: Issue & object }>",
+        ),
+        (
+            inline_only.as_str(),
+            Callable::Operation { leaf: "merged" },
+            "merged(): Promise<{ data: object }>",
         ),
         (
             default_only.as_str(),
