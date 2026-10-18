@@ -11,8 +11,8 @@ icons:
 # the nextdns-mcp project (MIT). It covers every documented endpoint except
 # analytics/domains;series. It tracks main because the repo is active and
 # lints the document in CI. NextDNS labels its API as beta.
-# logs/stream sends server-sent events, and logs/download redirects to a file
-# unless the request sets redirect=0.
+# logs/stream sends server-sent events, and logs/download redirects to a
+# temporary CSV file.
 source:
   openapi:
     url: https://raw.githubusercontent.com/dmeiser/nextdns-mcp/main/src/nextdns_mcp/nextdns-openapi.yaml
