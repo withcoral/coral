@@ -1,0 +1,31 @@
+[package]
+name = "coral-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+coral-db.workspace = true
+coral-outbound = { workspace = true, features = ["transport"] }
+coral-task.workspace = true
+coral-workspace.workspace = true
+reqwest.workspace = true
+sea-query.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+coral-test-support.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

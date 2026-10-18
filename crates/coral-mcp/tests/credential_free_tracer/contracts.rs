@@ -35,7 +35,7 @@ impl OutputContracts {
                 .expect("Run tool")["outputSchema"]
                 .clone()
         };
-        assert_eq!(schema("exec"), schema("wait"));
+        // `wait` and `cancel` observe a Run or an agent turn, so they share one union.
         assert_eq!(schema("wait"), schema("cancel"));
         Self(contracts)
     }

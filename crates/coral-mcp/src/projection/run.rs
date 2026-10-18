@@ -261,12 +261,12 @@ fn required_action(action: &RequiredAction, human_interface: &crate::HumanInterf
 }
 
 // Every i64 Unix-nanosecond value fits chrono's range. Keep conversion integral.
-fn timestamp(unix_nanos: i64) -> String {
+pub(super) fn timestamp(unix_nanos: i64) -> String {
     chrono::DateTime::from_timestamp_nanos(unix_nanos)
         .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
 }
 
-fn timestamp_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+pub(super) fn timestamp_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({
         "type": "string", "format": "date-time",
         "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{9}Z$"

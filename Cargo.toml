@@ -115,6 +115,7 @@ wiremock = "0.6"
 zeroize = "1.9"
 
 coral-administration = { path = "crates/coral-administration" }
+coral-agent = { path = "crates/coral-agent" }
 coral-app = { path = "crates/coral-app" }
 coral-auth = { path = "crates/coral-auth" }
 coral-catalog = { path = "crates/coral-catalog" }

@@ -17,6 +17,8 @@
 //!   wake [`Database::subscribe_changes`] readers. `SQLite` uses the shared application
 //!   handle; Postgres propagates invalidations across workers. Notifications are
 //!   coalescing hints, not retained Events, payloads, or authority.
+//! - [`Database::wait_for_changes`] paces a domain's reread loop on those commits
+//!   until the domain finds its snapshot ready or a bounded wait ends.
 //! - [`Database::execute`], [`Database::fetch_optional`], and
 //!   [`Database::fetch_all`] execute domain-owned `SeaQuery` statements.
 //! - [`QueryExecutor`] lets one domain read run directly against a [`Database`]
@@ -53,6 +55,7 @@ mod database;
 mod error;
 mod executor;
 mod migration;
+mod observe;
 mod options;
 mod query;
 mod transaction;
@@ -63,6 +66,7 @@ pub use database::{Database, ReadOnlyDatabase, validate_postgres_url};
 pub use error::{Error, sqlx_error_is_serialization_conflict, sqlx_error_is_unique_violation};
 pub use executor::QueryExecutor;
 pub use migration::{MigrationPlan, migration_plan};
+pub use observe::ChangeWait;
 pub use options::DatabaseOptions;
 pub use query::{col, column};
 pub use transaction::{RowLock, Transaction, TransactionToken};

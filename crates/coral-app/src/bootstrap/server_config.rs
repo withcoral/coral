@@ -26,6 +26,7 @@ struct ServerConfigFile {
     outbound: OutboundSettings,
     search: SearchSettings,
     credentials: CredentialSettings,
+    agent: AgentSettings,
     #[serde(rename = "auth")]
     _auth: IgnoredAny,
     #[serde(rename = "database")]
@@ -116,6 +117,7 @@ impl LoadedServerConfig {
         config.runtime.resolve()?;
         config.search.reconcile_interval()?;
         config.credentials.key_env()?;
+        config.agent.validate()?;
         self.auth_settings()?;
         crate::telemetry::TelemetryConfig::from_toml(&self.raw)?;
         Ok(())
@@ -156,6 +158,7 @@ impl LoadedServerConfig {
                 SocketAddr::from((Ipv4Addr::LOCALHOST, port))
             });
             return Ok(ServeSettings {
+                agent: config.agent.resolve()?,
                 outbound_policy: config.outbound.policy(defaults),
                 mcp_oauth_client_bootstrap,
                 runtime_limits,
@@ -209,6 +212,7 @@ impl LoadedServerConfig {
         )?;
         let human_interface = human_interface(listeners.web, true, launcher.local_web_url.clone())?;
         Ok(ServeSettings {
+            agent: config.agent.resolve()?,
             outbound_policy: config.outbound.policy(defaults),
             mcp_oauth_client_bootstrap,
             runtime_limits,
@@ -362,6 +366,68 @@ impl CredentialSettings {
                     .map_err(AppError::FailedPrecondition)
             })
             .transpose()
+    }
+}
+
+/// Coral's own agent. It is off until `api_key_env` names the variable that
+/// holds the Anthropic API key.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct AgentSettings {
+    api_key_env: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+}
+
+const AGENT_DEFAULT_MODEL: &str = "claude-haiku-5-5";
+const AGENT_DEFAULT_EFFORT: &str = "medium";
+const AGENT_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+impl AgentSettings {
+    fn validate(&self) -> Result<(), AppError> {
+        if let Some(name) = &self.api_key_env {
+            super::env_var_name("agent.api_key_env", name).map_err(AppError::FailedPrecondition)?;
+        } else if self.model.is_some() || self.effort.is_some() {
+            return Err(AppError::FailedPrecondition(
+                "agent.model and agent.effort require agent.api_key_env".into(),
+            ));
+        }
+        if self
+            .model
+            .as_deref()
+            .is_some_and(|model| model.trim().is_empty())
+        {
+            return Err(AppError::FailedPrecondition(
+                "agent.model must not be blank".into(),
+            ));
+        }
+        if let Some(effort) = &self.effort
+            && !AGENT_EFFORTS.contains(&effort.as_str())
+        {
+            return Err(AppError::FailedPrecondition(format!(
+                "agent.effort must be one of {}",
+                AGENT_EFFORTS.join(", ")
+            )));
+        }
+        Ok(())
+    }
+
+    fn resolve(&self) -> Result<Option<coral_agent::AnthropicSettings>, AppError> {
+        self.validate()?;
+        let Some(name) = &self.api_key_env else {
+            return Ok(None);
+        };
+        Ok(Some(coral_agent::AnthropicSettings {
+            api_key: AppEnvironment::required_env_var("agent.api_key_env", name)?,
+            model: self
+                .model
+                .clone()
+                .unwrap_or_else(|| AGENT_DEFAULT_MODEL.to_owned()),
+            effort: self
+                .effort
+                .clone()
+                .unwrap_or_else(|| AGENT_DEFAULT_EFFORT.to_owned()),
+        }))
     }
 }
 
@@ -551,6 +617,7 @@ impl McpHttpServeConfig {
 /// owns their lifecycle, so a server builder never constructs a transport it
 /// does not run.
 pub struct ServeSettings {
+    agent: Option<coral_agent::AnthropicSettings>,
     outbound_policy: coral_outbound::DestinationPolicy,
     mcp_oauth_client_bootstrap: coral_provider::account::ClientBootstrapPolicy,
     runtime_limits: coral_run::RuntimeLimits,
@@ -561,6 +628,12 @@ pub struct ServeSettings {
 }
 
 impl ServeSettings {
+    /// The model behind Coral's agent, when `[agent]` configures one.
+    #[must_use]
+    pub fn agent(&self) -> Option<&coral_agent::AnthropicSettings> {
+        self.agent.as_ref()
+    }
+
     /// Trusted human destination, required before any MCP work is accepted.
     #[must_use]
     pub fn human_interface(&self) -> &coral_mcp::HumanInterfaceUrl {

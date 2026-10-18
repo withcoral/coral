@@ -140,6 +140,47 @@ impl TaskModule {
         Ok(task)
     }
 
+    /// Holds the open Task that `actor` started, inside the caller's transaction,
+    /// so work the caller commits there belongs to it. Work above Task, such as
+    /// an Agent Turn, uses this to join a goal without a callback into Task.
+    ///
+    /// # Errors
+    ///
+    /// An absent, concealed, or other Principal's Task returns
+    /// [`Error::TaskNotFound`]; an ended one returns [`Error::TaskClosed`].
+    pub async fn hold_open_in_transaction(
+        &self,
+        transaction: &mut coral_db::Transaction<'_>,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        task_id: &TaskId,
+    ) -> Result<Task, Error> {
+        if !repository::hold(transaction, workspace_id, task_id).await? {
+            return Err(Error::TaskNotFound);
+        }
+        self.workspaces
+            .check_principal_inspection_in_transaction(
+                transaction,
+                actor,
+                workspace_id,
+                commands::now()?,
+            )
+            .await?
+            .require_current_at(commands::now()?)?;
+        let task = repository::find_attributed(
+            &mut *transaction,
+            workspace_id,
+            task_id,
+            actor.principal(),
+        )
+        .await?
+        .ok_or(Error::TaskNotFound)?;
+        if task.outcome().is_some() {
+            return Err(Error::TaskClosed);
+        }
+        Ok(task)
+    }
+
     /// Returns one Task when it is visible to the current Principal.
     ///
     /// # Errors

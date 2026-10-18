@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 coral-administration.workspace = true
+coral-agent.workspace = true
 coral-outbound = { workspace = true, features = ["transport"] }
 async-trait.workspace = true
 axum = { workspace = true, features = ["http1", "tokio"] }

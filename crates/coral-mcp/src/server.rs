@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use coral_agent::{AgentMessage, TurnCursor, TurnId, TurnObservation};
 use coral_run::{RUN_EVENT_PAGE_MAX, RunCursor, RunId, RunObservation};
 use coral_search::SearchInput;
 use coral_task::{TaskId, TaskIntent, TaskOutcome};
@@ -17,13 +18,15 @@ use uuid::Uuid;
 
 use crate::McpRuntime;
 use crate::arguments::{
-    self, CancelArguments, DeleteFunctionArguments, DescribeArguments, EndTaskArguments,
-    ExecArguments, SaveFunctionArguments, SearchArguments, StartTaskArguments, TaskOutcomeArgument,
-    ToolArguments, WaitArguments,
+    self, AgentArguments, CancelArguments, DeleteFunctionArguments, DescribeArguments,
+    EndTaskArguments, ExecArguments, SaveFunctionArguments, SearchArguments, StartTaskArguments,
+    TaskOutcomeArgument, ToolArguments, WaitArguments,
 };
 use crate::projection::{self, ToolFailure};
 use crate::prompts::{Asked, Channel, Prompting};
 
+#[cfg(test)]
+mod agent_tests;
 #[cfg(test)]
 mod tests;
 
@@ -62,7 +65,7 @@ impl McpServer {
         }
     }
 
-    async fn dispatch(
+    pub(crate) async fn dispatch(
         &self,
         mut request: CallToolRequestParams,
         channel: Channel,
@@ -117,6 +120,10 @@ impl McpServer {
             EndTaskArguments::NAME => {
                 let arguments = arguments::parse::<EndTaskArguments>(request.arguments)?;
                 self.end_task(arguments).await
+            }
+            AgentArguments::NAME if self.runtime.modules.agents.is_some() => {
+                let arguments = arguments::parse::<AgentArguments>(request.arguments)?;
+                self.agent(arguments).await
             }
             _ => Err(DispatchError::Protocol(ErrorData::invalid_params(
                 format!("tool '{name}' not found"),
@@ -282,7 +289,26 @@ impl McpServer {
         arguments: WaitArguments,
         prompting: Prompting,
     ) -> Result<CallToolResponse, DispatchError> {
-        let run_id = RunId::parse(&arguments.run_id).map_err(invalid_input)?;
+        let run_id = match target(arguments.run_id.as_deref(), arguments.turn_id.as_deref())? {
+            Target::Run(run_id) => run_id,
+            Target::Turn(turn_id) => {
+                if prompting.continued_run().is_some() {
+                    return Err(invalid_input_message(
+                        "requestState belongs to a Run, not a turn".into(),
+                    ));
+                }
+                let wait_ms =
+                    validated_wait(arguments.wait_ms.unwrap_or(arguments::DEFAULT_WAIT_MS))?;
+                let observation =
+                    TurnObservation::immediate(turn_cursor(arguments.cursor.as_deref())?)
+                        .with_wait(Duration::from_millis(wait_ms))
+                        .map_err(invalid_input)?;
+                return self
+                    .observe_turn(&turn_id, &observation)
+                    .await
+                    .map(Into::into);
+            }
+        };
         let cursor = arguments
             .cursor
             .as_deref()
@@ -459,7 +485,24 @@ impl McpServer {
     }
 
     async fn cancel(&self, arguments: CancelArguments) -> Result<CallToolResult, DispatchError> {
-        let run_id = RunId::parse(&arguments.run_id).map_err(invalid_input)?;
+        let run_id = match target(arguments.run_id.as_deref(), arguments.turn_id.as_deref())? {
+            Target::Run(run_id) => run_id,
+            Target::Turn(turn_id) => {
+                let observation =
+                    TurnObservation::immediate(turn_cursor(arguments.cursor.as_deref())?);
+                let update = self
+                    .agents()?
+                    .cancel(
+                        &self.runtime.principal,
+                        &self.workspace_id,
+                        &turn_id,
+                        &observation,
+                    )
+                    .await
+                    .map_err(agent_failure)?;
+                return projection::turn_update(&update).map_err(DispatchError::Tool);
+            }
+        };
         let cursor = arguments
             .cursor
             .as_deref()
@@ -481,6 +524,72 @@ impl McpServer {
             .await
             .map_err(run_failure)?;
         self.run_update(&update).map_err(DispatchError::Tool)
+    }
+
+    /// Accepts one message as the next agent turn, starting a Task when none is given,
+    /// and observes it like `exec` observes a new Run.
+    async fn agent(&self, arguments: AgentArguments) -> Result<CallToolResult, DispatchError> {
+        let agents = self.agents()?;
+        let message = AgentMessage::parse(&arguments.message).map_err(invalid_input)?;
+        let wait_ms = validated_wait(arguments.wait_ms.unwrap_or(arguments::DEFAULT_EXEC_WAIT_MS))?;
+        let observation =
+            TurnObservation::initial(Duration::from_millis(wait_ms)).map_err(invalid_input)?;
+        let task_id = match arguments.task_id.as_deref() {
+            Some(task_id) => TaskId::parse(task_id).map_err(invalid_input)?,
+            None => self
+                .runtime
+                .modules
+                .tasks
+                .start(
+                    &self.runtime.principal,
+                    &self.workspace_id,
+                    task_intent(message.as_str())?,
+                    now_unix_nanos()?,
+                )
+                .await
+                .map_err(task_failure)?
+                .id()
+                .clone(),
+        };
+        let toolbox = std::sync::Arc::new(crate::agent_toolbox::McpToolbox::new(self.clone()));
+        let turn_id = agents
+            .start_turn(
+                &self.runtime.principal,
+                &self.workspace_id,
+                &task_id,
+                &message,
+                toolbox,
+            )
+            .await
+            .map_err(agent_failure)?;
+        self.observe_turn(&turn_id, &observation).await
+    }
+
+    async fn observe_turn(
+        &self,
+        turn_id: &TurnId,
+        observation: &TurnObservation,
+    ) -> Result<CallToolResult, DispatchError> {
+        let update = self
+            .agents()?
+            .observe(
+                &self.runtime.principal,
+                &self.workspace_id,
+                turn_id,
+                observation,
+            )
+            .await
+            .map_err(agent_failure)?;
+        projection::turn_update(&update).map_err(DispatchError::Tool)
+    }
+
+    fn agents(&self) -> Result<&coral_agent::AgentModule, DispatchError> {
+        self.runtime.modules.agents.as_ref().ok_or_else(|| {
+            DispatchError::Tool(ToolFailure::stable(
+                "agent_unavailable",
+                "Coral's agent is not configured on this server",
+            ))
+        })
     }
 
     async fn end_task(&self, arguments: EndTaskArguments) -> Result<CallToolResult, DispatchError> {
@@ -549,7 +658,11 @@ impl ServerHandler for McpServer {
         )
         .with_protocol_version(fallback_protocol_version())
         .with_server_info(Implementation::new("Coral", env!("CARGO_PKG_VERSION")))
-        .with_instructions(crate::instructions::INSTRUCTIONS)
+        .with_instructions(if self.runtime.modules.agents.is_some() {
+            crate::instructions::AGENT_INSTRUCTIONS
+        } else {
+            crate::instructions::INSTRUCTIONS
+        })
     }
 
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
@@ -576,9 +689,11 @@ impl ServerHandler for McpServer {
         // Protocol 2026-07-28 (SEP-2549) requires cache hints on list results
         // and Claude Code rejects a tools/list result that omits them. Older
         // versions ignore the extra fields, so the hints are not version-gated.
-        std::future::ready(Ok(ListToolsResult::with_all_items(arguments::tools())
-            .with_ttl_ms(0)
-            .with_cache_scope(CacheScope::Private)))
+        std::future::ready(Ok(ListToolsResult::with_all_items(arguments::tools(
+            self.runtime.modules.agents.is_some(),
+        ))
+        .with_ttl_ms(0)
+        .with_cache_scope(CacheScope::Private)))
     }
 
     // Embedded output URIs label one result's blocks; they are never listed or read.
@@ -613,6 +728,62 @@ impl ServerHandler for McpServer {
             .with_ttl_ms(0)
             .with_cache_scope(CacheScope::Private)))
     }
+}
+
+enum Target {
+    Run(RunId),
+    Turn(TurnId),
+}
+
+/// `wait` and `cancel` name exactly one Run or one agent turn.
+fn target(run_id: Option<&str>, turn_id: Option<&str>) -> Result<Target, DispatchError> {
+    match (run_id, turn_id) {
+        (Some(run_id), None) => Ok(Target::Run(RunId::parse(run_id).map_err(invalid_input)?)),
+        (None, Some(turn_id)) => Ok(Target::Turn(TurnId::parse(turn_id).map_err(invalid_input)?)),
+        _ => Err(invalid_input_message(
+            "give exactly one of run_id and turn_id".into(),
+        )),
+    }
+}
+
+fn turn_cursor(cursor: Option<&str>) -> Result<Option<TurnCursor>, DispatchError> {
+    cursor
+        .map(TurnCursor::parse)
+        .transpose()
+        .map_err(invalid_input)
+}
+
+/// A Task started by `agent` takes the message's first line, cut to the intent limit.
+fn task_intent(message: &str) -> Result<TaskIntent, DispatchError> {
+    let line = message
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("Ask Coral's agent");
+    let intent = line
+        .chars()
+        .take(coral_task::TASK_INTENT_MAX_CHARS)
+        .collect::<String>();
+    TaskIntent::parse(intent.trim()).map_err(invalid_input)
+}
+
+fn agent_failure(error: coral_agent::Error) -> DispatchError {
+    let failure = match error {
+        coral_agent::Error::InvalidInput(message) => ToolFailure::safe("invalid_input", message),
+        coral_agent::Error::TurnNotFound => {
+            ToolFailure::stable("turn_not_found", "Agent turn was not found")
+        }
+        coral_agent::Error::TurnInProgress => ToolFailure::stable(
+            "turn_in_progress",
+            "A turn is already running in this Task; wait for it or cancel it",
+        ),
+        coral_agent::Error::Task(error) => return task_failure(error),
+        coral_agent::Error::Workspace(error) => workspace_tool_failure(error),
+        coral_agent::Error::Database(_)
+        | coral_agent::Error::CorruptData(_)
+        | coral_agent::Error::Clock => ToolFailure::internal(),
+    };
+    DispatchError::Tool(failure)
 }
 
 fn validated_wait(wait_ms: u64) -> Result<u64, DispatchError> {
@@ -770,7 +941,7 @@ fn workspace_tool_failure(error: coral_workspace::Error) -> ToolFailure {
     }
 }
 
-enum DispatchError {
+pub(crate) enum DispatchError {
     Protocol(ErrorData),
     Tool(ToolFailure),
 }

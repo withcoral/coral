@@ -1,8 +1,6 @@
 //! Non-consuming Run observation: one authorized snapshot per read, with
 //! bounded waiting on committed changes and required-action expiry.
 
-use std::time::Duration;
-
 use coral_db::Transaction;
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
@@ -11,11 +9,6 @@ use crate::{
     Error, RequiredAction, RunCursor, RunEvent, RunId, RunModule, RunObservation, RunUpdate,
     duration_until, required_actions, run_repository,
 };
-
-/// Minimum spacing between one waiter's rereads.
-const OBSERVE_MIN_REREAD_GAP: Duration = Duration::from_millis(50);
-/// Reread cadence for a waiter whose change notifications are unavailable.
-const OBSERVE_FALLBACK_POLL: Duration = Duration::from_millis(500);
 
 impl RunModule {
     /// Returns a non-consuming observation of an authorized Run, optionally waiting.
@@ -39,45 +32,28 @@ impl RunModule {
         observation: &RunObservation,
     ) -> Result<RunUpdate, Error> {
         validate_cursor(run_id, observation)?;
-        let deadline = tokio::time::Instant::now() + observation.wait();
-        // Subscribe before the first snapshot so a commit during it still wakes this wait.
-        // A wake-up is only a hint: the database stays authoritative, so an unavailable
-        // notification path degrades to slow polling instead of failing the wait.
-        let mut changes = if observation.wait().is_zero() {
-            None
-        } else {
-            self.database.subscribe_changes().ok()
-        };
+        let mut wait = self.database.wait_for_changes(observation.wait());
         let mut seen_sequence = None;
         loop {
             let update = self
                 .observe_snapshot(actor, workspace_id, run_id, observation)
                 .await?;
-            let read_at = tokio::time::Instant::now();
             let seen_sequence =
                 *seen_sequence.get_or_insert_with(|| observation.seen_sequence(&update));
-            if observation.is_ready(&update, seen_sequence) || read_at >= deadline {
+            if observation.is_ready(&update, seen_sequence) {
                 return Ok(update);
             }
             // Expiry changes action visibility without a commit.
+            let read_at = tokio::time::Instant::now();
             let now = self.now()?;
             let expiry = update
                 .required_actions()
                 .iter()
                 .map(|action| read_at + duration_until(action.deadline_at_unix_nanos, now))
                 .min();
-            let wake = expiry.map_or(deadline, |expiry| expiry.min(deadline));
-            match &mut changes {
-                Some(subscription) => tokio::select! {
-                    result = subscription.changed() => if result.is_err() { changes = None },
-                    () = tokio::time::sleep_until(wake) => {}
-                },
-                None => {
-                    tokio::time::sleep_until(wake.min(read_at + OBSERVE_FALLBACK_POLL)).await;
-                }
+            if !wait.pause(expiry).await {
+                return Ok(update);
             }
-            // Busy Runs commit often. Coalesce their wake-ups into bounded rereads.
-            tokio::time::sleep_until(deadline.min(read_at + OBSERVE_MIN_REREAD_GAP)).await;
         }
     }
 

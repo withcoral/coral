@@ -284,12 +284,14 @@ fn check_schema(tools: &[Value]) {
             "{name}.{field}"
         );
         assert_eq!(property.get("type"), Some(&json!(["integer", "null"])));
+        // `wait` names a Run or a turn, so it requires no single parameter.
         let required = tools
             .iter()
             .find(|tool| tool.get("name") == Some(&json!(name)))
             .and_then(|tool| tool.pointer("/inputSchema/required"))
             .and_then(Value::as_array)
-            .expect("required parameters");
+            .cloned()
+            .unwrap_or_default();
         assert!(!required.contains(&json!(field)));
     }
 }

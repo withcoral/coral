@@ -8,19 +8,22 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 
+use coral_agent::AGENT_MESSAGE_MAX_CHARS;
 use coral_run::RUN_TIMEOUT_MAX_MS;
 use coral_search::SEARCH_DEFAULT_LIMIT;
 use coral_task::{TASK_FEEDBACK_MAX_CHARS, TASK_INTENT_MAX_CHARS};
 
 const TASK_ID_DESCRIPTION: &str = "The task_id from start_task.";
-const RUN_ID_DESCRIPTION: &str = "The run_id from exec.";
+const RUN_ID_DESCRIPTION: &str = "The run_id from exec. Give run_id or turn_id, not both.";
+const TURN_ID_DESCRIPTION: &str = "The turn_id from agent. Give run_id or turn_id, not both.";
+const AGENT_TOOL_DESCRIPTION: &str = "Send one message to Coral's own agent, which answers it with the user's connected providers. Use it for data work you can state in one message: look up, list, compare, join or summarize provider records, or make one change. The agent sees only this message and earlier messages in the same Task, so include the repository, people, IDs and time ranges the request depends on. Follow the page with `wait` and its `turn_id` until `state` is not `running`. The last page carries `final`, the agent's answer or one question, and `evidence`, the Program behind the answer; check it before you rely on the answer. Reply, correct, or follow up with another `agent` call in the same Task. Without `task_id`, the call starts a Task.";
 const CALL_INTENT_DESCRIPTION: &str = "Why this call is needed, in one short phrase.";
 const DESCRIBE_INTENT_DESCRIPTION: &str =
     "What the search result did not show that you need from this declaration.";
 const FUNCTION_PATH_DESCRIPTION: &str =
     "Dotted path under coral.functions, without that prefix, such as reports.summarize.";
 const SEARCH_TOOL_DESCRIPTION: &str = "Search current visible Operations and Saved Functions. In `query`, give keywords for the capability you need. Leave out people, record titles, IDs, dates and other record values. Each result is a summary with a signature line. Call a read directly when its signature line is complete. Call describe first when the line was cut, its input names a type you do not see, or before a write. When the user names the service, pass its namespace in `provider`, or `coral.workspace` for Coral's own operations. Otherwise, leave `provider` out. `start_task` lists the namespaces you can search. The filter narrows Operations to one Provider; Saved Functions stay. A page lists `retriever_statuses` only when results may be missing; retry shortly or list without a query.";
-const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or wait on this Run. Without it, the response returns the Run's events from the start.";
+const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous call on this Run or turn. Without it, the response returns its events from the start.";
 pub(crate) const DEFAULT_RUN_TIMEOUT_MS: u64 = 900_000;
 pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 10_000;
 pub(crate) const DEFAULT_WAIT_MS: u64 = 0;
@@ -200,11 +203,18 @@ impl ToolArguments for ExecArguments {
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct WaitArguments {
+    #[serde(default)]
     #[schemars(
         schema_with = "uuid_schema",
         description = RUN_ID_DESCRIPTION
     )]
-    pub(crate) run_id: String,
+    pub(crate) run_id: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        schema_with = "uuid_schema",
+        description = TURN_ID_DESCRIPTION
+    )]
+    pub(crate) turn_id: Option<String>,
     #[schemars(
         length(min = 1),
         description = RUN_CURSOR_DESCRIPTION
@@ -213,7 +223,7 @@ pub(crate) struct WaitArguments {
     #[schemars(
         range(min = 0, max = MAX_WAIT_MS),
         extend("default" = DEFAULT_WAIT_MS),
-        description = format!("How long to wait for new output, a required action, or the end of the Run, in milliseconds. Default {DEFAULT_WAIT_MS}.")
+        description = format!("How long to wait for new output, a required action, or the end of the Run or turn, in milliseconds. Default {DEFAULT_WAIT_MS}.")
     )]
     pub(crate) wait_ms: Option<u64>,
 }
@@ -226,11 +236,18 @@ impl ToolArguments for WaitArguments {
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct CancelArguments {
+    #[serde(default)]
     #[schemars(
         schema_with = "uuid_schema",
         description = RUN_ID_DESCRIPTION
     )]
-    pub(crate) run_id: String,
+    pub(crate) run_id: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        schema_with = "uuid_schema",
+        description = TURN_ID_DESCRIPTION
+    )]
+    pub(crate) turn_id: Option<String>,
     #[schemars(
         length(min = 1),
         description = RUN_CURSOR_DESCRIPTION
@@ -240,6 +257,33 @@ pub(crate) struct CancelArguments {
 
 impl ToolArguments for CancelArguments {
     const NAME: &'static str = "cancel";
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub(crate) struct AgentArguments {
+    #[serde(default)]
+    #[schemars(
+        schema_with = "uuid_schema",
+        description = "The task_id from start_task or an earlier agent call. Omit it to start a Task."
+    )]
+    pub(crate) task_id: Option<String>,
+    #[schemars(
+        length(min = 1, max = AGENT_MESSAGE_MAX_CHARS),
+        description = "One self-contained message: the request, or your reply to the agent's question."
+    )]
+    pub(crate) message: String,
+    #[schemars(
+        range(min = 0, max = MAX_WAIT_MS),
+        extend("default" = DEFAULT_EXEC_WAIT_MS),
+        description = format!("How long this call waits for the turn before returning, in milliseconds. Default {DEFAULT_EXEC_WAIT_MS}. 0 returns at once.")
+    )]
+    pub(crate) wait_ms: Option<u64>,
+}
+
+impl ToolArguments for AgentArguments {
+    const NAME: &'static str = "agent";
 }
 
 #[derive(Clone, Copy, Deserialize, JsonSchema)]
@@ -281,8 +325,9 @@ where
     })
 }
 
-pub(crate) fn tools() -> Vec<Tool> {
-    vec![
+/// The advertised tools. `agent` is listed only when Coral's agent is configured.
+pub(crate) fn tools(agent: bool) -> Vec<Tool> {
+    let mut tools = vec![
         tool::<StartTaskArguments, crate::projection::StartedTask>(
             "Start one Coral Task for one unit of user work.",
             mutation_annotations("Start Task", false, false),
@@ -299,7 +344,7 @@ pub(crate) fn tools() -> Vec<Tool> {
             read_annotations("Describe"),
         ),
         tool::<SaveFunctionArguments, crate::projection::SavedFunctionResult<'_>>(
-            "Atomically create or replace one Saved Function. Programs call it as `coral.functions.<path>(...)`.",
+            "Atomically create or replace one Saved Function. Programs call it as `coral.functions.<path>(...)`. Use the request's values as inputs, a path like `github.pulls.listStale`, and search words in the description.",
             mutation_annotations("Save Function", true, false),
         ),
         tool::<DeleteFunctionArguments, crate::projection::DeletedFunction>(
@@ -310,19 +355,29 @@ pub(crate) fn tools() -> Vec<Tool> {
             "Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole Operation Result. Log diagnostics with `console.log`. A thrown `coral.OperationError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.",
             mutation_annotations("Execute Program", true, true),
         ),
-        tool::<WaitArguments, crate::projection::RunUpdateResult<'_>>(
-            "Observe one Program Run: its authored Emissions and Logs, current `required_actions`, and `state`. Observing consumes nothing, so an earlier cursor reads the same output again.",
-            read_annotations("Wait for Run"),
+        tool::<WaitArguments, crate::projection::ObservedUpdate<'_>>(
+            "Observe one Program Run, by `run_id`: its authored Emissions and Logs, current `required_actions`, and `state`. With `turn_id` instead, observe one agent turn: its steps, `state`, and at the end its `final` message. Observing consumes nothing, so an earlier cursor reads the same output again.",
+            read_annotations("Wait"),
         ),
-        tool::<CancelArguments, crate::projection::RunUpdateResult<'_>>(
-            "Request cancellation of one Program Run.",
-            mutation_annotations("Cancel Run", true, false),
+        tool::<CancelArguments, crate::projection::ObservedUpdate<'_>>(
+            "Request cancellation of one Program Run, by `run_id`, or one agent turn, by `turn_id`.",
+            mutation_annotations("Cancel", true, false),
         ),
         tool::<EndTaskArguments, crate::projection::EndedTask>(
             "Record one Task's success or failure outcome. The first call wins.",
             mutation_annotations("End Task", false, false),
         ),
-    ]
+    ];
+    if agent {
+        tools.push(tool::<
+            AgentArguments,
+            crate::projection::TurnUpdateResult<'_>,
+        >(
+            AGENT_TOOL_DESCRIPTION,
+            mutation_annotations("Ask Coral's agent", true, true),
+        ));
+    }
+    tools
 }
 
 fn tool<T, Output: JsonSchema>(description: &'static str, annotations: ToolAnnotations) -> Tool
@@ -379,7 +434,7 @@ mod tests {
     /// domain-validated and not advertised.
     #[test]
     fn describe_types_schema_caps_the_item_count() {
-        let tools = tools();
+        let tools = tools(true);
         let describe = tools
             .iter()
             .find(|tool| tool.name == "describe")
@@ -401,7 +456,7 @@ mod tests {
     /// parser to match, and commit both.
     #[test]
     fn search_and_describe_output_schemas_match_their_snapshots() {
-        let tools = tools();
+        let tools = tools(true);
         let mut changed = Vec::new();
         for name in ["search", "describe"] {
             let tool = tools

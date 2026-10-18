@@ -2,6 +2,7 @@
 mod diagnostics;
 mod discovery;
 mod run;
+mod turn;
 
 use coral_task::TaskOutcome;
 use rmcp::model::CallToolResult;
@@ -18,6 +19,16 @@ pub(crate) use discovery::{
     search,
 };
 pub(crate) use run::{RunUpdateResult, run_update};
+pub(crate) use turn::{TurnUpdateResult, turn_update};
+
+/// What `wait` and `cancel` return: a Run page for `run_id`, a turn page for `turn_id`.
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[expect(dead_code, reason = "schema union; each page serializes itself")]
+pub(crate) enum ObservedUpdate<'a> {
+    Run(RunUpdateResult<'a>),
+    Turn(TurnUpdateResult<'a>),
+}
 
 /// Every Coral-owned result keeps the SDK's compact JSON text of
 /// `structuredContent` as `content[0]`, as both served MCP versions advise.

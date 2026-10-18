@@ -626,6 +626,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "coral-agent"
+version = "1.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "coral-db",
+ "coral-outbound",
+ "coral-task",
+ "coral-test-support",
+ "coral-workspace",
+ "reqwest",
+ "sea-query",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "coral-app"
 version = "1.1.0"
 dependencies = [
@@ -633,6 +655,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "coral-administration",
+ "coral-agent",
  "coral-auth",
  "coral-catalog",
  "coral-credentials",
@@ -821,6 +844,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "coral-agent",
  "coral-catalog",
  "coral-db",
  "coral-functions",

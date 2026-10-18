@@ -2,6 +2,7 @@
 //! on every HTTP request; domain Modules own current authority and visibility.
 //! MCP session identifiers and client metadata never grant authority.
 
+mod agent_toolbox;
 mod arguments;
 mod authentication;
 mod http;
@@ -20,6 +21,7 @@ use {
 
 use std::num::NonZeroUsize;
 
+use coral_agent::AgentModule;
 use coral_run::RunModule;
 use coral_task::{TaskCommands, TaskModule};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceModule};
@@ -48,6 +50,7 @@ pub struct McpModules {
     pub(crate) runs: RunModule,
     pub(crate) human_interface: HumanInterfaceUrl,
     pub(crate) run_update_page_bytes: NonZeroUsize,
+    pub(crate) agents: Option<AgentModule>,
 }
 impl McpModules {
     /// Receives initialized Modules, including Task commands assembled by bootstrap.
@@ -66,7 +69,28 @@ impl McpModules {
             runs,
             human_interface,
             run_update_page_bytes: RUN_UPDATE_PAGE_BYTES,
+            agents: None,
         }
+    }
+
+    /// The Task Module these Modules use.
+    #[must_use]
+    pub const fn tasks(&self) -> &TaskModule {
+        &self.tasks
+    }
+
+    /// The Workspace Module these Modules use.
+    #[must_use]
+    pub const fn workspaces(&self) -> &WorkspaceModule {
+        &self.workspaces
+    }
+
+    /// Offers Coral's own agent through the `agent` tool. Without it the tool
+    /// is not listed and the instructions do not mention it.
+    #[must_use]
+    pub fn with_agents(mut self, agents: AgentModule) -> Self {
+        self.agents = Some(agents);
+        self
     }
 
     /// Selects the target size of one encoded `exec`, `wait` or `cancel`

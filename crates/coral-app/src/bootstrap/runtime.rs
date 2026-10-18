@@ -197,6 +197,10 @@ enum McpStartError {
     MissingAuthentication,
     #[error("failed to initialize MCP domain Modules: {0}")]
     Runtime(#[source] coral_run::Error),
+    #[error("failed to build the agent's model client: {0}")]
+    AgentClient(#[source] reqwest::Error),
+    #[error("failed to recover agent turns: {0}")]
+    Agent(#[source] coral_agent::Error),
     #[error(transparent)]
     Http(#[from] McpHttpError),
 }
@@ -342,6 +346,10 @@ async fn start_inner(builder: PreparedServerBuilder) -> Result<RunningRuntime, S
         authentication,
         settings.runtime_limits(),
         settings.human_interface().clone(),
+        settings
+            .agent()
+            .cloned()
+            .map(|agent| (agent, settings.outbound_policy())),
     )
     .await
     {
@@ -416,6 +424,10 @@ async fn start_mcp_http(
     authentication: Option<crate::WorkspaceAuthentication>,
     runtime_limits: RuntimeLimits,
     human_interface: coral_mcp::HumanInterfaceUrl,
+    agent: Option<(
+        coral_agent::AnthropicSettings,
+        coral_outbound::DestinationPolicy,
+    )>,
 ) -> Result<RunningMcpHttpServer, McpStartError> {
     let readiness = ListenerReadiness::from_database(grpc.database()).probe();
     let modules = mcp_modules(
@@ -426,6 +438,25 @@ async fn start_mcp_http(
         human_interface,
     )
     .map_err(McpStartError::Runtime)?;
+    let modules = match agent {
+        Some((settings, policy)) => {
+            let model = coral_agent::AnthropicModel::new(policy, settings)
+                .map_err(McpStartError::AgentClient)?;
+            let agents = coral_agent::AgentModule::new(
+                grpc.database(),
+                modules.tasks().clone(),
+                modules.workspaces().clone(),
+                Arc::new(model),
+            );
+            // This host owns no turn loops yet; earlier hosts' turns cannot resume.
+            agents
+                .interrupt_abandoned()
+                .await
+                .map_err(McpStartError::Agent)?;
+            modules.with_agents(agents)
+        }
+        None => modules,
+    };
     let server = match settings {
         McpHttpServeConfig::AuthDisabled { bind_addr } => {
             start_local(McpHttpConfig::new(bind_addr)?, modules, readiness).await?
