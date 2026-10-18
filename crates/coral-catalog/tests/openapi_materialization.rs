@@ -19,7 +19,7 @@ use std::fmt::Write as _;
 use coral_catalog::{
     CatalogDiagnostic, ExecutionBinding, HttpExecutionBinding, HttpParameterLocation,
     HttpParameterStyle, HttpResponseStatus, MaterializationOutcome, MaterializedOperation,
-    OpenApiDocument, OperationAvailability, ProviderSetupInput, materialize,
+    OpenApiDocument, OperationAvailability, ProviderSetupInput, SuccessSelection, materialize,
 };
 use coral_v8::{DiagnosticCategory, ProgramCompiler};
 use serde_json::Value;
@@ -156,6 +156,95 @@ fn http_binding(operation: &MaterializedOperation) -> &HttpExecutionBinding {
         panic!("OpenAPI materialization must produce an HTTP Execution Binding");
     };
     binding
+}
+
+/// The verdict `success_for` should reach, by the declared response it names.
+#[derive(Debug, PartialEq, Eq)]
+enum Verdict {
+    ErrorStatus,
+    Undeclared,
+    Untyped,
+    Declared(HttpResponseStatus),
+}
+
+#[test]
+fn each_response_selects_one_success_verdict_and_every_success_has_a_declared_type() {
+    use HttpResponseStatus::{Code, Default, Range};
+    let prepared = ready(
+        r"
+openapi: 3.1.0
+info: { title: Selection, version: '1' }
+servers: [{ url: https://api.example.test }]
+paths:
+  /exact:
+    get:
+      operationId: exact
+      responses:
+        '200': { description: ok }
+        '404': { description: missing }
+        default: { description: error }
+  /range:
+    get:
+      operationId: range
+      responses:
+        '201': { description: created }
+        '2XX': { description: any success }
+  /default-only:
+    get:
+      operationId: defaultOnly
+      responses:
+        default: { description: any }
+  /redirect-only:
+    get:
+      operationId: redirectOnly
+      responses:
+        '302': { description: to the file }
+",
+    );
+    for (operation_id, status, redirected, expected) in [
+        ("exact", 200, false, Verdict::Declared(Code(200))),
+        // A declared error response is still an error status.
+        ("exact", 404, false, Verdict::ErrorStatus),
+        ("exact", 500, false, Verdict::ErrorStatus),
+        // `default` beside a declared 2xx is not a success.
+        ("exact", 201, false, Verdict::Undeclared),
+        ("exact", 201, true, Verdict::Undeclared),
+        // An exact code wins over the range that also covers it.
+        ("range", 201, false, Verdict::Declared(Code(201))),
+        ("range", 204, false, Verdict::Declared(Range(2))),
+        ("defaultOnly", 200, false, Verdict::Declared(Default)),
+        ("defaultOnly", 400, false, Verdict::ErrorStatus),
+        ("redirectOnly", 200, true, Verdict::Untyped),
+        ("redirectOnly", 200, false, Verdict::Undeclared),
+        ("redirectOnly", 302, false, Verdict::ErrorStatus),
+    ] {
+        let operation = prepared
+            .operations()
+            .iter()
+            .find(|operation| operation.key().as_str() == operation_id)
+            .expect("declared Operation");
+        let binding = http_binding(operation);
+        let verdict = match binding.success_for(status, redirected) {
+            SuccessSelection::ErrorStatus => Verdict::ErrorStatus,
+            SuccessSelection::Undeclared => Verdict::Undeclared,
+            SuccessSelection::Untyped => Verdict::Untyped,
+            SuccessSelection::Declared(response) => Verdict::Declared(response.status()),
+        };
+        let case = format!("{operation_id} {status} redirected={redirected}");
+        assert_eq!(verdict, expected, "{case}");
+        // The declaration types every success the runtime returns.
+        let declaration = prepared.authoring_declaration(operation);
+        let typed = match verdict {
+            Verdict::Declared(Code(code)) => format!(", {code}, "),
+            Verdict::Declared(Range(_)) => ", HttpStatus2xx, ".to_string(),
+            Verdict::Declared(Default) | Verdict::Untyped => ", number, ".to_string(),
+            Verdict::ErrorStatus | Verdict::Undeclared => continue,
+        };
+        assert!(
+            declaration.contains(&typed),
+            "{case}: no `{typed}` in\n{declaration}"
+        );
+    }
 }
 
 #[test]

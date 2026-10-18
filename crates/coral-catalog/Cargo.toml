@@ -13,6 +13,7 @@ workspace = true
 coral-outbound.workspace = true
 coral-db.workspace = true
 jsonschema.workspace = true
+mime.workspace = true
 sea-query.workspace = true
 serde.workspace = true
 serde_json.workspace = true

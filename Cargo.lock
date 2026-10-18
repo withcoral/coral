@@ -708,6 +708,7 @@ dependencies = [
  "coral-test-support",
  "coral-v8",
  "jsonschema",
+ "mime",
  "sea-query",
  "serde",
  "serde_json",

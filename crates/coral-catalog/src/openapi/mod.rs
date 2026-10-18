@@ -11,7 +11,7 @@ pub use binding::{
     HttpContentBinding, HttpCredentialSlot, HttpEncodingBinding, HttpExecutionBinding,
     HttpHeaderBinding, HttpMethod, HttpParameterBinding, HttpParameterLocation, HttpParameterStyle,
     HttpRedirectPolicy, HttpRequestBodyBinding, HttpResponseBinding, HttpResponseStatus,
-    declared_successes,
+    SuccessSelection,
 };
 pub use configuration::validate_openapi_configuration;
 pub use input::{OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument};

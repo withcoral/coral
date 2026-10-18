@@ -99,8 +99,7 @@ pub use openapi::{
     HTTP_RESULT, HttpContentBinding, HttpCredentialSlot, HttpEncodingBinding, HttpExecutionBinding,
     HttpHeaderBinding, HttpMethod, HttpParameterBinding, HttpParameterLocation, HttpParameterStyle,
     HttpRedirectPolicy, HttpRequestBodyBinding, HttpResponseBinding, HttpResponseStatus,
-    OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument, declared_successes,
-    validate_openapi_configuration,
+    OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument, SuccessSelection, validate_openapi_configuration,
 };
 pub use paths::{OperationPathAssignment, call_path_segment_is_reserved};
 pub use search::{DeclarationIndexEntry, PreparedDeclarationFields, StoredDeclarationFields};

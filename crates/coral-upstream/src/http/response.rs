@@ -1,10 +1,6 @@
 //! Complete bounded HTTP response capture and decoding.
 
-use std::cmp::Reverse;
-
-use coral_catalog::{
-    HttpContentBinding, HttpRedirectPolicy, HttpResponseBinding, HttpResponseStatus, SchemaGraph,
-};
+use coral_catalog::{HttpExecutionBinding, HttpRedirectPolicy, SchemaGraph, SuccessSelection};
 use serde_json::Value;
 use url::Url;
 
@@ -230,8 +226,7 @@ impl HttpUpstream {
             mut body,
             request_media_type: _request_media_type,
             credential_slots: _credential_slots,
-            redirect_policy,
-            responses,
+            binding,
             schema_graph,
             limits,
         } = dispatch;
@@ -271,7 +266,7 @@ impl HttpUpstream {
             }
             let mut response = request.send().await.map_err(Error::send)?;
             let status = response.status().as_u16();
-            if redirect_policy == HttpRedirectPolicy::Follow
+            if binding.redirect_policy() == HttpRedirectPolicy::Follow
                 && redirects.len() < MAX_REDIRECTS
                 && let Some(next_method) = redirect_method(status, &method)
                 && let Some(location) = response
@@ -333,18 +328,18 @@ impl HttpUpstream {
             )
             .await?;
             let content_type =
-                selected_decode_facts(&responses, status, !response_body.is_empty(), content_type);
+                selected_decode_facts(&binding, status, !response_body.is_empty(), content_type);
             let (data, decode_diagnostics) = decode_response_body(
                 status,
                 &response_body,
                 &content_type,
-                &responses,
+                &binding,
                 &schema_graph,
                 limits,
             )?;
             let class = classify(
                 status,
-                &responses,
+                &binding,
                 !redirects.is_empty(),
                 !response_body.is_empty(),
                 &decode_diagnostics,
@@ -439,17 +434,13 @@ fn parse_content_type(value: &str) -> (Option<String>, Option<String>) {
 }
 
 fn selected_decode_facts(
-    responses: &[HttpResponseBinding],
+    binding: &HttpExecutionBinding,
     status: u16,
     body_present: bool,
     mut content_type: ResponseContentType,
 ) -> ResponseContentType {
-    let declared_content = select_response(responses, status).and_then(|response| {
-        select_response_content(
-            response.content(),
-            content_type.parsed.as_ref(),
-            !content_type.malformed,
-        )
+    let declared_content = binding.response_for(status).and_then(|response| {
+        response.content_for(content_type.parsed.as_ref(), !content_type.malformed)
     });
     if content_type.media_type.is_none() {
         content_type.media_type =
@@ -476,12 +467,12 @@ fn decode_response_body(
     status: u16,
     body: &[u8],
     content_type: &ResponseContentType,
-    responses: &[HttpResponseBinding],
+    binding: &HttpExecutionBinding,
     schema_graph: &SchemaGraph,
     limits: coral_value::ValueLimits,
 ) -> Result<(Value, Vec<HttpDecodeDiagnostic>), Error> {
     let mut diagnostics = Vec::new();
-    let response = select_response(responses, status);
+    let response = binding.response_for(status);
     if response.is_none() {
         push_diagnostic(
             &mut diagnostics,
@@ -490,11 +481,7 @@ fn decode_response_body(
         );
     }
     let selected_content = response.and_then(|response| {
-        select_response_content(
-            response.content(),
-            content_type.parsed.as_ref(),
-            !content_type.malformed,
-        )
+        response.content_for(content_type.parsed.as_ref(), !content_type.malformed)
     });
     if content_type.malformed {
         push_diagnostic(
@@ -571,38 +558,24 @@ const fn is_success_code(status: u16) -> bool {
     matches!(status, 200..=299)
 }
 
-/// Classifies one decoded response against the Operation's
-/// [`coral_catalog::declared_successes`].
-///
-/// The response must select a declared success first. After a followed
-/// redirect, a 2xx that no response describes is a success when the
-/// Operation declares none. Only then does its body matter, and only when it
-/// has one: a body that does not decode, or whose media type the success
-/// does not list, rejects the call. A schema mismatch never changes the class.
+/// Classifies one decoded response by the binding's
+/// [`HttpExecutionBinding::success_for`] verdict. A declared success's body
+/// matters only when it has one: a body that does not decode, or whose media
+/// type the success does not list, rejects the call. A schema mismatch never
+/// changes the class.
 fn classify(
     status: u16,
-    responses: &[HttpResponseBinding],
+    binding: &HttpExecutionBinding,
     redirected: bool,
     body_present: bool,
     diagnostics: &[HttpDecodeDiagnostic],
 ) -> OutcomeClass {
-    if !is_success_code(status) {
-        return OutcomeClass::ErrorResponse;
-    }
-    let successes = coral_catalog::declared_successes(responses);
-    let Some(response) = select_response(responses, status) else {
-        return if redirected && successes.is_empty() {
-            OutcomeClass::Success
-        } else {
-            OutcomeClass::UndeclaredResponse
-        };
+    let response = match binding.success_for(status, redirected) {
+        SuccessSelection::ErrorStatus => return OutcomeClass::ErrorResponse,
+        SuccessSelection::Undeclared => return OutcomeClass::UndeclaredResponse,
+        SuccessSelection::Untyped => return OutcomeClass::Success,
+        SuccessSelection::Declared(response) => response,
     };
-    if !successes
-        .iter()
-        .any(|success| std::ptr::eq(*success, response))
-    {
-        return OutcomeClass::UndeclaredResponse;
-    }
     if !body_present {
         return OutcomeClass::Success;
     }
@@ -622,64 +595,6 @@ fn classify(
     } else {
         OutcomeClass::Success
     }
-}
-
-fn select_response(responses: &[HttpResponseBinding], status: u16) -> Option<&HttpResponseBinding> {
-    responses
-        .iter()
-        .find(|response| response.status() == HttpResponseStatus::Code(status))
-        .or_else(|| {
-            responses
-                .iter()
-                .find(|response| response.status() == HttpResponseStatus::Range(status / 100))
-        })
-        .or_else(|| {
-            responses
-                .iter()
-                .find(|response| response.status() == HttpResponseStatus::Default)
-        })
-}
-
-fn select_response_content<'a>(
-    contents: &'a [HttpContentBinding],
-    actual_content_type: Option<&mime::Mime>,
-    allow_implicit_media: bool,
-) -> Option<&'a HttpContentBinding> {
-    match actual_content_type {
-        Some(actual) => contents
-            .iter()
-            .filter_map(|content| {
-                media_type_match_rank(content.media_type(), actual).map(|rank| (rank, content))
-            })
-            .min_by_key(|(rank, _content)| *rank)
-            .map(|(_rank, content)| content),
-        None if allow_implicit_media && contents.len() == 1 => contents.first(),
-        None => None,
-    }
-}
-
-fn media_type_match_rank(declared: &str, actual: &mime::Mime) -> Option<(u8, Reverse<usize>)> {
-    let declared = declared.parse::<mime::Mime>().ok()?;
-    let specificity = if declared
-        .essence_str()
-        .eq_ignore_ascii_case(actual.essence_str())
-    {
-        0
-    } else if declared.type_() == mime::STAR && declared.subtype() == mime::STAR {
-        2
-    } else if declared.type_() == actual.type_() && declared.subtype() == mime::STAR {
-        1
-    } else {
-        return None;
-    };
-    let parameters = declared.params().collect::<Vec<_>>();
-    if parameters
-        .iter()
-        .any(|(name, value)| actual.get_param(*name) != Some(*value))
-    {
-        return None;
-    }
-    Some((specificity, Reverse(parameters.len())))
 }
 
 fn decode_text(

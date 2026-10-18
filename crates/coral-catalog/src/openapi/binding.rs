@@ -433,25 +433,6 @@ impl HttpResponseStatus {
     }
 }
 
-/// Returns the responses an Operation declares as successes: each 2xx code
-/// and the `2XX` range, or `default` when no 2xx response is declared. A
-/// Program receives only these; every other response rejects its call.
-#[must_use]
-pub fn declared_successes(responses: &[HttpResponseBinding]) -> Vec<&HttpResponseBinding> {
-    let successes = responses
-        .iter()
-        .filter(|response| response.status().is_success())
-        .collect::<Vec<_>>();
-    if successes.is_empty() {
-        responses
-            .iter()
-            .filter(|response| response.status() == HttpResponseStatus::Default)
-            .collect()
-    } else {
-        successes
-    }
-}
-
 /// One complete declared HTTP response alternative.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpResponseBinding {
@@ -490,6 +471,75 @@ impl HttpResponseBinding {
     pub fn content(&self) -> &[HttpContentBinding] {
         &self.content
     }
+
+    /// Returns the media alternative an actual `Content-Type` selects: the
+    /// most specific declared match whose parameters it carries. Without a
+    /// `Content-Type`, the only alternative is selected when
+    /// `allow_implicit_media` holds.
+    #[must_use]
+    pub fn content_for(
+        &self,
+        content_type: Option<&mime::Mime>,
+        allow_implicit_media: bool,
+    ) -> Option<&HttpContentBinding> {
+        match content_type {
+            Some(actual) => self
+                .content
+                .iter()
+                .filter_map(|content| {
+                    media_type_match_rank(content.media_type(), actual).map(|rank| (rank, content))
+                })
+                .min_by_key(|(rank, _content)| *rank)
+                .map(|(_rank, content)| content),
+            None if allow_implicit_media && self.content.len() == 1 => self.content.first(),
+            None => None,
+        }
+    }
+}
+
+/// How specifically a declared media type matches an actual one: exact,
+/// then `type/*`, then `*/*`, then by more declared parameters. `None` when
+/// it does not match or names a parameter the actual type lacks.
+fn media_type_match_rank(
+    declared: &str,
+    actual: &mime::Mime,
+) -> Option<(u8, std::cmp::Reverse<usize>)> {
+    let declared = declared.parse::<mime::Mime>().ok()?;
+    let specificity = if declared
+        .essence_str()
+        .eq_ignore_ascii_case(actual.essence_str())
+    {
+        0
+    } else if declared.type_() == mime::STAR && declared.subtype() == mime::STAR {
+        2
+    } else if declared.type_() == actual.type_() && declared.subtype() == mime::STAR {
+        1
+    } else {
+        return None;
+    };
+    let parameters = declared.params().collect::<Vec<_>>();
+    if parameters
+        .iter()
+        .any(|(name, value)| actual.get_param(*name) != Some(*value))
+    {
+        return None;
+    }
+    Some((specificity, std::cmp::Reverse(parameters.len())))
+}
+
+/// How one complete HTTP response relates to an Operation's declared
+/// successes. A Program receives only `Declared` and `Untyped`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuccessSelection<'b> {
+    /// A non-2xx status, whether or not the Operation declares it.
+    ErrorStatus,
+    /// A 2xx status that selects no declared success.
+    Undeclared,
+    /// The final 2xx after a followed redirect, when the Operation declares no
+    /// success to describe it. Its declaration types it as unknown.
+    Untyped,
+    /// The declared success response the status selects.
+    Declared(&'b HttpResponseBinding),
 }
 
 /// Fixed host redirect behavior selected for this binding.
@@ -543,6 +593,67 @@ pub struct HttpExecutionBinding {
 }
 
 impl HttpExecutionBinding {
+    /// Returns the responses this Operation declares as successes: each 2xx
+    /// code and the `2XX` range, or `default` when no 2xx response is
+    /// declared. A Program receives only these; every other response rejects
+    /// its call. With none, only [`SuccessSelection::Untyped`] can succeed.
+    #[must_use]
+    pub fn declared_successes(&self) -> Vec<&HttpResponseBinding> {
+        let successes = self
+            .responses
+            .iter()
+            .filter(|response| response.status().is_success())
+            .collect::<Vec<_>>();
+        if successes.is_empty() {
+            self.responses
+                .iter()
+                .filter(|response| response.status() == HttpResponseStatus::Default)
+                .collect()
+        } else {
+            successes
+        }
+    }
+
+    /// Returns the declared response an actual status selects: its exact code,
+    /// then its range, then `default`.
+    #[must_use]
+    pub fn response_for(&self, status: u16) -> Option<&HttpResponseBinding> {
+        self.responses
+            .iter()
+            .find(|response| response.status() == HttpResponseStatus::Code(status))
+            .or_else(|| {
+                self.responses
+                    .iter()
+                    .find(|response| response.status() == HttpResponseStatus::Range(status / 100))
+            })
+            .or_else(|| {
+                self.responses
+                    .iter()
+                    .find(|response| response.status() == HttpResponseStatus::Default)
+            })
+    }
+
+    /// Returns how a complete response with `status`, reached after a followed
+    /// redirect when `redirected`, relates to this Operation's declared successes.
+    #[must_use]
+    pub fn success_for(&self, status: u16, redirected: bool) -> SuccessSelection<'_> {
+        if !matches!(status, 200..=299) {
+            return SuccessSelection::ErrorStatus;
+        }
+        let successes = self.declared_successes();
+        match self.response_for(status) {
+            Some(response)
+                if successes
+                    .iter()
+                    .any(|success| std::ptr::eq(*success, response)) =>
+            {
+                SuccessSelection::Declared(response)
+            }
+            None if redirected && successes.is_empty() => SuccessSelection::Untyped,
+            _ => SuccessSelection::Undeclared,
+        }
+    }
+
     /// Returns confirmed non-secret headers, independent of account credentials.
     #[must_use]
     pub const fn request_headers(&self) -> &std::collections::BTreeMap<String, String> {

@@ -2,10 +2,7 @@ use crate::schema::{
     Direction, ProjectionOptions, SharedTypes, TypeScriptNames, TypeScriptProjection,
     TypeScriptProjector, render_callable_declaration,
 };
-use crate::{
-    CatalogDiagnostic, HttpExecutionBinding, HttpResponseStatus, SchemaGraph, SchemaId,
-    declared_successes,
-};
+use crate::{CatalogDiagnostic, HttpExecutionBinding, HttpResponseStatus, SchemaGraph, SchemaId};
 
 /// The type an HTTP Operation declares for each declared success response:
 /// `{ status, data, metadata }`, with `status` beside `data` so checking it
@@ -71,7 +68,7 @@ pub(super) fn project_typescript(
     let input = projector.project(input_schema, Direction::Input)?;
     let mut outputs = Vec::new();
     let mut declares_range = false;
-    for response in declared_successes(binding.responses()) {
+    for response in binding.declared_successes() {
         let status = match response.status() {
             HttpResponseStatus::Code(code) => code.to_string(),
             // A declared success range is `2XX`.
@@ -110,8 +107,8 @@ pub(super) fn project_typescript(
         ]);
     }
     result_declarations.push(http_result_declaration());
-    // With no declared success, only the final 2xx after a followed redirect
-    // can succeed, and nothing describes it.
+    // With no declared success, only `SuccessSelection::Untyped` can succeed,
+    // and nothing describes it.
     if outputs.is_empty() {
         outputs.push(format!("{HTTP_RESULT}<unknown, number, string | null>"));
     }
