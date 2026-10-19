@@ -842,9 +842,9 @@ pub mod create_provider_setup_request {
     /// Exactly one source.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Input {
-        /// One exact OpenAPI document (JSON or YAML text).
-        #[prost(string, tag = "2")]
-        OpenapiDocument(::prost::alloc::string::String),
+        /// One exact OpenAPI document file: JSON or YAML text, optionally gzipped.
+        #[prost(bytes, tag = "2")]
+        OpenapiDocument(::prost::alloc::vec::Vec<u8>),
         /// One exact normalized MCP discovery snapshot.
         #[prost(string, tag = "3")]
         McpSnapshot(::prost::alloc::string::String),

@@ -585,6 +585,8 @@ pub struct HttpExecutionBinding {
     method: HttpMethod,
     server_url: Option<String>,
     path_template: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    query: Option<String>,
     redirect_policy: HttpRedirectPolicy,
     parameters: Vec<HttpParameterBinding>,
     request_body: Option<HttpRequestBodyBinding>,
@@ -675,6 +677,7 @@ impl HttpExecutionBinding {
         method: HttpMethod,
         server_url: Option<String>,
         path_template: String,
+        query: Option<String>,
         redirect_policy: HttpRedirectPolicy,
         parameters: Vec<HttpParameterBinding>,
         request_body: Option<HttpRequestBodyBinding>,
@@ -686,6 +689,7 @@ impl HttpExecutionBinding {
             method,
             server_url,
             path_template,
+            query,
             redirect_policy,
             parameters,
             request_body,
@@ -714,6 +718,12 @@ impl HttpExecutionBinding {
     #[must_use]
     pub fn path_template(&self) -> &str {
         &self.path_template
+    }
+
+    /// Returns the fixed query the provider's path declares, such as `beta=true`.
+    #[must_use]
+    pub fn query(&self) -> Option<&str> {
+        self.query.as_deref()
     }
 
     /// Returns the selected redirect behavior.

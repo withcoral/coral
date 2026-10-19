@@ -15,6 +15,8 @@ mod completion_feedback;
 mod health;
 #[path = "grpc/listener.rs"]
 mod listener;
+#[path = "grpc/load.rs"]
+mod load;
 #[path = "grpc/management_contracts.rs"]
 mod management_contracts;
 #[path = "grpc/organization_memberships.rs"]

@@ -3390,6 +3390,51 @@ fn openapi_input_is_refused_over_the_byte_budget() {
         .expect("the exact budget fits");
 }
 
+#[test]
+fn a_document_file_is_text_or_gzipped_text() {
+    let gzip = |text: &[u8]| {
+        use std::io::Write as _;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(text).unwrap();
+        encoder.finish().unwrap()
+    };
+    let limit = coral_catalog::OPENAPI_DOCUMENT_MAX_BYTES;
+    for (case, bytes, expected) in [
+        ("text", WEATHER_OPENAPI.as_bytes().to_vec(), Ok(())),
+        ("gzipped text", gzip(WEATHER_OPENAPI.as_bytes()), Ok(())),
+        (
+            "not UTF-8",
+            b"openapi: \xff".to_vec(),
+            Err(coral_catalog::Error::OpenApiDocumentNotText),
+        ),
+        (
+            "corrupt gzip",
+            b"\x1f\x8bopenapi".to_vec(),
+            Err(coral_catalog::Error::OpenApiDocumentNotText),
+        ),
+        (
+            "gzipped binary",
+            gzip(b"\xff\xfe"),
+            Err(coral_catalog::Error::OpenApiDocumentNotText),
+        ),
+        (
+            "too large once unzipped",
+            gzip(" ".repeat(limit + 1).as_bytes()),
+            Err(coral_catalog::Error::OpenApiDocumentTooLarge),
+        ),
+    ] {
+        match (OpenApiDocument::from_bytes(bytes), expected) {
+            (Ok(document), Ok(())) => assert_eq!(document.as_str(), WEATHER_OPENAPI, "{case}"),
+            (Err(error), Err(variant)) => assert_eq!(
+                std::mem::discriminant(&error),
+                std::mem::discriminant(&variant),
+                "{case}: {error:?}"
+            ),
+            (result, _) => panic!("{case}: {result:?}"),
+        }
+    }
+}
+
 /// Materializes a small valid document that also carries `extension` as `x-extension`.
 fn with_extension(extension: &str) -> MaterializationOutcome {
     let document = OpenApiDocument::parse(&format!(
@@ -3529,6 +3574,69 @@ fn response_schema_drives_the_typescript_declaration() {
     let declaration = prepared.authoring_declaration(&prepared.operations()[0]);
     assert!(declaration.starts_with("type Forecast = { \"temperature\": number };\n"));
     assert!(declaration.ends_with("Promise<HttpResult<Forecast, 200, \"application/json\">>;"));
+}
+
+#[test]
+fn a_query_in_a_path_key_becomes_the_operations_fixed_query() {
+    for (key, expected) in [
+        ("/forecast?beta=true", Ok(Some("beta=true"))),
+        ("/forecast?a=1&b=two", Ok(Some("a=1&b=two"))),
+        ("/forecast?", Ok(None)),
+        ("/forecast?beta={flag}", Err("invalid_operation_path")),
+        ("/forecast?beta=true#top", Err("invalid_operation_path")),
+    ] {
+        let document = WEATHER_OPENAPI.replace("  /forecast:", &format!("  \"{key}\":"));
+        let prepared = configured_ready(&document);
+        let [operation] = prepared.operations() else {
+            panic!("{key}: one Operation");
+        };
+        match expected {
+            Ok(query) => {
+                assert!(operation.diagnostic().is_none(), "{key}");
+                let binding = http_binding(operation);
+                assert_eq!(binding.path_template(), "/forecast", "{key}");
+                assert_eq!(binding.query(), query, "{key}");
+            }
+            Err(code) => {
+                assert_eq!(
+                    operation.availability(),
+                    OperationAvailability::Unavailable,
+                    "{key}"
+                );
+                assert_eq!(
+                    operation
+                        .diagnostic()
+                        .map(coral_catalog::CatalogDiagnostic::code),
+                    Some(code),
+                    "{key}"
+                );
+            }
+        }
+    }
+    // Without an operationId, the full path key still names the Operation.
+    let anonymous = WEATHER_OPENAPI.replace("      operationId: getForecast\n", "");
+    let (_, path_item) = anonymous.split_once("  /forecast:").expect("path item");
+    let document = format!("{anonymous}  \"/forecast?beta=true\":{path_item}");
+    let prepared = configured_ready(&document);
+    let operations = prepared
+        .operations()
+        .iter()
+        .map(|operation| {
+            let binding = http_binding(operation);
+            (
+                operation.key().as_str(),
+                binding.path_template(),
+                binding.query(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        operations,
+        [
+            ("get /forecast", "/forecast", None),
+            ("get /forecast?beta=true", "/forecast", Some("beta=true")),
+        ]
+    );
 }
 
 #[test]

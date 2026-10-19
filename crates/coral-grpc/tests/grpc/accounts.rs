@@ -8,7 +8,7 @@ async fn bearer_setup(f: &Fixture) -> management::ProviderSetup {
         .create_configured_setup(request(
             setup_request(
                 format!("workspaces/{}", f.workspace.id()),
-                Input::OpenapiDocument(openapi_document(true)),
+                Input::OpenapiDocument(openapi_document(true).into()),
             ),
             &f.token(&f.owner, "reef"),
             "reef",

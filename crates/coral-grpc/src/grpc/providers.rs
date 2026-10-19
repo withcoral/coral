@@ -236,6 +236,9 @@ pub(super) fn error(value: domain::Error) -> Status {
         E::Catalog(coral_catalog::Error::OpenApiDocumentTooLarge) => {
             (Code::InvalidArgument, "OPENAPI_DOCUMENT_TOO_LARGE")
         }
+        E::Catalog(coral_catalog::Error::OpenApiDocumentNotText) => {
+            (Code::InvalidArgument, "OPENAPI_DOCUMENT_NOT_TEXT")
+        }
         E::ProviderSetupConsumed => (Code::FailedPrecondition, "SETUP_CONSUMED"),
         E::ProviderSetupNotApplicable => (Code::FailedPrecondition, "SETUP_NOT_APPLICABLE"),
         E::ProviderSetupNotReady => (Code::FailedPrecondition, "SETUP_NOT_READY"),
@@ -543,8 +546,8 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
             return Err(invalid("request headers require an MCP URL"));
         }
         let source = match input {
-            Input::OpenapiDocument(text) => domain::ProviderSetupSource::OpenApiDocument(
-                domain::OpenApiDocument::parse(&text)
+            Input::OpenapiDocument(bytes) => domain::ProviderSetupSource::OpenApiDocument(
+                domain::OpenApiDocument::from_bytes(bytes)
                     .map_err(domain::Error::from)
                     .map_err(error)?,
             ),
@@ -1153,6 +1156,11 @@ mod tests {
                 E::Catalog(coral_catalog::Error::OpenApiDocumentTooLarge),
                 Code::InvalidArgument,
                 "OPENAPI_DOCUMENT_TOO_LARGE",
+            ),
+            (
+                E::Catalog(coral_catalog::Error::OpenApiDocumentNotText),
+                Code::InvalidArgument,
+                "OPENAPI_DOCUMENT_NOT_TEXT",
             ),
             (
                 E::ClientBootstrapUnavailable,

@@ -79,11 +79,17 @@ impl ReadyHttpDispatch {
             format!("{base_path}/{operation_path}")
         };
         url.set_path(&combined_path);
+        // The server's query, then the path's fixed query, then the arguments.
+        let query = [
+            url.query().unwrap_or_default(),
+            binding.query().unwrap_or_default(),
+            &query,
+        ]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("&");
         if !query.is_empty() {
-            let query = match url.query() {
-                Some(existing) if !existing.is_empty() => format!("{existing}&{query}"),
-                _ => query,
-            };
             url.set_query(Some(&query));
         }
         headers.extend(

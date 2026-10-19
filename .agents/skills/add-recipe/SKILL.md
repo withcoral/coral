@@ -27,15 +27,6 @@ Coral reads two kinds of source:
 
 Search the vendor's official docs for both. Record the URL of every doc page you rely on; the PR description cites them.
 
-If the vendor publishes no usable OpenAPI document and no MCP server, look for a third-party OpenAPI document (for example, a community-maintained repo). **Audit** it against the vendor's API reference before you use it:
-
-- Compare its operations with the documented endpoints.
-- Check when it last changed.
-- Accept it if it is a few months old and misses one or two operations. Reject it if it is years old or misses significant parts of the API.
-- If it lives in a git repo, point at the default branch when the repo is active, so new setups get fixes. Pin a tag when the default branch breaks often or holds unreleased work.
-
-If no source survives, stop. Report what you found. If the vendor's only spec is Swagger 2.0, note that converting it to 3.x is possible follow-up work.
-
 Done when you hold at least one usable source URL, or have reported that none exists.
 
 ## 3. Plan, then wait
