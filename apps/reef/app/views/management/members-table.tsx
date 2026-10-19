@@ -29,10 +29,13 @@ export function MembersTable({
   ariaLabel,
   currentUser,
   rows,
+  action,
 }: {
   ariaLabel: string
   currentUser: string
   rows: MemberRow[]
+  /** The page's main action beside its title. */
+  action?: ReactNode
 }) {
   const [input, setInput] = useState('')
   const [role, setRole] = useState<RoleFilter>('all')
@@ -44,24 +47,25 @@ export function MembersTable({
   )
   return (
     <>
-      {rows.length > 0 && (
-        <CatalogToolbar
-          filter={{
-            id: FILTER_ID,
-            label: 'Filter members',
-            shortcut: '$mod+f',
-            value: input,
-            onChange: setInput,
-          }}
-        >
-          <CatalogFilterMenu
-            ariaLabel="Filter members by role"
-            options={ROLE_FILTERS}
-            value={role}
-            onChange={setRole}
-          />
-        </CatalogToolbar>
-      )}
+      {/* The toolbar holds the page's title, so it stays when no rows do. */}
+      <CatalogToolbar
+        title="Members"
+        action={action}
+        filter={{
+          id: FILTER_ID,
+          label: 'Filter members',
+          shortcut: '$mod+f',
+          value: input,
+          onChange: setInput,
+        }}
+      >
+        <CatalogFilterMenu
+          ariaLabel="Filter members by role"
+          options={ROLE_FILTERS}
+          value={role}
+          onChange={setRole}
+        />
+      </CatalogToolbar>
       <Table.Container
         ariaLabel={ariaLabel}
         variant="card"

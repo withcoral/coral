@@ -12,13 +12,13 @@ import {
 } from '../../../support/providers.ts'
 import { copyNewAgentKey } from '../../../support/agent-key.ts'
 
-test('Breadcrumbs title each page, carry its actions, and lead back from nested pages', async (context) => {
+test('Each page has one title, and breadcrumbs lead back from nested pages', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {
     const crumbs = breadcrumb(page)
     const topBar = page.locator('header', { has: crumbs })
     const trail = () => crumbs.getByRole('listitem').allInnerTexts()
     const titles = () => page.getByRole('heading', { level: 1 }).allInnerTexts()
-    const heading = crumbs.getByRole('heading', { name: 'Agents', exact: true, level: 1 })
+    const heading = page.getByRole('heading', { name: 'Agents', exact: true, level: 1 })
     let workspace = ''
     const name = `Breadcrumbs ${crypto.randomUUID()}`
     await step('A workspace page starts with its workspace', async () => {
@@ -30,7 +30,7 @@ test('Breadcrumbs title each page, carry its actions, and lead back from nested 
         .click()
       await heading.waitFor()
       await expect.poll(trail).toEqual([name, 'Agents'])
-      // The current crumb is the page's only title.
+      // The toolbar's title is the page's only h1, not the current crumb.
       await expect.poll(titles).toEqual(['Agents'])
       expect(await crumbs.getByRole('link').count()).toBe(1)
       await crumbs.getByRole('link', { name, exact: true }).waitFor()
@@ -51,7 +51,11 @@ test('Breadcrumbs title each page, carry its actions, and lead back from nested 
     })
     await step('Page actions sit beside the title', async () => {
       await heading.waitFor()
-      await topBar.getByRole('button', { name: 'Create agent', exact: true }).waitFor()
+      await heading
+        .locator('..')
+        .getByRole('button', { name: 'Create agent', exact: true })
+        .waitFor()
+      expect(await topBar.getByRole('button').count()).toBe(0)
     })
     await step(
       'Each setup step titles the page with its provider and heads its content with its actions',
@@ -96,6 +100,14 @@ test('Breadcrumbs title each page, carry its actions, and lead back from nested 
       await openProviderPolicy(page, providerPath)
       await crumbs.getByRole('link', { name: 'Providers', exact: true }).click()
       await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/providers`)
+      // The provider list's toolbar titles the page and holds Add provider.
+      const providers = page.getByRole('heading', { name: 'Providers', exact: true, level: 1 })
+      await providers
+        .locator('..')
+        .getByRole('button', { name: 'Add provider', exact: true })
+        .waitFor()
+      await expect.poll(titles).toEqual(['Providers'])
+      expect(await topBar.getByRole('button').count()).toBe(0)
     })
     await step('The workspace crumb leads to its overview', async () => {
       await page
@@ -106,7 +118,9 @@ test('Breadcrumbs title each page, carry its actions, and lead back from nested 
       await expect.poll(trail).toEqual([name, 'Accounts'])
       await crumbs.getByRole('link', { name, exact: true }).click()
       await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}`)
-      await expect.poll(trail).toEqual([name])
+      await expect.poll(trail).toEqual([name, 'Overview'])
+      // The overview's title is its workspace name, which it can rename.
+      await expect.poll(titles).toEqual([name])
     })
     await step('A missing page in the workspace is titled by its crumb', async () => {
       await page.goto(`/workspaces/${workspace}/agents/${crypto.randomUUID()}`)

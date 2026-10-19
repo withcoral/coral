@@ -189,7 +189,6 @@ function WorkspaceProvidersContent({
   const operation = selected?.operations.find((o) => o.relativePath === selectedOperationPath)
   const empty = sortedProviders.length === 0
   const addButton = canChange ? <AddProviderLauncher {...entry} /> : null
-  const headerAction = empty ? null : addButton
   // The field echoes each keystroke at once; the rail and the table, which
   // rebuilds thousands of rows, follow with the deferred value when React has time.
   const deferredRailFilter = useDeferredValue(railFilter)
@@ -201,7 +200,8 @@ function WorkspaceProvidersContent({
     <PageLayout
       variant="split"
       breadcrumbs={trail([], 'Providers')}
-      actions={headerAction}
+      titled={!empty}
+      compact
       header={
         <>
           {!owner && (
@@ -235,6 +235,7 @@ function WorkspaceProvidersContent({
         </div>
       ) : (
         <ProvidersTableScreen
+          addButton={canChange && <AddProviderLauncher {...entry} compact />}
           canChange={canChange}
           filteredProviders={filteredProviders}
           form={form}
@@ -382,6 +383,7 @@ const tableRowHeight = (row: TableRowItem) => {
 }
 
 function ProvidersTableScreen({
+  addButton,
   canChange,
   filteredProviders,
   form,
@@ -393,6 +395,8 @@ function ProvidersTableScreen({
   routedProvider,
   setRailFilter,
 }: {
+  /** Adds a provider, beside the page's title. */
+  addButton: ReactNode
   canChange: boolean
   filteredProviders: ProviderView[]
   form: FormContext
@@ -783,6 +787,8 @@ function ProvidersTableScreen({
       }
     >
       <CatalogToolbar
+        title="Providers"
+        action={addButton}
         filter={{
           id: OPERATION_FILTER_ID,
           label: 'Filter operations',
