@@ -1318,12 +1318,18 @@ async fn a_lost_worker_run_is_interrupted_not_a_tool_error() {
         let interrupted = tokio::time::timeout(Duration::from_secs(90), async {
             loop {
                 tracer.runs.recover().await.expect("recover lost worker");
-                let result = session
-                    .tool(
+                // Recovery interrupts the Run under load; a transient server
+                // failure on one poll is retried within the same deadline.
+                let Some(result) = session
+                    .try_tool(
                         "wait",
                         json!({"run_id":lost_worker.to_string(), "wait_ms":0}),
                     )
-                    .await;
+                    .await
+                else {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                };
                 if result.pointer("/structuredContent/state") == Some(&json!("interrupted")) {
                     break result;
                 }
@@ -2256,6 +2262,12 @@ impl RawSession {
             .await
             .expect("raw request");
         let message = parse_message(response).await;
+        self.interpret(method, &params, &message)
+    }
+
+    /// Checks a parsed JSON-RPC message against the negotiated schema and
+    /// returns its `result`, or its `error`.
+    fn interpret(&self, method: &str, params: &Value, message: &Value) -> Result<Value, Value> {
         match message.get("result") {
             Some(result) if result.get("resultType") == Some(&json!("input_required")) => {
                 assert_conforms(&self.protocol_version, "InputRequiredResult", result);
@@ -2280,6 +2292,22 @@ impl RawSession {
         self.result("tools/call", json!({"name":tool, "arguments":arguments}))
             .await
             .unwrap_or_else(|error| panic!("raw tool {tool} failed: {error}"))
+    }
+
+    /// Like [`Self::tool`], but `None` for a transient server failure (a 5xx
+    /// status or an empty body) so a polling caller can try again.
+    async fn try_tool(&self, tool: &str, arguments: Value) -> Option<Value> {
+        let params = json!({"name":tool, "arguments":arguments});
+        let response = self
+            .request("tools/call", params.clone(), Some(2))
+            .send()
+            .await
+            .expect("raw request");
+        let message = parse_message_or_transient(response).await?;
+        Some(
+            self.interpret("tools/call", &params, &message)
+                .unwrap_or_else(|error| panic!("raw tool {tool} failed: {error}")),
+        )
     }
 
     /// Sends a tools/call whose conforming header set is edited before it leaves.
@@ -2324,19 +2352,38 @@ fn authorized(request: reqwest::RequestBuilder, bearer: Option<&str>) -> reqwest
     }
 }
 
+/// Parses a JSON-RPC message, or `None` for a transient server failure: a 5xx
+/// status or an empty body. Any other body that does not parse still panics.
+async fn parse_message_or_transient(response: reqwest::Response) -> Option<Value> {
+    if response.status().is_server_error() {
+        return None;
+    }
+    let status = response.status();
+    let text = response.text().await.expect("response body");
+    if text.trim().is_empty() {
+        return None;
+    }
+    Some(parse_text(status, &text))
+}
+
 /// Parses a JSON-RPC message from a JSON body or the first SSE data line.
 async fn parse_message(response: reqwest::Response) -> Value {
+    let status = response.status();
     let text = response.text().await.expect("response body");
-    serde_json::from_str(&text)
+    parse_text(status, &text)
+}
+
+fn parse_text(status: reqwest::StatusCode, text: &str) -> Value {
+    serde_json::from_str(text)
         .or_else(|_error| {
             serde_json::from_str(
                 text.lines()
                     .filter_map(|line| line.strip_prefix("data: "))
                     .find(|data| !data.is_empty())
-                    .expect("SSE response"),
+                    .unwrap_or_else(|| panic!("SSE response; got {status} with body {text:?}")),
             )
         })
-        .expect("JSON response")
+        .unwrap_or_else(|error| panic!("JSON response ({error}); got {status} with body {text:?}"))
 }
 
 async fn initial_wait_surfaces_approval_promptly(
