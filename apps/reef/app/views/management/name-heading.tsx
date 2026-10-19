@@ -40,7 +40,7 @@ export function NameHeading({
   fields?: ReactNode
   /** Status beside the name, such as pills. */
   children?: ReactNode
-  /** Titles the page from the top bar, as its h1, in place of a breadcrumb. */
+  /** The page's h1. Tell `PageLayout` the page is `titled`, so its breadcrumb is not a second h1. */
   pageTitle?: boolean
 }) {
   const fetcher = useFetcher<ActionResult>()
@@ -67,7 +67,7 @@ export function NameHeading({
     return (
       <div className={styles.nameHeading}>
         {pageTitle ? (
-          <Typography.BodyLargeStrong as="h1">{name}</Typography.BodyLargeStrong>
+          <Typography.HeadingLarge as="h1">{name}</Typography.HeadingLarge>
         ) : (
           <Typography.HeadingLarge as="h2">{name}</Typography.HeadingLarge>
         )}
@@ -100,9 +100,9 @@ export function NameHeading({
     >
       {/* The editor replaces the page's title, so the page keeps its h1 for assistive technology. */}
       {pageTitle && (
-        <Typography.BodyLargeStrong as="h1" className={visuallyHidden}>
+        <Typography.HeadingLarge as="h1" className={visuallyHidden}>
           {name}
-        </Typography.BodyLargeStrong>
+        </Typography.HeadingLarge>
       )}
       <Fields form={form} intent={intent} etag={openedAt} />
       {fields}

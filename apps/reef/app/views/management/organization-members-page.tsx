@@ -32,7 +32,7 @@ export function OrganizationMembersPage({
   form: FormContext
 }) {
   return (
-    <ManagementLayout breadcrumbs={trail([], 'Members')}>
+    <ManagementLayout breadcrumbs={trail([], 'Members')} titled compact>
       <MembersTable
         ariaLabel="Members"
         currentUser={currentUser}
