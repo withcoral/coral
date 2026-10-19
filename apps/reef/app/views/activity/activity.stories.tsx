@@ -3,6 +3,7 @@ import { createRoutesStub, useSearchParams } from 'react-router'
 import { expect, fn, waitFor, within } from 'storybook/test'
 import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
+import { resizeViewport } from '../../../.storybook/browser'
 import { Activity } from './activity'
 import { ActionReviewSession } from '../actions/review'
 import { stored } from './discovery/fixtures'
@@ -57,39 +58,43 @@ function scrollerIn(pane: HTMLElement) {
   )!
 }
 
-/** Reading the evidence never scrolls the decision out of its pane. The pinned header and
- * footer stay flush with that pane's edges, whichever stylesheet loads first. */
-async function expectPinnedFooter(pane: HTMLElement, names: string[]) {
-  const dialog = scrollerIn(pane)
-  const controls = names.map((name) => within(pane).getByRole('button', { name }))
-  const header = pane.querySelector('header')!
-  const footer = controls[0]!.closest('footer')!
-  await waitFor(() => expect(dialog.scrollHeight).toBeGreaterThan(dialog.clientHeight * 2))
-  const shown = () => {
-    const edge = dialog.getBoundingClientRect()
-    return controls.every((control) => {
-      const box = control.getBoundingClientRect()
-      return box.top >= edge.top && box.bottom <= edge.bottom
+/** The selected record's decision sits below its scrolling evidence, never inside it: it
+ * stays in view, the evidence's fade never covers it, and a click reaches each control. */
+async function expectDecisionBelowEvidence(pane: HTMLElement, names: string[]) {
+  const scroller = scrollerIn(pane)
+  for (const name of names) {
+    // One control per choice: the footer is not repeated inside the evidence.
+    const [control, ...copies] = within(pane).getAllByRole('button', { name })
+    await expect(copies).toEqual([])
+    await expect(scroller).not.toContainElement(control!)
+    await waitFor(() => {
+      const box = control!.getBoundingClientRect()
+      const bounds = pane.getBoundingClientRect()
+      expect(box.top).toBeGreaterThanOrEqual(scroller.getBoundingClientRect().bottom)
+      expect(box.bottom).toBeLessThanOrEqual(bounds.bottom)
+      for (const y of [box.top + 2, box.top + box.height / 2, box.bottom - 2])
+        expect(control).toContainElement(
+          document.elementFromPoint(box.left + box.width / 2, y) as HTMLElement,
+        )
     })
   }
-  // A sticky edge sticks once the content runs past it: the header after any scroll, the
-  // footer until the end. Stuck, each covers the drawer's padding, flush with its edge.
-  const flush = (fraction: number) => {
-    const edge = dialog.getBoundingClientRect()
-    const top = edge.top + dialog.clientTop
-    const bottom = top + dialog.clientHeight
-    const headerFlush = Math.abs(header.getBoundingClientRect().top - top) <= 1
-    const footerFlush = Math.abs(footer.getBoundingClientRect().bottom - bottom) <= 1
-    return (fraction === 0 || headerFlush) && (fraction === 1 || footerFlush)
-  }
+}
+
+/** Reading the evidence never scrolls the decision out of the selected record's pane. */
+async function expectPinnedFooter(pane: HTMLElement, names: string[]) {
+  const scroller = scrollerIn(pane)
+  await waitFor(() => expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight * 2))
   for (const fraction of [0, 0.5, 1]) {
-    dialog.scrollTop = (dialog.scrollHeight - dialog.clientHeight) * fraction
-    await waitFor(() => expect(shown()).toBe(true))
-    await waitFor(() => expect(flush(fraction)).toBe(true))
+    scroller.scrollTop = (scroller.scrollHeight - scroller.clientHeight) * fraction
+    await expectDecisionBelowEvidence(pane, names)
   }
   // Long content wraps or scrolls inside its block, never the drawer sideways.
-  await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+  await expect(scroller.scrollWidth).toBeLessThanOrEqual(scroller.clientWidth)
 }
+
+/** The height of the fade that marks evidence below the visible part of `scroller`. */
+const fadeBelow = (scroller: HTMLElement) =>
+  parseFloat(getComputedStyle(scroller, '::after').height) || 0
 
 /** A short phone screen: Chromatic reads `viewports`; the Vitest run reads the `viewport` global. */
 const shortScreen = { viewport: { value: 'mobile1', isRotated: false } }
@@ -1474,37 +1479,39 @@ export const OutsideWorkspace: Story = {
     },
   },
 }
+/** A call that waits for your approval, with `args` as its arguments. */
+const pendingApproval = (args: unknown): ActivityPage => ({
+  ...page,
+  detail: {
+    ...detail,
+    context: approvalContext,
+    request: {
+      kind: 'approval',
+      taskIntent: goal.intent,
+      actionable: true,
+      name: `${workspace}/approvals/mail`,
+      run,
+      invocation,
+      provider: call.provider,
+      providerLabel: 'Mail',
+      callPath: call.callPath,
+      arguments: JSON.stringify(args),
+      state: 'pending',
+      // A pending approval is still open, so its deadline is ahead of whoever views it.
+      deadline: new Date(Date.now() + 15 * 60_000).toISOString(),
+      approver: '',
+      decidedAt: null,
+      comment: null,
+    },
+  },
+})
 export const PendingApproval: Story = {
   beforeEach: freezeStoryClock,
   args: {
-    page: {
-      ...page,
-      detail: {
-        ...detail,
-        context: approvalContext,
-        request: {
-          kind: 'approval',
-          taskIntent: goal.intent,
-          actionable: true,
-          name: `${workspace}/approvals/mail`,
-          run,
-          invocation,
-          provider: call.provider,
-          providerLabel: 'Mail',
-          callPath: call.callPath,
-          arguments: JSON.stringify({
-            recipient: 'owner@example.com',
-            lines: Array.from({ length: 80 }, (_, i) => `Invoice ${i + 1}`),
-          }),
-          state: 'pending',
-          // A pending approval is still open, so its deadline is ahead of whoever views it.
-          deadline: minutesAfterStoryNow(15),
-          approver: '',
-          decidedAt: null,
-          comment: null,
-        },
-      },
-    },
+    page: pendingApproval({
+      recipient: 'owner@example.com',
+      lines: Array.from({ length: 80 }, (_, i) => `Invoice ${i + 1}`),
+    }),
   },
   globals: shortScreen,
   play: async ({ canvasElement, userEvent }) => {
@@ -1526,6 +1533,12 @@ export const PendingApproval: Story = {
     // The Run's source shares the drawer, so the decision pins to the selected record's pane.
     const selected = within(dialog).getByRole('region', { name: 'Selected record' })
     await expectPinnedFooter(selected, ['Deny this call', 'Approve this call'])
+    // Above the decision, a fade marks the evidence still below, until the reader reaches it.
+    const scroller = scrollerIn(selected)
+    scroller.scrollTop = 0
+    await waitFor(() => expect(fadeBelow(scroller)).toBeGreaterThan(0))
+    scroller.scrollTop = scroller.scrollHeight
+    await waitFor(() => expect(fadeBelow(scroller)).toBe(0))
     await expect(within(dialog).getByRole('region', { name: 'Accepted source' })).toBeVisible()
     // The review's own header holds the drawer's one close control; no Run header sits above it.
     const close = within(dialog).getByRole('button', { name: 'Close details' })
@@ -1534,6 +1547,20 @@ export const PendingApproval: Story = {
     ])
     const header = within(selected).getByRole('heading', { name: 'mail.send' }).closest('header')
     await expect(header).toContainElement(close)
+  },
+}
+/** Evidence that fits its pane leaves no fade, and the decision shows whole. */
+export const ShortPendingApproval: Story = {
+  args: { page: pendingApproval('owner@example.com') },
+  play: async ({ canvasElement }) => {
+    // Storybook's own UI cannot resize its viewport, so this play needs the test runner.
+    if (!(await resizeViewport(1440, 1800))) return
+    const dialog = await openDrawer(canvasElement, 'Review action')
+    const selected = within(dialog).getByRole('region', { name: 'Selected record' })
+    const scroller = scrollerIn(selected)
+    await waitFor(() => expect(scroller.scrollHeight).toBeLessThanOrEqual(scroller.clientHeight))
+    await waitFor(() => expect(fadeBelow(scroller)).toBe(0))
+    await expectDecisionBelowEvidence(selected, ['Deny this call', 'Approve this call'])
   },
 }
 export const ResolvedApproval: Story = {

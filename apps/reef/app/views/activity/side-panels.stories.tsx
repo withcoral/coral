@@ -102,6 +102,29 @@ const meta = {
     await waitFor(() => expect(opened).toBeVisible())
     for (const text of [parameters.evidence ?? []].flat())
       await expect(opened).toHaveTextContent(text)
+    // Beside a Run's source, a decision sits in the record pane's own footer, below the
+    // scrolling evidence, so the evidence's fade never covers it. A review's one named
+    // region holds both its evidence and that decision.
+    const selected = within(opened).queryByRole('region', { name: 'Selected record' })
+    const decisions = selected
+      ? within(selected).queryAllByRole('button', { name: /this call$|^Decline$|^Connect / })
+      : []
+    for (const control of decisions) {
+      const footer = control.closest('footer')!
+      await expect(selected).toContainElement(footer)
+      await expect(footer.previousElementSibling).toContainElement(
+        within(selected!).getAllByRole('heading')[0]!,
+      )
+    }
+    const approvals = selected
+      ? within(selected).queryAllByRole('button', { name: /this call$/ })
+      : []
+    if (approvals.length) {
+      const reviews = within(opened).getAllByRole('region', { name: /^Review / })
+      await expect(reviews).toHaveLength(1)
+      await expect(reviews[0]!.lastElementChild).toBe(approvals[0]!.closest('footer'))
+      await expect(reviews[0]!.querySelector('header')).not.toBeNull()
+    }
   },
 } satisfies Meta<typeof Activity>
 export default meta
@@ -2264,9 +2287,16 @@ function connectionStory(
         const footer = decline.closest('footer')!
         await expect(footer).toContainElement(connect)
         await expect(footer.querySelector('time')).toBeNull()
-        // The panel's own footer, pinned to the drawer's bottom as an approval's is.
-        await expect(getComputedStyle(footer).position).toBe('sticky')
-        await expect(footer.closest('section')).toContainElement(headers[0]!)
+        // The record's own footer, pinned as an approval's is: below the pane's scrolling
+        // evidence beside the Run's source, or to the drawer's bottom without it.
+        const pane = opened.queryByRole('region', { name: 'Selected record' })
+        if (pane) {
+          await expect(pane).toContainElement(footer)
+          await expect(footer.previousElementSibling).toContainElement(headers[0]!)
+        } else {
+          await expect(getComputedStyle(footer).position).toBe('sticky')
+          await expect(footer.closest('section')).toContainElement(headers[0]!)
+        }
         // While the live view reconnects, neither choice is offered.
         await expect(decline).toHaveProperty('disabled', Boolean(options.reconnecting))
         await expect(connect).toHaveProperty('disabled', Boolean(options.reconnecting))

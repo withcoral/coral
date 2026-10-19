@@ -26,10 +26,28 @@ export const split = style({
 // `flexGrow`/`flexBasis: 0` (set inline, per the live split ratio) divide whatever
 // height `.split` actually has; `minHeight` keeps each pane usable even when the
 // other is dragged toward it or the drawer itself shrinks, with no JS measurement.
+// A column: the record's evidence scrolls, and its decision footer stays below it.
 export const detailPane = style({
+  display: 'flex',
+  flexDirection: 'column',
   minHeight: 120,
   minWidth: 0,
   overflow: 'hidden',
+})
+export const detailRegion = style({
+  display: 'flex',
+  flexDirection: 'column',
+  flex: 1,
+  minHeight: 0,
+  minWidth: 0,
+})
+export const detailScroll = style({ flex: 1, minHeight: 0 })
+// Nothing to decide leaves no empty bar under the evidence.
+export const detailFooter = style({
+  flexShrink: 0,
+  borderTop: `1px solid ${theme.stroke.secondary}`,
+  padding: '12px 16px',
+  selectors: { '&:empty': { display: 'none' } },
 })
 export const detailContent = style({
   display: 'flex',
