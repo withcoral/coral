@@ -46,6 +46,9 @@ import { serverProblem, type ServerGroup } from './server-choices'
 import { StepFrame } from './step-frame'
 import * as styles from './providers.css'
 
+/** Names that differ only in case or surrounding space read as the same provider. */
+const nameKey = (name: string) => name.trim().toLocaleLowerCase()
+
 /** A value the source fixed: shaped like the fields beside it, never editable. */
 function ReadField({ label, value }: { label: string; value: string }) {
   const id = useId()
@@ -79,6 +82,7 @@ export function ConfigurationStep({
   namespace,
   onNamespace,
   takenNamespaces = [],
+  takenDisplayNames = [],
   suggestedName,
   recipe = null,
   title = 'Setup',
@@ -96,6 +100,8 @@ export function ConfigurationStep({
   onNamespace?: (namespace: string) => void
   /** Namespaces other providers in the workspace have; one of them cannot be confirmed. */
   takenNamespaces?: readonly string[]
+  /** Display names other providers in the workspace have; one of them cannot be confirmed. Absent for Update. */
+  takenDisplayNames?: readonly string[]
   /** An entered or recipe-suggested name; undefined keeps the document's title. */
   suggestedName?: string
   /** What the chosen recipe fills in; it applies only before the first confirmation. */
@@ -207,11 +213,16 @@ export function ConfigurationStep({
   )
   const readFrom = `Read from ${setup.sourceHost || 'the document'}`
   const namespaceTaken = namespace !== undefined && takenNamespaces.includes(namespace)
+  const displayNameTaken = takenDisplayNames.some(
+    (name) => nameKey(name) === nameKey(value.displayName),
+  )
   // Each reason Next cannot confirm, in the order the fields appear. Next names
   // the first one and moves focus to its field.
   const blockers: Blocker[] = []
   if (!value.displayName.trim())
     blockers.push({ field: ids.displayName, message: 'Enter a display name.' })
+  else if (displayNameTaken)
+    blockers.push({ field: ids.displayName, message: 'Enter a different display name.' })
   if (namespace !== undefined && !NAMESPACE.test(namespace))
     blockers.push({
       field: ids.namespace,
@@ -307,7 +318,12 @@ export function ConfigurationStep({
               required
               value={value.displayName}
               onChange={(displayName) => update({ displayName })}
-              error={errors.display_name}
+              error={
+                errors.display_name ??
+                (displayNameTaken
+                  ? 'Another provider uses this name. Enter a different display name.'
+                  : undefined)
+              }
               maxLength={256}
             />
             {namespace !== undefined && (

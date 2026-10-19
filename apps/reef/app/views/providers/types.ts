@@ -371,6 +371,8 @@ export interface StepperPageProps {
   workspace: WorkspaceView
   /** Namespaces other providers in this workspace have; Configuration refuses them. */
   takenNamespaces?: readonly string[]
+  /** Display names other providers in this workspace have; Configuration refuses them. */
+  takenDisplayNames?: readonly string[]
   /** The recipe this attempt was read from; it suggests the name and namespace. */
   recipe?: SourceChoice | null
   /** Recipes the catalog offers, from the bundled library. */

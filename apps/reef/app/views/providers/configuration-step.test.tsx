@@ -128,6 +128,33 @@ it.each([
   expect(next.getAttribute('aria-disabled')).toBe(refused ? 'true' : null)
 })
 
+// Catches: a second provider with another's name, which the provider list then
+// shows twice with nothing to tell them apart.
+it.each([
+  ['the same name', 'GitHub', true],
+  ['the name in another case with spaces', ' github ', true],
+  ['a different name', 'GitHub MCP', false],
+])('a display name with %s says so beside the field and blocks Next', (_case, name, refused) => {
+  const container = document.createElement('div')
+  container.innerHTML = markupRoute(
+    <ConfigurationStep
+      setup={{ ...setup, configuration: review }}
+      form={{ csrf: 'test-csrf', requestId: 'test-request' }}
+      pending={false}
+      namespace="github_two"
+      takenDisplayNames={['GitHub']}
+      suggestedName={name}
+    />,
+  )
+  const message = 'Another provider uses this name. Enter a different display name.'
+  const alerts = [...container.querySelectorAll('[role="alert"]')].map((alert) => alert.textContent)
+  expect(alerts).toEqual(refused ? [message] : [])
+  const next = [...container.querySelectorAll('button')].find(
+    (button) => button.textContent === 'Next',
+  )!
+  expect(next.getAttribute('aria-disabled')).toBe(refused ? 'true' : null)
+})
+
 describe('configuration application defaults', () => {
   it('keeps a saved automatic client automatic when configuration is reopened', () => {
     const html = render({
