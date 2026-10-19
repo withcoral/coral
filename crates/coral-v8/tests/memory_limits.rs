@@ -49,9 +49,15 @@ fn compiler_memory_failure_allows_the_next_request_to_succeed() {
     let limits =
         IsolateLimits::new(16 * 1024 * 1024, 64 * 1024 * 1024).expect("valid isolate limits");
     let compiler = ProgramCompiler::new(limits).expect("start bounded compiler");
+    // The module text alone fills the compiler's heap budget, and its empty
+    // statements make the parser allocate from the first token, so V8 trips
+    // the limit after a few milliseconds of compiler work. A source that
+    // outgrew the budget through type checking (30,000 object literals) spent
+    // up to COMPILATION_TIMEOUT in TypeScript on a loaded CI runner and
+    // reported CompilationTimedOut instead.
     let source = format!(
-        "export default function values() {{ return [{}]; }}",
-        "({ value: 1 }),".repeat(30_000),
+        "export default function values() {{ return 1; }}\n{}",
+        ";".repeat(limits.compiler_heap_bytes()),
     );
     let result = compiler.prepare_saved_function(deadline(), &source);
     assert!(
