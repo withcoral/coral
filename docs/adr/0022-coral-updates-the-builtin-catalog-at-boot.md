@@ -30,8 +30,9 @@ Invocation of one it does not perform with `operation_unavailable`.
 A new Operation starts at the Access State its hints give, and Owners change it with the existing Operation policy.
 Exact rules are keyed by Operation Key, so a rule set on an Operation applies again when the Operation returns.
 
-This amends ADR 0016, which says the server rejects regeneration and the Built-in Provider is immutable apart from its
-access state. An Owner still cannot regenerate, rename, reconfigure, update or remove it. Coral updates it at boot.
+This amends [ADR 0021](0021-admin-operations-as-a-built-in-provider.md), which says the server rejects regeneration and
+the Built-in Provider is immutable apart from its access state. An Owner still cannot regenerate, rename, reconfigure,
+update or remove it. Coral updates it at boot.
 
 Rejected: an Owner reviewing and applying each update on the providers page, which leaves Workspaces on an old catalog
 until someone acts and makes every Owner repeat the same step; and ordering catalogs by a version number so that an

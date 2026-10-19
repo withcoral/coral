@@ -585,6 +585,67 @@ async fn a_configuration_the_source_cannot_take_leaves_no_setup_open() {
     );
 }
 
+// Catches: a source that fails to answer telling the Program to correct
+// arguments that may be right, or leaving a Setup open behind the failure.
+#[tokio::test]
+async fn a_source_that_fails_to_answer_is_not_the_programs_input_to_correct() {
+    let scope = AdminScope::new("user:source-fails").await;
+    scope.set_access(OperationAccessState::Enabled).await;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/unavailable.json"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap()
+    };
+    for url in [
+        format!("{}/unavailable.json", server.uri()),
+        format!("http://{closed}/openapi.json"),
+    ] {
+        let before = scope.created_setups().await;
+        let run = scope
+            .start(
+                &scope.owner,
+                create_provider(
+                    &serde_json::json!({
+                        "namespace": "weather",
+                        "source": { "kind": "openapi_url", "url": url },
+                        "credentialRoute": "none",
+                    }),
+                    "error.code",
+                ),
+            )
+            .await;
+        assert_final_code(
+            &scope.terminal(&scope.owner, &run).await,
+            "upstream_incomplete",
+        );
+        for setup in scope.setups_created_since(&before).await {
+            let state = scope
+                .fixture
+                .providers
+                .get_setup(&scope.owner_user(), &scope.workspace_id, &setup)
+                .await
+                .unwrap()
+                .state();
+            assert!(!state.is_open(), "{url} {setup}: {state:?}");
+        }
+    }
+    assert!(
+        !scope
+            .fixture
+            .providers
+            .inspect_providers(&scope.owner_user(), &scope.workspace_id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|provider| provider.call_root().as_str() == "coral.providers.weather")
+    );
+}
+
 // Catches: a namespace already in use reaching a fetch and a Setup before the
 // Publication finally fails on it.
 #[tokio::test]
@@ -931,6 +992,9 @@ async fn invalid_input_fails_before_storage_approval_fetch_or_setup() {
             "method": "header_credentials",
             "headers": { "x-weather-key": { "source": "literal", "value": "secret" } },
         })),
+        // A method that takes no settings takes no credential beside it.
+        authenticated(serde_json::json!({ "method": "bearer", "token": "secret" })),
+        authenticated(serde_json::json!({ "method": "none", "token": "secret" })),
         // Device authorization takes no authorization parameters.
         authenticated(serde_json::json!({
             "method": "oauth_device_code",
@@ -1274,6 +1338,13 @@ async fn an_invalid_argument_names_what_to_correct() {
                 serde_json::json!({ "source": { "kind": "openapi_document", "document": CANARY } }),
             ),
             " at `source`: Coral cannot build a Provider from the source (invalid_openapi_document)",
+        ),
+        (
+            valid_with(serde_json::json!({
+                "credentialRoute": "fixed",
+                "authentication": { "method": "bearer", "token": CANARY },
+            })),
+            " at `authentication`: unknown field `token`, there are no fields",
         ),
         (
             valid_with(serde_json::json!({ "requestHeaders": { "X-Api-Key": CANARY } })),

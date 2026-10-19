@@ -750,11 +750,14 @@ fn setup_error(error: coral_provider::Error) -> Error {
         coral_provider::Error::OutboundDestinationRejected => {
             Error::InvocationRejected(CoralFailure::OutboundDestinationRejected.into())
         }
+        // Coral got no usable response from the source: it did not answer, or
+        // answered with an error status. The arguments may be right, so this
+        // is not the Program's to correct.
+        coral_provider::Error::InputUnavailable => {
+            Error::InvocationRejected(CoralFailure::UpstreamIncomplete.into())
+        }
         // A source Coral fetched but cannot use is the Program's to correct.
         // Each reason is Coral's own: a fetched body or error never reaches it.
-        coral_provider::Error::InputUnavailable => {
-            source("Coral could not fetch a usable response from the source URL")
-        }
         coral_provider::Error::InvalidInput(_)
         | coral_provider::Error::Catalog(coral_catalog::Error::InvalidInput(_)) => {
             source("Coral cannot read an OpenAPI document or an MCP server from the source")

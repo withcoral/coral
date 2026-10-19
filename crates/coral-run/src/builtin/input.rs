@@ -65,8 +65,11 @@ impl From<CredentialFieldInput> for CredentialField {
 #[derive(Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum AuthenticationInput {
-    None,
-    Bearer,
+    // Empty struct variants, not unit ones: serde ignores `deny_unknown_fields`
+    // on a unit variant of an internally tagged enum, so `{ method: "bearer",
+    // token }` would parse and its token would be stored with the arguments.
+    None {},
+    Bearer {},
     HeaderCredentials {
         headers: BTreeMap<String, HeaderInput>,
     },
@@ -101,8 +104,8 @@ impl TryFrom<AuthenticationInput> for AuthenticationConfiguration {
     /// Converts the input, or names the first argument to correct.
     fn try_from(input: AuthenticationInput) -> Result<Self, InputProblem> {
         Ok(match input {
-            AuthenticationInput::None => Self::None,
-            AuthenticationInput::Bearer => Self::Bearer,
+            AuthenticationInput::None {} => Self::None,
+            AuthenticationInput::Bearer {} => Self::Bearer,
             AuthenticationInput::HeaderCredentials { headers } => Self::HeaderCredentials {
                 headers: headers
                     .into_iter()

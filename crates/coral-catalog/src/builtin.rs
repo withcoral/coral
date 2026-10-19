@@ -268,7 +268,9 @@ fn definition(operation: BuiltinOperation) -> Definition {
                      it. When the source declares no credential but the service needs one, \
                      give authentication, such as { method: \"bearer\" }, with fixed or \
                      caller. Never pass a secret or a literal credential value: Coral stores \
-                     your arguments, and Workspace Owners can see them. When status is \
+                     your arguments, and Workspace Owners can see them. When Coral cannot \
+                     fetch a source URL, the call fails with upstream_incomplete: check that \
+                     the URL is reachable, then call again. When status is \
                      published, call the Provider's Operations under \
                      coral.providers.<namespace>. When status is needs_sign_in, show the \
                      person the returned url. To check later whether it is published, search \
