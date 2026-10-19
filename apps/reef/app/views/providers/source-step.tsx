@@ -38,7 +38,7 @@ const SOURCE_URL = {
   openapi: {
     label: 'OpenAPI URL',
     placeholder: 'https://example.com/openapi.json',
-    help: 'A JSON or YAML document. You can also use a gzipped one.',
+    help: 'A JSON or YAML document.',
   },
 } as const
 

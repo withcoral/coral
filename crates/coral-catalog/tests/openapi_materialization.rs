@@ -3486,6 +3486,30 @@ fn a_query_in_a_path_key_becomes_the_operations_fixed_query() {
             }
         }
     }
+    // Without an operationId, the full path key still names the Operation.
+    let anonymous = WEATHER_OPENAPI.replace("      operationId: getForecast\n", "");
+    let (_, path_item) = anonymous.split_once("  /forecast:").expect("path item");
+    let document = format!("{anonymous}  \"/forecast?beta=true\":{path_item}");
+    let prepared = configured_ready(&document);
+    let operations = prepared
+        .operations()
+        .iter()
+        .map(|operation| {
+            let binding = http_binding(operation);
+            (
+                operation.key().as_str(),
+                binding.path_template(),
+                binding.query(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        operations,
+        [
+            ("get /forecast", "/forecast", None),
+            ("get /forecast?beta=true", "/forecast", Some("beta=true")),
+        ]
+    );
 }
 
 #[test]
