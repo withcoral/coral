@@ -79,19 +79,7 @@ export function WorkspaceMembersPage({
     ),
   }))
   return (
-    <ManagementLayout
-      breadcrumbs={trail([], 'Members')}
-      actions={
-        owner ? (
-          <AddMembersDialog
-            candidates={candidates}
-            currentUser={w.currentUser}
-            disabled={!active}
-            form={form}
-          />
-        ) : undefined
-      }
-    >
+    <ManagementLayout breadcrumbs={trail([], 'Members')} titled compact>
       <PageIntro status={!active ? <Pill color="gray">Archived</Pill> : undefined}>
         {!owner ? (
           <InfoTip label="Workspace members">
@@ -105,7 +93,21 @@ export function WorkspaceMembersPage({
         </ArchivedBanner>
       )}
       <ActionNotice result={result} />
-      <MembersTable ariaLabel="Members" currentUser={w.currentUser} rows={rows} />
+      <MembersTable
+        ariaLabel="Members"
+        currentUser={w.currentUser}
+        rows={rows}
+        action={
+          owner && (
+            <AddMembersDialog
+              candidates={candidates}
+              currentUser={w.currentUser}
+              disabled={!active}
+              form={form}
+            />
+          )
+        }
+      />
       {(nextMembers || nextOwners) && (
         <div className={styles.row}>
           {nextMembers && (

@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { createRoutesStub } from 'react-router'
 
 import { filterQuery } from '@/utils/filter-query'
-import { Table } from '@/wax/components'
+import { Button, Table } from '@/wax/components'
 
 import { CatalogLayout, CatalogRail, CatalogRailItem, CatalogToolbar } from './catalog'
 
@@ -12,7 +12,7 @@ const groups = [
   { name: 'linear', members: ['completedSince', 'issueBrief', 'myOpenIssues'] },
 ]
 
-function Catalog() {
+function Catalog({ title }: { title?: string }) {
   const [rail, setRail] = useState('')
   const [table, setTable] = useState('')
   const [current, setCurrent] = useState('finance')
@@ -46,6 +46,10 @@ function Catalog() {
         }
       >
         <CatalogToolbar
+          title={title}
+          action={
+            title && <Button.IconButton name="Plus" tooltipText="Add member" variant="bare" />
+          }
           filter={{
             label: 'Filter members',
             value: table,
@@ -93,4 +97,10 @@ type Story = StoryObj<typeof meta>
 export const Default: Story = {
   args: { rail: null, children: null },
   render: () => <Catalog />,
+}
+
+// The toolbar heads the page with its title and main action.
+export const Titled: Story = {
+  args: { rail: null, children: null },
+  render: () => <Catalog title="Functions" />,
 }

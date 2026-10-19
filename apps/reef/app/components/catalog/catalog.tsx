@@ -153,10 +153,19 @@ export function CatalogRailItem({
  * other controls and the filter's input at the end.
  */
 export function CatalogToolbar({
+  title,
+  action,
   filter,
   leading,
   children,
 }: {
+  /**
+   * The page's h1, at the start of the row. Tell `PageLayout` the page is
+   * `titled`, so its breadcrumb is not a second h1.
+   */
+  title?: string
+  /** The page's main action beside the title, such as an icon button that adds a row. */
+  action?: ReactNode
   filter: FilterFieldProps & {
     /** A shortcut, such as "$mod+f", that focuses the filter from anywhere on the page. */
     shortcut?: string
@@ -177,7 +186,19 @@ export function CatalogToolbar({
   return (
     <div className={styles.toolbar}>
       {/* An empty group would still take a gap, and push the controls off the table's edge. */}
-      {leading && <div className={styles.toolbarGroup}>{leading}</div>}
+      {(title || leading) && (
+        <div className={styles.toolbarGroup}>
+          {title && (
+            <div className={styles.toolbarTitle}>
+              <Typography.HeadingLarge as="h1" truncate>
+                {title}
+              </Typography.HeadingLarge>
+              {action}
+            </div>
+          )}
+          {leading}
+        </div>
+      )}
       <div className={styles.toolbarGroup}>
         {children}
         <div
