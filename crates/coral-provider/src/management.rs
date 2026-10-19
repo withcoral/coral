@@ -1,8 +1,9 @@
 //! Current Workspace authority and exact Provider inspection.
-use crate::{Error, Provider, ProviderId, ProviderModule, repository};
+use crate::{Error, Provider, ProviderCallRoot, ProviderId, ProviderModule, repository};
 use coral_catalog::{OperationKey, OperationSummary};
 use coral_workspace::AuthenticatedUser;
 use coral_workspace::WorkspaceAction;
+use coral_workspace::WorkspaceEvidence;
 use coral_workspace::WorkspaceId;
 
 /// Owner-only source provenance, without descriptors or credential material.
@@ -18,7 +19,9 @@ impl ProviderModule {
     /// Inspects the saved source for one exact Provider under current Owner authority.
     ///
     /// # Errors
-    /// Returns current Owner authority, missing Provider, or persistence failures.
+    /// Returns current Owner authority, missing Provider, or persistence failures, and
+    /// [`Error::BuiltinProviderManaged`] for the Built-in Provider, whose catalog Coral
+    /// defines without a source.
     pub async fn inspect_provider_source(
         &self,
         actor: &AuthenticatedUser,
@@ -31,6 +34,10 @@ impl ProviderModule {
         let stored = repository::provider_in_transaction(&mut tx, workspace, provider)
             .await?
             .ok_or(Error::ProviderNotFound)?;
+        match stored.provider.call_root() {
+            ProviderCallRoot::Owner(_) => {}
+            ProviderCallRoot::Builtin => return Err(Error::BuiltinProviderManaged),
+        }
         let kind =
             coral_catalog::setup_input_kind_in_transaction(&mut tx, &stored.generation_id).await?;
         tx.rollback().await?;
@@ -41,6 +48,7 @@ impl ProviderModule {
     }
 
     /// Lists exact Workspace Providers under current inspection authority.
+    /// Only an Owner sees the Built-in Provider.
     ///
     /// # Errors
     /// Returns current Workspace authority or persistence failures.
@@ -50,16 +58,75 @@ impl ProviderModule {
         workspace: &WorkspaceId,
     ) -> Result<Vec<Provider>, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
-        self.management_authority(&mut tx, actor, workspace).await?;
+        let evidence = self.management_authority(&mut tx, actor, workspace).await?;
         let result = repository::management_providers(&mut tx, workspace, None)
             .await?
             .into_iter()
             .map(|stored| stored.provider)
+            .filter(|provider| crate::inspects(&evidence, provider))
             .collect();
         tx.rollback().await?;
         Ok(result)
     }
-    /// Inspects one Provider, concealing other Workspaces as absent.
+
+    /// Lists every Workspace Provider, in any state and in creation order, with
+    /// what each offers `actor`, from one snapshot. The Built-in Provider,
+    /// created with the Workspace, comes first, and only for an Owner.
+    ///
+    /// # Errors
+    /// Returns current Workspace authority, persistence, or corrupt-evidence failures.
+    pub async fn published_providers(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace: &WorkspaceId,
+    ) -> Result<Vec<crate::PublishedProvider>, Error> {
+        let caller = coral_workspace::AuthenticatedPrincipal::user(actor.clone());
+        let mut tx = self.database.begin_read_snapshot().await?;
+        let evidence = self.management_authority(&mut tx, actor, workspace).await?;
+        let providers = repository::management_providers(&mut tx, workspace, None).await?;
+        let mut published = Vec::with_capacity(providers.len());
+        for active in providers
+            .into_iter()
+            .filter(|active| crate::inspects(&evidence, &active.provider))
+        {
+            published.push(
+                crate::program_setup::published_active_provider_in_transaction(
+                    &mut tx,
+                    active,
+                    caller.principal(),
+                )
+                .await?,
+            );
+        }
+        tx.rollback().await?;
+        Ok(published)
+    }
+
+    /// Whether a Provider in this Workspace already uses `namespace`, so a
+    /// Publication under it would fail with a namespace conflict.
+    ///
+    /// # Errors
+    /// Returns current Workspace authority or persistence failures.
+    pub async fn namespace_in_use(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace: &WorkspaceId,
+        namespace: &crate::ProviderNamespace,
+    ) -> Result<bool, Error> {
+        let mut tx = self.database.begin_read_snapshot().await?;
+        self.management_authority(&mut tx, actor, workspace).await?;
+        let in_use = crate::access::call_root_exists(
+            &mut tx,
+            workspace,
+            &crate::ProviderCallRoot::Owner(namespace.clone()),
+        )
+        .await?;
+        tx.rollback().await?;
+        Ok(in_use)
+    }
+
+    /// Inspects one Provider, concealing other Workspaces, and the Built-in
+    /// Provider from a non-Owner, as absent.
     ///
     /// # Errors
     /// Returns current Workspace authority, missing Provider or persistence failures.
@@ -70,10 +137,9 @@ impl ProviderModule {
         provider: &ProviderId,
     ) -> Result<Provider, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
-        self.management_authority(&mut tx, actor, workspace).await?;
-        let stored = repository::provider_in_transaction(&mut tx, workspace, provider)
-            .await?
-            .ok_or(Error::ProviderNotFound)?;
+        let stored = self
+            .inspected_provider(&mut tx, actor, workspace, provider)
+            .await?;
         tx.rollback().await?;
         Ok(stored.provider)
     }
@@ -90,10 +156,9 @@ impl ProviderModule {
         page_size: u32,
     ) -> Result<Vec<OperationSummary>, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
-        self.management_authority(&mut tx, actor, workspace).await?;
-        let stored = repository::provider_in_transaction(&mut tx, workspace, provider)
-            .await?
-            .ok_or(Error::ProviderNotFound)?;
+        let stored = self
+            .inspected_provider(&mut tx, actor, workspace, provider)
+            .await?;
         let operations = coral_catalog::operation_summaries_in_transaction(
             &mut tx,
             &stored.generation_id,
@@ -109,11 +174,26 @@ impl ProviderModule {
         tx: &mut coral_db::Transaction<'_>,
         actor: &AuthenticatedUser,
         workspace: &WorkspaceId,
-    ) -> Result<(), Error> {
-        self.workspaces
+    ) -> Result<WorkspaceEvidence, Error> {
+        Ok(self
+            .workspaces
             .check_in_transaction(tx, actor, workspace, WorkspaceAction::Inspect)
-            .await?;
-        Ok(())
+            .await?)
+    }
+
+    /// Loads one Provider that `actor` may inspect; anything else is absent.
+    async fn inspected_provider(
+        &self,
+        tx: &mut coral_db::Transaction<'_>,
+        actor: &AuthenticatedUser,
+        workspace: &WorkspaceId,
+        provider: &ProviderId,
+    ) -> Result<repository::ProviderWithActiveGeneration, Error> {
+        let evidence = self.management_authority(tx, actor, workspace).await?;
+        repository::provider_in_transaction(tx, workspace, provider)
+            .await?
+            .filter(|stored| crate::inspects(&evidence, &stored.provider))
+            .ok_or(Error::ProviderNotFound)
     }
 }
 
@@ -135,13 +215,14 @@ impl ProviderModule {
         let authority = self
             .check_owner_configuration_in_transaction(tx, context.actor(), workspace)
             .await?;
-        if !repository::hold_provider_in_transaction(tx, workspace, id).await? {
-            return Err(Error::ProviderNotFound);
-        }
-        let current = repository::provider_in_transaction(tx, workspace, id)
-            .await?
-            .ok_or(Error::ProviderNotFound)?
-            .provider;
+        let current = crate::change::hold_for_change(
+            tx,
+            workspace,
+            id,
+            crate::change::ProviderChange::Rename,
+        )
+        .await?
+        .provider;
         current.check_etag(context)?;
         if current.display_name() == display_name.as_str() {
             return Ok(current);

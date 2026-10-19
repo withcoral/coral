@@ -7,7 +7,7 @@ use coral_db::Transaction;
 use crate::cursor::encode_cursor;
 use crate::retriever::{EntityRef, EntityRetriever, Hydrated, RequestContext};
 use crate::{
-    Error, ProviderNamespace, RetrieverStatus, SEARCH_CURSOR_MAX_BYTES, SEARCH_PAGE_MAX_BYTES,
+    Error, ProviderCallRoot, RetrieverStatus, SEARCH_CURSOR_MAX_BYTES, SEARCH_PAGE_MAX_BYTES,
     SearchHit, SearchLimit, SearchPage,
 };
 
@@ -37,7 +37,7 @@ pub(crate) async fn hydrate_page_in_transaction(
     start: usize,
     limit: SearchLimit,
     normalized_query: Option<&str>,
-    provider_filter: Option<&ProviderNamespace>,
+    provider_filter: Option<&ProviderCallRoot>,
     retriever_statuses: Vec<RetrieverStatus>,
 ) -> Result<SearchPage, Error> {
     let mut hits = Vec::<SearchHit>::new();

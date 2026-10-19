@@ -282,7 +282,10 @@ async fn publishes_workspace_provider_catalog_and_access_atomically() {
         Some("export default function (): Promise<HttpResult<unknown, 200, string | null>>;")
     );
     assert_eq!(published.access().id(), published.id());
-    assert_eq!(published.access().namespace().as_str(), "weather");
+    assert_eq!(
+        published.access().call_root().as_str(),
+        "coral.providers.weather"
+    );
     assert_eq!(published.access().credential_route(), CredentialRoute::None);
     assert_eq!(published.access().version(), 1);
 
@@ -349,7 +352,7 @@ async fn successful_regeneration_atomically_activates_current_material_and_retai
     let retained = retained_operation(
         &providers,
         &fixture.workspace_id,
-        fixture.provider_access.namespace(),
+        fixture.provider_access.call_root(),
     )
     .await;
     let provider_inspections = providers
@@ -508,7 +511,7 @@ async fn regeneration_reuses_the_active_generation_only_for_an_unchanged_package
         let before = retained_operation(
             &providers,
             &fixture.workspace_id,
-            fixture.provider_access.namespace(),
+            fixture.provider_access.call_root(),
         )
         .await;
         let setup = fixture
@@ -524,7 +527,7 @@ async fn regeneration_reuses_the_active_generation_only_for_an_unchanged_package
         let after = retained_operation(
             &providers,
             &fixture.workspace_id,
-            fixture.provider_access.namespace(),
+            fixture.provider_access.call_root(),
         )
         .await;
 
@@ -721,7 +724,7 @@ async fn failed_regeneration_consumes_setup_and_leaves_active_material_and_provi
 #[tokio::test]
 async fn regeneration_materialization_holds_no_transaction_and_preserves_independent_provider() {
     let (_fixture, database, workspaces) = test_foundation().await;
-    let default_providers = ProviderModule::new(
+    let default_providers = ProviderModule::with_running_catalog(
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
@@ -812,7 +815,7 @@ async fn regeneration_materialization_holds_no_transaction_and_preserves_indepen
 #[tokio::test]
 async fn active_generation_race_records_no_outcome_and_leaves_setup_reusable() {
     let (_fixture, database, workspaces) = test_foundation().await;
-    let default_providers = ProviderModule::new(
+    let default_providers = ProviderModule::with_running_catalog(
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
@@ -904,7 +907,7 @@ async fn active_generation_race_records_no_outcome_and_leaves_setup_reusable() {
 #[tokio::test]
 async fn regeneration_request_id_reuse_returns_conflict_without_changing_state() {
     let (_fixture, database, workspaces) = test_foundation().await;
-    let default_providers = ProviderModule::new(
+    let default_providers = ProviderModule::with_running_catalog(
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
@@ -1005,7 +1008,7 @@ async fn regeneration_request_id_reuse_returns_conflict_without_changing_state()
 #[tokio::test]
 async fn exact_regeneration_crossing_terminal_commit_replays_the_committed_result() {
     let (_fixture, database, workspaces) = test_foundation().await;
-    let default_providers = ProviderModule::new(
+    let default_providers = ProviderModule::with_running_catalog(
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
@@ -1423,7 +1426,7 @@ async fn structural_failure_consumes_setup_without_publishing_resources() {
 )]
 async fn request_id_reuse_with_different_content_fails_without_materializing() {
     let (fixture, database, workspaces) = test_foundation().await;
-    let default_providers = ProviderModule::new(
+    let default_providers = ProviderModule::with_running_catalog(
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
@@ -1633,7 +1636,7 @@ async fn duplicate_provider_namespace_is_one_terminal_domain_failure() {
 #[tokio::test]
 async fn concurrent_publications_consume_one_setup_at_most_once() {
     let (fixture, database, workspaces) = test_foundation().await;
-    let default_providers = ProviderModule::new(
+    let default_providers = ProviderModule::with_running_catalog(
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
@@ -1760,7 +1763,7 @@ fn spawn_regeneration(
 #[tokio::test]
 async fn operational_materialization_failure_leaves_setup_reusable() {
     let (fixture, database, workspaces) = test_foundation().await;
-    let default_providers = ProviderModule::new(
+    let default_providers = ProviderModule::with_running_catalog(
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
@@ -2010,7 +2013,7 @@ async fn final_commit_refreshes_the_publishers_organization_membership() {
 #[tokio::test]
 async fn materialization_holds_no_transaction_and_final_commit_rechecks_workspace() {
     let (fixture, database, workspaces) = test_foundation().await;
-    let default_providers = ProviderModule::new(
+    let default_providers = ProviderModule::with_running_catalog(
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
@@ -2259,7 +2262,7 @@ async fn interrupted_publications_leave_no_outcome_or_replay_the_committed_one()
     for (flow, fault, document, committed) in rows {
         let row = format!("{flow:?} {fault:?} {committed:?}");
         let (_database, database, workspaces) = test_foundation().await;
-        let default_providers = ProviderModule::new(
+        let default_providers = ProviderModule::with_running_catalog(
             DestinationPolicy::default(),
             database.clone(),
             workspaces.clone(),
@@ -2555,7 +2558,7 @@ async fn concurrent_workspace_publication_exact_replay_returns_one_terminal_resu
         .await
         .expect("create Workspace");
     let workspace_id = workspace.id();
-    let default_providers = ProviderModule::new(
+    let default_providers = ProviderModule::with_running_catalog(
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
@@ -2668,7 +2671,7 @@ async fn concurrent_workspace_publications_record_one_terminal_namespace_conflic
         .await
         .expect("create Workspace");
     let workspace_id = workspace.id();
-    let default_providers = ProviderModule::new(
+    let default_providers = ProviderModule::with_running_catalog(
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),

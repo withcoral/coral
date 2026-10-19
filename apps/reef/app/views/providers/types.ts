@@ -83,6 +83,8 @@ export interface ProviderView {
   id: string
   displayName: string
   namespace: string
+  /** Coral defines and manages this provider. */
+  builtin: boolean
   account: AccountLabel
   /** Coral's provider blockers: provider health, not your own account. */
   blockers: string[]
@@ -103,6 +105,10 @@ export interface ProviderSettingsView {
   id: string
   displayName: string
   namespace: string
+  /** The provider's complete Call Root, such as `coral.providers.github`. */
+  callRoot: string
+  /** Coral defines and manages this provider; owners cannot change it. */
+  builtin: boolean
   etag: string
   path: string
   /** Disabled providers keep their settings but Coral refuses their calls. */

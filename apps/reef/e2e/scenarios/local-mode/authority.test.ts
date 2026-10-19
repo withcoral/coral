@@ -37,7 +37,7 @@ test('The implicit local Owner works through a Membership and does not bypass li
       )
       expect(await owned()).toEqual([[workspace.currentUser, WorkspaceRole.OWNER, true]])
       await page.goto(`/${name}`)
-      await page.getByRole('button', { name: 'Add provider', exact: true }).first().waitFor()
+      await page.getByRole('heading', { name: 'Providers', exact: true, level: 2 }).waitFor()
       expect((await api.workspaces.getWorkspace({ name })).currentUser).toBe(workspace.currentUser)
       const result = await programRunner(page, target, id).exec('return "local owner";')
       expect(result.structuredContent.state).toBe('succeeded')

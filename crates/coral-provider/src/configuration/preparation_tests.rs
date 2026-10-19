@@ -88,7 +88,7 @@ async fn preparation_is_reused_by_reads_replays_invalid_edits_and_restarts() {
     assert_eq!(count.calls(), 1);
 
     // A new Module has no in-memory results from preparation, even on another host process.
-    let mut restarted = ProviderModule::new(
+    let mut restarted = ProviderModule::with_running_catalog(
         DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         h.database.clone(),
         h.workspaces.clone(),
@@ -192,7 +192,7 @@ async fn update_compatibility_is_unknown_until_prepared_and_survives_restart() {
         "missing preparation is unknown, not anonymous or compatible"
     );
     assert_eq!(count.calls(), 0, "Update source review must remain cheap");
-    let mut restarted = ProviderModule::new(
+    let mut restarted = ProviderModule::with_running_catalog(
         DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         h.database.clone(),
         h.workspaces.clone(),
@@ -427,7 +427,7 @@ async fn a_different_host_policy_cannot_reuse_prepared_authority() {
         .await
         .unwrap();
     assert!(local.diagnostic.is_none());
-    let mut hosted = ProviderModule::new(
+    let mut hosted = ProviderModule::with_running_catalog(
         DestinationPolicy::default(),
         h.database.clone(),
         h.workspaces.clone(),

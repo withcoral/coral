@@ -12,47 +12,140 @@ pub use inspection::{
     inspect_agent_providers_in_transaction, inspect_provider_readiness_in_transaction,
 };
 pub(crate) use repository::{
-    by_namespace_in_transaction, exact_in_transaction, hold_exact_in_transaction,
+    by_call_root_in_transaction, exact_in_transaction, hold_exact_in_transaction,
     provider_id_in_transaction,
 };
 #[cfg(test)]
 mod tests;
 
-/// Immutable JavaScript namespace of one Provider.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ProviderNamespace(String);
+/// Immutable, Workspace-unique JavaScript path under which one Provider's
+/// Operations are called. No Call Root is a prefix of another, so at most one
+/// owns a Call Path.
+///
+/// Each kind of Provider is one variant. A rule that depends on the kind
+/// matches on it, so a new kind must be decided at every such rule.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ProviderCallRoot {
+    /// `coral.providers.<namespace>`: a Provider an Owner adds.
+    Owner(ProviderNamespace),
+    /// `coral.workspace`: the Workspace's Built-in Provider, which Coral defines.
+    Builtin,
+}
+
+/// The short name an Owner gives a Provider: a non-reserved safe ASCII
+/// JavaScript identifier of at most 128 bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ProviderNamespace {
+    /// The complete Call Root, so [`ProviderCallRoot::as_str`] can borrow it.
+    call_root: String,
+}
+
+/// The prefix of every Owner-added Provider's Call Root.
+const OWNER_ROOT_PREFIX: &str = "coral.providers.";
+/// The Call Root of every Workspace's Built-in Provider.
+const BUILTIN_ROOT: &str = "coral.workspace";
+const MAX_SEGMENT_BYTES: usize = 128;
 
 impl ProviderNamespace {
-    /// Validates one ASCII JavaScript identifier segment.
+    /// Validates one Provider Namespace.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidInput`] for an invalid or unsafe path segment.
+    /// Returns [`Error::InvalidInput`] for an invalid or unsafe namespace.
     pub fn parse(value: &str) -> Result<Self, Error> {
-        let mut bytes = value.bytes();
-        let first = bytes.next();
-        let valid_first =
-            first.is_some_and(|byte| byte.is_ascii_alphabetic() || matches!(byte, b'_' | b'$'));
-        let valid_rest =
-            bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$'));
-        if !valid_first
-            || !valid_rest
-            || value.len() > 128
-            || coral_catalog::call_path_segment_is_reserved(value)
-        {
+        if !safe_segment(value) {
             return Err(Error::InvalidInput(
-                "Provider namespace must be a non-reserved safe ASCII JavaScript identifier of at most 128 bytes"
+                "Provider Namespace must be a non-reserved safe ASCII JavaScript identifier of at most 128 bytes"
                     .to_string(),
             ));
         }
-        Ok(Self(value.to_string()))
+        Ok(Self {
+            call_root: format!("{OWNER_ROOT_PREFIX}{value}"),
+        })
     }
 
-    /// Returns the immutable namespace segment.
+    /// Returns the namespace.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        &self.0
+        self.call_root
+            .strip_prefix(OWNER_ROOT_PREFIX)
+            .unwrap_or(&self.call_root)
     }
+}
+
+impl ProviderCallRoot {
+    /// Validates one Call Root: `coral.providers.<namespace>` or `coral.workspace`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] for any other value.
+    pub fn parse(value: &str) -> Result<Self, Error> {
+        if value == BUILTIN_ROOT {
+            return Ok(Self::Builtin);
+        }
+        value
+            .strip_prefix(OWNER_ROOT_PREFIX)
+            .and_then(|namespace| ProviderNamespace::parse(namespace).ok())
+            .map(Self::Owner)
+            .ok_or_else(|| {
+                Error::InvalidInput(
+                    "Provider Call Root must be coral.providers.<namespace>, with a non-reserved safe ASCII JavaScript identifier of at most 128 bytes, or coral.workspace"
+                        .to_string(),
+                )
+            })
+    }
+
+    /// Splits `call_path` into the Call Root that owns it and the
+    /// Operation-relative path under that root, if a valid root owns it.
+    #[must_use]
+    pub fn split_call_path(call_path: &str) -> Option<(Self, &str)> {
+        call_path
+            .match_indices('.')
+            .take(3)
+            .filter_map(|(end, _)| call_path.get(..end).and_then(|root| Self::parse(root).ok()))
+            .find_map(|root| {
+                root.relative_path(call_path)
+                    .map(|relative| (root, relative))
+            })
+    }
+
+    /// Returns the complete Call Root.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Owner(namespace) => &namespace.call_root,
+            Self::Builtin => BUILTIN_ROOT,
+        }
+    }
+
+    /// Returns the Call Root's last segment, such as `github` or `workspace`, for
+    /// search text and labels. No rule reads it.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        let root = self.as_str();
+        root.rsplit('.').next().unwrap_or(root)
+    }
+
+    /// Returns the Operation-relative path of a Call Path under this root, or
+    /// `None` when the path belongs elsewhere or has an empty or control segment.
+    fn relative_path<'a>(&self, call_path: &'a str) -> Option<&'a str> {
+        let relative = call_path.strip_prefix(self.as_str())?.strip_prefix('.')?;
+        let valid = !relative.chars().any(char::is_control)
+            && relative.split('.').all(|segment| !segment.is_empty());
+        valid.then_some(relative)
+    }
+}
+
+fn safe_segment(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    let first = bytes.next();
+    let valid_first =
+        first.is_some_and(|byte| byte.is_ascii_alphabetic() || matches!(byte, b'_' | b'$'));
+    let valid_rest = bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$'));
+    valid_first
+        && valid_rest
+        && value.len() <= MAX_SEGMENT_BYTES
+        && !coral_catalog::call_path_segment_is_reserved(value)
 }
 
 /// Credential selection configured for one Provider.
@@ -66,12 +159,12 @@ pub enum CredentialRoute {
     Fixed,
 }
 
-/// Workspace configuration that exposes one Provider under one namespace.
+/// Workspace configuration that exposes one Provider under one Call Root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderAccess {
     id: ProviderId,
     workspace_id: WorkspaceId,
-    namespace: ProviderNamespace,
+    call_root: ProviderCallRoot,
     credential_route: CredentialRoute,
     version: i64,
 }
@@ -80,14 +173,14 @@ impl ProviderAccess {
     pub(crate) const fn new(
         id: ProviderId,
         workspace_id: WorkspaceId,
-        namespace: ProviderNamespace,
+        call_root: ProviderCallRoot,
         credential_route: CredentialRoute,
         version: i64,
     ) -> Self {
         Self {
             id,
             workspace_id,
-            namespace,
+            call_root,
             credential_route,
             version,
         }
@@ -105,10 +198,10 @@ impl ProviderAccess {
         &self.workspace_id
     }
 
-    /// Returns the immutable Program namespace.
+    /// Returns the immutable Call Root.
     #[must_use]
-    pub const fn namespace(&self) -> &ProviderNamespace {
-        &self.namespace
+    pub const fn call_root(&self) -> &ProviderCallRoot {
+        &self.call_root
     }
 
     /// Returns the exact credential route.
@@ -127,7 +220,7 @@ impl ProviderAccess {
         Self::new(
             self.id.clone(),
             self.workspace_id.clone(),
-            self.namespace.clone(),
+            self.call_root.clone(),
             credential_route,
             version,
         )
@@ -164,25 +257,34 @@ pub(crate) async fn verify_retained_in_transaction(
     Ok(RetainedProviderVerification::Current)
 }
 
+/// Whether a Provider in the Workspace already uses `call_root`.
+pub(crate) async fn call_root_exists(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    call_root: &ProviderCallRoot,
+) -> Result<bool, Error> {
+    repository::call_root_exists(transaction, workspace_id, call_root).await
+}
+
 pub(super) enum PreparedProviderAccess {
     Ready(ProviderAccess),
-    NamespaceConflict,
+    CallRootConflict,
 }
 
 pub(super) async fn prepare(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     provider_id: ProviderId,
-    namespace: ProviderNamespace,
+    call_root: ProviderCallRoot,
     credential_route: CredentialRoute,
 ) -> Result<PreparedProviderAccess, Error> {
-    if repository::namespace_exists(transaction, workspace_id, &namespace).await? {
-        return Ok(PreparedProviderAccess::NamespaceConflict);
+    if repository::call_root_exists(transaction, workspace_id, &call_root).await? {
+        return Ok(PreparedProviderAccess::CallRootConflict);
     }
     Ok(PreparedProviderAccess::Ready(ProviderAccess::new(
         provider_id,
         workspace_id.clone(),
-        namespace,
+        call_root,
         credential_route,
         1,
     )))

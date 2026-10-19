@@ -44,16 +44,7 @@ impl Fixture {
     /// index's default when `None`.
     pub(super) async fn with_write_limit(write_limit: Option<std::time::Duration>) -> Self {
         // Search applies Operation access rules, so the schema includes Policy.
-        let db = TestDatabase::new(&coral_test_support::combined_migrator(&[
-            coral_workspace::migrator(),
-            coral_catalog::migrator(),
-            coral_provider::migrator(),
-            coral_functions::migrator(),
-            coral_policy::migrator(),
-            coral_search::migrator(),
-        ]))
-        .await
-        .unwrap();
+        let db = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let database = db.database();
         coral_search::prepare_storage(&database).await.unwrap();
         let workspaces = WorkspaceModule::new(database.clone());
@@ -65,7 +56,7 @@ impl Fixture {
             )
             .await
             .unwrap();
-        let providers = ProviderModule::new(
+        let providers = ProviderModule::with_running_catalog(
             coral_outbound::DestinationPolicy::default(),
             database.clone(),
             workspaces.clone(),

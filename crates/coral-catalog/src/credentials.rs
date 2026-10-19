@@ -200,6 +200,25 @@ pub enum CredentialSource {
 }
 
 impl AuthenticationConfiguration {
+    /// Whether any credential part is a non-empty literal value rather than a
+    /// Credential Field a person fills in.
+    #[must_use]
+    pub fn has_literal_values(&self) -> bool {
+        // An empty literal, such as a Basic password that is absent, carries no value.
+        let literal = |source: &CredentialSource| matches!(source, CredentialSource::Literal { value } if !value.is_empty());
+        match self {
+            Self::HeaderCredentials { headers } => headers.values().any(
+                |binding| matches!(binding, HeaderBinding::Literal { value } if !value.is_empty()),
+            ),
+            Self::BasicAuth { username, password } => literal(username) || literal(password),
+            Self::QueryCredentials { parameters } => parameters.values().any(literal),
+            Self::None
+            | Self::Bearer
+            | Self::OAuthDeviceCode { .. }
+            | Self::OAuthAuthorizationCode { .. } => false,
+        }
+    }
+
     /// Returns the requested tokens and their outgoing encoding for either OAuth flow.
     #[must_use]
     pub fn oauth_scopes(&self) -> Option<(&[String], OAuthScopeFormat)> {
@@ -563,6 +582,25 @@ impl OAuthClientPolicy {
         }
         Ok(())
     }
+}
+
+/// Whether `value` can name an OAuth endpoint: an absolute HTTP(S) URL with a
+/// host, and no credentials, fragment, or reserved OAuth parameter.
+#[must_use]
+pub fn oauth_endpoint_is_valid(value: &str) -> bool {
+    if value.len() > 2048 || value.chars().any(char::is_control) || value.contains('\\') {
+        return false;
+    }
+    url::Url::parse(value).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.fragment().is_none()
+            && !url
+                .query_pairs()
+                .any(|(name, _)| oauth_parameter_is_reserved(&name))
+    })
 }
 
 /// Protocol fields controlled by Coral, or unsuitable for browser navigation.

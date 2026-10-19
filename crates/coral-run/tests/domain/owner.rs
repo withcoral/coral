@@ -590,15 +590,13 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert!(deliver(effects).is_empty());
         assert!(matches!(
             answered(&mut second),
-            Some(Err(Error::InvocationRejected(
-                CoralFailure::RunOutputTooLarge
-            )))
+            Some(Err(Error::InvocationRejected(rejection)))
+                if rejection.failure() == CoralFailure::RunOutputTooLarge
         ));
         assert!(matches!(
             second_work.lock().expect("settle").as_ref(),
-            Some(Err(Error::InvocationRejected(
-                CoralFailure::RunOutputTooLarge
-            )))
+            Some(Err(Error::InvocationRejected(rejection)))
+                if rejection.failure() == CoralFailure::RunOutputTooLarge
         ));
         assert!(
             first_work.lock().expect("settle").is_none(),

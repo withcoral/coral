@@ -473,6 +473,7 @@ fn resolve_database_config(
 /// handle sends shutdown to the background task as a best-effort fallback, but
 /// does not wait for the task to finish.
 pub struct RunningServer {
+    providers: coral_provider::ProviderModule,
     accounts: Option<coral_provider::account::AccountModule>,
     runs: coral_run::RunModule,
     device_recovery: Option<JoinHandle<()>>,
@@ -591,6 +592,12 @@ impl RunningServer {
 }
 
 impl RunningServer {
+    /// Shares the bootstrap-owned Provider Module with companion runtime composition.
+    #[must_use]
+    pub fn providers(&self) -> coral_provider::ProviderModule {
+        self.providers.clone()
+    }
+
     /// Shares the bootstrap-owned credential subsystem with companion runtime composition.
     #[must_use]
     pub fn provider_accounts(&self) -> Option<coral_provider::account::AccountModule> {
@@ -671,8 +678,14 @@ pub(crate) async fn start_server(
     let readiness = EngineReadiness::from_database(Arc::clone(&database));
     let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
     let tasks = coral_task::TaskModule::new(database.clone(), workspaces.clone());
-    let providers =
-        coral_provider::ProviderModule::new(policy, database.clone(), workspaces.clone());
+    let builtin_catalog = coral_catalog::BuiltinCatalog::running()
+        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+    let providers = coral_provider::ProviderModule::new(
+        policy,
+        database.clone(),
+        workspaces.clone(),
+        builtin_catalog,
+    );
     let accounts = vault.map(|vault| {
         let accounts = coral_provider::account::AccountModule::new(providers.clone(), vault)
             .with_client_bootstrap_policy(client_bootstrap_policy);
@@ -681,9 +694,45 @@ pub(crate) async fn start_server(
             None => accounts,
         }
     });
-    let mut runs =
-        coral_run::RunModule::new(policy, database.clone(), workspaces.clone(), runtime_limits)
-            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+    // State initialization already ran the search checks and stream. The
+    // reconcile task's first pass runs in the background, so neither boot nor
+    // a request waits for it.
+    let search_index = coral_search::SearchIndex::new(Arc::clone(&database), reconcile_interval);
+    let provider_workflow = coral_administration::ProviderWorkflow::new(
+        database.clone(),
+        providers.clone(),
+        search_index.clone(),
+    );
+    // Every Workspace has a Built-in Provider with this process's catalog
+    // before the process takes requests. A rollback moves Workspaces back the
+    // same way.
+    let booted_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
+        .ok_or_else(|| AppError::FailedPrecondition("system clock is out of range".into()))?;
+    provider_workflow
+        .install_missing_builtins(booted_at)
+        .await
+        .map_err(|error| {
+            AppError::FailedPrecondition(format!("Built-in Provider install failed: {error}"))
+        })?;
+    provider_workflow
+        .update_builtin_catalogs(booted_at)
+        .await
+        .map_err(|error| {
+            AppError::FailedPrecondition(format!("Built-in Provider update failed: {error}"))
+        })?;
+    // createProvider publishes through the same workflow as Reef.
+    let mut runs = coral_run::RunModule::new(
+        policy,
+        database.clone(),
+        workspaces.clone(),
+        providers.clone(),
+        runtime_limits,
+    )
+    .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
+    .with_provider_publisher(Arc::new(provider_workflow.clone()));
     if let Some(accounts) = &accounts {
         runs = runs.with_accounts(accounts.clone());
     }
@@ -691,10 +740,6 @@ pub(crate) async fn start_server(
         coral_functions::SavedFunctionInspection::new(database.clone(), workspaces.clone());
     let saved_function_deletion =
         coral_functions::SavedFunctionDeletion::new(database.clone(), workspaces.clone());
-    // State initialization already ran the search checks and stream. The
-    // reconcile task's first pass runs in the background, so neither boot nor
-    // a request waits for it.
-    let search_index = coral_search::SearchIndex::new(Arc::clone(&database), reconcile_interval);
     let mcp_origin = Arc::new(std::sync::OnceLock::new());
     let routes = coral_grpc::routes(
         coral_grpc::Dependencies {
@@ -711,13 +756,15 @@ pub(crate) async fn start_server(
                 database.clone(),
                 workspaces.clone(),
             ),
-            provider_workflow: coral_administration::ProviderWorkflow::new(
+            provider_workflow,
+            workspace_workflow: coral_administration::WorkspaceWorkflow::new(
                 database.clone(),
+                workspaces.clone(),
                 providers.clone(),
                 search_index.clone(),
             ),
             workspaces,
-            providers,
+            providers: providers.clone(),
             accounts: accounts.clone(),
             tasks,
             saved_functions,
@@ -760,6 +807,7 @@ pub(crate) async fn start_server(
     });
     let search_reconcile = search_index.spawn_reconcile_task();
     Ok(RunningServer {
+        providers,
         device_recovery,
         search_index,
         search_reconcile,

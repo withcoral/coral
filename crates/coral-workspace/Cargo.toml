@@ -9,6 +9,11 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# The test-only Workspace creation that adds no Built-in Provider.
+# Dev-dependencies enable this; production crates never do.
+test-fixtures = []
+
 [dependencies]
 base64.workspace = true
 ring.workspace = true

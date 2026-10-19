@@ -545,7 +545,7 @@ async fn publish_http(
     namespace: &str,
     url: &str,
 ) -> coral_provider::ProviderId {
-    let providers = coral_provider::ProviderModule::new(
+    let providers = coral_provider::ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         f.database.database(),

@@ -10,19 +10,22 @@ publish = false
 workspace = true
 
 [dependencies]
+async-trait.workspace = true
 coral-db.workspace = true
 coral-workspace.workspace = true
 coral-provider.workspace = true
 coral-functions.workspace = true
 coral-search.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
-coral-policy.workspace = true
+coral-workspace = { workspace = true, features = ["test-fixtures"] }
 coral-provider = { workspace = true, features = ["test-fixtures"] }
 coral-search = { workspace = true, features = ["test-fixtures"] }
 coral-test-support.workspace = true
-coral-catalog.workspace = true
+coral-catalog = { workspace = true, features = ["test-fixtures"] }
+sea-query.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
 sqlx.workspace = true

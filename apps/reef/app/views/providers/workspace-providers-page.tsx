@@ -49,7 +49,12 @@ import type {
   WorkspaceProvidersPageProps,
 } from './types'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
+import coralMarkDark from './coral-mark-dark.svg'
+import coralMarkLight from './coral-mark-light.svg'
 import * as styles from './providers.css'
+
+/** Coral's own mark, which stands for the Built-in Provider. */
+const CORAL_ICONS: RecipeIcons = { light: coralMarkLight, dark: coralMarkDark }
 
 const bulkPolicyOptions = policyOptions.map(({ icon, ...option }) => ({
   ...option,
@@ -156,9 +161,15 @@ function WorkspaceProvidersContent({
   const sortedProviders = useMemo(() => sortProviders(installed), [installed])
   // A provider added from a recipe usually keeps the recipe's id as its
   // namespace, so that recipe's logo stands for it; otherwise a lettermark.
-  const providerIcons = useMemo(
+  // Coral's mark stands for the Built-in Provider.
+  const recipeIcons = useMemo(
     () => new Map(recipes.flatMap((recipe) => (recipe.icons ? [[recipe.id, recipe.icons]] : []))),
     [recipes],
+  )
+  const providerIcons = useCallback(
+    (provider: ProviderView) =>
+      provider.builtin ? CORAL_ICONS : recipeIcons.get(provider.namespace),
+    [recipeIcons],
   )
   const entry = {
     form,
@@ -178,7 +189,6 @@ function WorkspaceProvidersContent({
   const operation = selected?.operations.find((o) => o.relativePath === selectedOperationPath)
   const empty = sortedProviders.length === 0
   const addButton = canChange ? <AddProviderLauncher {...entry} /> : null
-  const headerAction = empty ? null : addButton
   // The field echoes each keystroke at once; the rail and the table, which
   // rebuilds thousands of rows, follow with the deferred value when React has time.
   const deferredRailFilter = useDeferredValue(railFilter)
@@ -190,7 +200,8 @@ function WorkspaceProvidersContent({
     <PageLayout
       variant="split"
       breadcrumbs={trail([], 'Providers')}
-      actions={headerAction}
+      titled={!empty}
+      compact
       header={
         <>
           {!owner && (
@@ -224,6 +235,7 @@ function WorkspaceProvidersContent({
         </div>
       ) : (
         <ProvidersTableScreen
+          addButton={canChange && <AddProviderLauncher {...entry} compact />}
           canChange={canChange}
           filteredProviders={filteredProviders}
           form={form}
@@ -249,9 +261,12 @@ function caseFolded(value: string) {
   return value.toLocaleLowerCase()
 }
 
+// Coral's Built-in Provider leads; the providers you add follow by label.
 function sortProviders(providers: ProviderView[]) {
-  return providers.toSorted((a, b) =>
-    caseFolded(providerLabel(a)).localeCompare(caseFolded(providerLabel(b))),
+  return providers.toSorted(
+    (a, b) =>
+      Number(b.builtin) - Number(a.builtin) ||
+      caseFolded(providerLabel(a)).localeCompare(caseFolded(providerLabel(b))),
   )
 }
 
@@ -368,6 +383,7 @@ const tableRowHeight = (row: TableRowItem) => {
 }
 
 function ProvidersTableScreen({
+  addButton,
   canChange,
   filteredProviders,
   form,
@@ -379,12 +395,14 @@ function ProvidersTableScreen({
   routedProvider,
   setRailFilter,
 }: {
+  /** Adds a provider, beside the page's title. */
+  addButton: ReactNode
   canChange: boolean
   filteredProviders: ProviderView[]
   form: FormContext
   providers: ProviderView[]
   /** Recipe logos by namespace, for providers that kept the recipe's id. */
-  providerIcons: Map<string, RecipeIcons>
+  providerIcons: (provider: ProviderView) => RecipeIcons | undefined
   railFilter: string
   selectedProvider: ProviderView | null
   selectedOperation: OperationView | null
@@ -731,11 +749,7 @@ function ProvidersTableScreen({
                     blockers={provider.blockers}
                     personalAccountAction={provider.personalAccountAction}
                   />
-                  <Logo
-                    name={providerLabel(provider)}
-                    icons={providerIcons.get(provider.namespace)}
-                    size="20"
-                  />
+                  <Logo name={providerLabel(provider)} icons={providerIcons(provider)} size="20" />
                 </>
               }
               name={providerLabel(provider)}
@@ -751,17 +765,20 @@ function ProvidersTableScreen({
                       <Button.Icon name="ListFilter" />
                     </Button.Container>
                   </Tooltip>
-                  <Button.Container
-                    as={Link}
-                    id={providerSettingsDomId(provider.id)}
-                    to={`${provider.path}/settings`}
-                    preventScrollReset
-                    variant="bare"
-                    size="22"
-                    ariaLabel={`${providerLabel(provider)} settings`}
-                  >
-                    <Button.Icon name="Settings" />
-                  </Button.Container>
+                  {/* Coral has no settings: nobody renames, reconfigures, or removes it. */}
+                  {!provider.builtin && (
+                    <Button.Container
+                      as={Link}
+                      id={providerSettingsDomId(provider.id)}
+                      to={`${provider.path}/settings`}
+                      preventScrollReset
+                      variant="bare"
+                      size="22"
+                      ariaLabel={`${providerLabel(provider)} settings`}
+                    >
+                      <Button.Icon name="Settings" />
+                    </Button.Container>
+                  )}
                 </>
               }
             />
@@ -770,6 +787,8 @@ function ProvidersTableScreen({
       }
     >
       <CatalogToolbar
+        title="Providers"
+        action={addButton}
         filter={{
           id: OPERATION_FILTER_ID,
           label: 'Filter operations',
@@ -1021,7 +1040,7 @@ const TableSections = memo(function TableSections({
   /** Records an operation the reader opened in place, so its route does not scroll the table. */
   markRevealed: (provider: string, operation: string) => void
   policyFilter: PolicyFilter['value'] | null
-  providerIcons: Map<string, RecipeIcons>
+  providerIcons: (provider: ProviderView) => RecipeIcons | undefined
   /** The operation filter, bolded where it matches a name. */
   query: FilterQuery
   sections: ProviderSection[]
@@ -1054,7 +1073,7 @@ const TableSections = memo(function TableSections({
               />
               <Logo
                 name={providerLabel(section.provider)}
-                icons={providerIcons.get(section.provider.namespace)}
+                icons={providerIcons(section.provider)}
                 size="20"
               />
               <Typography.BodyStrong as="span">

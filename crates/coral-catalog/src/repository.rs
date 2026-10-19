@@ -6,9 +6,10 @@ use sqlx::FromRow;
 mod tests;
 
 use crate::{
-    CatalogDiagnostic, Error, ExecutionBinding, HttpMethod, MaterializedOperation,
-    OperationAvailability, OperationKey, PreparedProviderCatalog, ProviderGenerationId,
-    ProviderSetupInput, ProviderSetupInputDigest, ProviderSetupInputKind, SchemaGraph, SchemaId,
+    BuiltinCatalogIdentity, CatalogDiagnostic, Error, ExecutionBinding, HttpMethod,
+    MaterializedOperation, OperationAvailability, OperationKey, PreparedProviderCatalog,
+    ProviderGenerationId, ProviderSetupInput, ProviderSetupInputDigest, ProviderSetupInputKind,
+    SchemaGraph, SchemaId,
 };
 
 #[derive(Iden)]
@@ -58,6 +59,70 @@ enum MaterializedOperations {
     TypeReferencesJson,
 }
 
+const BUILTIN_INPUT_KIND: &str = "builtin";
+
+/// The exact input one Generation pins: a Setup's input, or the identity of
+/// the Built-in Provider's Coral-defined catalog.
+#[derive(Clone, Copy)]
+pub(super) enum GenerationInput<'a> {
+    Setup(&'a ProviderSetupInput),
+    Builtin(&'a BuiltinCatalogIdentity),
+}
+
+impl<'a> GenerationInput<'a> {
+    const fn kind(self) -> &'static str {
+        match self {
+            Self::Setup(input) => input.kind().as_str(),
+            Self::Builtin(_) => BUILTIN_INPUT_KIND,
+        }
+    }
+
+    fn pinned(self) -> &'a str {
+        match self {
+            Self::Setup(input) => input.as_str(),
+            Self::Builtin(identity) => identity.as_str(),
+        }
+    }
+
+    fn configuration(self) -> Option<&'a crate::ProviderConfiguration> {
+        match self {
+            Self::Setup(input) => input.configuration(),
+            Self::Builtin(_) => None,
+        }
+    }
+}
+
+/// A stored Generation's decoded pinned input.
+enum StoredGenerationInput {
+    Setup(ProviderSetupInput),
+    Builtin(BuiltinCatalogIdentity),
+}
+
+impl StoredGenerationInput {
+    fn from_storage(kind: &str, pinned: &str) -> Result<Self, Error> {
+        if kind == BUILTIN_INPUT_KIND {
+            return BuiltinCatalogIdentity::parse(pinned)
+                .map(Self::Builtin)
+                .ok_or_else(|| {
+                    Error::CorruptData(
+                        "built-in Generation pins a malformed catalog identity".to_string(),
+                    )
+                });
+        }
+        ProviderSetupInput::from_storage(ProviderSetupInputKind::from_storage(kind)?, pinned)
+            .map(Self::Setup)
+    }
+
+    fn digest(&self) -> ProviderSetupInputDigest {
+        match self {
+            Self::Setup(input) => ProviderSetupInputDigest::of_setup_input(input),
+            Self::Builtin(identity) => {
+                ProviderSetupInputDigest::of_bytes(identity.as_str().as_bytes())
+            }
+        }
+    }
+}
+
 #[derive(Iden)]
 enum ProviderGenerationTypes {
     Table,
@@ -90,8 +155,7 @@ impl GenerationRow {
         let id = ProviderGenerationId::parse(&self.id).map_err(|_error| {
             Error::CorruptData("Provider Generation has invalid identity".to_string())
         })?;
-        let input_kind = ProviderSetupInputKind::from_storage(&self.input_kind)?;
-        let setup_input = ProviderSetupInput::from_storage(input_kind, &self.pinned_input)
+        let pinned = StoredGenerationInput::from_storage(&self.input_kind, &self.pinned_input)
             .map_err(|_error| {
                 Error::CorruptData("Provider Generation has invalid pinned input".to_string())
             })?;
@@ -102,7 +166,7 @@ impl GenerationRow {
                 "Provider Generation has incomplete credential or authoring material".to_string(),
             ));
         }
-        if ProviderSetupInputDigest::of_setup_input(&setup_input) != input_digest {
+        if pinned.digest() != input_digest {
             return Err(Error::CorruptData(
                 "Provider Generation pinned input does not match its digest".to_string(),
             ));
@@ -376,6 +440,19 @@ impl OperationRow {
                 }
                 self.definition_json
             }
+            ExecutionBinding::Builtin(binding) => {
+                if self.method.is_some() || self.path.is_some() || self.server_url.is_some() {
+                    return Err(Error::CorruptData(
+                        "built-in Operation has an HTTP index".to_string(),
+                    ));
+                }
+                if binding.input_schema() != &input_schema || binding.operation_key() != &key {
+                    return Err(Error::CorruptData(
+                        "built-in Operation binding disagrees with its index".to_string(),
+                    ));
+                }
+                self.definition_json
+            }
         };
         Ok(MaterializedOperation::new(
             key,
@@ -398,7 +475,7 @@ impl OperationRow {
 
 pub(super) async fn publish_generation(
     transaction: &mut Transaction<'_>,
-    setup_input: &ProviderSetupInput,
+    input: GenerationInput<'_>,
     input_digest: &ProviderSetupInputDigest,
     prepared: PreparedProviderCatalog,
     materializer_version: &str,
@@ -410,7 +487,7 @@ pub(super) async fn publish_generation(
     insert_generation(
         transaction,
         &generation_id,
-        setup_input,
+        input,
         input_digest,
         &contract,
         &parts.schema_graph_json,
@@ -516,7 +593,7 @@ pub(super) async fn load_shared_types(
 async fn insert_generation(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-    setup_input: &ProviderSetupInput,
+    input: GenerationInput<'_>,
     input_digest: &ProviderSetupInputDigest,
     credential_contract: &str,
     schema_graph_json: &str,
@@ -540,11 +617,11 @@ async fn insert_generation(
         ])
         .values_panic([
             Expr::val(generation_id.to_string()),
-            Expr::val(setup_input.kind().as_str()),
-            Expr::val(setup_input.as_str()),
+            Expr::val(input.kind()),
+            Expr::val(input.pinned()),
             Expr::val(input_digest.as_str()),
             Expr::val(
-                setup_input
+                input
                     .configuration()
                     .map(serde_json::to_string)
                     .transpose()
@@ -648,10 +725,11 @@ async fn insert_operation(
     Ok(())
 }
 
+/// Reads the Setup input kind a Generation pins; `None` for a built-in Generation.
 pub(super) async fn load_setup_input_kind(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-) -> Result<ProviderSetupInputKind, Error> {
+) -> Result<Option<ProviderSetupInputKind>, Error> {
     let row: Option<(String,)> = transaction
         .fetch_optional(
             Query::select()
@@ -663,20 +741,63 @@ pub(super) async fn load_setup_input_kind(
         .await?;
     let (kind,) =
         row.ok_or_else(|| Error::CorruptData("Provider has no active Generation".to_string()))?;
-    ProviderSetupInputKind::from_storage(&kind)
+    if kind == BUILTIN_INPUT_KIND {
+        return Ok(None);
+    }
+    ProviderSetupInputKind::from_storage(&kind).map(Some)
 }
 
+/// Reads the exact Setup input a Generation pins; `None` for a built-in Generation.
 pub(super) async fn load_setup_input(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-) -> Result<ProviderSetupInput, Error> {
+) -> Result<Option<ProviderSetupInput>, Error> {
     let row = load_generation(transaction, generation_id).await?;
+    if row.input_kind == BUILTIN_INPUT_KIND {
+        row.decode()?;
+        return Ok(None);
+    }
     let input = ProviderSetupInput::from_storage(
         ProviderSetupInputKind::from_storage(&row.input_kind)?,
         &row.pinned_input,
     )?;
     row.decode()?;
-    Ok(input)
+    Ok(Some(input))
+}
+
+/// Reads the catalog identity a built-in Generation pins, checked against
+/// the Generation's input digest.
+pub(super) async fn load_builtin_identity(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+) -> Result<BuiltinCatalogIdentity, Error> {
+    let row: Option<(String, String, String)> = transaction
+        .fetch_optional(
+            Query::select()
+                .columns([
+                    ProviderGenerations::InputKind,
+                    ProviderGenerations::PinnedInput,
+                    ProviderGenerations::InputDigest,
+                ])
+                .from(ProviderGenerations::Table)
+                .and_where(Expr::col(ProviderGenerations::Id).eq(generation_id.to_string()))
+                .to_owned(),
+        )
+        .await?;
+    let (kind, pinned, digest) =
+        row.ok_or_else(|| Error::CorruptData("Provider has no active Generation".to_string()))?;
+    let pinned = StoredGenerationInput::from_storage(&kind, &pinned)?;
+    if pinned.digest() != ProviderSetupInputDigest::parse(digest)? {
+        return Err(Error::CorruptData(
+            "Provider Generation pinned input does not match its digest".to_string(),
+        ));
+    }
+    match pinned {
+        StoredGenerationInput::Builtin(identity) => Ok(identity),
+        StoredGenerationInput::Setup(_) => Err(Error::CorruptData(
+            "the Built-in Provider's Generation pins a Setup input".to_string(),
+        )),
+    }
 }
 
 async fn load_generation(

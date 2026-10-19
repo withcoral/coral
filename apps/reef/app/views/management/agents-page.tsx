@@ -59,11 +59,7 @@ export function AgentsPage({ workspace: w, agents, nextPage, form, result }: Age
     </Button.TextButton>
   )
   return (
-    <ManagementLayout
-      breadcrumbs={trail([], 'Agents')}
-      actions={agents.length > 0 ? createButton : undefined}
-      bounded
-    >
+    <ManagementLayout breadcrumbs={trail([], 'Agents')} titled compact bounded>
       <ActionDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
@@ -91,6 +87,19 @@ export function AgentsPage({ workspace: w, agents, nextPage, form, result }: Age
       {notice?.error && <ActionNotice result={notice} />}
       {/* The empty state sits in the table, so the page keeps its shape at the first agent. */}
       <CatalogToolbar
+        title="Agents"
+        action={
+          agents.length > 0 && (
+            <Button.IconButton
+              ref={createTrigger}
+              name="Plus"
+              tooltipText="Create agent"
+              variant="bare"
+              disabled={!active}
+              onClick={() => setCreateOpen(true)}
+            />
+          )
+        }
         filter={{
           id: FILTER_ID,
           label: 'Filter agents',
@@ -141,13 +150,13 @@ export function AgentsPage({ workspace: w, agents, nextPage, form, result }: Age
         <Table.Body>
           {shown.map((a) => (
             <Table.Row key={a.name} to={a.path}>
-              <Table.Cell wrap>
+              <Table.Cell title={a.displayName}>
                 <Table.RowLink to={a.path}>{a.displayName}</Table.RowLink>
               </Table.Cell>
-              <Table.Cell wrap>
+              <Table.Cell>
                 <Status blockers={a.accessBlockers} />
               </Table.Cell>
-              <Table.Cell wrap>
+              <Table.Cell>
                 <Person person={a.creator} currentUser={w.currentUser} compact />
               </Table.Cell>
               <Table.Cell actions>

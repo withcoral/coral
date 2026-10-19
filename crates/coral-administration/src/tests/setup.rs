@@ -48,7 +48,7 @@ async fn removal_scrubs_configuration_only_setup_secrets_and_prevents_reuse_afte
         )
         .await
         .unwrap();
-    let providers = ProviderModule::new(
+    let providers = ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         database.clone(),

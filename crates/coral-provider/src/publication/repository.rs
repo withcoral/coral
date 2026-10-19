@@ -268,7 +268,7 @@ impl PublicationRow {
                 let access = ProviderAccess::new(
                     provider_id,
                     request.workspace_id().clone(),
-                    request.namespace().clone(),
+                    request.call_root(),
                     request.credential_route(),
                     version,
                 );

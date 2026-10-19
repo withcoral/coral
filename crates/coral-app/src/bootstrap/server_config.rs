@@ -829,7 +829,7 @@ mod tests {
     /// check instead of being refused `invalid_target`.
     async fn accepted_resources(auth: super::SessionAuthSettings, resources: &[&str]) -> Vec<bool> {
         const CALLBACK: &str = "https://client.example.test/callback";
-        let fixture = coral_test_support::TestDatabase::new(coral_auth::migrator())
+        let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
             .await
             .expect("client database");
         let server = auth

@@ -150,21 +150,18 @@ test('Opening an operation drawer preserves the table selection', async (context
         actor.accessToken,
         `Drawer selection ${crypto.randomUUID()}`,
       )
-      await publishWorkspaceProvider(
+      const publication = await publishWorkspaceProvider(
         actor.accessToken,
         `workspaces/${workspace}`,
         openApiDocument('Drawer selection', { first: {}, second: {}, third: {} }),
         'drawerselection',
       )
-      await page.goto(`/workspaces/${workspace}/providers`)
-      await table.waitFor()
-      // The base URL selects the first provider implicitly; the row form action
-      // carries the explicit provider path the drawer routes are nested under.
-      const action = await table.locator('form').first().getAttribute('action')
-      if (!action) throw new Error('Missing provider action')
-      provider = action
+      // The drawer routes nest under the explicit provider path.
+      provider = `/${publication.provider}`
       await page.goto(provider)
       await table.waitFor()
+      // Leave the Built-in Provider's operations out of every selection.
+      await page.getByRole('searchbox', { name: 'Filter providers' }).fill('Drawer selection')
       await checkbox('first').check()
       await checkbox('second').check()
       expect(await checked()).toBe(2)

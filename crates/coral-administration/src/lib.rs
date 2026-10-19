@@ -5,6 +5,9 @@
 //! [`ProviderWorkflow`] owns the transaction for Provider publication, removal,
 //! and rename. Provider prepares and writes; the workflow begins and commits.
 //!
+//! [`WorkspaceWorkflow`] owns the transaction that creates a Workspace together
+//! with its Built-in Provider. It is the only production Workspace creation path.
+//!
 //! [`AccessLifecycleModule`] removes Workspace Membership (including self-service
 //! leave), Organization Membership, or an exact Workspace-owned Agent. Callers
 //! submit one command with its change context and target, not a cleanup scope list.
@@ -24,8 +27,10 @@
 //! compiler, or performs network revocation. Current authority at the commit is
 //! sufficient to fence later dispatch; no post-commit cleanup is required.
 mod providers;
+mod workspaces;
 
 pub use providers::ProviderWorkflow;
+pub use workspaces::WorkspaceWorkflow;
 
 use coral_db::{Database, Transaction};
 use coral_workspace::{

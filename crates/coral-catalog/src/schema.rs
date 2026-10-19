@@ -718,6 +718,18 @@ impl ProjectionOptions {
         }
     }
 
+    /// Coral names its own schemas, so their names need no disambiguation.
+    pub(super) const fn builtin() -> Self {
+        Self {
+            honor_property_access: false,
+            binary_string_type: None,
+            declared_type_names: &[],
+            disambiguation_source_prefix: None,
+            widen_unguarded_reference_cycles: false,
+            use_recursive_map_index_signatures: false,
+        }
+    }
+
     pub(super) const fn mcp() -> Self {
         Self {
             honor_property_access: false,

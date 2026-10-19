@@ -179,7 +179,7 @@ test.for(['complete', 'deny'] as const)(
               expect(
                 (await api.providers.listProviders({ parent: `workspaces/${workspace}` }))
                   .providers,
-              ).toHaveLength(0)
+              ).toHaveLength(1)
               await page.getByRole('button', { name: 'Add provider', exact: true }).click()
             }
             await waitForPublication(page)

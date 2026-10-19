@@ -116,17 +116,7 @@ impl Fixture {
         reason = "composes the real domain graph and authenticated test principals once"
     )]
     async fn with_session_auth(enabled: bool) -> Self {
-        let migrator = coral_test_support::combined_migrator(&[
-            coral_workspace::migrator(),
-            coral_task::migrator(),
-            coral_run::migrator(),
-            coral_catalog::migrator(),
-            coral_provider::migrator(),
-            coral_policy::migrator(),
-            coral_functions::migrator(),
-            coral_search::migrator(),
-        ]);
-        let fixture = TestDatabase::new(&migrator).await.unwrap();
+        let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let database = fixture.database();
         coral_search::prepare_storage(&database).await.unwrap();
         let issuer = SessionTokenIssuer::new(
@@ -172,7 +162,7 @@ impl Fixture {
         let vault_dir = tempfile::tempdir().unwrap();
         let vault =
             coral_credentials::CredentialVault::open(&vault_dir.path().join("key")).unwrap();
-        let providers = coral_provider::ProviderModule::new(
+        let providers = coral_provider::ProviderModule::with_running_catalog(
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             database.clone(),
             workspaces.clone(),
@@ -185,6 +175,7 @@ impl Fixture {
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             database.clone(),
             workspaces.clone(),
+            providers.clone(),
             coral_run::RuntimeLimits::default(),
         )
         .unwrap()
@@ -220,6 +211,12 @@ impl Fixture {
                 ),
                 provider_workflow: coral_administration::ProviderWorkflow::new(
                     database.clone(),
+                    providers.clone(),
+                    search_index.clone(),
+                ),
+                workspace_workflow: coral_administration::WorkspaceWorkflow::new(
+                    database.clone(),
+                    workspaces.clone(),
                     providers.clone(),
                     search_index.clone(),
                 ),

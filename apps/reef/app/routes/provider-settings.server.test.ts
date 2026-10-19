@@ -124,6 +124,22 @@ it('does not read the source for a member', async () => {
   expect(data.source).toBeUndefined()
 })
 
+// Catches: the Built-in Provider's settings reporting a failed source read.
+// Coral defines its catalog, so it has no source to read.
+it('does not read the source of the built-in provider', async () => {
+  responses['providers.getProvider'] = () =>
+    provider({
+      displayName: 'Coral',
+      namespace: '',
+      callRoot: 'coral.workspace',
+      credentialRoute: { kind: CredentialRoute_Kind.NONE },
+    })
+  signedInAs('owner')
+  const data = await load()
+  expect(calls).not.toContain('providers.getProviderSource')
+  expect(data.source).toBeUndefined()
+})
+
 // Catches: the raw source URL, with its credentials, reaching the browser.
 it('gives owners the source kind and a redacted URL', async () => {
   signedInAs('owner', 'archived')

@@ -333,6 +333,8 @@ impl ProviderWithActiveGenerationRow {
         let display_name = ProviderDisplayName::parse(&self.display_name).map_err(|_error| {
             Error::CorruptData("Provider has invalid display metadata".to_string())
         })?;
+        let call_root = crate::ProviderCallRoot::parse(&self.namespace)
+            .map_err(|_error| Error::CorruptData("Provider has invalid Call Root".to_string()))?;
         let generation_id =
             ProviderGenerationId::parse(&self.active_generation_id).map_err(|_error| {
                 Error::CorruptData("Provider has invalid active Generation".to_string())
@@ -343,7 +345,7 @@ impl ProviderWithActiveGenerationRow {
                 crate::ProviderAccess::new(
                     id,
                     owner,
-                    crate::ProviderNamespace::parse(&self.namespace)?,
+                    call_root,
                     crate::CredentialRoute::from_storage_str(&self.credential_route)?,
                     self.account_setting_version,
                 ),
@@ -368,6 +370,7 @@ impl LifecycleAction {
             Self::SetupCanceled => "provider_setup.canceled",
             Self::SetupExpired => "provider_setup.expired",
             Self::PublicationCompleted => "provider_publication.completed",
+            Self::BuiltinProviderInstalled => "provider.builtin_installed",
             Self::ProviderDisabled => "provider.disabled",
             Self::ProviderUpdated => "provider.updated",
             Self::ProviderRestored => "provider.restored",
@@ -396,6 +399,7 @@ impl LifecycleAction {
             "provider_setup.canceled" => Ok(Self::SetupCanceled),
             "provider_setup.expired" => Ok(Self::SetupExpired),
             "provider_publication.completed" => Ok(Self::PublicationCompleted),
+            "provider.builtin_installed" => Ok(Self::BuiltinProviderInstalled),
             "provider.disabled" => Ok(Self::ProviderDisabled),
             "provider.updated" => Ok(Self::ProviderUpdated),
             "provider.restored" => Ok(Self::ProviderRestored),
@@ -863,21 +867,40 @@ pub(super) async fn management_providers(
 pub(super) async fn active_generations(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<crate::ActiveGeneration>, Error> {
-    let rows: Vec<(Option<String>, String, String, String)> = transaction
-        .fetch_all(
-            Query::select()
-                .columns([
-                    ProviderRecords::WorkspaceId,
-                    ProviderRecords::Id,
-                    ProviderRecords::ActiveGenerationId,
-                    ProviderRecords::DisplayName,
-                ])
-                .from(ProviderRecords::Table)
-                .order_by(ProviderRecords::WorkspaceId, Order::Asc)
-                .order_by(ProviderRecords::Id, Order::Asc)
-                .to_owned(),
-        )
-        .await?;
+    fetch_active_generations(transaction, active_generation_query()).await
+}
+
+/// Reads every Workspace's Built-in Provider's active Generation, in any
+/// state and in any Workspace state.
+pub(super) async fn builtin_active_generations(
+    transaction: &mut Transaction<'_>,
+) -> Result<Vec<crate::ActiveGeneration>, Error> {
+    let mut query = active_generation_query();
+    query.and_where(
+        Expr::col(ProviderRecords::Namespace).eq(crate::ProviderCallRoot::Builtin.as_str()),
+    );
+    fetch_active_generations(transaction, query).await
+}
+
+fn active_generation_query() -> sea_query::SelectStatement {
+    Query::select()
+        .columns([
+            ProviderRecords::WorkspaceId,
+            ProviderRecords::Id,
+            ProviderRecords::ActiveGenerationId,
+            ProviderRecords::DisplayName,
+        ])
+        .from(ProviderRecords::Table)
+        .order_by(ProviderRecords::WorkspaceId, Order::Asc)
+        .order_by(ProviderRecords::Id, Order::Asc)
+        .to_owned()
+}
+
+async fn fetch_active_generations(
+    transaction: &mut Transaction<'_>,
+    query: sea_query::SelectStatement,
+) -> Result<Vec<crate::ActiveGeneration>, Error> {
+    let rows: Vec<(Option<String>, String, String, String)> = transaction.fetch_all(query).await?;
     rows.into_iter()
         .map(|(workspace_id, provider_id, generation_id, display_name)| {
             Ok(crate::ActiveGeneration::new(
@@ -995,16 +1018,56 @@ pub(super) async fn activate_generation(
     replacement_generation_id: &ProviderGenerationId,
     display_name: &ProviderDisplayName,
 ) -> Result<bool, Error> {
-    let statement = Query::update()
+    let mut statement = activation(
+        owner,
+        provider_id,
+        expected_generation_id,
+        replacement_generation_id,
+    );
+    statement
+        .value(
+            ProviderRecords::DisplayName,
+            Expr::val(display_name.as_str()),
+        )
+        .and_where(Expr::col(ProviderRecords::State).eq(ProviderState::Active.as_storage_str()));
+    Ok(transaction.execute(statement).await? == 1)
+}
+
+/// Activates `replacement_generation_id` when the Workspace's Built-in
+/// Provider still has `expected_generation_id` active, whatever its state.
+pub(super) async fn activate_builtin_generation(
+    transaction: &mut Transaction<'_>,
+    owner: &WorkspaceId,
+    provider_id: &ProviderId,
+    expected_generation_id: &ProviderGenerationId,
+    replacement_generation_id: &ProviderGenerationId,
+) -> Result<bool, Error> {
+    let mut statement = activation(
+        owner,
+        provider_id,
+        expected_generation_id,
+        replacement_generation_id,
+    );
+    statement.and_where(
+        Expr::col(ProviderRecords::Namespace).eq(crate::ProviderCallRoot::Builtin.as_str()),
+    );
+    Ok(transaction.execute(statement).await? == 1)
+}
+
+/// Replaces the Provider's active Generation when it is still the expected
+/// one, and bumps its resource version.
+fn activation(
+    owner: &WorkspaceId,
+    provider_id: &ProviderId,
+    expected_generation_id: &ProviderGenerationId,
+    replacement_generation_id: &ProviderGenerationId,
+) -> sea_query::UpdateStatement {
+    Query::update()
         .table(ProviderRecords::Table)
         .values([
             (
                 ProviderRecords::ActiveGenerationId,
                 Expr::val(replacement_generation_id.to_string()),
-            ),
-            (
-                ProviderRecords::DisplayName,
-                Expr::val(display_name.as_str()),
             ),
             (
                 ProviderRecords::ResourceVersion,
@@ -1013,12 +1076,10 @@ pub(super) async fn activate_generation(
         ])
         .and_where(exact_provider_owner(owner))
         .and_where(Expr::col(ProviderRecords::Id).eq(provider_id.to_string()))
-        .and_where(Expr::col(ProviderRecords::State).eq(ProviderState::Active.as_storage_str()))
         .and_where(
             Expr::col(ProviderRecords::ActiveGenerationId).eq(expected_generation_id.to_string()),
         )
-        .to_owned();
-    Ok(transaction.execute(statement).await? == 1)
+        .to_owned()
 }
 
 pub(super) async fn update_provider_state(
@@ -1120,7 +1181,7 @@ pub(super) async fn insert_provider(
             Expr::val(provider.id().to_string()),
             Expr::val(Some(ToString::to_string(provider.owner()))),
             Expr::val(provider.display_name()),
-            Expr::val(provider.namespace().as_str()),
+            Expr::val(provider.call_root().as_str()),
             Expr::val(provider.credential_route().as_storage_str()),
             Expr::val(provider.account_setting_version()),
             Expr::val(generation_id.to_string()),
@@ -1279,7 +1340,7 @@ pub(crate) async fn set_oauth_client_failure(
     Ok(())
 }
 
-/// Update preparation belongs to the exact Provider identity, not its reusable namespace.
+/// Update preparation belongs to the exact Provider identity, not its reusable Call Root.
 /// Includes configuration-only Setups which have no provisional account row yet.
 pub(crate) async fn unconsumed_setups_for_provider(
     tx: &mut Transaction<'_>,

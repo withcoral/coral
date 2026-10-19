@@ -10,7 +10,7 @@ use coral_workspace::{
     AuthenticatedUser, ChangeContext, OrganizationRole, WorkspaceDisplayName, WorkspaceModule,
 };
 
-use crate::access::{CredentialRoute, ProviderNamespace};
+use crate::access::{CredentialRoute, ProviderCallRoot};
 use crate::account::AccountModule;
 use crate::{
     LifecycleAction, LifecycleOutcome, ManagementRequestId, OpenApiDocument, ProviderModule,
@@ -114,7 +114,7 @@ pub(crate) async fn publish_provider(
                 ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                 workspace.clone(),
                 setup.id().clone(),
-                ProviderNamespace::parse(namespace).unwrap(),
+                crate::ProviderNamespace::parse(namespace).unwrap(),
                 route,
             ),
         )
@@ -128,18 +128,17 @@ pub(crate) async fn publish_provider(
 pub(crate) async fn retained_operation(
     providers: &ProviderModule,
     workspace_id: &coral_workspace::WorkspaceId,
-    namespace: &ProviderNamespace,
+    call_root: &ProviderCallRoot,
 ) -> crate::ResolvedInvocationOperation {
     let mut transaction = providers
         .database
         .begin()
         .await
         .expect("begin Invocation resolution");
-    let retained = crate::resolve_invocation_operation_in_transaction(
+    let retained = crate::resolve_owner_operation_in_transaction(
         &mut transaction,
         workspace_id,
-        namespace,
-        "getForecast",
+        &format!("{}.getForecast", call_root.as_str()),
     )
     .await
     .expect("resolve Invocation Operation")
@@ -191,8 +190,8 @@ pub(crate) async fn operation_authoring_paths(
         .flat_map(|catalog| {
             catalog.operations().iter().map(|operation| {
                 format!(
-                    "coral.providers.{}.{}",
-                    catalog.access().namespace().as_str(),
+                    "{}.{}",
+                    catalog.access().call_root().as_str(),
                     operation.relative_path()
                 )
             })
@@ -211,14 +210,14 @@ pub(crate) fn publication_request(
         ManagementRequestId::parse(request_id).expect("request id"),
         workspace_id.clone(),
         setup_id.clone(),
-        ProviderNamespace::parse(namespace).expect("namespace"),
+        crate::ProviderNamespace::parse(namespace).expect("namespace"),
         route,
     )
 }
 
 pub(crate) async fn test_modules() -> (TestDatabase, WorkspaceModule, ProviderModule) {
     let (fixture, database, workspaces) = test_foundation().await;
-    let providers = ProviderModule::new(
+    let providers = ProviderModule::with_running_catalog(
         DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         database,
         workspaces.clone(),
@@ -227,20 +226,7 @@ pub(crate) async fn test_modules() -> (TestDatabase, WorkspaceModule, ProviderMo
 }
 
 pub(crate) async fn test_foundation() -> (TestDatabase, Arc<Database>, WorkspaceModule) {
-    test_foundation_with(&[]).await
-}
-
-/// The Workspace, Catalog and Provider schemas plus `extra` Modules' schemas.
-async fn test_foundation_with(
-    extra: &[&sqlx::migrate::Migrator],
-) -> (TestDatabase, Arc<Database>, WorkspaceModule) {
-    let mut plans = vec![
-        coral_workspace::migrator(),
-        coral_catalog::migrator(),
-        crate::migrator(),
-    ];
-    plans.extend_from_slice(extra);
-    let fixture = TestDatabase::new(&coral_test_support::combined_migrator(&plans))
+    let fixture = TestDatabase::new(coral_db::migration_plan())
         .await
         .expect("create Workspace, Catalog, and Provider test database");
     let database = fixture.database();
@@ -268,13 +254,8 @@ pub(crate) struct Harness {
 
 impl Harness {
     pub(crate) async fn new() -> Self {
-        Self::with_migrations(&[]).await
-    }
-
-    /// Adds other Modules' schemas, such as Saved Functions for offboarding.
-    pub(crate) async fn with_migrations(extra: &[&sqlx::migrate::Migrator]) -> Self {
-        let (fixture, database, workspaces) = test_foundation_with(extra).await;
-        let providers = ProviderModule::new(
+        let (fixture, database, workspaces) = test_foundation().await;
+        let providers = ProviderModule::with_running_catalog(
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             database.clone(),
             workspaces.clone(),
@@ -333,6 +314,20 @@ pub(crate) async fn join_as_owner(
         )
         .await
         .expect("assign the Organization Owner as a designated Owner");
+}
+
+/// Reads a Setup as stored, for a test that checks what a refusal or a removal
+/// left behind. A Setup answers only the User who started it, and these tests
+/// look at one after that User lost authority.
+pub(crate) async fn stored_setup(
+    database: &Database,
+    workspace: &WorkspaceId,
+    setup: &crate::ProviderSetupId,
+) -> crate::repository::LoadedSetup {
+    crate::repository::setup(database, workspace, setup)
+        .await
+        .expect("read the Setup")
+        .expect("the Setup exists")
 }
 
 /// Holds the first Publication that reaches `point` for good. The test then

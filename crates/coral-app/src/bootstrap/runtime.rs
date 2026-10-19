@@ -464,6 +464,8 @@ fn mcp_modules(
     let search = UniversalSearchModule::new(Arc::clone(&database), workspaces.clone());
     let saved_functions =
         SavedFunctionModule::new(database, workspaces.clone(), runtime_limits.isolate())?;
+    // MCP-started Runs link people to Reef; this clone shares the server's Run Owners.
+    let runs = runs.with_human_interface(human_interface.clone());
     let commands = TaskCommands::new(
         tasks.clone(),
         saved_functions,

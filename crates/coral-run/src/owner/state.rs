@@ -257,11 +257,13 @@ impl OwnerState {
             return vec![
                 Effect::Abandon(
                     work,
-                    Error::InvocationRejected(CoralFailure::RunOutputTooLarge),
+                    Error::InvocationRejected(CoralFailure::RunOutputTooLarge.into()),
                 ),
                 Effect::Reply(
                     reply,
-                    Err(Error::InvocationRejected(CoralFailure::RunOutputTooLarge)),
+                    Err(Error::InvocationRejected(
+                        CoralFailure::RunOutputTooLarge.into(),
+                    )),
                 ),
             ];
         }

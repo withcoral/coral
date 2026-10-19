@@ -17,10 +17,11 @@ export const workspaceView: WorkspaceView = {
 
 /** An available operation of `owner` that needs approval, in `group`. */
 export function operation(owner: ProviderView, relativePath: string, group = ''): OperationView {
+  const callRoot = owner.builtin ? 'coral.workspace' : `coral.providers.${owner.namespace}`
   return {
     name: `workspaces/demo/providers/${owner.id}/operations/${relativePath}`,
     relativePath,
-    callPath: `coral.providers.${owner.namespace}.${relativePath}`,
+    callPath: `${callRoot}.${relativePath}`,
     summary: '',
     description: '',
     hints: {},
@@ -47,6 +48,7 @@ export function provider(
     path: `/workspaces/demo/providers/${id}`,
     displayName,
     namespace,
+    builtin: false,
     account: 'No account',
     blockers: [],
     personalAccountAction: null,
@@ -60,5 +62,21 @@ export function provider(
   view.operations = operations.map((entry) =>
     typeof entry === 'string' ? operation(view, entry) : operation(view, ...entry),
   )
+  return view
+}
+
+/** Coral's Built-in Provider, with its operations under `coral.workspace`. */
+export function builtinProvider(id: string): ProviderView {
+  const view: ProviderView = { ...provider(id, 'Coral', ''), builtin: true }
+  view.operations = [
+    operation(view, 'createProvider'),
+    // Read-only, so it starts enabled.
+    {
+      ...operation(view, 'listProviders'),
+      hints: { readOnly: true, idempotent: true },
+      policy: 'enabled',
+    },
+  ]
+  view.readyCount = view.totalCount = view.operations.length
   return view
 }

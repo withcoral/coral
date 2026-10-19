@@ -3,6 +3,7 @@ use crate::auth::test_config::loopback_policy;
 use crate::{CanonicalOauthUrl, WorkspaceMcpUrls};
 use coral_auth::{PrincipalAuthentication, SessionTokenIssuer};
 use coral_mcp::{McpModules, WorkspaceAuthenticator};
+use coral_provider::ProviderModule;
 use coral_workspace::{
     AgentDisplayName, AgentState, AuthenticatedUser, ChangeContext, OrganizationModule,
     OrganizationRole, PrincipalKind, TraceId, UserId, WorkspaceDisplayName, WorkspaceId,
@@ -310,14 +311,7 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
-        let fixture =
-            coral_test_support::TestDatabase::new(&coral_test_support::combined_migrator(&[
-                coral_workspace::migrator(),
-                coral_task::migrator(),
-                // `start_task` lists the Providers the caller can search.
-                coral_catalog::migrator(),
-                coral_provider::migrator(),
-            ]))
+        let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
             .await
             .unwrap();
         let database = fixture.database();
@@ -363,6 +357,12 @@ impl Fixture {
             loopback_policy(),
             database.clone(),
             workspaces.clone(),
+            ProviderModule::new(
+                loopback_policy(),
+                database.clone(),
+                workspaces.clone(),
+                coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
+            ),
             coral_run::RuntimeLimits::default(),
         )
         .unwrap();

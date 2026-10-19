@@ -604,22 +604,24 @@ dependencies = [
 name = "coral-administration"
 version = "1.1.0"
 dependencies = [
+ "async-trait",
  "coral-catalog",
  "coral-credentials",
  "coral-db",
  "coral-functions",
  "coral-outbound",
- "coral-policy",
  "coral-provider",
  "coral-search",
  "coral-test-support",
  "coral-workspace",
+ "sea-query",
  "serde",
  "serde_yaml",
  "sqlx",
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -703,6 +705,7 @@ dependencies = [
 name = "coral-catalog"
 version = "1.1.0"
 dependencies = [
+ "coral-catalog",
  "coral-db",
  "coral-outbound",
  "coral-test-support",
@@ -817,6 +820,7 @@ dependencies = [
  "axum",
  "chrono",
  "coral-catalog",
+ "coral-db",
  "coral-functions",
  "coral-outbound",
  "coral-policy",
@@ -834,7 +838,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "sqlx",
  "thiserror",
  "tokio",
  "tower",
@@ -884,7 +887,6 @@ dependencies = [
  "coral-catalog",
  "coral-credentials",
  "coral-db",
- "coral-functions",
  "coral-outbound",
  "coral-provider",
  "coral-telemetry",
@@ -931,7 +933,9 @@ dependencies = [
  "coral-value",
  "coral-workspace",
  "sea-query",
+ "serde",
  "serde_json",
+ "serde_path_to_error",
  "sha2 0.11.0",
  "sqlx",
  "tempfile",
@@ -984,7 +988,6 @@ dependencies = [
  "coral-db",
  "coral-functions",
  "coral-outbound",
- "coral-policy",
  "coral-provider",
  "coral-run",
  "coral-search",

@@ -10,14 +10,7 @@ use coral_workspace::{
 };
 
 async fn fixture() -> TestDatabase {
-    let migrator = coral_test_support::combined_migrator(&[
-        coral_workspace::migrator(),
-        coral_catalog::migrator(),
-        coral_provider::migrator(),
-        coral_functions::migrator(),
-        coral_search::migrator(),
-    ]);
-    let fixture = TestDatabase::new(&migrator).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     coral_search::prepare_storage(&fixture.database())
         .await
         .unwrap();

@@ -814,10 +814,6 @@ function applicationInput(application: ApplicationFields, secret = '') {
   }
 }
 
-function applicationFrom(form: FormData) {
-  return applicationInput(applicationFields(form))
-}
-
 /** One response shape for returned field errors and thrown configuration rejections. */
 function rejectConfiguration(
   draft: ConfigurationDraft,
@@ -890,6 +886,10 @@ export async function setupAction<Published = never>(
   // Carry local choices through setup; only final publication sends them to Coral.
   const submittedAccount = accountChoice(form.get('account') as string | null)
   const chosen = submittedAccount ?? attempt.account ?? null
+  // Only the account question's forms carry an account, so only a sign-in it
+  // started answers it. A discovery sign-in leaves the question to the person,
+  // even when the page URL (an agent's link, say) already names a route.
+  const answering = Boolean(submittedAccount)
   const draft = reviseAttempt(attempt)
   if (draft.kind === 'update') {
     draft.review = false
@@ -1038,17 +1038,21 @@ export async function setupAction<Published = never>(
           name,
           redirectUri: callbackRedirectUri(request, context),
           configurationRevision: BigInt(field(form, 'configurationRevision')),
-          application: applicationFrom(form),
+          // A confidential application whose secret nobody saved yet takes it here.
+          application: applicationInput(
+            applicationFields(form),
+            optionalField(form, 'clientSecret'),
+          ),
           replacementGrant: optionalField(form, 'replacementGrant'),
         })
         if (started.credentialMethod === CredentialMethod.OAUTH_DEVICE_CODE)
-          return redirect(stepper(chosen, true), { headers: privateHeaders })
+          return redirect(stepper(chosen, answering), { headers: privateHeaders })
         return await redirectToConsent(
           api,
           {
             setup: name,
             // Review the resulting grant explicitly before shared or self retention.
-            returnTo: stepper(chosen, true),
+            returnTo: stepper(chosen, answering),
           },
           context,
         )
@@ -1059,10 +1063,10 @@ export async function setupAction<Published = never>(
         if (setup.authorization?.state === SetupAuthorizationState.PENDING)
           return await redirectToConsent(
             api,
-            { setup: name, returnTo: stepper(chosen, true) },
+            { setup: name, returnTo: stepper(chosen, answering) },
             context,
           )
-        return redirect(stepper(chosen, true), { headers: privateHeaders })
+        return redirect(stepper(chosen, answering), { headers: privateHeaders })
       }
       case 'borrow-account':
         await api.setups.retryProviderSetupDiscovery({

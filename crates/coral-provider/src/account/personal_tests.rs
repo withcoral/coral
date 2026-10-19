@@ -6,7 +6,7 @@ use super::{
     AccountModule, AccountScope, AccountState, AuthorizationState, ConnectionRequestId,
     ConnectionResolution, ConnectionState, resolve_connection_in_transaction,
 };
-use crate::access::{CredentialRoute, ProviderNamespace};
+use crate::access::CredentialRoute;
 use crate::account_tests::{CREDENTIAL_REQUIRED_OPENAPI, authorization_request};
 use crate::tests::{
     CREDENTIAL_FREE_OPENAPI, change_context, organization_user, publish_provider, test_modules,
@@ -21,11 +21,10 @@ async fn open_connection_request(
     now: i64,
 ) -> ConnectionRequestId {
     let mut tx = providers.database.begin().await.unwrap();
-    let target = crate::resolve_invocation_operation_in_transaction(
+    let target = crate::resolve_owner_operation_in_transaction(
         &mut tx,
         workspace,
-        &ProviderNamespace::parse("private").unwrap(),
-        "getPrivateForecast",
+        "coral.providers.private.getPrivateForecast",
     )
     .await
     .unwrap()

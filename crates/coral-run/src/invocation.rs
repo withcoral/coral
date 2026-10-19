@@ -9,8 +9,8 @@
 //! and sends outside every lock, and reports the terminal Invocation through
 //! the owner: an upstream result at Applied, a known failure once it is
 //! recorded. Operational failure is host-fatal rather than catchable. Known
-//! failures persist the same closed [`CoralFailure`] code and message
-//! projected to the Program, even during child shutdown. Only shutdown and
+//! failures persist the same closed [`CoralFailure`] code and safe
+//! [`Rejection`] message projected to the Program, even during child shutdown. Only shutdown and
 //! recovery record lost dispatching work as indeterminate; a stop that
 //! reaches the owner before a fenced Invocation sends ends it as
 //! `run_terminated` instead.
@@ -21,8 +21,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use coral_db::Transaction;
 use coral_policy::{OperationAccessState, OperationPolicyTarget};
-use coral_provider::access::ProviderNamespace;
-use coral_provider::{InvocationOperationVerification, ResolvedInvocationOperation};
+use coral_provider::{
+    InvocationCaller, InvocationOperationVerification, ResolvedInvocationOperation,
+};
 use coral_upstream::{McpRejection, McpResources, ReadyDispatch, UpstreamOutcome};
 use coral_workspace::{AuthenticatedPrincipal, Principal, PrincipalWorkspaceEvidence};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
@@ -36,7 +37,8 @@ use crate::owner::{ChunkWork, OwnerHandle};
 use crate::run_repository::{OwnedEvent, OwnedEventKind};
 use crate::types::AcceptedRun;
 use crate::{
-    CoralFailure, Error, InvocationId, InvocationResultKind, RunId, invocation_repository,
+    CoralFailure, Error, InvocationId, InvocationResultKind, Rejection, RunId,
+    invocation_repository, run_repository,
 };
 
 pub(crate) enum UpstreamSendError {
@@ -145,6 +147,8 @@ pub(crate) trait InvocationObserver: Send + Sync {
     fn invocation_failure_committed(&self, _code: &'static str) {}
 
     fn run_completion_checked(&self, _has_nonterminal_invocation: bool) {}
+
+    fn builtin_setup_prepared(&self) {}
 }
 
 #[cfg(test)]
@@ -155,7 +159,7 @@ pub(crate) struct NoopInvocationObserver;
 impl InvocationObserver for NoopInvocationObserver {}
 
 pub(crate) enum InvocationHostError {
-    Rejected(CoralFailure),
+    Rejected(Rejection),
     /// A complete, durably retained upstream outcome that is not a declared success.
     Upstream {
         rejection: crate::error::UpstreamRejection,
@@ -177,6 +181,9 @@ impl From<Error> for InvocationHostError {
 #[derive(Clone)]
 pub(crate) struct OperationInvoker {
     accounts: Option<coral_provider::account::AccountModule>,
+    providers: coral_provider::ProviderModule,
+    provider_publisher: Option<Arc<dyn coral_provider::WorkspaceProviderPublisher>>,
+    human_interface: Option<crate::HumanInterfaceUrl>,
     database: Arc<coral_db::Database>,
     workspaces: WorkspaceModule,
     actor: AuthenticatedPrincipal,
@@ -226,6 +233,9 @@ impl OperationInvoker {
     )]
     pub(crate) fn new(
         accounts: Option<coral_provider::account::AccountModule>,
+        providers: coral_provider::ProviderModule,
+        provider_publisher: Option<Arc<dyn coral_provider::WorkspaceProviderPublisher>>,
+        human_interface: Option<crate::HumanInterfaceUrl>,
         database: Arc<coral_db::Database>,
         workspaces: WorkspaceModule,
         actor: AuthenticatedPrincipal,
@@ -237,6 +247,9 @@ impl OperationInvoker {
     ) -> Self {
         Self {
             accounts,
+            providers,
+            provider_publisher,
+            human_interface,
             database,
             workspaces,
             actor,
@@ -266,12 +279,11 @@ impl OperationInvoker {
             .validate_json(&arguments_json)
             .map_err(|error| {
                 InvocationHostError::Rejected(match error {
-                    coral_value::ValueError::Invalid => CoralFailure::InvalidInput,
-                    coral_value::ValueError::TooLarge => CoralFailure::InputTooLarge,
+                    coral_value::ValueError::Invalid => CoralFailure::InvalidInput.into(),
+                    coral_value::ValueError::TooLarge => CoralFailure::InputTooLarge.into(),
                 })
             })?;
-        let address = CallPath::parse(call_path)?;
-        let (target, policy) = self.resolve(&address).await?;
+        let (target, policy, builtin) = self.resolve(call_path, &arguments).await?;
         let admitted = Arc::new(AdmittedInvocation {
             id: InvocationId::generate(),
             workspace_id: self.workspace_id.clone(),
@@ -292,20 +304,22 @@ impl OperationInvoker {
                 .finish_failure(&admitted, &progress, CoralFailure::OperationDisabled)
                 .await?);
         }
-        let mut ready = match self.plan(&admitted.target, &arguments) {
+        let mut ready = match self.dispatch(&admitted, &arguments, builtin.as_ref()) {
             Ok(ready) => ready,
             Err(error) => {
-                let failure = match error {
+                let failure: Rejection = match error {
                     coral_upstream::Error::DestinationRejected => {
-                        CoralFailure::OutboundDestinationRejected
+                        CoralFailure::OutboundDestinationRejected.into()
                     }
-                    coral_upstream::Error::InputTooLarge => CoralFailure::InputTooLarge,
-                    coral_upstream::Error::InvalidArguments(_)
-                    | coral_upstream::Error::UnsupportedRequestMedia(_) => {
-                        CoralFailure::InvalidInput
+                    coral_upstream::Error::InputTooLarge => CoralFailure::InputTooLarge.into(),
+                    coral_upstream::Error::InvalidArguments(reason) => {
+                        Rejection::invalid_input("", reason)
+                    }
+                    coral_upstream::Error::UnsupportedRequestMedia(_) => {
+                        CoralFailure::InvalidInput.into()
                     }
                     coral_upstream::Error::OperationUnavailable => {
-                        CoralFailure::OperationUnavailable
+                        CoralFailure::OperationUnavailable.into()
                     }
                     private_error => return Err(Error::Upstream(private_error).into()),
                 };
@@ -345,7 +359,7 @@ impl OperationInvoker {
                         };
                     }
                     ready = self
-                        .plan(&admitted.target, &arguments)
+                        .dispatch(&admitted, &arguments, builtin.as_ref())
                         .map_err(Error::from)?;
                 }
             }
@@ -354,22 +368,43 @@ impl OperationInvoker {
     }
 
     /// Resolves the Call Path's current Operation and policy, outside the Run:
-    /// the fence rechecks both before any dispatch.
+    /// the fence rechecks both before any dispatch. A Built-in Operation checks
+    /// its input here, before admission, so input it rejects, such as a
+    /// credential, is never stored.
     async fn resolve(
         &self,
-        address: &CallPath,
-    ) -> Result<(ResolvedInvocationOperation, OperationAccessState), Error> {
+        call_path: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<
+        (
+            ResolvedInvocationOperation,
+            OperationAccessState,
+            Option<crate::builtin::BuiltinCall>,
+        ),
+        Error,
+    > {
         let mut transaction = self.database.begin().await?;
+        let resolved_at = self.now()?.max(self.accepted_at_unix_nanos);
         let Some(target) = coral_provider::resolve_invocation_operation_in_transaction(
             &mut transaction,
             &self.workspace_id,
-            &address.namespace,
-            &address.relative_path,
+            InvocationCaller::new(&self.workspaces, &self.actor, resolved_at),
+            call_path,
         )
         .await?
         else {
             transaction.rollback().await?;
-            return Err(Error::InvocationRejected(CoralFailure::OperationNotFound));
+            return Err(Error::InvocationRejected(
+                CoralFailure::OperationNotFound.into(),
+            ));
+        };
+        let builtin = match crate::builtin::BuiltinCall::parse(&target, arguments) {
+            Some(Ok(call)) => Some(call),
+            Some(Err(failure)) => {
+                transaction.rollback().await?;
+                return Err(Error::InvocationRejected(failure));
+            }
+            None => None,
         };
         let policy = coral_policy::invocation_decision_in_transaction(
             &mut transaction,
@@ -380,7 +415,7 @@ impl OperationInvoker {
         .await?
         .access_state();
         transaction.commit().await?;
-        Ok((target, policy))
+        Ok((target, policy, builtin))
     }
 
     #[cfg(test)]
@@ -407,7 +442,7 @@ impl OperationInvoker {
         &self,
         admitted: &Arc<AdmittedInvocation>,
         progress: &InvocationProgress,
-        mut ready: ReadyDispatch,
+        mut ready: Dispatch,
     ) -> Result<String, InvocationHostError> {
         if let Err(error) = self.authorize(admitted, progress, &mut ready).await {
             return match error {
@@ -424,6 +459,12 @@ impl OperationInvoker {
             self.end_before_send(admitted).await?;
             return Err(InvocationHostError::Fatal(Error::ProgramHostTerminated));
         }
+        let ready = match ready {
+            Dispatch::Upstream(ready) => ready,
+            Dispatch::Builtin(call) => {
+                return self.perform_builtin(admitted, progress, &call).await;
+            }
+        };
         let outcome = match self.upstream.send(ready, self.stop.clone()).await {
             Ok(outcome) => outcome,
             Err(UpstreamSendError::Canceled) => {
@@ -466,8 +507,27 @@ impl OperationInvoker {
                     .await?);
             }
         };
-        let result_json =
-            serde_json::to_string(&outcome.operation_result()).map_err(Error::ProgramValueJson)?;
+        let result_json = self
+            .finish_result(admitted, progress, &outcome.operation_result())
+            .await?;
+        match crate::error::UpstreamRejection::of(outcome.class()) {
+            None => Ok(result_json),
+            Some(rejection) => Err(InvocationHostError::Upstream {
+                rejection,
+                outcome_json: result_json,
+            }),
+        }
+    }
+
+    /// Records a complete Operation Result as the Upstream Outcome, through
+    /// the owner.
+    async fn finish_result(
+        &self,
+        admitted: &Arc<AdmittedInvocation>,
+        progress: &InvocationProgress,
+        result: &serde_json::Value,
+    ) -> Result<String, InvocationHostError> {
+        let result_json = serde_json::to_string(result).map_err(Error::ProgramValueJson)?;
         if result_json.len() > self.limits.upstream_bytes()
             || self.limits.validate_json(&result_json).is_err()
         {
@@ -476,20 +536,75 @@ impl OperationInvoker {
                 .await?);
         }
         match self.finish_upstream(admitted, progress, &result_json).await {
-            Ok(()) => {}
-            Err(Error::InvocationRejected(CoralFailure::RunOutputTooLarge)) => {
-                return Err(self
-                    .finish_failure(admitted, progress, CoralFailure::RunOutputTooLarge)
-                    .await?);
+            Ok(()) => Ok(result_json),
+            Err(Error::InvocationRejected(rejection))
+                if rejection.failure() == CoralFailure::RunOutputTooLarge =>
+            {
+                Err(self.finish_failure(admitted, progress, rejection).await?)
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => Err(error.into()),
         }
-        match crate::error::UpstreamRejection::of(outcome.class()) {
-            None => Ok(result_json),
-            Some(rejection) => Err(InvocationHostError::Upstream {
-                rejection,
-                outcome_json: result_json,
-            }),
+    }
+
+    /// What the fence will permit: a Built-in Operation that Coral performs
+    /// itself, or one planned upstream send.
+    fn dispatch(
+        &self,
+        admitted: &AdmittedInvocation,
+        arguments: &serde_json::Value,
+        builtin: Option<&crate::builtin::BuiltinCall>,
+    ) -> Result<Dispatch, coral_upstream::Error> {
+        if let Some(call) = builtin {
+            return Ok(Dispatch::Builtin(Box::new(call.clone())));
+        }
+        self.plan(&admitted.target, arguments)
+            .map(Dispatch::Upstream)
+    }
+
+    /// Performs a Built-in Operation as the invoking User after the fence,
+    /// where an upstream send would run, and records its Operation Result as
+    /// the Upstream Outcome. Nothing is sent upstream.
+    async fn perform_builtin(
+        &self,
+        admitted: &Arc<AdmittedInvocation>,
+        progress: &InvocationProgress,
+        call: &crate::builtin::BuiltinCall,
+    ) -> Result<String, InvocationHostError> {
+        // Every runtime that runs Programs names Reef's origin; without it a
+        // built-in result could not link the person anywhere.
+        let Some(human_interface) = &self.human_interface else {
+            return Err(self
+                .finish_failure(admitted, progress, CoralFailure::OperationUnavailable)
+                .await?);
+        };
+        let Some(user) = self.actor.authenticated_user() else {
+            return Err(self
+                .finish_failure(admitted, progress, CoralFailure::AuthorityLost)
+                .await?);
+        };
+        let context = coral_workspace::ChangeContext::new(
+            user.clone(),
+            self.now()?,
+            coral_workspace::TraceId::current_or_new(),
+        );
+        let request_id = coral_provider::ManagementRequestId::parse(&admitted.id.to_string())
+            .map_err(Error::from)?;
+        let host = crate::builtin::BuiltinHost {
+            providers: &self.providers,
+            publisher: self.provider_publisher.as_deref(),
+            context: &context,
+            principal: &self.principal,
+            workspace_id: &self.workspace_id,
+            human_interface,
+            request_id: &request_id,
+            run: self,
+        };
+        match call.perform(&host).await {
+            Ok(result) => self.finish_result(admitted, progress, &result).await,
+            Err(Error::InvocationRejected(failure)) => {
+                Err(self.finish_failure(admitted, progress, failure).await?)
+            }
+            Err(error) => Err(error.into()),
         }
     }
 
@@ -500,15 +615,14 @@ impl OperationInvoker {
         &self,
         admitted: &AdmittedInvocation,
         progress: &InvocationProgress,
-        ready: &mut ReadyDispatch,
+        ready: &mut Dispatch,
     ) -> Result<(), Error> {
         let Some(evidence) = &progress.credential_evidence else {
             return Ok(());
         };
-        let accounts = self
-            .accounts
-            .as_ref()
-            .ok_or(Error::InvocationRejected(CoralFailure::AccountRequired))?;
+        let accounts = self.accounts.as_ref().ok_or(Error::InvocationRejected(
+            CoralFailure::AccountRequired.into(),
+        ))?;
         let secret = tokio::select! {
             biased;
             () = self.stop.requested() => return Err(Error::ProgramHostTerminated),
@@ -520,15 +634,20 @@ impl OperationInvoker {
             ) => result.map_err(account_error)?,
         };
         let authorization = match ready {
-            ReadyDispatch::Http(http) => http.authorize(&secret),
-            ReadyDispatch::Mcp(mcp) => mcp.authorize(&secret),
+            Dispatch::Upstream(ReadyDispatch::Http(http)) => http.authorize(&secret),
+            Dispatch::Upstream(ReadyDispatch::Mcp(mcp)) => mcp.authorize(&secret),
+            // Built-in Operations have no Credential Route.
+            Dispatch::Builtin(_) => Err(coral_upstream::Error::OperationUnavailable),
         };
         authorization.map_err(|error| {
-            Error::InvocationRejected(if matches!(error, coral_upstream::Error::InputTooLarge) {
-                CoralFailure::InputTooLarge
-            } else {
-                CoralFailure::AccountRequired
-            })
+            Error::InvocationRejected(
+                if matches!(error, coral_upstream::Error::InputTooLarge) {
+                    CoralFailure::InputTooLarge
+                } else {
+                    CoralFailure::AccountRequired
+                }
+                .into(),
+            )
         })
     }
 
@@ -787,10 +906,9 @@ impl OperationInvoker {
         let Some(evidence) = &progress.credential_evidence else {
             return Ok(());
         };
-        let accounts = self
-            .accounts
-            .as_ref()
-            .ok_or(Error::InvocationRejected(CoralFailure::AccountRequired))?;
+        let accounts = self.accounts.as_ref().ok_or(Error::InvocationRejected(
+            CoralFailure::AccountRequired.into(),
+        ))?;
         tokio::select! {
             biased;
             () = self.stop.requested() => Err(Error::ProgramHostTerminated),
@@ -859,7 +977,9 @@ impl OperationInvoker {
         }
         let (_, policy) = self.current_target_authority(tx, admitted).await?;
         if policy == OperationAccessState::Disabled {
-            return Err(Error::InvocationRejected(CoralFailure::OperationDisabled));
+            return Err(Error::InvocationRejected(
+                CoralFailure::OperationDisabled.into(),
+            ));
         }
         let selection = if self.accounts.is_some() {
             coral_provider::account::resolve_connection_in_transaction(
@@ -956,7 +1076,9 @@ impl OperationInvoker {
         crate::approval::committed_rejection(tx, admitted).await?;
         let (authority, policy) = self.current_target_authority(tx, admitted).await?;
         if policy == OperationAccessState::Disabled {
-            return Err(Error::InvocationRejected(CoralFailure::OperationDisabled));
+            return Err(Error::InvocationRejected(
+                CoralFailure::OperationDisabled.into(),
+            ));
         }
         coral_provider::account::verify_in_transaction(
             tx,
@@ -974,7 +1096,7 @@ impl OperationInvoker {
         }
         authority
             .require_current_at(now)
-            .map_err(|_expired| Error::InvocationRejected(CoralFailure::AuthorityLost))?;
+            .map_err(|_expired| Error::InvocationRejected(CoralFailure::AuthorityLost.into()))?;
         let ready = crate::approval::gate(
             tx,
             admitted,
@@ -1045,7 +1167,9 @@ impl OperationInvoker {
         }
         let (authority, policy) = self.current_target_authority(tx, admitted).await?;
         if policy == OperationAccessState::Disabled {
-            return Err(Error::InvocationRejected(CoralFailure::OperationDisabled));
+            return Err(Error::InvocationRejected(
+                CoralFailure::OperationDisabled.into(),
+            ));
         }
         coral_provider::account::verify_in_transaction(
             tx,
@@ -1061,10 +1185,9 @@ impl OperationInvoker {
             None
         };
         if let Some(evidence) = &progress.credential_evidence {
-            let accounts = self
-                .accounts
-                .as_ref()
-                .ok_or(Error::InvocationRejected(CoralFailure::AccountRequired))?;
+            let accounts = self.accounts.as_ref().ok_or(Error::InvocationRejected(
+                CoralFailure::AccountRequired.into(),
+            ))?;
             let current = accounts
                 .dispatch_credentials_in_transaction(
                     tx,
@@ -1091,11 +1214,11 @@ impl OperationInvoker {
         }
         authority
             .require_current_at(dispatch_started_at)
-            .map_err(|_expired| Error::InvocationRejected(CoralFailure::AuthorityLost))?;
+            .map_err(|_expired| Error::InvocationRejected(CoralFailure::AuthorityLost.into()))?;
         if let Some(approval) = approval {
             approval
                 .require_current_at(dispatch_started_at)
-                .map_err(Error::InvocationRejected)?;
+                .map_err(|failure| Error::InvocationRejected(failure.into()))?;
         }
         if !invocation_repository::mark_dispatch_started(
             tx,
@@ -1105,7 +1228,9 @@ impl OperationInvoker {
         )
         .await?
         {
-            return Err(Error::InvocationRejected(CoralFailure::AuthorityLost));
+            return Err(Error::InvocationRejected(
+                CoralFailure::AuthorityLost.into(),
+            ));
         }
         Ok(FenceOutcome::Permitted)
     }
@@ -1115,10 +1240,12 @@ impl OperationInvoker {
         tx: &mut coral_db::Transaction<'_>,
         admitted: &AdmittedInvocation,
     ) -> Result<(PrincipalWorkspaceEvidence, OperationAccessState), Error> {
-        let authority = self
-            .workspace_dispatch_authority(tx)
-            .await?
-            .ok_or(Error::InvocationRejected(CoralFailure::AuthorityLost))?;
+        let authority =
+            self.workspace_dispatch_authority(tx)
+                .await?
+                .ok_or(Error::InvocationRejected(
+                    CoralFailure::AuthorityLost.into(),
+                ))?;
         match coral_provider::verify_invocation_operation_in_transaction(
             tx,
             &self.workspace_id,
@@ -1129,14 +1256,18 @@ impl OperationInvoker {
             InvocationOperationVerification::Current => {}
             InvocationOperationVerification::CredentialRouteChanged => {
                 return Err(Error::InvocationRejected(
-                    CoralFailure::CredentialRouteChanged,
+                    CoralFailure::CredentialRouteChanged.into(),
                 ));
             }
             InvocationOperationVerification::ProviderUnavailable => {
-                return Err(Error::InvocationRejected(CoralFailure::ProviderUnavailable));
+                return Err(Error::InvocationRejected(
+                    CoralFailure::ProviderUnavailable.into(),
+                ));
             }
             InvocationOperationVerification::AuthorityLost => {
-                return Err(Error::InvocationRejected(CoralFailure::AuthorityLost));
+                return Err(Error::InvocationRejected(
+                    CoralFailure::AuthorityLost.into(),
+                ));
             }
         }
         let policy = coral_policy::invocation_decision_in_transaction(
@@ -1148,7 +1279,7 @@ impl OperationInvoker {
         .await
         .map_err(|error| match error {
             coral_policy::Error::OperationNotFound => {
-                Error::InvocationRejected(CoralFailure::AuthorityLost)
+                Error::InvocationRejected(CoralFailure::AuthorityLost.into())
             }
             error => error.into(),
         })?;
@@ -1212,8 +1343,10 @@ impl OperationInvoker {
         &self,
         admitted: &Arc<AdmittedInvocation>,
         progress: &InvocationProgress,
-        failure: CoralFailure,
+        failure: impl Into<Rejection>,
     ) -> Result<InvocationHostError, Error> {
+        let failure: Rejection = failure.into();
+        let completion = InvocationCompletion::Failure(failure.clone());
         #[cfg(test)]
         self.observer.before_failure_commit().await?;
         let outcome = self
@@ -1223,7 +1356,7 @@ impl OperationInvoker {
                     observer: self.observer.clone(),
                     admitted: admitted.clone(),
                     dispatch_started: progress.dispatch_started,
-                    completion: InvocationCompletion::Failure(failure),
+                    completion,
                     reply: Some(reply),
                 })
             })
@@ -1232,7 +1365,7 @@ impl OperationInvoker {
             FinishOutcome::Finished(_) | FinishOutcome::SameFailure => {}
             // Deliver the durable human decision, not a worker's stale gate failure.
             FinishOutcome::Superseded(existing) => {
-                return Err(Error::InvocationRejected(existing));
+                return Err(Error::InvocationRejected(existing.into()));
             }
             FinishOutcome::Lost => {
                 return Err(Error::InvocationPersistence(
@@ -1272,7 +1405,7 @@ impl OperationInvoker {
 /// fails it.
 fn catch_rejection<O>(
     result: Result<O, Error>,
-    rejected: impl FnOnce(CoralFailure) -> O,
+    rejected: impl FnOnce(Rejection) -> O,
 ) -> Result<O, Error> {
     match result {
         Err(Error::InvocationRejected(failure)) => Ok(rejected(failure)),
@@ -1296,7 +1429,7 @@ fn account_error(error: coral_provider::Error) -> Error {
         coral_provider::Error::CredentialRouteChanged => CoralFailure::CredentialRouteChanged,
         other => return other.into(),
     };
-    Error::InvocationRejected(failure)
+    Error::InvocationRejected(failure.into())
 }
 
 fn policy_target(
@@ -1308,34 +1441,6 @@ fn policy_target(
         target.provider_access().id().clone(),
         target.operation().key().clone(),
     )
-}
-
-struct CallPath {
-    namespace: ProviderNamespace,
-    relative_path: String,
-}
-
-impl CallPath {
-    fn parse(value: &str) -> Result<Self, Error> {
-        let Some(provider_path) = value.strip_prefix("coral.providers.") else {
-            return Err(Error::InvocationRejected(CoralFailure::OperationNotFound));
-        };
-        let Some((namespace, relative_path)) = provider_path.split_once('.') else {
-            return Err(Error::InvocationRejected(CoralFailure::OperationNotFound));
-        };
-        if relative_path.is_empty()
-            || relative_path.chars().any(char::is_control)
-            || relative_path.split('.').any(str::is_empty)
-        {
-            return Err(Error::InvocationRejected(CoralFailure::OperationNotFound));
-        }
-        let namespace = ProviderNamespace::parse(namespace)
-            .map_err(|_error| Error::InvocationRejected(CoralFailure::OperationNotFound))?;
-        Ok(Self {
-            namespace,
-            relative_path: relative_path.to_string(),
-        })
-    }
 }
 
 /// One admitted Invocation's immutable evidence.
@@ -1361,7 +1466,7 @@ pub(crate) struct InvocationProgress {
 
 pub(crate) enum InvocationCompletion {
     Upstream { result_json: String },
-    Failure(CoralFailure),
+    Failure(Rejection),
 }
 
 impl InvocationCompletion {
@@ -1376,21 +1481,21 @@ impl InvocationCompletion {
 enum SelectionOutcome {
     Waiting(InvocationProgress),
     Ready(InvocationProgress),
-    Rejected(CoralFailure),
+    Rejected(Rejection),
     RunNotCurrent,
 }
 
 enum GateOutcome {
     Waiting,
     Ready,
-    Rejected(CoralFailure),
+    Rejected(Rejection),
     RunNotCurrent,
 }
 
 enum FenceOutcome {
     RefreshRequired,
     Permitted,
-    Rejected(CoralFailure),
+    Rejected(Rejection),
     RunTerminated,
 }
 
@@ -1690,6 +1795,7 @@ impl ChunkWork for EndBeforeSendWork {
         let unfinished = UnfinishedInvocation {
             id: self.admitted.id.clone(),
             state: InvocationState::Dispatching,
+            call_path: self.admitted.call_path.clone(),
         };
         // A row that is no longer dispatching was settled by the termination
         // itself; nothing is left to end.
@@ -1698,6 +1804,7 @@ impl ChunkWork for EndBeforeSendWork {
             run,
             &unfinished,
             InvocationResultKind::RunTerminated,
+            None,
             ended_at,
         )
         .await?;
@@ -1708,4 +1815,42 @@ impl ChunkWork for EndBeforeSendWork {
     fn settle(self: Box<Self>, recorded: Result<(), Error>) {
         self.reply.settle(recorded);
     }
+}
+
+#[async_trait]
+impl crate::builtin::InvokingRun for OperationInvoker {
+    /// Whether this Run still accepts Program work: not stopped, terminated or
+    /// past its deadline.
+    async fn still_current(&self) -> Result<bool, Error> {
+        if self.stop.is_requested() {
+            return Ok(false);
+        }
+        let mut tx = self.database.begin_read_snapshot().await?;
+        let run =
+            run_repository::find_exact_in_transaction(&mut tx, &self.workspace_id, &self.run_id)
+                .await?;
+        tx.commit().await?;
+        let now = self.now()?;
+        Ok(run.is_some_and(|run| self.run_is_current(&run, now)))
+    }
+
+    async fn stopped(&self) {
+        self.stop.requested().await;
+    }
+
+    fn now(&self) -> Result<i64, Error> {
+        OperationInvoker::now(self)
+    }
+
+    #[cfg(test)]
+    fn setup_prepared(&self) {
+        self.observer.builtin_setup_prepared();
+    }
+}
+
+/// What the fence permits: one upstream send, or a Built-in Operation that
+/// Coral performs itself.
+enum Dispatch {
+    Upstream(ReadyDispatch),
+    Builtin(Box<crate::builtin::BuiltinCall>),
 }

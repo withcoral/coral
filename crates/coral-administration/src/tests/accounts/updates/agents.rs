@@ -67,11 +67,10 @@ async fn agent_update(shared: bool, removal_first: bool) {
         .unwrap();
     let database = f.db.database();
     let mut tx = database.begin().await.unwrap();
-    let target = coral_provider::resolve_invocation_operation_in_transaction(
+    let target = coral_provider::resolve_owner_operation_in_transaction(
         &mut tx,
         f.workspace.id(),
-        &ProviderNamespace::parse("private").unwrap(),
-        "value",
+        "coral.providers.private.value",
     )
     .await
     .unwrap()
@@ -82,7 +81,7 @@ async fn agent_update(shared: bool, removal_first: bool) {
             .unwrap()
             .unwrap();
     tx.commit().await.unwrap();
-    let providers = ProviderModule::new(
+    let providers = ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         database,

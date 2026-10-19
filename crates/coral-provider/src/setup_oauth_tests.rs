@@ -1284,8 +1284,8 @@ async fn cancellation_and_expiry_leave_no_usable_credential() {
                 .authorized,
             "{flow:?}: material past the Setup deadline is scrubbed"
         );
-        // The expired ready Setup can still record its failed Publication.
-        let failed = if let Some(sealed) = &sealed {
+        // A Ready Setup expires at its deadline as well, so it publishes nothing.
+        if let Some(sealed) = &sealed {
             let publication = fixture
                 .harness
                 .providers
@@ -1300,14 +1300,12 @@ async fn cancellation_and_expiry_leave_no_usable_credential() {
                     )
                     .with_account_grant(sealed.provisional_grant_id.unwrap()),
                 )
-                .await
-                .unwrap();
-            assert_eq!(publication.outcome(), ProviderPublicationOutcome::Failed);
-            assert_eq!(publication.diagnostic().unwrap().code(), "setup_expired");
-            Some(publication.id().clone())
-        } else {
-            None
-        };
+                .await;
+            assert!(
+                matches!(publication, Err(Error::ProviderSetupNotReady)),
+                "{flow:?}: {publication:?}"
+            );
+        }
         assert!(
             matches!(
                 fixture.begin(owner, &expiring, 102 + HOUR).await,
@@ -1317,7 +1315,7 @@ async fn cancellation_and_expiry_leave_no_usable_credential() {
         );
         assert_eq!(
             fixture.setup_state(&expiring).await,
-            failed.map_or(ProviderSetupState::Expired, ProviderSetupState::Consumed),
+            ProviderSetupState::Expired,
             "{flow:?}"
         );
         assert!(
@@ -1367,7 +1365,8 @@ async fn callbacks_are_fenced_against_replay_forgery_and_superseded_flows() {
             ),
             "{flow:?}"
         );
-        // Another Owner can neither complete nor restart this User's flow.
+        // Another Owner cannot complete this User's flow: to them the Setup
+        // does not exist.
         let other = organization_user(
             fixture.harness.database.clone(),
             "user:oauth-fence-other",
@@ -1378,14 +1377,7 @@ async fn callbacks_are_fenced_against_replay_forgery_and_superseded_flows() {
         assert!(
             matches!(
                 fixture.complete(&other, &setup, &current, CODE, 23).await,
-                Err(Error::AccountNotFound)
-            ),
-            "{flow:?}"
-        );
-        assert!(
-            matches!(
-                fixture.begin(&other, &setup, 24).await,
-                Err(Error::AccountNotFound)
+                Err(Error::ProviderSetupNotFound)
             ),
             "{flow:?}"
         );
@@ -2110,7 +2102,7 @@ async fn blockers(
         .into_iter()
         .map(|inspection| {
             (
-                format!("{:?}", inspection.provider.namespace()),
+                format!("{:?}", inspection.provider.call_root()),
                 inspection.blockers,
             )
         })
@@ -2124,11 +2116,10 @@ async fn active_contract(
     namespace: &str,
 ) -> ProviderCredentialContract {
     let mut tx = harness.database.begin().await.unwrap();
-    let target = crate::resolve_invocation_operation_in_transaction(
+    let target = crate::resolve_owner_operation_in_transaction(
         &mut tx,
         workspace,
-        &crate::access::ProviderNamespace::parse(namespace).unwrap(),
-        "getData",
+        &format!("coral.providers.{namespace}.getData"),
     )
     .await
     .unwrap()
@@ -3268,6 +3259,108 @@ async fn confidential_setup_authenticates_with_the_workspace_owners_application(
 #[tokio::test]
 async fn confidential_setup_authenticates_with_the_organization_owners_application() {
     Box::pin(confidential_application_lifecycle(true)).await;
+}
+
+/// An agent's createProvider confirms a confidential application without its
+/// secret, which it never sees. Sign-in refuses to start until the person gives
+/// the secret, and then seals it with the flow, as configuration would have.
+#[tokio::test]
+async fn an_application_secret_can_follow_confirmation_and_arrives_with_the_sign_in() {
+    use crate::{OAuthClientAuthentication, OAuthClientConfiguration};
+    let api = OAuthApi::start().await;
+    let harness = harness(None).await;
+    let (actor, workspace) = workspace_owner(&harness, "user:secret-follows").await;
+    let owner = workspace.id().clone();
+    let context = change_context(actor.clone(), 10, '1');
+    let setup = harness
+        .providers
+        .prepare_openapi_fixture(&context, &owner, api.document("Confidential"))
+        .await
+        .unwrap();
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(header(
+            "authorization",
+            "Basic b3duZXIlM0FhcHArJTJCOnNlY3JldCUzQSUyQislMjZjYW5hcnk=",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": ACCESS, "token_type": "Bearer", "refresh_token": REFRESH,
+            "scope": "read write", "expires_in": 3600
+        })))
+        .with_priority(2)
+        .mount(&api.server)
+        .await;
+    let review = harness
+        .providers
+        .review_setup_configuration(&actor, &owner, setup.id())
+        .await
+        .unwrap();
+    let application = coral_catalog::OAuthClientPolicy {
+        bootstrap: OAuthClientBootstrap::Manual,
+        client_id: "owner:app +".into(),
+        authentication: coral_catalog::OAuthClientAuthenticationMethod::ClientSecretBasic,
+        pkce: coral_catalog::OAuthPkcePolicy::S256,
+        authorization_parameters: std::collections::BTreeMap::new(),
+    };
+    let mut configuration = review.confirmed.unwrap();
+    configuration.authentication = configuration
+        .authentication
+        .map(|method| method.with_oauth_client(&application));
+    let confirmed = harness
+        .providers
+        .confirm_setup_configuration(&context, &owner, setup.id(), review.revision, configuration)
+        .await
+        .unwrap();
+    assert!(confirmed.errors.is_empty(), "{:?}", confirmed.errors);
+
+    let without_secret = harness
+        .accounts
+        .start_setup_authorization(
+            &context,
+            &owner,
+            setup.id(),
+            confirmed.revision,
+            self::client(),
+        )
+        .await;
+    assert!(
+        matches!(without_secret, Err(Error::OAuthClientConfiguration)),
+        "{without_secret:?}"
+    );
+
+    let started = harness
+        .accounts
+        .start_setup_authorization(
+            &context,
+            &owner,
+            setup.id(),
+            confirmed.revision,
+            SetupOAuthClient::application(
+                "https://reef.example/provider-setup/oauth/callback".into(),
+                OAuthClientConfiguration::new(
+                    "owner:app +".into(),
+                    OAuthClientAuthentication::ClientSecretBasic {
+                        secret: Some(Secret::new("secret:+ &canary".into()).unwrap()),
+                    },
+                ),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let navigation = started.authorization.unwrap().authorization_url.unwrap();
+    assert!(!navigation.contains("canary"));
+    let completed = harness
+        .accounts
+        .complete_setup_authorization(
+            &context,
+            None,
+            &state_of(&navigation),
+            Secret::new(CODE.into()).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(completed.authentication.authorized);
 }
 
 #[expect(
@@ -4466,7 +4559,8 @@ async fn regeneration_expires_only_setup_secrets_and_repairs_only_replaced_appli
     let original_secret = active_secret().await;
     for (secret, created, now, succeeds, repairs) in [
         (Some("expired-canary"), 10, HOUR + 10, false, false),
-        (None, 10, HOUR + 10, true, false),
+        // A Setup expires at its deadline with or without a secret of its own.
+        (None, 10, HOUR + 10, false, false),
         (Some("fresh-canary"), HOUR + 11, HOUR + 12, true, true),
     ] {
         let created_context = change_context(actor.clone(), created, '2');
@@ -4951,7 +5045,7 @@ async fn consent_issuance_rechecks_dns_on_setup_reads_account_reads_and_request_
     for published in [false, true] {
         let mut h = harness(None).await;
         let public = Arc::new(AtomicBool::new(false));
-        h.providers = crate::ProviderModule::new(
+        h.providers = crate::ProviderModule::with_running_catalog(
             coral_outbound::DestinationPolicy::default(),
             h.database.clone(),
             h.workspaces.clone(),

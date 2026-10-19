@@ -5,7 +5,6 @@
 mod arguments;
 mod authentication;
 mod http;
-mod human_interface;
 mod instructions;
 mod projection;
 mod prompts;
@@ -15,8 +14,8 @@ mod urls;
 #[cfg(test)]
 use {
     coral_catalog as _, coral_policy as _, coral_provider as _, coral_test_support as _,
-    jsonschema as _, opentelemetry as _, opentelemetry_sdk as _, reqwest as _, sqlx as _,
-    tracing as _, tracing_opentelemetry as _, tracing_subscriber as _,
+    jsonschema as _, opentelemetry as _, opentelemetry_sdk as _, reqwest as _, tracing as _,
+    tracing_opentelemetry as _, tracing_subscriber as _,
 };
 
 use std::num::NonZeroUsize;
@@ -26,11 +25,11 @@ use coral_task::{TaskCommands, TaskModule};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceModule};
 
 pub use authentication::{AuthenticationError, OauthProtectedResource, WorkspaceAuthenticator};
+pub use coral_run::{HumanInterfaceUrl, HumanInterfaceUrlError};
 pub use http::{
     McpHttpConfig, McpHttpError, ReadinessProbe, RunningMcpHttpServer, start_authenticated,
     start_local,
 };
-pub use human_interface::{HumanInterfaceUrl, HumanInterfaceUrlError};
 pub use server::SUPPORTED_PROTOCOL_VERSIONS;
 pub use urls::{WORKSPACE_MCP_ROUTE, parse_workspace_mcp_path, workspace_mcp_path};
 

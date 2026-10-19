@@ -38,27 +38,15 @@ impl Fixture {
     }
 
     async fn new() -> Self {
-        let migrator = coral_test_support::combined_migrator_with(
-            &[
-                coral_workspace::migrator(),
-                crate::migrator(),
-                coral_functions::migrator(),
-                coral_catalog::migrator(),
-                coral_provider::migrator(),
-                coral_policy::migrator(),
-                coral_run::migrator(),
-                coral_search::migrator(),
-            ],
-            [sqlx::migrate::Migration::new(
-                9000,
-                "Task fault controls".into(),
-                sqlx::migrate::MigrationType::Simple,
-                sqlx::SqlStr::from_static(
-                    "CREATE TABLE task_test_fault_parent (id INTEGER PRIMARY KEY); CREATE TABLE task_test_fault_child (id INTEGER PRIMARY KEY CHECK (id > 0), parent_id INTEGER REFERENCES task_test_fault_parent(id) DEFERRABLE INITIALLY DEFERRED);",
-                ),
-                false,
-            )],
-        );
+        let migrator = coral_test_support::migration_plan_with([sqlx::migrate::Migration::new(
+            9000,
+            "Task fault controls".into(),
+            sqlx::migrate::MigrationType::Simple,
+            sqlx::SqlStr::from_static(
+                "CREATE TABLE task_test_fault_parent (id INTEGER PRIMARY KEY); CREATE TABLE task_test_fault_child (id INTEGER PRIMARY KEY CHECK (id > 0), parent_id INTEGER REFERENCES task_test_fault_parent(id) DEFERRABLE INITIALLY DEFERRED);",
+            ),
+            false,
+        )]);
         let fixture = TestDatabase::new(&migrator).await.unwrap();
         let database = fixture.database();
         coral_search::prepare_storage(&database).await.unwrap();
@@ -80,11 +68,17 @@ impl Fixture {
             coral_functions::IsolateLimits::default(),
         )
         .unwrap();
+        let loopback = coral_outbound::DestinationPolicy::default()
+            .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps);
         let runs = coral_run::RunModule::new(
-            coral_outbound::DestinationPolicy::default()
-                .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
+            loopback,
             database.clone(),
             workspaces.clone(),
+            coral_provider::ProviderModule::with_running_catalog(
+                loopback,
+                database.clone(),
+                workspaces.clone(),
+            ),
             coral_run::RuntimeLimits::default(),
         )
         .unwrap();
@@ -114,7 +108,7 @@ impl Fixture {
     /// filter by it.
     async fn publish_provider(&self, namespace: &str) {
         let database = self.test_database.database();
-        coral_provider::ProviderModule::new(
+        coral_provider::ProviderModule::with_running_catalog(
             coral_outbound::DestinationPolicy::default(),
             database.clone(),
             WorkspaceModule::new(database),
@@ -1948,8 +1942,8 @@ fn wall_time() -> i64 {
 async fn empty_filtered_search_retains_exact_accepted_query_provider_and_limit() {
     let fixture = Fixture::new().await;
     let goal = fixture.goal().await;
+    fixture.publish_provider("weather").await;
     let provider = "weather";
-    fixture.publish_provider(provider).await;
     let page = fixture
         .commands
         .search(

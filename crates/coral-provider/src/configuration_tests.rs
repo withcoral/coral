@@ -2198,14 +2198,9 @@ async fn confirmation_conceals_other_workspaces_and_rechecks_expiry_and_authorit
             .await,
         Err(Error::Workspace(coral_workspace::Error::WorkspaceNotFound))
     ));
-    let review = h
-        .providers
-        .review_setup_configuration(&administrator, &owner, setup.id())
-        .await
-        .unwrap();
-    assert_eq!(review.revision, 0);
-    assert!(!review.configuration_confirmed);
-    assert!(review.confirmed.is_none());
+    let stored = crate::tests::stored_setup(&h.database, &owner, setup.id()).await;
+    assert_eq!(stored.configuration_revision, 0);
+    assert!(stored.configuration.is_none());
     assert_eq!(
         h.providers
             .list_lifecycle_events(&administrator, workspace.id())
@@ -2245,6 +2240,8 @@ async fn modules_retain_independent_outbound_permissions_for_preview_and_publica
                     }),
                     h.database.clone(),
                     h.workspaces.clone(),
+                    coral_catalog::BuiltinCatalog::running()
+                        .expect("the built-in catalog prepares"),
                 ),
             )
         })

@@ -31,7 +31,7 @@ async fn regeneration_rechecks_setup_configuration_after_materialization() {
 )]
 async fn rejected_regeneration(change: InterveningChange) {
     let (_database_fixture, database, workspaces) = test_foundation().await;
-    let default_providers = ProviderModule::new(
+    let default_providers = ProviderModule::with_running_catalog(
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
@@ -183,10 +183,9 @@ async fn rejected_regeneration(change: InterveningChange) {
         Err(Error::ProviderPublicationNotFound)
     ));
     assert_eq!(
-        providers
-            .get_setup(&inspector, &fixture.workspace_id, setup.id())
+        crate::tests::stored_setup(&providers.database, &fixture.workspace_id, setup.id())
             .await
-            .unwrap()
+            .setup
             .state(),
         ProviderSetupState::Ready
     );
@@ -280,7 +279,7 @@ async fn rejected_regeneration(change: InterveningChange) {
 #[tokio::test]
 async fn competing_regeneration_requests_consume_one_setup_once() {
     let (_database_fixture, database, workspaces) = test_foundation().await;
-    let default_providers = ProviderModule::new(
+    let default_providers = ProviderModule::with_running_catalog(
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),

@@ -16,7 +16,7 @@ use coral_catalog::{
 use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
 
-use crate::access::ProviderNamespace;
+use crate::access::ProviderCallRoot;
 use crate::{Error, OperationAuthoringMaterial, Provider, ProviderId, ProviderState, repository};
 
 /// Everything Universal Search may index about one Generation: the Provider's
@@ -25,7 +25,7 @@ use crate::{Error, OperationAuthoringMaterial, Provider, ProviderId, ProviderSta
 pub struct GenerationEntries {
     workspace_id: WorkspaceId,
     provider_id: ProviderId,
-    namespace: ProviderNamespace,
+    call_root: ProviderCallRoot,
     display_name: String,
     generation_id: ProviderGenerationId,
     operations: Vec<OperationEntry>,
@@ -42,7 +42,7 @@ impl GenerationEntries {
         Self {
             workspace_id: provider.owner().clone(),
             provider_id: provider.id().clone(),
-            namespace: provider.access().namespace().clone(),
+            call_root: provider.access().call_root().clone(),
             display_name: provider.display_name().to_string(),
             generation_id,
             operations,
@@ -61,11 +61,10 @@ impl GenerationEntries {
         &self.provider_id
     }
 
-    /// Returns the Provider's immutable namespace, the second segment of every
-    /// Call Path.
+    /// Returns the Provider's immutable Call Root, the start of every Call Path.
     #[must_use]
-    pub const fn namespace(&self) -> &ProviderNamespace {
-        &self.namespace
+    pub const fn call_root(&self) -> &ProviderCallRoot {
+        &self.call_root
     }
 
     /// Returns the Provider's display name.
@@ -105,7 +104,7 @@ impl OperationEntry {
         &self.key
     }
 
-    /// Returns the Call Path below the Provider namespace.
+    /// Returns the Call Path below the Provider Call Root.
     #[must_use]
     pub fn relative_path(&self) -> &str {
         &self.relative_path
@@ -232,7 +231,7 @@ pub struct ActiveProvider {
 }
 
 impl ActiveProvider {
-    /// Returns the Provider: its identity, namespace, display name, and
+    /// Returns the Provider: its identity, Call Root, display name, and
     /// account-setting evidence.
     #[must_use]
     pub const fn provider(&self) -> &Provider {
@@ -494,7 +493,7 @@ pub async fn hydrate_operation_in_transaction(
 }
 
 /// Reads one Operation of the Provider's active Generation by its path below
-/// the namespace, for an exact description. Reads no other Operation.
+/// the Call Root, for an exact description. Reads no other Operation.
 ///
 /// `Ok(None)` when no structurally available Operation has the path. The
 /// caller decides visibility.

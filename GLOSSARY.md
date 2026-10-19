@@ -163,7 +163,8 @@ telemetry, replay checkpoint
 _Avoid_: Using episode as an alias for Task
 
 **Upstream Service**: An external system, such as Gmail or Linear, that receives calls from a Provider. Several
-Providers can connect to the same Upstream Service through different interfaces or configurations. _Avoid_: Provider,
+Providers can connect to the same Upstream Service through different interfaces or configurations. For a Built-in
+Provider, Coral itself is the Upstream Service. _Avoid_: Provider,
 Provider Account
 
 **Provider Recipe**: A distributed, secret-free description of one Upstream Service that pre-fills Provider Setup and
@@ -194,8 +195,9 @@ setup-scoped material rather than a permanent discovery account; retaining it as
 requires an explicit choice. Failed or abandoned creation leaves no usable Provider Account. Creating or regenerating a
 Provider consumes the prepared setup; Coral does not fetch a different descriptor silently. A Setup is `awaiting_configuration`, `awaiting_authorization`, `awaiting_discovery`, `ready`, `consumed`, `expired`,
 or `canceled`. Only a
-ready Setup feeds Publication. A pre-ready Setup and any Setup holding setup-scoped credential material has a host
-deadline; expiry and explicit cancellation scrub that material. _Avoid_: Provider Definition inspection, live Provider,
+ready Setup feeds Publication. Every open Setup has a host deadline one hour after it is created; a Setup still open
+then, ready or not, expires, and Publication refuses it. Expiry and explicit cancellation scrub setup-scoped credential
+material. _Avoid_: Provider Definition inspection, live Provider,
 implicit refresh
 _In Reef_: never named; preparation within "Add provider", "Refresh operations", "Edit configuration", and "Change account setting"
 
@@ -222,7 +224,32 @@ lifecycle. Providers are independent even when configured from the same upstream
 _Avoid_: Source, Upstream Service, Provider Definition, provider account
 _In Reef_: "provider"; revoke and restore are "Disable" and "Enable"; hard deletion is "Remove"
 
-**Operation**: A single callable action exposed by an Upstream Service through a Provider and made available by Coral.
+**Built-in Provider**: The one Provider in every Workspace whose Operation catalog Coral itself defines and whose
+Operations Coral itself performs, with no upstream dispatch. Its Call Root is `coral.workspace`. It shares search, describe,
+Operation Access State, Approval Requests, and Operation Invocation records with every other Provider. Only a User with
+effective Workspace Owner authority can discover or invoke its Operations; members and Agent Principals cannot. An
+Owner can disable and enable it and set its Operation policy, but nobody can rename, reconfigure, or remove it, and it
+has no Provider Accounts. When Coral boots, it updates every Workspace's Built-in Provider to the catalog it
+serves; a Workspace whose update fails keeps its catalog until the next boot. Coral itself publishes the Provider
+only from a ready Setup on the `none` route. A credential-requiring Setup, on the `fixed` or the `caller` route, always
+needs a person to sign in. If a person must finish the Setup and the Run is still current, the Operation returns the
+Reef page and does not wait; Coral ends a Setup it prepared that nobody will finish. Its Operations never return a
+secret or an OAuth URL to the Program, and never take a secret from it: a person enters a confidential OAuth
+application's secret in Reef. A Reef link one returns may name a Provider Setup; that Setup's identity grants nothing,
+and only the User who started the Setup can publish it.
+_Avoid_: admin API, administrative calls, coral.admin surface, system provider
+_In Reef_: "Coral", with the Coral logo, listed first
+
+**Provider Namespace**: The short JavaScript identifier an Owner chooses for a Provider, such as `github`, and the
+name Reef shows and accepts. It is one segment of the Provider's Call Root. _Avoid_: Call Root, display name
+
+**Provider Call Root**: The complete, immutable, Workspace-unique JavaScript path under which one Provider's Operations
+are called: `coral.providers.<provider-namespace>` for an Owner-created Provider and `coral.workspace` for the Built-in
+Provider. Uniqueness applies to the Call Root, so a Provider named `workspace` (`coral.providers.workspace`) never clashes with
+the Built-in Provider. _Avoid_: namespace, prefix
+
+**Operation**: A single callable action exposed by an Upstream Service, or by Coral for the Built-in Provider, through a
+Provider and made available by Coral.
 It has named inputs and returns one upstream-native result. _Avoid_: Capability, function, tool
 
 **Operation Key**: The Upstream Service-authored or deterministically derived key that addresses an Operation within one
@@ -234,11 +261,11 @@ management id
 
 **Operation Call Path**: The collision-free JavaScript path for one Provider Operation in Coral Programs and
 Principal-facing discovery. It is the only v1 client name for the Operation; v1 has no separate
-language-neutral Operation Logical Name. Every Call Path starts with `coral.providers.<provider-namespace>`. Provider
+language-neutral Operation Logical Name. Every Call Path starts with its Provider's Call Root. Provider
 Publication assigns and collision-resolves the Operation-relative projection, then carries it forward while the same
 Operation Key stays active. The projection is idiomatic JavaScript: `/` and `.` in the Operation Key separate dotted
 namespace segments and each segment is lowerCamelCase, so `actions/add-repo-access` projects as
-`actions.addRepoAccess`. Each Provider prefixes that projection with its immutable namespace. The path
+`actions.addRepoAccess`. Each Provider prefixes that projection with its immutable Call Root. The path
 persists outside an MCP session and is distinct from the internal Operation Key.
 A removed Operation-relative path or Provider namespace is not reserved and can be reused later. V1 provides
 no alias or historical Call Path compatibility guarantee. A Call Path does not pin a Provider Generation. _Avoid_:
@@ -278,8 +305,10 @@ application key. It belongs to that one account and is never a Provider-wide set
 _Avoid_: credential input, secret (a field need not be sensitive), credential parameter
 
 **Credential Route**: The Provider setting that determines whether Invocations use no credentials (`none`), its single
-shared Provider Account (`fixed`), or the invoking Principal's exact Provider Account (`caller`). Programs cannot
-select the route or account, and Coral never falls back to another route or credential. A User's missing,
+shared Provider Account (`fixed`), or the invoking Principal's exact Provider Account (`caller`). A Program cannot
+choose the route or account for an Invocation, and Coral never falls back to another route or credential. A route is
+Provider configuration: an Owner chooses it in Reef, or an Owner's Program chooses it for the Provider that
+`coral.workspace.createProvider` creates. A User's missing,
 disconnected, expired, or incompatible `caller` Account does not hide Operations from discovery. The User connects a
 missing or disconnected Account during Invocation, before approval and dispatch, and reconnects an expired or
 incompatible one the same way; Coral never replaces a connected Account's credentials on its own. Before discovery, a
@@ -428,8 +457,9 @@ read-only (see Operation Hints) as possibly effectful. _Avoid_: Write operation,
 open-world. Coral takes each hint at catalog materialization only when the source declares it, from an MCP tool's
 annotations in v1, and never assumes a protocol default, so an undeclared hint says nothing. OpenAPI/HTTP-sourced
 Operations declare none in v1, and their HTTP method is not a hint; Coral's MCP resource read is read-only by protocol
-definition. Hints are provider claims, not caller-configurable, and only a declared read-only hint affects policy among
-them. _Avoid_: Effect classification, `unknown` effect, tool annotations
+definition. Coral declares the hints of each Built-in Provider Operation in its catalog. Hints are provider claims, not
+caller-configurable, and only a declared read-only hint affects policy among them. _Avoid_: Effect classification,
+`unknown` effect, tool annotations
 _In Reef_: one label per hint declared true: "Read-only", "Destructive", "Idempotent", "Open world"; none when undeclared
 
 **Operation Access State**: The Workspace decision that one Operation is `enabled`, `approval_required`, or `disabled`.
@@ -538,7 +568,8 @@ invokes each subsequent page. Coral returns one provider response per invocation
 combine pages. _Avoid_: Transparent pagination, automatic pagination
 
 **Execution Binding**: The upstream-specific invocation recipe attached to an Operation behind Coral's common Operation
-interface. A v1 binding describes HTTP or MCP without exposing routing or credential details to Programs. _Avoid_:
+interface. A v1 binding describes HTTP, MCP, or a Built-in Provider Operation without exposing routing or credential details to
+Programs. _Avoid_:
 Execution attachment, client transport, File Collection binding
 
 **Upstream Outcome**: A complete upstream result received for one Operation Invocation and represented according to its
@@ -551,7 +582,9 @@ state
 
 **Coral Failure**: A safe, coded inability to produce a complete Upstream Outcome for one Operation Invocation. It
 excludes Run-level termination and unexpected host defects and makes no public claim about dispatch, external effects,
-or retry safety in v1. _Avoid_: Upstream failure, transport failure, Program failure
+or retry safety in v1. When Coral can identify an invalid argument, an `invalid_input` failure names it and gives a
+Coral-written reason; otherwise it may give only a general message. It never repeats a submitted value. _Avoid_:
+Upstream failure, transport failure, Program failure
 
 **Upstream Result**: The Upstream Service-owned value and safe upstream metadata carried by an Upstream Outcome. Coral
 does not reshape the value into normalized rows or make upstream schema conformance a condition of success. _Avoid_:
@@ -632,7 +665,8 @@ and it creates no separate durable Run or Invocation record. Its type informatio
 runtime TypeScript semantics. _Avoid_: UDF, Operation, tool, Saved Function JSON Schema, dynamic function lookup
 
 **Coral Program**: Principal-authored TypeScript lowered to JavaScript and executed by a Coral-owned, secret-free
-runtime against schema-typed Provider Operations under `coral.providers` and Saved Functions under `coral.functions`.
+runtime against schema-typed Provider Operations under their Call Roots (`coral.providers` and `coral.workspace`) and Saved
+Functions under `coral.functions`.
 JavaScript remains valid source, and type information guides authoring without gating admission. It receives Operation
 Results, catchable Operation Errors, `coral.emit`, and a bounded global `console`; Run cancellation and deadlines remain
 host-owned and have no Program-visible signal. It receives no Workspace, Principal, Provider Account, policy, approval,

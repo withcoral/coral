@@ -18,7 +18,7 @@ async fn offboarding_and_initial_publication_never_leave_a_departed_users_accoun
 async fn create_and_remove(removal: Removal, shared: bool, removal_first: bool) {
     let mut f = AccountFixture::new().await;
     let context = change(&f.member);
-    let providers = ProviderModule::new(
+    let providers = ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         f.db.database(),

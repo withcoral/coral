@@ -10,7 +10,7 @@ use crate::{MaterializationOutcome, McpDiscoverySnapshot, OpenApiDocument};
     reason = "persistence acceptance checks every retained catalog facet"
 )]
 async fn catalog_preserves_retained_generations_and_operations() {
-    let fixture = TestDatabase::new(crate::migrator()).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
     let http = include_str!("../../tests/fixtures/openapi-http-corpus.yaml");
     let inputs = [
@@ -46,7 +46,7 @@ async fn catalog_preserves_retained_generations_and_operations() {
             .collect::<Vec<_>>();
         let generation_id = publish_generation(
             &mut transaction,
-            input,
+            GenerationInput::Setup(input),
             &ProviderSetupInputDigest::of_setup_input(input),
             prepared,
             "persistence-fixture",
@@ -174,7 +174,7 @@ async fn summary_fixture(
     assert!(expected.len() > 3);
     let generation = publish_generation(
         tx,
-        &input,
+        GenerationInput::Setup(&input),
         &ProviderSetupInputDigest::of_setup_input(&input),
         prepared,
         "summary-page-fixture",
@@ -187,7 +187,7 @@ async fn summary_fixture(
 
 #[tokio::test]
 async fn summary_pages_are_bounded_and_do_not_load_operation_definitions() {
-    let fixture = TestDatabase::new(crate::migrator()).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
     let mut tx = database.begin().await.unwrap();
     let (generation, expected) = summary_fixture(&mut tx).await;
@@ -273,7 +273,7 @@ async fn summary_pages_are_bounded_and_do_not_load_operation_definitions() {
 
 #[tokio::test]
 async fn summary_pages_use_ordinal_keys_independently_of_database_locale() {
-    let fixture = TestDatabase::new(crate::migrator()).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
     let mut tx = database.begin().await.unwrap();
     let (generation, operations) = summary_fixture(&mut tx).await;
@@ -327,24 +327,33 @@ async fn summary_pages_use_ordinal_keys_independently_of_database_locale() {
 
 #[tokio::test]
 async fn catalog_schema_rejects_drift() {
-    let mut migrations = vec![sqlx::migrate::Migration::new(
-        0,
-        "inject schema drift".into(),
-        sqlx::migrate::MigrationType::Simple,
-        sqlx::SqlStr::from_static("CREATE TABLE materialized_operations (unexpected TEXT)"),
-        false,
-    )];
-    let fixture = TestDatabase::new(&sqlx::migrate::Migrator::with_migrations(
-        migrations.clone(),
-    ))
-    .await
-    .unwrap();
-    migrations.extend(crate::migrator().iter().cloned());
+    const CATALOG_MIGRATION: i64 = 3;
+    let before_catalog = coral_test_support::edited_migration_plan(|migrations| {
+        migrations
+            .into_iter()
+            .filter(|migration| migration.version < CATALOG_MIGRATION)
+            .collect()
+    });
+    let fixture = TestDatabase::new(&before_catalog).await.unwrap();
+    fixture
+        .execute_fixture_sql("CREATE TABLE materialized_operations (unexpected TEXT)")
+        .await
+        .unwrap();
+
+    let error = fixture
+        .database()
+        .migrate(coral_db::migration_plan())
+        .await
+        .expect_err("a drifted catalog table must be rejected");
+
     assert!(
-        fixture
-            .database()
-            .migrate(&sqlx::migrate::Migrator::with_migrations(migrations))
-            .await
-            .is_err()
+        matches!(
+            &error,
+            coral_db::Error::Migration(sqlx::migrate::MigrateError::ExecuteMigration(
+                _,
+                CATALOG_MIGRATION
+            ))
+        ),
+        "{error:?}"
     );
 }

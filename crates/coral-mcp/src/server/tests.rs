@@ -14,17 +14,7 @@ use super::*;
 use serde_json::{Value, json};
 
 async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
-    let migrator = coral_test_support::combined_migrator(&[
-        coral_workspace::migrator(),
-        coral_task::migrator(),
-        coral_catalog::migrator(),
-        coral_provider::migrator(),
-        coral_policy::migrator(),
-        coral_run::migrator(),
-        coral_functions::migrator(),
-        coral_search::migrator(),
-    ]);
-    let fixture = TestDatabase::new(&migrator).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
     coral_search::prepare_storage(&database).await.unwrap();
     let user = local_organization_owner();
@@ -52,6 +42,11 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
         coral_outbound::DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
+        coral_provider::ProviderModule::with_running_catalog(
+            coral_outbound::DestinationPolicy::default(),
+            database.clone(),
+            workspaces.clone(),
+        ),
         RuntimeLimits::default(),
     )
     .unwrap();

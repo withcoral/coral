@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useId,
+  useMemo,
   useState,
   type ReactNode,
 } from 'react'
@@ -121,11 +122,29 @@ export function ActionReviewSession({
   )
 }
 
+/** An inline OpenAPI document can run to thousands of lines, so the arguments
+ * name it and the document itself starts collapsed below them. */
+function withoutInlineDocument(json: string): { args: string; document?: string } {
+  try {
+    const value = JSON.parse(json)
+    const document = value?.source?.document
+    if (typeof document !== 'string') return { args: json }
+    return {
+      args: JSON.stringify({
+        ...value,
+        source: { ...value.source, document: '(OpenAPI document, shown below)' },
+      }),
+      document,
+    }
+  } catch {
+    return { args: json }
+  }
+}
+
 /** Whether leaving the review would lose an unsent comment, so the session asks first. */
 export function useUnsentComment() {
   return useContext(DraftContext)?.dirty ?? false
 }
-
 /** One exact call, one draft, one durable decision in Activity. */
 export function ApprovalReview({ detail }: { detail: Approval }) {
   const csrf = useShellCsrf()
@@ -153,6 +172,11 @@ export function ApprovalReview({ detail }: { detail: Approval }) {
   const commentInvalid = new TextEncoder().encode(comment).length > 1024 || comment.includes('\0')
   const state = winning ?? detail.state
   const stateLabel = settledApproval(state)?.label ?? 'Approval unavailable'
+  // A comment draft re-renders on every keystroke; the document only changes with the call.
+  const { args, document } = useMemo(
+    () => withoutInlineDocument(detail.arguments),
+    [detail.arguments],
+  )
   return (
     <section className={styles.review} aria-label={`Review ${detail.callPath}`}>
       <Card.Header sticky>
@@ -173,7 +197,12 @@ export function ApprovalReview({ detail }: { detail: Approval }) {
         </div>
       </Card.Header>
       <Typography.HeadingSmall as="h4">Arguments to review</Typography.HeadingSmall>
-      <CodeBlock value={detail.arguments} format="json" />
+      <CodeBlock value={args} format="json" />
+      {document !== undefined && (
+        <Disclosure title="OpenAPI document">
+          <CodeBlock value={document} />
+        </Disclosure>
+      )}
       {detail.approver && (
         <Typography.BodySmall>
           Reviewed by: {detail.approverLabel || 'Previous reviewer'}

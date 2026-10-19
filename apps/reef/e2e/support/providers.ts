@@ -240,9 +240,18 @@ export async function nextPublication(page: Page) {
   )
 }
 
+/** Every workspace also holds the Built-in Provider, which Coral adds itself. */
+const BUILTIN_CALL_ROOT = 'coral.workspace'
+
+/** The providers the workspace added, without the Built-in Provider. */
+export function addedProviders<P extends { callRoot: string }>(providers: readonly P[]) {
+  return providers.filter((provider) => provider.callRoot !== BUILTIN_CALL_ROOT)
+}
+
 /**
- * Opens the settings page of the provider the URL names, or of the only
- * provider on the page, from its entry in the rail.
+ * Opens the settings page of the provider the URL names, from its entry in
+ * the rail. When the URL names no provider or the Built-in Provider, opens the
+ * only added provider's settings instead.
  */
 export async function openProviderSettings(page: Page) {
   // A saved change returns to settings. Load them again for fresh data.
@@ -256,12 +265,16 @@ export async function openProviderSettings(page: Page) {
   // redirect is about to replace.
   await page.waitForURL((url) => /\/providers(?:\/(?!new(?:\/|$))[^/?#]+)?$/.test(url.pathname))
   const routed = /\/providers\/([^/?#]+)/.exec(new URL(page.url()).pathname)?.[1]
-  // The bare list route selects its first provider implicitly. Each gear
-  // links to its provider's settings route, beside the provider in the rail.
+  // The bare list route selects its first provider implicitly, which can be
+  // the Built-in Provider. Each added provider's gear links to its settings
+  // route, beside the provider in the rail; Coral has no gear. Wait for the
+  // rail's gears before looking for the routed one, so a rail that has not
+  // rendered yet cannot redirect the click.
   const rail = page.getByRole('navigation', { name: 'installed providers', exact: true })
-  const gear = routed
-    ? rail.locator(`a[href$="/providers/${routed}/settings"]`)
-    : rail.getByRole('link', { name: / settings$/ }).first()
+  const gears = rail.getByRole('link', { name: / settings$/ })
+  await gears.first().waitFor()
+  const routedGear = routed ? rail.locator(`a[href$="/providers/${routed}/settings"]`) : null
+  const gear = routedGear && (await routedGear.count()) ? routedGear : gears.first()
   await gear.click()
   await page.waitForURL((url) => url.pathname.endsWith('/settings'))
   await breadcrumb(page, 'Settings').waitFor()
@@ -502,7 +515,7 @@ export async function openDialog(page: Page, trigger: Locator) {
  * in the confirmation, the same place OAuth confirms before it leaves for the
  * service; an API key would be labelled by its own header.
  */
-async function connectSharedAccount(page: Page, secret: string) {
+export async function connectSharedAccount(page: Page, secret: string) {
   const dialog = await openDialog(
     page,
     page.getByRole('button', { name: 'Connect the shared account', exact: true }),

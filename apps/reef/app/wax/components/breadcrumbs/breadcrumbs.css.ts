@@ -2,8 +2,8 @@ import { style } from '@/wax/css'
 
 import { theme } from '@/wax/theme/theme.css'
 
-// The trail heads the page, a step above body text: each part is set at the
-// body-large size, links at their 36 size and the current page in its strong weight.
+// Every part is set in the button-strong style: links at their 32 size, the
+// current page and the separators to match.
 export const breadcrumbList = style({
   alignItems: 'center',
   display: 'flex',
@@ -20,7 +20,7 @@ export const breadcrumbItem = style({
   maxWidth: '100%',
   selectors: {
     '&:not(:last-child)::after': {
-      ...theme.typography.bodyLarge,
+      ...theme.typography.buttonStrong,
       color: theme.content.tertiary,
       content: '/',
     },

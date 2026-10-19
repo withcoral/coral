@@ -298,9 +298,11 @@ pub(super) async fn finish(
 ) -> Result<bool, Error> {
     let (result_json, failure_code, failure_message) = match completion {
         InvocationCompletion::Upstream { result_json } => (Some(result_json.as_str()), None, None),
-        InvocationCompletion::Failure(failure) => {
-            (None, Some(failure.code()), Some(failure.message()))
-        }
+        InvocationCompletion::Failure(failure) => (
+            None,
+            Some(failure.code()),
+            Some(failure.message().into_owned()),
+        ),
     };
     let result_bytes = i64::try_from(result_json.map_or(0, str::len))
         .map_err(|_overflow| Error::CorruptData("Invocation byte count overflow".into()))?;
@@ -490,7 +492,11 @@ pub(super) async fn nonterminal_for_run(
     let rows: Vec<NonterminalInvocationRow> = transaction
         .fetch_all(
             Query::select()
-                .columns([OperationInvocations::Id, OperationInvocations::State])
+                .columns([
+                    OperationInvocations::Id,
+                    OperationInvocations::State,
+                    OperationInvocations::CallPath,
+                ])
                 .from(OperationInvocations::Table)
                 .and_where(
                     Expr::col(OperationInvocations::WorkspaceId).eq(run.workspace_id.to_string()),
@@ -512,6 +518,7 @@ pub(super) async fn nonterminal_for_run(
                     Error::CorruptData("Invocation has invalid identity".into())
                 })?,
                 state: InvocationState::from_storage_str(&row.state)?,
+                call_path: row.call_path,
             })
         })
         .collect()
@@ -522,8 +529,11 @@ pub(super) async fn end_for_termination(
     run: &RunRecord,
     invocation: &UnfinishedInvocation,
     result_kind: InvocationResultKind,
+    result_json: Option<&str>,
     ended_at_unix_nanos: i64,
 ) -> Result<bool, Error> {
+    let result_bytes = i64::try_from(result_json.map_or(0, str::len))
+        .map_err(|_overflow| Error::CorruptData("Invocation byte count overflow".into()))?;
     let statement = Query::update()
         .table(OperationInvocations::Table)
         .values([
@@ -543,6 +553,8 @@ pub(super) async fn end_for_termination(
                 OperationInvocations::ResultKind,
                 Expr::val(result_kind.as_storage_str()),
             ),
+            (OperationInvocations::ResultJson, Expr::val(result_json)),
+            (OperationInvocations::ResultBytes, Expr::val(result_bytes)),
         ])
         .and_where(Expr::col(OperationInvocations::WorkspaceId).eq(run.workspace_id.to_string()))
         .and_where(Expr::col(OperationInvocations::Id).eq(invocation.id.to_string()))
@@ -555,6 +567,7 @@ pub(super) async fn end_for_termination(
 struct NonterminalInvocationRow {
     id: String,
     state: String,
+    call_path: String,
 }
 
 pub(super) async fn has_nonterminal_for_run(

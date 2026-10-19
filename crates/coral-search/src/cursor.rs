@@ -4,7 +4,7 @@ use coral_workspace::{AuthenticatedPrincipal, PrincipalKind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::{Error, ProviderNamespace, SearchCursor};
+use crate::{Error, ProviderCallRoot, SearchCursor};
 
 /// The ranking format a cursor pages. It changes whenever a ranking change
 /// can reorder a result universe, so a cursor issued before fails as
@@ -26,7 +26,7 @@ pub(super) fn decode_cursor_position(
     actor: &AuthenticatedPrincipal,
     workspace_id: &WorkspaceId,
     normalized_query: Option<&str>,
-    provider: Option<&ProviderNamespace>,
+    provider: Option<&ProviderCallRoot>,
 ) -> Result<usize, Error> {
     let Some(cursor) = cursor else {
         return Ok(0);
@@ -56,7 +56,7 @@ pub(super) fn encode_cursor(
     actor: &AuthenticatedPrincipal,
     workspace_id: &WorkspaceId,
     normalized_query: Option<&str>,
-    provider: Option<&ProviderNamespace>,
+    provider: Option<&ProviderCallRoot>,
 ) -> Result<SearchCursor, Error> {
     let position = u64::try_from(position).map_err(|_error| Error::ServiceUnavailable)?;
     let payload = CursorPayload {
@@ -73,12 +73,12 @@ fn cursor_digest(
     actor: &AuthenticatedPrincipal,
     workspace_id: &WorkspaceId,
     normalized_query: Option<&str>,
-    provider: Option<&ProviderNamespace>,
+    provider: Option<&ProviderCallRoot>,
     position: u64,
 ) -> String {
     let mut hasher = Sha256::new();
     let workspace = workspace_id.to_string();
-    let provider = provider.map(ProviderNamespace::as_str).unwrap_or_default();
+    let provider = provider.map(ProviderCallRoot::as_str).unwrap_or_default();
     let position = position.to_string();
     for value in [
         match actor.principal().kind() {

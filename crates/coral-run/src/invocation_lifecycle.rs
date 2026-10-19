@@ -22,13 +22,26 @@ pub(crate) enum InvocationState {
 pub(crate) struct UnfinishedInvocation {
     pub(crate) id: InvocationId,
     pub(crate) state: InvocationState,
+    pub(crate) call_path: String,
 }
 
 impl UnfinishedInvocation {
-    fn termination_result(&self) -> Result<InvocationResultKind, Error> {
+    /// How the Invocation ends with its Run, and the Operation Result recovery
+    /// can still establish. A lost send is indeterminate. A lost
+    /// `createProvider` is not: Coral's own Publication shows what happened.
+    async fn settle_for_termination(
+        &self,
+        transaction: &mut Transaction<'_>,
+        run: &RunRecord,
+    ) -> Result<(InvocationResultKind, Option<String>), Error> {
         match self.state {
-            InvocationState::Pending => Ok(InvocationResultKind::RunTerminated),
-            InvocationState::Dispatching => Ok(InvocationResultKind::Indeterminate),
+            InvocationState::Pending => Ok((InvocationResultKind::RunTerminated, None)),
+            InvocationState::Dispatching
+                if crate::builtin::names_create_provider(&self.call_path) =>
+            {
+                crate::builtin::recover_create_provider(transaction, run, &self.id).await
+            }
+            InvocationState::Dispatching => Ok((InvocationResultKind::Indeterminate, None)),
             InvocationState::Ended => Err(Error::CorruptData(
                 "Invocation has invalid nonterminal state".into(),
             )),
@@ -158,12 +171,14 @@ pub(crate) async fn end_nonterminal_for_run(
     // Approval Requests, and their `invocation.ended` Events commit together.
     let mut events = Vec::with_capacity(invocations.len());
     for invocation in &invocations {
-        let result_kind = invocation.termination_result()?;
+        let (result_kind, result_json) =
+            invocation.settle_for_termination(transaction, run).await?;
         let event = end_for_termination(
             transaction,
             run,
             invocation,
             result_kind,
+            result_json.as_deref(),
             ended_at_unix_nanos,
         )
         .await?
@@ -180,13 +195,15 @@ pub(crate) async fn end_nonterminal_for_run(
 }
 
 /// Ends one nonterminal Invocation for a termination: its row, its pending
-/// Approval Request, and its `invocation.ended` for the caller's chunk. `None`
-/// when the row is no longer in the expected state.
+/// Approval Request, and its `invocation.ended` for the caller's chunk, with
+/// the Operation Result recovery established, if any. `None` when the row is
+/// no longer in the expected state.
 pub(crate) async fn end_for_termination(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
     invocation: &UnfinishedInvocation,
     result_kind: InvocationResultKind,
+    result_json: Option<&str>,
     ended_at_unix_nanos: i64,
 ) -> Result<Option<OwnedEvent>, Error> {
     if !invocation_repository::end_for_termination(
@@ -194,6 +211,7 @@ pub(crate) async fn end_for_termination(
         run,
         invocation,
         result_kind,
+        result_json,
         ended_at_unix_nanos,
     )
     .await?

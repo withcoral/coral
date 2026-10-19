@@ -26,17 +26,22 @@ test('Workspace operations preserve deep links, settings, and independent filter
       )
       await page.goto(`/workspaces/${workspace}/providers`)
       await table.waitFor()
-      const action = await table.locator('form').first().getAttribute('action')
+      // Coral's own provider lists first, so find this provider by its row.
+      const action = await table
+        .getByRole('row')
+        .filter({ has: page.getByRole('link', { name: 'works', exact: true }) })
+        .locator('form')
+        .getAttribute('action')
       if (!action) throw new Error('Missing installation action')
       installation = action
       await publishWorkspaceProvider(
         actor.accessToken,
         `workspaces/${workspace}`,
         // The second provider is taller than the table's port, so scrolling
-        // can bring its heading to the top.
+        // can bring its heading, or the first catalog's below Coral, to the top.
         openApiDocument('Second catalog', {
           another: { summary: 'Another operation' },
-          ...Object.fromEntries(Array.from({ length: 12 }, (_, index) => [`more${index}`, {}])),
+          ...Object.fromEntries(Array.from({ length: 24 }, (_, index) => [`more${index}`, {}])),
         }),
         'other',
       )

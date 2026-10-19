@@ -9,6 +9,11 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Test-only Built-in catalogs with Operations this Coral version does not
+# perform. Dev-dependencies enable this; production crates never do.
+test-fixtures = []
+
 [dependencies]
 coral-outbound.workspace = true
 coral-db.workspace = true
@@ -28,6 +33,8 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# Integration tests build this library without `cfg(test)`.
+coral-catalog = { workspace = true, features = ["test-fixtures"] }
 coral-test-support.workspace = true
 coral-v8.workspace = true
 tokio.workspace = true

@@ -41,7 +41,8 @@ export function ProviderSettingsPage({
 }: ProviderSettingsPageProps) {
   const owner = w.effectiveRole === 'owner'
   const active = w.state === 'active'
-  const canChange = owner && active
+  // Coral manages the Built-in Provider: owners read it and set its operations' policy only.
+  const canChange = owner && active && !provider.builtin
   return (
     <PageLayout
       variant="wide"
@@ -73,6 +74,7 @@ export function ProviderSettingsPage({
           form={form}
           owner={owner}
           active={active}
+          canChange={canChange}
           pending={pending}
         />
         {canChange && (
@@ -140,6 +142,7 @@ function AccountSection({
   form,
   owner,
   active,
+  canChange,
   pending,
 }: {
   workspacePath: string
@@ -147,6 +150,8 @@ function AccountSection({
   form: FormContext
   owner: boolean
   active: boolean
+  /** The reader may change the account setting. */
+  canChange: boolean
   pending: boolean
 }) {
   const audience = useAccountAudience()
@@ -209,7 +214,6 @@ function AccountSection({
       description={audience.onlyYou}
     />
   )
-  const canChange = owner && active
   return (
     <section aria-label="Account">
       <Card
@@ -325,8 +329,7 @@ function Removal({ provider, form }: { provider: ProviderSettingsView; form: For
             <ul className={styles.bulletList}>
               <Typography.Body as="li">{provider.displayName}</Typography.Body>
               <Typography.Body as="li">
-                The namespace{' '}
-                <Typography.CodeInline>coral.providers.{provider.namespace}</Typography.CodeInline>
+                The namespace <Typography.CodeInline>{provider.callRoot}</Typography.CodeInline>
               </Typography.Body>
               <Typography.Body as="li">Every connected account</Typography.Body>
             </ul>

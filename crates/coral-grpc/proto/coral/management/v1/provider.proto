@@ -43,6 +43,7 @@ service ProviderService {
   // Inspects one exact Workspace Provider.
   rpc GetProvider(GetProviderRequest) returns (Provider);
   // Reads source provenance for the current Workspace Owner only.
+  // The Built-in Provider has no source and fails with FailedPrecondition.
   rpc GetProviderSource(GetProviderSourceRequest) returns (ProviderSource);
   // Changes display metadata without changing identity or namespace.
   rpc UpdateProvider(UpdateProviderRequest) returns (Provider);
@@ -140,7 +141,8 @@ message Provider {
   ProviderState state = 3;
   // Concurrency token for current configuration and lifecycle.
   string etag = 5;
-  // Immutable Program namespace, unique in the Workspace.
+  // Provider Namespace of a Provider an Owner adds: the last segment of
+  // call_root, the name Reef shows. Empty for the Built-in Provider.
   string namespace = 6;
   // Current account-selection setting, never credential material.
   CredentialRoute credential_route = 7;
@@ -152,6 +154,8 @@ message Provider {
   SearchIndexState search_index_state = 10;
   // Why the last attempt failed. Unspecified unless search_index_state is FAILED.
   SearchIndexFailureReason search_index_failure_reason = 11;
+  // Immutable Workspace-unique Provider Call Root, such as coral.providers.github.
+  string call_root = 12;
 }
 
 // Lists Providers owned by one authorized Workspace.
@@ -890,7 +894,8 @@ message PublishProviderRequest {
   string setup = 2;
   // Required first-party UUID; exact replay returns the committed result.
   string request_id = 3;
-  // Creation only: immutable Workspace-unique Program namespace.
+  // Creation only: immutable Workspace-unique Provider Namespace. Coral calls
+  // the Provider under coral.providers.<namespace>.
   string namespace = 4;
   // Creation: required. Update: explicit replacement setting, absent to retain it.
   CredentialRoute credential_route = 5;

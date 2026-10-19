@@ -8,6 +8,7 @@ import {
 import { inspectRunEvents, managementClients } from '../../../../support/management.ts'
 import { oauthMcpServer } from '../../../../support/provider-fixtures.ts'
 import {
+  addedProviders,
   acceptOperations,
   accountQuestion,
   chooseAccount,
@@ -99,7 +100,7 @@ export async function protectedDiscovery(choice: 'retain' | 'different', context
             parent: `workspaces/${workspace}`,
           })
         ).providers,
-      ).toHaveLength(0)
+      ).toHaveLength(1)
     })
     await step('Explicitly choose the authorization to retain for shared use', async () => {
       await chooseAccount(page, 'shared')
@@ -145,7 +146,7 @@ export async function protectedDiscovery(choice: 'retain' | 'different', context
           url.searchParams.get('requestId') === new URL(frozenUrl).searchParams.get('requestId'),
       )
       const parent = `workspaces/${workspace}`
-      const committed = (await api.providers.listProviders({ parent })).providers
+      const committed = addedProviders((await api.providers.listProviders({ parent })).providers)
       expect(committed).toHaveLength(1)
       const inspect = () =>
         api.accounts.getProviderAccount({
@@ -180,7 +181,7 @@ export async function protectedDiscovery(choice: 'retain' | 'different', context
         available: 1,
         total: 1,
       })
-      const replayed = (await api.providers.listProviders({ parent })).providers
+      const replayed = addedProviders((await api.providers.listProviders({ parent })).providers)
       expect(replayed.map((provider) => provider.name)).toEqual(
         committed.map((provider) => provider.name),
       )

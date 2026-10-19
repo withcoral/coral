@@ -7,7 +7,7 @@
 //! transaction and returns evidence of what it changed; the caller commits.
 //! Commands retain exact creation or regeneration evidence. Workspace owns authority;
 //! Catalog owns materialization and immutable Generations. Provider prepares its
-//! immutable namespace and promotes provisional credentials in the final transaction.
+//! immutable Call Root and promotes provisional credentials in the final transaction.
 //! Every terminal transaction scrubs remaining provisional credentials.
 //!
 //! Safe structural/domain failures consume the Setup with a failed terminal result.
@@ -23,6 +23,40 @@ mod repository;
 #[cfg(test)]
 mod tests;
 mod types;
+
+/// The terminal Workspace Publication that one management request produced,
+/// in the caller's transaction. A request that reached no terminal Publication
+/// has none.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-evidence failure.
+pub async fn publication_for_request_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    request_id: &ManagementRequestId,
+) -> Result<Option<ProviderPublication>, Error> {
+    repository::publication_by_request_in_transaction(transaction, workspace_id, request_id).await
+}
+
+/// Publishes one Workspace-owned Provider in its own transaction and notifies
+/// Universal Search after the commit. The workflow that owns that transaction
+/// implements it, so a Built-in Operation publishes exactly as Reef does.
+#[async_trait::async_trait]
+pub trait WorkspaceProviderPublisher: Send + Sync {
+    /// Publishes the request's Setup. Safe structural and domain failures are
+    /// successful calls whose returned outcome is `Failed`.
+    ///
+    /// # Errors
+    ///
+    /// Returns authority, etag, configuration and operational failures, which
+    /// publish nothing and leave the Setup reusable.
+    async fn publish_workspace_provider(
+        &self,
+        context: &coral_workspace::ChangeContext,
+        request: WorkspaceProviderPublicationRequest,
+    ) -> Result<ProviderPublication, crate::Error>;
+}
 
 pub use types::{
     ActivatedGeneration, ProviderPublication, ProviderPublicationId, ProviderPublicationOutcome,
@@ -232,6 +266,10 @@ impl ProviderModule {
         )))
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one preflight keeps replay, the row lock, and the regeneration baseline in order"
+    )]
     async fn publication_preflight(
         &self,
         context: &ChangeContext,
@@ -274,7 +312,7 @@ impl ProviderModule {
             transaction.rollback().await?;
             return Ok(Preflight::Replay(terminal));
         }
-        // Creation and regeneration share the exact Workspace's request namespace.
+        // Creation and regeneration share the exact Workspace's request Call Root.
         // Re-read after a key appears: a concurrent exact request may
         // have committed since the first read (Postgres READ COMMITTED).
         if repository::request_key_exists(&mut transaction, &command).await? {
@@ -296,14 +334,16 @@ impl ProviderModule {
                 if !provider_exists {
                     return Err(Error::ProviderNotFound);
                 }
-                let provider = provider_repository::provider_in_transaction(
+                let provider = crate::change::load_for_change(
                     &mut transaction,
                     &owner,
                     request.provider_id(),
+                    crate::change::ProviderChange::Regenerate,
                 )
-                .await?
-                .filter(|stored| stored.provider.state() == ProviderState::Active)
-                .ok_or(Error::ProviderNotFound)?;
+                .await?;
+                if provider.provider.state() != ProviderState::Active {
+                    return Err(Error::ProviderNotFound);
+                }
                 // The terminal transaction checks the etag after settling an
                 // irreversibly stale account decision and its provisional material.
                 Command::Regenerate {
@@ -327,9 +367,14 @@ impl ProviderModule {
             }
             Command::Workspace(request) => Command::Workspace(request),
         };
-        let loaded = provider_repository::setup(&mut transaction, &owner, command.setup_id())
-            .await?
-            .ok_or(Error::ProviderSetupNotFound)?;
+        // Before anything reads the source on another User's behalf.
+        let loaded = crate::started_setup(
+            &mut transaction,
+            context.actor(),
+            &owner,
+            command.setup_id(),
+        )
+        .await?;
         require_ready(&loaded.setup)?;
         if let Command::Regenerate { request, .. } = &command {
             validate_regeneration_setup(request, &loaded)?;
@@ -407,26 +452,19 @@ impl ProviderModule {
             }
         };
         lock_setup(transaction, &owner, &setup_id).await?;
-        let current_setup = provider_repository::setup(&mut *transaction, &owner, &setup_id)
-            .await?
-            .ok_or(Error::ProviderSetupNotFound)?;
+        let current_setup =
+            crate::started_setup(&mut *transaction, context.actor(), &owner, &setup_id).await?;
         require_ready(&current_setup.setup)?;
         if current_setup.setup_input.as_ref() != Some(&setup_input) {
             return Err(Error::EtagMismatch);
         }
+        // A Setup that reached its deadline publishes nothing, ready or not.
         let materialized = if credential_decision_context(context, started).occurred_at_unix_nanos()
             >= setup_credentials::setup_deadline(current_setup.setup.created_at_unix_nanos())?
-            && crate::account::oauth_client_secret_repository::load(
-                transaction,
-                &owner,
-                &crate::account::oauth_client_secret_repository::Target::Setup(&setup_id),
-            )
-            .await?
-            .is_some()
         {
             MaterializationOutcome::Rejected(PublicationDiagnostic::stable(
                 "setup_expired",
-                "the setup-scoped OAuth application secret expired before Publication",
+                "the Setup expired before Publication",
             ))
         } else {
             materialized
@@ -1029,7 +1067,7 @@ impl ProviderModule {
             transaction,
             request.workspace_id(),
             provider_id.clone(),
-            request.namespace().clone(),
+            request.call_root(),
             request.credential_route(),
         )
         .await?
@@ -1054,12 +1092,10 @@ impl ProviderModule {
                 }
                 MaterializationOutcome::Rejected(diagnostic) => Err(diagnostic),
             },
-            access::PreparedProviderAccess::NamespaceConflict => {
-                Err(PublicationDiagnostic::stable(
-                    "provider_namespace_conflict",
-                    "the requested Provider namespace is already in use",
-                ))
-            }
+            access::PreparedProviderAccess::CallRootConflict => Err(PublicationDiagnostic::stable(
+                types::NAMESPACE_CONFLICT,
+                "the requested Provider namespace is already in use",
+            )),
         };
         let publication_id = ProviderPublicationId::generate();
         let (publication, evidence) = match prepared {

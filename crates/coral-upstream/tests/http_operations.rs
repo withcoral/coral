@@ -690,6 +690,16 @@ fn a_path_argument_cannot_become_a_dot_segment() {
             ),
         }
     }
+    // The Program learns which argument to correct.
+    let prepared = path_operation("https://api.example.test", SPLIT, SIMPLE);
+    assert!(
+        matches!(
+            try_plan(&prepared, &serde_json::json!({"a": "x", "b": "../admin"})),
+            Err(coral_upstream::Error::InvalidArguments(reason))
+                if reason == "Operation argument `b` cannot contain a `.` or `..` path segment"
+        ),
+        "the reason names the argument"
+    );
 }
 
 #[tokio::test]

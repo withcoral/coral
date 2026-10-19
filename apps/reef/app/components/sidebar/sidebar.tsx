@@ -9,7 +9,10 @@ import { Icon } from '@/wax/components/icon'
 import type { IconName } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { SidebarBadge, SidebarButton } from '@/wax/components/sidebar-button/sidebar-button'
-import { NavigationFrame } from '@/wax/components/navigation-frame/navigation-frame'
+import {
+  NavigationClose,
+  NavigationFrame,
+} from '@/wax/components/navigation-frame/navigation-frame'
 import { useTheme } from '@/wax/theme/theme-provider'
 import { ActionDialog, NameInput } from '@/views/management/forms'
 import { ArchiveWorkspaceButton } from '@/views/management/archive-workspace'
@@ -116,7 +119,7 @@ export function Sidebar({ initialIsMinimized, ...props }: SidebarProps) {
   const { isMinimized, toggleSidebar, hasToggled } = useSidebarState(initialIsMinimized)
   const location = useLocation()
   return (
-    <NavigationFrame navigationKey={location.key} label={props.workspace?.displayName ?? 'Coral'}>
+    <NavigationFrame navigationKey={location.key}>
       {(mobile) => (
         <SidebarNavigation
           {...props}
@@ -236,13 +239,7 @@ function SidebarNavigation({
       )}
       data-sidebar-minimized={isMinimized}
     >
-      <div
-        className={classNames(
-          styles.header,
-          isMinimized && styles.minimizedColumn,
-          isMinimized && !mobile && styles.minimizedHeader,
-        )}
-      >
+      <div className={classNames(styles.header, isMinimized && styles.minimizedColumn)}>
         <Link
           to="/"
           className={classNames(styles.identity, isMinimized && styles.minimizedControl)}
@@ -250,7 +247,9 @@ function SidebarNavigation({
         >
           <Brand compact={isMinimized} />
         </Link>
-        {!mobile && (
+        {mobile ? (
+          <NavigationClose />
+        ) : (
           <KeyboardShortcut
             handler={(event) => {
               event.preventDefault()
@@ -539,6 +538,7 @@ function SidebarNavigation({
                 <Menu.Item to="/organization/workspaces" icon="Folders">
                   Workspaces
                 </Menu.Item>
+                <Menu.Separator />
               </>
             )}
             {auth.mode === 'required' ? (

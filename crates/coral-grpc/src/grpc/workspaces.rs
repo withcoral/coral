@@ -299,13 +299,13 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
             .with_request_id(&input.request_id)
             .map_err(error)?;
         let created = self
-            .workspaces
-            .create(
+            .workspace_workflow
+            .create_workspace(
                 &context,
                 WorkspaceDisplayName::parse(&input.display_name).map_err(error)?,
             )
             .await
-            .map_err(error)?;
+            .map_err(administration_error)?;
         Ok(Response::new(
             self.workspace_view(&user, created.id()).await?,
         ))

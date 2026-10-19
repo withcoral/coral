@@ -1,4 +1,4 @@
-use crate::{Error, HttpExecutionBinding, McpExecutionBinding, SchemaId};
+use crate::{BuiltinExecutionBinding, Error, HttpExecutionBinding, McpExecutionBinding, SchemaId};
 
 /// Complete upstream-specific invocation recipe for one materialized Operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7,6 +7,8 @@ pub enum ExecutionBinding {
     Http(HttpExecutionBinding),
     /// MCP tool or resource execution.
     Mcp(McpExecutionBinding),
+    /// A Built-in Provider Operation that Coral performs itself.
+    Builtin(BuiltinExecutionBinding),
 }
 
 impl ExecutionBinding {
@@ -14,6 +16,7 @@ impl ExecutionBinding {
         match self {
             Self::Http(_) => "http",
             Self::Mcp(_) => "mcp",
+            Self::Builtin(_) => "builtin",
         }
     }
 
@@ -21,6 +24,7 @@ impl ExecutionBinding {
         match protocol {
             "http" => HttpExecutionBinding::from_storage_json(value).map(Self::Http),
             "mcp" => McpExecutionBinding::from_storage_json(value).map(Self::Mcp),
+            "builtin" => BuiltinExecutionBinding::from_storage_json(value).map(Self::Builtin),
             _ => Err(Error::CorruptData(format!(
                 "Materialized Operation has unrecognized protocol '{protocol}'"
             ))),
@@ -34,7 +38,7 @@ impl ExecutionBinding {
                 Some(binding.path_template()),
                 binding.server_url(),
             ),
-            Self::Mcp(_) => (None, None, None),
+            Self::Mcp(_) | Self::Builtin(_) => (None, None, None),
         }
     }
 
@@ -42,6 +46,7 @@ impl ExecutionBinding {
         match self {
             Self::Http(binding) => Box::new(binding.schema_ids()),
             Self::Mcp(binding) => Box::new(binding.schema_ids()),
+            Self::Builtin(binding) => Box::new(binding.schema_ids()),
         }
     }
 }

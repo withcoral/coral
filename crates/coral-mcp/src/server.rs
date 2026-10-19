@@ -155,7 +155,7 @@ impl McpServer {
             task_id: task.id().to_string(),
             providers: providers
                 .iter()
-                .map(|namespace| namespace.as_str().to_string())
+                .map(|call_root| coral_search::provider_filter_value(call_root).to_string())
                 .collect(),
         })
         .map_err(DispatchError::Tool)

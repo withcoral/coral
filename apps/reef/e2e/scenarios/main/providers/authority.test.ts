@@ -6,6 +6,7 @@ import { withBrowserSession } from '../../../support/browser-session.ts'
 import { joinAsOwner, managementClients } from '../../../support/management.ts'
 import { openApiDocument } from '../../../support/provider-fixtures.ts'
 import {
+  addedProviders,
   acceptOperations,
   chooseFile,
   confirmConfiguration,
@@ -78,7 +79,7 @@ test('A frozen publication request grants no authority after its owner is demote
         await waitForPublication(page)
         expect(
           (await api.providers.listProviders({ parent: workspace.name })).providers,
-        ).toHaveLength(1)
+        ).toHaveLength(2)
       })
     },
     { actor: alice.label, storageState: alice.storageState },
@@ -199,9 +200,9 @@ test('Members get 403 on Owner-only pages; malformed identifiers get 404', async
           })
         }
         expect(
-          (await member.providers.listProviders({ parent: workspace.name })).providers.map(
-            (provider) => provider.name,
-          ),
+          addedProviders(
+            (await member.providers.listProviders({ parent: workspace.name })).providers,
+          ).map((provider) => provider.name),
         ).toEqual([publication.provider])
       })
     },

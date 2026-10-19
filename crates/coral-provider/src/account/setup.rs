@@ -441,9 +441,7 @@ impl AccountModule {
             .workspaces
             .check_in_transaction(&mut tx, context.actor(), owner, WorkspaceAction::Configure)
             .await?;
-        let loaded = providers::setup(&mut tx, owner, id)
-            .await?
-            .ok_or(Error::ProviderSetupNotFound)?;
+        let loaded = crate::started_setup(&mut tx, context.actor(), owner, id).await?;
         crate::configuration::require_editable(&loaded, context)?;
         crate::configuration::check_preparation(self.providers.outbound_policy, &loaded)?;
         if loaded.configuration_revision != revision {
@@ -615,9 +613,7 @@ impl AccountModule {
         self.providers
             .check_owner_inspection_in_transaction(&mut tx, actor, owner)
             .await?;
-        let loaded = providers::setup(&mut tx, owner, id)
-            .await?
-            .ok_or(Error::ProviderSetupNotFound)?;
+        let loaded = crate::started_setup(&mut tx, actor, owner, id).await?;
         tx.rollback().await?;
         crate::configuration::check_preparation(self.providers.outbound_policy, &loaded)?;
         let requirement = loaded
@@ -708,9 +704,7 @@ impl AccountModule {
         if !providers::lock_setup_for_publication(&mut tx, owner, id).await? {
             return Err(Error::ProviderSetupNotFound);
         }
-        let loaded = providers::setup(&mut tx, owner, id)
-            .await?
-            .ok_or(Error::ProviderSetupNotFound)?;
+        let loaded = crate::started_setup(&mut tx, context.actor(), owner, id).await?;
         let discovery = loaded.setup.state() == crate::ProviderSetupState::AwaitingAuthorization
             && loaded.setup.input_kind() == coral_catalog::ProviderSetupInputKind::Mcp;
         if !discovery {
@@ -825,11 +819,17 @@ impl ProviderModule {
         if !exists {
             return Err(Error::ProviderSetupNotFound);
         }
-        let mut loaded = providers::setup(&mut tx, owner, id)
-            .await?
-            .ok_or(Error::ProviderSetupNotFound)?;
-        super::setup_oauth::settle_deadlines(&mut tx, &context, owner, authority, &mut loaded)
-            .await?;
+        let mut loaded = crate::started_setup(&mut tx, actor, owner, id).await?;
+        super::setup_oauth::settle_deadlines(
+            &mut tx,
+            super::setup_oauth::SetupActor::User {
+                context: &context,
+                authority,
+            },
+            owner,
+            &mut loaded,
+        )
+        .await?;
         let row = load(&mut tx, owner, id).await?;
         let active_contract = crate::configuration::update_contract(&mut tx, &loaded).await?;
         let client_secret_configured =

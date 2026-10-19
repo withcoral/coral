@@ -83,7 +83,7 @@ test('Drawer policy shares optimistic state and locks with the table', async (co
 
 async function openPolicies(page: Page, accessToken: string) {
   const workspace = await createWorkspace(accessToken, `Pending policy ${crypto.randomUUID()}`)
-  await publishWorkspaceProvider(
+  const { provider } = await publishWorkspaceProvider(
     accessToken,
     `workspaces/${workspace}`,
     openApiDocument('Pending', {
@@ -93,8 +93,10 @@ async function openPolicies(page: Page, accessToken: string) {
     }),
     'pending',
   )
-  await page.goto(`/workspaces/${workspace}/providers`)
+  await page.goto(`/${provider}`)
   await row(page, 'first').waitFor()
+  // Leave the Built-in Provider's operations out of every selection.
+  await page.getByRole('searchbox', { name: 'Filter providers' }).fill('Pending')
 }
 
 // Hold the actual browser POST, then let the real action/backend respond. No

@@ -87,17 +87,6 @@ impl CancellationCaller {
     }
 }
 
-/// Every domain migration plan a Run test database installs.
-pub(crate) const MIGRATION_PLANS: [&sqlx::migrate::Migrator; 7] = [
-    coral_workspace::migrator(),
-    coral_catalog::migrator(),
-    coral_provider::migrator(),
-    coral_policy::migrator(),
-    crate::migrator(),
-    coral_functions::migrator(),
-    coral_search::migrator(),
-];
-
 pub(crate) struct TestModules {
     pub(crate) test_database: TestDatabase,
     pub(crate) database: Arc<coral_db::Database>,
@@ -136,8 +125,7 @@ impl TestModules {
         invocation_observer: Arc<dyn InvocationObserver>,
         execution_observer: Arc<dyn ExecutionObserver>,
     ) -> Self {
-        let migrator = coral_test_support::combined_migrator(&MIGRATION_PLANS);
-        let fixture = TestDatabase::new(&migrator)
+        let fixture = TestDatabase::new(coral_db::migration_plan())
             .await
             .expect("create Program Run test database");
         let database = fixture.database();
@@ -145,7 +133,7 @@ impl TestModules {
             .await
             .expect("prepare Universal Search storage");
         let workspaces = WorkspaceModule::new(database.clone());
-        let providers = ProviderModule::new(
+        let providers = ProviderModule::with_running_catalog(
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             database.clone(),
             workspaces.clone(),
@@ -155,11 +143,13 @@ impl TestModules {
         let runs = RunModule::with_adapters(
             database.clone(),
             workspaces.clone(),
+            providers.clone(),
             engine,
             upstream.clone(),
             clock.clone(),
             crate::TestObservers::new(invocation_observer, execution_observer),
-        );
+        )
+        .with_human_interface(test_reef());
         Self {
             test_database: fixture,
             database,
@@ -179,9 +169,11 @@ impl TestModules {
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             self.database.clone(),
             self.workspaces.clone(),
+            self.providers.clone(),
             crate::RuntimeLimits::default(),
         )
-        .expect("start the real Program runtime");
+        .expect("start the real Program runtime")
+        .with_human_interface(test_reef());
         match accounts {
             Some(accounts) => runs.with_accounts(accounts),
             None => runs,
@@ -294,6 +286,19 @@ impl TestModules {
         intent: &str,
         server_url: &str,
     ) -> OperationFixture {
+        self.user_operation_under(user_id, intent, server_url, "weather")
+            .await
+    }
+
+    /// Publishes the forecast Provider at `coral.providers.<namespace>` and
+    /// enables its `getForecast` Operation.
+    pub(crate) async fn user_operation_under(
+        &self,
+        user_id: &str,
+        intent: &str,
+        server_url: &str,
+        namespace: &str,
+    ) -> OperationFixture {
         let (workspace_id, principal) = self.user_scope(user_id, intent).await;
         let user = principal
             .authenticated_user()
@@ -359,7 +364,7 @@ impl TestModules {
                         .expect("request id"),
                     workspace_id.clone(),
                     setup.id().clone(),
-                    ProviderNamespace::parse("weather").expect("namespace"),
+                    ProviderNamespace::parse(namespace).expect("namespace"),
                     CredentialRoute::None,
                 ),
             )
@@ -545,11 +550,10 @@ pub(crate) async fn configure_shared_account(
     );
     let (dir, accounts) = configure_shared_provider(fixture, operation, &document, values).await;
     let mut tx = fixture.database.begin().await.unwrap();
-    let target = coral_provider::resolve_invocation_operation_in_transaction(
+    let target = coral_provider::resolve_owner_operation_in_transaction(
         &mut tx,
         &operation.workspace_id,
-        &ProviderNamespace::parse("weather").unwrap(),
-        "getForecast",
+        "coral.providers.weather.getForecast",
     )
     .await
     .unwrap()
@@ -1009,4 +1013,11 @@ pub(crate) fn change(actor: AuthenticatedUser, at: i64, trace_digit: char) -> Ch
         at,
         TraceId::parse(&trace_digit.to_string().repeat(32)).expect("trace id"),
     )
+}
+
+/// The Reef origin every test runtime links built-in results to.
+pub(crate) const TEST_REEF: &str = "https://reef.example.test";
+
+pub(crate) fn test_reef() -> crate::HumanInterfaceUrl {
+    crate::HumanInterfaceUrl::parse(TEST_REEF).expect("test Reef origin")
 }

@@ -14,7 +14,7 @@ pub(super) async fn prepare_accounts(
     owner: &AuthenticatedUser,
     workspace: &WorkspaceId,
 ) -> (ProviderId, AccountModule, tempfile::TempDir) {
-    let providers = ProviderModule::new(
+    let providers = ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         database,
@@ -47,11 +47,10 @@ pub(super) async fn credential_evidence(
     user: &AuthenticatedUser,
 ) -> coral_provider::account::CredentialEvidence {
     let mut tx = database.begin().await.unwrap();
-    let target = coral_provider::resolve_invocation_operation_in_transaction(
+    let target = coral_provider::resolve_owner_operation_in_transaction(
         &mut tx,
         workspace,
-        &ProviderNamespace::parse("private").unwrap(),
-        "value",
+        "coral.providers.private.value",
     )
     .await
     .unwrap()
@@ -262,7 +261,7 @@ impl AccountFixture {
 )]
 async fn shared_account_survives_its_provisioner_but_pending_replacement_is_canceled() {
     let f = AccountFixture::new().await;
-    let providers = ProviderModule::new(
+    let providers = ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         f.db.database(),

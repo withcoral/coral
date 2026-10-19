@@ -43,8 +43,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     const provider = providerSettingsView(stored, workspace.path)
     const owner = workspace.effectiveRole === 'owner'
     const [source, connection] = await Promise.all([
-      // Source metadata is owner-only; members never reach the read.
-      owner ? readSource(api, name) : undefined,
+      // Source metadata is owner-only; members never reach the read. Coral
+      // defines the Built-in Provider's catalog, so it has no source.
+      owner && !provider.builtin ? readSource(api, name) : undefined,
       // Calls that use no account have no account to read.
       provider.account === 'none'
         ? {}

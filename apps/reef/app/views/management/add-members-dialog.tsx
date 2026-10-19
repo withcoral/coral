@@ -31,14 +31,14 @@ export function AddMembersDialog({
   const noun = role === 'owner' ? 'owner' : 'member'
   return (
     <>
-      <Button.TextButton
+      <Button.IconButton
         ref={trigger}
-        variant="primary"
+        name="Plus"
+        tooltipText="Add members"
+        variant="bare"
         disabled={disabled}
         onClick={() => setOpen(true)}
-      >
-        Add members
-      </Button.TextButton>
+      />
       <ActionDialog
         open={open}
         onOpenChange={(next) => {

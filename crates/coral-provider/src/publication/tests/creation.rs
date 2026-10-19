@@ -12,7 +12,7 @@ fn retention_request(
         ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
         setup.owner().clone(),
         setup.id().clone(),
-        ProviderNamespace::parse("retention").unwrap(),
+        crate::ProviderNamespace::parse("retention").unwrap(),
         route,
     )
 }
@@ -525,10 +525,9 @@ async fn creation_rechecks_owner_demotion_after_materialization() {
         Err(Error::ProviderPublicationNotFound)
     ));
     assert_eq!(
-        providers
-            .get_setup(&administrator, workspace.id(), setup.id())
+        crate::tests::stored_setup(&providers.database, workspace.id(), setup.id())
             .await
-            .unwrap()
+            .setup
             .state(),
         ProviderSetupState::Ready
     );

@@ -3,6 +3,7 @@ import { withOwnerSession } from '../../../support/actors.ts'
 import { managementClients } from '../../../support/management.ts'
 import { openApiDocument } from '../../../support/provider-fixtures.ts'
 import {
+  addedProviders,
   acceptOperations,
   backToConfiguration,
   chooseAccount,
@@ -111,7 +112,9 @@ test('Workspace creation and Update recover exact publication requests', async (
       const drawer = await openOperation(page, 'hello')
       await drawer.getByText('coral.providers.replayed.hello', { exact: true }).waitFor()
       const listed = await api.providers.listProviders({ parent: `workspaces/${workspace}` })
-      expect(listed.providers.map((provider) => provider.name)).toEqual([providerPath.slice(1)])
+      expect(addedProviders(listed.providers).map((provider) => provider.name)).toEqual([
+        providerPath.slice(1),
+      ])
     })
     await step('Recover Update using the original etag and configuration revision', async () => {
       await page.goto(`${providerPath}/update`)
@@ -162,7 +165,9 @@ test('Workspace creation and Update recover exact publication requests', async (
       const drawer = await openOperation(page, 'hello')
       await drawer.getByText('coral.providers.replayed.hello', { exact: true }).waitFor()
       const listed = await api.providers.listProviders({ parent: `workspaces/${workspace}` })
-      expect(listed.providers.map((provider) => provider.name)).toEqual([providerPath.slice(1)])
+      expect(addedProviders(listed.providers).map((provider) => provider.name)).toEqual([
+        providerPath.slice(1),
+      ])
       const operations = await api.providers.listOperations({ parent: providerPath.slice(1) })
       expect(operations.operations.map((operation) => operation.relativePath).toSorted()).toEqual([
         'hello',
@@ -231,6 +236,7 @@ test('Recover a lost Add response by replaying the same request identity', async
       await waitForPublication(page)
       expect(committedBody).toContain(new URL(page.url()).pathname)
       const rail = page.getByRole('navigation', { name: 'installed providers', exact: true })
+      // Only the added provider has settings; Coral has none.
       const settings = rail.getByRole('link', { name: / settings$/ })
       await settings.first().waitFor()
       expect(await settings.count()).toBe(1)

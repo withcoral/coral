@@ -17,17 +17,11 @@ async fn test_modules() -> (
     coral_workspace::WorkspaceModule,
     crate::ProviderModule,
 ) {
-    let migrator = coral_test_support::combined_migrator(&[
-        coral_workspace::migrator(),
-        coral_catalog::migrator(),
-        crate::migrator(),
-        coral_functions::migrator(),
-    ]);
-    let db = coral_test_support::TestDatabase::new(&migrator)
+    let db = coral_test_support::TestDatabase::new(coral_db::migration_plan())
         .await
         .unwrap();
     let workspaces = coral_workspace::WorkspaceModule::new(db.database());
-    let providers = crate::ProviderModule::new(
+    let providers = crate::ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         db.database(),

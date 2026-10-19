@@ -29,4 +29,5 @@ unicode-id-start.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+coral-workspace = { workspace = true, features = ["test-fixtures"] }
 coral-test-support.workspace = true

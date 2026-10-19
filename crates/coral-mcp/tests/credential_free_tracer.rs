@@ -230,8 +230,7 @@ impl Tracer {
     )]
     async fn start() -> Self {
         let upstream = TestUpstream::start().await;
-        let migrator = test_migrator();
-        let database = TestDatabase::new(&migrator)
+        let database = TestDatabase::new(coral_db::migration_plan())
             .await
             .expect("create MCP tracer database");
         let db = database.database();
@@ -249,7 +248,7 @@ impl Tracer {
             .await
             .expect("provision the local User");
         let tasks = TaskModule::new(db.clone(), workspaces.clone());
-        let providers = ProviderModule::new(
+        let providers = ProviderModule::with_running_catalog(
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             db.clone(),
             workspaces.clone(),
@@ -265,6 +264,7 @@ impl Tracer {
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             db.clone(),
             workspaces.clone(),
+            providers.clone(),
             coral_run::RuntimeLimits::default(),
         )
         .expect("start real Program runtime");
@@ -513,7 +513,7 @@ async fn handshakes_carry_instructions_and_no_readable_resources_on_every_versio
             "`wait`",
             "`next_cursor`",
             "`run_status_url`",
-            "`coral.providers.<namespace>",
+            "complete literal Call Path",
             "`fetch`",
             "`required_actor`",
         ] {
@@ -1096,6 +1096,7 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
         structured(&described)["call_path"],
         "coral.providers.weather.getForecast"
     );
+    assert_eq!(structured(&described)["provider_access"], "weather");
     assert!(
         structured(&described)["typescript_declaration"]
             .as_str()
@@ -2780,19 +2781,6 @@ async fn publish_operations(
             .expect("enable tracer Operation");
     }
     provider_id
-}
-
-fn test_migrator() -> sqlx::migrate::Migrator {
-    coral_test_support::combined_migrator(&[
-        coral_workspace::migrator(),
-        coral_task::migrator(),
-        coral_catalog::migrator(),
-        coral_provider::migrator(),
-        coral_policy::migrator(),
-        coral_run::migrator(),
-        coral_functions::migrator(),
-        coral_search::migrator(),
-    ])
 }
 
 fn change(

@@ -111,11 +111,14 @@ pub use activity_observation::{ActivityObservation, ActivityWake};
 pub use admission::{PreparedRun, StagedRun};
 pub mod approval;
 mod approval_repository;
+mod builtin;
 mod engine;
 mod error;
 mod execution;
 mod history;
+mod human_interface;
 pub use history::{InvocationStatus, InvocationSummary, RunSummary};
+pub use human_interface::{HumanInterfaceUrl, HumanInterfaceUrlError};
 pub mod history_repository;
 mod inspection;
 mod inspection_repository;
@@ -148,7 +151,7 @@ use coral_workspace::{
 pub use coral_v8::{IsolateLimits, ProgramError, ProgramOperationError};
 pub use coral_value::ValueLimits;
 use engine::{Clock, ProgramEngine, SystemClock, V8ProgramEngine};
-pub use error::{CoralFailure, Error};
+pub use error::{CoralFailure, Error, Rejection};
 use execution::ExecutionPolicy;
 #[cfg(test)]
 use execution::{ExecutionObserver, NoopExecutionObserver};
@@ -170,14 +173,6 @@ pub use types::{
     RuntimeLimits, SOURCE_MAP_MAX_BYTES,
 };
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-
-/// Returns the Program Run Module's domain-owned migration plan.
-#[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
-    &MIGRATOR
-}
-
 #[cfg(test)]
 struct TestObservers {
     invocation: Arc<dyn InvocationObserver>,
@@ -198,6 +193,9 @@ impl TestObservers {
 #[derive(Clone)]
 pub struct RunModule {
     accounts: Option<coral_provider::account::AccountModule>,
+    providers: coral_provider::ProviderModule,
+    provider_publisher: Option<Arc<dyn coral_provider::WorkspaceProviderPublisher>>,
+    human_interface: Option<HumanInterfaceUrl>,
     database: Arc<Database>,
     workspaces: WorkspaceModule,
     engine: Arc<dyn ProgramEngine>,
@@ -215,15 +213,21 @@ pub struct RunModule {
 
 impl RunModule {
     /// Builds the runtime with the deployment's outbound policy and runtime limits.
+    /// Built-in Operations prepare Setups through `providers`, the bootstrap's
+    /// Provider Module.
     /// # Errors
     /// Returns an initialization error when the runtime or HTTP client cannot start.
     pub fn new(
         policy: coral_outbound::DestinationPolicy,
         database: Arc<Database>,
         workspaces: WorkspaceModule,
+        providers: coral_provider::ProviderModule,
         limits: RuntimeLimits,
     ) -> Result<Self, Error> {
         Ok(Self {
+            providers,
+            provider_publisher: None,
+            human_interface: None,
             database,
             workspaces,
             accounts: None,
@@ -245,12 +249,16 @@ impl RunModule {
     pub(crate) fn with_adapters(
         database: Arc<Database>,
         workspaces: WorkspaceModule,
+        providers: coral_provider::ProviderModule,
         engine: Arc<dyn ProgramEngine>,
         upstream: Arc<dyn UpstreamSender>,
         clock: Arc<dyn Clock>,
         observers: TestObservers,
     ) -> Self {
         Self {
+            providers,
+            provider_publisher: None,
+            human_interface: None,
             database,
             workspaces,
             accounts: None,
@@ -271,6 +279,27 @@ impl RunModule {
     #[must_use]
     pub fn with_accounts(mut self, accounts: coral_provider::account::AccountModule) -> Self {
         self.accounts = Some(accounts);
+        self
+    }
+
+    /// Lets `coral.workspace.createProvider` publish a Provider that needs nobody to
+    /// sign in, through the workflow Reef publishes with. Without it, such a
+    /// call fails with `operation_unavailable`.
+    #[must_use]
+    pub fn with_provider_publisher(
+        mut self,
+        publisher: Arc<dyn coral_provider::WorkspaceProviderPublisher>,
+    ) -> Self {
+        self.provider_publisher = Some(publisher);
+        self
+    }
+
+    /// Names the Reef origin that built-in Operation Results link to. Only the
+    /// runtime that launches Programs needs it; without it, a built-in
+    /// Operation fails as `operation_unavailable`.
+    #[must_use]
+    pub fn with_human_interface(mut self, human_interface: HumanInterfaceUrl) -> Self {
+        self.human_interface = Some(human_interface);
         self
     }
 

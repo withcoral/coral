@@ -7,6 +7,7 @@ import { inspectRunEvents, managementClients } from '../../../support/management
 import { listen, openApiDocument } from '../../../support/provider-fixtures.ts'
 import {
   acceptOperations,
+  addedProviders,
   addProviderFromFile,
   chooseFile,
   confirmConfiguration,
@@ -100,10 +101,11 @@ test('Workspace Provider Add, MCP execution, policy, Update and lifecycle use on
           const providers = (
             await api.providers.listProviders({ parent: `workspaces/${workspace}` })
           ).providers
-          expect(providers).toHaveLength(1)
-          providerName = providers[0].name
+          expect(providers).toHaveLength(2)
+          const [added] = addedProviders(providers)
+          providerName = added.name
           expect(providerPath).toBe(`/${providerName}`)
-          expect(providers[0].namespace).toBe('weather')
+          expect(added.namespace).toBe('weather')
           await policy(providerPath, 'weather', 'Always allow')
           run = programRunner(page, target, workspace, {
             accessToken: await mcpToken(page, workspace),
@@ -223,7 +225,7 @@ test('Workspace Provider Add, MCP execution, policy, Update and lifecycle use on
           expect(calls).toBe(4)
           expect(
             (await api.providers.listProviders({ parent: `workspaces/${workspace}` })).providers,
-          ).toHaveLength(2)
+          ).toHaveLength(3)
           expect((await page.request.get(secondProvider)).status()).toBe(200)
         },
       )

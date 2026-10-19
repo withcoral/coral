@@ -111,6 +111,8 @@ impl StoredDeclarationFields {
                 self.mcp_names
                     .get_or_init(|| crate::mcp::typescript_names(graph)),
             ),
+            // Every built-in Operation takes one `input` object.
+            ExecutionBinding::Builtin(_) => Ok(true),
         };
         input_declared
             .map(|input_declared| {
@@ -239,6 +241,12 @@ fn walk_declarations(
                     .ok_or_else(invalid_index)?;
                 walk.index_root(output_schema, &output_path, output_projection)?;
             }
+        }
+        ExecutionBinding::Builtin(binding) => {
+            let output_path = DeclarationPath::result()
+                .property("data")
+                .ok_or_else(invalid_index)?;
+            walk.index_root(binding.output_schema(), &output_path, output_projection)?;
         }
     }
     walk.drain()

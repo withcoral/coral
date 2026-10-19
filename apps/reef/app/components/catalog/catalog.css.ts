@@ -17,7 +17,7 @@ export const layout = style({
 export const rail = style({
   display: 'flex',
   flexDirection: 'column',
-  gap: 12,
+  gap: 16,
   minHeight: 0,
   minWidth: 0,
   paddingInlineEnd: 16,
@@ -106,7 +106,7 @@ export const stack = style({
   display: 'flex',
   flex: '1 1 auto',
   flexDirection: 'column',
-  gap: 12,
+  gap: 16,
   minHeight: 0,
   minWidth: 0,
 })
@@ -124,9 +124,16 @@ export const toolbarGroup = style({
   flexWrap: 'wrap',
   gap: 12,
   minWidth: 0,
-  // The trailing group keeps the filter at the end when the row wraps.
-  selectors: { '&:last-child': { flex: '1 1 auto', justifyContent: 'flex-end' } },
+  // The trailing group keeps its controls on one line, at the end. When the row
+  // has no room for them at full width, the whole group moves below the title,
+  // so the picker never stacks over the filter beside a title centred on both.
+  selectors: {
+    '&:last-child': { flex: '1 1 auto', flexWrap: 'nowrap', justifyContent: 'flex-end' },
+  },
 })
-export const toolbarFilter = style({ flex: '0 1 360px', minWidth: 220 })
+export const toolbarTitle = style({ alignItems: 'center', display: 'flex', gap: 8, minWidth: 0 })
+// The basis decides when the group wraps; on its own line the filter then
+// shrinks to fit a phone.
+export const toolbarFilter = style({ flex: '0 1 360px', minWidth: 120 })
 // In a narrow column the filter takes the rest of the row, so it stays beside its picker.
 export const toolbarFilterFill = style({ flex: '1 1 160px', minWidth: 0 })

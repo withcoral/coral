@@ -17,7 +17,7 @@ Coral runs TypeScript Programs that call the user's connected providers.
 6. When the work is done or cannot continue, call `end_task` once with the outcome.
 
 ## Program rules
-- Write each call as its full literal path: `coral.providers.<namespace>.<operation>(...)` or `coral.functions.<path>(...)`. Keep `coral` and its sub-paths out of variables.
+- Write each call as the complete literal Call Path that `search` returns, such as `coral.providers.github.getRepo(...)`. Keep `coral` and its sub-paths out of variables.
 - Only Operations reach the network; `fetch`, `setTimeout` and other ambient APIs are absent.
 - Keep credentials and account choice out of Program source; Coral supplies both.
 - Publish interim output with `await coral.emit(value)`. The Program's return value is the Final Value.

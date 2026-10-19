@@ -455,11 +455,14 @@ async fn check_identities(session: &RawSession, task: &str, tools: &[Value]) {
             assert_eq!(error.get("code"), Some(&json!(-32602)));
         }
     }
-    // `provider` is a namespace, the second segment of a Call Path; an id is not one.
+    // `provider` is a namespace, or coral.workspace; an id or complete Call Path is not one.
     let provider_schema = validator(property(tools, "search", "provider"));
     assert!(provider_schema.is_valid(&json!("weather")));
+    assert!(provider_schema.is_valid(&json!("coral.workspace")));
     for invalid in [
         canonical,
+        "coral.providers.weather",
+        "coral.providers.weather.getForecast",
         "not-a-uuid",
         "ABCDEF12-1234-4123-8123-123456789ABC",
     ] {

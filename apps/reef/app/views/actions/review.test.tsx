@@ -79,6 +79,28 @@ async function click(name: string) {
 }
 
 describe('exact approval review', () => {
+  // Catches: an inline OpenAPI document burying the createProvider arguments.
+  it('collapses an inline OpenAPI document below the arguments', () => {
+    const detail = {
+      ...approval,
+      callPath: 'coral.workspace.createProvider',
+      arguments: JSON.stringify({
+        namespace: 'weather',
+        source: { kind: 'openapi_document', document: 'openapi: 3.1.0' },
+        credentialRoute: 'none',
+      }),
+    }
+    renderRoute(
+      <ActionReviewSession request={detail}>
+        <ApprovalReview detail={detail} />
+      </ActionReviewSession>,
+      { entry: '/activity', csrf: 'test-csrf' },
+    )
+    const inline = screen.getByText('OpenAPI document').closest('details')
+    expect(inline).not.toHaveAttribute('open')
+    expect(inline).toHaveTextContent('openapi: 3.1.0')
+  })
+
   it.each([
     [
       'approval to its exact operation',

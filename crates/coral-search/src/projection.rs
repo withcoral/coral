@@ -157,7 +157,7 @@ fn authoring(description: &AuthoringDescription) -> Value {
         fields.extend([
             (
                 "provider_access".to_string(),
-                json!(operation.provider_namespace().as_str()),
+                json!(crate::provider_filter_value(operation.provider_call_root())),
             ),
             (
                 "provider_id".to_string(),

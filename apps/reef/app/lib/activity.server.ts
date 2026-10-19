@@ -53,9 +53,10 @@ import {
 } from './management.server'
 import { savedFunctionHref } from './management-views.server'
 import { listAllOperations, listAllProviders, providerPath } from './providers.server'
+import { operationOwner } from './call-root'
 import { connectionState } from './accounts.server'
 import { MAX_EXPANDED_RECORDS } from '@/views/activity/types'
-import { discoveryView, functionTarget, operationTarget } from '@/views/activity/discovery/response'
+import { discoveryView, functionTarget } from '@/views/activity/discovery/response'
 import {
   ACTIVITY_CHILD_WINDOW,
   retainRows,
@@ -168,16 +169,13 @@ async function linkCurrentTargets(
     view.kind === 'search' ? view.page.hits : view.kind === 'describe' ? [view.description] : []
   const workspace = workspaceOf(interaction.name)
   if (targets.some((target) => target.kind === 'operation')) {
-    const providers = new Map(
-      (await listedOrNone(() => listAllProviders(api, workspace))).map((provider) => [
-        provider.namespace,
-        provider.name,
-      ]),
-    )
+    const providers = await listedOrNone(() => listAllProviders(api, workspace))
     const linked = targets.flatMap((target) => {
-      const operation = target.kind === 'operation' ? operationTarget(target.callPath) : null
-      const provider = operation && providers.get(operation.namespace)
-      return operation && provider ? [{ target, provider, path: operation.relativePath }] : []
+      const owner = target.kind === 'operation' ? operationOwner(target.callPath, providers) : null
+      if (!owner) return []
+      // An untitled operation shows its path inside the provider, as the provider page does.
+      if (target.title === target.callPath) target.title = owner.relativePath
+      return [{ target, provider: owner.provider.name, path: owner.relativePath }]
     })
     // An update can remove an operation and keep its provider, so read the
     // current operations of each provider that a target names.

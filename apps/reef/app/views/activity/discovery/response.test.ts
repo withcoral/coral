@@ -34,8 +34,9 @@ it('reads a search page into hits, with no coverage when every retriever searche
   expect(view.page.hits[4]).toEqual({
     ...updateBranch,
     kind: 'operation',
-    // A hit names no title, so Reef shows the path under the namespace.
-    title: 'pulls.updateBranch',
+    // A hit names no title, so it shows its Call Path until the loader links
+    // it to its provider and shortens it.
+    title: 'coral.providers.github.pulls.updateBranch',
     matched: { fields: [], tags: ['pulls'], paths: [] },
   })
 })

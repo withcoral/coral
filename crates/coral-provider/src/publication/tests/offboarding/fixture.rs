@@ -1,10 +1,8 @@
 use super::*;
 use crate::setup_tests::Harness;
 
-// Administration also retires Saved Functions. Compose its schema into the
-// existing Provider Harness, using the same backend selection as other tests.
 pub(super) async fn harness() -> Harness {
-    Harness::with_migrations(&[coral_functions::migrator()]).await
+    Harness::new().await
 }
 
 pub(super) async fn candidate(
@@ -79,11 +77,10 @@ pub(super) async fn evidence(
     principal: &coral_workspace::Principal,
 ) -> account::CredentialEvidence {
     let mut tx = h.database.begin().await.unwrap();
-    let target = crate::resolve_invocation_operation_in_transaction(
+    let target = crate::resolve_owner_operation_in_transaction(
         &mut tx,
         workspace,
-        &ProviderNamespace::parse(namespace).unwrap(),
-        "getPrivateForecast",
+        &format!("coral.providers.{namespace}.getPrivateForecast"),
     )
     .await
     .unwrap()

@@ -48,7 +48,7 @@ test('A recipe logo with a dark-theme variant reads in both themes', async (cont
     const heading = page
       .getByRole('table', { name: 'Operations', exact: true })
       .locator('[role="row"][aria-level="1"]')
-      .first()
+      .filter({ hasText: 'Logo fixture' })
     let workspace = ''
     await step('Show the white GitHub mark in the dark catalog', async () => {
       workspace = await createWorkspace(actor.accessToken, `Logos ${crypto.randomUUID()}`)
@@ -61,13 +61,13 @@ test('A recipe logo with a dark-theme variant reads in both themes', async (cont
       expect(await visibleGlyphLuminance(card)).toBeLessThan(0.2)
     })
     await step('Show the recipe logo for a provider added under its id', async () => {
-      await publishWorkspaceProvider(
+      const { provider } = await publishWorkspaceProvider(
         actor.accessToken,
         `workspaces/${workspace}`,
         openApiDocument('Logo fixture', { hello: {} }),
         'github',
       )
-      await page.goto(`/workspaces/${workspace}/providers`)
+      await page.goto(`/${provider}`)
       expect(await visibleGlyphLuminance(heading)).toBeLessThan(0.2)
       await useTheme(page, 'dark')
       expect(await visibleGlyphLuminance(heading)).toBeGreaterThan(0.8)

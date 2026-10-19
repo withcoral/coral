@@ -120,6 +120,9 @@ fn run_effect(
         Effect::StartProgram(package) => {
             let invoker = OperationInvoker::new(
                 module.accounts.clone(),
+                module.providers.clone(),
+                module.provider_publisher.clone(),
+                module.human_interface.clone(),
                 module.database.clone(),
                 module.workspaces.clone(),
                 actor.clone(),

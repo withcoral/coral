@@ -13,6 +13,11 @@
 //! to its own terminal transaction.
 
 mod binding;
+mod builtin;
+pub use builtin::{
+    BUILTIN_PROVIDER_DISPLAY_NAME, BuiltinCatalog, BuiltinCatalogIdentity, BuiltinExecutionBinding,
+    BuiltinOperation,
+};
 mod configuration;
 pub use configuration::{
     ConfigurationFieldError, CredentialField, DISPLAY_NAME_MAX_BYTES, ProviderConfiguration,
@@ -56,7 +61,9 @@ pub async fn setup_input_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     generation_id: &ProviderGenerationId,
 ) -> Result<ProviderSetupInput, Error> {
-    repository::load_setup_input(transaction, generation_id).await
+    repository::load_setup_input(transaction, generation_id)
+        .await?
+        .ok_or_else(no_setup_input)
 }
 
 /// Reads only the source kind for an owner-authorized Provider inspection.
@@ -66,15 +73,22 @@ pub async fn setup_input_kind_in_transaction(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
 ) -> Result<ProviderSetupInputKind, Error> {
-    repository::load_setup_input_kind(transaction, generation_id).await
+    repository::load_setup_input_kind(transaction, generation_id)
+        .await?
+        .ok_or_else(no_setup_input)
+}
+
+/// The Built-in Provider's Generation pins Coral's own catalog, not a Setup input.
+fn no_setup_input() -> Error {
+    Error::InvalidInput("the Built-in Provider has no Setup input".to_string())
 }
 
 mod credentials;
 pub use credentials::{
     AuthenticationConfiguration, AuthenticationKind, CredentialSource, HeaderBinding,
     OAuthClientAuthenticationMethod, OAuthClientBootstrap, OAuthClientPolicy, OAuthPkcePolicy,
-    OAuthScopeFormat, ProviderCredentialContract, oauth_parameter_is_reserved,
-    validate_oauth_client_id,
+    OAuthScopeFormat, ProviderCredentialContract, oauth_endpoint_is_valid,
+    oauth_parameter_is_reserved, validate_oauth_client_id,
 };
 pub mod history_repository;
 mod repository;
@@ -86,6 +100,9 @@ use coral_db::Transaction;
 
 #[cfg(test)]
 use coral_v8 as _;
+// The dev-dependency on this crate exists for the integration tests' feature.
+#[cfg(test)]
+use coral_catalog as _;
 
 pub use binding::ExecutionBinding;
 pub use declaration_path::{DECLARATION_PATH_MAX_BYTES, DeclarationPath};
@@ -111,14 +128,6 @@ pub use types::{
     ProviderSetupInputDigest, ProviderSetupInputKind, SchemaGraph, SchemaId, SchemaSemantics,
 };
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-
-/// Returns the Catalog Module's domain-owned migration plan.
-#[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
-    &MIGRATOR
-}
-
 /// Materializes one pinned Provider Setup input with the deployment-selected policy.
 ///
 /// Active Operation-relative paths are carried forward only for Operation Keys
@@ -138,6 +147,7 @@ pub fn materialize(
             match operation.execution_binding() {
                 ExecutionBinding::Http(binding) => binding.server_url(),
                 ExecutionBinding::Mcp(binding) => Some(binding.server_url()),
+                ExecutionBinding::Builtin(_) => None,
             }
         });
         if let Err(diagnostic) =
@@ -214,13 +224,52 @@ pub async fn publish_generation_in_transaction(
 ) -> Result<ProviderGenerationId, Error> {
     repository::publish_generation(
         transaction,
-        setup_input,
+        repository::GenerationInput::Setup(setup_input),
         input_digest,
         prepared,
         materializer_version(setup_input.kind()),
         created_at_unix_nanos,
     )
     .await
+}
+
+/// Publishes one Workspace's own Generation of `catalog`. The caller owns
+/// the transaction and commits the Provider that selects it atomically with
+/// this facet.
+///
+/// # Errors
+///
+/// Returns a persistence failure.
+pub async fn publish_builtin_generation_in_transaction(
+    transaction: &mut Transaction<'_>,
+    catalog: &BuiltinCatalog,
+    created_at_unix_nanos: i64,
+) -> Result<ProviderGenerationId, Error> {
+    let identity = catalog.identity();
+    repository::publish_generation(
+        transaction,
+        repository::GenerationInput::Builtin(identity),
+        &ProviderSetupInputDigest::of_bytes(identity.as_str().as_bytes()),
+        catalog.prepared(),
+        builtin::MATERIALIZER_VERSION,
+        created_at_unix_nanos,
+    )
+    .await
+}
+
+/// Reports whether a Workspace's Built-in Generation pins `catalog`, by the
+/// catalog identity it pinned when Coral published it.
+///
+/// # Errors
+///
+/// Returns a persistence failure, or corrupt data for a Generation that pins
+/// no well-formed catalog identity.
+pub async fn builtin_generation_pins_in_transaction(
+    transaction: &mut Transaction<'_>,
+    catalog: &BuiltinCatalog,
+    generation_id: &ProviderGenerationId,
+) -> Result<bool, Error> {
+    Ok(&repository::load_builtin_identity(transaction, generation_id).await? == catalog.identity())
 }
 
 /// Reads confirmed secret-free OpenAPI configuration for Update review.

@@ -39,6 +39,9 @@ impl ReadyDispatch {
                 ReadyMcpDispatch::plan(operation, arguments, provider, resources, limits)
                     .map(|ready| Self::Mcp(Box::new(ready)))
             }
+            // The Run domain performs built-in Operations itself and never plans
+            // one. Planning one anyway settles as a safe Coral Failure.
+            ExecutionBinding::Builtin(_) => Err(Error::OperationUnavailable),
         }
     }
 }

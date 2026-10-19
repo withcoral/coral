@@ -5,7 +5,7 @@
 )]
 use coral_provider::{
     CredentialRoute, InvocationOperationVerification, LifecycleAction, LifecycleOutcome,
-    ManagementRequestId, OpenApiDocument, ProviderDisplayName, ProviderModule, ProviderNamespace,
+    ManagementRequestId, OpenApiDocument, ProviderCallRoot, ProviderDisplayName, ProviderModule,
     ProviderPublicationOutcome, ProviderRegenerationRequest, ProviderState,
     WorkspaceProviderPublicationRequest,
 };
@@ -32,16 +32,11 @@ async fn harness() -> (
     ProviderModule,
     AuthenticatedUser,
 ) {
-    let migrator = coral_test_support::combined_migrator(&[
-        coral_workspace::migrator(),
-        coral_catalog::migrator(),
-        coral_provider::migrator(),
-    ]);
-    let db = TestDatabase::new(&migrator)
+    let db = TestDatabase::new(coral_db::migration_plan())
         .await
         .expect("create domain test database");
     let workspaces = WorkspaceModule::new(db.database());
-    let providers = ProviderModule::new(
+    let providers = ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         db.database(),
@@ -119,7 +114,7 @@ fn added_events(
 async fn searchable_providers(
     database: &coral_db::Database,
     workspace: &WorkspaceId,
-) -> Vec<ProviderNamespace> {
+) -> Vec<ProviderCallRoot> {
     let mut tx = database.begin().await.expect("begin discovery read");
     let catalogs =
         coral_provider::provider_search_catalogs_in_transaction(&mut tx, workspace, None)
@@ -128,7 +123,7 @@ async fn searchable_providers(
     tx.rollback().await.expect("finish discovery read");
     catalogs
         .iter()
-        .map(|catalog| catalog.access().namespace().clone())
+        .map(|catalog| catalog.access().call_root().clone())
         .collect()
 }
 
@@ -142,7 +137,7 @@ fn request(
         ManagementRequestId::parse(id).expect("valid publication request fixture"),
         workspace.clone(),
         setup.id().clone(),
-        ProviderNamespace::parse(namespace).expect("valid namespace fixture"),
+        coral_provider::ProviderNamespace::parse(namespace).expect("valid namespace fixture"),
         CredentialRoute::None,
     )
 }
@@ -175,7 +170,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
         .unwrap();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let provider = publication.published_provider().unwrap();
-    assert_eq!(provider.namespace().as_str(), "weather");
+    assert_eq!(provider.call_root().as_str(), "coral.providers.weather");
     assert_eq!(provider.account_setting_version(), 1);
     assert_eq!(provider.access().id(), provider.id());
     assert_eq!(
@@ -187,11 +182,10 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
     );
 
     let mut tx = database.begin().await.unwrap();
-    let retained = coral_provider::resolve_invocation_operation_in_transaction(
+    let retained = coral_provider::resolve_owner_operation_in_transaction(
         &mut tx,
         workspace.id(),
-        provider.namespace(),
-        "forecast",
+        &format!("{}.forecast", provider.call_root().as_str()),
     )
     .await
     .unwrap()
@@ -208,7 +202,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
         .await
         .unwrap();
     assert_eq!(renamed.id(), provider.id());
-    assert_eq!(renamed.namespace(), provider.namespace());
+    assert_eq!(renamed.call_root(), provider.call_root());
     assert_eq!(renamed.account_setting_version(), 1);
     assert!(matches!(
         providers
@@ -245,7 +239,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
         .inspect_provider(&actor, workspace.id(), provider.id())
         .await
         .unwrap();
-    assert_eq!(updated.namespace(), provider.namespace());
+    assert_eq!(updated.call_root(), provider.call_root());
     assert_eq!(updated.account_setting_version(), 1);
     let mut tx = database.begin().await.unwrap();
     assert_eq!(
@@ -334,11 +328,10 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
     );
     let mut tx = database.begin().await.unwrap();
     assert!(
-        coral_provider::resolve_invocation_operation_in_transaction(
+        coral_provider::resolve_owner_operation_in_transaction(
             &mut tx,
             workspace.id(),
-            provider.namespace(),
-            "forecast"
+            &format!("{}.forecast", provider.call_root().as_str()),
         )
         .await
         .unwrap()
@@ -375,7 +368,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
     );
     assert_eq!(
         searchable_providers(&database, workspace.id()).await,
-        [provider.namespace().clone()]
+        [provider.call_root().clone()]
     );
     let before_delete = providers
         .list_lifecycle_events(&actor, workspace.id())
@@ -714,7 +707,7 @@ async fn existing_caller_binding_uses_the_workspace_provider_address() {
                 ManagementRequestId::parse("84000000-0000-4000-8000-000000000001").unwrap(),
                 workspace.id().clone(),
                 setup.id().clone(),
-                ProviderNamespace::parse("weather").unwrap(),
+                coral_provider::ProviderNamespace::parse("weather").unwrap(),
                 CredentialRoute::Caller,
             ),
         )
@@ -850,11 +843,10 @@ async fn existing_caller_binding_uses_the_workspace_provider_address() {
         Some(account_id)
     );
     let mut tx = database.begin().await.unwrap();
-    let retained = coral_provider::resolve_invocation_operation_in_transaction(
+    let retained = coral_provider::resolve_owner_operation_in_transaction(
         &mut tx,
         workspace.id(),
-        provider.namespace(),
-        "forecast",
+        &format!("{}.forecast", provider.call_root().as_str()),
     )
     .await
     .unwrap()
@@ -953,7 +945,7 @@ async fn foreign_workspace_mutations_are_denied_and_change_nothing() {
                 ManagementRequestId::parse("85000000-0000-4000-8000-000000000001").unwrap(),
                 home.id().clone(),
                 published.id().clone(),
-                ProviderNamespace::parse("weather").unwrap(),
+                coral_provider::ProviderNamespace::parse("weather").unwrap(),
                 CredentialRoute::Caller,
             ),
         )

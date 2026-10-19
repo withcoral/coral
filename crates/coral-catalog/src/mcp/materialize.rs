@@ -235,7 +235,6 @@ fn build_mcp(
             diagnostics_json,
         ));
     }
-    operations.sort_by(|left, right| left.key().cmp(right.key()));
     let catalog = PreparedProviderCatalog::new(
         display_name,
         schema_graph,

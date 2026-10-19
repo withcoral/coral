@@ -98,8 +98,9 @@ test('The keyboard drives the operations table, its drawer, and its policy', asy
       const count = heading('Keys').getByRole('button', { name: '1 Always allow', exact: true })
       await count.click()
       expect(await count.getAttribute('aria-pressed')).toBe('true')
+      // Coral's own provider has read-only operations that start as Always allow.
       await expect
-        .poll(() => table.locator('a[href*="/ops/"]').allTextContents())
+        .poll(() => heading('Keys').locator('a[href*="/ops/"]').allTextContents())
         .toEqual(['op146'])
       await heading('Keys').getByText('1 of 150 operations', { exact: true }).waitFor()
       await heading('Aside').getByText('No matching operations.', { exact: true }).waitFor()

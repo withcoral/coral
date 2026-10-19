@@ -3,7 +3,7 @@
 use coral_outbound::{EndpointUrl, ResourceIdentifier};
 
 /// Validated HTTPS or explicit loopback HTTP origin for authenticated human review.
-/// Holding this value is required before the MCP listener can accept work.
+/// The MCP listener requires one; built-in Operations link to Reef pages under it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HumanInterfaceUrl(String);
 
@@ -32,9 +32,11 @@ impl HumanInterfaceUrl {
         &self.0
     }
 
-    // The domain owns this root-relative Reef path. Concatenation, unlike URL
-    // resolution, cannot turn even a network-path reference into another origin.
-    pub(crate) fn page_url(&self, path: &str) -> String {
+    /// Joins a root-relative Reef path that the Run domain owns to this origin.
+    /// Concatenation, unlike URL resolution, cannot turn even a network-path
+    /// reference into another origin.
+    #[must_use]
+    pub fn page_url(&self, path: &str) -> String {
         format!("{}{path}", self.0)
     }
 }

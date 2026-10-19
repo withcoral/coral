@@ -167,7 +167,7 @@ pub enum OperationHostError {
         /// Domain-owned stable `snake_case` code, not an upstream error code.
         code: &'static str,
         /// Safe domain message, never an upstream or host diagnostic.
-        message: &'static str,
+        message: std::borrow::Cow<'static, str>,
         /// Optional lowercase W3C trace identifier; grants no authority.
         trace_id: Option<String>,
     },

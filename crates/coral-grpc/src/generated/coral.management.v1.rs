@@ -31,7 +31,8 @@ pub struct Provider {
     /// Concurrency token for current configuration and lifecycle.
     #[prost(string, tag = "5")]
     pub etag: ::prost::alloc::string::String,
-    /// Immutable Program namespace, unique in the Workspace.
+    /// Provider Namespace of a Provider an Owner adds: the last segment of
+    /// call_root, the name Reef shows. Empty for the Built-in Provider.
     #[prost(string, tag = "6")]
     pub namespace: ::prost::alloc::string::String,
     /// Current account-selection setting, never credential material.
@@ -49,6 +50,9 @@ pub struct Provider {
     /// Why the last attempt failed. Unspecified unless search_index_state is FAILED.
     #[prost(enumeration = "SearchIndexFailureReason", tag = "11")]
     pub search_index_failure_reason: i32,
+    /// Immutable Workspace-unique Provider Call Root, such as coral.providers.github.
+    #[prost(string, tag = "12")]
+    pub call_root: ::prost::alloc::string::String,
 }
 /// Lists Providers owned by one authorized Workspace.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -962,7 +966,8 @@ pub struct PublishProviderRequest {
     /// Required first-party UUID; exact replay returns the committed result.
     #[prost(string, tag = "3")]
     pub request_id: ::prost::alloc::string::String,
-    /// Creation only: immutable Workspace-unique Program namespace.
+    /// Creation only: immutable Workspace-unique Provider Namespace. Coral calls
+    /// the Provider under coral.providers.<namespace>.
     #[prost(string, tag = "4")]
     pub namespace: ::prost::alloc::string::String,
     /// Creation: required. Update: explicit replacement setting, absent to retain it.
@@ -2599,6 +2604,7 @@ pub mod provider_service_client {
             self.inner.unary(req, path, codec).await
         }
         /// Reads source provenance for the current Workspace Owner only.
+        /// The Built-in Provider has no source and fails with FailedPrecondition.
         pub async fn get_provider_source(
             &mut self,
             request: impl tonic::IntoRequest<super::GetProviderSourceRequest>,
@@ -2814,6 +2820,7 @@ pub(crate) mod provider_service_server {
             request: tonic::Request<super::GetProviderRequest>,
         ) -> std::result::Result<tonic::Response<super::Provider>, tonic::Status>;
         /// Reads source provenance for the current Workspace Owner only.
+        /// The Built-in Provider has no source and fails with FailedPrecondition.
         async fn get_provider_source(
             &self,
             request: tonic::Request<super::GetProviderSourceRequest>,

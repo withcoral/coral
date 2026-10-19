@@ -23,14 +23,19 @@ coral-v8.workspace = true
 coral-value.workspace = true
 coral-workspace.workspace = true
 sea-query.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+serde_path_to_error.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+url.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+coral-workspace = { workspace = true, features = ["test-fixtures"] }
+coral-catalog = { workspace = true, features = ["test-fixtures"] }
 coral-provider = { workspace = true, features = ["test-fixtures"] }
 axum = { workspace = true, features = ["http1", "tokio"] }
 coral-credentials.workspace = true
@@ -39,4 +44,3 @@ tempfile.workspace = true
 coral-search.workspace = true
 coral-test-support.workspace = true
 wiremock.workspace = true
-url.workspace = true
