@@ -27,6 +27,8 @@ Coral reads two kinds of source:
 
 Search the vendor's official docs for both. Record the URL of every doc page you rely on; the PR description cites them.
 
+If the vendor's own document lives on `raw.githubusercontent.com` and the recipe tracks a branch, add the vendor's GitHub organization, lowercased, to `VENDOR_GITHUB_OWNERS` in `apps/reef/app/lib/provider-recipes/recipes.server.test.ts`. Add it only when the vendor's official docs link to that organization. The recipe test requires every other GitHub document to pin a commit.
+
 If the vendor publishes no usable OpenAPI document and no MCP server, look for a third-party OpenAPI document (for example, a community-maintained repo). **Audit** it against the vendor's API reference before you use it:
 
 - Compare its operations with the documented endpoints.
@@ -43,7 +45,7 @@ Done when you hold at least one usable source URL, or have reported that none ex
 Show the user a short plan and wait for their approval. Cover each point:
 
 - **Recipes and ids.** One source: use the bare id. OpenAPI and MCP both: offer two recipes, `<id>` for OpenAPI and `<id>_mcp` for MCP. Give both the same `display_name` and set `service: <id>` in the MCP recipe, so the catalog shows both on one card and suggests one namespace (as `github_mcp` does). A self-hosted edition with its own host: offer `<id>_self_hosted` as well.
-- **Source URLs**, and for a third-party document, the audit result and the pinned commit.
+- **Source URLs**, any organization you add to `VENDOR_GITHUB_OWNERS`, and for a third-party document, the audit result and the pinned commit.
 - **Authentication options** and the `default` (see below).
 - **Scopes** for each OAuth option, or why it names none.
 - **Inputs and servers**, e.g. a region.
