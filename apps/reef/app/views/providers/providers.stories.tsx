@@ -143,6 +143,11 @@ const coralOperations = ['createProvider', 'listProviders'].map((key) => ({
   relativePath: key,
   callPath: `coral.workspace.${key}`,
   path: `/workspaces/demo/providers/prov-coral/ops/${key}`,
+  // Read-only, so it starts enabled.
+  ...(key === 'listProviders' && {
+    hints: { readOnly: true, idempotent: true },
+    policy: 'enabled' as const,
+  }),
 }))
 const coral: ProviderView = {
   ...weather,

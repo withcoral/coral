@@ -106,11 +106,14 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 "{key} declaration lacks {expected}: {declaration}"
             );
         }
-        assert!(
-            targets.iter().any(|target| target.key().as_str() == key),
-            "{key} is a search target"
-        );
     }
+    // Every built-in Operation is a search target, and nothing else is.
+    let mut target_keys = targets
+        .iter()
+        .map(|target| target.key().as_str())
+        .collect::<Vec<_>>();
+    target_keys.sort_unstable();
+    assert_eq!(target_keys, ["createProvider", "listProviders"]);
 
     let graph = coral_catalog::schema_graph_in_transaction(&mut transaction, &first)
         .await
