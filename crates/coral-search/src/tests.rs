@@ -3527,7 +3527,7 @@ async fn readiness_inspection_does_not_require_saved_function_persistence() {
     // Drop Functions' schema and the search index: any accidental
     // repository read must fail, even when no Functions exist. Readiness
     // depends only on Operation domains and reads no index.
-    let fixture = TestModules::without_search_storage().await;
+    let fixture = TestModules::before_prepare_storage().await;
     fixture
         .fixture
         .execute_fixture_sql(
@@ -3729,14 +3729,14 @@ struct TestModules {
 
 impl TestModules {
     async fn new() -> Self {
-        let modules = Self::without_search_storage().await;
+        let modules = Self::before_prepare_storage().await;
         crate::prepare_storage(&modules.search.database)
             .await
             .expect("prepare Universal Search storage");
         modules
     }
 
-    async fn without_search_storage() -> Self {
+    async fn before_prepare_storage() -> Self {
         let fixture = TestDatabase::new(coral_db::migration_plan())
             .await
             .expect("create Universal Search test database");

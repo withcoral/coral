@@ -289,7 +289,7 @@ const NAMES: &str = r#"{
 #[tokio::test]
 async fn postgres_step_two_splits_indexed_names_and_restates_lengths_and_statistics() {
     coral_test_support::database_only!(Postgres);
-    let modules = TestModules::without_search_storage().await;
+    let modules = TestModules::before_prepare_storage().await;
     let database = modules.search.database.clone();
     crate::storage::prepare_storage_through(&database, 1)
         .await
