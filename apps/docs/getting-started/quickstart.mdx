@@ -1,166 +1,50 @@
 ---
 title: "Quickstart"
-description: "Add your first provider, then point an MCP client at your workspace."
+description: "Add a provider, connect your agent, and ask your first question."
 ---
 
-The quickest way to set up Coral is to add a [provider](/guides/concepts#providers) to a [workspace](/guides/concepts#workspaces). Your agents can then call that provider's [operations](/guides/concepts#operations).
-
-## Add a provider
-
-You need to be a workspace owner to add a provider.
+Install the [desktop app](/getting-started/install-locally) or
+[run a shared server](/getting-started/self-host) first.
 
 <Steps>
-  <Step title="Select Add provider">
-    Open your workspace in the [Coral UI](/guides/concepts#coral-ui). Select **Providers**, then **Add provider**.
+  <Step title="Open the Coral UI">
+    You set up everything in Coral from the Coral UI.
+
+    - **Desktop app:** Open Coral. The app window is the Coral UI.
+    - **Shared server:** Go to `https://<coral-host>` in your browser, then sign in.
   </Step>
 
-  <Step title="Choose a service">
-    Pick a service from the catalog, or bring your own:
+  <Step title="Add a provider" id="add-a-provider">
+    A [provider](/guides/concepts#providers) gives your agents access to a
+    service, such as GitHub or Linear. Your agents can only call the providers
+    you add. You decide which operations run without your approval.
 
-    - **MCP server URL**: a Streamable HTTP endpoint.
-    - **OpenAPI URL**: a JSON or YAML document. You can also upload the document.
-
+    Choose a provider from Coral's catalog, or add your own from an MCP server
+    or an OpenAPI document.
   </Step>
 
-  <Step title="Confirm the setup">
-    Check the display name, the namespace, and the sign-in method. The namespace prefixes every [call path](/guides/concepts#operations), and you cannot change it later.
-
+  <Step title="Connect your agent" id="connect-an-mcp-client">
+    Connect your agent to Coral once, and it can use every provider in your
+    [workspace](/guides/concepts#workspaces). Copy the setup for your MCP client from the Coral UI. It already
+    contains your workspace's URL.
   </Step>
 
-  <Step title="Review the operations">
-    Coral lists the operations it found. Check that the list is what you expect, then select **Next**.
+  <Step title="Ask a question">
+    Ask your agent something that needs your provider. For example, if you've
+    connected GitHub, you could ask:
 
-    Some MCP servers ask you to sign in before they list their operations.
-
-  </Step>
-
-  <Step title="Choose the account and add the provider">
-    Choose the [account setting](/guides/concepts#account-setting): **One shared account** or **Individual accounts**. A provider that needs no credentials shows **No account needed**.
-
-    A shared account must be connected before you add the provider. With individual accounts, you can connect yours now or when you first use the provider.
-
-    Select **Add provider**.
+    > What are my open pull requests?
 
   </Step>
 </Steps>
 
-A new provider starts with a default [policy](/guides/concepts#operation-policy). Operations that read data run without approval. Other operations need approval. Change the policy for each operation from the provider's page.
+## Next steps
 
-## Connect an MCP client
-
-Each [workspace](/guides/concepts#workspaces) has its own MCP URL. In the [Coral UI](/guides/concepts#coral-ui), hover over the workspace in the sidebar and select **Copy MCP endpoint**.
-
-Use that URL in place of `<your-mcp-url>` below. Your agents can then reach every provider in that workspace.
-
-<Tabs>
-<Tab title="Claude Code">
-
-```shellscript
-claude mcp add --scope user --transport http coral <your-mcp-url>
-```
-
-</Tab>
-
-<Tab title="Codex">
-
-**CLI**
-
-```shellscript
-codex mcp add coral --url <your-mcp-url>
-```
-
-**Manual config**
-
-Add to `~/.codex/config.toml`:
-
-```toml
-[mcp_servers.coral]
-url = "<your-mcp-url>"
-```
-
-</Tab>
-
-<Tab title="Cursor">
-
-Add to `.cursor/mcp.json` for a project-scoped server, or `~/.cursor/mcp.json`
-for a user-scoped one:
-
-```json
-{
-    "mcpServers": {
-        "coral": {
-            "url": "<your-mcp-url>"
-        }
-    }
-}
-```
-
-</Tab>
-
-<Tab title="VS Code">
-
-**Install**
-
-Open the Command Palette and run `MCP: Add Server`, then choose whether to add
-Coral to the workspace or your user profile.
-
-**Manual config**
-
-Add to `.vscode/mcp.json`:
-
-```json
-{
-    "servers": {
-        "coral": {
-            "type": "http",
-            "url": "<your-mcp-url>"
-        }
-    }
-}
-```
-
-For user scope, open the user-profile `mcp.json` with
-`MCP: Open User Configuration` and add the same entry there.
-
-</Tab>
-
-<Tab title="OpenCode">
-
-Add to `~/.config/opencode/opencode.json` for global scope, or `opencode.json`
-in your project root for project scope:
-
-```json
-{
-    "$schema": "https://opencode.ai/config.json",
-    "mcp": {
-        "coral": {
-            "type": "remote",
-            "url": "<your-mcp-url>",
-            "enabled": true
-        }
-    }
-}
-```
-
-</Tab>
-
-<Tab title="Other">
-
-Any MCP client that supports Streamable HTTP can use Coral. Point it at:
-
-```text
-<your-mcp-url>
-```
-
-Consult your client's documentation for the exact config format.
-
-</Tab>
-</Tabs>
-
-### Verify the connection
-
-Ask your agent a question that needs one of your providers. For example, if you've added GitHub, you can ask:
-
-> "What are my open pull requests?"
-
-Your MCP client should be able to retrieve that information using Coral MCP server.
+<CardGroup cols={2}>
+  <Card title="Concepts" icon="book-open" href="/guides/concepts">
+    Learn how workspaces, providers, and policies fit together.
+  </Card>
+  <Card title="Query databases" icon="database" href="/guides/query-databases">
+    Give your agents read access to a database.
+  </Card>
+</CardGroup>

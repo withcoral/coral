@@ -49,8 +49,8 @@
   "navbar": {
     "links": [
       {
-        "label": "Deploy Coral",
-        "href": "/getting-started/self-host",
+        "label": "Download",
+        "href": "/getting-started/install-locally",
         "icon": "download"
       },
       {
@@ -70,6 +70,7 @@
         "group": "Get started",
         "pages": [
           "index",
+          "getting-started/quickstart",
           "getting-started/install-locally",
           {
             "group": "Shared server",
@@ -78,8 +79,7 @@
               "getting-started/self-host/docker-compose",
               "getting-started/self-host/kubernetes"
             ]
-          },
-          "getting-started/quickstart"
+          }
         ]
       },
       {
