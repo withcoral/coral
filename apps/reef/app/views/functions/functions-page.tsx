@@ -9,6 +9,7 @@ import { PageLayout } from '@/wax/components/page-layout'
 import { Tooltip } from '@/wax/components/tooltip'
 import { trail } from '@/views/management/layout'
 import { useArrivalToast } from '@/lib/use-arrival-toast'
+import { filterQuery } from '@/utils/filter-query'
 import type { WorkspaceView } from '@/views/management/types'
 import type { SavedFunctionSummaryView } from './types'
 import * as styles from './functions.css'
@@ -98,14 +99,14 @@ export function FunctionsPage({ workspace: w, functions, children }: FunctionsPa
   const [railFilterInput, setRailFilterInput] = useState('')
   const [tableFilterInput, setTableFilterInput] = useState('')
   const [current, setCurrent] = useState<string | null>(null)
-  const railFilter = useDeferredValue(railFilterInput).trim().toLowerCase()
-  const tableFilter = useDeferredValue(tableFilterInput).trim().toLowerCase()
+  const railQuery = filterQuery(useDeferredValue(railFilterInput))
+  const tableQuery = filterQuery(useDeferredValue(tableFilterInput))
   const { topLevel, namespaces } = useMemo(() => catalog(functions), [functions])
-  const matches = (m: Member) => m.summary.path.toLowerCase().includes(tableFilter)
-  const listed = namespaces.filter((n) => n.name.toLowerCase().includes(railFilter))
+  const matches = (m: Member) => tableQuery.matches(m.summary.path)
+  const listed = namespaces.filter((n) => railQuery.matches(n.name))
   // A namespace filter narrows the table to those namespaces, which leaves out
   // top-level functions: they belong to none.
-  const shownTopLevel = railFilter ? [] : topLevel.filter(matches)
+  const shownTopLevel = railQuery.text ? [] : topLevel.filter(matches)
   const shown = listed
     .map((n) => ({ ...n, members: n.members.filter(matches) }))
     .filter((n) => n.members.length > 0)
@@ -132,7 +133,7 @@ export function FunctionsPage({ workspace: w, functions, children }: FunctionsPa
                 onChange: setRailFilterInput,
               }}
               empty={listed.length === 0}
-              emptyMessage={railFilter ? 'No namespaces match.' : 'No namespaces yet.'}
+              emptyMessage={railQuery.text ? 'No namespaces match.' : 'No namespaces yet.'}
             >
               {listed.map((n) => (
                 <CatalogRailItem

@@ -8,6 +8,7 @@ import { animations } from '@/wax/animations'
 import { CodeChip } from '@/wax/components/code-chip'
 import { Icon, type IconName } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
+import { HighlightedMatches } from '@/wax/components/highlighted-matches'
 import { Logo } from '@/wax/components/logo'
 import { Markdown } from '@/wax/components/markdown'
 import { PageLayout } from '@/wax/components/page-layout'
@@ -18,6 +19,7 @@ import { InfoTip, Tooltip } from '@/wax/components/tooltip'
 import * as Table from '@/wax/components/table'
 import { CELL_HEIGHT_PX, groupHeadingHeightPx } from '@/wax/components/table'
 import { CatalogLayout, CatalogRail, CatalogRailItem, CatalogToolbar } from '@/components/catalog'
+import { filterQuery, type FilterQuery } from '@/utils/filter-query'
 import { EmptyPage } from '@/components/empty-page'
 import {
   PolicyToggle,
@@ -126,10 +128,6 @@ function HintLabels({
   )
 }
 
-function matches(value: string, query: string) {
-  return value.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
-}
-
 export function WorkspaceProvidersPage(props: WorkspaceProvidersPageProps) {
   return (
     <PolicyMutations>
@@ -185,8 +183,8 @@ function WorkspaceProvidersContent({
   // rebuilds thousands of rows, follow with the deferred value when React has time.
   const deferredRailFilter = useDeferredValue(railFilter)
   const filteredProviders = useMemo(() => {
-    if (!deferredRailFilter.trim()) return sortedProviders
-    return sortedProviders.filter((i) => matches(providerLabel(i), deferredRailFilter))
+    const query = filterQuery(deferredRailFilter)
+    return sortedProviders.filter((i) => query.matches(providerLabel(i)))
   }, [sortedProviders, deferredRailFilter])
   return (
     <PageLayout
@@ -263,46 +261,15 @@ function sortOperations(operations: OperationView[]) {
   )
 }
 
-// The filter matches only the name the row shows, so every match is visible.
-// It is lowercased once per operation rather than on every keystroke: a large
-// catalog holds thousands of operations.
-function searchText(operation: OperationView) {
-  return operation.relativePath.toLocaleLowerCase()
-}
-
-/** The name with each case-insensitive match of the filter in bold. */
-function HighlightedName({ name, query }: { name: string; query: string }) {
-  const needle = query.trim().toLocaleLowerCase()
-  const haystack = name.toLocaleLowerCase()
-  // Lowercasing can change a string's length; offsets would then be wrong.
-  if (!needle || haystack.length !== name.length) return name
-  const parts: ReactNode[] = []
-  let from = 0
-  for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, from)) {
-    if (at > from) parts.push(name.slice(from, at))
-    from = at + needle.length
-    parts.push(
-      <Typography.BodySmallStrong key={at} as="strong">
-        {name.slice(at, from)}
-      </Typography.BodySmallStrong>,
-    )
-  }
-  if (from < name.length) parts.push(name.slice(from))
-  return parts
-}
-
 type SearchableProvider = {
   provider: ProviderView
-  sorted: { operation: OperationView; text: string }[]
+  sorted: OperationView[]
 }
 
 function searchableProviders(providers: ProviderView[]): SearchableProvider[] {
   return providers.map((provider) => ({
     provider,
-    sorted: sortOperations(provider.operations).map((operation) => ({
-      operation,
-      text: searchText(operation),
-    })),
+    sorted: sortOperations(provider.operations),
   }))
 }
 
@@ -324,21 +291,19 @@ function policyFilterLabel(value: PolicyFilter['value']) {
 
 function matchingOperations(
   { provider, sorted }: SearchableProvider,
-  tableFilter: string,
+  tableFilter: FilterQuery,
   policyFilter: PolicyFilter | null,
   selectedView: ReadonlySet<SelectionKey> | null,
 ) {
-  const query = tableFilter.trim().toLocaleLowerCase()
-  return sorted
-    .filter(({ operation, text }) => {
-      const key = selectionKey(provider.id, operation.name)
-      return (
-        (!query || text.includes(query)) &&
-        (!policyFilter || policyFilter.keys.has(key)) &&
-        (!selectedView || selectedView.has(key))
-      )
-    })
-    .map(({ operation }) => operation)
+  // The filter matches only the name the row shows, so every match is visible.
+  return sorted.filter((operation) => {
+    const key = selectionKey(provider.id, operation.name)
+    return (
+      tableFilter.matches(operation.relativePath) &&
+      (!policyFilter || policyFilter.keys.has(key)) &&
+      (!selectedView || selectedView.has(key))
+    )
+  })
 }
 
 /** The rows a provider lists: what matches the filter, plus the operation the
@@ -350,9 +315,7 @@ function listedOperations(
   linkedOperation: OperationView | null,
 ) {
   if (!linkedOperation || matching.includes(linkedOperation)) return matching
-  return sorted
-    .map(({ operation }) => operation)
-    .filter((o) => o === linkedOperation || matching.includes(o))
+  return sorted.filter((o) => o === linkedOperation || matching.includes(o))
 }
 
 type TableRowItem =
@@ -435,6 +398,7 @@ function ProvidersTableScreen({
   // The field echoes each keystroke at once; the table, which rebuilds
   // thousands of rows, follows with the deferred value when React has time.
   const tableFilter = useDeferredValue(tableFilterInput)
+  const tableQuery = useMemo(() => filterQuery(tableFilter), [tableFilter])
   const [policyFilter, setPolicyFilter] = useState<PolicyFilter | null>(null)
   const [selected, setSelected] = useState<Set<SelectionKey>>(new Set())
   // "Show selected" lists the selection as it was when clicked, like a policy
@@ -453,7 +417,7 @@ function ProvidersTableScreen({
     const entries = searchable
       .filter((entry) => listedProviders.has(entry.provider.id))
       .map((entry) => {
-        const matching = matchingOperations(entry, tableFilter, policyFilter, selectedView)
+        const matching = matchingOperations(entry, tableQuery, policyFilter, selectedView)
         const linked = selectedProvider?.id === entry.provider.id ? selectedOperation : null
         return {
           provider: entry.provider,
@@ -473,7 +437,7 @@ function ProvidersTableScreen({
     selectedOperation,
     selectedProvider?.id,
     selectedView,
-    tableFilter,
+    tableQuery,
   ])
   const visibleOperations = visibleByProvider.flatMap(({ provider, matching }) =>
     matching.map((operation) => ({ provider, operation })),
@@ -782,7 +746,7 @@ function ProvidersTableScreen({
                       variant="bare"
                       size="22"
                       ariaLabel={`Show only ${providerLabel(provider)}`}
-                      onClick={() => setRailFilter(providerLabel(provider))}
+                      onClick={() => setRailFilter(`^${providerLabel(provider)}$`)}
                     >
                       <Button.Icon name="ListFilter" />
                     </Button.Container>
@@ -866,7 +830,7 @@ function ProvidersTableScreen({
             markRevealed={markRevealed}
             form={form}
             policyFilter={policyFilter?.value ?? null}
-            query={tableFilter}
+            query={tableQuery}
             virtual={virtual}
             providerIcons={providerIcons}
             sections={sections}
@@ -1059,7 +1023,7 @@ const TableSections = memo(function TableSections({
   policyFilter: PolicyFilter['value'] | null
   providerIcons: Map<string, RecipeIcons>
   /** The operation filter, bolded where it matches a name. */
-  query: string
+  query: FilterQuery
   sections: ProviderSection[]
   selected: Set<SelectionKey>
   showSelected: () => void
@@ -1361,7 +1325,7 @@ const OperationRow = memo(function OperationRow({
   provider: ProviderView
   measure: Ref<HTMLDivElement>
   operation: OperationView
-  query: string
+  query: FilterQuery
   onCheck: (checked: boolean) => void
   /** Runs before a click opens the operation, which the reader can already see. */
   onOpen: (provider: string, operation: string) => void
@@ -1406,7 +1370,7 @@ const OperationRow = memo(function OperationRow({
             onClick={() => onOpen(provider.id, operation.name)}
             className={styles.operationName}
           >
-            <HighlightedName name={operation.relativePath} query={query} />
+            <HighlightedMatches text={operation.relativePath} query={query} />
           </Link>
         </Tooltip>
         <HintLabels hints={operation.hints} />
