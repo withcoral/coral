@@ -34,9 +34,46 @@ impl OpenApiDocument {
         })
     }
 
+    /// Accepts a document file: UTF-8 text, or gzipped UTF-8 text such as the
+    /// `.json.gz` document Anthropic's SDKs publish. The size limit applies to
+    /// the unzipped text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::OpenApiDocumentNotText`] for corrupt gzip or other
+    /// non-UTF-8 input, or the errors of [`Self::parse`].
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, Error> {
+        let text = String::from_utf8(gunzip(bytes)?)
+            .map_err(|_invalid_utf8| Error::OpenApiDocumentNotText)?;
+        Self::parse(&text)
+    }
+
     /// Returns the exact accepted input.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.source
     }
+}
+
+/// Unzips a gzip file, detected by its magic bytes, and returns any other
+/// input unchanged.
+fn gunzip(bytes: Vec<u8>) -> Result<Vec<u8>, Error> {
+    use std::io::Read as _;
+    const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+    if !bytes.starts_with(&GZIP_MAGIC) {
+        return Ok(bytes);
+    }
+    let mut text = Vec::new();
+    flate2::read::MultiGzDecoder::new(bytes.as_slice())
+        .take(
+            u64::try_from(OPENAPI_DOCUMENT_MAX_BYTES)
+                .unwrap_or(u64::MAX)
+                .saturating_add(1),
+        )
+        .read_to_end(&mut text)
+        .map_err(|_corrupt| Error::OpenApiDocumentNotText)?;
+    if text.len() > OPENAPI_DOCUMENT_MAX_BYTES {
+        return Err(Error::OpenApiDocumentTooLarge);
+    }
+    Ok(text)
 }

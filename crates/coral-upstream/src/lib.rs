@@ -9,7 +9,7 @@ mod dispatch;
 mod http;
 mod mcp;
 
-pub use dispatch::{ReadyDispatch, UpstreamOutcome};
+pub use dispatch::{OutcomeClass, ReadyDispatch, UpstreamOutcome};
 pub use http::{HttpDecodeDiagnostic, HttpOutcome, HttpRedirect, HttpUpstream, ReadyHttpDispatch};
 pub use mcp::{
     AuthorizationDiscoveryError, AuthorizationRequirement, BearerChallenge, McpOutcome,

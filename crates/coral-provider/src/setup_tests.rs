@@ -1209,6 +1209,48 @@ async fn openapi_url_source_keeps_the_query_that_selects_the_document() {
     server.verify().await;
 }
 
+/// Anthropic's SDKs publish their document only as `scripts/mock-spec.json.gz`.
+#[tokio::test]
+async fn openapi_url_source_unzips_a_gzipped_document() {
+    let harness = harness().await;
+    let (owner, workspace) = workspace_owner(&harness, "user:openapi-gzip").await;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/openapi.json.gz"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_bytes(gzip(&credential_free_openapi(&server))),
+        )
+        .mount(&server)
+        .await;
+    let setup = harness
+        .accounts
+        .prepare_remote_fixture(
+            &change_context(owner.clone(), 10, '2'),
+            workspace.id(),
+            ProviderSetupSource::OpenApiUrl(format!("{}/openapi.json.gz", server.uri())),
+            None,
+        )
+        .await
+        .expect("pin the unzipped document");
+    assert_eq!(setup.state(), ProviderSetupState::AwaitingConfiguration);
+    let suggested = harness
+        .providers
+        .review_setup_configuration(&owner, workspace.id(), setup.id())
+        .await
+        .unwrap()
+        .document
+        .expect("the unzipped text is an OpenAPI document")
+        .suggested;
+    assert_eq!(suggested.display_name, "Open");
+}
+
+fn gzip(text: &str) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(text.as_bytes()).unwrap();
+    encoder.finish().unwrap()
+}
+
 #[tokio::test]
 async fn remote_openapi_accepts_a_32_mib_document() {
     let harness = harness().await;

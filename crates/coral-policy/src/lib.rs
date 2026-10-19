@@ -53,14 +53,6 @@ pub use types::{
     OperationAccessState, OperationPolicyDecision, OperationPolicyTarget,
 };
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-
-/// Returns the Operation Policy Module's domain-owned migration plan.
-#[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
-    &MIGRATOR
-}
-
 /// Exact Workspace Operation-policy Module.
 #[derive(Clone)]
 pub struct OperationPolicyModule {

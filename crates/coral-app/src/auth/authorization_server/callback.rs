@@ -296,7 +296,7 @@ mod tests {
 
     /// Opens the migrated database a callback provisions logins into.
     async fn database() -> (Arc<Database>, TestDatabase) {
-        let (database, fixture) = database_with(&crate::state::current_migrator()).await;
+        let (database, fixture) = database_with(coral_db::migration_plan()).await;
         coral_search::prepare_storage(database.as_ref())
             .await
             .expect("prepare search storage");
@@ -305,11 +305,11 @@ mod tests {
 
     /// A database with no schema, standing in for one Coral cannot write.
     async fn unmigrated_database() -> (Arc<Database>, TestDatabase) {
-        database_with(&sqlx::migrate::Migrator::with_migrations(Vec::new())).await
+        database_with(&coral_db::MigrationPlan::shared(&[])).await
     }
 
-    async fn database_with(migrator: &sqlx::migrate::Migrator) -> (Arc<Database>, TestDatabase) {
-        let fixture = TestDatabase::new(migrator).await.expect("test database");
+    async fn database_with(plan: &coral_db::MigrationPlan) -> (Arc<Database>, TestDatabase) {
+        let fixture = TestDatabase::new(plan).await.expect("test database");
         (fixture.database(), fixture)
     }
 

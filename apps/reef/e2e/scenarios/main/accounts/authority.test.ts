@@ -39,7 +39,7 @@ test('Account inspection preserves User privacy and exact Agent targeting', asyn
         'Accounts',
         { listEntries: { summary: 'List entries' } },
         { security: 'bearer' },
-      ).toString(),
+      ),
     },
   })
   await api.setups.confirmProviderSetupConfiguration({

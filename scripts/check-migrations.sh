@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Fails when this checkout edits, renames or deletes a migration that is on
-# main, or adds one whose version does not sort after every version on main.
-# Databases record applied migrations by checksum, so either change breaks a
-# database created from an earlier main.
+# main, adds one whose version does not sort after every version on main, or
+# adds one where no ledger reads it. Databases record applied migrations by
+# checksum, so either change breaks a database created from an earlier main.
 #
 #   scripts/check-migrations.sh [base-ref]   # default: origin/main
 set -euo pipefail
@@ -28,11 +28,28 @@ if git show "$fork_point:Cargo.toml" 2>/dev/null | grep -qE '^version = "0\.'; t
 fi
 
 # One version sequence per ledger: the shared SQLx chain, then each search stream.
-ledgers=('crates/*/migrations' 'crates/coral-search/streams/postgres' 'crates/coral-search/streams/sqlite')
+# The chain's database-specific halves sit in subfolders of its directory.
+chain='crates/coral-db/migrations'
+# SQLx reads the chain's directory and each database's half, nothing deeper.
+chain_runs="^$chain/((postgres|sqlite)/)?[^/]+\.sql$"
+ledgers=("$chain" 'crates/coral-search/streams/postgres' 'crates/coral-search/streams/sqlite')
 pathspecs=()
-for ledger in "${ledgers[@]}"; do pathspecs+=(":(glob)$ledger/*.sql"); done
+for ledger in "${ledgers[@]}"; do pathspecs+=(":(glob)$ledger/**/*.sql"); done
 
 status=0
+
+# The migration plan reads only the chain's files, so a migration added to
+# another crate's folder, or to another subfolder of the chain, would never run.
+crate_migrations=':(glob)crates/*/migrations/**/*.sql'
+stray="$({
+  git diff --no-renames --name-only --diff-filter=A "$fork_point" -- "$crate_migrations"
+  git ls-files --others --exclude-standard -- "$crate_migrations"
+} | grep -vE "$chain_runs" | sort -u || true)"
+if [ -n "$stray" ]; then
+  echo "check-migrations: these migrations never run; add them to $chain, or its postgres/ or sqlite/ folder, instead:" >&2
+  echo "$stray" | sed 's/^/  /' >&2
+  status=1
+fi
 
 changed="$(git diff --no-renames --name-only --diff-filter=MDT "$fork_point" -- "${pathspecs[@]}")"
 if [ -n "$changed" ]; then
@@ -42,15 +59,18 @@ if [ -n "$changed" ]; then
 fi
 
 for ledger in "${ledgers[@]}"; do
-  pathspec=":(glob)$ledger/*.sql"
-  on_base="$(git ls-tree -r --name-only "$base_ref" -- "${ledger%%\**}" | grep -E "^${ledger//\*/[^/]+}/[^/]+\.sql$" || true)"
+  pathspec=":(glob)$ledger/**/*.sql"
+  runs="^$ledger/[^/]+\.sql$"
+  [ "$ledger" != "$chain" ] || runs="$chain_runs"
+  on_base="$(git ls-tree -r --name-only "$base_ref" -- "$ledger" | grep -E "$runs" || true)"
   max="$(echo "$on_base" | sed -nE 's#^.*/0*([0-9]+)_[^/]*$#\1#p' | sort -n | tail -1)"
-  max="${max:-0}"
+  # A ledger with no migrations on main yet accepts any version, 0000 included.
+  max="${max:--1}"
 
   added="$({
     git diff --no-renames --name-only --diff-filter=A "$fork_point" -- "$pathspec"
     git ls-files --others --exclude-standard -- "$pathspec"
-  } | sort -u)"
+  } | { grep -E "$runs" || true; } | sort -u)"
   while IFS= read -r file; do
     [ -n "$file" ] || continue
     if ! [[ "$(basename "$file")" =~ ^0*([0-9]+)_ ]]; then

@@ -1,24 +1,31 @@
-//! One migration plan composed from several domain plans.
+//! Coral's migration plan with test-only changes.
+use coral_db::{DatabaseSystem, MigrationPlan};
 use sqlx::migrate::{Migration, Migrator};
 
-/// Combines domain migration plans into one plan ordered by version.
+/// Coral's migration plan plus extra migrations, such as a fault trigger,
+/// ordered by version. Both databases run the same extras.
 #[must_use]
-pub fn combined_migrator(plans: &[&Migrator]) -> Migrator {
-    combined_migrator_with(plans, [])
+pub fn migration_plan_with(extra: impl IntoIterator<Item = Migration>) -> MigrationPlan {
+    let extra: Vec<Migration> = extra.into_iter().collect();
+    edited_migration_plan(|mut migrations| {
+        migrations.extend(extra.iter().cloned());
+        migrations
+    })
 }
 
-/// Combines domain migration plans and extra migrations, such as a fault
-/// trigger, into one plan ordered by version.
+/// Coral's migration plan with each database's migrations passed through
+/// `edit`, such as a plan that stops before one version.
 #[must_use]
-pub fn combined_migrator_with(
-    plans: &[&Migrator],
-    extra: impl IntoIterator<Item = Migration>,
-) -> Migrator {
-    let mut migrations: Vec<Migration> = plans
-        .iter()
-        .flat_map(|plan| plan.migrations.iter().cloned())
-        .chain(extra)
-        .collect();
-    migrations.sort_by_key(|migration| migration.version);
-    Migrator::with_migrations(migrations)
+pub fn edited_migration_plan(edit: impl Fn(Vec<Migration>) -> Vec<Migration>) -> MigrationPlan {
+    let edited = |system| {
+        let migrations = coral_db::migration_plan()
+            .for_system(system)
+            .migrations
+            .to_vec();
+        Migrator::with_migrations(edit(migrations))
+    };
+    MigrationPlan::new(
+        edited(DatabaseSystem::Postgres),
+        edited(DatabaseSystem::Sqlite),
+    )
 }

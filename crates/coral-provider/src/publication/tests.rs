@@ -279,9 +279,7 @@ async fn publishes_workspace_provider_catalog_and_access_atomically() {
     let declaration = operation.typescript_declaration();
     assert_eq!(
         declaration.lines().last(),
-        Some(
-            "function getForecast(): Promise<HttpResult<null, 200, string | null> | HttpUnknownResult>;"
-        )
+        Some("export default function (): Promise<HttpResult<unknown, 200, string | null>>;")
     );
     assert_eq!(published.access().id(), published.id());
     assert_eq!(

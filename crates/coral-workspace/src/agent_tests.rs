@@ -511,7 +511,7 @@ async fn event_failure_rolls_back_rotation_and_lifecycle_changes() {
 async fn fault_module(predicate: &str) -> (coral_test_support::TestDatabase, WorkspaceModule) {
     // Private persistence fault injection: reject the second matching Event.
     // Assertions still use the public lifecycle/credential Interface.
-    let migrator = coral_test_support::combined_migrator_with(&[crate::migrator()], [sqlx::migrate::Migration::new(9000, "event fault".into(), sqlx::migrate::MigrationType::Simple,
+    let migrator = coral_test_support::migration_plan_with([sqlx::migrate::Migration::new(9000, "event fault".into(), sqlx::migrate::MigrationType::Simple,
         sqlx::AssertSqlSafe(format!("CREATE UNIQUE INDEX reject_second_event ON workspace_lifecycle_events(workspace_id) WHERE {predicate}")).into_sql_str(), false)]);
     let fixture = coral_test_support::TestDatabase::new(&migrator)
         .await

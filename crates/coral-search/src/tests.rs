@@ -155,7 +155,7 @@ async fn listing_orders_hits_by_call_path() {
     let operation_hit = listed.get(1).expect("Operation hit");
     assert_eq!(
         operation_hit.signature_line(),
-        "getForecast(): Promise<{ data: object }>"
+        "getForecast(): Promise<{ data: {…} }>"
     );
     assert_eq!(
         operation_hit.description_snippet(),
@@ -178,6 +178,44 @@ async fn listing_orders_hits_by_call_path() {
         operation.approval_requirement(),
         ApprovalRequirement::NotRequired
     );
+}
+
+#[tokio::test]
+async fn saved_function_signature_lines_show_the_inferred_result_fields() {
+    let fixture = TestModules::new().await;
+    let user = organization_user(fixture.search.database.clone(), "user:saved-result").await;
+    let principal = AuthenticatedPrincipal::user(user.clone());
+    let workspace_id = fixture.create_workspace(&user).await;
+    fixture
+        .save_source(
+            &principal,
+            &workspace_id,
+            "github.pullRequestDetails",
+            "Summarize one pull request",
+            r#"export default async function pullRequestDetails(input: { repo: string; number: number }) {
+    return { title: "t", merged_at: null as string | null, base: { ref: "main" }, linked: [input.repo] };
+}"#,
+            20,
+        )
+        .await;
+    fixture.converge().await;
+
+    let page = fixture
+        .search
+        .search(&principal, &workspace_id, &SearchRequest::list())
+        .await
+        .expect("list Saved Functions");
+
+    let [hit] = page.hits() else {
+        panic!("one Saved Function hit: {:?}", page.hits());
+    };
+    let line = hit.signature_line();
+    for field in ["title:", "merged_at:", "base:", "linked:"] {
+        assert!(
+            line.contains(field),
+            "the fields of a result the compiler infers appear: {line}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -333,10 +371,11 @@ async fn describe_returns_exact_descriptions_and_only_owned_source() {
     assert_eq!(operation.provider_id(), &scope.published.provider_id);
     let declaration = operation.typescript_declaration();
     assert!(
-        declaration
-            .contains("function getForecast(): Promise<HttpResult<({ \"temperatureC\": number }")
+        declaration.contains(
+            "export default function (): Promise<HttpResult<{ \"temperatureC\": number }"
+        )
     );
-    assert!(declaration.ends_with(", 200, \"application/json\"> | HttpUnknownResult>;"));
+    assert!(declaration.ends_with(", 200, \"application/json\">>;"));
     assert!(described_operation.saved_function_detail().is_none());
 
     let described_function = scope
@@ -998,7 +1037,9 @@ async fn phrase_points_match_whole_words_and_favor_a_whole_field() {
         "/drafts/all":{"get":{"operationId":"drafts/list","summary":"Open draft and review drafts","responses":{"200":{"description":"ok"}}}},
         "/pulls/merge":{"put":{"operationId":"pulls/merge","summary":"Merge a pull request now","description":"LONG","responses":{"200":{"description":"ok"}}}},
         "/merges":{"get":{"operationId":"merges/list","summary":"MERGE PULL REQUESTS","responses":{"200":{"description":"ok"}}}},
-        "/merges/tool":{"get":{"operationId":"merges/tool","summary":"MERGE PULLREQUEST NOW","responses":{"200":{"description":"ok"}}}}
+        "/merges/tool":{"get":{"operationId":"merges/tool","summary":"MERGE PULLREQUEST NOW","responses":{"200":{"description":"ok"}}}},
+        "/hooks/then":{"post":{"operationId":"hooks/then","summary":"Chain a hook","responses":{"200":{"description":"ok"}}}},
+        "/hooks/then/review":{"post":{"operationId":"hooks/thenReview","summary":"Chain a hook review","responses":{"200":{"description":"ok"}}}}
       }
     }"#
     .replace("LONG", long.trim_end());
@@ -1025,9 +1066,9 @@ async fn phrase_points_match_whole_words_and_favor_a_whole_field() {
             "a whole name outranks the camelCase names it begins",
         ),
         (
-            "pulls.get",
-            "pulls._get",
-            "`_` separates words, so the escaped name `_get` is the whole name",
+            "hooks.then",
+            "hooks._then",
+            "`_` separates words, so the escaped name `_then` is the whole name",
         ),
         (
             "create a pull request stack",
@@ -3496,16 +3537,17 @@ async fn exact_provider_readiness_does_not_read_unrelated_providers() {
 
 #[tokio::test]
 async fn readiness_inspection_does_not_require_saved_function_persistence() {
-    // Do not install Functions' schema or the search index: any accidental
+    // Drop Functions' schema and the search index: any accidental
     // repository read must fail, even when no Functions exist. Readiness
     // depends only on Operation domains and reads no index.
-    let migrator = coral_test_support::combined_migrator(&[
-        coral_workspace::migrator(),
-        coral_catalog::migrator(),
-        coral_provider::migrator(),
-        coral_policy::migrator(),
-    ]);
-    let fixture = TestModules::with_migrator(&migrator).await;
+    let fixture = TestModules::before_prepare_storage().await;
+    fixture
+        .fixture
+        .execute_fixture_sql(
+            "DROP TABLE search_entities; DROP TABLE search_index_states; DROP TABLE search_migrations; DROP TABLE saved_function_records; DROP TABLE saved_function_lifecycle_events;",
+        )
+        .await
+        .expect("drop Functions and the search index");
     let upstream = MockServer::start().await;
     let user = organization_user(fixture.search.database.clone(), "user:focused-readiness").await;
     let workspace = fixture.create_workspace(&user).await;
@@ -3700,15 +3742,15 @@ struct TestModules {
 
 impl TestModules {
     async fn new() -> Self {
-        let modules = Self::with_migrator(&test_migrator()).await;
+        let modules = Self::before_prepare_storage().await;
         crate::prepare_storage(&modules.search.database)
             .await
             .expect("prepare Universal Search storage");
         modules
     }
 
-    async fn with_migrator(migrator: &sqlx::migrate::Migrator) -> Self {
-        let fixture = TestDatabase::new(migrator)
+    async fn before_prepare_storage() -> Self {
+        let fixture = TestDatabase::new(coral_db::migration_plan())
             .await
             .expect("create Universal Search test database");
         let database = fixture.database();
@@ -3752,6 +3794,27 @@ impl TestModules {
         description: &str,
         occurred_at_unix_nanos: i64,
     ) -> coral_functions::SavedFunction {
+        self.save_source(
+            principal,
+            workspace_id,
+            path,
+            description,
+            "export default function run(input: { limit: number }): number { return input.limit; }",
+            occurred_at_unix_nanos,
+        )
+        .await
+    }
+
+    /// Saves `source` as the Saved Function at `path` with `description`.
+    async fn save_source(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        path: &str,
+        description: &str,
+        source: &str,
+        occurred_at_unix_nanos: i64,
+    ) -> coral_functions::SavedFunction {
         self.saved_functions
             .save(
                 &SavedFunctionChangeContext::new(
@@ -3763,10 +3826,7 @@ impl TestModules {
                 SavedFunctionSave::new(
                     SavedFunctionPath::parse(path).expect("Saved Function path"),
                     SavedFunctionDescription::parse(description).expect("description"),
-                    SavedFunctionSource::parse(
-                        "export default function run(input: { limit: number }): number { return input.limit; }",
-                    )
-                    .expect("source"),
+                    SavedFunctionSource::parse(source).expect("source"),
                 ),
             )
             .await
@@ -4122,17 +4182,6 @@ export default function formatForecast(value: Forecast): string {{
             .await
             .expect("save tracer Saved Function")
     }
-}
-
-fn test_migrator() -> sqlx::migrate::Migrator {
-    coral_test_support::combined_migrator(&[
-        coral_workspace::migrator(),
-        coral_catalog::migrator(),
-        coral_provider::migrator(),
-        coral_policy::migrator(),
-        coral_functions::migrator(),
-        crate::migrator(),
-    ])
 }
 
 async fn organization_user(

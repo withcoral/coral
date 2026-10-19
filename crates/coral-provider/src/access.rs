@@ -145,7 +145,7 @@ fn safe_segment(value: &str) -> bool {
     valid_first
         && valid_rest
         && value.len() <= MAX_SEGMENT_BYTES
-        && !matches!(value, "__proto__" | "prototype" | "constructor" | "then")
+        && !coral_catalog::call_path_segment_is_reserved(value)
 }
 
 /// Credential selection configured for one Provider.

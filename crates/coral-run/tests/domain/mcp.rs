@@ -10,7 +10,7 @@ use wiremock::matchers::body_partial_json;
     clippy::too_many_lines,
     reason = "one real Program scenario covers publication, dispatch, resource rejection and durable observation"
 )]
-async fn complete_mcp_outcomes_and_provider_bound_reads_survive_run_observation() {
+async fn an_mcp_is_error_rejects_the_call_and_provider_bound_reads_survive_run_observation() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(|request: &wiremock::Request| {
@@ -98,8 +98,14 @@ async fn complete_mcp_outcomes_and_provider_bound_reads_survive_run_observation(
     }
     let runs = fixture.live_runs(None);
     let accepted = runs.start(&principal, &workspace, submission(r#"
-        const result = await coral.providers.first.mixed({});
-        if (result.data.isError !== true) throw new Error("lost isError");
+        let result;
+        try {
+          await coral.providers.first.mixed({});
+          throw new Error("isError should reject the call");
+        } catch (error) {
+          if (!(error instanceof coral.OperationError)) throw error;
+          result = {code: error.code, status: error.status ?? null, data: error.data, metadata: error.metadata};
+        }
         const reference = result.data.content[1].resource;
         let rejected = 0;
         try { await coral.providers.second.resources.read({reference}); } catch (_) { rejected++; }
@@ -115,7 +121,14 @@ async fn complete_mcp_outcomes_and_provider_bound_reads_survive_run_observation(
     else {
         panic!("MCP Program failed: {:?}", terminal.terminal_outcome());
     };
-    let result = &value.as_json()["result"];
+    let thrown = &value.as_json()["result"];
+    assert_eq!(thrown["code"], "error_response");
+    assert_eq!(
+        thrown["status"],
+        Value::Null,
+        "an MCP outcome has no HTTP status"
+    );
+    let result = &json!({"data": thrown["data"], "metadata": thrown["metadata"]});
     assert_eq!(result["data"]["isError"], true);
     let history = runs
         .activity_entries(

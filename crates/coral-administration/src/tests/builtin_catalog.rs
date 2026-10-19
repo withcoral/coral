@@ -34,16 +34,7 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Self {
         // Search applies Operation access rules, so the schema includes Policy.
-        let db = TestDatabase::new(&coral_test_support::combined_migrator(&[
-            coral_workspace::migrator(),
-            coral_catalog::migrator(),
-            coral_provider::migrator(),
-            coral_functions::migrator(),
-            coral_policy::migrator(),
-            coral_search::migrator(),
-        ]))
-        .await
-        .unwrap();
+        let db = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let database = db.database();
         coral_search::prepare_storage(&database).await.unwrap();
         let workspaces = WorkspaceModule::new(database.clone());

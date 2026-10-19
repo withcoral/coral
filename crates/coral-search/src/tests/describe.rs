@@ -81,17 +81,19 @@ async fn describe_returns_the_fitted_declaration_or_the_named_types_of_the_same_
     let [fitted, repository] = declarations.as_slice() else {
         unreachable!();
     };
-    assert!(fitted.contains("function list"), "{fitted}");
+    assert!(fitted.contains("export default function ("), "{fitted}");
     assert!(
         fitted.contains(r#"describe this path with types: ["Repository"]"#),
         "{fitted}"
     );
-    assert!(!fitted.contains("type Repository = ("), "{fitted}");
+    // The stub names fields; the full type quotes and types them.
+    let full = r#"type Repository = { "field_000_url"?: string;"#;
+    assert!(!fitted.contains(full), "{fitted}");
+    assert!(repository.starts_with(full), "{repository}");
     assert!(
-        repository.starts_with("type Repository = ("),
+        !repository.contains("export default function ("),
         "{repository}"
     );
-    assert!(!repository.contains("function list"), "{repository}");
 }
 
 /// A rejected `types` changes nothing: an undeclared name names itself and
@@ -120,10 +122,7 @@ async fn describe_rejects_undeclared_or_oversized_types_and_changes_nothing() {
                 }),
             ) => {
                 assert_eq!(undeclared, ["Missing"]);
-                assert_eq!(
-                    declared,
-                    ["Issue", "Repository", "HttpResult", "HttpUnknownResult"]
-                );
+                assert_eq!(declared, ["Issue", "Repository", "HttpResult"]);
             }
             ("too many names" | "a name too long", Err(Error::TypesLimit)) => {}
             (story, rejected) => panic!("{story}: {rejected:?}"),

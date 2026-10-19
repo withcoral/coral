@@ -19,7 +19,7 @@ use std::fmt::Write as _;
     reason = "one table checks each Built-in Operation's retained contract"
 )]
 async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
-    let fixture = TestDatabase::new(coral_catalog::migrator()).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
     let catalog = BuiltinCatalog::running().unwrap();
     let mut transaction = database.begin().await.unwrap();
@@ -56,7 +56,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 "\"openapi_document\"",
                 "\"openapi_url\"",
                 "\"mcp_url\"",
-                "function createProvider(input: {",
+                "export default function (input: {",
                 r#""credentialRoute": "none" | "fixed" | "caller""#,
                 r#""displayName"?: string"#,
                 r#""namespace": string"#,
@@ -71,7 +71,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             // Read-only, so the default Operation Access State is enabled.
             OperationHints::new(Some(true), None, Some(true), None),
             &[
-                "function listProviders(input: Record<string, never>)",
+                "export default function (input: Record<string, never>)",
                 r#"{ "providers": Array<Provider> }"#,
                 // The Built-in Provider has no namespace.
                 r#""namespace": null | string"#,
@@ -158,7 +158,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
 
 #[tokio::test]
 async fn a_builtin_generation_pins_its_catalog_identity_and_decodes_any_well_formed_one() {
-    let fixture = TestDatabase::new(coral_catalog::migrator()).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
     let catalog = BuiltinCatalog::running().unwrap();
     let mut transaction = database.begin().await.unwrap();
@@ -237,7 +237,7 @@ async fn a_builtin_generation_pins_its_catalog_identity_and_decodes_any_well_for
 // keeping it, or a corrupt Generation passing as current.
 #[tokio::test]
 async fn a_builtin_generation_pins_its_own_catalog_and_no_other() {
-    let fixture = TestDatabase::new(coral_catalog::migrator()).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
     let running = BuiltinCatalog::running().unwrap();
     let other =
