@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 
 import { Breadcrumbs, type Segment } from '@/wax/components/breadcrumbs/breadcrumbs'
+import { NavigationTrigger } from '@/wax/components/navigation-frame/navigation-frame'
 
 import * as ScrollArea from '@/wax/components/scroll-area'
 import * as styles from './page-layout.css'
@@ -92,7 +93,11 @@ export function TopBar({
 }) {
   return (
     <header className={styles.topBar}>
-      <Breadcrumbs items={breadcrumbs} heading={heading} />
+      {/* On a phone the navigation is a drawer, opened from the start of this bar. */}
+      <div className={styles.topBarStart}>
+        <NavigationTrigger />
+        <Breadcrumbs items={breadcrumbs} heading={heading} />
+      </div>
       {actions && <div className={styles.topBarActions}>{actions}</div>}
     </header>
   )

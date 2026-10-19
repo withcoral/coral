@@ -21,6 +21,20 @@ export const SeveralBlockers: Story = {
   },
 }
 export const CustomReadyLabel: Story = { args: { ready: 'Active' } }
+// Catches: a narrow table cell clipping the pill's box instead of truncating its text.
+export const NarrowColumn: Story = {
+  args: { blockers: ['Access expired'] },
+  render: (args) => (
+    <div data-testid="column" style={{ width: 72, overflow: 'hidden', whiteSpace: 'nowrap' }}>
+      <Status {...args} />
+    </div>
+  ),
+  play: async ({ canvas }) => {
+    const column = canvas.getByTestId('column').getBoundingClientRect()
+    const pill = canvas.getByTitle('Access expired').getBoundingClientRect()
+    await expect(pill.right).toBeLessThanOrEqual(column.right)
+  },
+}
 export const Dots: Story = {
   render: () => (
     <span style={{ display: 'inline-flex', gap: 12 }}>

@@ -146,6 +146,14 @@ export const guidance = style({
   },
 })
 export const identity = style({ overflowWrap: 'anywhere', minWidth: 0 })
+// A person on one table line: the avatar and any pill keep their size, the name truncates.
+export const personLine = style({
+  alignItems: 'center',
+  display: 'flex',
+  gap: 8,
+  minWidth: 0,
+})
+export const personLineName = style({ minWidth: 0 })
 export const empty = style({
   display: 'flex',
   flexDirection: 'column',
