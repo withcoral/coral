@@ -27,14 +27,12 @@ Coral reads two kinds of source:
 
 Search the vendor's official docs for both. Record the URL of every doc page you rely on; the PR description cites them.
 
-If the vendor's own document lives on `raw.githubusercontent.com` and the recipe tracks a branch, map the recipe id to the vendor's GitHub organization, lowercased, in `VENDOR_GITHUB_OWNERS` in `apps/reef/app/lib/provider-recipes/recipes.server.test.ts`. Add the entry only when the vendor's official docs link to that organization. The recipe test requires every other GitHub document to pin a commit.
-
 If the vendor publishes no usable OpenAPI document and no MCP server, look for a third-party OpenAPI document (for example, a community-maintained repo). **Audit** it against the vendor's API reference before you use it:
 
 - Compare its operations with the documented endpoints.
 - Check when it last changed.
 - Accept it if it is a few months old and misses one or two operations. Reject it if it is years old or misses significant parts of the API.
-- Pin it to a commit SHA, as in `https://raw.githubusercontent.com/<owner>/<repo>/<sha>/<path>`. Its owner can move any branch or tag, and a changed `servers` URL would send credentials to their host. Record the commit date in a recipe comment, as `nextdns` does.
+- If it lives in a git repo, point at the default branch when the repo is active, so new setups get fixes. Pin a tag when the default branch breaks often or holds unreleased work.
 
 If no source survives, stop. Report what you found. If the vendor's only spec is Swagger 2.0, note that converting it to 3.x is possible follow-up work.
 
@@ -45,7 +43,7 @@ Done when you hold at least one usable source URL, or have reported that none ex
 Show the user a short plan and wait for their approval. Cover each point:
 
 - **Recipes and ids.** One source: use the bare id. OpenAPI and MCP both: offer two recipes, `<id>` for OpenAPI and `<id>_mcp` for MCP. Give both the same `display_name` and set `service: <id>` in the MCP recipe, so the catalog shows both on one card and suggests one namespace (as `github_mcp` does). A self-hosted edition with its own host: offer `<id>_self_hosted` as well.
-- **Source URLs**, any entry you add to `VENDOR_GITHUB_OWNERS`, and for a third-party document, the audit result and the pinned commit.
+- **Source URLs**, and for a third-party document, the audit result and why you pinned it or not.
 - **Authentication options** and the `default` (see below).
 - **Scopes** for each OAuth option, or why it names none.
 - **Inputs and servers**, e.g. a region.

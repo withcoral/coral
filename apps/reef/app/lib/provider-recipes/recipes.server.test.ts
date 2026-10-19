@@ -22,40 +22,6 @@ import { recipeJsonSchema } from './recipe-format'
 const reefRoot = path.resolve(import.meta.dirname, '../../..')
 const recipeLibraries = ['recipes']
 
-/**
- * The GitHub organization each vendor owns, by recipe id. A recipe may track a
- * branch only in its own vendor's organization; any other
- * raw.githubusercontent.com document pins a commit.
- */
-const VENDOR_GITHUB_OWNERS: Record<string, string> = {
-  algolia: 'algolia',
-  datadog_v1: 'datadog',
-  discord: 'discord',
-  dropbox_sign: 'hellosign',
-  front: 'frontapp',
-  github: 'github',
-  klaviyo: 'klaviyo',
-  microsoft_graph: 'microsoftgraph',
-  okta: 'okta',
-  openai: 'openai',
-  paddle: 'paddlehq',
-  sendgrid: 'twilio',
-  sentry: 'getsentry',
-  stripe: 'stripe',
-  twilio: 'twilio',
-  typesense: 'typesense',
-  xero: 'xeroapi',
-  zendesk_conversations: 'zendesk',
-}
-
-/** The lowercased owner and ref of a raw GitHub URL, or null for any other URL. */
-function githubSource(url: string) {
-  const parsed = URL.parse(url)
-  if (parsed?.hostname.replace(/\.$/, '') !== 'raw.githubusercontent.com') return null
-  const [, owner, , ref] = parsed.pathname.split('/')
-  return { owner: owner.toLowerCase(), ref }
-}
-
 function recipeFiles() {
   return recipeLibraries.flatMap((library) => {
     const libraryPath = path.join(reefRoot, library)
@@ -103,29 +69,8 @@ describe('checked-in recipes', () => {
         const document = path.join(directory, recipe.source.openapi.file)
         expect(fs.statSync(document).size).toBeLessThanOrEqual(OPENAPI_DOCUMENT_MAX_BYTES)
       }
-
-      // The owner of another repository can rewrite a branch, and a changed
-      // `servers` URL would send credentials to their host.
-      if ('openapi' in recipe.source && 'url' in recipe.source.openapi) {
-        const github = githubSource(recipe.source.openapi.url)
-        if (github && github.owner !== VENDOR_GITHUB_OWNERS[recipe.id]) {
-          expect(
-            github.ref,
-            `pin ${github.owner}'s document to a commit SHA, or map ${recipe.id} to ${github.owner} in VENDOR_GITHUB_OWNERS if it is the vendor`,
-          ).toMatch(/^[0-9a-f]{40}$/)
-        }
-      }
     },
   )
-
-  // A leftover entry would let a later recipe with that id track the branch unreviewed.
-  it('maps each VENDOR_GITHUB_OWNERS recipe to the owner of its document', () => {
-    for (const [id, owner] of Object.entries(VENDOR_GITHUB_OWNERS)) {
-      const source = PROVIDER_RECIPES.find((recipe) => recipe.id === id)?.source
-      const url = source && 'openapi' in source && 'url' in source.openapi ? source.openapi.url : ''
-      expect(githubSource(url)?.owner, id).toBe(owner)
-    }
-  })
 })
 
 describe('bundled recipe library', () => {
