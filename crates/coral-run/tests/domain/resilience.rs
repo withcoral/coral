@@ -413,6 +413,65 @@ async fn an_owner_past_three_leases_ends_v8_ends_dispatches_indeterminate_and_re
     );
 }
 
+/// The one chunk that ends a Run its owner can no longer run records the
+/// deadline when it has passed: a takeover (or a self-interrupt) after the
+/// deadline ends the Run `timed_out`, as every deadline path does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_takeover_after_the_run_deadline_records_timed_out() {
+    let (engine, gates) = BurstEngine::new(vec!["\"one\"".to_string()]);
+    let probe = CommitProbe::new();
+    let fixture = quiet_fixture(engine.clone(), probe.clone()).await;
+    let (workspace_id, principal, run_id) = started_run(&fixture, "late-panic").await;
+    let before = fixture.run_record(&workspace_id, &run_id).await;
+    let claim_id = before.execution_claim_id.clone().expect("started Run");
+    wait_until(|| engine.started.load(Ordering::SeqCst)).await;
+
+    // The deadline passes before the owner's task ends.
+    fixture
+        .clock
+        .next
+        .store(before.deadline_at_unix_nanos + 1, Ordering::SeqCst);
+    probe.panic_on_next_message();
+    gates.go.send(()).expect("start the burst");
+    wait_until_async_within(Duration::from_secs(10), async || {
+        fixture
+            .run_record(&workspace_id, &run_id)
+            .await
+            .state
+            .is_terminal()
+    })
+    .await;
+    gates.release.send(()).expect("release the Program");
+
+    let after = fixture.run_record(&workspace_id, &run_id).await;
+    assert_eq!(after.state, RunState::TimedOut);
+    assert!(
+        after
+            .execution_claim_id
+            .as_deref()
+            .is_some_and(|claim| claim != claim_id),
+        "the supervisor took the claim over: {:?}",
+        after.execution_claim_id
+    );
+    assert_eq!(after.chunk_sequence - before.chunk_sequence, 1, "one chunk");
+    let events = fixture
+        .events_after(&workspace_id, &run_id, last_sequence(&before))
+        .await;
+    assert!(
+        matches!(
+            events.as_slice(),
+            [ended] if matches!(ended.kind(), RunEventKind::Ended { state: RunState::TimedOut, .. })
+        ),
+        "{events:?}"
+    );
+    let update = fixture
+        .runs
+        .observe(&principal, &workspace_id, &run_id, &immediate(None, 100))
+        .await
+        .expect("observe after the timeout");
+    assert_eq!(update.state(), RunState::TimedOut);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_owner_task_that_panics_mid_run_has_the_supervisor_record_interrupted_once() {
     let (engine, gates) = BurstEngine::new(vec!["\"one\"".to_string()]);
