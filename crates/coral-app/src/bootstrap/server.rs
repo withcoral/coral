@@ -321,6 +321,7 @@ impl PreparedServerBuilder {
                 .map(Box::new),
         };
         let policy = deployment_config.outbound_policy(builder.outbound_defaults)?;
+        let runtime_limits = deployment_config.runtime_limits()?;
         let config = builder.config;
         let vault = open_credential_vault(&deployment_config, state.credential_key_path())?;
         let (coral_db, state_lock) = state.into_parts();
@@ -368,6 +369,7 @@ impl PreparedServerBuilder {
             client_id_metadata_document,
             client_bootstrap_policy,
             policy,
+            runtime_limits,
             reconcile_interval,
             state_lock,
         )
@@ -653,6 +655,7 @@ pub(crate) async fn start_server(
     client_id_metadata_document: Option<String>,
     client_bootstrap_policy: coral_provider::account::ClientBootstrapPolicy,
     policy: coral_outbound::DestinationPolicy,
+    runtime_limits: coral_run::RuntimeLimits,
     reconcile_interval: std::time::Duration,
     state_lock: StateLock,
 ) -> Result<RunningServer, AppError> {
@@ -669,13 +672,9 @@ pub(crate) async fn start_server(
             None => accounts,
         }
     });
-    let mut runs = coral_run::RunModule::new(
-        policy,
-        database.clone(),
-        workspaces.clone(),
-        coral_run::RuntimeLimits::default(),
-    )
-    .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+    let mut runs =
+        coral_run::RunModule::new(policy, database.clone(), workspaces.clone(), runtime_limits)
+            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
     if let Some(accounts) = &accounts {
         runs = runs.with_accounts(accounts.clone());
     }

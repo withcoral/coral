@@ -121,6 +121,11 @@ impl LoadedServerConfig {
         Ok(())
     }
 
+    /// Resolves the `[runtime]` section: the Program runtime limits.
+    pub(crate) fn runtime_limits(&self) -> Result<coral_run::RuntimeLimits, AppError> {
+        self.parse()?.runtime.resolve()
+    }
+
     /// Resolves the mandatory MCP listener and optional OIDC authentication.
     ///
     /// This returns validated configuration and resolved key material only. The
