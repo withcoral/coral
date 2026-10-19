@@ -37,8 +37,7 @@ impl RunRecord {
             .is_ok_and(|total| total <= self.value_limits.run_output_bytes())
     }
 
-    /// The Run Output Budget total after `additional` bytes, as a chunk writes
-    /// it. Overflow is corrupt state, not a budget decision.
+    /// The Run Output Budget total after `additional` bytes, as a chunk writes it.
     pub(crate) fn output_total(&self, additional: usize) -> Result<usize, Error> {
         self.accumulated_output_bytes
             .checked_add(additional)
