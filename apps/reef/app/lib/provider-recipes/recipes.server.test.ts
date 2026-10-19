@@ -22,6 +22,30 @@ import { recipeJsonSchema } from './recipe-format'
 const reefRoot = path.resolve(import.meta.dirname, '../../..')
 const recipeLibraries = ['recipes']
 
+/**
+ * GitHub organizations that the vendor itself owns. A recipe may track a branch
+ * of their repositories; a document from any other owner pins a commit.
+ */
+const VENDOR_GITHUB_OWNERS = new Set([
+  'algolia',
+  'datadog',
+  'discord',
+  'frontapp',
+  'getsentry',
+  'github',
+  'hellosign',
+  'klaviyo',
+  'microsoftgraph',
+  'okta',
+  'openai',
+  'paddlehq',
+  'stripe',
+  'twilio',
+  'typesense',
+  'xeroapi',
+  'zendesk',
+])
+
 function recipeFiles() {
   return recipeLibraries.flatMap((library) => {
     const libraryPath = path.join(reefRoot, library)
@@ -68,6 +92,23 @@ describe('checked-in recipes', () => {
       if ('openapi' in recipe.source && 'file' in recipe.source.openapi) {
         const document = path.join(directory, recipe.source.openapi.file)
         expect(fs.statSync(document).size).toBeLessThanOrEqual(OPENAPI_DOCUMENT_MAX_BYTES)
+      }
+
+      // The owner of a third-party repository can rewrite a branch, and a changed
+      // `servers` URL would send credentials to their host.
+      if ('openapi' in recipe.source && 'url' in recipe.source.openapi) {
+        const prefix = 'https://raw.githubusercontent.com/'
+        const { url } = recipe.source.openapi
+        if (url.startsWith(prefix)) {
+          const [owner, , ref] = url.slice(prefix.length).split('/')
+          const name = owner.toLowerCase()
+          if (!VENDOR_GITHUB_OWNERS.has(name)) {
+            expect(
+              ref,
+              `pin ${name}'s document to a commit SHA, or add ${name} to VENDOR_GITHUB_OWNERS if it is the vendor`,
+            ).toMatch(/^[0-9a-f]{40}$/)
+          }
+        }
       }
     },
   )
