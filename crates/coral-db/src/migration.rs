@@ -154,7 +154,8 @@ mod tests {
 
     use sqlx::migrate::Migrator;
 
-    use super::{POSTGRES, SHARED, SQLITE};
+    use super::{POSTGRES, SQLITE};
+    use crate::backend::DatabaseSystem;
 
     fn steps(migrator: &Migrator) -> BTreeSet<(i64, String)> {
         migrator
@@ -172,14 +173,17 @@ mod tests {
 
     #[test]
     fn every_version_belongs_to_one_step() {
-        // SQLx does not reject two files with one version.
-        let mut versions = BTreeSet::new();
-        for migration in SHARED.migrations.iter().chain(POSTGRES.migrations.iter()) {
-            assert!(
-                versions.insert(migration.version),
-                "migrations share one SQLx ledger; version {} is used twice",
-                migration.version
-            );
+        // SQLx does not reject two files with one version, and `0026_x.sql`
+        // and `026_x.sql` even share a name. Check what each database runs.
+        for system in [DatabaseSystem::Postgres, DatabaseSystem::Sqlite] {
+            let mut versions = BTreeSet::new();
+            for migration in super::migration_plan().for_system(system).iter() {
+                assert!(
+                    versions.insert(migration.version),
+                    "{system:?} runs version {} twice",
+                    migration.version
+                );
+            }
         }
     }
 
