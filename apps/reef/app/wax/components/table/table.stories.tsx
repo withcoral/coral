@@ -585,6 +585,42 @@ export const Wrapping: Story = {
   ),
 }
 
+// A bounded table once shrank every row to the shortest row's height, so a
+// wrapped cell spilled over the next row and took its clicks.
+export const BoundedWrapping: Story = {
+  render: () => (
+    <div style={{ display: 'flex', flexDirection: 'column', height: 240, width: 360 }}>
+      <Container ariaLabel="Features" columns={FEATURE_COLUMNS} layout="fixed" bounded>
+        <Head />
+        <Body>
+          {Array.from({ length: 20 }, (_, index) => (
+            <Row key={index}>
+              <Cell wrap>
+                {index === 0
+                  ? 'Long-form prose in a cell wraps onto as many lines as it needs, and the row grows with it.'
+                  : `Feature ${index + 1}`}
+              </Cell>
+              <Cell mono>on</Cell>
+            </Row>
+          ))}
+        </Body>
+      </Container>
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const table = within(canvasElement).getByRole('table', { name: 'Features' })
+    const rows = within(table).getAllByRole('row').slice(1)
+    await expect(rows[0].getBoundingClientRect().height).toBeGreaterThan(
+      rows[1].getBoundingClientRect().height,
+    )
+    for (const row of rows) {
+      const bottom = row.getBoundingClientRect().bottom
+      for (const cell of within(row).getAllByRole('cell'))
+        await expect(cell.getBoundingClientRect().bottom).toBeLessThanOrEqual(bottom)
+    }
+  },
+}
+
 function ReadingExample() {
   const [grown, grow] = useState(false)
   const [hidden, hide] = useState(false)
