@@ -104,9 +104,9 @@ export function FunctionsPage({ workspace: w, functions, children }: FunctionsPa
   const { topLevel, namespaces } = useMemo(() => catalog(functions), [functions])
   const matches = (m: Member) => tableQuery.matches(m.summary.path)
   const listed = namespaces.filter((n) => railQuery.matches(n.name))
-  // A namespace filter narrows the table to those namespaces, which leaves out
-  // top-level functions: they belong to none.
-  const shownTopLevel = railQuery.text ? [] : topLevel.filter(matches)
+  // A namespace filter that leaves some out narrows the table to the rest,
+  // which leaves out top-level functions: they belong to none.
+  const shownTopLevel = listed.length < namespaces.length ? [] : topLevel.filter(matches)
   const shown = listed
     .map((n) => ({ ...n, members: n.members.filter(matches) }))
     .filter((n) => n.members.length > 0)

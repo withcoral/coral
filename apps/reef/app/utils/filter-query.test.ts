@@ -1,12 +1,13 @@
 import { expect, test } from 'vitest'
 
-import { filterQuery } from './filter-query'
+import { exactFilter, filterQuery } from './filter-query'
 
-const names = ['GitHub', 'GitHub Enterprise', 'Weather', 'api.v2 (beta)']
+const names = ['GitHub', 'GitHub Enterprise', 'Weather', 'api.v2 (beta)', 'a*b', 'a\\b']
 
 // Catches: `^`, `$` or `*` read as plain text, or read anywhere but where
-// they mean something; other regex characters read at all, which would also
-// throw on a half-typed pattern; or case deciding a match.
+// they mean something; `\*` or `\\` not read as one literal character, or a
+// lone `\` not read as itself; other regex characters read at all, which
+// would also throw on a half-typed pattern; or case deciding a match.
 test.each([
   ['', names],
   ['  ', names],
@@ -22,9 +23,37 @@ test.each([
   ['.v2 (', ['api.v2 (beta)']],
   ['.', ['api.v2 (beta)']],
   ['github (', []],
+  ['^a*b$', ['a*b', 'a\\b']],
+  ['^a\\*b$', ['a*b']],
+  ['^a\\\\b$', ['a\\b']],
+  ['^a\\b$', ['a\\b']],
 ])('%j matches %j', (input, expected) => {
   const query = filterQuery(input)
   expect(names.filter((name) => query.matches(name))).toEqual(expected)
+})
+
+// Catches: Show only matching a name other than its own, such as `a*b`
+// matching `a middle b`.
+test.each(['a*b', 'a\\b', '^weather', 'weather$', 'a\\*b'])(
+  'exactFilter(%j) matches only it',
+  (name) => {
+    const query = filterQuery(exactFilter(name))
+    expect(query.matches(name)).toBe(true)
+    expect(query.matches(`${name}x`, `x${name}`, 'a middle b')).toBe(false)
+  },
+)
+
+// Catches: `*` that stops at a line break.
+test('a wildcard spans lines', () => {
+  expect(filterQuery('first*second').matches('first\nsecond')).toBe(true)
+})
+
+// Catches: a query that backtracks, which grows with each `*` and froze the
+// page for 15 seconds at seven of them on a 60-character name.
+test('a query with many wildcards fails a long name at once', () => {
+  const started = performance.now()
+  expect(filterQuery('a*a*a*a*a*a*a*b').matches('a'.repeat(10_000))).toBe(false)
+  expect(performance.now() - started).toBeLessThan(100)
 })
 
 // Catches: a query that tests only its first text, or fails on a missing one.
@@ -54,6 +83,7 @@ test.each([
     ],
   ],
   ['*', 'issues.list', []],
+  ['a\\*', 'a*b', [[0, 2]]],
   ['', 'issues.list', []],
   ['ß', 'Straße', [[4, 5]]],
 ])('%j marks %j at %j', (input, text, ranges) => {

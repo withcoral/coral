@@ -19,7 +19,7 @@ import { InfoTip, Tooltip } from '@/wax/components/tooltip'
 import * as Table from '@/wax/components/table'
 import { CELL_HEIGHT_PX, groupHeadingHeightPx } from '@/wax/components/table'
 import { CatalogLayout, CatalogRail, CatalogRailItem, CatalogToolbar } from '@/components/catalog'
-import { filterQuery, type FilterQuery } from '@/utils/filter-query'
+import { exactFilter, filterQuery, type FilterQuery } from '@/utils/filter-query'
 import { EmptyPage } from '@/components/empty-page'
 import {
   PolicyToggle,
@@ -746,7 +746,7 @@ function ProvidersTableScreen({
                       variant="bare"
                       size="22"
                       ariaLabel={`Show only ${providerLabel(provider)}`}
-                      onClick={() => setRailFilter(`^${providerLabel(provider)}$`)}
+                      onClick={() => setRailFilter(exactFilter(providerLabel(provider)))}
                     >
                       <Button.Icon name="ListFilter" />
                     </Button.Container>

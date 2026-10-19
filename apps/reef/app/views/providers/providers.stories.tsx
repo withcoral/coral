@@ -1087,6 +1087,11 @@ export const SourcePickerFiltered: Story = {
     await userEvent.type(canvas.getByRole('searchbox'), 'stripe')
     await expect(canvas.getByRole('button', { name: 'Add Stripe API' })).toBeVisible()
     await expect(canvas.queryByRole('button', { name: 'Add GitHub API' })).not.toBeInTheDocument()
+    // The search reads the filter syntax, and a service matches by any recipe's id.
+    await userEvent.clear(canvas.getByRole('searchbox'))
+    await userEvent.type(canvas.getByRole('searchbox'), '^git*mcp$')
+    await expect(canvas.getByRole('button', { name: 'Add GitHub MCP' })).toBeVisible()
+    await expect(canvas.queryByRole('button', { name: 'Add Stripe API' })).not.toBeInTheDocument()
   },
 }
 export const SourcePickerNoMatch: Story = {
