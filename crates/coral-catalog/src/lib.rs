@@ -111,14 +111,6 @@ pub use types::{
     ProviderSetupInputDigest, ProviderSetupInputKind, SchemaGraph, SchemaId, SchemaSemantics,
 };
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-
-/// Returns the Catalog Module's domain-owned migration plan.
-#[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
-    &MIGRATOR
-}
-
 /// Materializes one pinned Provider Setup input with the deployment-selected policy.
 ///
 /// Active Operation-relative paths are carried forward only for Operation Keys

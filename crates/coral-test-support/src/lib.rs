@@ -14,7 +14,7 @@ mod organization;
 mod provider;
 pub use context::{change, trace};
 pub use keys::{RSA_TEST_PRIVATE_KEY_DER, RSA_TEST_PUBLIC_MODULUS, p256_pkcs8};
-pub use migration::{combined_migrator, combined_migrator_with};
+pub use migration::{edited_migration_plan, migration_plan_with};
 pub use organization::provision_user;
 pub use provider::fixture_request_id;
 
@@ -23,8 +23,7 @@ use std::sync::Arc;
 pub use coral_credentials::CredentialValues as FixtureCredentialValues;
 pub use coral_credentials::Secret as FixtureSecret;
 pub use coral_db::DatabaseSystem;
-use coral_db::{Database, DatabaseOptions};
-use sqlx::migrate::Migrator;
+use coral_db::{Database, DatabaseOptions, MigrationPlan};
 use tempfile::TempDir;
 use thiserror::Error;
 use uuid::Uuid;
@@ -64,7 +63,7 @@ pub struct TestDatabase {
 }
 
 impl TestDatabase {
-    /// Creates an isolated database and applies `migrator`.
+    /// Creates an isolated database and applies its half of `plan`.
     ///
     /// With no `CORAL_TEST_DATABASE`, this creates a temporary `SQLite` file.
     /// `CORAL_TEST_DATABASE=postgres` requires `CORAL_TEST_POSTGRES_URL` and
@@ -74,16 +73,16 @@ impl TestDatabase {
     ///
     /// Returns an error for invalid bootstrap configuration, fixture creation,
     /// connection, or migration failure.
-    pub async fn new(migrator: &Migrator) -> Result<Self, TestDatabaseError> {
+    pub async fn new(plan: &MigrationPlan) -> Result<Self, TestDatabaseError> {
         let selection = optional_environment(TEST_DATABASE_ENV)?;
         let postgres_url = optional_environment(POSTGRES_URL_ENV)?;
         match select_database(selection.as_deref(), postgres_url.as_deref())
             .map_err(TestDatabaseError::Config)?
         {
-            DatabaseSystem::Sqlite => Self::sqlite(migrator).await,
+            DatabaseSystem::Sqlite => Self::sqlite(plan).await,
             DatabaseSystem::Postgres => {
                 Self::postgres(
-                    migrator,
+                    plan,
                     postgres_url.as_deref().ok_or_else(|| {
                         TestDatabaseError::Config(format!(
                             "{POSTGRES_URL_ENV} must be set when {TEST_DATABASE_ENV}=postgres"
@@ -181,13 +180,13 @@ impl TestDatabase {
         Ok(())
     }
 
-    async fn sqlite(migrator: &Migrator) -> Result<Self, TestDatabaseError> {
+    async fn sqlite(plan: &MigrationPlan) -> Result<Self, TestDatabaseError> {
         let directory = tempfile::tempdir()?;
         let options = DatabaseOptions::Sqlite {
             path: directory.path().join("coral.sqlite"),
         };
         let database = Arc::new(Database::connect(options.clone()).await?);
-        database.migrate(migrator).await?;
+        database.migrate(plan).await?;
         Ok(Self {
             database,
             options,
@@ -195,7 +194,7 @@ impl TestDatabase {
         })
     }
 
-    async fn postgres(migrator: &Migrator, base_url: &str) -> Result<Self, TestDatabaseError> {
+    async fn postgres(plan: &MigrationPlan, base_url: &str) -> Result<Self, TestDatabaseError> {
         coral_db::validate_postgres_url(base_url)?;
         let administration_pool = sqlx::PgPool::connect(base_url).await?;
         let schema = format!("coral_test_{}", Uuid::new_v4().simple());
@@ -215,7 +214,7 @@ impl TestDatabase {
             url: scoped_url.into(),
         };
         let database = Arc::new(Database::connect(options.clone()).await?);
-        database.migrate(migrator).await?;
+        database.migrate(plan).await?;
         Ok(Self {
             database,
             options,
@@ -318,7 +317,10 @@ fn optional_environment(name: &str) -> Result<Option<String>, TestDatabaseError>
 mod tests {
     use super::*;
 
-    static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./tests/migrations");
+    static MIGRATOR: std::sync::LazyLock<coral_db::MigrationPlan> =
+        std::sync::LazyLock::new(|| {
+            coral_db::MigrationPlan::shared(&sqlx::migrate!("./tests/migrations").migrations)
+        });
 
     #[tokio::test]
     async fn selected_database_is_live_and_shareable() {

@@ -58,14 +58,6 @@ pub use types::{
     SavedFunctionSearchMaterial, SavedFunctionSource, SavedFunctionSummary,
 };
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-
-/// Returns the current Saved Function Module's domain-owned migrations.
-#[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
-    &MIGRATOR
-}
-
 /// Loads source-free metadata without consulting declaration relevance material.
 ///
 /// # Errors

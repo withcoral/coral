@@ -116,17 +116,7 @@ impl Fixture {
         reason = "composes the real domain graph and authenticated test principals once"
     )]
     async fn with_session_auth(enabled: bool) -> Self {
-        let migrator = coral_test_support::combined_migrator(&[
-            coral_workspace::migrator(),
-            coral_task::migrator(),
-            coral_run::migrator(),
-            coral_catalog::migrator(),
-            coral_provider::migrator(),
-            coral_policy::migrator(),
-            coral_functions::migrator(),
-            coral_search::migrator(),
-        ]);
-        let fixture = TestDatabase::new(&migrator).await.unwrap();
+        let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let database = fixture.database();
         coral_search::prepare_storage(&database).await.unwrap();
         let issuer = SessionTokenIssuer::new(

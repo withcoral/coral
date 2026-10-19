@@ -3524,16 +3524,17 @@ async fn exact_provider_readiness_does_not_read_unrelated_providers() {
 
 #[tokio::test]
 async fn readiness_inspection_does_not_require_saved_function_persistence() {
-    // Do not install Functions' schema or the search index: any accidental
+    // Drop Functions' schema and the search index: any accidental
     // repository read must fail, even when no Functions exist. Readiness
     // depends only on Operation domains and reads no index.
-    let migrator = coral_test_support::combined_migrator(&[
-        coral_workspace::migrator(),
-        coral_catalog::migrator(),
-        coral_provider::migrator(),
-        coral_policy::migrator(),
-    ]);
-    let fixture = TestModules::with_migrator(&migrator).await;
+    let fixture = TestModules::without_search_storage().await;
+    fixture
+        .fixture
+        .execute_fixture_sql(
+            "DROP TABLE search_entities; DROP TABLE search_index_states; DROP TABLE search_migrations; DROP TABLE saved_function_records; DROP TABLE saved_function_lifecycle_events;",
+        )
+        .await
+        .expect("drop Functions and the search index");
     let upstream = MockServer::start().await;
     let user = organization_user(fixture.search.database.clone(), "user:focused-readiness").await;
     let workspace = fixture.create_workspace(&user).await;
@@ -3728,15 +3729,15 @@ struct TestModules {
 
 impl TestModules {
     async fn new() -> Self {
-        let modules = Self::with_migrator(&test_migrator()).await;
+        let modules = Self::without_search_storage().await;
         crate::prepare_storage(&modules.search.database)
             .await
             .expect("prepare Universal Search storage");
         modules
     }
 
-    async fn with_migrator(migrator: &sqlx::migrate::Migrator) -> Self {
-        let fixture = TestDatabase::new(migrator)
+    async fn without_search_storage() -> Self {
+        let fixture = TestDatabase::new(coral_db::migration_plan())
             .await
             .expect("create Universal Search test database");
         let database = fixture.database();
@@ -4171,17 +4172,6 @@ export default function formatForecast(value: Forecast): string {{
             .await
             .expect("save tracer Saved Function")
     }
-}
-
-fn test_migrator() -> sqlx::migrate::Migrator {
-    coral_test_support::combined_migrator(&[
-        coral_workspace::migrator(),
-        coral_catalog::migrator(),
-        coral_provider::migrator(),
-        coral_policy::migrator(),
-        coral_functions::migrator(),
-        crate::migrator(),
-    ])
 }
 
 async fn organization_user(

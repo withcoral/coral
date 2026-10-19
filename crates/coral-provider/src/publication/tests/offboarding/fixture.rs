@@ -1,10 +1,8 @@
 use super::*;
 use crate::setup_tests::Harness;
 
-// Administration also retires Saved Functions. Compose its schema into the
-// existing Provider Harness, using the same backend selection as other tests.
 pub(super) async fn harness() -> Harness {
-    Harness::with_migrations(&[coral_functions::migrator()]).await
+    Harness::new().await
 }
 
 pub(super) async fn candidate(

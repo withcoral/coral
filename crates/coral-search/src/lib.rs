@@ -27,9 +27,9 @@
 //!   Functions or the index.
 //! - [`UniversalSearchModule::inspect_search_index_states`] reports whether
 //!   the index holds each Provider's active Generation, apart from readiness.
-//! - [`migrator`] adds the search index's portable tables to the shared chain,
-//!   and [`prepare_storage`] checks the database features and applies the
-//!   backend-specific search stream at boot.
+//! - [`prepare_storage`] runs at boot after `coral_db::migration_plan()` creates the
+//!   search index's portable tables. It checks the database features and
+//!   applies the backend-specific search stream.
 //! - [`SearchIndex`] writes the search-owned index in the background when a
 //!   committing workflow notifies it, and its reconcile task converges the
 //!   index on what the owners hold.
@@ -91,17 +91,6 @@ pub use types::{
 /// How many ranked Search Entities each retriever hands the engine. The
 /// fused union of the windows is the result universe a cursor pages through.
 const RETRIEVAL_WINDOW: usize = 100;
-
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-
-/// Returns Universal Search's portable migrations for the shared chain.
-///
-/// Process bootstrap runs [`prepare_storage`] after the chain for the
-/// backend-specific objects on top of these tables.
-#[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
-    &MIGRATOR
-}
 
 /// Transport-neutral Universal Search Module.
 #[derive(Clone)]

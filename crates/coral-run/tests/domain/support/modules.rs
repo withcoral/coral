@@ -73,17 +73,6 @@ impl CancellationCaller {
     }
 }
 
-/// Every domain migration plan a Run test database installs.
-pub(crate) const MIGRATION_PLANS: [&sqlx::migrate::Migrator; 7] = [
-    coral_workspace::migrator(),
-    coral_catalog::migrator(),
-    coral_provider::migrator(),
-    coral_policy::migrator(),
-    crate::migrator(),
-    coral_functions::migrator(),
-    coral_search::migrator(),
-];
-
 pub(crate) struct TestModules {
     pub(crate) test_database: TestDatabase,
     pub(crate) database: Arc<coral_db::Database>,
@@ -122,8 +111,7 @@ impl TestModules {
         invocation_observer: Arc<dyn InvocationObserver>,
         execution_observer: Arc<dyn ExecutionObserver>,
     ) -> Self {
-        let migrator = coral_test_support::combined_migrator(&MIGRATION_PLANS);
-        let fixture = TestDatabase::new(&migrator)
+        let fixture = TestDatabase::new(coral_db::migration_plan())
             .await
             .expect("create Program Run test database");
         let database = fixture.database();

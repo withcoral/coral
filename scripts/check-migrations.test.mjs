@@ -8,6 +8,8 @@ import test from 'node:test'
 
 const script = fileURLToPath(new URL('./check-migrations.sh', import.meta.url))
 const migration = 'crates/coral-app/migrations/0009_workspace_access_control.sql'
+const moved = 'crates/coral-db/migrations/0009_workspace_access_control.sql'
+const original = 'CREATE TABLE workspaces (id TEXT PRIMARY KEY);\n'
 
 // A repository whose `main` holds one migration at the given product version,
 // with a branch checked out on top of it.
@@ -26,7 +28,7 @@ async function repository(t, version) {
   git('config', 'user.email', 'dev@example.com')
   git('config', 'user.name', 'Dev')
   await write('Cargo.toml', `[workspace.package]\nversion = "${version}" # x-release-please-version\n`)
-  await write(migration, 'CREATE TABLE workspaces (id TEXT PRIMARY KEY);\n')
+  await write(migration, original)
   git('add', '-A')
   git('commit', '--quiet', '-m', 'base')
   git('switch', '--quiet', '-c', 'change')
@@ -41,7 +43,19 @@ const changes = {
   'deletes a migration': (repo) => repo.remove(migration),
   'edits a migration': (repo) => repo.write(migration, 'CREATE TABLE workspaces (id TEXT);\n'),
   'adds a migration below the highest version': (repo) =>
-    repo.write('crates/coral-run/migrations/0001_runs.sql', 'CREATE TABLE runs (id TEXT PRIMARY KEY);\n'),
+    repo.write('crates/coral-db/migrations/0001_runs.sql', 'CREATE TABLE runs (id TEXT PRIMARY KEY);\n'),
+  'adds a migration to another crate': (repo) =>
+    repo.write('crates/coral-run/migrations/0010_runs.sql', 'CREATE TABLE runs (id TEXT PRIMARY KEY);\n'),
+  'moves a migration and edits it': async (repo) => {
+    await repo.remove(migration)
+    await repo.write(moved, 'CREATE TABLE workspaces (id TEXT);\n')
+  },
+  'adds a migration for one database below the highest version': (repo) =>
+    repo.write('crates/coral-db/migrations/sqlite/0001_runs.sql', 'CREATE TABLE runs (id TEXT PRIMARY KEY);\n'),
+  'moves a migration under a new name': async (repo) => {
+    await repo.remove(migration)
+    await repo.write('crates/coral-db/migrations/0009_workspaces.sql', original)
+  },
 }
 
 for (const [name, change] of Object.entries(changes)) {
@@ -50,7 +64,7 @@ for (const [name, change] of Object.entries(changes)) {
     await change(repo)
     const result = repo.check()
     assert.equal(result.status, 1, result.stderr)
-    assert.match(result.stderr, /check-migrations: .*(must not change|must use a version above 9)/)
+    assert.match(result.stderr, /check-migrations: .*(must not change|must use a version above 9|never run)/)
   })
 
   // The swap replaces Coral 0.x's whole tree, migrations included.
@@ -63,9 +77,25 @@ for (const [name, change] of Object.entries(changes)) {
   })
 }
 
-test('a checkout that adds the next migration passes against a Coral 1.x main', async (t) => {
-  const repo = await repository(t, '1.0.0-beta.11')
-  await repo.write('crates/coral-run/migrations/0010_runs.sql', 'CREATE TABLE runs (id TEXT PRIMARY KEY);\n')
-  const result = repo.check()
-  assert.equal(result.status, 0, result.stderr)
-})
+const accepted = {
+  'adds the next migration': (repo) =>
+    repo.write('crates/coral-db/migrations/0010_runs.sql', 'CREATE TABLE runs (id TEXT PRIMARY KEY);\n'),
+  'adds the next migration for each database': async (repo) => {
+    await repo.write('crates/coral-db/migrations/postgres/0010_runs.sql', 'CREATE TABLE runs (id TEXT PRIMARY KEY);\n')
+    await repo.write('crates/coral-db/migrations/sqlite/0010_runs.sql', 'CREATE TABLE runs (id TEXT PRIMARY KEY);\n')
+  },
+  // Databases match a migration by version and checksum, not by its directory.
+  'moves a migration unchanged into coral-db': async (repo) => {
+    await repo.remove(migration)
+    await repo.write(moved, original)
+  },
+}
+
+for (const [name, change] of Object.entries(accepted)) {
+  test(`a checkout that ${name} passes against a Coral 1.x main`, async (t) => {
+    const repo = await repository(t, '1.0.0-beta.11')
+    await change(repo)
+    const result = repo.check()
+    assert.equal(result.status, 0, result.stderr)
+  })
+}

@@ -18,7 +18,6 @@ coral-search.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-coral-policy.workspace = true
 coral-provider = { workspace = true, features = ["test-fixtures"] }
 coral-search = { workspace = true, features = ["test-fixtures"] }
 coral-test-support.workspace = true

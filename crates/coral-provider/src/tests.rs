@@ -227,20 +227,7 @@ pub(crate) async fn test_modules() -> (TestDatabase, WorkspaceModule, ProviderMo
 }
 
 pub(crate) async fn test_foundation() -> (TestDatabase, Arc<Database>, WorkspaceModule) {
-    test_foundation_with(&[]).await
-}
-
-/// The Workspace, Catalog and Provider schemas plus `extra` Modules' schemas.
-async fn test_foundation_with(
-    extra: &[&sqlx::migrate::Migrator],
-) -> (TestDatabase, Arc<Database>, WorkspaceModule) {
-    let mut plans = vec![
-        coral_workspace::migrator(),
-        coral_catalog::migrator(),
-        crate::migrator(),
-    ];
-    plans.extend_from_slice(extra);
-    let fixture = TestDatabase::new(&coral_test_support::combined_migrator(&plans))
+    let fixture = TestDatabase::new(coral_db::migration_plan())
         .await
         .expect("create Workspace, Catalog, and Provider test database");
     let database = fixture.database();
@@ -268,12 +255,7 @@ pub(crate) struct Harness {
 
 impl Harness {
     pub(crate) async fn new() -> Self {
-        Self::with_migrations(&[]).await
-    }
-
-    /// Adds other Modules' schemas, such as Saved Functions for offboarding.
-    pub(crate) async fn with_migrations(extra: &[&sqlx::migrate::Migrator]) -> Self {
-        let (fixture, database, workspaces) = test_foundation_with(extra).await;
+        let (fixture, database, workspaces) = test_foundation().await;
         let providers = ProviderModule::new(
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             database.clone(),

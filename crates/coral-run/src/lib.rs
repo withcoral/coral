@@ -157,14 +157,6 @@ pub use types::{
     RunTimeout, RunUpdate, SOURCE_MAP_MAX_BYTES,
 };
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-
-/// Returns the Program Run Module's domain-owned migration plan.
-#[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
-    &MIGRATOR
-}
-
 #[cfg(test)]
 struct TestObservers {
     invocation: Arc<dyn InvocationObserver>,

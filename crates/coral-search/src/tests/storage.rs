@@ -12,7 +12,7 @@ use crate::{StorageError, prepare_storage};
 
 #[tokio::test]
 async fn a_stream_step_runs_once_across_two_boots() {
-    let fixture = TestDatabase::new(&super::test_migrator()).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
 
     prepare_storage(&database).await.expect("first boot");
@@ -25,7 +25,7 @@ async fn a_stream_step_runs_once_across_two_boots() {
 
 #[tokio::test]
 async fn a_recorded_stream_version_newer_than_the_binary_refuses_boot() {
-    let fixture = TestDatabase::new(&super::test_migrator()).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
     prepare_storage(&database).await.expect("first boot");
     let supported = supported_version(&database);
@@ -68,7 +68,7 @@ async fn a_recorded_stream_version_newer_than_the_binary_refuses_boot() {
 
 #[tokio::test]
 async fn an_object_that_exists_before_the_stream_fails_the_step_and_records_nothing() {
-    let fixture = TestDatabase::new(&super::test_migrator()).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
     let drift = match database.system() {
         DatabaseSystem::Sqlite => "search_entities_fts",
@@ -289,7 +289,7 @@ const NAMES: &str = r#"{
 #[tokio::test]
 async fn postgres_step_two_splits_indexed_names_and_restates_lengths_and_statistics() {
     coral_test_support::database_only!(Postgres);
-    let modules = TestModules::with_migrator(&super::test_migrator()).await;
+    let modules = TestModules::without_search_storage().await;
     let database = modules.search.database.clone();
     crate::storage::prepare_storage_through(&database, 1)
         .await

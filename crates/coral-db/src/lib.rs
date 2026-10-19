@@ -2,12 +2,15 @@
 //!
 //! This private foundation owns backend selection, connection pools, short
 //! transactions, migration execution, and bounded `SQLite` contention handling.
-//! It has no domain schemas and no generic CRUD repository.
+//! It holds every Module's schema migrations in one plan, with a half for each
+//! database where the two differ. It has no generic CRUD repository.
 //!
 //! # Interface
 //!
 //! - [`Database::connect`] selects and opens one Adapter from [`DatabaseOptions`].
-//! - [`Database::migrate`] validates and applies a caller-owned migration plan.
+//! - [`migration_plan`] is the one migration plan for every Module's tables.
+//! - [`Database::migrate`] validates and applies the selected database's half
+//!   of a [`MigrationPlan`].
 //! - [`Database::begin`] and [`Database::begin_read_snapshot`] start short
 //!   transactions.
 //! - [`Transaction::execute_change`] marks observable mutations; only their commits
@@ -55,6 +58,7 @@ pub use changes::ChangeSubscription;
 pub use database::{Database, ReadOnlyDatabase, validate_postgres_url};
 pub use error::{Error, sqlx_error_is_serialization_conflict, sqlx_error_is_unique_violation};
 pub use executor::QueryExecutor;
+pub use migration::{MigrationPlan, migration_plan};
 pub use options::DatabaseOptions;
 pub use query::{col, column};
 pub use transaction::{Transaction, TransactionToken};
