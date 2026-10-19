@@ -4,18 +4,32 @@ use coral_provider::account::AccountModule;
 
 pub(crate) struct TestClock {
     pub(crate) next: AtomicI64,
+    failing: AtomicBool,
 }
 
 impl TestClock {
     pub(crate) const fn new() -> Self {
+        Self::starting_at(1_000)
+    }
+
+    pub(crate) const fn starting_at(unix_nanos: i64) -> Self {
         Self {
-            next: AtomicI64::new(1_000),
+            next: AtomicI64::new(unix_nanos),
+            failing: AtomicBool::new(false),
         }
+    }
+
+    /// Every read from now on fails, as a clock that the host cannot read.
+    pub(crate) fn fail(&self) {
+        self.failing.store(true, Ordering::SeqCst);
     }
 }
 
 impl Clock for TestClock {
     fn now_unix_nanos(&self) -> Result<i64, String> {
+        if self.failing.load(Ordering::SeqCst) {
+            return Err("test clock failed".to_string());
+        }
         Ok(self.next.fetch_add(1, Ordering::SeqCst))
     }
 }

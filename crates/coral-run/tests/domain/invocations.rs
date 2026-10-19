@@ -823,6 +823,62 @@ async fn real_program_retains_no_sensitive_response_header_value() {
     }
 }
 
+/// The production sender never launches a request for a stop that is already
+/// set: the peer receives nothing and the dispatch ends `Canceled`.
+#[tokio::test]
+async fn a_stop_already_set_never_launches_the_upstream_send() {
+    let sink = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+        .expect(0)
+        .mount(&sink)
+        .await;
+    let policy = coral_outbound::DestinationPolicy::default()
+        .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps);
+    let document = serde_json::json!({
+        "openapi": "3.1.0", "info": {"title": "Weather", "version": "1"},
+        "servers": [{"url": sink.uri()}],
+        "paths": {"/forecast": {"get": {
+            "operationId": "getForecast",
+            "responses": {"200": {"description": "Forecast"}}
+        }}}
+    });
+    let input = coral_catalog::ProviderSetupInput::from(
+        coral_catalog::OpenApiDocument::parse(&document.to_string()).expect("OpenAPI fixture"),
+    );
+    let prepared = match coral_catalog::materialize(policy, &input, &[]) {
+        coral_catalog::MaterializationOutcome::Ready(prepared) => prepared,
+        coral_catalog::MaterializationOutcome::Rejected(diagnostic) => {
+            panic!("fixture should materialize: {}", diagnostic.message())
+        }
+    };
+    let ready = coral_upstream::ReadyHttpDispatch::plan(
+        prepared.operations().first().expect("Operation"),
+        prepared.schema_graph(),
+        &serde_json::json!({}),
+        coral_value::ValueLimits::default(),
+    )
+    .expect("plan the request");
+    let upstream = crate::invocation::ProductionUpstream::new(policy).expect("HTTP Adapter");
+    let stop = Arc::new(ExecutionStop::new());
+    stop.request();
+
+    let outcome = upstream
+        .send(coral_upstream::ReadyDispatch::Http(Box::new(ready)), stop)
+        .await;
+    assert!(
+        matches!(outcome, Err(crate::invocation::UpstreamSendError::Canceled)),
+        "a set stop cancels before the send"
+    );
+    assert!(
+        sink.received_requests()
+            .await
+            .expect("recording sink")
+            .is_empty(),
+        "no request reaches the peer"
+    );
+}
+
 #[tokio::test]
 async fn blocked_destination_is_a_durable_catchable_operation_error() {
     let sink = wiremock::MockServer::start().await;

@@ -383,6 +383,42 @@ async fn the_lease_is_renewed_by_a_chunk_commit_and_by_the_idle_tick() {
     assert_eq!(terminal.state(), RunState::Succeeded);
 }
 
+/// A clock the host cannot read stops the owner like a failed commit; the
+/// Program's end that follows still reaches the terminal write, which fails
+/// on the same clock, and the owner retires with nothing written. Without
+/// that, the end was discarded with the failed clock read and the owner
+/// stayed registered forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failing_clock_stops_the_owner_and_the_programs_end_still_retires_it() {
+    let (engine, gates) = BurstEngine::new(Vec::new());
+    gates.go.send(()).expect("no gate before the Program runs");
+    let fixture = TestModules::new(engine.clone()).await;
+    let (workspace_id, principal) = fixture.user_scope("user:clock", "Lose the clock").await;
+    let accepted = fixture
+        .runs
+        .start(&principal, &workspace_id, submission("clock"))
+        .await
+        .expect("accept the Program");
+    let run_id = accepted.run_id().clone();
+    // The start mark is the owner's first chunk; the clock fails after it.
+    wait_until_recorded(&fixture, &workspace_id, &run_id, 1).await;
+    let started = fixture.run_record(&workspace_id, &run_id).await;
+    let events = fixture.events_after(&workspace_id, &run_id, 0).await;
+    fixture.clock.fail();
+
+    gates.release.send(()).expect("release the Program");
+    wait_until(|| !fixture.runs.has_owner(&run_id)).await;
+    let abandoned = fixture.run_record(&workspace_id, &run_id).await;
+    assert_eq!(abandoned.state, RunState::Running);
+    assert!(abandoned.termination.is_none());
+    assert_eq!(abandoned.chunk_sequence, started.chunk_sequence);
+    assert_eq!(
+        fixture.events_after(&workspace_id, &run_id, 0).await,
+        events,
+        "nothing is written on a clock the host cannot read"
+    );
+}
+
 /// A reply the table test can read back.
 fn reply() -> (crate::owner::Reply, Answer) {
     tokio::sync::oneshot::channel()

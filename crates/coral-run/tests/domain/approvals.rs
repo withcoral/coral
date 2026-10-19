@@ -824,9 +824,7 @@ async fn expired_approval_cannot_be_approved_and_settles_with_a_safe_failure() {
     .unwrap();
     // Advance the decision clock to the Request deadline, not the later Run deadline.
     // The worker remains alive on its own clock so this tests expiry, not lost claims.
-    let approvals = approvals.with_clock(Arc::new(TestClock {
-        next: AtomicI64::new(approval_deadline),
-    }));
+    let approvals = approvals.with_clock(Arc::new(TestClock::starting_at(approval_deadline)));
     let stale = approvals
         .get(&operation.principal, &operation.workspace_id, &request.id)
         .await
@@ -1413,9 +1411,11 @@ async fn approval_event_failure_rolls_back_decision_and_invocation_settlement() 
             pending
         );
     }
-    let expired_clock = approvals.clone().with_clock(Arc::new(TestClock {
-        next: AtomicI64::new(pending.deadline_at_unix_nanos),
-    }));
+    let expired_clock = approvals
+        .clone()
+        .with_clock(Arc::new(TestClock::starting_at(
+            pending.deadline_at_unix_nanos,
+        )));
     assert!(matches!(
         expired_clock
             .decide(
