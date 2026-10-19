@@ -684,12 +684,13 @@ async fn upstream_send_holds_no_database_transaction_or_lock() {
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 1);
 }
 
-/// Runs a Program that returns one real `getForecast` Result from `server`,
-/// then reads back its durable Final Value and its only Invocation.
-async fn real_forecast(
+/// Runs `source` against one real `getForecast` Operation at `server`, then
+/// reads back its terminal outcome and its only Invocation.
+async fn run_real_forecast(
     user_id: &str,
     server: &MockServer,
-) -> (serde_json::Value, crate::InvocationDetail) {
+    source: &str,
+) -> (RunTerminalOutcome, crate::InvocationDetail) {
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
     let runs = fixture.live_runs(None);
     let operation = fixture
@@ -699,7 +700,7 @@ async fn real_forecast(
         .start(
             &operation.principal,
             &operation.workspace_id,
-            submission("return await coral.providers.weather.getForecast({ city: 'London' });"),
+            submission(source),
         )
         .await
         .expect("accept real Operation Program");
@@ -710,12 +711,6 @@ async fn real_forecast(
         accepted.run_id(),
     )
     .await;
-    let Some(RunTerminalOutcome::Succeeded {
-        final_value: FinalValue::Present(value),
-    }) = terminal.terminal_outcome()
-    else {
-        panic!("real HTTP Operation should produce a Final Value");
-    };
     let history = runs
         .activity_entries(
             &operation.principal,
@@ -734,11 +729,37 @@ async fn real_forecast(
         .inspect_invocation(&operation.principal, &operation.workspace_id, &summary.id)
         .await
         .expect("inspect Invocation");
+    (
+        terminal
+            .terminal_outcome()
+            .expect("terminal outcome")
+            .clone(),
+        detail,
+    )
+}
+
+/// Runs a Program that returns one real `getForecast` Result from `server`,
+/// then reads back its durable Final Value and its only Invocation.
+async fn real_forecast(
+    user_id: &str,
+    server: &MockServer,
+) -> (serde_json::Value, crate::InvocationDetail) {
+    let (outcome, detail) = run_real_forecast(
+        user_id,
+        server,
+        "return await coral.providers.weather.getForecast({ city: 'London' });",
+    )
+    .await;
+    let RunTerminalOutcome::Succeeded {
+        final_value: FinalValue::Present(value),
+    } = outcome
+    else {
+        panic!("real HTTP Operation should produce a Final Value: {outcome:?}");
+    };
     (value.as_json().clone(), detail)
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn real_program_preserves_one_complete_non_success_http_outcome() {
+async fn rejecting_forecast_server() -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/forecast"))
@@ -749,22 +770,42 @@ async fn real_program_preserves_one_complete_non_success_http_outcome() {
         .expect(1)
         .mount(&server)
         .await;
+    server
+}
 
-    let (value, detail) = real_forecast("user:http-runner", &server).await;
-    let value = &value;
+#[tokio::test(flavor = "multi_thread")]
+async fn a_non_success_http_outcome_rejects_the_call_and_is_retained() {
+    let server = rejecting_forecast_server().await;
 
-    assert_eq!(value["data"], serde_json::json!({"temperature": 18}));
-    let metadata = &value["metadata"];
-    assert_eq!(metadata["kind"], "http");
-    assert_eq!(metadata["status"], 422);
+    let (outcome, detail) = run_real_forecast(
+        "user:http-runner",
+        &server,
+        "return await coral.providers.weather.getForecast({ city: 'London' });",
+    )
+    .await;
+
+    let RunTerminalOutcome::Failed(failure) = &outcome else {
+        panic!("an uncaught upstream error fails the Run: {outcome:?}");
+    };
+    assert_eq!(failure.code(), crate::RunFailureCode::ProgramRejected);
+    let operation = failure
+        .error()
+        .and_then(|error| error.operation.as_ref())
+        .expect("trusted Operation error fields");
+    assert_eq!(operation.code, "error_response");
     assert_eq!(
         detail.summary.outcome,
         Some(crate::InvocationResultKind::UpstreamOutcome)
     );
     assert_eq!(detail.arguments, serde_json::json!({"city": "London"}));
-    assert!(
-        matches!(detail.outcome, Some(crate::InvocationOutcome::UpstreamOutcome(ref result)) if result == value)
-    );
+    let Some(crate::InvocationOutcome::UpstreamOutcome(retained)) = &detail.outcome else {
+        panic!("the complete upstream outcome stays in history")
+    };
+    assert_eq!(retained["status"], 422);
+    assert_eq!(retained["data"], serde_json::json!({"temperature": 18}));
+    let metadata = &retained["metadata"];
+    assert_eq!(metadata["kind"], "http");
+    assert_eq!(metadata.get("status"), None);
     assert_eq!(metadata["mediaType"], "application/json");
     assert_eq!(metadata["charset"], "utf-8");
     assert!(
@@ -779,6 +820,50 @@ async fn real_program_preserves_one_complete_non_success_http_outcome() {
             .iter()
             .any(|header| header == &serde_json::json!(["content-type", "application/json"]))
     }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_caught_error_response_carries_status_data_and_metadata() {
+    let server = rejecting_forecast_server().await;
+
+    let (outcome, _detail) = run_real_forecast(
+        "user:http-catcher",
+        &server,
+        r#"
+        try {
+          await coral.providers.weather.getForecast({ city: 'London' });
+          return "returned";
+        } catch (error) {
+          return {
+            isOperationError: error instanceof coral.OperationError,
+            code: error.code,
+            status: error.status,
+            data: error.data,
+            kind: error.metadata.kind,
+            mediaType: error.metadata.mediaType,
+          };
+        }
+        "#,
+    )
+    .await;
+
+    let RunTerminalOutcome::Succeeded {
+        final_value: FinalValue::Present(value),
+    } = outcome
+    else {
+        panic!("a caught upstream error lets the Run succeed: {outcome:?}");
+    };
+    assert_eq!(
+        value.as_json(),
+        &serde_json::json!({
+            "isOperationError": true,
+            "code": "error_response",
+            "status": 422,
+            "data": {"temperature": 18},
+            "kind": "http",
+            "mediaType": "application/json",
+        })
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -808,6 +893,12 @@ async fn real_program_retains_no_sensitive_response_header_value() {
         .await;
 
     let (value, detail) = real_forecast("user:http-headers", &server).await;
+    // A declared success carries its status beside its data.
+    assert_eq!(value.get("status"), Some(&serde_json::json!(200)));
+    assert_eq!(
+        value.get("data"),
+        Some(&serde_json::json!({"temperature": 18}))
+    );
 
     let Some(crate::InvocationOutcome::UpstreamOutcome(retained)) = &detail.outcome else {
         panic!("retained upstream outcome")

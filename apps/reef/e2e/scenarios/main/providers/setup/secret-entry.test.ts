@@ -47,6 +47,8 @@ test('Secret entry with one shared account, then each person’s own account', a
       await page.goto(`/workspaces/${workspace}/providers/new`)
       await chooseFile(page, 'ledger_theirs.json', document)
       await page.getByRole('button', { name: 'Read', exact: true }).click()
+      // The first provider already has the document's title.
+      await page.getByLabel('Display name', { exact: true }).fill('Their ledger')
       await confirmConfiguration(page, 'Bearer token')
       await acceptOperations(page)
       await accountQuestion(page).waitFor()
@@ -55,7 +57,6 @@ test('Secret entry with one shared account, then each person’s own account', a
       await chooseAccount(page, 'own-later')
       await page.getByRole('button', { name: 'Add provider', exact: true }).click()
       await waitForPublication(page)
-      // Both providers share the document's title, so the new one is named by its path.
       // You cannot call it before you connect your own account.
       const theirs = { path: new URL(page.url()).pathname }
       await waitForProviderStatus(page, theirs, 'Connect your account')

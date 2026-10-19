@@ -12,6 +12,7 @@ import { accountStates } from './account-states'
 import { ConnectButton } from './connect-button'
 import { DisconnectAccount } from './disconnect-account'
 import * as styles from './accounts.css'
+import { filterQuery } from '@/utils/filter-query'
 
 const states: Record<
   PersonalAccountState,
@@ -43,11 +44,9 @@ export function UserAccountsPage({
 }) {
   const [input, setInput] = useState('')
   const [state, setState] = useState<PersonalAccountState | 'all'>('all')
-  const query = useDeferredValue(input).trim()
+  const query = filterQuery(useDeferredValue(input))
   const shown = v.accounts.filter(
-    (row) =>
-      row.name.toLowerCase().includes(query.toLowerCase()) &&
-      (state === 'all' || row.state === state),
+    (row) => query.matches(row.name) && (state === 'all' || row.state === state),
   )
   const table = Table.useRowCursor({ filterId: FILTER_ID })
 
@@ -100,7 +99,7 @@ export function UserAccountsPage({
         ) : (
           shown.length === 0 && (
             <Table.Status>
-              {query ? `No accounts match “${query}”.` : 'No accounts match.'}
+              {query.text ? `No accounts match “${query.text}”.` : 'No accounts match.'}
             </Table.Status>
           )
         )}

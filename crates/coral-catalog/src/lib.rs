@@ -110,13 +110,12 @@ pub use mcp::{
     McpInvocationMethod, McpTaskSupport, McpToolAnnotations, McpTransport,
 };
 pub use openapi::{
-    HTTP_RESULT, HTTP_SUCCESS_STATUS, HTTP_UNKNOWN_RESULT, HttpContentBinding, HttpCredentialSlot,
-    HttpEncodingBinding, HttpExecutionBinding, HttpHeaderBinding, HttpMethod, HttpParameterBinding,
-    HttpParameterLocation, HttpParameterStyle, HttpRedirectPolicy, HttpRequestBodyBinding,
-    HttpResponseBinding, HttpResponseStatus, OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument,
-    validate_openapi_configuration,
+    HTTP_RESULT, HttpContentBinding, HttpCredentialSlot, HttpEncodingBinding, HttpExecutionBinding,
+    HttpHeaderBinding, HttpMethod, HttpParameterBinding, HttpParameterLocation, HttpParameterStyle,
+    HttpRedirectPolicy, HttpRequestBodyBinding, HttpResponseBinding, HttpResponseStatus,
+    OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument, SuccessSelection, validate_openapi_configuration,
 };
-pub use paths::OperationPathAssignment;
+pub use paths::{OperationPathAssignment, call_path_segment_is_reserved};
 pub use search::{DeclarationIndexEntry, PreparedDeclarationFields, StoredDeclarationFields};
 pub use types::{
     CatalogDiagnostic, CatalogDiagnosticSeverity, CatalogSearchTarget, MaterializationOutcome,
@@ -125,14 +124,6 @@ pub use types::{
     ProviderGenerationFingerprint, ProviderGenerationId, ProviderSetupInput,
     ProviderSetupInputDigest, ProviderSetupInputKind, SchemaGraph, SchemaId, SchemaSemantics,
 };
-
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-
-/// Returns the Catalog Module's domain-owned migration plan.
-#[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
-    &MIGRATOR
-}
 
 /// Materializes one pinned Provider Setup input with the deployment-selected policy.
 ///

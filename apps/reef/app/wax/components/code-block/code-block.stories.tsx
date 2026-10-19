@@ -40,9 +40,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** Open issues nobody has updated in \`days\` days, oldest first. */
 export default async function staleIssues(input: Input = {}): Promise<Issue[]> {
   const cutoff = new Date(Date.now() - (input.days ?? 14) * DAY_MS);
-  const result = await coral.providers.linear.listIssues({ assignee: input.assignee ?? "me" });
-  if (result.data.isError) throw new Error(\`Linear error: \${result.data.message}\`);
-  return result.data.issues.filter((issue: Issue) => new Date(issue.updatedAt) < cutoff);
+  const { data } = await coral.providers.linear.listIssues({ assignee: input.assignee ?? "me" });
+  return data.issues.filter((issue: Issue) => new Date(issue.updatedAt) < cutoff);
 }`,
   },
 }

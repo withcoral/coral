@@ -120,7 +120,8 @@ async fn resource_references_preserve_position_and_only_read_with_the_issuing_pr
             ResponseTemplate::new(200).set_body_json(json!({
                 "jsonrpc": "2.0", "id": request["id"], "result": {
                     "contents": [{"uri": "private://bucket/secret?token=hidden", "text": "report body", "mimeType": "text/plain", "_meta": {"vendor/page": 1}}],
-                    "_meta": {"vendor/read": true}, "content": ["read extension, not a tool block"], "ttlMs": "provider extension"
+                    "_meta": {"vendor/read": true}, "content": ["read extension, not a tool block"], "ttlMs": "provider extension",
+                    "isError": true
                 }
             }))
         }).expect(1).mount(&server).await;
@@ -219,6 +220,8 @@ async fn resource_references_preserve_position_and_only_read_with_the_issuing_pr
     )
     .expect("exact Provider reference");
     let outcome = upstream.send(dispatch).await.expect("resource read");
+    // `isError` belongs to tool results; on a read it is an extension field.
+    assert_eq!(outcome.class(), coral_upstream::OutcomeClass::Success);
     assert_eq!(
         outcome.operation_result()["data"]["contents"][0]["text"],
         "report body"
@@ -778,7 +781,7 @@ async fn incomplete_tool_response_is_not_a_complete_outcome() {
 }
 
 #[tokio::test]
-async fn complete_tool_outcomes_preserve_content_structured_content_and_error_presence() {
+async fn complete_tool_outcomes_preserve_content_and_only_is_error_is_an_error_response() {
     for is_error in [None, Some(false), Some(true)] {
         let mut result = json!({
             "content": [
@@ -805,6 +808,15 @@ async fn complete_tool_outcomes_preserve_content_structured_content_and_error_pr
         assert_eq!(
             outcome.operation_result(),
             &json!({"data": result, "metadata": {"kind": "mcp", "_meta": meta}})
+        );
+        assert_eq!(
+            outcome.class(),
+            if is_error == Some(true) {
+                coral_upstream::OutcomeClass::ErrorResponse
+            } else {
+                coral_upstream::OutcomeClass::Success
+            },
+            "isError {is_error:?}"
         );
         server.verify().await;
         // Count JSON-RPC posts only: a session close from an earlier test can land

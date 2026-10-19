@@ -45,7 +45,7 @@ test("A secret entered in the agent's connect dialog reaches Coral and returns t
             'Vault',
             { listEntries: { summary: 'List entries' } },
             { security: 'bearer' },
-          ).toString(),
+          ),
         },
       })
       await api.setups.confirmProviderSetupConfiguration({

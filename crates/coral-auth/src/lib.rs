@@ -59,14 +59,6 @@ fn external_user_id(value: &str) -> Result<UserId, ()> {
     Ok(id)
 }
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-
-/// Returns the authentication Module's domain-owned migration plan.
-#[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
-    &MIGRATOR
-}
-
 /// One verified OIDC identity supplied by the authorization-server Adapter.
 pub struct VerifiedOidcLogin<'a> {
     issuer: &'a str,
@@ -223,13 +215,9 @@ mod tests {
     use super::{LoginProvisioning, UserDirectory, VerifiedOidcLogin};
     use coral_test_support::TestDatabase;
 
-    fn test_migrator() -> sqlx::migrate::Migrator {
-        coral_test_support::combined_migrator(&[coral_workspace::migrator(), super::migrator()])
-    }
-
     #[tokio::test]
     async fn trusted_profile_refresh_preserves_identity_and_rejects_stale_login_updates() {
-        let fixture = TestDatabase::new(&test_migrator()).await.unwrap();
+        let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let directory = UserDirectory::new(fixture.database());
         let user = provisioned(
             directory
@@ -301,7 +289,7 @@ mod tests {
             ChangeContext, OrganizationModule, TraceId, VerifiedUserProfile, WorkspaceDisplayName,
             WorkspaceModule, WorkspaceRole,
         };
-        let fixture = TestDatabase::new(&test_migrator()).await.unwrap();
+        let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let directory = UserDirectory::new(fixture.database())
             .with_bootstrap_owner("https://issuer.test", "owner");
         let verified = |email| VerifiedUserProfile::new(None, Some(email), Some(true), None);
@@ -370,7 +358,7 @@ mod tests {
 
     #[tokio::test]
     async fn verified_login_provisions_membership_and_cannot_undo_disablement() {
-        let fixture = TestDatabase::new(&test_migrator()).await.unwrap();
+        let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let directory = UserDirectory::new(fixture.database())
             .with_bootstrap_owner("https://issuer.test", "owner");
         let owner_id = provisioned(
@@ -422,7 +410,7 @@ mod tests {
 
     #[tokio::test]
     async fn login_provisioning_contract_holds_for_selected_database() {
-        let fixture = TestDatabase::new(&test_migrator())
+        let fixture = TestDatabase::new(coral_db::migration_plan())
             .await
             .expect("create authentication test database");
         let directory = UserDirectory::new(fixture.database());
@@ -478,7 +466,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_first_logins_converge_for_selected_database() {
-        let fixture = TestDatabase::new(&test_migrator())
+        let fixture = TestDatabase::new(coral_db::migration_plan())
             .await
             .expect("create authentication test database");
         let directory = UserDirectory::new(fixture.database());

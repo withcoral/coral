@@ -88,8 +88,8 @@ impl SearchIndex {
     /// and its `complete` state row in one transaction. The committing
     /// workflow sends ids alone and never waits for the preparation (ADR
     /// 0017). Writing an indexed Generation again rewrites its rows. A failed
-    /// write rolls back and leaves a `failed` state row; a failed preparation
-    /// is logged, and the reconcile task indexes the Generation instead.
+    /// preparation or write leaves a `failed` state row, and the reconcile
+    /// task retries the Generation once the failure is old enough.
     ///
     /// A Generation that another publication replaced before the write runs
     /// is skipped: the replacing publication's notification indexes its own.
@@ -137,17 +137,64 @@ impl SearchIndex {
                 // the Generation; that change's own notification follows.
                 Ok(_) => {}
                 Err(error) => {
-                    // TODO: an error monitor for failed index writes is still to be set up.
-                    tracing::error!(
-                        workspace_id = %workspace_id,
-                        provider_id = %provider_id,
-                        generation_id = expected.as_ref().map(tracing::field::display),
-                        error = %error,
-                        "failed to prepare a Provider Generation for the search index"
-                    );
+                    index
+                        .fail_preparation(&workspace_id, &provider_id, expected.as_ref(), &error)
+                        .await;
                 }
             }
         });
+    }
+
+    /// Logs a failed preparation and records a `failed` state row for the
+    /// Provider's active Generation, as a reconcile pass does, so the
+    /// Provider does not read as pending until the next pass. Records
+    /// nothing when the Provider is gone or `expected` was replaced.
+    async fn fail_preparation(
+        &self,
+        workspace_id: &WorkspaceId,
+        provider_id: &ProviderId,
+        expected: Option<&ProviderGenerationId>,
+        error: &IndexError,
+    ) {
+        match self.active_generation(workspace_id, provider_id).await {
+            Ok(Some(active))
+                if expected.is_none_or(|expected| expected == active.generation_id()) =>
+            {
+                self.fail_generation((&active).into(), error).await;
+            }
+            Ok(_) => {}
+            Err(read_error) => {
+                // TODO: an error monitor for failed index writes is still to be set up.
+                tracing::error!(
+                    workspace_id = %workspace_id,
+                    provider_id = %provider_id,
+                    generation_id = expected.map(tracing::field::display),
+                    error = %error,
+                    read_error = %read_error,
+                    "failed to prepare a Provider Generation for the search index"
+                );
+            }
+        }
+    }
+
+    /// The Provider's active Generation, or `None` when the Provider is gone.
+    async fn active_generation(
+        &self,
+        workspace_id: &WorkspaceId,
+        provider_id: &ProviderId,
+    ) -> Result<Option<coral_provider::ActiveGeneration>, IndexError> {
+        self.within_limit(async {
+            let mut transaction = self.database.begin_read_snapshot().await?;
+            let active = coral_provider::workspace_active_generations_in_transaction(
+                &mut transaction,
+                workspace_id,
+                Some(provider_id),
+            )
+            .await?;
+            transaction.rollback().await?;
+            Ok(active.into_iter().next())
+        })
+        .await
     }
 
     /// A Generation stopped being active: removes its rows and state row.
@@ -370,13 +417,26 @@ impl SearchIndex {
         .await
     }
 
+    /// Begins a write, waiting again while the writer is busy, in this
+    /// process or another. A write that overran its limit keeps the writer
+    /// until its statement ends, and the failure it leaves must still be
+    /// recorded. The caller's limit bounds the wait.
+    async fn begin_when_writer_free(&self) -> Result<Transaction<'_>, IndexError> {
+        loop {
+            match self.database.begin().await {
+                Err(error) if error.is_serialization_conflict() => {}
+                begun => return Ok(begun?),
+            }
+        }
+    }
+
     async fn record_failed_generation(
         &self,
         generation: AttemptedGeneration<'_>,
         error: &IndexError,
     ) -> Result<(), IndexError> {
         self.within_limit(async {
-            let mut transaction = self.database.begin().await?;
+            let mut transaction = self.begin_when_writer_free().await?;
             operations::record_failed_attempt(&mut transaction, generation, error).await?;
             transaction.commit().await?;
             Ok(())
@@ -389,7 +449,7 @@ impl SearchIndex {
         error: &IndexError,
     ) -> Result<(), IndexError> {
         self.within_limit(async {
-            let mut transaction = self.database.begin().await?;
+            let mut transaction = self.begin_when_writer_free().await?;
             functions::record_failed_attempt(&mut transaction, entry, error).await?;
             transaction.commit().await?;
             Ok(())
