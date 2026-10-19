@@ -6,14 +6,17 @@ import { withBrowserSession } from '../../../support/browser-session.ts'
 import { inspectRunEvents, managementClients } from '../../../support/management.ts'
 import { listen, openApiDocument } from '../../../support/provider-fixtures.ts'
 import {
+  acceptOperations,
   addProviderFromFile,
   chooseFile,
+  confirmConfiguration,
   createWorkspace,
   openProviderPolicy,
   openProviderSettings,
   programRunner,
   type RunUpdate,
   setProviderEnabled,
+  waitForPublication,
 } from '../../../support/providers.ts'
 
 test('Workspace Provider Add, MCP execution, policy, Update and lifecycle use one identity', async (context) => {
@@ -115,14 +118,24 @@ test('Workspace Provider Add, MCP execution, policy, Update and lifecycle use on
         expect(calls).toBe(1)
       })
       await step(
-        'A second provider from the same source owns independent policy and identity',
+        'A second provider from the same source takes its own name and owns independent policy and identity',
         async () => {
-          secondProvider = await addProviderFromFile(
-            page,
-            workspace,
-            document('Weather'),
-            'otherWeather',
+          const taken = page.getByText(
+            'Another provider uses this name. Enter a different display name.',
+            { exact: true },
           )
+          await page.goto(`/workspaces/${workspace}/providers/new`)
+          await chooseFile(page, 'otherWeather.json', document('Weather'))
+          await page.getByRole('button', { name: 'Read', exact: true }).click()
+          await taken.waitFor()
+          await page.getByLabel('Display name', { exact: true }).fill('Other weather')
+          await taken.waitFor({ state: 'detached' })
+          await page.getByLabel('Namespace', { exact: true }).fill('otherWeather')
+          await confirmConfiguration(page)
+          await acceptOperations(page)
+          await page.getByRole('button', { name: 'Add provider', exact: true }).click()
+          await waitForPublication(page)
+          secondProvider = new URL(page.url()).pathname
           expect(secondProvider).not.toBe(providerPath)
           await policy(secondProvider, 'otherWeather', 'Always allow')
           await policy(providerPath, 'weather', 'Disabled')

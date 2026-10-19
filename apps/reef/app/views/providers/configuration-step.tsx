@@ -47,7 +47,8 @@ import { StepFrame } from './step-frame'
 import * as styles from './providers.css'
 
 /** Names that differ only in case or surrounding space read as the same provider. */
-const nameKey = (name: string) => name.trim().toLocaleLowerCase()
+// The host's locale would let the server and the browser disagree, so case folds the same everywhere.
+const nameKey = (name: string) => name.trim().toLowerCase()
 
 /** A value the source fixed: shaped like the fields beside it, never editable. */
 function ReadField({ label, value }: { label: string; value: string }) {
