@@ -119,7 +119,11 @@ User decision, recorded 2026-10-15. It supersedes the settled decision that `cor
 - Middleware-originated emits keep the trusted bypass. No policy applies to them, whatever policy the Middleware sets for the emit it wraps.
 - The Program's `coral.emit` Promise resolves to `undefined` once the Emission is durable.
 
-### Implementation choices to confirm through Hermes
+## Activity integration requirement
+
+Emission approvals use the same Activity workflows as other approval requests: they must be discoverable in pending actions and Live mode, open the exact payload review, and participate in normal post-decision navigation. This is an integration requirement, not a new Middleware semantic. An emission approval has no Provider Operation Invocation, so Activity must resolve it through its Run rather than assume an Invocation identifier exists.
+
+## Implementation choices to confirm through Hermes
 
 - A final `disabled` policy rejects with `operation_disabled` and the Operation message, because Middleware sees an emit as an Operation. A dedicated `emission_disabled` code is the alternative.
 - A request closed while the invoking Principal lacks Workspace authority rejects with `dispatch_authority_lost`, whether the host or a decision attempt closed it. Other closures reject with `approval_required`, as for Invocations.
