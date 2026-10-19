@@ -3,11 +3,90 @@ use std::time::Duration;
 
 use tokio::sync::Notify;
 
-#[cfg(test)]
-use crate::RunId;
+use crate::{Error, RunId};
 
 const CLAIM_LEASE: Duration = Duration::from_secs(30);
+/// Leases without a successful commit after which a Run Owner is suspect: it
+/// answers Program requests only once their chunk is recorded.
+const SUSPECT_AFTER_LEASES: u32 = 1;
+/// Leases without a successful commit after which a Run Owner interrupts its
+/// Run: it terminates the Program, cancels its dispatches, and records
+/// Interrupted as soon as the database answers.
+const SELF_INTERRUPT_AFTER_LEASES: u32 = 3;
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+/// The backoff between attempts when the database gives no answer: a reread
+/// after an uncertain commit, a recommit, or the Interrupted record. Attempts
+/// end on an answer, never on the clock.
+pub(crate) const RETRY_BACKOFF_MIN: Duration = Duration::from_millis(50);
+pub(crate) const RETRY_BACKOFF_MAX: Duration = Duration::from_secs(2);
+
+/// The wait before retry number `attempt` (from 1): doubling from
+/// [`RETRY_BACKOFF_MIN`] up to [`RETRY_BACKOFF_MAX`].
+fn retry_backoff(attempt: u32) -> Duration {
+    RETRY_BACKOFF_MIN
+        .saturating_mul(1 << attempt.saturating_sub(1).min(16))
+        .min(RETRY_BACKOFF_MAX)
+}
+
+/// The backoff between attempts of one Run write the database did not
+/// answer, with one warn line per attempt.
+pub(crate) struct Backoff<'a> {
+    run_id: &'a RunId,
+    write: &'static str,
+    attempts: u32,
+}
+
+impl<'a> Backoff<'a> {
+    pub(crate) const fn new(run_id: &'a RunId, write: &'static str) -> Self {
+        Self {
+            run_id,
+            write,
+            attempts: 0,
+        }
+    }
+
+    /// Logs the unanswered attempt and waits before the next one.
+    pub(crate) async fn wait(&mut self, error: &Error) {
+        self.attempts += 1;
+        tracing::warn!(
+            run_id = %self.run_id,
+            write = self.write,
+            attempt = self.attempts,
+            error = %error,
+            "Run Owner write got no answer from the database; retrying"
+        );
+        tokio::time::sleep(retry_backoff(self.attempts)).await;
+    }
+}
+
+/// Runs `attempt` until the database answers it: an operational error is
+/// followed by another attempt after a bounded backoff, and each attempt
+/// reads for itself whether the previous one took effect. Ends on the
+/// answer, never on the clock; or with [`Error::OwnerLost`] once
+/// `keep_trying` says the owner retired meanwhile and nothing is left to
+/// tell it.
+pub(crate) async fn until_answered<T, F>(
+    run_id: &RunId,
+    write: &'static str,
+    keep_trying: impl Fn() -> bool,
+    mut attempt: impl FnMut() -> F,
+) -> Result<T, Error>
+where
+    F: Future<Output = Result<T, Error>>,
+{
+    let mut backoff = Backoff::new(run_id, write);
+    loop {
+        match attempt().await {
+            Err(error) if error.is_operational() => {
+                backoff.wait(&error).await;
+                if !keep_trying() {
+                    return Err(Error::OwnerLost);
+                }
+            }
+            answered => return answered,
+        }
+    }
+}
 
 #[cfg(test)]
 #[async_trait::async_trait]
@@ -18,6 +97,15 @@ pub(crate) trait ExecutionObserver: Send + Sync {
 
     /// The Run Owner is about to commit one chunk; a test may hold it here.
     async fn before_chunk_commit(&self) {}
+
+    /// One chunk commit landed; `true` loses its answer, so the owner resolves
+    /// the commit as one the database never answered.
+    async fn chunk_commit_answer_lost(&self) -> bool {
+        false
+    }
+
+    /// The owner's task dequeued one message; a test may panic here.
+    fn owner_message_dequeued(&self) {}
 
     fn execution_attempt_finished(&self) {}
 }
@@ -86,6 +174,18 @@ impl ExecutionPolicy {
     /// lease with an empty chunk: half a lease.
     pub(crate) fn idle_tick(self) -> Duration {
         self.claim_lease / 2
+    }
+
+    /// How long after its last successful commit a Run Owner is suspect.
+    pub(crate) fn suspect_after_nanos(self) -> i64 {
+        self.claim_lease_nanos()
+            .saturating_mul(i64::from(SUSPECT_AFTER_LEASES))
+    }
+
+    /// How long after its last successful commit a Run Owner interrupts its Run.
+    pub(crate) fn self_interrupt_after_nanos(self) -> i64 {
+        self.claim_lease_nanos()
+            .saturating_mul(i64::from(SELF_INTERRUPT_AFTER_LEASES))
     }
 
     pub(crate) fn shutdown_grace_nanos(self) -> i64 {

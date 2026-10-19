@@ -31,7 +31,7 @@ pub(crate) use ledger::{Chunk, ChunkEvent, commit_chunk};
 pub(crate) use retention::{delete_retained_history, retention_activity};
 use run_row::RunRow;
 pub(crate) use termination::{
-    finish_run, finish_termination, finish_unstarted_run, request_termination,
+    finish_run, finish_termination, finish_unstarted_run, interrupt_run, request_termination,
 };
 
 #[derive(Iden)]
@@ -89,6 +89,19 @@ pub(crate) async fn hold_run(
         .returning(Query::returning().columns(RUN_COLUMNS))
         .to_owned();
     let row: Option<RunRow> = transaction.fetch_optional_returning(statement).await?;
+    row.map(RunRow::decode).transpose()
+}
+
+/// Reads the Run row in one statement, outside any transaction and without
+/// holding it: the reread a Run Owner makes when a commit got no answer.
+pub(crate) async fn find_exact(
+    database: &coral_db::Database,
+    workspace_id: &WorkspaceId,
+    run_id: &RunId,
+) -> Result<Option<RunRecord>, Error> {
+    let row: Option<RunRow> = database
+        .fetch_optional(exact_run_statement(workspace_id, run_id))
+        .await?;
     row.map(RunRow::decode).transpose()
 }
 

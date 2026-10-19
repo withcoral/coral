@@ -66,7 +66,7 @@ impl<'a> Chunk<'a> {
     }
 
     /// Appends `events` in order after the ones already in the chunk.
-    pub(crate) fn owned_events(mut self, events: &'a [OwnedEvent]) -> Self {
+    pub(crate) fn owned_events(mut self, events: impl IntoIterator<Item = &'a OwnedEvent>) -> Self {
         for event in events {
             self = self.event(event.as_new(), event.occurred_at_unix_nanos);
         }

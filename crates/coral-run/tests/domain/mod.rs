@@ -19,6 +19,7 @@ mod owner;
 mod provider_setup;
 mod refresh;
 mod required_actions;
+mod resilience;
 mod scoping;
 mod support;
 mod updates;

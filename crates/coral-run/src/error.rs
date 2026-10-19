@@ -375,6 +375,20 @@ pub enum Error {
 }
 
 impl Error {
+    /// Whether the database gave no usable answer: the operation may or may
+    /// not have taken effect, and a reread decides. Every other error is the
+    /// database's or the domain's definite answer.
+    #[must_use]
+    pub(crate) fn is_operational(&self) -> bool {
+        matches!(
+            self,
+            Self::Database(_)
+                | Self::Workspace(coral_workspace::Error::Database(_))
+                | Self::Provider(coral_provider::Error::Database(_))
+                | Self::Policy(coral_policy::Error::Database(_))
+        )
+    }
+
     /// Returns a definite safe rejection; operational uncertainty has no invented outcome.
     #[must_use]
     pub fn safe_rejection(&self) -> Option<(&'static str, String)> {

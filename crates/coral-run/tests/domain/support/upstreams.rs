@@ -148,3 +148,33 @@ pub(crate) fn scripted_http_result(data: &serde_json::Value) -> serde_json::Valu
         }
     })
 }
+
+/// Holds the send until the Run's stop is requested, then reports it
+/// canceled, as the production sender does for a dispatch in flight.
+pub(crate) struct StopAwareUpstream {
+    pub(crate) entered: AtomicBool,
+    pub(crate) exited: AtomicBool,
+}
+
+impl StopAwareUpstream {
+    pub(crate) const fn new() -> Self {
+        Self {
+            entered: AtomicBool::new(false),
+            exited: AtomicBool::new(false),
+        }
+    }
+}
+
+#[async_trait]
+impl UpstreamSender for StopAwareUpstream {
+    async fn send(
+        &self,
+        _dispatch: ReadyDispatch,
+        stop: Arc<ExecutionStop>,
+    ) -> Result<UpstreamOutcome, crate::invocation::UpstreamSendError> {
+        self.entered.store(true, Ordering::SeqCst);
+        stop.requested().await;
+        self.exited.store(true, Ordering::SeqCst);
+        Err(crate::invocation::UpstreamSendError::Canceled)
+    }
+}

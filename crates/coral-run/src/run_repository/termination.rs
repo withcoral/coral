@@ -4,7 +4,7 @@ use coral_db::Transaction;
 use sea_query::Expr;
 
 use super::ledger::commit_chunk_with;
-use super::{Chunk, NewEvent, ProgramRunRecords};
+use super::{Chunk, NewEvent, OwnedEvent, ProgramRunRecords};
 use crate::lifecycle::{RunRecord, RunTermination};
 use crate::{Error, FinalValue, RunTerminalOutcome};
 
@@ -72,7 +72,16 @@ pub(crate) async fn finish_unstarted_run(
     outcome: &RunTerminalOutcome,
     terminal_at_unix_nanos: i64,
 ) -> Result<(), Error> {
-    finish_terminal_run(transaction, run, None, outcome, terminal_at_unix_nanos).await
+    finish_terminal_run(
+        transaction,
+        run,
+        None,
+        &[],
+        outcome,
+        terminal_at_unix_nanos,
+        Vec::new(),
+    )
+    .await
 }
 
 /// Persists the caller-selected outcome and terminal Event under the Run hold.
@@ -88,16 +97,22 @@ pub(crate) async fn finish_run(
         transaction,
         run,
         Some(claim_id),
+        &[],
         outcome,
         terminal_at_unix_nanos,
+        Vec::new(),
     )
     .await
 }
 
 /// Ends a Run whose termination `run` records, under whichever claim it holds.
+/// `invocation_events` are the `invocation.ended` Events of the Invocations
+/// the same transaction ended for the termination; they precede `run.ended`
+/// in the one terminal chunk.
 pub(crate) async fn finish_termination(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
+    invocation_events: &[OwnedEvent],
     outcome: &RunTerminalOutcome,
     terminal_at_unix_nanos: i64,
 ) -> Result<(), Error> {
@@ -105,21 +120,76 @@ pub(crate) async fn finish_termination(
         transaction,
         run,
         run.execution_claim_id.as_deref(),
+        invocation_events,
         outcome,
         terminal_at_unix_nanos,
+        Vec::new(),
     )
     .await
 }
 
-/// The terminal chunk: the outcome, a released worker claim, and `run.ended`.
-/// No Event follows it: a chunk built before it mismatches the head it moved,
-/// and a chunk built after it finds no running Run.
+/// The one chunk that interrupts a Run its owner can no longer run: the
+/// termination intent and the terminal outcome together, the worker claim
+/// released, the `invocation.ended` Events of its ended Invocations, and
+/// `run.ended`. Predicated on the claim `run` holds (its execution claim, or
+/// the worker claim of a Run that never started). `new_execution_claim_id`
+/// is the claim id a recovering writer mints when it takes the Run over from
+/// a started owner that can no longer write: every commit still in flight
+/// under the old claim then mismatches.
+pub(crate) async fn interrupt_run(
+    transaction: &mut Transaction<'_>,
+    run: &RunRecord,
+    invocation_events: &[OwnedEvent],
+    termination: &RunTermination,
+    new_execution_claim_id: Option<&str>,
+    terminal_at_unix_nanos: i64,
+) -> Result<(), Error> {
+    let mut values = vec![
+        (
+            ProgramRunRecords::TerminationKind,
+            Expr::val(termination.kind.as_storage_str()),
+        ),
+        (
+            ProgramRunRecords::TerminationStartedAtUnixNanos,
+            Expr::val(termination.started_at_unix_nanos),
+        ),
+        (
+            ProgramRunRecords::TerminationDeadlineAtUnixNanos,
+            Expr::val(termination.deadline_at_unix_nanos),
+        ),
+    ];
+    // A Run that never started has no execution claim to take over: its
+    // row pairs the execution claim with the start mark, and the released
+    // worker claim is all the fence a late start mark needs.
+    if let (Some(new_claim_id), Some(_started)) =
+        (new_execution_claim_id, run.execution_claim_id.as_deref())
+    {
+        values.push((ProgramRunRecords::ExecutionClaimId, Expr::val(new_claim_id)));
+    }
+    finish_terminal_run(
+        transaction,
+        run,
+        run.execution_claim_id.as_deref(),
+        invocation_events,
+        &termination.kind.outcome(),
+        terminal_at_unix_nanos,
+        values,
+    )
+    .await
+}
+
+/// The terminal chunk: the outcome, a released worker claim, and `run.ended`
+/// after `invocation_events`. No Event follows it: a chunk built before it
+/// mismatches the head it moved, and a chunk built after it finds no running
+/// Run.
 async fn finish_terminal_run(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
     execution_claim_id: Option<&str>,
+    invocation_events: &[OwnedEvent],
     outcome: &RunTerminalOutcome,
     terminal_at_unix_nanos: i64,
+    mut values: Vec<(ProgramRunRecords, Expr)>,
 ) -> Result<(), Error> {
     let (failure_code, failure_message, final_value_json) = terminal_fields(outcome);
     let final_value_bytes = final_value_json.as_deref().map_or(0, str::len);
@@ -133,7 +203,7 @@ async fn finish_terminal_run(
             })?,
         _ => None,
     };
-    let mut values = vec![
+    values.extend([
         (
             ProgramRunRecords::State,
             Expr::val(outcome.state().as_storage_str()),
@@ -155,12 +225,14 @@ async fn finish_terminal_run(
             ProgramRunRecords::FinalValueJson,
             Expr::val(final_value_json),
         ),
-    ];
+    ]);
     values.extend(released_worker_claim());
-    let chunk = Chunk::new(run, execution_claim_id).event(
-        NewEvent::Ended(outcome.state(), final_value_bytes),
-        terminal_at_unix_nanos,
-    );
+    let chunk = Chunk::new(run, execution_claim_id)
+        .owned_events(invocation_events)
+        .event(
+            NewEvent::Ended(outcome.state(), final_value_bytes),
+            terminal_at_unix_nanos,
+        );
     commit_chunk_with(transaction, chunk, values).await
 }
 

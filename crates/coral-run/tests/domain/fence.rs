@@ -511,10 +511,14 @@ async fn provider_disablement_at_the_fence_blocks_dispatch() {
 }
 
 #[tokio::test]
-async fn run_and_claim_expiry_during_final_checks_prevent_dispatch() {
-    for (now, expected) in [
-        (2_000_000_000, RunState::Interrupted),
-        (61_000_000_000, RunState::TimedOut),
+/// The Run deadline passing during the fence's final checks refuses the
+/// dispatch. The worker lease lapsing there does not: the lease is ownership
+/// between processes, and the owner's own fence rides a commit predicated on
+/// its claim, which the lapse leaves in place.
+async fn run_expiry_during_final_checks_prevents_dispatch_and_a_lapsed_lease_does_not() {
+    for (now, expected, sends) in [
+        (2_000_000_000, RunState::Succeeded, 1),
+        (61_000_000_000, RunState::TimedOut, 0),
     ] {
         let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
         let mut fixture = TestModules::with_upstream(
@@ -536,26 +540,31 @@ async fn run_and_claim_expiry_during_final_checks_prevent_dispatch() {
             run.run_id(),
         )
         .await;
-        observer.fences.assert_no_dispatch();
-        assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
-        assert_eq!(terminal.state(), expected);
-        assert!(
-            retained_events(
-                &fixture.runs,
-                &operation.principal,
-                &operation.workspace_id,
-                terminal.run_id()
-            )
-            .await
-            .iter()
-            .any(|event| matches!(
+        assert_eq!(upstream.sends.load(Ordering::SeqCst), sends, "at {now}");
+        assert_eq!(terminal.state(), expected, "at {now}");
+        let run_terminated = retained_events(
+            &fixture.runs,
+            &operation.principal,
+            &operation.workspace_id,
+            terminal.run_id(),
+        )
+        .await
+        .iter()
+        .any(|event| {
+            matches!(
                 event.kind(),
                 RunEventKind::InvocationEnded {
                     result_kind: crate::InvocationResultKind::RunTerminated,
                     ..
                 }
-            ))
-        );
+            )
+        });
+        if sends == 0 {
+            observer.fences.assert_no_dispatch();
+            assert!(run_terminated, "at {now}");
+        } else {
+            assert!(!run_terminated, "at {now}");
+        }
     }
 }
 

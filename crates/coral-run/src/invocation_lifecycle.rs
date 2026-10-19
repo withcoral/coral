@@ -153,22 +153,26 @@ pub(crate) async fn commit_outside_owner(
     run_repository::commit_chunk(tx, Chunk::new(run, Some(claim)).owned_events(events)).await
 }
 
-pub(crate) async fn end_nonterminal_for_run(
+/// Ends every nonterminal Invocation of `run` for its termination: pending
+/// ones as `run_terminated`, dispatching ones as `indeterminate` (or with
+/// the Operation Result Coral's own records establish), their pending
+/// Approval Requests closed. Returns their `invocation.ended` Events for the
+/// caller's terminal chunk, so the Invocation rows, the Approval rows, the
+/// Events and `run.ended` commit together.
+pub(crate) async fn end_nonterminal_invocations(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
     ended_at_unix_nanos: i64,
-) -> Result<(), Error> {
+) -> Result<Vec<OwnedEvent>, Error> {
     let invocations = invocation_repository::nonterminal_for_run(transaction, run).await?;
     if invocations.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
-    let Some(claim) = run.execution_claim_id.as_deref() else {
+    if run.execution_claim_id.is_none() {
         return Err(Error::CorruptData(
             "unclaimed Run has nonterminal Invocations".into(),
         ));
-    };
-    // One chunk ends every nonterminal Invocation: their rows, their pending
-    // Approval Requests, and their `invocation.ended` Events commit together.
+    }
     let mut events = Vec::with_capacity(invocations.len());
     for invocation in &invocations {
         let (result_kind, result_json) =
@@ -187,11 +191,7 @@ pub(crate) async fn end_nonterminal_for_run(
         })?;
         events.push(event);
     }
-    run_repository::commit_chunk(
-        transaction,
-        Chunk::new(run, Some(claim)).owned_events(&events),
-    )
-    .await
+    Ok(events)
 }
 
 /// Ends one nonterminal Invocation for a termination: its row, its pending

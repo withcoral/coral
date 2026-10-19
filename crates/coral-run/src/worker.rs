@@ -21,7 +21,7 @@ impl RunModule {
     pub(crate) fn schedule_execution(&self, run: AcceptedRun, actor: AuthenticatedPrincipal) {
         let (handle, mailbox) = OwnerHandle::new(run.id.clone(), run.claim_id.clone());
         let registration = self.owners.register(handle.clone());
-        let _owner_task = tokio::spawn(owner::host(
+        let owner_task = tokio::spawn(owner::host(
             self.clone(),
             run.clone(),
             actor,
@@ -29,6 +29,15 @@ impl RunModule {
             mailbox,
             registration,
         ));
+        let supervisor = self.clone();
+        let supervised = run.clone();
+        let _supervisor_task = tokio::spawn(async move {
+            if let Err(ended) = owner_task.await {
+                supervisor
+                    .recover_from_owner_failure(&supervised, &ended)
+                    .await;
+            }
+        });
         let deadline_module = self.clone();
         let _deadline_task = tokio::spawn(async move {
             let now = deadline_module
@@ -40,11 +49,54 @@ impl RunModule {
         });
     }
 
+    /// The supervisor's answer to an owner task that ended without retiring
+    /// (a panic unwound it): the Run has no writer, so the supervisor takes
+    /// the claim over with a new claim id and records the interruption in one
+    /// chunk, as the owner's self-interrupt would. Nothing still in flight
+    /// under the old claim can land afterwards.
+    async fn recover_from_owner_failure(&self, run: &AcceptedRun, ended: &tokio::task::JoinError) {
+        let takeover_claim_id = uuid::Uuid::new_v4().hyphenated().to_string();
+        tracing::error!(
+            run_id = %run.id,
+            claim_id = %run.claim_id,
+            takeover_claim_id = %takeover_claim_id,
+            ended = %ended,
+            "Run Owner task ended without retiring; interrupting its Run"
+        );
+        match self
+            .record_interruption(
+                &run.workspace_id,
+                &run.id,
+                &run.claim_id,
+                Some(&takeover_claim_id),
+            )
+            .await
+        {
+            Ok(()) => {}
+            Err(Error::ClaimMismatch | Error::RunEnded) => {
+                tracing::warn!(
+                    run_id = %run.id,
+                    "Run of a failed Run Owner was ended by another writer first"
+                );
+            }
+            Err(error) => {
+                tracing::error!(
+                    run_id = %run.id,
+                    error = %error,
+                    "Run of a failed Run Owner could not be interrupted"
+                );
+            }
+        }
+    }
+
     /// The owner's first chunk: rechecks the Run and the Principal's current
     /// authority under the Run hold, then writes the execution-start mark and
     /// returns the package to execute. `None` when there is nothing to run:
     /// the Run ended or was terminated first, its deadline passed (recorded
     /// here), its lease lapsed, or authority was lost (the Run fails here).
+    /// Run again after an attempt the database did not answer, it returns the
+    /// package when that attempt's start mark landed, so the Program starts
+    /// exactly once.
     pub(crate) async fn start_execution(
         &self,
         accepted: &AcceptedRun,
@@ -58,6 +110,12 @@ impl RunModule {
         else {
             return Ok(None);
         };
+        if run.state == RunState::Running
+            && run.termination.is_none()
+            && run.execution_claim_id.as_deref() == Some(claim_id)
+        {
+            return Self::package_of_started_run(transaction, accepted).await;
+        }
         if run.state != RunState::Running
             || run.termination.is_some()
             || run.execution_started()
@@ -119,7 +177,7 @@ impl RunModule {
             evidence.require_current_at(started_at)?;
             Ok(())
         }) {
-            if is_operational_error(&error) {
+            if error.is_operational() {
                 return Err(error);
             }
             run_repository::finish_unstarted_run(
@@ -143,6 +201,24 @@ impl RunModule {
         Ok(Some(package))
     }
 
+    /// The package of a Run whose start mark this owner's earlier attempt
+    /// landed without an answer: the Program has not started yet, and this
+    /// is its one start.
+    async fn package_of_started_run(
+        mut transaction: coral_db::Transaction<'_>,
+        accepted: &AcceptedRun,
+    ) -> Result<Option<ProgramPackage>, Error> {
+        let package = run_repository::load_package_in_transaction(
+            &mut transaction,
+            &accepted.workspace_id,
+            &accepted.id,
+        )
+        .await?
+        .ok_or_else(|| Error::CorruptData("started Run has no Program package".to_string()))?;
+        transaction.commit().await?;
+        Ok(Some(package))
+    }
+
     /// The terminal write for the Program's completion, after the owner has
     /// recorded every chunk it applied. Returns the shutdown still to settle
     /// when a termination is recorded instead of a completion.
@@ -154,7 +230,7 @@ impl RunModule {
     pub(crate) async fn complete_execution(
         &self,
         accepted: &AcceptedRun,
-        completion: ExecutionCompletion,
+        completion: &ExecutionCompletion,
     ) -> Result<Option<ShutdownAction>, Error> {
         let claim_id = accepted.claim_id.as_str();
         let mut transaction = self.database.begin().await?;
@@ -173,11 +249,11 @@ impl RunModule {
             None
         } else if now >= run.deadline_at_unix_nanos {
             Some(RunTerminationKind::TimedOut)
-        } else if completion == ExecutionCompletion::ProgramHostTerminated
+        } else if *completion == ExecutionCompletion::ProgramHostTerminated
             || !run.program_work_is_current(claim_id, now)
         {
             Some(RunTerminationKind::Interrupted)
-        } else if completion == ExecutionCompletion::MemoryLimitExceeded {
+        } else if *completion == ExecutionCompletion::MemoryLimitExceeded {
             Some(RunTerminationKind::MemoryLimitExceeded)
         } else {
             None
@@ -226,10 +302,10 @@ impl RunModule {
             return Ok(None);
         }
         let outcome = match completion {
-            ExecutionCompletion::Succeeded(final_value) => {
-                RunTerminalOutcome::Succeeded { final_value }
-            }
-            ExecutionCompletion::Failed(failure) => RunTerminalOutcome::Failed(failure),
+            ExecutionCompletion::Succeeded(final_value) => RunTerminalOutcome::Succeeded {
+                final_value: final_value.clone(),
+            },
+            ExecutionCompletion::Failed(failure) => RunTerminalOutcome::Failed(failure.clone()),
             ExecutionCompletion::ProgramHostTerminated
             | ExecutionCompletion::MemoryLimitExceeded => unreachable!(
                 "host termination creates durable interruption evidence before completion"
@@ -254,11 +330,4 @@ impl RunModule {
         transaction.commit().await?;
         Ok(None)
     }
-}
-
-fn is_operational_error(error: &Error) -> bool {
-    matches!(
-        error,
-        Error::Database(_) | Error::Workspace(coral_workspace::Error::Database(_))
-    )
 }

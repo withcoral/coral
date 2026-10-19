@@ -29,6 +29,7 @@
 //! | `CORAL_LOAD_REPORT` | path of the JSON report (default: stderr only) |
 //! | `CORAL_LOAD_SAMPLER_URL` | direct Postgres URL, outside any proxy, for measurement reads and `pg_stat_activity` sampling |
 //! | `CORAL_LOAD_LABEL` | free text copied into the report, for example `+5ms` |
+//! | `CORAL_LOAD_LOG` | tracing filter for the cell's stderr (default `coral_run=warn`: the Run Owner's suspect, self-interrupt and retry lines) |
 //!
 //! Probes, each on its own task for the whole cell:
 //! - `begin`: an unrelated `begin()` + commit every 250 ms (pool acquisition wait).
@@ -736,6 +737,15 @@ struct Harness {
 
 impl Harness {
     async fn arrange(cell: &str) -> Self {
+        // The Run Owner's liveness transitions (suspect, self-interrupt) and
+        // its retries are warn-level lines; the cell's log shows them, so a
+        // run can say whether any happened. `CORAL_LOAD_LOG` narrows them.
+        let _subscriber = tracing_subscriber::fmt()
+            .with_env_filter(
+                setting("CORAL_LOAD_LOG").unwrap_or_else(|| "coral_run=warn".to_string()),
+            )
+            .with_writer(std::io::stderr)
+            .try_init();
         let f = Fixture::new().await;
         let backend = match f.database.options() {
             DatabaseOptions::Postgres { .. } => "postgres",

@@ -4,81 +4,10 @@
 use super::*;
 
 use crate::owner::{
-    CHUNK_WORK_CAP, ChunkWork, CommitRejection, Effect, Message, OwnerLimits, OwnerState, Phase,
-    apply,
+    CHUNK_WORK_CAP, CommitRejection, Effect, Message, OwnerLimits, OwnerState, Phase, apply,
 };
 use crate::termination::ShutdownAction;
 use crate::{AppliedOutputCap, CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, CoralFailure};
-use coral_db::Transaction;
-
-/// Waits for `go`, emits `values` in one burst recording each acknowledgement,
-/// then holds the Program until `release`, so the test can look at the ledger
-/// while the Program is still running.
-struct BurstEngine {
-    values: Vec<String>,
-    acknowledged: AtomicUsize,
-    rejected: AtomicUsize,
-    go: Mutex<Option<mpsc::Receiver<()>>>,
-    release: Mutex<Option<mpsc::Receiver<()>>>,
-}
-
-struct Gates {
-    go: mpsc::Sender<()>,
-    release: mpsc::Sender<()>,
-}
-
-impl BurstEngine {
-    fn new(values: Vec<String>) -> (Arc<Self>, Gates) {
-        let (go, go_receiver) = mpsc::channel();
-        let (release, release_receiver) = mpsc::channel();
-        (
-            Arc::new(Self {
-                values,
-                acknowledged: AtomicUsize::new(0),
-                rejected: AtomicUsize::new(0),
-                go: Mutex::new(Some(go_receiver)),
-                release: Mutex::new(Some(release_receiver)),
-            }),
-            Gates { go, release },
-        )
-    }
-
-    fn wait(gate: &Mutex<Option<mpsc::Receiver<()>>>) -> bool {
-        let receiver = gate.lock().expect("gate lock").take();
-        receiver.is_none_or(|receiver| receiver.recv().is_ok())
-    }
-}
-
-impl ProgramEngine for BurstEngine {
-    fn compile(
-        &self,
-        _deadline: std::time::Instant,
-        source: &str,
-    ) -> Result<ProgramPackage, String> {
-        Ok(ProgramPackage::scripted(source))
-    }
-
-    fn execute(
-        &self,
-        _package: ProgramPackage,
-        host: Arc<dyn coral_v8::ProgramHost>,
-        stop: Arc<ExecutionStop>,
-    ) -> ExecutionCompletion {
-        if !Self::wait(&self.go) {
-            return ExecutionCompletion::ProgramHostTerminated;
-        }
-        for value in &self.values {
-            match host.emit(value) {
-                Ok(()) => self.acknowledged.fetch_add(1, Ordering::SeqCst),
-                Err(_rejected) => self.rejected.fetch_add(1, Ordering::SeqCst),
-            };
-        }
-        if !Self::wait(&self.release) || stop.is_requested() {
-            return ExecutionCompletion::ProgramHostTerminated;
-        }
-        ExecutionCompletion::Succeeded(FinalValue::Absent)
-    }
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_burst_of_emits_commits_in_chunks_and_stays_prefix_complete() {
@@ -198,45 +127,6 @@ async fn above_the_applied_cap_a_program_request_answers_only_after_its_chunk_co
     assert_eq!(last_sequence(&after), 2 + 3);
 }
 
-async fn wait_until_started(
-    fixture: &TestModules,
-    workspace_id: &coral_workspace::WorkspaceId,
-    run_id: &crate::RunId,
-) {
-    wait_until_async(async || {
-        fixture
-            .run_record(workspace_id, run_id)
-            .await
-            .execution_started()
-    })
-    .await;
-}
-
-/// How a [`ProbeWork`] was settled, once it was.
-type Settled = Arc<Mutex<Option<Result<(), Error>>>>;
-
-/// Row work that only records how it was settled.
-#[derive(Debug)]
-struct ProbeWork {
-    settled: Settled,
-}
-
-#[async_trait]
-impl ChunkWork for ProbeWork {
-    async fn run(
-        &mut self,
-        _transaction: &mut Transaction<'_>,
-        _run: &crate::lifecycle::RunRecord,
-        _now_unix_nanos: i64,
-    ) -> Result<Vec<crate::run_repository::OwnedEvent>, Error> {
-        Ok(Vec::new())
-    }
-
-    fn settle(self: Box<Self>, recorded: Result<(), Error>) {
-        *self.settled.lock().expect("settle lock") = Some(recorded);
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_mismatch_on_commit_stops_the_owner_ends_v8_and_changes_nothing_further() {
     let (engine, gates) = BurstEngine::new(vec!["\"one\"".to_string()]);
@@ -273,12 +163,8 @@ async fn a_claim_mismatch_on_commit_stops_the_owner_ends_v8_and_changes_nothing_
 
     // The next chunk commit finds the mismatch: the work waiting on it learns
     // the owner is lost, the Program is terminated, and nothing else is written.
-    let settled = Arc::new(Mutex::new(None));
-    owner
-        .work(Box::new(ProbeWork {
-            settled: settled.clone(),
-        }))
-        .expect("the owner takes the work");
+    let (work, settled) = probe_work();
+    owner.work(work).expect("the owner takes the work");
     wait_until(|| settled.lock().expect("settle lock").is_some()).await;
     assert!(
         matches!(
@@ -309,18 +195,6 @@ async fn a_claim_mismatch_on_commit_stops_the_owner_ends_v8_and_changes_nothing_
         .await
         .expect("observe the Run");
     assert_eq!(observed.state(), RunState::Running, "no terminal write");
-}
-
-async fn wait_until_recorded(
-    fixture: &TestModules,
-    workspace_id: &coral_workspace::WorkspaceId,
-    run_id: &crate::RunId,
-    sequence: u64,
-) {
-    wait_until_async(async || {
-        last_sequence(&fixture.run_record(workspace_id, run_id).await) >= sequence
-    })
-    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -401,13 +275,7 @@ async fn a_failing_clock_stops_the_owner_and_the_programs_end_still_retires_it()
     let run_id = accepted.run_id().clone();
     // The start mark is the owner's first chunk and the Program runs after
     // it; the clock fails once the Program is running.
-    wait_until_async(async || {
-        fixture
-            .run_record(&workspace_id, &run_id)
-            .await
-            .execution_started()
-    })
-    .await;
+    wait_until_started(&fixture, &workspace_id, &run_id).await;
     let events = fixture.events_after(&workspace_id, &run_id, 0).await;
     fixture.clock.fail();
 
@@ -477,7 +345,7 @@ fn deliver(effects: Vec<Effect>) -> Vec<Effect> {
 }
 
 fn started(limits: OwnerLimits) -> OwnerState {
-    let mut state = OwnerState::new(limits);
+    let mut state = OwnerState::new(limits, 1);
     assert!(matches!(
         apply(&mut state, Message::Launch, 1).as_slice(),
         [Effect::Start]
@@ -495,10 +363,14 @@ fn started(limits: OwnerLimits) -> OwnerState {
     state
 }
 
+const LEASE: i64 = 100_000;
+
 const LIMITS: OwnerLimits = OwnerLimits {
     run_output_bytes: 64 << 20,
     applied_cap_bytes: AppliedOutputCap::DEFAULT_BYTES,
     deadline_at_unix_nanos: 1_000_000,
+    suspect_after_nanos: LEASE,
+    self_interrupt_after_nanos: 3 * LEASE,
 };
 
 #[test]
@@ -952,14 +824,170 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         ));
         assert_eq!(state.phase(), Phase::Retired);
     }
-}
 
-fn probe_work() -> (Box<dyn ChunkWork>, Settled) {
-    let settled = Arc::new(Mutex::new(None));
-    (
-        Box::new(ProbeWork {
-            settled: settled.clone(),
-        }),
-        settled,
-    )
+    // Suspect: past one lease without a successful commit, a Program request
+    // answers only once its chunk is recorded; the next commit clears it.
+    {
+        let mut state = started(LIMITS);
+        let (effects, mut prompt) = emit(&mut state, 10, 100);
+        assert!(deliver(effects).is_empty());
+        assert!(matches!(answered(&mut prompt), Some(Ok(()))));
+        assert!(matches!(
+            apply(&mut state, Message::Drained, 101).as_slice(),
+            [Effect::Commit { .. }]
+        ));
+        let (effects, mut late) = emit(&mut state, 10, 2 + LEASE + 1);
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::Suspect {
+                    last_commit_age_nanos
+                }] if *last_commit_age_nanos == LEASE + 1
+            ),
+            "{effects:?}"
+        );
+        assert!(state.is_suspect());
+        assert!(
+            answered(&mut late).is_none(),
+            "suspect: answers at Recorded"
+        );
+        // The chunk in flight lands: the owner is trusted again, and the
+        // late Emission's chunk commits and answers it.
+        let effects = deliver(apply(&mut state, Message::Committed, 2 + LEASE + 2));
+        assert!(
+            matches!(effects.as_slice(), [Effect::Commit { .. }]),
+            "{effects:?}"
+        );
+        assert!(!state.is_suspect());
+        assert!(answered(&mut late).is_none());
+        assert!(deliver(apply(&mut state, Message::Committed, 2 + LEASE + 3)).is_empty());
+        assert!(matches!(answered(&mut late), Some(Ok(()))));
+        let (effects, mut prompt) = emit(&mut state, 10, 2 + LEASE + 4);
+        assert!(deliver(effects).is_empty());
+        assert!(
+            matches!(answered(&mut prompt), Some(Ok(()))),
+            "Applied again"
+        );
+    }
+
+    // Self-interrupt: past three leases without a successful commit the
+    // owner gives its Run up. The request on the chunk in flight and the
+    // pending work learn the host ended, the Program is terminated, the
+    // Interrupted chunk is written; the late outcome of the chunk in flight
+    // and the Program's end change nothing, and the record retires the owner.
+    {
+        // Every request rides its chunk, so each one is observable.
+        let mut state = started(OwnerLimits {
+            applied_cap_bytes: 0,
+            ..LIMITS
+        });
+        let (effects, mut waiting) = emit(&mut state, 10, 200);
+        assert!(deliver(effects).is_empty());
+        assert!(answered(&mut waiting).is_none());
+        assert!(matches!(
+            apply(&mut state, Message::Drained, 201).as_slice(),
+            [Effect::Commit { .. }]
+        ));
+        let (effects, mut pending, pending_work) = result(&mut state, 10, 202);
+        assert!(deliver(effects).is_empty());
+        assert!(answered(&mut pending).is_none());
+        let now = 2 + 3 * LEASE + 1;
+        let effects = apply(&mut state, Message::IdleTick, now);
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [.., Effect::TerminateProgram, Effect::Interrupt {
+                    last_commit_age_nanos
+                }] if *last_commit_age_nanos == 3 * LEASE + 1
+            ),
+            "{effects:?}"
+        );
+        let rest = deliver(effects);
+        assert_eq!(rest.len(), 2, "{rest:?}");
+        assert!(matches!(
+            answered(&mut waiting),
+            Some(Err(Error::ProgramHostTerminated))
+        ));
+        assert!(matches!(
+            answered(&mut pending),
+            Some(Err(Error::ProgramHostTerminated))
+        ));
+        assert!(matches!(
+            pending_work.lock().expect("settle").as_ref(),
+            Some(Err(Error::ProgramHostTerminated))
+        ));
+        assert_eq!(state.phase(), Phase::Interrupting);
+        assert_eq!(state.pending_chunks(), 0);
+        assert!(apply(&mut state, Message::Committed, now + 1).is_empty());
+        assert!(
+            apply(
+                &mut state,
+                Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
+                now + 2,
+            )
+            .is_empty()
+        );
+        let (effects, mut refused) = emit(&mut state, 4, now + 3);
+        deliver(effects);
+        assert!(matches!(
+            answered(&mut refused),
+            Some(Err(Error::RunEventPersistence(_)))
+        ));
+        assert!(matches!(
+            apply(&mut state, Message::Interrupted(Ok(())), now + 4).as_slice(),
+            [Effect::Retire]
+        ));
+        assert_eq!(state.phase(), Phase::Retired);
+    }
+
+    // Past the Run deadline the deadline ends the Run, not the owner's
+    // liveness bound.
+    {
+        let mut state = started(LIMITS);
+        let past_deadline = LIMITS.deadline_at_unix_nanos + 3 * LEASE;
+        let effects = apply(&mut state, Message::IdleTick, past_deadline);
+        assert!(
+            effects
+                .iter()
+                .all(|effect| matches!(effect, Effect::Commit { .. })),
+            "{effects:?}"
+        );
+        assert_eq!(state.phase(), Phase::Running);
+    }
+
+    // A corrupt ledger: the owner stops loudly, the request on the lost chunk
+    // and pending work learn it, and the Program's end writes nothing.
+    {
+        let mut state = started(LIMITS);
+        let (effects, _) = emit(&mut state, 10, 300);
+        deliver(effects);
+        apply(&mut state, Message::Drained, 301);
+        let (work_effects, _, pending_work) = result(&mut state, 10, 302);
+        assert!(deliver(work_effects).is_empty());
+        let effects = apply(
+            &mut state,
+            Message::CommitRejected(CommitRejection::Corrupt),
+            303,
+        );
+        let rest = deliver(effects);
+        assert!(
+            rest.iter()
+                .all(|effect| matches!(effect, Effect::TerminateProgram)),
+            "{rest:?}"
+        );
+        assert!(matches!(
+            pending_work.lock().expect("settle").as_ref(),
+            Some(Err(Error::CorruptData(_)))
+        ));
+        assert_eq!(state.phase(), Phase::Stopped(CommitRejection::Corrupt));
+        let effects = apply(
+            &mut state,
+            Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
+            304,
+        );
+        assert!(
+            matches!(effects.as_slice(), [Effect::Retire]),
+            "{effects:?}"
+        );
+    }
 }

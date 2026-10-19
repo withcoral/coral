@@ -51,12 +51,16 @@ pub(crate) enum Message {
     ProgramEnded(ExecutionCompletion),
     /// The chunk in flight landed.
     Committed,
-    /// The chunk in flight did not land.
+    /// The chunk in flight did not land, definitively: an answer the database
+    /// did not give is resolved by the hosting task before it reaches here.
     CommitRejected(CommitRejection),
     /// The terminal write ran; a shutdown settle may still be due.
     Completed(Result<Option<ShutdownAction>, Error>),
     /// The recorded termination is settled: the Run is terminal.
     Settled,
+    /// The self-interrupt's one chunk is recorded, or another writer ended or
+    /// took the Run first.
+    Interrupted(Result<(), CommitRejection>),
     /// An outside writer recorded a termination and wants execution to stop.
     Stop,
     /// Half a lease passed since the last commit.
@@ -105,6 +109,9 @@ impl fmt::Debug for Message {
                 .field(&result.as_ref().map(Option::is_some))
                 .finish(),
             Self::Settled => formatter.write_str("Settled"),
+            Self::Interrupted(result) => {
+                formatter.debug_tuple("Interrupted").field(result).finish()
+            }
             Self::Stop => formatter.write_str("Stop"),
             Self::IdleTick => formatter.write_str("IdleTick"),
             Self::Drained => formatter.write_str("Drained"),
@@ -123,9 +130,17 @@ pub(crate) enum CommitRejection {
     /// The Run row no longer takes Program work: its deadline passed, or an
     /// outside writer released the worker claim. The terminal write decides.
     Refused,
-    /// The commit failed operationally; the terminal write decides what the
-    /// Run records, and nothing is invented.
+    /// The commit failed on a definite answer that is neither the Run's
+    /// (a clock the host cannot read, a domain rule a work item met); the
+    /// terminal write decides what the Run records, and nothing is invented.
+    /// An answer the database did not give is not a rejection: the hosting
+    /// task rereads the Run and recommits until it has one.
     Failed,
+    /// The Run row contradicts the owner's own history: a head below the one
+    /// the chunk was built on, or a head mismatch under a matching claim,
+    /// which one serial owner cannot cause. Loud, never treated as a lost
+    /// claim, and nothing more is written.
+    Corrupt,
 }
 
 impl CommitRejection {
@@ -134,16 +149,23 @@ impl CommitRejection {
         match self {
             Self::ClaimMismatch => Error::OwnerLost,
             Self::RunEnded | Self::Refused | Self::Failed => Error::ProgramHostTerminated,
+            Self::Corrupt => Error::CorruptData(
+                "Run Ledger head contradicts its Run Owner's history".to_string(),
+            ),
         }
     }
 }
 
 impl From<Error> for CommitRejection {
+    /// The rejection a definite answer means. The head is read under the Run
+    /// hold until slice 6, so a head mismatch under a matching claim can only
+    /// mean the row changed under the lock: corruption, already.
     fn from(error: Error) -> Self {
         match error {
             Error::ClaimMismatch => Self::ClaimMismatch,
             Error::RunEnded => Self::RunEnded,
-            _operational => Self::Failed,
+            Error::HeadMismatch | Error::CorruptData(_) => Self::Corrupt,
+            _definite => Self::Failed,
         }
     }
 }
@@ -218,6 +240,12 @@ impl OwnerHandle {
         if !self.shared.stopped.swap(true, Ordering::SeqCst) {
             self.shared.stopped_notification.notify_waiters();
         }
+    }
+
+    /// Whether the owner has retired (or its task ended): nothing it started
+    /// needs to keep trying on its behalf.
+    pub(crate) fn is_retired(&self) -> bool {
+        self.shared.stopped.load(Ordering::SeqCst)
     }
 
     /// Returns once the owner has retired: no chunk commit of its own follows.

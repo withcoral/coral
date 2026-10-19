@@ -285,3 +285,96 @@ impl InvocationObserver for ApprovalWaitProbe {
         self.parked.send_modify(|parked| *parked += 1);
     }
 }
+
+/// Watches the Run Owner's chunk commits: counts them, holds the next one
+/// when armed, loses the next one's answer when armed, and panics the
+/// owner's task on its next message when armed.
+pub(crate) struct CommitProbe {
+    commits: AtomicUsize,
+    hold: Mutex<Option<oneshot::Receiver<()>>>,
+    held: AtomicBool,
+    lose: Mutex<Option<oneshot::Receiver<()>>>,
+    lost: AtomicBool,
+    panic_on_next_message: AtomicBool,
+}
+
+impl CommitProbe {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            commits: AtomicUsize::new(0),
+            hold: Mutex::new(None),
+            held: AtomicBool::new(false),
+            lose: Mutex::new(None),
+            lost: AtomicBool::new(false),
+            panic_on_next_message: AtomicBool::new(false),
+        })
+    }
+
+    /// Chunk commit attempts so far, recommits included.
+    pub(crate) fn commits(&self) -> usize {
+        self.commits.load(Ordering::SeqCst)
+    }
+
+    /// Holds the next chunk commit before its transaction until the sender
+    /// fires (or is dropped).
+    pub(crate) fn hold_next_commit(&self) -> oneshot::Sender<()> {
+        let (release, receiver) = oneshot::channel();
+        self.held.store(false, Ordering::SeqCst);
+        *self.hold.lock().expect("hold lock") = Some(receiver);
+        release
+    }
+
+    pub(crate) fn held(&self) -> bool {
+        self.held.load(Ordering::SeqCst)
+    }
+
+    /// Loses the next chunk commit's answer: once that chunk has landed, the
+    /// commit waits here until the sender fires (or is dropped), then
+    /// resolves as one the database never answered.
+    pub(crate) fn lose_next_answer(&self) -> oneshot::Sender<()> {
+        let (release, receiver) = oneshot::channel();
+        self.lost.store(false, Ordering::SeqCst);
+        *self.lose.lock().expect("lose lock") = Some(receiver);
+        release
+    }
+
+    pub(crate) fn lost(&self) -> bool {
+        self.lost.load(Ordering::SeqCst)
+    }
+
+    /// Panics the owner's task when it dequeues its next message.
+    pub(crate) fn panic_on_next_message(&self) {
+        self.panic_on_next_message.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl ExecutionObserver for CommitProbe {
+    async fn before_chunk_commit(&self) {
+        self.commits.fetch_add(1, Ordering::SeqCst);
+        let release = self.hold.lock().expect("hold lock").take();
+        if let Some(release) = release {
+            self.held.store(true, Ordering::SeqCst);
+            let _released = release.await;
+        }
+    }
+
+    async fn chunk_commit_answer_lost(&self) -> bool {
+        let release = self.lose.lock().expect("lose lock").take();
+        match release {
+            Some(release) => {
+                self.lost.store(true, Ordering::SeqCst);
+                let _released = release.await;
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn owner_message_dequeued(&self) {
+        assert!(
+            !self.panic_on_next_message.swap(false, Ordering::SeqCst),
+            "scripted Run Owner task panic"
+        );
+    }
+}
