@@ -35,6 +35,7 @@ export const topBar = style({
   },
 })
 
+export const topBarStart = style({ alignItems: 'center', display: 'flex', gap: 8, minWidth: 0 })
 export const topBarActions = style({ alignItems: 'center', display: 'flex', gap: 4 })
 export const scrollContainer = style({
   flex: '1 1 auto',

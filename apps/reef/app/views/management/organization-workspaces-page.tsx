@@ -99,8 +99,8 @@ export function OrganizationWorkspacesPage({
         <Table.Body>
           {shown.map((w) => (
             <Table.Row key={w.name}>
-              <Table.Cell wrap>{w.displayName}</Table.Cell>
-              <Table.Cell wrap>
+              <Table.Cell title={w.displayName}>{w.displayName}</Table.Cell>
+              <Table.Cell>
                 <StatePill workspace={w} />
               </Table.Cell>
               <Table.Cell>

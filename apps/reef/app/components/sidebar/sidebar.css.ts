@@ -43,7 +43,8 @@ export const sidebarResized = style({
     },
   },
 })
-export const drawerSidebar = style({ flex: 1, height: 'auto', padding: 0, minHeight: 0 })
+// In the drawer the sidebar fills the popup, and looks as it does on a desktop.
+export const drawerSidebar = style({ flex: 1, height: 'auto', minHeight: 0 })
 // A masthead: the brand with the collapse toggle at its end, and room beneath
 // it before the scopes begin. Collapsed, the toggle sits under the mark, so it
 // stays at the top in both states.
@@ -53,8 +54,6 @@ export const header = style({
   gap: 4,
   marginBlockStart: MASTHEAD_OFFSET_PX,
   minWidth: 0,
-  // The drawer has no top bar beside it, and no padding to rise into.
-  selectors: { [`${drawerSidebar} &`]: { marginBlockStart: 0 } },
 })
 // Same inset as the icon-and-text buttons below, so every icon shares one column.
 export const identity = style({

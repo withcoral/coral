@@ -19,7 +19,8 @@ export interface StatusProps {
 export function Status({ blockers, ready = 'Ready', detail = false }: StatusProps) {
   const [first, ...rest] = blockers
   if (!first) return <Pill color="green">{ready}</Pill>
-  const title = rest.length ? `Also blocked: ${rest.join('; ')}` : undefined
+  // The title holds the first blocker too, since a narrow column truncates it.
+  const title = rest.length ? `${first}. Also blocked: ${rest.join('; ')}` : first
   return (
     <span className={styles.root}>
       <span className={styles.pills}>
