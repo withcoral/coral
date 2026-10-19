@@ -47,6 +47,34 @@ export const Default: Story = {
   ),
 }
 
+// Catches: a trigger that drops the tooltip's handlers, so its tooltip never opens.
+export const TriggerWithTooltip: Story = {
+  play: async ({ canvas, userEvent }) => {
+    const trigger = canvas.getByRole('button', { name: 'Add provider' })
+    await userEvent.hover(trigger)
+    await within(document.body).findByText('Add provider')
+    await userEvent.click(trigger)
+    await within(document.body).findByRole('dialog', { name: 'Add provider' })
+  },
+  render: () => (
+    <Dialog.Root>
+      <Tooltip content="Add provider" delay={0}>
+        <Dialog.Trigger
+          render={<Button.Container variant="bare" size="32" ariaLabel="Add provider" />}
+        >
+          <Button.Icon name="Plus" />
+        </Dialog.Trigger>
+      </Tooltip>
+      <Dialog.Portal>
+        <Dialog.Backdrop />
+        <Dialog.Popup size="l">
+          <Dialog.Title>Add provider</Dialog.Title>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
+  ),
+}
+
 export const Large: Story = {
   render: () => (
     <Dialog.Root>
