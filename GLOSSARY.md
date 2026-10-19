@@ -561,10 +561,10 @@ Provider-native Result, row projection, normalized query result
 `{ data, metadata }` for MCP. Its mandatory metadata carries safe execution-specific response facts. _Avoid_: Program
 outcome, failure union, Upstream Error
 
-**Operation Error (`OperationError`)**: The Coral-owned JavaScript `Error` subclass, `coral.OperationError`, that rejects
-an Operation call that produced no Declared Success. It carries the Upstream Outcome when the upstream answered, and only
-a stable code for a Coral Failure, which makes no claim about whether the call took effect. _Avoid_: Upstream Error,
-Program failure, provider response
+**Operation Error (`OperationError`)**: The non-constructible JavaScript `Error` subclass, `coral.OperationError`, that
+rejects an Operation call that produced no Declared Success. When Coral rejects an Upstream Outcome, the error carries
+it. For a Coral Failure it carries only a stable code and an optional trace identifier, and makes no claim about whether
+the call took effect. _Avoid_: Upstream Error, Program failure, provider response
 
 **MCP Content Block (`McpContentBlock`)**: One ordered member of an MCP-backed Operation's content sequence,
 distinguished by its content type. Binary image, audio, and embedded-resource payloads carry their bounded

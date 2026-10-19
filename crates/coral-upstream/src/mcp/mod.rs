@@ -186,10 +186,15 @@ fn validate_request_size(
 #[derive(Debug, Clone, PartialEq)]
 pub struct McpOutcome {
     result: Value,
+    method: McpInvocationMethod,
 }
 
 impl McpOutcome {
-    fn from_data(mut data: Value, limits: coral_value::ValueLimits) -> Result<Self, Error> {
+    fn from_data(
+        mut data: Value,
+        method: McpInvocationMethod,
+        limits: coral_value::ValueLimits,
+    ) -> Result<Self, Error> {
         let object = data.as_object_mut().ok_or(Error::McpResult)?;
         let mut metadata = serde_json::Map::from_iter([("kind".to_string(), json!("mcp"))]);
         if let Some(meta) = object.remove("_meta") {
@@ -203,7 +208,7 @@ impl McpOutcome {
         limits
             .validate_json(&encoded)
             .map_err(Error::invalid_result)?;
-        Ok(Self { result })
+        Ok(Self { result, method })
     }
 
     /// Returns distinct provider-native data and safe MCP metadata.
@@ -213,10 +218,13 @@ impl McpOutcome {
     }
 
     /// Returns [`OutcomeClass::ErrorResponse`] for a tool result with
-    /// `isError: true`, and a success otherwise.
+    /// `isError: true`, and a success otherwise. A resource read has no
+    /// `isError`; a field of that name there is a provider extension.
     #[must_use]
     pub fn class(&self) -> crate::OutcomeClass {
-        if self.result.pointer("/data/isError") == Some(&Value::Bool(true)) {
+        if self.method == McpInvocationMethod::CallTool
+            && self.result.pointer("/data/isError") == Some(&Value::Bool(true))
+        {
             crate::OutcomeClass::ErrorResponse
         } else {
             crate::OutcomeClass::Success
@@ -381,6 +389,6 @@ impl McpUpstream {
             dispatch.binding.invocation_method(),
             &mut data,
         )?;
-        McpOutcome::from_data(data, dispatch.limits)
+        McpOutcome::from_data(data, dispatch.binding.invocation_method(), dispatch.limits)
     }
 }

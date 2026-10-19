@@ -23,9 +23,9 @@ declare namespace coral {
   const functions: any;
   function emit(value: unknown): Promise<void>;
   /**
-   * Rejects an Operation call that produced no declared success. When the
-   * upstream answered, \`data\` and \`metadata\` hold its complete outcome, and
-   * \`status\` its HTTP status. Without \`data\`, Coral received no response,
+   * Rejects an Operation call that produced no declared success. When Coral
+   * rejects the upstream's response, \`data\` and \`metadata\` hold it, and
+   * \`status\` its HTTP status. Without \`data\`, there is no response to read,
    * and the call may or may not have taken effect.
    */
   class OperationError extends Error {

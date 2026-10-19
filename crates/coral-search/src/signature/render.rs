@@ -224,7 +224,12 @@ impl Renderer<'_> {
             // open record adds nothing a reader can use.
             Type::Intersection(parts) => {
                 let mut rendered = Vec::<String>::new();
-                for part in parts.iter().filter(|part| !is_open_record(part)) {
+                // A declared `Record` alias shadows the global one, so its part stays.
+                let open_record = self.alias("Record").is_none();
+                for part in parts
+                    .iter()
+                    .filter(|part| !(open_record && is_open_record(part)))
+                {
                     let part = self.grouped(part, seen, object, opaque);
                     if !rendered.contains(&part) {
                         rendered.push(part);

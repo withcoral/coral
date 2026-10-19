@@ -80,8 +80,9 @@ pub struct HttpOutcome {
 }
 
 impl HttpOutcome {
-    /// Builds a complete scripted response for a deterministic Adapter. A 2xx
-    /// status is a declared success; any other is an upstream error.
+    /// Builds a complete scripted response for a deterministic Adapter. It has
+    /// no binding to select from, so a 2xx status is a success and any other an
+    /// error response.
     #[must_use]
     pub const fn new(status: u16, data: Value) -> Self {
         Self {
@@ -559,10 +560,10 @@ const fn is_success_code(status: u16) -> bool {
 }
 
 /// Classifies one decoded response by the binding's
-/// [`HttpExecutionBinding::success_for`] verdict. A declared success's body
-/// matters only when it has one: a body that does not decode, or whose media
-/// type the success does not list, rejects the call. A schema mismatch never
-/// changes the class.
+/// [`HttpExecutionBinding::success_for`] verdict. A success's body matters
+/// only when it has one: a body that does not decode rejects the call, and so
+/// does a media type that a declared success does not list. A schema mismatch
+/// never changes the class.
 fn classify(
     status: u16,
     binding: &HttpExecutionBinding,
@@ -570,30 +571,27 @@ fn classify(
     body_present: bool,
     diagnostics: &[HttpDecodeDiagnostic],
 ) -> OutcomeClass {
-    let response = match binding.success_for(status, redirected) {
-        SuccessSelection::ErrorStatus => return OutcomeClass::ErrorResponse,
-        SuccessSelection::Undeclared => return OutcomeClass::UndeclaredResponse,
-        SuccessSelection::Untyped => return OutcomeClass::Success,
-        SuccessSelection::Declared(response) => response,
-    };
-    if !body_present {
-        return OutcomeClass::Success;
-    }
     let reported = |codes: &[&str]| {
-        diagnostics
-            .iter()
-            .any(|diagnostic| codes.contains(&diagnostic.code))
+        body_present
+            && diagnostics
+                .iter()
+                .any(|diagnostic| codes.contains(&diagnostic.code))
     };
-    if reported(&[
+    let undecodable = reported(&[
         "malformed_content_type",
         "malformed_body",
         "unsupported_charset",
-    ]) {
-        OutcomeClass::UndecodableResponse
-    } else if !response.content().is_empty() && reported(&["undeclared_media_type"]) {
-        OutcomeClass::UndeclaredResponse
-    } else {
-        OutcomeClass::Success
+    ]);
+    match binding.success_for(status, redirected) {
+        SuccessSelection::ErrorStatus => OutcomeClass::ErrorResponse,
+        SuccessSelection::Undeclared => OutcomeClass::UndeclaredResponse,
+        _ if undecodable => OutcomeClass::UndecodableResponse,
+        SuccessSelection::Declared(response)
+            if !response.content().is_empty() && reported(&["undeclared_media_type"]) =>
+        {
+            OutcomeClass::UndeclaredResponse
+        }
+        SuccessSelection::Declared(_) | SuccessSelection::Untyped => OutcomeClass::Success,
     }
 }
 

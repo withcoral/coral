@@ -13,8 +13,9 @@ Agents cast results to `any`, which turned checking off. Coral's own compiler ty
 nothing showed this until an outside type check did (#2508).
 
 An Operation call now returns only a Declared Success: for HTTP, a 2xx response that selects a declared 2xx code or
-range, or `default` when the Operation declares no 2xx response, or, after a followed redirect, any 2xx when it declares
-none; for MCP, a tool result without `isError: true`. Every other outcome rejects the call with
+range, or `default` when the Operation declares no 2xx response; for MCP, a tool result without `isError: true`. One
+exception returns untyped: the final 2xx after a followed redirect, when the Operation declares no success to describe
+it. Every other outcome rejects the call with
 `coral.OperationError`: a non-2xx status, a 2xx status or media type the Operation does not declare as a success, a
 body that does not decode, and an MCP tool result with `isError: true`. An HTTP Operation Result is
 `{ status, data, metadata }`, so checking `status` narrows `data` when an Operation declares several successes.
@@ -28,7 +29,7 @@ at runtime. This reverses the v1 rule and the sentence of ADR 0001 that kept the
   them and return to `as any`.
 - **A separate error class for upstream errors.** It keeps `OperationError` meaning "no response", but agents learn two
   names and catch the wrong one. One class with fields carries the same distinction: when the upstream answered,
-  `data` is present and the outcome is known; without `data`, Coral received no response and the call may or may not
+  `data` is present and the outcome is known; without `data`, there is no response to read, and the call may or may not
   have taken effect. The codes stay distinct: `error_response`, `undeclared_response` and `undecodable_response` never
   name a Coral Failure. An MCP `isError` result takes `error_response`, as an HTTP error status does; `metadata.kind`
   and the absence of `status` tell them apart.

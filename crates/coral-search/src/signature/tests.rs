@@ -64,6 +64,18 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
         ]);
         format!("{aliases}export default function (): {result};")
     };
+    let typed_and_untyped = {
+        let (aliases, result) = http_result(&[("Thing", "200"), ("unknown", "202")]);
+        format!(
+            "{aliases}type Thing = {{ \"id\": string }};\nexport default function (): {result};"
+        )
+    };
+    let shadowed_record = {
+        let (aliases, result) = http_result(&[("(Thing & Record<string, unknown>)", "200")]);
+        format!(
+            "{aliases}type Record<K, V> = {{ \"key\": K; \"value\": V }};\ntype Thing = {{ \"id\": string }};\nexport default function (): {result};"
+        )
+    };
     let default_only = {
         let (aliases, result) = http_result(&[("Thing", "number")]);
         format!(
@@ -120,6 +132,16 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
             inline_only.as_str(),
             Callable::Operation { leaf: "merged" },
             "merged(): Promise<{ data: object }>",
+        ),
+        (
+            typed_and_untyped.as_str(),
+            Callable::Operation { leaf: "accept" },
+            "accept(): Promise<{ data: Thing | unknown }>",
+        ),
+        (
+            shadowed_record.as_str(),
+            Callable::Operation { leaf: "pair" },
+            "pair(): Promise<{ data: Thing & Record<string, unknown> }>",
         ),
         (
             default_only.as_str(),

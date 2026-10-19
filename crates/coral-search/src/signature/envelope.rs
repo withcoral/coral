@@ -10,7 +10,8 @@ use super::tree::{Member, Type};
 
 impl Renderer<'_> {
     /// An Operation's result: the envelope with the `data` types of its
-    /// declared successes. An untyped envelope contributes nothing.
+    /// declared successes. An MCP envelope with `unknown` data contributes
+    /// nothing.
     pub(super) fn operation_result(&self, result: &Type) -> String {
         let Some(envelopes) = envelopes(result) else {
             return self.result(result, &mut HashSet::new());
@@ -20,7 +21,9 @@ impl Renderer<'_> {
             let Some(value) = response(envelope) else {
                 continue;
             };
-            if value == &Type::Plain("unknown".to_string()) {
+            // An untyped HTTP success stays in the union; an MCP envelope
+            // without a declared output contributes nothing.
+            if matches!(envelope, Type::Object(_)) && value == &Type::Plain("unknown".to_string()) {
                 continue;
             }
             // Split on the type tree, so the data types of several responses

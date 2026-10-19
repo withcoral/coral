@@ -297,7 +297,7 @@ function InvocationOutcome({ detail }: { detail: InvocationDetail }) {
       return (
         <Disclosure title="Operation outcome" open>
           <Typography.BodySmall>
-            The program receives only a successful response. It receives any other response as an
+            Your program receives only a declared success. It receives any other response as an
             operation error.
           </Typography.BodySmall>
           <Native value={detail.result.value} format="json" />

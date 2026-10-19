@@ -120,7 +120,8 @@ async fn resource_references_preserve_position_and_only_read_with_the_issuing_pr
             ResponseTemplate::new(200).set_body_json(json!({
                 "jsonrpc": "2.0", "id": request["id"], "result": {
                     "contents": [{"uri": "private://bucket/secret?token=hidden", "text": "report body", "mimeType": "text/plain", "_meta": {"vendor/page": 1}}],
-                    "_meta": {"vendor/read": true}, "content": ["read extension, not a tool block"], "ttlMs": "provider extension"
+                    "_meta": {"vendor/read": true}, "content": ["read extension, not a tool block"], "ttlMs": "provider extension",
+                    "isError": true
                 }
             }))
         }).expect(1).mount(&server).await;
@@ -219,6 +220,8 @@ async fn resource_references_preserve_position_and_only_read_with_the_issuing_pr
     )
     .expect("exact Provider reference");
     let outcome = upstream.send(dispatch).await.expect("resource read");
+    // `isError` belongs to tool results; on a read it is an extension field.
+    assert_eq!(outcome.class(), coral_upstream::OutcomeClass::Success);
     assert_eq!(
         outcome.operation_result()["data"]["contents"][0]["text"],
         "report body"

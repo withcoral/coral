@@ -1199,6 +1199,15 @@ async fn each_outcome_is_a_declared_success_or_names_why_it_is_not() {
             class: OutcomeClass::Success,
         },
         ClassCase {
+            name: "a final 2xx after a declared redirect whose body does not decode",
+            responses: REDIRECT_ONLY,
+            redirected: true,
+            status: 200,
+            content_type: json,
+            body: b"{broken",
+            class: OutcomeClass::UndecodableResponse,
+        },
+        ClassCase {
             name: "a final 4xx after a declared redirect",
             responses: REDIRECT_ONLY,
             redirected: true,
