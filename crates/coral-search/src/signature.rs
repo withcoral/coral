@@ -12,7 +12,8 @@
 //! input is: an object's members one level deep, named or not. The line
 //! looks inside the result's `Promise` and one level of array. The compiler
 //! infers most Saved Function results, so they have no name to show. A
-//! result object the line does not show is the marker `{…}`.
+//! result object the line does not show is the marker `{…}`, and a Saved
+//! Function result type the line cannot read is the marker `…`.
 //!
 //! The line is cut at [`SIGNATURE_LINE_MAX_BYTES`] at a word boundary with a
 //! marker. A line with no marker and no bare type name in its input is

@@ -131,11 +131,7 @@ impl Renderer<'_> {
     fn inline(&self, type_: &Type) -> String {
         match self.resolved(type_) {
             Type::Object(members) => self.members(members),
-            Type::Intersection(parts)
-                if parts
-                    .iter()
-                    .any(|part| matches!(self.resolved(part), Type::Object(_))) =>
-            {
+            Type::Intersection(parts) if self.shows_members(type_) => {
                 let shown = parts
                     .iter()
                     .filter(|part| !self.is_open_record(part, &HashSet::new()))
@@ -165,36 +161,40 @@ impl Renderer<'_> {
     /// inline one level deep, as in the input, or an array element's. What
     /// the tree cannot read is the marker.
     fn saved_function_result(&self, type_: &Type) -> String {
-        if let Type::Named { name, arguments } = type_
-            && name == "Promise"
-            && self.alias(name).is_none()
-            && let [value] = arguments.as_slice()
-        {
-            return format!("Promise<{}>", self.saved_function_result(value));
-        }
         match self.resolved(type_) {
-            Type::Array { element, readonly } => {
-                if let Type::Object(members) = self.resolved(element) {
-                    return format!(
-                        "{}{}[]",
-                        if *readonly { "readonly " } else { "" },
-                        self.members(members)
-                    );
+            Type::Named { name, arguments } if self.alias(name).is_none() => {
+                match (name.as_str(), arguments.as_slice()) {
+                    ("Promise", [value]) => {
+                        return format!("Promise<{}>", self.saved_function_result(value));
+                    }
+                    ("Array" | "ReadonlyArray", [element]) if self.shows_members(element) => {
+                        return format!("{name}<{}>", self.inline(element));
+                    }
+                    _ => {}
                 }
             }
-            Type::Named { name, arguments }
-                if ["Array", "ReadonlyArray"].contains(&name.as_str())
-                    && self.alias(name).is_none() =>
-            {
-                if let [element] = arguments.as_slice()
-                    && let Type::Object(members) = self.resolved(element)
-                {
-                    return format!("{name}<{}>", self.members(members));
+            Type::Array { element, readonly } if self.shows_members(element) => {
+                let mut shown = self.inline(element);
+                if !matches!(self.resolved(element), Type::Object(_)) {
+                    shown = format!("({shown})");
                 }
+                return format!("{}{shown}[]", if *readonly { "readonly " } else { "" });
             }
             _ => {}
         }
         self.inline(type_)
+    }
+
+    /// Whether [`Self::inline`] shows members of `type_`: an object, or a
+    /// union or intersection with an object part.
+    fn shows_members(&self, type_: &Type) -> bool {
+        match self.resolved(type_) {
+            Type::Object(_) => true,
+            Type::Union(parts) | Type::Intersection(parts) => parts
+                .iter()
+                .any(|part| matches!(self.resolved(part), Type::Object(_))),
+            _ => false,
+        }
     }
 
     fn members(&self, members: &[Member]) -> String {

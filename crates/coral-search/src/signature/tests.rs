@@ -103,6 +103,11 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
     let readonly_array = "export default function labels(): ReadonlyArray<{ name: string }>;";
     let named_union = "interface Row { id: number }\nexport default function find(input: { id: number }): Promise<Row | undefined>;";
     let named_intersection = "interface Base { id: number }\nexport default function tagged(): Promise<Base & { tag: string }>;";
+    let aliased_promise =
+        "type Result = Promise<{ title: string }>;\nexport default function aliased(): Result;";
+    let union_elements = "interface Row { id: number }\nexport default function rows(): Promise<(Row | undefined)[]>;";
+    let union_generic =
+        "export default function events(): Array<{ kind: \"a\" } | { kind: \"b\" }>;";
     let mapped_result =
         "export default function mapped(): Promise<{ [K in \"a\" | \"b\"]: number }>;";
     let arrow = "declare const g: (input: {\n    q: string;\n}) => number;\nexport default g;\n";
@@ -226,6 +231,21 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
             named_intersection,
             Callable::SavedFunction { leaf: "tagged" },
             "tagged(): Promise<{ id: number } & { tag: string }>",
+        ),
+        (
+            aliased_promise,
+            Callable::SavedFunction { leaf: "aliased" },
+            "aliased(): Promise<{ title: string }>",
+        ),
+        (
+            union_elements,
+            Callable::SavedFunction { leaf: "rows" },
+            "rows(): Promise<({ id: number } | undefined)[]>",
+        ),
+        (
+            union_generic,
+            Callable::SavedFunction { leaf: "events" },
+            "events(): Array<{ kind: \"a\" } | { kind: \"b\" }>",
         ),
         (
             mapped_result,
