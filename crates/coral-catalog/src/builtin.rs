@@ -233,13 +233,8 @@ pub(crate) fn prepare() -> Result<PreparedBuiltinCatalog, CatalogDiagnostic> {
         let key = OperationKey::parse(definition.operation.key())
             .map_err(|_error| invalid("a built-in Operation Key is invalid"))?;
         let relative_path = definition.operation.key().to_string();
-        let (declaration, type_references) = project(
-            &relative_path,
-            &binding,
-            &schema_graph,
-            &type_names,
-            &mut shared_types,
-        )?;
+        let (declaration, type_references) =
+            project(&binding, &schema_graph, &type_names, &mut shared_types)?;
         if crate::types::operation_description_too_large(
             &relative_path,
             BUILTIN_PROVIDER_DISPLAY_NAME,
@@ -291,7 +286,6 @@ pub(crate) fn typescript_names(graph: &SchemaGraph) -> TypeScriptNames {
 }
 
 fn project(
-    relative_path: &str,
     binding: &BuiltinExecutionBinding,
     graph: &SchemaGraph,
     type_names: &TypeScriptNames,
@@ -310,10 +304,9 @@ fn project(
         return Err(invalid("a built-in schema cannot be projected faithfully"));
     }
     let declaration = render_callable_declaration(
-        relative_path,
         &format!("input: {input}"),
         &format!("Promise<{{ data: {output}; metadata: {{ kind: \"builtin\" }} }}>"),
-    )?;
+    );
     Ok((declaration, type_references))
 }
 

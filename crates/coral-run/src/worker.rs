@@ -410,9 +410,8 @@ impl RunModule {
         } else {
             outcome
         };
-        let _changed =
-            run_repository::finish_run(&mut transaction, &run, claim_id, &outcome, completed_at)
-                .await?;
+        run_repository::finish_run(&mut transaction, &run, claim_id, &outcome, completed_at)
+            .await?;
         transaction.commit().await?;
         Ok(())
     }

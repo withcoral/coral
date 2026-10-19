@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
 import { createRoutesStub } from 'react-router'
 
+import { filterQuery } from '@/utils/filter-query'
 import { Table } from '@/wax/components'
 
 import { CatalogLayout, CatalogRail, CatalogRailItem, CatalogToolbar } from './catalog'
@@ -15,7 +16,8 @@ function Catalog() {
   const [rail, setRail] = useState('')
   const [table, setTable] = useState('')
   const [current, setCurrent] = useState('finance')
-  const listed = groups.filter((g) => g.name.includes(rail))
+  const tableQuery = filterQuery(table)
+  const listed = groups.filter((g) => filterQuery(rail).matches(g.name))
   return (
     <div style={{ height: 420 }}>
       <CatalogLayout
@@ -59,7 +61,7 @@ function Catalog() {
           {listed.map((g) => (
             <Table.Group key={g.name} label={g.name}>
               {g.members
-                .filter((m) => m.includes(table))
+                .filter((m) => tableQuery.matches(m))
                 .map((m) => (
                   <Table.Row key={m}>
                     <Table.Cell>{m}</Table.Cell>

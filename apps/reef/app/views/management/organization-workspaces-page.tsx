@@ -8,6 +8,7 @@ import { ActionDialog } from './forms'
 import { ManagementLayout, trail } from './layout'
 import { PeopleField } from './people-field'
 import { personLabel, personName } from './person'
+import { filterQuery } from '@/utils/filter-query'
 import type {
   FormContext,
   OrganizationPersonView,
@@ -45,13 +46,14 @@ export function OrganizationWorkspacesPage({
 }) {
   const [input, setInput] = useState('')
   const [state, setState] = useState<StateFilter>('all')
-  const query = useDeferredValue(input).trim()
+  const query = filterQuery(useDeferredValue(input))
   // The filter matches the workspace name and its owners' names and emails.
   const shown = workspaces.filter(
     (w) =>
       (state === 'all' || w.state === state) &&
-      [w.displayName, ...w.owners.flatMap((o) => [personLabel(o.profile), o.profile.email])].some(
-        (text) => text.toLowerCase().includes(query.toLowerCase()),
+      query.matches(
+        w.displayName,
+        ...w.owners.flatMap((o) => [personLabel(o.profile), o.profile.email]),
       ),
   )
   return (
@@ -91,7 +93,7 @@ export function OrganizationWorkspacesPage({
         {workspaces.length === 0 && <Table.Status>No workspaces on this page.</Table.Status>}
         {workspaces.length > 0 && shown.length === 0 && (
           <Table.Status>
-            {query ? `No workspaces match “${query}”.` : 'No workspaces match.'}
+            {query.text ? `No workspaces match “${query.text}”.` : 'No workspaces match.'}
           </Table.Status>
         )}
         <Table.Body>

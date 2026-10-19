@@ -742,23 +742,12 @@ impl ProjectionOptions {
     }
 }
 
-pub(super) fn render_callable_declaration(
-    relative_path: &str,
-    input_parameter: &str,
-    return_type: &str,
-) -> Result<String, CatalogDiagnostic> {
-    let mut segments = relative_path.split('.').collect::<Vec<_>>();
-    let leaf = segments.pop().ok_or_else(|| {
-        CatalogDiagnostic::stable(
-            "invalid_operation_path_index",
-            "an Operation has no TypeScript declaration path",
-        )
-    })?;
-    let mut declaration = format!("function {leaf}({input_parameter}): {return_type};");
-    for namespace in segments.into_iter().rev() {
-        declaration = format!("namespace {namespace} {{ {declaration} }}");
-    }
-    Ok(declaration)
+/// Declares an Operation's callable as an anonymous default export, as a
+/// Saved Function's compiler-emitted declaration does. The Call Path travels
+/// beside the declaration, so a segment such as `delete`, which TypeScript
+/// rejects as a function or namespace name, never has to parse here.
+pub(super) fn render_callable_declaration(input_parameter: &str, return_type: &str) -> String {
+    format!("export default function ({input_parameter}): {return_type};")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -1295,8 +1284,16 @@ impl<'a> TypeScriptProjector<'a> {
                     );
                 }
             }
-            Some(Value::Bool(true)) | None => {
+            Some(Value::Bool(true)) => {
                 intersections.push("Record<string, unknown>".to_string());
+            }
+            // Undeclared extra properties still arrive at runtime, but the type
+            // lists only documented fields, so a misspelled read is an error.
+            // A free-form object with no fields stays an open map.
+            None => {
+                if fields.is_empty() {
+                    intersections.push("Record<string, unknown>".to_string());
+                }
             }
             Some(additional) => {
                 let kind = self.project_guarded_schema(additional, direction)?;

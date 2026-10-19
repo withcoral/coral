@@ -2,9 +2,9 @@
 
 use coral_catalog::AuthenticationConfiguration;
 use coral_catalog::{
-    ExecutionBinding, HttpContentBinding, HttpEncodingBinding, HttpMethod, HttpParameterBinding,
-    HttpParameterLocation, HttpParameterStyle, HttpRedirectPolicy, HttpResponseBinding,
-    MaterializedOperation, OperationAvailability, SchemaGraph,
+    ExecutionBinding, HttpContentBinding, HttpEncodingBinding, HttpExecutionBinding, HttpMethod,
+    HttpParameterBinding, HttpParameterLocation, HttpParameterStyle, MaterializedOperation,
+    OperationAvailability, SchemaGraph,
 };
 use serde_json::{Map, Value};
 use url::Url;
@@ -25,8 +25,8 @@ pub struct ReadyHttpDispatch {
     pub(super) body: Option<Vec<u8>>,
     pub(super) request_media_type: Option<String>,
     pub(super) credential_slots: Vec<String>,
-    pub(super) redirect_policy: HttpRedirectPolicy,
-    pub(super) responses: Vec<HttpResponseBinding>,
+    /// The Operation's binding, which selects among its declared responses.
+    pub(super) binding: HttpExecutionBinding,
     pub(super) schema_graph: SchemaGraph,
     pub(super) limits: coral_value::ValueLimits,
 }
@@ -79,11 +79,17 @@ impl ReadyHttpDispatch {
             format!("{base_path}/{operation_path}")
         };
         url.set_path(&combined_path);
+        // The server's query, then the path's fixed query, then the arguments.
+        let query = [
+            url.query().unwrap_or_default(),
+            binding.query().unwrap_or_default(),
+            &query,
+        ]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("&");
         if !query.is_empty() {
-            let query = match url.query() {
-                Some(existing) if !existing.is_empty() => format!("{existing}&{query}"),
-                _ => query,
-            };
             url.set_query(Some(&query));
         }
         headers.extend(
@@ -131,8 +137,7 @@ impl ReadyHttpDispatch {
             body,
             request_media_type,
             credential_slots,
-            redirect_policy: binding.redirect_policy(),
-            responses: binding.responses().to_vec(),
+            binding: binding.clone(),
             schema_graph: schema_graph.clone(),
             limits,
         })

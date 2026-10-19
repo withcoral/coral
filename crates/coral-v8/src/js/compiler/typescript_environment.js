@@ -23,10 +23,19 @@ declare namespace coral {
   const workspace: any;
   const functions: any;
   function emit(value: unknown): Promise<void>;
+  /**
+   * Rejects an Operation call that produced no declared success. When Coral
+   * rejects the upstream's response, \`data\` and \`metadata\` hold it, and
+   * \`status\` its HTTP status. Without \`data\`, it carries only a Coral
+   * failure code, and the call may or may not have taken effect.
+   */
   class OperationError extends Error {
     private constructor();
     readonly code: string;
     readonly traceId?: string;
+    readonly status?: number;
+    readonly data?: unknown;
+    readonly metadata?: unknown;
   }
 }
 

@@ -166,20 +166,24 @@ fn camel_case(words: &[&str]) -> String {
     path
 }
 
-/// Prefixes `_` when a segment would otherwise be an invalid or reserved
-/// JavaScript identifier.
+/// Prefixes `_` when a segment would otherwise be an invalid JavaScript
+/// identifier or a reserved Call Path segment.
 fn safe_segment(mut segment: String) -> String {
     if !segment
         .bytes()
         .next()
         .is_some_and(|byte| byte.is_ascii_alphabetic() || matches!(byte, b'_' | b'$'))
-        || javascript_reserved_word(&segment)
+        || call_path_segment_is_reserved(&segment)
     {
         segment.insert(0, '_');
     }
     segment
 }
 
+/// Whether a stored or carried-forward path has the shape every assigned path
+/// has: dotted ASCII JavaScript identifiers. Naming rules, such as which
+/// segments `safe_segment` escapes, apply only when a path is assigned. They
+/// change over time, and a path an earlier rule assigned stays valid.
 pub(super) fn valid_relative_path(value: &str) -> bool {
     !value.is_empty()
         && value.split('.').all(|segment| {
@@ -190,7 +194,6 @@ pub(super) fn valid_relative_path(value: &str) -> bool {
                 && segment
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$'))
-                && !javascript_reserved_word(segment)
         })
 }
 
@@ -198,78 +201,16 @@ fn diagnostic(code: &'static str, message: &'static str) -> CatalogDiagnostic {
     CatalogDiagnostic::stable(code, message)
 }
 
-fn javascript_reserved_word(value: &str) -> bool {
-    matches!(
-        value,
-        "abstract"
-            | "any"
-            | "as"
-            | "async"
-            | "await"
-            | "boolean"
-            | "break"
-            | "case"
-            | "catch"
-            | "class"
-            | "const"
-            | "continue"
-            | "debugger"
-            | "default"
-            | "delete"
-            | "do"
-            | "else"
-            | "enum"
-            | "export"
-            | "extends"
-            | "false"
-            | "finally"
-            | "for"
-            | "function"
-            | "get"
-            | "if"
-            | "implements"
-            | "import"
-            | "in"
-            | "instanceof"
-            | "interface"
-            | "is"
-            | "keyof"
-            | "let"
-            | "module"
-            | "namespace"
-            | "never"
-            | "new"
-            | "null"
-            | "number"
-            | "object"
-            | "of"
-            | "package"
-            | "private"
-            | "protected"
-            | "public"
-            | "readonly"
-            | "require"
-            | "return"
-            | "set"
-            | "static"
-            | "string"
-            | "super"
-            | "switch"
-            | "symbol"
-            | "this"
-            | "throw"
-            | "true"
-            | "type"
-            | "try"
-            | "typeof"
-            | "undefined"
-            | "unknown"
-            | "var"
-            | "void"
-            | "while"
-            | "with"
-            | "yield"
-    )
+/// Whether `value` is a Call Path segment that the Program Runtime Surface's
+/// Call Path proxy cannot route. The proxy answers `then` with `undefined`, so
+/// awaiting a path does not treat it as a thenable; the rest are object-model
+/// names. Operation paths, Provider namespaces and Saved Function paths all
+/// reserve these. Language keywords such as `delete` stay usable: property
+/// access accepts them, and an Operation's declaration does not spell its
+/// path.
+#[must_use]
+pub fn call_path_segment_is_reserved(value: &str) -> bool {
+    matches!(value, "then" | "constructor" | "prototype" | "__proto__")
 }
 
 #[cfg(test)]
@@ -303,13 +244,41 @@ mod tests {
     }
 
     #[test]
-    fn segments_stay_valid_javascript_identifiers() {
-        assert_eq!(path("interface"), "_interface");
-        assert_eq!(path("repos/delete"), "repos._delete");
-        assert_eq!(path("2fa/enable"), "_2fa.enable");
-        assert_eq!(path("///"), "_");
-        assert_eq!(path("日本"), "_");
-        assert!(valid_relative_path(&path("actions/get-Runner")));
+    fn segments_keep_keywords_and_escape_only_names_the_runtime_reserves() {
+        for (key, expected) in [
+            ("repos/delete", "repos.delete"),
+            ("pulls/get", "pulls.get"),
+            ("interface", "interface"),
+            ("default/new", "default.new"),
+            ("then", "_then"),
+            ("items/constructor", "items._constructor"),
+            ("prototype", "_prototype"),
+            ("2fa/enable", "_2fa.enable"),
+            ("///", "_"),
+            ("日本", "_"),
+        ] {
+            assert_eq!(path(key), expected, "{key}");
+            assert!(valid_relative_path(expected), "{expected}");
+        }
+        for malformed in ["", "2fa", "a..b", "a.b-c"] {
+            assert!(!valid_relative_path(malformed), "{malformed}");
+        }
+    }
+
+    /// Naming rules change; a path an earlier rule assigned must still carry
+    /// forward, even one whose segment a later rule reserves or escapes.
+    #[test]
+    fn paths_assigned_under_earlier_naming_rules_carry_forward() {
+        for (key, earlier) in [("items/then", "items.then"), ("pulls/get", "pulls._get")] {
+            let key = OperationKey::parse(key).expect("test key");
+            let previous = OperationPathAssignment {
+                key: key.clone(),
+                relative_path: earlier.to_string(),
+            };
+            let assigned =
+                assign_operation_paths([&key].into_iter(), &[previous]).expect("assignment");
+            assert_eq!(assigned.get(&key).map(String::as_str), Some(earlier));
+        }
     }
 
     #[test]

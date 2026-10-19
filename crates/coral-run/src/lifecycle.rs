@@ -3,7 +3,7 @@
 use crate::{Error, RunFailure, RunFailureCode, RunId, RunState, RunTerminalOutcome};
 use coral_workspace::{Principal, WorkspaceId};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RunRecord {
     pub(crate) id: RunId,
     pub(crate) workspace_id: WorkspaceId,
@@ -17,7 +17,12 @@ pub(crate) struct RunRecord {
     pub(crate) execution_started_at_unix_nanos: Option<i64>,
     pub(crate) termination: Option<RunTermination>,
     pub(crate) shutdown_grace_nanos: i64,
-    pub(crate) next_event_sequence: u64,
+    /// The Run Ledger head: the number of chunk commits since acceptance.
+    pub(crate) chunk_sequence: u64,
+    /// The last Event sequence on the Run as of a read snapshot, `0` before
+    /// `run.started`. `None` on a Run read under `hold_run`, which does not
+    /// read the Event rows: the chunk commit numbers its Events itself.
+    pub(crate) last_event_sequence: Option<u64>,
     pub(crate) accumulated_output_bytes: usize,
     pub(crate) terminal_outcome: Option<RunTerminalOutcome>,
     pub(crate) terminal_at_unix_nanos: Option<i64>,
@@ -28,9 +33,15 @@ impl RunRecord {
     /// Checks Emissions, Logs, Invocation results, and the Final Value against
     /// the shared budget. The Final Value is checked only at Run completion.
     pub(crate) fn output_fits(&self, additional: usize) -> bool {
+        self.output_total(additional)
+            .is_ok_and(|total| total <= self.value_limits.run_output_bytes())
+    }
+
+    /// The Run Output Budget total after `additional` bytes, as a chunk writes it.
+    pub(crate) fn output_total(&self, additional: usize) -> Result<usize, Error> {
         self.accumulated_output_bytes
             .checked_add(additional)
-            .is_some_and(|total| total <= self.value_limits.run_output_bytes())
+            .ok_or_else(|| Error::CorruptData("Run output bytes overflowed".into()))
     }
 
     pub(crate) fn program_work_is_current(&self, claim_id: &str, now_unix_nanos: i64) -> bool {
@@ -62,10 +73,6 @@ impl RunRecord {
         let deadline_at_unix_nanos = started_at_unix_nanos
             .checked_add(self.shutdown_grace_nanos)
             .ok_or_else(|| Error::CorruptData("Run termination deadline overflowed".into()))?;
-        let next_event_sequence = self
-            .next_event_sequence
-            .checked_add(u64::from(kind == RunTerminationKind::Canceled))
-            .ok_or_else(|| Error::CorruptData("Run Event sequence overflowed".into()))?;
         Ok(RequestedTermination {
             termination: RunTermination {
                 kind,
@@ -73,7 +80,6 @@ impl RunRecord {
                 deadline_at_unix_nanos,
             },
             requester,
-            next_event_sequence,
             release_worker_claim: kind == RunTerminationKind::Interrupted,
         })
     }
@@ -82,7 +88,6 @@ impl RunRecord {
 pub(crate) struct RequestedTermination<'a> {
     pub(crate) termination: RunTermination,
     pub(crate) requester: Option<&'a Principal>,
-    pub(crate) next_event_sequence: u64,
     pub(crate) release_worker_claim: bool,
 }
 
@@ -108,7 +113,7 @@ impl RunTerminationKind {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RunTermination {
     pub(crate) kind: RunTerminationKind,
     pub(crate) started_at_unix_nanos: i64,

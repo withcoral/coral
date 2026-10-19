@@ -10,6 +10,7 @@ import {
   operationCount,
 } from './configuration-details'
 import { REFRESH_NEW, REFRESH_REMOVED, reviewOperationNodes } from './tree-model'
+import { filterQuery } from '@/utils/filter-query'
 import type { LiveOperationView, SetupView } from './types'
 import * as styles from './providers.css'
 
@@ -47,9 +48,9 @@ export function OperationsBrowser({
   const [collapsed, setCollapsed] = useState<readonly string[]>(() =>
     groups.filter((id) => id !== REFRESH_NEW && id !== REFRESH_REMOVED),
   )
-  const search = query.trim().toLowerCase()
+  const search = useMemo(() => filterQuery(query), [query])
   const shown = useMemo(() => filterNodes(nodes, search), [nodes, search])
-  const open = search ? [] : collapsed
+  const open = search.text ? [] : collapsed
   const expanded = open.length === 0
   return (
     <div className={styles.operationsBrowser}>
@@ -60,7 +61,7 @@ export function OperationsBrowser({
           <Button.TextButton
             type="button"
             variant="secondary"
-            disabled={Boolean(search) || Boolean(empty)}
+            disabled={Boolean(search.text) || Boolean(empty)}
             onClick={() => setCollapsed(expanded ? groups : [])}
           >
             {/* Nothing is open when there is nothing to open. */}
@@ -96,7 +97,7 @@ export function OperationsBrowser({
             collapsedIds={open}
             // A search decides what is open; collapsing one group then would be
             // undone by the next keystroke.
-            onCollapsedChange={search ? undefined : setCollapsed}
+            onCollapsedChange={search.text ? undefined : setCollapsed}
             emptyMessage="No operations match your search."
           />
         </ScrollArea.Container>

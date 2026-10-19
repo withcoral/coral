@@ -141,7 +141,7 @@ fn corpus_preserves_exact_schemas_annotations_and_result_field_presence() {
     );
     for field in [
         "content: Array<McpContentBlock>",
-        "isError?: boolean",
+        "isError?: false",
         "_meta?: McpSafeMeta",
     ] {
         assert!(structured.typescript_declaration().contains(field));
@@ -500,17 +500,7 @@ fn resource_capability_synthesizes_one_opaque_provider_bound_read_operation() {
     );
     assert!(
         read.typescript_declaration()
-            .contains("namespace resources")
-    );
-    assert!(read.typescript_declaration().contains("function read("));
-    assert!(
-        !read
-            .typescript_declaration()
-            .contains("function resources.read")
-    );
-    assert!(
-        read.typescript_declaration()
-            .contains("input: { reference: McpResourceRef }")
+            .contains("export default function (input: { reference: McpResourceRef })")
     );
 
     let resources_only = serde_json::json!({

@@ -907,7 +907,7 @@ export async function publishWorkspaceProvider(
   const api = managementClients(accessToken)
   const setup = await api.setups.createProviderSetup({
     parent: workspace,
-    input: { case: 'openapiDocument', value: document.toString('utf8') },
+    input: { case: 'openapiDocument', value: document },
     discoveryCredential: '',
   })
   await confirmFixtureConfiguration(api, setup)

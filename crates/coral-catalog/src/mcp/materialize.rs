@@ -14,7 +14,7 @@ use crate::{
 };
 
 /// Stable version of the bounded schema-faithful MCP profile materializer.
-pub(crate) const MATERIALIZER_VERSION: &str = "mcp-schema-faithful-search-profile-v2";
+pub(crate) const MATERIALIZER_VERSION: &str = "mcp-schema-faithful-search-profile-v3";
 const RESOURCE_READ_KEY: &str = "resources/read";
 const RESOURCE_READ_PATH: &str = "resources.read";
 
@@ -182,7 +182,6 @@ fn build_mcp(
             .set_credential_contract(credential_contract.clone());
         let reads_resource = build.binding.invocation_method() == McpInvocationMethod::ReadResource;
         let (declaration, type_references) = match project_mcp_typescript(
-            &build.relative_path,
             &build.input_schema,
             build.output_schema.as_ref(),
             reads_resource,
@@ -196,7 +195,7 @@ fn build_mcp(
             }
             Err(diagnostic) => {
                 build.diagnostics.push(diagnostic);
-                (fallback_typescript(&build.relative_path)?, Vec::new())
+                (fallback_typescript(), Vec::new())
             }
         };
         if let Some(diagnostic) = crate::types::operation_description_too_large(

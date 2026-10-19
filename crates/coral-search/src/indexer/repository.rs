@@ -3,7 +3,7 @@
 //! Every function joins the caller's transaction; [`crate::SearchIndex`] owns
 //! when each transaction begins, commits, or rolls back.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use coral_catalog::{OperationKey, ProviderGenerationId};
 use coral_db::{DatabaseSystem, Error, Transaction};
@@ -16,7 +16,7 @@ use sea_query::{
 };
 
 use super::IndexError;
-use crate::CallPath;
+use crate::{CallPath, SearchIndexFailure, SearchIndexState};
 
 /// The `search_entities` table and its columns, for sea-query. Each row is
 /// one Search Entity that indexed: an Operation or a Saved Function.
@@ -65,6 +65,8 @@ enum SearchIndexStates {
     State,
     AttemptedAtUnixNanos,
     Error,
+    /// The kind of error a failed Generation attempt recorded.
+    ErrorKind,
 }
 
 /// The Postgres `search_stats` table and the columns the reconcile pass
@@ -188,7 +190,10 @@ impl OperationRow<'_> {
 /// The outcome an index attempt records.
 pub(super) enum AttemptState {
     Complete,
-    Failed { error: String },
+    Failed {
+        error: String,
+        failure: Option<SearchIndexFailure>,
+    },
 }
 
 /// One Generation's row in `search_index_states`.
@@ -328,9 +333,9 @@ pub(super) async fn write_generation_state(
     transaction: &mut Transaction<'_>,
     state: GenerationState<'_>,
 ) -> Result<(), Error> {
-    let (name, error) = match state.state {
-        AttemptState::Complete => (COMPLETE, None),
-        AttemptState::Failed { error } => (FAILED, Some(error)),
+    let (name, error, error_kind) = match state.state {
+        AttemptState::Complete => (COMPLETE, None, None),
+        AttemptState::Failed { error, failure } => (FAILED, Some(error), failure.map(failure_kind)),
     };
     transaction
         .execute(
@@ -346,6 +351,7 @@ pub(super) async fn write_generation_state(
                     SearchIndexStates::State,
                     SearchIndexStates::AttemptedAtUnixNanos,
                     SearchIndexStates::Error,
+                    SearchIndexStates::ErrorKind,
                 ])
                 .values_panic([
                     state.workspace_id.to_string().into(),
@@ -357,6 +363,7 @@ pub(super) async fn write_generation_state(
                     name.into(),
                     state.attempted_at_unix_nanos.into(),
                     error.into(),
+                    error_kind.into(),
                 ])
                 .on_conflict(
                     OnConflict::column(SearchIndexStates::TargetId)
@@ -365,6 +372,7 @@ pub(super) async fn write_generation_state(
                             SearchIndexStates::State,
                             SearchIndexStates::AttemptedAtUnixNanos,
                             SearchIndexStates::Error,
+                            SearchIndexStates::ErrorKind,
                         ])
                         .to_owned(),
                 )
@@ -688,6 +696,81 @@ pub(super) async fn recorded_generations(
             },
         )
         .collect()
+}
+
+/// Reads the outcome each of a Workspace's Generation state rows records, or
+/// only the one Provider's, keyed by Generation. A Generation no attempt has
+/// reached has no entry.
+pub(crate) async fn generation_outcomes_in_workspace(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    provider_filter: Option<&ProviderId>,
+) -> Result<HashMap<ProviderGenerationId, SearchIndexState>, IndexError> {
+    let mut query = Query::select()
+        .columns([
+            SearchIndexStates::ProviderGenerationId,
+            SearchIndexStates::State,
+            SearchIndexStates::ErrorKind,
+        ])
+        .from(SearchIndexStates::Table)
+        .and_where(Expr::col(SearchIndexStates::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(SearchIndexStates::Kind).eq(OPERATION))
+        .to_owned();
+    if let Some(provider_id) = provider_filter {
+        query.and_where(Expr::col(SearchIndexStates::ProviderId).eq(provider_id.to_string()));
+    }
+    let rows: Vec<(String, String, Option<String>)> = transaction.fetch_all(query).await?;
+    rows.into_iter()
+        .map(|(generation_id, state, error_kind)| {
+            let generation_id = ProviderGenerationId::parse(&generation_id).map_err(|_error| {
+                IndexError::Corrupt("a search index state row has an invalid Generation id")
+            })?;
+            let state = match (state.as_str(), error_kind.as_deref()) {
+                (COMPLETE, None) => SearchIndexState::Indexed,
+                (FAILED, kind) => SearchIndexState::Failed {
+                    reason: kind.and_then(parse_failure_kind),
+                },
+                _ => {
+                    return Err(IndexError::Corrupt(
+                        "a search index state row has an invalid state",
+                    ));
+                }
+            };
+            Ok((generation_id, state))
+        })
+        .collect()
+}
+
+/// The `error_kind` value of each kind. Exhaustive, so a new kind does not
+/// compile without one.
+const fn failure_kind(failure: SearchIndexFailure) -> &'static str {
+    match failure {
+        SearchIndexFailure::InvalidEntry => "invalid_entry",
+        SearchIndexFailure::TimedOut => "timed_out",
+        SearchIndexFailure::Clock => "clock",
+        SearchIndexFailure::Corrupt => "corrupt",
+        SearchIndexFailure::Provider => "provider",
+        SearchIndexFailure::Database => "database",
+    }
+}
+
+/// Every kind the read can name. A kind missing here reads as no reason;
+/// its test lists every kind with an exhaustive match.
+const FAILURES: [SearchIndexFailure; 6] = [
+    SearchIndexFailure::InvalidEntry,
+    SearchIndexFailure::TimedOut,
+    SearchIndexFailure::Clock,
+    SearchIndexFailure::Corrupt,
+    SearchIndexFailure::Provider,
+    SearchIndexFailure::Database,
+];
+
+/// `None` for a kind this Coral does not know, such as one a later Coral
+/// wrote: the kind is information only, so it never fails the read.
+fn parse_failure_kind(value: &str) -> Option<SearchIndexFailure> {
+    FAILURES
+        .into_iter()
+        .find(|failure| failure_kind(*failure) == value)
 }
 
 /// Reads a Workspace's Operation rows as `(provider id, Generation id, Call
@@ -1138,4 +1221,42 @@ async fn refresh_statistics(
         .ok_or(sqlx::Error::RowNotFound)?;
     // A sum of counts is never negative.
     Ok(written.unsigned_abs())
+}
+
+#[cfg(test)]
+mod failure_kind_tests {
+    use super::{FAILURES, failure_kind, parse_failure_kind};
+    use crate::SearchIndexFailure;
+
+    // Catches: a kind the write records but the read cannot name, which
+    // would show "No reason recorded." instead of the real reason.
+    #[test]
+    fn every_failure_kind_reads_back_as_itself() {
+        let every_kind = [
+            SearchIndexFailure::InvalidEntry,
+            SearchIndexFailure::TimedOut,
+            SearchIndexFailure::Clock,
+            SearchIndexFailure::Corrupt,
+            SearchIndexFailure::Provider,
+            SearchIndexFailure::Database,
+        ];
+        for kind in every_kind {
+            // Exhaustive: a new kind stops this compiling until it is listed.
+            match kind {
+                SearchIndexFailure::InvalidEntry
+                | SearchIndexFailure::TimedOut
+                | SearchIndexFailure::Clock
+                | SearchIndexFailure::Corrupt
+                | SearchIndexFailure::Provider
+                | SearchIndexFailure::Database => {}
+            }
+            assert!(FAILURES.contains(&kind), "{kind:?} is readable");
+            assert_eq!(parse_failure_kind(failure_kind(kind)), Some(kind));
+        }
+        let values = FAILURES
+            .map(failure_kind)
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(values.len(), FAILURES.len(), "stored values are distinct");
+    }
 }
