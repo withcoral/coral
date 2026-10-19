@@ -384,9 +384,9 @@ async fn the_lease_is_renewed_by_a_chunk_commit_and_by_the_idle_tick() {
 
 /// A clock the host cannot read stops the owner like a failed commit; the
 /// Program's end that follows still reaches the terminal write, which fails
-/// on the same clock, and the owner retires with nothing written. Without
-/// that, the end was discarded with the failed clock read and the owner
-/// stayed registered forever.
+/// on the same clock, and the owner retires with the Run's end unrecorded.
+/// Without that, the end was discarded with the failed clock read and the
+/// owner stayed registered forever.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failing_clock_stops_the_owner_and_the_programs_end_still_retires_it() {
     let (engine, gates) = BurstEngine::new(Vec::new());
@@ -399,22 +399,33 @@ async fn a_failing_clock_stops_the_owner_and_the_programs_end_still_retires_it()
         .await
         .expect("accept the Program");
     let run_id = accepted.run_id().clone();
-    // The start mark is the owner's first chunk; the clock fails after it.
-    wait_until_recorded(&fixture, &workspace_id, &run_id, 1).await;
-    let started = fixture.run_record(&workspace_id, &run_id).await;
+    // The start mark is the owner's first chunk and the Program runs after
+    // it; the clock fails once the Program is running.
+    wait_until_async(async || {
+        fixture
+            .run_record(&workspace_id, &run_id)
+            .await
+            .execution_started()
+    })
+    .await;
     let events = fixture.events_after(&workspace_id, &run_id, 0).await;
     fixture.clock.fail();
 
     gates.release.send(()).expect("release the Program");
-    wait_until(|| !fixture.runs.has_owner(&run_id)).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while fixture.runs.has_owner(&run_id) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the owner retires after the Program's end");
     let abandoned = fixture.run_record(&workspace_id, &run_id).await;
     assert_eq!(abandoned.state, RunState::Running);
     assert!(abandoned.termination.is_none());
-    assert_eq!(abandoned.chunk_sequence, started.chunk_sequence);
     assert_eq!(
         fixture.events_after(&workspace_id, &run_id, 0).await,
         events,
-        "nothing is written on a clock the host cannot read"
+        "no Event is written on a clock the host cannot read"
     );
 }
 

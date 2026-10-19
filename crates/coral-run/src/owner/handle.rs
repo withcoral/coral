@@ -148,10 +148,12 @@ impl From<Error> for CommitRejection {
     }
 }
 
-/// The receiving end of one owner's mailbox. It is unbounded: every request
-/// awaits its answer, so the Program keeps one in flight and dispatches are
-/// capped by the Fan-out Limit, and the owner's own tasks must never wait to
-/// report back.
+/// The receiving end of one owner's mailbox. It is unbounded: a Program
+/// request or row work is awaited by the task that queued it, so the queue
+/// never holds more than the Program's outstanding calls (one Emission or Log
+/// at a time; one message per Invocation in flight, which admission does not
+/// cap) plus the owner's own few messages, and the owner applies each one in
+/// memory without I/O. The owner's own messages must never wait.
 pub(crate) type Mailbox = mpsc::UnboundedReceiver<Message>;
 
 struct Shared {
