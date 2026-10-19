@@ -42,9 +42,10 @@ function equivalentPrintedToken(left, right) {
 // Align the unchanged token suffix so printer whitespace and blank-line removal
 // cannot move runtime frames away from the original authored token positions.
 // The printer also ends every statement it prints with a semicolon, including
-// ones the author left to automatic semicolon insertion; only such an inserted
-// semicolon is skipped. Any other difference stops the alignment, so earlier
-// tokens stay unmapped rather than guessed.
+// ones the author left to automatic semicolon insertion, so a printed semicolon
+// without an authored match is skipped. Authored tokens are never skipped, and
+// any other difference stops the alignment, so earlier tokens stay unmapped
+// rather than guessed.
 function printedStatementMappings(block, sourceFile, authored) {
   const printedFile = ts.createSourceFile(
     'printed_saved_function.ts',
