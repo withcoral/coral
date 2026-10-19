@@ -93,3 +93,17 @@ export const SplitWithBreadcrumbs: Story = {
     children: splitContent,
   },
 }
+
+// The content carries the h1, so the current crumb is plain text.
+export const TitledCompact: Story = {
+  args: {
+    titled: true,
+    compact: true,
+    children: (
+      <>
+        <Typography.HeadingLarge as="h1">Providers</Typography.HeadingLarge>
+        <Typography.Body as="p">Add a provider to start.</Typography.Body>
+      </>
+    ),
+  },
+}

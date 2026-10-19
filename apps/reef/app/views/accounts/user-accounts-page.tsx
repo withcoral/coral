@@ -51,9 +51,10 @@ export function UserAccountsPage({
   const table = Table.useRowCursor({ filterId: FILTER_ID })
 
   return (
-    <ManagementLayout breadcrumbs={trail([], 'Accounts')}>
+    <ManagementLayout breadcrumbs={trail([], 'Accounts')} titled compact>
       {/* The empty state sits in the table, so the page keeps its shape at the first account. */}
       <CatalogToolbar
+        title="Accounts"
         filter={{
           id: FILTER_ID,
           label: 'Filter accounts',

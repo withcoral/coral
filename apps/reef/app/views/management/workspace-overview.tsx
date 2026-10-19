@@ -7,7 +7,7 @@ import type { RecipeIcons, SourceChoice } from '@/lib/provider-recipes/choice'
 import { AddProviderLauncher } from '@/views/providers/add-provider'
 import { AgentKeyDialog } from './agent-key-dialog'
 import { ActionDialog, NameInput } from './forms'
-import { ManagementLayout } from './layout'
+import { ManagementLayout, trail } from './layout'
 import { NameHeading } from './name-heading'
 import { Person } from './person'
 import { WorkspaceQuickStart } from './quick-start'
@@ -76,21 +76,17 @@ export function WorkspaceOverview({
       enabled: ownMembership.enabled,
     })
   return (
-    <ManagementLayout
-      breadcrumbs={[]}
-      title={
-        <NameHeading
-          name={w.displayName}
-          noun="workspace"
-          canRename={canChange}
-          form={form}
-          intent="rename"
-          etag={w.etag}
-          action={w.path}
-          pageTitle
-        />
-      }
-    >
+    <ManagementLayout breadcrumbs={trail([], 'Overview')} titled compact>
+      <NameHeading
+        name={w.displayName}
+        noun="workspace"
+        canRename={canChange}
+        form={form}
+        intent="rename"
+        etag={w.etag}
+        action={w.path}
+        pageTitle
+      />
       {/* Stays mounted whichever button opened it, so the one-time key survives revalidation. */}
       <ActionDialog
         open={createOpen}

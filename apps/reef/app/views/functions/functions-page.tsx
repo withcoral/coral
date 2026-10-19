@@ -112,7 +112,12 @@ export function FunctionsPage({ workspace: w, functions, children }: FunctionsPa
     .filter((n) => n.members.length > 0)
   const listPath = `${w.path}/functions`
   return (
-    <PageLayout variant="split" breadcrumbs={trail([], 'Functions')}>
+    <PageLayout
+      variant="split"
+      breadcrumbs={trail([], 'Functions')}
+      titled={functions.length > 0}
+      compact
+    >
       {functions.length === 0 ? (
         <div className={styles.empty}>
           <EmptyPage
@@ -152,6 +157,7 @@ export function FunctionsPage({ workspace: w, functions, children }: FunctionsPa
           }
         >
           <CatalogToolbar
+            title="Functions"
             filter={{
               label: 'Filter functions',
               value: tableFilterInput,

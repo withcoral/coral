@@ -236,13 +236,7 @@ function SidebarNavigation({
       )}
       data-sidebar-minimized={isMinimized}
     >
-      <div
-        className={classNames(
-          styles.header,
-          isMinimized && styles.minimizedColumn,
-          isMinimized && !mobile && styles.minimizedHeader,
-        )}
-      >
+      <div className={classNames(styles.header, isMinimized && styles.minimizedColumn)}>
         <Link
           to="/"
           className={classNames(styles.identity, isMinimized && styles.minimizedControl)}
@@ -539,6 +533,7 @@ function SidebarNavigation({
                 <Menu.Item to="/organization/workspaces" icon="Folders">
                   Workspaces
                 </Menu.Item>
+                <Menu.Separator />
               </>
             )}
             {auth.mode === 'required' ? (
