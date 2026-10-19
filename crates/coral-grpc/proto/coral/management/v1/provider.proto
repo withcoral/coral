@@ -820,8 +820,8 @@ message CreateProviderSetupRequest {
   string parent = 1;
   // Exactly one source.
   oneof input {
-    // One exact OpenAPI document (JSON or YAML text).
-    string openapi_document = 2;
+    // One exact OpenAPI document file: JSON or YAML text, optionally gzipped.
+    bytes openapi_document = 2;
     // One exact normalized MCP discovery snapshot.
     string mcp_snapshot = 3;
     // An OpenAPI document URL fetched once without redirects.

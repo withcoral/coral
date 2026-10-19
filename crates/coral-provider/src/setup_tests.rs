@@ -1308,20 +1308,6 @@ async fn unsafe_input_urls_and_upstream_failures_are_safe_errors() {
         )
         .mount(&server)
         .await;
-    // Small on the wire, too large once unzipped.
-    Mock::given(method("GET"))
-        .and(path("/huge.gz"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_bytes(gzip(&" ".repeat(crate::OPENAPI_DOCUMENT_MAX_BYTES + 1))),
-        )
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/corrupt.gz"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"\x1f\x8bbody-canary".to_vec()))
-        .mount(&server)
-        .await;
     Mock::given(method("GET"))
         .and(path("/missing"))
         .respond_with(ResponseTemplate::new(404).set_body_string("body-canary"))
@@ -1346,7 +1332,7 @@ async fn unsafe_input_urls_and_upstream_failures_are_safe_errors() {
         assert!(matches!(error, Error::AccountInput), "{error:?}");
         assert!(!format!("{error:?}").contains("secret-canary"));
     }
-    for suffix in ["/redirect", "/huge", "/huge.gz", "/corrupt.gz", "/missing"] {
+    for suffix in ["/redirect", "/huge", "/missing"] {
         let error = harness
             .accounts
             .prepare_remote_fixture(
@@ -1357,7 +1343,7 @@ async fn unsafe_input_urls_and_upstream_failures_are_safe_errors() {
             )
             .await
             .expect_err("unavailable source");
-        if suffix.starts_with("/huge") {
+        if suffix == "/huge" {
             assert!(
                 matches!(
                     error,

@@ -3259,6 +3259,47 @@ fn openapi_input_is_refused_over_the_byte_budget() {
         .expect("the exact budget fits");
 }
 
+#[test]
+fn a_document_file_is_text_or_gzipped_text() {
+    let gzip = |text: &[u8]| {
+        use std::io::Write as _;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(text).unwrap();
+        encoder.finish().unwrap()
+    };
+    let limit = coral_catalog::OPENAPI_DOCUMENT_MAX_BYTES;
+    for (case, bytes, expected) in [
+        ("text", WEATHER_OPENAPI.as_bytes().to_vec(), Ok(())),
+        ("gzipped text", gzip(WEATHER_OPENAPI.as_bytes()), Ok(())),
+        (
+            "not UTF-8",
+            b"openapi: \xff".to_vec(),
+            Err("OpenApiDocumentNotText"),
+        ),
+        (
+            "corrupt gzip",
+            b"\x1f\x8bopenapi".to_vec(),
+            Err("OpenApiDocumentNotText"),
+        ),
+        (
+            "gzipped binary",
+            gzip(b"\xff\xfe"),
+            Err("OpenApiDocumentNotText"),
+        ),
+        (
+            "too large once unzipped",
+            gzip(" ".repeat(limit + 1).as_bytes()),
+            Err("OpenApiDocumentTooLarge"),
+        ),
+    ] {
+        match (OpenApiDocument::from_bytes(bytes), expected) {
+            (Ok(document), Ok(())) => assert_eq!(document.as_str(), WEATHER_OPENAPI, "{case}"),
+            (Err(error), Err(variant)) => assert_eq!(format!("{error:?}"), variant, "{case}"),
+            (result, _) => panic!("{case}: {result:?}"),
+        }
+    }
+}
+
 /// Materializes a small valid document that also carries `extension` as `x-extension`.
 fn with_extension(extension: &str) -> MaterializationOutcome {
     let document = OpenApiDocument::parse(&format!(

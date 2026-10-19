@@ -707,6 +707,7 @@ dependencies = [
  "coral-outbound",
  "coral-test-support",
  "coral-v8",
+ "flate2",
  "jsonschema",
  "sea-query",
  "serde",

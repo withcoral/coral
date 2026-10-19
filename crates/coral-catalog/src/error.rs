@@ -4,6 +4,9 @@ pub enum Error {
     /// An OpenAPI document exceeds the accepted byte budget.
     #[error("OpenAPI document exceeds the size limit")]
     OpenApiDocumentTooLarge,
+    /// An OpenAPI document is neither UTF-8 text nor gzipped UTF-8 text.
+    #[error("OpenAPI document is not text")]
+    OpenApiDocumentNotText,
     /// Caller-supplied catalog input was invalid.
     #[error("invalid catalog input: {0}")]
     InvalidInput(String),

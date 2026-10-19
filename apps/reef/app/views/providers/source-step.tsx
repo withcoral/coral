@@ -25,7 +25,8 @@ export type SourceTab = 'catalog' | 'custom'
 
 /** What the action does, in the words each kind uses for it. */
 const SOURCE_VERB = { mcp: 'Connect', openapi: 'Read' } as const
-const DOCUMENT_FILE_TYPES = '.json,.yaml,.yml,application/json,application/yaml'
+const DOCUMENT_FILE_TYPES =
+  '.json,.yaml,.yml,.gz,application/json,application/yaml,application/gzip'
 
 /** What each kind calls its address, and what that address points to. */
 const SOURCE_URL = {
