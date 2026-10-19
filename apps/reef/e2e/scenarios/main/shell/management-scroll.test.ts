@@ -184,6 +184,13 @@ test('Management bottom actions are reachable by wheel and keyboard in a short v
         await expect
           .poll(() => openNavigation.evaluate((element) => document.activeElement === element))
           .toBe(true)
+        // The drawer closes from its masthead, where the sidebar collapses on a desktop.
+        await openNavigation.click()
+        await drawer.getByRole('button', { name: 'Close navigation', exact: true }).click()
+        await expect.poll(() => page.getByRole('dialog').count()).toBe(0)
+        await expect
+          .poll(() => openNavigation.evaluate((element) => document.activeElement === element))
+          .toBe(true)
         // The confirmation opens from the drawer's Workspace header.
         await openNavigation.click()
         await drawer.getByRole('button', { name: `Archive ${name}`, exact: true }).click()
