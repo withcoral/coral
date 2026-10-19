@@ -49,7 +49,6 @@ import type {
   RunDetail,
   RecordSourceLocation,
   LiveAction,
-  ActionPage,
 } from '@/views/activity/types'
 import {
   privateHeaders,
