@@ -299,7 +299,7 @@ export const ManyAgents: Story = {
       agents={Array.from({ length: 40 }, (_, i) => ({
         ...agent,
         name: `${agent.name}-${i}`,
-        // One name wraps, so its row is taller than the others.
+        // One name is too long for its column, so it truncates.
         displayName:
           i === 0
             ? `${agent.displayName} for every payments, billing and reconciliation queue in each region`
@@ -310,20 +310,16 @@ export const ManyAgents: Story = {
       form={form}
     />
   ),
-  parameters: { initialEntry: '/workspaces/demo/agents' },
-  // A bounded table once shrank every row to the shortest row's height, so a
-  // wrapped name spilled over the next row and took its clicks.
+  parameters: { initialEntry: '/workspaces/demo/agents', chromatic: { viewports: [390, 1280] } },
+  // A long name stays on one line and shows in full on hover.
   play: async ({ canvasElement }) => {
     const table = within(canvasElement).getByRole('table', { name: 'Agents' })
     const rows = within(table).getAllByRole('row').slice(1)
-    await expect(rows[0].getBoundingClientRect().height).toBeGreaterThan(
+    await expect(rows[0].getBoundingClientRect().height).toBe(
       rows[1].getBoundingClientRect().height,
     )
-    for (const row of rows) {
-      const bottom = row.getBoundingClientRect().bottom
-      for (const cell of within(row).getAllByRole('cell'))
-        await expect(cell.getBoundingClientRect().bottom).toBeLessThanOrEqual(bottom)
-    }
+    const [name] = within(rows[0]).getAllByRole('cell')
+    await expect(name).toHaveAttribute('title', expect.stringContaining('reconciliation queue'))
   },
   // The app shell bounds the page's height; the story needs a bound of its own.
   decorators: [
@@ -650,7 +646,9 @@ export const OrganizationMembers: Story = {
   parameters: { chromatic: { viewports: [390, 1280] } },
   play: async ({ canvas }) => {
     await expect(canvas.getByText('Jordan Lee (You)')).toBeVisible()
-    await expect(canvas.getByTitle(alice.email)).toBeVisible()
+    await expect(
+      canvas.getByTitle(`${alice.name}\n${alice.email}`, { normalizer: (t) => t }),
+    ).toBeVisible()
     await expect(canvas.queryByText(alice.email)).not.toBeInTheDocument()
     await expect(canvas.getByText('Disabled')).toBeVisible()
   },

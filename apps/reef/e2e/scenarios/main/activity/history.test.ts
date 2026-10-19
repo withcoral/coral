@@ -205,8 +205,11 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           expect(
             await page.getByRole('link', { name: /^(Next|Previous|First) records$/ }).count(),
           ).toBe(0)
-          const heading = await breadcrumb(page).boundingBox()
-          expect((await list.boundingBox())!.x).toBe(heading!.x)
+          // The list starts at the top bar's gutter, where the drawer trigger opens it.
+          const barStart = await page
+            .getByRole('button', { name: 'Open navigation', exact: true })
+            .boundingBox()
+          expect((await list.boundingBox())!.x).toBe(barStart!.x)
           const overflowingAncestors = await list.evaluate((element) => {
             const overflowing = []
             for (
