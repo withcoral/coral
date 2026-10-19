@@ -1,5 +1,5 @@
-//! The Built-in Provider catalog update at boot: each Workspace in its own
-//! transaction, and Universal Search told after each commit.
+//! The Built-in Provider install and catalog update at boot: each Workspace in
+//! its own transaction, and Universal Search told after each commit.
 use crate::{ProviderWorkflow, WorkspaceWorkflow};
 use coral_catalog::{BuiltinCatalog, OperationHints};
 use coral_provider::{Provider, ProviderModule};
@@ -74,14 +74,13 @@ impl Fixture {
 
     /// A process that serves `catalog` boots at `at`.
     async fn boot(&self, catalog: BuiltinCatalog, at: i64) {
-        ProviderWorkflow::new(
+        let workflow = ProviderWorkflow::new(
             self.db.database(),
             self.providers(catalog),
             self.index.clone(),
-        )
-        .update_builtin_catalogs(at)
-        .await
-        .unwrap();
+        );
+        workflow.install_missing_builtins(at).await.unwrap();
+        workflow.update_builtin_catalogs(at).await.unwrap();
     }
 
     async fn builtin(&self, workspace: &Workspace) -> Provider {
@@ -152,6 +151,46 @@ async fn an_update_makes_the_added_operation_searchable_and_describable() {
     fixture.index.settled().await;
 
     assert_eq!(finds_added().await, (true, true));
+}
+
+// Catches: an install that commits without telling search, so agents in a
+// Workspace from before the Built-in Provider cannot find its Operations until
+// a reconcile pass runs.
+#[tokio::test]
+async fn an_install_makes_the_builtin_operations_searchable() {
+    let fixture = Fixture::new().await;
+    // Creating a Workspace without the workflow installs no Built-in Provider,
+    // as in a database from before Coral had it.
+    let workspace = fixture
+        .workspaces
+        .create(
+            &coral_test_support::change(fixture.owner.clone(), 100, '1'),
+            WorkspaceDisplayName::parse("Earlier").unwrap(),
+        )
+        .await
+        .unwrap();
+    let search = UniversalSearchModule::new(fixture.db.database(), fixture.workspaces.clone());
+    let principal = AuthenticatedPrincipal::user(fixture.owner.clone());
+    let finds_create_provider = || async {
+        search
+            .search(
+                &principal,
+                workspace.id(),
+                &SearchRequest::query(SearchQuery::parse("create provider").unwrap()),
+            )
+            .await
+            .unwrap()
+            .hits()
+            .iter()
+            .any(|hit| hit.call_path().as_str() == "coral.workspace.createProvider")
+    };
+    fixture.index.settled().await;
+    assert!(!finds_create_provider().await);
+
+    fixture.boot(BuiltinCatalog::running().unwrap(), 200).await;
+    fixture.index.settled().await;
+
+    assert!(finds_create_provider().await);
 }
 
 // Catches: one Built-in Provider whose update fails stopping the others at

@@ -365,7 +365,7 @@ async fn upgrade_stores_the_call_root_of_each_provider_an_owner_added() {
         .expect("create database from before Call Roots");
     let database = db.database();
     let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
-    let providers = crate::ProviderModule::new(
+    let providers = crate::ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
