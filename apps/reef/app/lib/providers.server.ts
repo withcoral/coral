@@ -354,7 +354,7 @@ const reasons: Record<string, string> = {
   SETUP_NOT_APPLICABLE: 'That step does not apply now. Reload the page.',
   INPUT_UNAVAILABLE: 'Coral could not reach this address. Check it and try again.',
   OPENAPI_DOCUMENT_TOO_LARGE: `This OpenAPI document is larger than ${OPENAPI_DOCUMENT_SIZE_LABEL}. Select a smaller document.`,
-  OPENAPI_DOCUMENT_NOT_TEXT: 'This document is not text. Use a JSON or YAML OpenAPI document.',
+  OPENAPI_DOCUMENT_NOT_TEXT: 'This document is not text. Select a JSON or YAML OpenAPI document.',
   CLIENT_BOOTSTRAP_UNAVAILABLE:
     'This server needs an OAuth client ID. Register Coral with the server to get one.',
   CLIENT_METADATA_NOT_PUBLIC:

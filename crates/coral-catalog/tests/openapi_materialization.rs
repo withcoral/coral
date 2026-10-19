@@ -3274,27 +3274,31 @@ fn a_document_file_is_text_or_gzipped_text() {
         (
             "not UTF-8",
             b"openapi: \xff".to_vec(),
-            Err("OpenApiDocumentNotText"),
+            Err(coral_catalog::Error::OpenApiDocumentNotText),
         ),
         (
             "corrupt gzip",
             b"\x1f\x8bopenapi".to_vec(),
-            Err("OpenApiDocumentNotText"),
+            Err(coral_catalog::Error::OpenApiDocumentNotText),
         ),
         (
             "gzipped binary",
             gzip(b"\xff\xfe"),
-            Err("OpenApiDocumentNotText"),
+            Err(coral_catalog::Error::OpenApiDocumentNotText),
         ),
         (
             "too large once unzipped",
             gzip(" ".repeat(limit + 1).as_bytes()),
-            Err("OpenApiDocumentTooLarge"),
+            Err(coral_catalog::Error::OpenApiDocumentTooLarge),
         ),
     ] {
         match (OpenApiDocument::from_bytes(bytes), expected) {
             (Ok(document), Ok(())) => assert_eq!(document.as_str(), WEATHER_OPENAPI, "{case}"),
-            (Err(error), Err(variant)) => assert_eq!(format!("{error:?}"), variant, "{case}"),
+            (Err(error), Err(variant)) => assert_eq!(
+                std::mem::discriminant(&error),
+                std::mem::discriminant(&variant),
+                "{case}: {error:?}"
+            ),
             (result, _) => panic!("{case}: {result:?}"),
         }
     }

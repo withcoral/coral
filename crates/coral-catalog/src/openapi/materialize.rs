@@ -770,7 +770,7 @@ fn validate_path_query(query: Option<&str>) -> Result<(), CatalogDiagnostic> {
     if query.is_some_and(|query| query.contains(['#', '{', '}'])) {
         return Err(diagnostic(
             "invalid_operation_path",
-            "an OpenAPI path query is not fixed text without a fragment",
+            "an OpenAPI path query contains a parameter or a fragment",
         ));
     }
     Ok(())
