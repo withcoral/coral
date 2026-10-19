@@ -61,9 +61,7 @@ pub(crate) async fn host(
             break;
         }
         let message = tokio::select! {
-            biased;
-            Some(message) = mailbox.internal.recv() => message,
-            Some(message) = mailbox.requests.recv() => message,
+            Some(message) = mailbox.recv() => message,
             () = &mut idle => {
                 idle.as_mut().reset(Instant::now() + idle_tick);
                 Message::IdleTick
@@ -86,16 +84,9 @@ pub(crate) async fn host(
             }
         };
         effects.extend(apply(&mut state, message, now));
-        // Apply everything that arrived meanwhile: effect outcomes first, then
-        // Program requests, each in its own arrival order; then commit when free.
-        loop {
-            let next = match mailbox.internal.try_recv() {
-                Ok(message) => message,
-                Err(_empty) => match mailbox.requests.try_recv() {
-                    Ok(message) => message,
-                    Err(_empty) => break,
-                },
-            };
+        // Apply everything that arrived meanwhile, in arrival order; then
+        // commit when free.
+        while let Ok(next) = mailbox.try_recv() {
             effects.extend(apply(&mut state, next, now));
         }
         effects.extend(apply(&mut state, Message::Drained, now));
@@ -123,7 +114,7 @@ fn run_effect(
             let handle = handle.clone();
             tokio::spawn(async move {
                 let started = module.start_execution(&accepted, &actor).await;
-                handle.send_internal(Message::Started(started));
+                handle.send(Message::Started(started));
             });
         }
         Effect::StartProgram(package) => {
@@ -147,7 +138,7 @@ fn run_effect(
             tokio::spawn(async move {
                 let completion =
                     engine::execute(engine, package, invoker, output, limits, stop).await;
-                handle.send_internal(Message::ProgramEnded(completion));
+                handle.send(Message::ProgramEnded(completion));
             });
         }
         Effect::TerminateProgram => handle.stop().request(),
@@ -158,7 +149,7 @@ fn run_effect(
             let handle = handle.clone();
             tokio::spawn(async move {
                 let completed = module.complete_execution(&accepted, completion).await;
-                handle.send_internal(Message::Completed(completed));
+                handle.send(Message::Completed(completed));
             });
         }
         Effect::Settle(shutdown) => {
@@ -168,7 +159,7 @@ fn run_effect(
                 // The recorded termination is the recovery source when the
                 // settle itself fails.
                 let _settled = module.settle_within_grace(shutdown).await;
-                handle.send_internal(Message::Settled);
+                handle.send(Message::Settled);
             });
         }
         Effect::Commit { .. } | Effect::Retire => {
@@ -192,7 +183,7 @@ fn spawn_commit(
             Ok(()) => Message::Committed,
             Err(rejection) => Message::CommitRejected(rejection),
         };
-        handle.send_internal(message);
+        handle.send(message);
     });
 }
 

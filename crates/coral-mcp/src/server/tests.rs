@@ -1,5 +1,7 @@
 use coral_functions::SavedFunctionModule;
-use coral_run::{IsolateLimits, ProgramSource, RunModule, RunSubmission, RunTimeout};
+use coral_run::{
+    IsolateLimits, ProgramSource, RunModule, RunSubmission, RunTimeout, RuntimeLimits,
+};
 use coral_search::UniversalSearchModule;
 use coral_task::{TaskCommands, TaskModule};
 use coral_test_support::TestDatabase;
@@ -50,7 +52,7 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
         coral_outbound::DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
-        IsolateLimits::default(),
+        RuntimeLimits::default(),
     )
     .unwrap();
     // Commit acceptance without launching execution. There can be no authored output,

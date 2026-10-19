@@ -167,7 +167,7 @@ pub use types::{
     PROGRAM_SOURCE_MAX_BYTES, ProgramLogLevel, ProgramSource, ProgramValue, RUN_EVENT_PAGE_MAX,
     RUN_TIMEOUT_MAX_MS, RunCursor, RunEvent, RunEventKind, RunFailure, RunFailureCode, RunId,
     RunObservation, RunState, RunSubmission, RunTerminalOutcome, RunTimeout, RunUpdate,
-    SOURCE_MAP_MAX_BYTES,
+    RuntimeLimits, SOURCE_MAP_MAX_BYTES,
 };
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
@@ -214,25 +214,25 @@ pub struct RunModule {
 }
 
 impl RunModule {
-    /// Builds the runtime with deployment-selected outbound policy and isolate limits.
+    /// Builds the runtime with the deployment's outbound policy and runtime limits.
     /// # Errors
     /// Returns an initialization error when the runtime or HTTP client cannot start.
     pub fn new(
         policy: coral_outbound::DestinationPolicy,
         database: Arc<Database>,
         workspaces: WorkspaceModule,
-        isolate_limits: IsolateLimits,
+        limits: RuntimeLimits,
     ) -> Result<Self, Error> {
         Ok(Self {
             database,
             workspaces,
             accounts: None,
-            engine: Arc::new(V8ProgramEngine::new(isolate_limits)?),
+            engine: Arc::new(V8ProgramEngine::new(limits.isolate())?),
             upstream: Arc::new(ProductionUpstream::new(policy)?),
             clock: Arc::new(SystemClock),
             execution_policy: ExecutionPolicy::production(),
             value_limits: coral_value::ValueLimits::default(),
-            applied_output_cap: AppliedOutputCap::default(),
+            applied_output_cap: limits.applied_output_cap(),
             owners: Owners::default(),
             #[cfg(test)]
             invocation_observer: Arc::new(NoopInvocationObserver),
@@ -287,10 +287,9 @@ impl RunModule {
         self.value_limits
     }
 
-    /// Selects the Applied cap for the Run Owners of future Runs: the
-    /// unrecorded output above which Program requests wait for their chunk.
-    #[must_use]
-    pub const fn with_applied_output_cap(mut self, cap: AppliedOutputCap) -> Self {
+    /// Replaces the Applied cap on a built module.
+    #[cfg(test)]
+    pub(crate) const fn with_applied_output_cap(mut self, cap: AppliedOutputCap) -> Self {
         self.applied_output_cap = cap;
         self
     }

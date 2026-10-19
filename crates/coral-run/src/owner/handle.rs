@@ -14,9 +14,6 @@ use crate::{Error, ProgramLogLevel, ProgramValue, RunId};
 
 use super::chunk::ChunkWork;
 
-/// How many Run Requests the mailbox holds before a sender waits.
-const MAILBOX_CAPACITY: usize = 256;
-
 /// The answer to one Program request, at Applied or at Recorded.
 pub(crate) type Reply = oneshot::Sender<Result<(), Error>>;
 
@@ -151,17 +148,16 @@ impl From<Error> for CommitRejection {
     }
 }
 
-/// The receiving ends of one owner's mailbox.
-pub(crate) struct Mailbox {
-    pub(crate) requests: mpsc::Receiver<Message>,
-    pub(crate) internal: mpsc::UnboundedReceiver<Message>,
-}
+/// The receiving end of one owner's mailbox. It is unbounded: every request
+/// awaits its answer, so the Program keeps one in flight and dispatches are
+/// capped by the Fan-out Limit, and the owner's own tasks must never wait to
+/// report back.
+pub(crate) type Mailbox = mpsc::UnboundedReceiver<Message>;
 
 struct Shared {
     run_id: RunId,
     claim_id: String,
-    requests: mpsc::Sender<Message>,
-    internal: mpsc::UnboundedSender<Message>,
+    sender: mpsc::UnboundedSender<Message>,
     stop: Arc<ExecutionStop>,
     stopped: AtomicBool,
     stopped_notification: Notify,
@@ -176,26 +172,18 @@ pub(crate) struct OwnerHandle {
 
 impl OwnerHandle {
     pub(crate) fn new(run_id: RunId, claim_id: String) -> (Self, Mailbox) {
-        let (requests, request_receiver) = mpsc::channel(MAILBOX_CAPACITY);
-        let (internal, internal_receiver) = mpsc::unbounded_channel();
+        let (sender, mailbox) = mpsc::unbounded_channel();
         let handle = Self {
             shared: Arc::new(Shared {
                 run_id,
                 claim_id,
-                requests,
-                internal,
+                sender,
                 stop: Arc::new(ExecutionStop::new()),
                 stopped: AtomicBool::new(false),
                 stopped_notification: Notify::new(),
             }),
         };
-        (
-            handle,
-            Mailbox {
-                requests: request_receiver,
-                internal: internal_receiver,
-            },
-        )
+        (handle, mailbox)
     }
 
     pub(crate) fn run_id(&self) -> &RunId {
@@ -215,7 +203,7 @@ impl OwnerHandle {
     /// requests are accepted. The owner still records what it applied.
     pub(crate) fn request_stop(&self) {
         self.shared.stop.request();
-        self.send_internal(Message::Stop);
+        self.send(Message::Stop);
     }
 
     /// Whether a stop was requested: the owner's terminal state as a dispatch
@@ -242,9 +230,10 @@ impl OwnerHandle {
         notified.await;
     }
 
-    pub(crate) fn send_internal(&self, message: Message) {
-        // A retired owner has dropped its mailbox; nothing is left to tell it.
-        let _retired = self.shared.internal.send(message);
+    /// Delivers one message; a retired owner has dropped its mailbox and
+    /// nothing is left to tell it.
+    pub(crate) fn send(&self, message: Message) {
+        let _retired = self.shared.sender.send(message);
     }
 
     pub(crate) async fn emit(&self, value: ProgramValue) -> Result<(), Error> {
@@ -274,20 +263,18 @@ impl OwnerHandle {
     }
 
     /// Queues row work; its own outcome arrives through the work.
-    pub(crate) async fn work(&self, work: Box<dyn ChunkWork>) -> Result<(), Error> {
+    pub(crate) fn work(&self, work: Box<dyn ChunkWork>) -> Result<(), Error> {
         self.shared
-            .requests
+            .sender
             .send(Message::Work(work))
-            .await
             .map_err(|_retired| Error::OwnerLost)
     }
 
     async fn ask(&self, build: impl FnOnce(Reply) -> Message) -> Result<(), Error> {
         let (reply, answer) = oneshot::channel();
         self.shared
-            .requests
+            .sender
             .send(build(reply))
-            .await
             .map_err(|_retired| Error::OwnerLost)?;
         answer.await.map_err(|_retired| Error::OwnerLost)?
     }

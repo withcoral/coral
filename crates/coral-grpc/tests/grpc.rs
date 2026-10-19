@@ -185,7 +185,7 @@ impl Fixture {
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             database.clone(),
             workspaces.clone(),
-            coral_run::IsolateLimits::default(),
+            coral_run::RuntimeLimits::default(),
         )
         .unwrap()
         .with_accounts(accounts.clone());

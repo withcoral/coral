@@ -810,7 +810,7 @@ impl OperationInvoker {
         build: impl FnOnce(Replier<O>) -> Box<dyn ChunkWork>,
     ) -> Result<O, Error> {
         let (sender, receiver) = oneshot::channel();
-        self.owner.work(build(Replier::new(sender))).await?;
+        self.owner.work(build(Replier::new(sender)))?;
         receiver.await.map_err(|_lost| Error::OwnerLost)?
     }
 

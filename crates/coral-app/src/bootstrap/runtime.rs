@@ -18,7 +18,9 @@ use coral_workspace::WorkspaceModule;
 use super::error::AppError;
 use super::health::EngineReadiness as ListenerReadiness;
 use super::server::{PreparedServerBuilder, RunningServer as GrpcServer, ServerBuilder};
-use super::server_config::{LOCAL_OUTBOUND_DEFAULTS, McpHttpServeConfig, RuntimeLimits};
+use coral_run::RuntimeLimits;
+
+use super::server_config::{LOCAL_OUTBOUND_DEFAULTS, McpHttpServeConfig};
 use crate::auth::{AuthServerError, CoralAuthorizationServer, RunningCoralAuthorizationServer};
 
 /// What the launching process says about this launch.
@@ -460,14 +462,15 @@ fn mcp_modules(
     runtime_limits: RuntimeLimits,
     human_interface: coral_mcp::HumanInterfaceUrl,
 ) -> Result<McpModules, coral_run::Error> {
-    let isolate_limits = runtime_limits.isolate_limits();
     let workspaces = WorkspaceModule::new(Arc::clone(&database));
     let tasks = TaskModule::new(Arc::clone(&database), workspaces.clone());
     let search = UniversalSearchModule::new(Arc::clone(&database), workspaces.clone());
-    let saved_functions =
-        SavedFunctionModule::new(Arc::clone(&database), workspaces.clone(), isolate_limits)?;
-    let runs = RunModule::new(policy, database, workspaces.clone(), isolate_limits)?
-        .with_applied_output_cap(runtime_limits.applied_output_cap());
+    let saved_functions = SavedFunctionModule::new(
+        Arc::clone(&database),
+        workspaces.clone(),
+        runtime_limits.isolate(),
+    )?;
+    let runs = RunModule::new(policy, database, workspaces.clone(), runtime_limits)?;
     let runs = match accounts {
         Some(accounts) => runs.with_accounts(accounts),
         None => runs,

@@ -265,7 +265,7 @@ impl Tracer {
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             db.clone(),
             workspaces.clone(),
-            coral_run::IsolateLimits::default(),
+            coral_run::RuntimeLimits::default(),
         )
         .expect("start real Program runtime");
         let search = UniversalSearchModule::new(db.clone(), workspaces.clone());

@@ -12,19 +12,13 @@ use crate::{CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, Error};
 
 use super::handle::Reply;
 
-/// Row work items after which a chunk closes. Each held recheck and fence is
-/// its own sequence of round trips inside the commit transaction, so this
-/// bounds how many of them one commit holds the Run row and the Workspace,
-/// Provider, Account and policy rows through; it bounds a count, not a
-/// duration, and at the round-trip latencies the load harness measures it
-/// keeps a commit well inside a lease. Aligned with the Fan-out Limit (ADR
-/// 0018); slice 4 replaces the per-Invocation fence with one check per chunk.
+/// Row work items per chunk. Each one queries the database inside the
+/// commit, so this keeps a commit from holding the Run row for too long.
 pub(crate) const CHUNK_WORK_CAP: usize = 32;
 
-/// Row work that joins the owner's chunk commit: an Invocation row insert, a
-/// held recheck, the Dispatch Fence, an Invocation's completion. It runs
-/// inside the commit transaction, after the Run row is held, and learns the
-/// chunk's fate once the transaction ends.
+/// A database write that the owner runs inside a chunk's commit transaction,
+/// such as inserting an Invocation or recording its result. After the commit,
+/// the work is told whether the chunk landed.
 #[async_trait]
 pub(crate) trait ChunkWork: Send + fmt::Debug {
     /// Does the work's row writes in `transaction` and returns the Events it

@@ -363,7 +363,7 @@ impl Fixture {
             loopback_policy(),
             database.clone(),
             workspaces.clone(),
-            coral_run::IsolateLimits::default(),
+            coral_run::RuntimeLimits::default(),
         )
         .unwrap();
         let commands = coral_task::TaskCommands::new(

@@ -85,7 +85,7 @@ impl Fixture {
                 .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             database.clone(),
             workspaces.clone(),
-            coral_run::IsolateLimits::default(),
+            coral_run::RuntimeLimits::default(),
         )
         .unwrap();
         let index = coral_search::SearchIndex::new(database.clone(), RECONCILE_INTERVAL);

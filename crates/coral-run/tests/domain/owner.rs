@@ -278,7 +278,6 @@ async fn a_claim_mismatch_on_commit_stops_the_owner_ends_v8_and_changes_nothing_
         .work(Box::new(ProbeWork {
             settled: settled.clone(),
         }))
-        .await
         .expect("the owner takes the work");
     wait_until(|| settled.lock().expect("settle lock").is_some()).await;
     assert!(

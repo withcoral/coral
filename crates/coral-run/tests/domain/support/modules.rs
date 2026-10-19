@@ -179,7 +179,7 @@ impl TestModules {
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             self.database.clone(),
             self.workspaces.clone(),
-            crate::IsolateLimits::default(),
+            crate::RuntimeLimits::default(),
         )
         .expect("start the real Program runtime");
         match accounts {

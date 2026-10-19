@@ -673,7 +673,7 @@ pub(crate) async fn start_server(
         policy,
         database.clone(),
         workspaces.clone(),
-        coral_run::IsolateLimits::default(),
+        coral_run::RuntimeLimits::default(),
     )
     .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
     if let Some(accounts) = &accounts {

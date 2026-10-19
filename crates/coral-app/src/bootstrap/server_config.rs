@@ -383,29 +383,8 @@ impl Default for RuntimeSettings {
     }
 }
 
-/// The Program runtime limits one deployment selects.
-#[derive(Debug, Clone, Copy)]
-pub struct RuntimeLimits {
-    isolate_limits: coral_run::IsolateLimits,
-    applied_output_cap: coral_run::AppliedOutputCap,
-}
-
-impl RuntimeLimits {
-    /// Returns the per-isolate heap budgets.
-    #[must_use]
-    pub fn isolate_limits(&self) -> coral_run::IsolateLimits {
-        self.isolate_limits
-    }
-
-    /// Returns the Run Owner's Applied cap on unrecorded Program output.
-    #[must_use]
-    pub fn applied_output_cap(&self) -> coral_run::AppliedOutputCap {
-        self.applied_output_cap
-    }
-}
-
 impl RuntimeSettings {
-    fn resolve(self) -> Result<RuntimeLimits, AppError> {
+    fn resolve(self) -> Result<coral_run::RuntimeLimits, AppError> {
         let isolate_limits =
             coral_run::IsolateLimits::new(self.execution_heap_bytes, self.compiler_heap_bytes)
                 .map_err(|error| AppError::FailedPrecondition(format!("runtime: {error}")))?;
@@ -413,10 +392,10 @@ impl RuntimeSettings {
             .map_err(|error| {
                 AppError::FailedPrecondition(format!("runtime.applied_output_cap_bytes: {error}"))
             })?;
-        Ok(RuntimeLimits {
+        Ok(coral_run::RuntimeLimits::new(
             isolate_limits,
             applied_output_cap,
-        })
+        ))
     }
 }
 
@@ -569,7 +548,7 @@ impl McpHttpServeConfig {
 pub struct ServeSettings {
     outbound_policy: coral_outbound::DestinationPolicy,
     mcp_oauth_client_bootstrap: coral_provider::account::ClientBootstrapPolicy,
-    runtime_limits: RuntimeLimits,
+    runtime_limits: coral_run::RuntimeLimits,
     pub(super) mcp_http: McpHttpServeConfig,
     auth_bind_addr: SocketAddr,
     pub(super) session_auth: Option<SessionAuthSettings>,
@@ -597,7 +576,7 @@ impl ServeSettings {
 
     /// Returns the Program runtime limits selected at process bootstrap.
     #[must_use]
-    pub fn runtime_limits(&self) -> RuntimeLimits {
+    pub fn runtime_limits(&self) -> coral_run::RuntimeLimits {
         self.runtime_limits
     }
 

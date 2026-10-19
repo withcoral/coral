@@ -929,3 +929,35 @@ impl Default for AppliedOutputCap {
         }
     }
 }
+
+/// The limits one deployment sets for Program execution: the V8 isolate heaps
+/// and the Run Owner's Applied cap. Resolved once at process bootstrap and
+/// handed to the Run module whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RuntimeLimits {
+    isolate: crate::IsolateLimits,
+    applied_output_cap: AppliedOutputCap,
+}
+
+impl RuntimeLimits {
+    /// Composes the limits bootstrap resolved from the `[runtime]` section.
+    #[must_use]
+    pub const fn new(isolate: crate::IsolateLimits, applied_output_cap: AppliedOutputCap) -> Self {
+        Self {
+            isolate,
+            applied_output_cap,
+        }
+    }
+
+    /// The per-isolate heap budgets the compiler and the executor read.
+    #[must_use]
+    pub const fn isolate(&self) -> crate::IsolateLimits {
+        self.isolate
+    }
+
+    /// The Run Owner's Applied cap on unrecorded Program output.
+    #[must_use]
+    pub const fn applied_output_cap(&self) -> AppliedOutputCap {
+        self.applied_output_cap
+    }
+}
