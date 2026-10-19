@@ -19,7 +19,7 @@ export function Person({
 }: {
   person: PersonView
   currentUser: string
-  /** One line for table rows: the email moves to a hover title. */
+  /** One line for table rows: the name truncates, and the email moves to a hover title. */
   compact?: boolean
   /** Marks a person whose organization membership is disabled, in words. */
   disabled?: boolean
@@ -27,12 +27,24 @@ export function Person({
   const label = personLabel(person)
   const name = personName(person, currentUser)
   const showEmail = Boolean(person.name && person.email)
+  if (compact) {
+    // The full name and the email show on hover, since a narrow column truncates the name.
+    return (
+      <div className={styles.personLine} title={showEmail ? `${name}\n${person.email}` : name}>
+        <Avatar name={label} seed={person.user} size="20" />
+        <Typography.BodyStrong className={styles.personLineName} truncate>
+          {name}
+        </Typography.BodyStrong>
+        {disabled && <Pill size="small">Disabled</Pill>}
+      </div>
+    )
+  }
   return (
-    <div className={styles.row} title={compact && showEmail ? person.email : undefined}>
+    <div className={styles.row}>
       <Avatar name={label} seed={person.user} size="20" />
       <div className={styles.intro}>
         <Typography.BodyStrong className={styles.identity}>{name}</Typography.BodyStrong>
-        {showEmail && !compact && (
+        {showEmail && (
           <Typography.BodySmall className={styles.identity}>{person.email}</Typography.BodySmall>
         )}
       </div>
