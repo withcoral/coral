@@ -99,6 +99,8 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
         "export default function (input: {\n    q: string;\n}): {\n    n: number;\n};\n";
     let inferred = "export default function pullRequestDetails(input: {\n    repo: string;\n    number: number;\n}): Promise<{\n    title: string;\n    merged_at: string | null;\n    base: {\n        ref: string;\n    };\n    linked: string[];\n}>;\n";
     let listed = "export default function openPrs(input: {\n    repo: string;\n}): Promise<{\n    number: number;\n    author: {\n        login: string;\n    };\n}[]>;\n";
+    let generic_array = "export default function openIssuesByLabel(input: {\n    label: string;\n}): Promise<Array<{\n    number: number;\n    title: string;\n}>>;\n";
+    let readonly_array = "export default function labels(): ReadonlyArray<{ name: string }>;";
     let mapped_result =
         "export default function mapped(): Promise<{ [K in \"a\" | \"b\"]: number }>;";
     let arrow = "declare const g: (input: {\n    q: string;\n}) => number;\nexport default g;\n";
@@ -200,6 +202,18 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
             listed,
             Callable::SavedFunction { leaf: "openPrs" },
             "openPrs(input: { repo: string }): Promise<{ number: number; author: {…} }[]>",
+        ),
+        (
+            generic_array,
+            Callable::SavedFunction {
+                leaf: "openIssuesByLabel",
+            },
+            "openIssuesByLabel(input: { label: string }): Promise<Array<{ number: number; title: string }>>",
+        ),
+        (
+            readonly_array,
+            Callable::SavedFunction { leaf: "labels" },
+            "labels(): ReadonlyArray<{ name: string }>",
         ),
         (
             mapped_result,

@@ -167,14 +167,27 @@ impl Renderer<'_> {
         {
             return format!("Promise<{}>", self.saved_function_result(value));
         }
-        if let Type::Array { element, readonly } = self.resolved(type_)
-            && let Type::Object(members) = self.resolved(element)
-        {
-            return format!(
-                "{}{}[]",
-                if *readonly { "readonly " } else { "" },
-                self.members(members)
-            );
+        match self.resolved(type_) {
+            Type::Array { element, readonly } => {
+                if let Type::Object(members) = self.resolved(element) {
+                    return format!(
+                        "{}{}[]",
+                        if *readonly { "readonly " } else { "" },
+                        self.members(members)
+                    );
+                }
+            }
+            Type::Named { name, arguments }
+                if ["Array", "ReadonlyArray"].contains(&name.as_str())
+                    && self.alias(name).is_none() =>
+            {
+                if let [element] = arguments.as_slice()
+                    && let Type::Object(members) = self.resolved(element)
+                {
+                    return format!("{name}<{}>", self.members(members));
+                }
+            }
+            _ => {}
         }
         self.inline(type_)
     }
