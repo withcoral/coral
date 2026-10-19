@@ -91,7 +91,7 @@ const githubHits = [
     kind: 'operation',
     call_path: 'coral.providers.github.pulls.updateBranch',
     signature_line:
-      'updateBranch(input: { body?: PutReposOwnerRepoPullsPull_numberUpdateBranchBodyInput; owner: string; pull_number: number; repo: string }): Promise<{ data: object }>',
+      'updateBranch(input: { body?: PutReposOwnerRepoPullsPull_numberUpdateBranchBodyInput; owner: string; pull_number: number; repo: string }): Promise<{ data: {…} }>',
     description_snippet:
       'Updates the pull request branch with the latest upstream changes by merging HEAD from the base branch into the pull request branch.\nNote: If making a request on behalf of a GitHub App you must also have permissions to write the contents of the head repository.',
     evidence: {

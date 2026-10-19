@@ -141,6 +141,11 @@ impl InvocationObserver for NoopInvocationObserver {}
 
 pub(crate) enum InvocationHostError {
     Rejected(CoralFailure),
+    /// A complete, durably retained upstream outcome that is not a declared success.
+    Upstream {
+        rejection: crate::error::UpstreamRejection,
+        outcome_json: String,
+    },
     Fatal(Error),
 }
 
@@ -393,7 +398,13 @@ impl OperationInvoker {
                 .await?);
         }
         self.finish_upstream(admitted, &result_json).await?;
-        Ok(result_json)
+        match crate::error::UpstreamRejection::of(outcome.class()) {
+            None => Ok(result_json),
+            Some(rejection) => Err(InvocationHostError::Upstream {
+                rejection,
+                outcome_json: result_json,
+            }),
+        }
     }
 
     fn plan(

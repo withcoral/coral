@@ -33,7 +33,7 @@ pub(super) fn render(declarations: &Declarations, callable: Callable<'_>) -> Str
         .map(|(index, parameter)| {
             let value = parameter.value.as_ref().map_or_else(String::new, |value| {
                 let shown = if index == 0 {
-                    renderer.input(value)
+                    renderer.inline(value)
                 } else {
                     renderer.member(value, &mut HashSet::new())
                 };
@@ -52,7 +52,7 @@ pub(super) fn render(declarations: &Declarations, callable: Callable<'_>) -> Str
         || "unknown".to_string(),
         |result| match callable {
             Callable::Operation { .. } => renderer.operation_result(result),
-            Callable::SavedFunction { .. } => renderer.result(result, &mut HashSet::new()),
+            Callable::SavedFunction { .. } => renderer.saved_function_result(result),
         },
     );
     format!("{}({parameters}): {result}", callable.leaf())
@@ -112,8 +112,8 @@ impl Renderer<'_> {
         }
     }
 
-    /// The first parameter: an object's members inline one level deep.
-    fn input(&self, type_: &Type) -> String {
+    /// The body of `type_`, followed through every alias.
+    fn resolved<'t>(&'t self, type_: &'t Type) -> &'t Type {
         let mut seen = HashSet::new();
         let mut resolved = type_;
         while let Type::Named { name, arguments } = resolved
@@ -123,30 +123,77 @@ impl Renderer<'_> {
         {
             resolved = body;
         }
-        match resolved {
+        resolved
+    }
+
+    /// The first parameter or a Saved Function's result: an object's members
+    /// inline one level deep.
+    fn inline(&self, type_: &Type) -> String {
+        match self.resolved(type_) {
             Type::Object(members) => self.members(members),
-            Type::Intersection(parts)
-                if parts.iter().any(|part| matches!(part, Type::Object(_))) =>
-            {
+            Type::Intersection(parts) if self.shows_members(type_) => {
                 let shown = parts
                     .iter()
-                    .filter(|part| !is_open_record(part))
-                    .map(|part| match part {
-                        Type::Object(members) => self.members(members),
-                        other => self.member(other, &mut HashSet::new()),
-                    })
+                    .filter(|part| !self.is_open_record(part, &HashSet::new()))
+                    .map(|part| self.inline_part(part))
                     .collect::<Vec<_>>();
                 shown.join(" & ")
             }
             Type::Union(parts) => parts
                 .iter()
-                .map(|part| match part {
-                    Type::Object(members) => self.members(members),
-                    other => self.member(other, &mut HashSet::new()),
-                })
+                .map(|part| self.inline_part(part))
                 .collect::<Vec<_>>()
                 .join(" | "),
             other => self.member(other, &mut HashSet::new()),
+        }
+    }
+
+    /// One part of an inlined union or intersection: an object, named or
+    /// not, as its members; anything else as a member.
+    fn inline_part(&self, part: &Type) -> String {
+        match self.resolved(part) {
+            Type::Object(members) => self.members(members),
+            _ => self.member(part, &mut HashSet::new()),
+        }
+    }
+
+    /// A Saved Function's result: inside its `Promise`, an object's members
+    /// inline one level deep, as in the input, or an array element's. What
+    /// the tree cannot read is the marker.
+    fn saved_function_result(&self, type_: &Type) -> String {
+        match self.resolved(type_) {
+            Type::Named { name, arguments } if self.alias(name).is_none() => {
+                match (name.as_str(), arguments.as_slice()) {
+                    ("Promise", [value]) => {
+                        return format!("Promise<{}>", self.saved_function_result(value));
+                    }
+                    ("Array" | "ReadonlyArray", [element]) if self.shows_members(element) => {
+                        return format!("{name}<{}>", self.inline(element));
+                    }
+                    _ => {}
+                }
+            }
+            Type::Array { element, readonly } if self.shows_members(element) => {
+                let mut shown = self.inline(element);
+                if !matches!(self.resolved(element), Type::Object(_)) {
+                    shown = format!("({shown})");
+                }
+                return format!("{}{shown}[]", if *readonly { "readonly " } else { "" });
+            }
+            _ => {}
+        }
+        self.inline(type_)
+    }
+
+    /// Whether [`Self::inline`] shows members of `type_`: an object, or a
+    /// union or intersection with an object part.
+    fn shows_members(&self, type_: &Type) -> bool {
+        match self.resolved(type_) {
+            Type::Object(_) => true,
+            Type::Union(parts) | Type::Intersection(parts) => parts
+                .iter()
+                .any(|part| matches!(self.resolved(part), Type::Object(_))),
+            _ => false,
         }
     }
 
@@ -181,9 +228,10 @@ impl Renderer<'_> {
         self.render(type_, seen, &format!("{{{CUT_MARKER}}}"), CUT_MARKER)
     }
 
-    /// A result type: named types by name, an anonymous object as `object`.
+    /// A result type: named types by name, an anonymous object as the
+    /// marker, so a line that hides one is not complete.
     pub(super) fn result(&self, type_: &Type, seen: &mut HashSet<String>) -> String {
-        self.render(type_, seen, "object", "unknown")
+        self.render(type_, seen, &format!("{{{CUT_MARKER}}}"), "unknown")
     }
 
     /// A type as a key or plain value, with no alias lookups.
@@ -220,17 +268,23 @@ impl Renderer<'_> {
                 }
                 rendered.join(" | ")
             }
+            // Each part keeps its name; inline objects share one marker, and an
+            // open record adds nothing a reader can use.
             Type::Intersection(parts) => {
-                if parts.iter().any(|part| {
-                    matches!(self.shallow_body(part, &mut seen.clone()), Type::Object(_))
-                }) {
+                let mut rendered = Vec::<String>::new();
+                for part in parts {
+                    if self.is_open_record(part, seen) {
+                        continue;
+                    }
+                    let part = self.grouped(part, seen, object, opaque);
+                    if !rendered.contains(&part) {
+                        rendered.push(part);
+                    }
+                }
+                if rendered.is_empty() {
                     return object.to_string();
                 }
-                parts
-                    .iter()
-                    .map(|part| self.grouped(part, seen, object, opaque))
-                    .collect::<Vec<_>>()
-                    .join(" & ")
+                rendered.join(" & ")
             }
             Type::Array { element, readonly } => format!(
                 "{}{}[]",
@@ -282,6 +336,16 @@ impl Renderer<'_> {
         }
     }
 
+    /// Whether `type_`, through shallow aliases, is the global
+    /// `Record<string, unknown>`, which adds nothing a reader can use. A
+    /// declared `Record` alias shadows the global one.
+    fn is_open_record(&self, type_: &Type, seen: &HashSet<String>) -> bool {
+        self.alias("Record").is_none()
+            && matches!(self.shallow_body(type_, &mut seen.clone()), Type::Named { name, arguments }
+                if name == "Record"
+                    && matches!(arguments.as_slice(), [Type::Plain(key), Type::Plain(value)] if key == "string" && value == "unknown"))
+    }
+
     /// A type in operand position, in parentheses when it is a union,
     /// intersection, or function.
     fn grouped(
@@ -305,10 +369,4 @@ impl Renderer<'_> {
             rendered
         }
     }
-}
-
-fn is_open_record(type_: &Type) -> bool {
-    matches!(type_, Type::Named { name, arguments }
-        if name == "Record"
-            && matches!(arguments.as_slice(), [Type::Plain(key), Type::Plain(value)] if key == "string" && value == "unknown"))
 }

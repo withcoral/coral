@@ -2,6 +2,7 @@ import { useDeferredValue, useState } from 'react'
 import { CatalogToolbar } from '@/components/catalog'
 import { Table } from '@/wax/components'
 import * as styles from './accounts.css'
+import { filterQuery } from '@/utils/filter-query'
 
 /** A short list reads at a glance; a filter only helps a long one. */
 const FILTER_FROM = 8
@@ -20,9 +21,8 @@ const MAX_HEIGHT = 360
  */
 export function PermissionsTable({ rows }: { rows: string[] }) {
   const [input, setInput] = useState('')
-  const query = useDeferredValue(input).trim()
-  const filter = query.toLowerCase()
-  const shown = rows.filter((name) => name.toLowerCase().includes(filter))
+  const query = filterQuery(useDeferredValue(input))
+  const shown = rows.filter((name) => query.matches(name))
   return (
     <div className={styles.permissions}>
       {rows.length >= FILTER_FROM && (
@@ -41,7 +41,7 @@ export function PermissionsTable({ rows }: { rows: string[] }) {
       >
         <Table.Head />
         {shown.length === 0 ? (
-          <Table.Status>{`No permissions match “${query}”.`}</Table.Status>
+          <Table.Status>{`No permissions match “${query.text}”.`}</Table.Status>
         ) : (
           <Table.Body>
             {shown.map((name) => (

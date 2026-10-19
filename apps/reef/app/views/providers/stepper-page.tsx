@@ -52,6 +52,7 @@ function StepperAttemptPage({
   attempt,
   callbackUrl,
   takenNamespaces = [],
+  takenDisplayNames = [],
   recipe = null,
   recipes = [],
   recipeConfiguration = null,
@@ -98,6 +99,7 @@ function StepperAttemptPage({
       namespace={local.namespace}
       onNamespace={setNamespace}
       takenNamespaces={takenNamespaces}
+      takenDisplayNames={takenDisplayNames}
       suggestedName={answers.displayName ?? local.suggestedName}
       recipe={recipeConfiguration}
     />

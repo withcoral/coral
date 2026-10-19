@@ -98,6 +98,38 @@ enum ProviderBlocker {
   PROVIDER_BLOCKER_ACCOUNT_SETTING_INCOMPATIBLE = 7;
 }
 
+// Whether search has indexed the Provider's active Generation. Information
+// only: it never changes what a caller may invoke.
+enum SearchIndexState {
+  // Not supplied, not recognized by this client, or not read.
+  SEARCH_INDEX_STATE_UNSPECIFIED = 0;
+  // No indexing attempt has reached the active Generation yet.
+  SEARCH_INDEX_STATE_PENDING = 1;
+  // Search holds the active Generation's Operations.
+  SEARCH_INDEX_STATE_INDEXED = 2;
+  // The last attempt failed: search cannot find the Operations until a retry succeeds.
+  SEARCH_INDEX_STATE_FAILED = 3;
+}
+
+// Why search could not index the active Generation: the kind of error, never
+// its message, which can hold internal detail.
+enum SearchIndexFailureReason {
+  // Not failed, not recognized by this client, or recorded before Coral kept the kind.
+  SEARCH_INDEX_FAILURE_REASON_UNSPECIFIED = 0;
+  // An Operation could not become a search entry.
+  SEARCH_INDEX_FAILURE_REASON_INVALID_ENTRY = 1;
+  // The write did not finish within its limit.
+  SEARCH_INDEX_FAILURE_REASON_TIMED_OUT = 2;
+  // The system clock could not stamp the attempt.
+  SEARCH_INDEX_FAILURE_REASON_CLOCK = 3;
+  // The search index holds a value it does not admit.
+  SEARCH_INDEX_FAILURE_REASON_CORRUPT = 4;
+  // Reading or preparing the Provider's Generation failed.
+  SEARCH_INDEX_FAILURE_REASON_PROVIDER = 5;
+  // Database access failed.
+  SEARCH_INDEX_FAILURE_REASON_DATABASE = 6;
+}
+
 // One Provider at workspaces/{workspace}/providers/{provider}.
 message Provider {
   // Canonical resource name containing the immutable Workspace and Provider IDs.
@@ -117,8 +149,12 @@ message Provider {
   int64 account_setting_version = 8;
   // Derived configuration and inspected-Agent blockers from one read snapshot.
   repeated ProviderBlocker blockers = 9;
+  // Search state of the active Generation, read apart from the blockers.
+  SearchIndexState search_index_state = 10;
+  // Why the last attempt failed. Unspecified unless search_index_state is FAILED.
+  SearchIndexFailureReason search_index_failure_reason = 11;
   // Immutable Workspace-unique Provider Call Root, such as coral.providers.github.
-  string call_root = 10;
+  string call_root = 12;
 }
 
 // Lists Providers owned by one authorized Workspace.
@@ -787,8 +823,8 @@ message CreateProviderSetupRequest {
   string parent = 1;
   // Exactly one source.
   oneof input {
-    // One exact OpenAPI document (JSON or YAML text).
-    string openapi_document = 2;
+    // One exact OpenAPI document file: JSON or YAML text, optionally gzipped.
+    bytes openapi_document = 2;
     // One exact normalized MCP discovery snapshot.
     string mcp_snapshot = 3;
     // An OpenAPI document URL fetched once without redirects.

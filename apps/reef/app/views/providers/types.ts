@@ -76,6 +76,9 @@ export type CredentialMethod = 'none' | 'bearer' | 'header' | 'basic' | 'query' 
 /** The Credential Route as Reef names it: "Whose account does it use?" */
 export type { AccountLabel } from './account-labels'
 
+/** Search has not indexed the provider's operations yet, or could not, and why. */
+export type SearchIndexView = { state: 'pending' } | { state: 'failed'; reason: string }
+
 export interface ProviderView {
   id: string
   displayName: string
@@ -85,6 +88,8 @@ export interface ProviderView {
   blockers: string[]
   /** What you must do with your own account before you call the provider, if anything. */
   personalAccountAction: string | null
+  /** Whether search can find the provider's operations; null when it can, or when Coral sent no state. Calls still work. */
+  searchIndex: SearchIndexView | null
   readyCount: number
   totalCount: number
   etag: string
@@ -368,6 +373,8 @@ export interface StepperPageProps {
   workspace: WorkspaceView
   /** Namespaces other providers in this workspace have; Configuration refuses them. */
   takenNamespaces?: readonly string[]
+  /** Display names other providers in this workspace have; Configuration refuses them. */
+  takenDisplayNames?: readonly string[]
   /** The recipe this attempt was read from; it suggests the name and namespace. */
   recipe?: SourceChoice | null
   /** Recipes the catalog offers, from the bundled library. */

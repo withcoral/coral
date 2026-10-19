@@ -3,6 +3,7 @@ import { Link } from 'react-router'
 
 import { Icon } from '@/wax/components/icon'
 import { Tooltip } from '@/wax/components/tooltip'
+import type { FilterQuery } from '@/utils/filter-query'
 
 import * as styles from './tree.css'
 
@@ -42,16 +43,14 @@ export interface TreeProps {
 }
 
 /** Leaves whose search terms match; a branch survives through its children. */
-export function filterNodes(nodes: readonly TreeNode[], query: string): readonly TreeNode[] {
-  if (!query) return nodes
+export function filterNodes(nodes: readonly TreeNode[], query: FilterQuery): readonly TreeNode[] {
+  if (!query.text) return nodes
   return nodes.flatMap((node) => {
     if (node.children) {
       const children = filterNodes(node.children, query)
       return children.length ? [{ ...node, children }] : []
     }
-    return (node.searchTerms ?? [node.label]).some((term) => term.toLowerCase().includes(query))
-      ? [node]
-      : []
+    return query.matches(...(node.searchTerms ?? [node.label])) ? [node] : []
   })
 }
 

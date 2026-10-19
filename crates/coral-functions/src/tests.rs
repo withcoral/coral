@@ -1164,11 +1164,7 @@ struct SavedFunctionTestModules {
 
 impl SavedFunctionTestModules {
     async fn new() -> Self {
-        let migrator = coral_test_support::combined_migrator(&[
-            coral_workspace::migrator(),
-            crate::migrator(),
-        ]);
-        let fixture = TestDatabase::new(&migrator)
+        let fixture = TestDatabase::new(coral_db::migration_plan())
             .await
             .expect("create Saved Function test database");
         let database = fixture.database();

@@ -82,14 +82,6 @@ pub use types::{
     TASK_FEEDBACK_MAX_CHARS, TASK_INTENT_MAX_CHARS, Task, TaskId, TaskIntent, TaskOutcome,
 };
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-
-/// Returns the Task Module's domain-owned migration plan.
-#[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
-    &MIGRATOR
-}
-
 /// Durable Task lifecycle and visibility Module.
 #[derive(Clone)]
 pub struct TaskModule {

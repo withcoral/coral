@@ -9,7 +9,7 @@ use coral_catalog::{
     MaterializationOutcome, OpenApiDocument, PreparedProviderCatalog, ProviderSetupInput,
 };
 use coral_outbound::DestinationPolicy;
-use coral_upstream::{HttpOutcome, HttpUpstream, ReadyHttpDispatch};
+use coral_upstream::{HttpOutcome, HttpUpstream, OutcomeClass, ReadyHttpDispatch};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -582,6 +582,37 @@ paths:
     }
 }
 
+#[test]
+fn a_fixed_path_query_precedes_query_arguments() {
+    let prepared = ready(
+        r#"openapi: 3.1.0
+info: { title: Fixed query, version: "1" }
+servers: [{ url: "https://api.example.test/v1" }]
+paths:
+  "/models/{id}?beta=true":
+    get:
+      operationId: read
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer } }
+      responses:
+        "204": { description: done }
+"#,
+    );
+    for (arguments, expected) in [
+        (
+            serde_json::json!({"id": "m"}),
+            "https://api.example.test/v1/models/m?beta=true",
+        ),
+        (
+            serde_json::json!({"id": "m", "limit": 2}),
+            "https://api.example.test/v1/models/m?beta=true&limit=2",
+        ),
+    ] {
+        assert_eq!(plan(&prepared, &arguments).url().as_str(), expected);
+    }
+}
+
 /// One GET Operation at `{server}/v1` + `template`, whose path parameters
 /// `a` and `b` use `parameters` as their serialization fields.
 fn path_operation(server: &str, template: &str, parameters: &str) -> PreparedProviderCatalog {
@@ -937,6 +968,292 @@ async fn complete_responses_decode_by_their_declared_media_and_schema() {
             case.content_type,
             case.declared
         );
+    }
+}
+
+/// A response to an Operation declaring `responses`, and its class.
+struct ClassCase {
+    name: &'static str,
+    /// The Operation's declared `responses`, as YAML.
+    responses: &'static str,
+    /// The first request answers `302` to the response below.
+    redirected: bool,
+    status: u16,
+    content_type: Option<&'static str>,
+    body: &'static [u8],
+    class: OutcomeClass,
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table holds every class a response can take"
+)]
+async fn each_outcome_is_a_declared_success_or_names_why_it_is_not() {
+    const JSON_200: &str = r#"
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, required: [id], properties: { id: { type: string } } }"#;
+    const JSON_200_AND_404: &str = r#"
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { type: object }
+        "404":
+          description: missing
+          content:
+            application/json:
+              schema: { type: object }"#;
+    const DEFAULT_ONLY: &str = r"
+        default:
+          description: any
+          content:
+            application/json:
+              schema: { type: object }";
+    const OK_AND_DEFAULT: &str = r#"
+        "200": { description: ok }
+        default:
+          description: error
+          content:
+            application/json:
+              schema: { type: object }"#;
+    const RANGE_2XX: &str = r#"
+        "2XX": { description: any success }"#;
+    const NO_CONTENT_200: &str = r#"
+        "200": { description: ok }"#;
+    const REDIRECT_ONLY: &str = r#"
+        "302": { description: to the file }"#;
+    const TWO_MEDIA_200: &str = r#"
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { type: object }
+            text/csv:
+              schema: { type: string }"#;
+    let json = Some("application/json");
+    for case in [
+        ClassCase {
+            name: "a declared 200 that matches its schema",
+            responses: JSON_200,
+            redirected: false,
+            status: 200,
+            content_type: json,
+            body: br#"{"id":"one"}"#,
+            class: OutcomeClass::Success,
+        },
+        ClassCase {
+            name: "a declared 200 that misses its schema is still a success",
+            responses: JSON_200,
+            redirected: false,
+            status: 200,
+            content_type: json,
+            body: br#"{"id":1}"#,
+            class: OutcomeClass::Success,
+        },
+        ClassCase {
+            name: "a declared 404",
+            responses: JSON_200_AND_404,
+            redirected: false,
+            status: 404,
+            content_type: json,
+            body: br#"{"message":"missing"}"#,
+            class: OutcomeClass::ErrorResponse,
+        },
+        ClassCase {
+            name: "an undeclared 500",
+            responses: JSON_200,
+            redirected: false,
+            status: 500,
+            content_type: None,
+            body: b"",
+            class: OutcomeClass::ErrorResponse,
+        },
+        ClassCase {
+            name: "a 2xx the Operation does not declare",
+            responses: JSON_200,
+            redirected: false,
+            status: 201,
+            content_type: json,
+            body: br#"{"id":"one"}"#,
+            class: OutcomeClass::UndeclaredResponse,
+        },
+        ClassCase {
+            name: "a 2xx that only `default` matches beside a declared 200",
+            responses: OK_AND_DEFAULT,
+            redirected: false,
+            status: 201,
+            content_type: json,
+            body: b"{}",
+            class: OutcomeClass::UndeclaredResponse,
+        },
+        ClassCase {
+            name: "a 2xx when `default` is the only declared response",
+            responses: DEFAULT_ONLY,
+            redirected: false,
+            status: 200,
+            content_type: json,
+            body: b"{}",
+            class: OutcomeClass::Success,
+        },
+        ClassCase {
+            name: "a 4xx when `default` is the only declared response",
+            responses: DEFAULT_ONLY,
+            redirected: false,
+            status: 400,
+            content_type: json,
+            body: b"{}",
+            class: OutcomeClass::ErrorResponse,
+        },
+        ClassCase {
+            name: "a status in a declared 2XX range",
+            responses: RANGE_2XX,
+            redirected: false,
+            status: 204,
+            content_type: None,
+            body: b"",
+            class: OutcomeClass::Success,
+        },
+        ClassCase {
+            name: "a body for a success that declares no content",
+            responses: NO_CONTENT_200,
+            redirected: false,
+            status: 200,
+            content_type: json,
+            body: br#"{"anything":true}"#,
+            class: OutcomeClass::Success,
+        },
+        ClassCase {
+            name: "a media type the declared success does not list",
+            responses: JSON_200,
+            redirected: false,
+            status: 200,
+            content_type: Some("text/html"),
+            body: b"<html></html>",
+            class: OutcomeClass::UndeclaredResponse,
+        },
+        ClassCase {
+            name: "a body that is not valid JSON",
+            responses: JSON_200,
+            redirected: false,
+            status: 200,
+            content_type: json,
+            body: b"{broken",
+            class: OutcomeClass::UndecodableResponse,
+        },
+        ClassCase {
+            name: "a malformed Content-Type",
+            responses: JSON_200,
+            redirected: false,
+            status: 200,
+            content_type: Some("not-a-media-type"),
+            body: br#"{"id":"one"}"#,
+            class: OutcomeClass::UndecodableResponse,
+        },
+        ClassCase {
+            name: "an unsupported charset",
+            responses: JSON_200,
+            redirected: false,
+            status: 200,
+            content_type: Some("application/json; charset=x-unknown"),
+            body: br#"{"id":"one"}"#,
+            class: OutcomeClass::UndecodableResponse,
+        },
+        ClassCase {
+            name: "an empty body for a success that declares no content, under a malformed Content-Type",
+            responses: NO_CONTENT_200,
+            redirected: false,
+            status: 200,
+            content_type: Some("not-a-media-type"),
+            body: b"",
+            class: OutcomeClass::Success,
+        },
+        ClassCase {
+            name: "an empty body without a Content-Type for a success with two media types",
+            responses: TWO_MEDIA_200,
+            redirected: false,
+            status: 200,
+            content_type: None,
+            body: b"",
+            class: OutcomeClass::Success,
+        },
+        ClassCase {
+            name: "an undeclared 2xx is undeclared even when its body is malformed",
+            responses: JSON_200,
+            redirected: false,
+            status: 201,
+            content_type: json,
+            body: b"{broken",
+            class: OutcomeClass::UndeclaredResponse,
+        },
+        ClassCase {
+            name: "the final 2xx after a declared redirect",
+            responses: REDIRECT_ONLY,
+            redirected: true,
+            status: 200,
+            content_type: Some("application/octet-stream"),
+            body: b"file",
+            class: OutcomeClass::Success,
+        },
+        ClassCase {
+            name: "a final 2xx after a declared redirect whose body does not decode",
+            responses: REDIRECT_ONLY,
+            redirected: true,
+            status: 200,
+            content_type: json,
+            body: b"{broken",
+            class: OutcomeClass::UndecodableResponse,
+        },
+        ClassCase {
+            name: "a final 4xx after a declared redirect",
+            responses: REDIRECT_ONLY,
+            redirected: true,
+            status: 404,
+            content_type: None,
+            body: b"",
+            class: OutcomeClass::ErrorResponse,
+        },
+    ] {
+        let server = MockServer::start().await;
+        let mut response = ResponseTemplate::new(case.status).set_body_bytes(case.body);
+        if let Some(content_type) = case.content_type {
+            response = response.insert_header("content-type", content_type);
+        }
+        if case.redirected {
+            Mock::given(path("/value"))
+                .respond_with(ResponseTemplate::new(302).insert_header("location", "/final"))
+                .mount(&server)
+                .await;
+            Mock::given(path("/final"))
+                .respond_with(response)
+                .mount(&server)
+                .await;
+        } else {
+            Mock::given(path("/value"))
+                .respond_with(response)
+                .mount(&server)
+                .await;
+        }
+        let prepared = ready(&format!(
+            r#"openapi: 3.1.0
+info: {{ title: Classes, version: "1" }}
+servers: [{{ url: {} }}]
+paths:
+  /value:
+    get:
+      operationId: getValue
+      responses:{}
+"#,
+            server.uri(),
+            case.responses
+        ));
+        let outcome = send(plan(&prepared, &serde_json::json!({})))
+            .await
+            .expect("a complete response is an outcome");
+        assert_eq!(outcome.class(), case.class, "{}", case.name);
     }
 }
 
