@@ -444,10 +444,10 @@ function ErrorDetail({ error }: { error: ProgramError }) {
       )}
       {error.operationBody && (
         <>
-          <Typography.BodySmallStrong>Upstream response body</Typography.BodySmallStrong>
+          <Typography.BodySmallStrong>Upstream response data</Typography.BodySmallStrong>
           <Native value={error.operationBody} format="json" />
           {error.operationBodyTruncated && (
-            <Typography.Body>This is the start of the body.</Typography.Body>
+            <Typography.Body>This is the start of the data.</Typography.Body>
           )}
         </>
       )}

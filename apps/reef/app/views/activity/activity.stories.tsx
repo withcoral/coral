@@ -883,7 +883,7 @@ export const UpstreamOperationError: Story = {
     await expect(
       drawer.getByText(codeContaining('No invoices for this account'), { selector: 'pre' }),
     ).toBeVisible()
-    await expect(drawer.getByText('This is the start of the body.')).toBeVisible()
+    await expect(drawer.getByText('This is the start of the data.')).toBeVisible()
   },
 }
 export const RetainedSource: Story = {
