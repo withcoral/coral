@@ -161,7 +161,8 @@ test('Organization Owner governance, eligible Memberships, and private server pa
             charlie.userId,
           ])
             expect(html).not.toContain(hidden)
-          await page.getByTitle(alice.email, { exact: true }).waitFor()
+          // A compact member row's hover title holds the name and the email.
+          await page.getByTitle(alice.email).waitFor()
           const denied = await page.request.get(`/${agents.agents[0].name}`, { maxRedirects: 0 })
           const absent = await page.request.get(
             `${path}/agents/00000000-0000-4000-8000-000000000000`,

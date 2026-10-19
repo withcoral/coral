@@ -88,7 +88,7 @@ export function MembersTable({
         <Table.Body>
           {shown.map((row) => (
             <Table.Row key={row.key}>
-              <Table.Cell wrap>
+              <Table.Cell>
                 <Person person={row.profile} currentUser={currentUser} compact />
               </Table.Cell>
               <Table.Cell>

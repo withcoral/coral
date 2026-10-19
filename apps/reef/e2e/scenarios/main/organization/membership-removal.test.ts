@@ -68,7 +68,8 @@ test('Organization owner removes current work across workspaces through Members 
         await breadcrumb(page, 'Members').waitFor()
         const row = page
           .getByRole('row')
-          .filter({ has: page.getByTitle(bob.email, { exact: true }) })
+          // The member's hover title holds the name and the email.
+          .filter({ has: page.getByTitle(bob.email) })
         for (let pages = 0; pages < 20 && (await row.count()) === 0; pages++) {
           const previous = page.url()
           await page.getByRole('link', { name: 'Next members', exact: true }).click()
