@@ -108,7 +108,7 @@ fn safe_path_segment(value: &str) -> bool {
             matches!(character, '_' | '$' | '\u{200c}' | '\u{200d}')
                 || unicode_id_start::is_id_continue(character)
         })
-        && !matches!(value, "__proto__" | "prototype" | "constructor" | "then")
+        && !coral_catalog::call_path_segment_is_reserved(value)
 }
 
 /// Explicit safe human-facing description of one Saved Function.

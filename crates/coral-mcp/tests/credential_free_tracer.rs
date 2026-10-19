@@ -230,8 +230,7 @@ impl Tracer {
     )]
     async fn start() -> Self {
         let upstream = TestUpstream::start().await;
-        let migrator = test_migrator();
-        let database = TestDatabase::new(&migrator)
+        let database = TestDatabase::new(coral_db::migration_plan())
             .await
             .expect("create MCP tracer database");
         let db = database.database();
@@ -2734,19 +2733,6 @@ async fn publish_operations(
             .expect("enable tracer Operation");
     }
     provider_id
-}
-
-fn test_migrator() -> sqlx::migrate::Migrator {
-    coral_test_support::combined_migrator(&[
-        coral_workspace::migrator(),
-        coral_task::migrator(),
-        coral_catalog::migrator(),
-        coral_provider::migrator(),
-        coral_policy::migrator(),
-        coral_run::migrator(),
-        coral_functions::migrator(),
-        coral_search::migrator(),
-    ])
 }
 
 fn change(

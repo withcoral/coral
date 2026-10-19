@@ -4,6 +4,7 @@ import { Table } from '@/wax/components'
 import { Pill } from '@/wax/components/pill'
 import { Person, personLabel } from './person'
 import type { PersonView } from './types'
+import { filterQuery } from '@/utils/filter-query'
 
 interface MemberRow {
   key: string
@@ -35,13 +36,11 @@ export function MembersTable({
 }) {
   const [input, setInput] = useState('')
   const [role, setRole] = useState<RoleFilter>('all')
-  const query = useDeferredValue(input).trim()
+  const query = filterQuery(useDeferredValue(input))
   const shown = rows.filter(
     (row) =>
       (role === 'all' || row.role === role) &&
-      [personLabel(row.profile), row.profile.email].some((text) =>
-        text.toLowerCase().includes(query.toLowerCase()),
-      ),
+      query.matches(personLabel(row.profile), row.profile.email),
   )
   return (
     <>
@@ -79,7 +78,7 @@ export function MembersTable({
         {rows.length === 0 && <Table.Status>No members on this page.</Table.Status>}
         {rows.length > 0 && shown.length === 0 && (
           <Table.Status>
-            {query ? `No members match “${query}”.` : 'No members match.'}
+            {query.text ? `No members match “${query.text}”.` : 'No members match.'}
           </Table.Status>
         )}
         <Table.Body>

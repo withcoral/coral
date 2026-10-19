@@ -125,14 +125,6 @@ pub use types::{
     WorkspaceMembership, WorkspaceRole, WorkspaceState, local_organization_owner,
 };
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-
-/// Returns the Workspace Module's domain-owned migration plan.
-#[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
-    &MIGRATOR
-}
-
 /// Workspace lifecycle, Membership, and authority Module.
 #[derive(Clone)]
 pub struct WorkspaceModule {

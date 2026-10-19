@@ -7,6 +7,7 @@ const MESSAGE_BYTES: usize = 1024;
 const NAME_BYTES: usize = 64;
 const STACK_BYTES: usize = 16 * 1024;
 const ERROR_JSON_BYTES: usize = 8 * 1024;
+const OPERATION_BODY_BYTES: usize = 1024;
 
 /// An authored location in the existing Program error's stack.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,15 +31,42 @@ impl fmt::Display for ProgramErrorFrame {
     }
 }
 
-/// Existing trusted fields of a host-created `OperationError`.
+/// Trusted fields of a host-created `OperationError`, read from host-only
+/// private state rather than from properties a Program can redefine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProgramOperationError {
-    /// Existing Coral Failure code; absent on Program-created errors.
+    /// Stable Operation error code; absent on Program-created errors.
     pub code: String,
     /// Existing correlation identifier, if supplied to the Program.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    /// HTTP status of the upstream response the Program did not receive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    /// The start of that response's encoded `data`, at most 1 KiB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// `body` omits the rest of the encoded `data`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub body_truncated: bool,
+}
+
+/// The status and bounded encoded `data` of one Operation Result.
+pub(crate) fn operation_outcome_excerpt(outcome_json: &str) -> (Option<u16>, Option<String>, bool) {
+    let Ok(outcome) = serde_json::from_str::<serde_json::Value>(outcome_json) else {
+        return (None, None, false);
+    };
+    let status = outcome
+        .get("status")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|status| u16::try_from(status).ok());
+    let Some(body) = outcome.get("data").map(serde_json::Value::to_string) else {
+        return (status, None, false);
+    };
+    let excerpt = prefix(&body, OPERATION_BODY_BYTES);
+    let truncated = excerpt.len() < body.len();
+    (status, Some(excerpt.to_string()), truncated)
 }
 
 /// Bounded isolate-visible error retained for authorized Run readers, never telemetry.

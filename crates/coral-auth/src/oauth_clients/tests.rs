@@ -16,7 +16,7 @@ fn request() -> RegistrationRequest {
 
 #[tokio::test]
 async fn admission_is_global_atomic_durable_and_never_evicts_working_clients() {
-    let fixture = TestDatabase::new(crate::migrator()).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let clients = OAuthClients::new(fixture.database(), Arc::new(NoFetch));
     let peer = OAuthClients::new(
         Arc::new(fixture.connect_peer().await.unwrap()),
@@ -95,7 +95,7 @@ impl ClientMetadataResolver for NoFetch {
 
 #[tokio::test]
 async fn unsafe_metadata_is_rejected_without_spending_admission_and_ids_never_fetch() {
-    let fixture = TestDatabase::new(crate::migrator()).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let clients = OAuthClients::new(fixture.database(), Arc::new(NoFetch));
     for metadata in [
         json!({"token_endpoint_auth_method": "client_secret_basic"}),
@@ -162,7 +162,7 @@ async fn unsafe_metadata_is_rejected_without_spending_admission_and_ids_never_fe
 
 #[tokio::test]
 async fn pi_public_registration_resolves_after_reopening_the_module() {
-    let fixture = TestDatabase::new(crate::migrator()).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let clients = OAuthClients::new(fixture.database(), Arc::new(NoFetch));
     let request = serde_json::from_value(json!({
         "redirect_uris": ["http://127.0.0.1:49152/callback"],

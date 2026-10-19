@@ -297,7 +297,8 @@ function InvocationOutcome({ detail }: { detail: InvocationDetail }) {
       return (
         <Disclosure title="Operation outcome" open>
           <Typography.BodySmall>
-            HTTP status and MCP isError describe the upstream response, not the goal outcome.
+            Your program receives only a declared success. It receives any other response as an
+            operation error.
           </Typography.BodySmall>
           <Native value={detail.result.value} format="json" />
         </Disclosure>
@@ -437,6 +438,18 @@ function ErrorDetail({ error }: { error: ProgramError }) {
         <Typography.Body>
           Coral operation code: {error.operationCode} · Trace: {error.operationTraceId}
         </Typography.Body>
+      )}
+      {error.operationStatus > 0 && (
+        <Typography.Body>Upstream HTTP status: {error.operationStatus}</Typography.Body>
+      )}
+      {error.operationBody && (
+        <>
+          <Typography.BodySmallStrong>Upstream response data</Typography.BodySmallStrong>
+          <Native value={error.operationBody} format="json" />
+          {error.operationBodyTruncated && (
+            <Typography.Body>This is the start of the data.</Typography.Body>
+          )}
+        </>
       )}
       {error.truncated && (
         <Typography.Body>Coral retained bounded diagnostic content.</Typography.Body>

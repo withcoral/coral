@@ -70,7 +70,12 @@ function render(
   result?: StepperResult,
   kind: SetupView['kind'] = 'openapi',
   overrides: Partial<SetupView> = {},
-  namespace: { namespace?: string; takenNamespaces?: string[] } = {},
+  fields: {
+    namespace?: string
+    takenNamespaces?: string[]
+    takenDisplayNames?: string[]
+    suggestedName?: string
+  } = {},
 ) {
   return markupRoute(
     <ConfigurationStep
@@ -80,7 +85,7 @@ function render(
       callbackUrl="https://coral.test/callback"
       recipe={recipe}
       result={result}
-      {...namespace}
+      {...fields}
     />,
   )
 }
@@ -122,6 +127,31 @@ it.each([
   expect(described ? container.querySelector(`#${CSS.escape(described)}`)?.textContent : null).toBe(
     refused ? 'Another provider uses this namespace. Enter a different namespace.' : null,
   )
+  const next = [...container.querySelectorAll('button')].find(
+    (button) => button.textContent === 'Next',
+  )!
+  expect(next.getAttribute('aria-disabled')).toBe(refused ? 'true' : null)
+})
+
+// Catches: a second provider with another's name, which the provider list then
+// shows twice with nothing to tell them apart.
+it.each([
+  ['the same name', 'GitHub', true],
+  ['the name in another case with spaces', ' github ', true],
+  ['a different name', 'GitHub MCP', false],
+])('a display name with %s says so beside the field and blocks Next', (_case, name, refused) => {
+  const container = document.createElement('div')
+  container.innerHTML = render(
+    review,
+    undefined,
+    undefined,
+    'openapi',
+    {},
+    { namespace: 'github_two', takenDisplayNames: ['GitHub'], suggestedName: name },
+  )
+  const message = 'Another provider uses this name. Enter a different display name.'
+  const alerts = [...container.querySelectorAll('[role="alert"]')].map((alert) => alert.textContent)
+  expect(alerts).toEqual(refused ? [message] : [])
   const next = [...container.querySelectorAll('button')].find(
     (button) => button.textContent === 'Next',
   )!

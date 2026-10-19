@@ -166,7 +166,7 @@ async fn each_authentication_method_reads_back_with_the_settings_it_was_confirme
         .create_provider_setup(request(
             setup_request(
                 format!("workspaces/{}", fixture.workspace.id()),
-                Input::OpenapiDocument(openapi_document(true)),
+                Input::OpenapiDocument(openapi_document(true).into()),
             ),
             &token,
             "reef",
@@ -346,7 +346,7 @@ async fn each_authentication_method_reads_back_with_the_settings_it_was_confirme
                 )]),
                 ..setup_request(
                     format!("workspaces/{}", fixture.workspace.id()),
-                    Input::OpenapiDocument(openapi_document(true)),
+                    Input::OpenapiDocument(openapi_document(true).into()),
                 )
             },
             &token,
@@ -392,7 +392,7 @@ async fn device_code_authorization_projects_the_user_code_but_never_the_device_c
         .create_provider_setup(request(
             setup_request(
                 format!("workspaces/{}", f.workspace.id()),
-                Input::OpenapiDocument(openapi_document(true)),
+                Input::OpenapiDocument(openapi_document(true).into()),
             ),
             &token,
             "reef",
@@ -496,7 +496,7 @@ async fn stale_secret_form_is_rejected_before_sealing_against_new_configuration(
         .create_configured_setup(request(
             setup_request(
                 format!("workspaces/{}", fixture.workspace.id()),
-                Input::OpenapiDocument(openapi_document(true)),
+                Input::OpenapiDocument(openapi_document(true).into()),
             ),
             &token,
             "reef",
@@ -626,7 +626,10 @@ async fn openapi_upload_accepts_64_mib_and_reports_the_document_limit() {
     document.extend(std::iter::repeat_n(' ', 64 * 1024 * 1024 - document.len()));
     let setup = client
         .create_configured_setup(request(
-            setup_request(parent.clone(), Input::OpenapiDocument(document.clone())),
+            setup_request(
+                parent.clone(),
+                Input::OpenapiDocument(document.clone().into()),
+            ),
             &token,
             "reef",
         ))
@@ -637,7 +640,7 @@ async fn openapi_upload_accepts_64_mib_and_reports_the_document_limit() {
     document.push(' ');
     let error = client
         .create_configured_setup(request(
-            setup_request(parent, Input::OpenapiDocument(document)),
+            setup_request(parent, Input::OpenapiDocument(document.into())),
             &token,
             "reef",
         ))
@@ -660,7 +663,7 @@ async fn workspace_owner_publishes_an_inline_document_and_a_reused_request_id_co
         .create_configured_setup(request(
             setup_request(
                 parent.clone(),
-                Input::OpenapiDocument(openapi_document(false)),
+                Input::OpenapiDocument(openapi_document(false).into()),
             ),
             &token,
             "reef",
@@ -770,7 +773,10 @@ async fn members_cannot_prepare_setups_and_malformed_names_are_safe() {
     ] {
         let error = setups
             .create_configured_setup(request(
-                setup_request(parent, Input::OpenapiDocument(openapi_document(false))),
+                setup_request(
+                    parent,
+                    Input::OpenapiDocument(openapi_document(false).into()),
+                ),
                 &member,
                 "reef",
             ))
@@ -904,7 +910,7 @@ async fn update_projects_saved_differences_and_requires_exact_interruption_accep
         .create_configured_setup(request(
             setup_request(
                 parent.clone(),
-                Input::OpenapiDocument(openapi_document(true)),
+                Input::OpenapiDocument(openapi_document(true).into()),
             ),
             &token,
             "reef",
@@ -958,7 +964,7 @@ async fn update_projects_saved_differences_and_requires_exact_interruption_accep
                 provider: provider.name.clone(),
                 ..setup_request(
                     parent.clone(),
-                    Input::OpenapiDocument(replacement.to_string()),
+                    Input::OpenapiDocument(replacement.to_string().into()),
                 )
             },
             &token,
@@ -1247,7 +1253,7 @@ async fn workspace_owner_publishes_with_explicit_shared_or_self_account_retentio
             .create_configured_setup(request(
                 setup_request(
                     parent.clone(),
-                    Input::OpenapiDocument(openapi_document(true)),
+                    Input::OpenapiDocument(openapi_document(true).into()),
                 ),
                 &token,
                 "reef",
@@ -1336,7 +1342,10 @@ async fn concurrent_secret_authorizations_return_their_own_grants() {
     let mut setups = f.setups();
     let setup = setups
         .create_configured_setup(request(
-            setup_request(parent, Input::OpenapiDocument(openapi_document(true))),
+            setup_request(
+                parent,
+                Input::OpenapiDocument(openapi_document(true).into()),
+            ),
             &token,
             "reef",
         ))
@@ -1400,7 +1409,7 @@ async fn publish_workspace_document(
     let mut setups = f.setups();
     let setup = setups
         .create_configured_setup(request(
-            setup_request(parent, Input::OpenapiDocument(document)),
+            setup_request(parent, Input::OpenapiDocument(document.into())),
             token,
             "reef",
         ))
@@ -1790,7 +1799,7 @@ async fn provider_pages_round_trip_and_bind_their_token() {
             .create_configured_setup(request(
                 setup_request(
                     parent.clone(),
-                    Input::OpenapiDocument(openapi_document(false)),
+                    Input::OpenapiDocument(openapi_document(false).into()),
                 ),
                 &token,
                 "reef",
@@ -1963,7 +1972,9 @@ async fn regeneration_publishes_against_the_exact_provider_and_etag() {
                 ..setup_request(
                     parent.clone(),
                     Input::OpenapiDocument(
-                        openapi_document(false).replace("Get forecast", "Get current forecast"),
+                        openapi_document(false)
+                            .replace("Get forecast", "Get current forecast")
+                            .into(),
                     ),
                 )
             },
@@ -2590,7 +2601,7 @@ async fn oauth_configuration_owns_a_write_only_application_secret() {
             .create_provider_setup(request(
                 setup_request(
                     format!("workspaces/{}", fixture.workspace.id()),
-                    Input::OpenapiDocument(document),
+                    Input::OpenapiDocument(document.into()),
                 ),
                 &token,
                 "reef",
@@ -2785,7 +2796,7 @@ async fn openapi_oauth_document_signs_in_through_an_explicit_application_from_st
     let mut setups = f.setups();
     let setup = setups
         .create_configured_setup(request(
-            setup_request(parent, Input::OpenapiDocument(document)),
+            setup_request(parent, Input::OpenapiDocument(document.into())),
             &token,
             "reef",
         ))
@@ -2940,7 +2951,7 @@ async fn publication_without_account_material_succeeds_only_for_the_caller_route
             .create_configured_setup(request(
                 setup_request(
                     parent.clone(),
-                    Input::OpenapiDocument(openapi_document(true)),
+                    Input::OpenapiDocument(openapi_document(true).into()),
                 ),
                 &token,
                 "reef",

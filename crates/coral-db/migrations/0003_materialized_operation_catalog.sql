@@ -11,7 +11,7 @@ CREATE TABLE provider_generations (
     created_at_unix_nanos BIGINT NOT NULL,
 
     CONSTRAINT provider_generations_input_kind_valid
-        CHECK (input_kind IN ('openapi', 'mcp', 'builtin')),
+        CHECK (input_kind IN ('openapi', 'mcp')),
     CONSTRAINT provider_generations_pinned_input_not_empty
         CHECK (LENGTH(pinned_input) > 0),
     CONSTRAINT provider_generations_input_digest_shape
@@ -60,7 +60,7 @@ CREATE TABLE materialized_operations (
         FOREIGN KEY (provider_generation_id)
         REFERENCES provider_generations(id),
     CONSTRAINT materialized_operations_protocol_valid
-        CHECK (protocol IN ('http', 'mcp', 'builtin')),
+        CHECK (protocol IN ('http', 'mcp')),
     CONSTRAINT materialized_operations_protocol_index_valid
         CHECK (
             (protocol = 'http'
@@ -70,14 +70,14 @@ CREATE TABLE materialized_operations (
                 AND (availability = 'unavailable'
                     OR (server_url IS NOT NULL AND LENGTH(server_url) > 0)))
             OR
-            (protocol IN ('mcp', 'builtin')
+            (protocol = 'mcp'
                 AND method IS NULL
                 AND path IS NULL
                 AND server_url IS NULL)
         ),
-    CONSTRAINT materialized_operations_hints_declared_by_source
+    CONSTRAINT materialized_operations_hints_declared_by_mcp
         CHECK (
-            protocol IN ('mcp', 'builtin')
+            protocol = 'mcp'
             OR (read_only_hint IS NULL
                 AND destructive_hint IS NULL
                 AND idempotent_hint IS NULL

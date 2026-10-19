@@ -189,9 +189,7 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
-        let database = TestDatabase::new(coral_workspace::migrator())
-            .await
-            .unwrap();
+        let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let organization = OrganizationModule::new(database.database());
         let workspaces = WorkspaceModule::new(database.database());
         let owner = change("owner");

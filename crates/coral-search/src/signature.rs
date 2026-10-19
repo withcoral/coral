@@ -5,10 +5,19 @@
 //! object appears as `{…}`, and a named type appears by name, unless it is a
 //! shallow alias: an alias of scalars, literals, or arrays of those, which is
 //! inlined, so an Operation's generated parameter aliases do not hide plain
-//! types. The result type appears by name only; an Operation shows its result
-//! envelope with the `data` types of its success responses. The line is cut
-//! at [`SIGNATURE_LINE_MAX_BYTES`] at a word boundary with a marker. A line
-//! with no marker and no bare type name in its input is complete.
+//! types.
+//!
+//! An Operation's result is its envelope with the `data` types of its
+//! success responses, by name. A Saved Function's result is shown as its
+//! input is: an object's members one level deep, named or not. The line
+//! looks inside the result's `Promise` and one level of array. The compiler
+//! infers most Saved Function results, so they have no name to show. A
+//! result object the line does not show is the marker `{…}`, and a Saved
+//! Function result type the line cannot read is the marker `…`.
+//!
+//! The line is cut at [`SIGNATURE_LINE_MAX_BYTES`] at a word boundary with a
+//! marker. A line with no marker and no bare type name in its input is
+//! complete.
 //!
 //! `syntax` reads the declaration with oxc into the small type tree of `tree`;
 //! `render` and `envelope` print the line from that tree, and `abridge`
@@ -36,8 +45,8 @@ pub(crate) const SIGNATURE_LINE_MAX_BYTES: usize = 512;
 #[derive(Clone, Copy)]
 pub(crate) enum Callable<'a> {
     /// A catalog-projected Operation: its result is a union of envelopes,
-    /// one per response: `{ data; metadata }` objects, or `HttpResult` and
-    /// `HttpUnknownResult` for an HTTP Operation.
+    /// one per declared success: `{ data; metadata }` objects, or
+    /// `HttpResult` for an HTTP Operation.
     Operation { leaf: &'a str },
     /// A Saved Function's compiler-emitted declaration with one default
     /// callable export.
