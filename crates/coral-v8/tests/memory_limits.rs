@@ -51,7 +51,7 @@ fn compiler_memory_failure_allows_the_next_request_to_succeed() {
     let compiler = ProgramCompiler::new(limits).expect("start bounded compiler");
     // The module text alone fills the compiler's heap budget, and its empty
     // statements make the parser allocate from the first token, so V8 trips
-    // the limit after a few milliseconds of compiler work. A source that
+    // the limit during parsing, before any type checking runs. A source that
     // outgrew the budget through type checking (30,000 object literals) spent
     // up to COMPILATION_TIMEOUT in TypeScript on a loaded CI runner and
     // reported CompilationTimedOut instead.
