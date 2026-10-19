@@ -17,7 +17,7 @@ export const layout = style({
 export const rail = style({
   display: 'flex',
   flexDirection: 'column',
-  gap: 12,
+  gap: 16,
   minHeight: 0,
   minWidth: 0,
   paddingInlineEnd: 16,
@@ -106,7 +106,7 @@ export const stack = style({
   display: 'flex',
   flex: '1 1 auto',
   flexDirection: 'column',
-  gap: 12,
+  gap: 16,
   minHeight: 0,
   minWidth: 0,
 })
@@ -127,6 +127,7 @@ export const toolbarGroup = style({
   // The trailing group keeps the filter at the end when the row wraps.
   selectors: { '&:last-child': { flex: '1 1 auto', justifyContent: 'flex-end' } },
 })
+export const toolbarTitle = style({ alignItems: 'center', display: 'flex', gap: 8, minWidth: 0 })
 export const toolbarFilter = style({ flex: '0 1 360px', minWidth: 220 })
 // In a narrow column the filter takes the rest of the row, so it stays beside its picker.
 export const toolbarFilterFill = style({ flex: '1 1 160px', minWidth: 0 })

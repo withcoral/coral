@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { Button } from '@/wax/components'
 import * as Dialog from '@/wax/components/dialog'
+import { Tooltip } from '@/wax/components/tooltip'
 import { sourceSearch, type SourceChoice } from '@/lib/provider-recipes/choice'
 import { ProviderCatalog } from './provider-catalog'
 import { SourceStep, type SourceTab } from './source-step'
@@ -126,8 +127,13 @@ export function AddProviderEntry({
  */
 export function AddProviderLauncher({
   description,
+  compact = false,
   ...entry
-}: Omit<AddProviderEntryProps, 'result' | 'onReading'> & { description?: string }) {
+}: Omit<AddProviderEntryProps, 'result' | 'onReading'> & {
+  description?: string
+  /** A "+" icon button, for beside a page title. */
+  compact?: boolean
+}) {
   const [open, setOpen] = useState(false)
   // A catalog read in flight keeps the dialog open: it moves on by itself when
   // the read succeeds, and says why here when it does not.
@@ -140,9 +146,19 @@ export function AddProviderLauncher({
         if (next || !readingRecipe) setOpen(next)
       }}
     >
-      <Dialog.Trigger render={<Button.Container variant="primary" size="32" />}>
-        <Button.Text>Add provider</Button.Text>
-      </Dialog.Trigger>
+      {compact ? (
+        <Tooltip content="Add provider">
+          <Dialog.Trigger
+            render={<Button.Container variant="bare" size="32" ariaLabel="Add provider" />}
+          >
+            <Button.Icon name="Plus" />
+          </Dialog.Trigger>
+        </Tooltip>
+      ) : (
+        <Dialog.Trigger render={<Button.Container variant="primary" size="32" />}>
+          <Button.Text>Add provider</Button.Text>
+        </Dialog.Trigger>
+      )}
       {open && (
         <Dialog.Portal>
           <Dialog.Backdrop />

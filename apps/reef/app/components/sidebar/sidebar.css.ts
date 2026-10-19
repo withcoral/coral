@@ -1,12 +1,13 @@
-import { globalStyle, keyframes, style, styleVariants } from '@vanilla-extract/css'
+import { keyframes, style, styleVariants } from '@vanilla-extract/css'
 import { animation, theme, zIndex } from '@/wax/theme/theme.css'
 import { TOP_BAR_HEIGHT_PX } from '@/wax/components/page-layout/constants'
 
 const SIDEBAR_PADDING_PX = 12
-// The masthead centres the brand on the page's top bar beside it.
-const MASTHEAD_HEIGHT_PX = TOP_BAR_HEIGHT_PX - 2 * SIDEBAR_PADDING_PX
 // As tall as the collapse toggle beside the brand.
 const IDENTITY_HEIGHT_PX = 32
+// The masthead rises into the sidebar's padding, so the brand centres on the
+// page's top bar beside it.
+const MASTHEAD_OFFSET_PX = (TOP_BAR_HEIGHT_PX - IDENTITY_HEIGHT_PX) / 2 - SIDEBAR_PADDING_PX
 export const sidebar = style({
   backgroundColor: theme.surface.main,
   display: 'flex',
@@ -44,14 +45,16 @@ export const sidebarResized = style({
 })
 export const drawerSidebar = style({ flex: 1, height: 'auto', padding: 0, minHeight: 0 })
 // A masthead: the brand with the collapse toggle at its end, and room beneath
-// it before the scopes begin. Collapsed, the toggle takes the mark's place while
-// the pointer is on the masthead or the toggle has keyboard focus.
+// it before the scopes begin. Collapsed, the toggle sits under the mark, so it
+// stays at the top in both states.
 export const header = style({
   alignItems: 'center',
   display: 'flex',
   gap: 4,
+  marginBlockStart: MASTHEAD_OFFSET_PX,
   minWidth: 0,
-  paddingBlock: (MASTHEAD_HEIGHT_PX - IDENTITY_HEIGHT_PX) / 2,
+  // The drawer has no top bar beside it, and no padding to rise into.
+  selectors: { [`${drawerSidebar} &`]: { marginBlockStart: 0 } },
 })
 // Same inset as the icon-and-text buttons below, so every icon shares one column.
 export const identity = style({
@@ -212,26 +215,6 @@ export const minimizedControl = style({
   width: 34,
 })
 export const minimizedColumn = style({ alignItems: 'center', flexDirection: 'column' })
-// Collapsed, the mark and the toggle share one cell. The masthead is as tall as
-// the expanded one, so the mark stays level with the page's breadcrumbs.
-export const minimizedHeader = style({
-  display: 'grid',
-  height: MASTHEAD_HEIGHT_PX,
-  paddingBlock: 0,
-  placeItems: 'center',
-})
-globalStyle(`${minimizedHeader} > *`, {
-  gridArea: '1 / 1',
-  transition: animation.fadeTransition,
-})
-globalStyle(`${minimizedHeader} > :last-child`, { opacity: 0 })
-globalStyle(`${minimizedHeader}:is(:hover, :has(button:focus-visible)) > :last-child`, {
-  opacity: 1,
-})
-globalStyle(`${minimizedHeader}:is(:hover, :has(button:focus-visible)) > :first-child`, {
-  opacity: 0,
-  pointerEvents: 'none',
-})
 export const railDestinations = style({
   alignItems: 'center',
   display: 'flex',
