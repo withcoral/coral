@@ -70,7 +70,12 @@ function render(
   result?: StepperResult,
   kind: SetupView['kind'] = 'openapi',
   overrides: Partial<SetupView> = {},
-  namespace: { namespace?: string; takenNamespaces?: string[] } = {},
+  fields: {
+    namespace?: string
+    takenNamespaces?: string[]
+    takenDisplayNames?: string[]
+    suggestedName?: string
+  } = {},
 ) {
   return markupRoute(
     <ConfigurationStep
@@ -80,7 +85,7 @@ function render(
       callbackUrl="https://coral.test/callback"
       recipe={recipe}
       result={result}
-      {...namespace}
+      {...fields}
     />,
   )
 }
@@ -136,15 +141,13 @@ it.each([
   ['a different name', 'GitHub MCP', false],
 ])('a display name with %s says so beside the field and blocks Next', (_case, name, refused) => {
   const container = document.createElement('div')
-  container.innerHTML = markupRoute(
-    <ConfigurationStep
-      setup={{ ...setup, configuration: review }}
-      form={{ csrf: 'test-csrf', requestId: 'test-request' }}
-      pending={false}
-      namespace="github_two"
-      takenDisplayNames={['GitHub']}
-      suggestedName={name}
-    />,
+  container.innerHTML = render(
+    review,
+    undefined,
+    undefined,
+    'openapi',
+    {},
+    { namespace: 'github_two', takenDisplayNames: ['GitHub'], suggestedName: name },
   )
   const message = 'Another provider uses this name. Enter a different display name.'
   const alerts = [...container.querySelectorAll('[role="alert"]')].map((alert) => alert.textContent)
