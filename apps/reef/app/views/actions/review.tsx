@@ -1,3 +1,4 @@
+import { Instant } from '../activity/instant'
 import {
   createContext,
   useCallback,
@@ -153,12 +154,13 @@ export function useUnsentComment() {
 export function ApprovalReview({
   detail,
   context,
-  runControls,
+  callStartedAt,
 }: {
   detail: Approval
   context: RunDetail
-  /** Run-level links and controls, shown after the request's technical details. */
-  runControls?: ReactNode
+  /** When the call this approval decides started, if that call is loaded. An approval records
+   * no start of its own; the Run's start and the deadline are not this call's. */
+  callStartedAt?: string
 }) {
   const csrf = useShellCsrf()
   const connected = useActivityConnected()
@@ -220,7 +222,7 @@ export function ApprovalReview({
           )
         }
       />
-      <DescriptionList.List title="Context">
+      <DescriptionList.List>
         {detail.taskIntent && (
           <DescriptionList.Row label="Task intent">{detail.taskIntent}</DescriptionList.Row>
         )}
@@ -229,6 +231,11 @@ export function ApprovalReview({
           {run.actorLabel || (run.agent ? 'Agent unavailable' : 'You')} ·{' '}
           {run.workspaceLabel || 'Workspace unavailable'}
         </DescriptionList.Row>
+        {callStartedAt && (
+          <DescriptionList.Row label="Call started">
+            <Instant value={callStartedAt} />
+          </DescriptionList.Row>
+        )}
       </DescriptionList.List>
       <Arguments source={args} />
       {document !== undefined && (
@@ -236,22 +243,8 @@ export function ApprovalReview({
           <CodeBlock value={document} />
         </Disclosure>
       )}
-      {deciding && (
-        <Disclosure title="Program body">
-          <CodeBlock value={context.source} format="typescript" />
-        </Disclosure>
-      )}
-      <Disclosure title="Technical details">
-        <DescriptionList.List>
-          <DescriptionList.Row label="Workspace">{run.workspace}</DescriptionList.Row>
-          <DescriptionList.Row label="Provider">{detail.provider}</DescriptionList.Row>
-          <DescriptionList.Row label="Deadline">{detail.deadline}</DescriptionList.Row>
-          <DescriptionList.Row label="Approval request ID">{detail.name}</DescriptionList.Row>
-        </DescriptionList.List>
-        {runControls && <div className={styles.controls}>{runControls}</div>}
-      </Disclosure>
       {!deciding && (detail.approver || detail.decidedAt || detail.comment !== null) && (
-        <DescriptionList.List title="Decision">
+        <DescriptionList.List>
           {detail.approver && (
             <DescriptionList.Row label="Reviewed by">
               {detail.approverLabel || 'Previous reviewer'}
@@ -259,7 +252,7 @@ export function ApprovalReview({
           )}
           {detail.decidedAt && (
             <DescriptionList.Row label="Decided">
-              <time dateTime={detail.decidedAt}>{detail.decidedAt}</time>
+              <Instant value={detail.decidedAt} />
             </DescriptionList.Row>
           )}
           {detail.comment !== null && (

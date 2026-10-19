@@ -13,6 +13,7 @@
  * - `complete`: the captured page as Coral writes it now.
  * - `mixed`: a Saved Function hit, a guidance match, a matched input, and flags.
  * - `partial` and `error`: the same hits with incomplete Search Coverage.
+ * - `sparse`: a Saved Function hit, then a hit whose signature and description are empty.
  * - `earlierShape`: the response before Search Hits. The parser rejects it.
  */
 const githubHits = [
@@ -242,6 +243,14 @@ const mixed = {
   has_more: true,
 }
 
+const sparse = {
+  hits: [
+    trimmed(functionHit),
+    { call_path: 'coral.providers.github.pulls.get', signature_line: '', description_snippet: '' },
+  ],
+  has_more: false,
+}
+
 const partial = {
   hits: githubHits.slice(0, 3).map(trimmed),
   has_more: false,
@@ -318,6 +327,7 @@ export const stored = {
   complete: JSON.stringify(complete),
   untrimmed: JSON.stringify(untrimmed),
   mixed: JSON.stringify(mixed),
+  sparse: JSON.stringify(sparse),
   partial: JSON.stringify(partial),
   error: JSON.stringify(error),
   describeOperation: JSON.stringify(describeOperation),

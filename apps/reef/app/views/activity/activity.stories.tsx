@@ -1222,8 +1222,8 @@ export const HistoricalSearch: Story = {
     ).toBeVisible()
     await expect(opened.queryByText('Intent', { selector: 'dt' })).toBeNull()
     await expect(opened.getByText('Query').nextElementSibling).toHaveTextContent('“github pulls”')
-    // One Result heading leads coverage and results.
-    await expect(opened.getByRole('region', { name: 'Result' })).toContainElement(
+    // One Results heading counts this page and leads its results; "+" says more remain.
+    await expect(opened.getByRole('region', { name: 'Results (5+)' })).toContainElement(
       opened.getByRole('list', { name: 'Results in rank order' }),
     )
     // What the search asked comes first, under Search.
@@ -1233,9 +1233,9 @@ export const HistoricalSearch: Story = {
         .getAllByRole('term')
         .map((term) => term.textContent),
     ).toEqual(['Query', 'Provider', 'Page'])
-    // Every retriever searched, so the page states only that more results remain.
-    const coverage = opened.getByRole('group', { name: 'Search coverage' })
-    await expect(coverage).toHaveTextContent(/^More results were available after this page\.$/)
+    // Every retriever searched, so the page states no coverage and no extra sentence.
+    await expect(opened.queryByRole('group', { name: 'Search coverage' })).toBeNull()
+    await expect(opened.queryByText(/after this page/)).toBeNull()
     const results = within(opened.getByRole('list', { name: 'Results in rank order' }))
     await expect(results.getAllByRole('listitem')).toHaveLength(5)
     // A hit names no title, so its path under the namespace heads it.
@@ -1256,8 +1256,9 @@ export const HistoricalSearchUntrimmed: Story = {
     await expect(coverage.getByText('100+ found')).toBeVisible()
     await expect(coverage.getByText('none match')).toBeVisible()
     await expect(coverage.queryByText(/searched|more available/)).toBeNull()
-    // The "+" already says more remain, so the page does not repeat it.
-    await expect(coverage.queryByText(/after this page/)).toBeNull()
+    // The heading counts this page's results, not the kind's returned count.
+    await expect(opened.getByRole('heading', { name: 'Results (5+)' })).toBeVisible()
+    await expect(opened.queryByText(/after this page/)).toBeNull()
     const results = within(opened.getByRole('list', { name: 'Results in rank order' }))
     await expect(results.getByText('Update a pull request branch')).toBeVisible()
     // A retained page lists its matched declaration paths as a count on the compact row.
@@ -1287,7 +1288,7 @@ export const HistoricalSearchFailedCoverage: Story = {
 /** Both kinds of result, with flags and a guidance match. */
 export const HistoricalSearchMixedResults: Story = {
   args: discovery({ ...searched, query: 'github issues by label' }, stored.mixed),
-  play: async ({ canvasElement }) => {
+  play: async ({ canvasElement, userEvent }) => {
     const opened = await openDetail(canvasElement)
     const results = opened.getByRole('list', { name: 'Results in rank order' })
     const [savedFunction, merge] = within(results).getAllByRole('listitem')
@@ -1303,12 +1304,42 @@ export const HistoricalSearchMixedResults: Story = {
     for (const flag of ['destructive', 'not idempotent', 'tag: pulls'])
       await expect(within(merge).getByText(flag)).toBeVisible()
     await expect(within(results).queryByText(/Matched declaration paths/)).toBeNull()
-    // A compact row: the catalog keeps the signature, description and guidance.
-    await expect(merge.querySelector('pre')).toBeNull()
-    await expect(merge).not.toHaveTextContent('Guidance:')
+    // Each card folds its own retained guidance, description and signature into Details.
+    const detailsIn = (row: HTMLElement) =>
+      within(row).getByText('Details', { selector: 'summary' }).closest('details')!
+    const [functionDetails, mergeDetails] = [detailsIn(savedFunction), detailsIn(merge)]
+    const signature = within(mergeDetails).getByText(codeContaining('merge(input: { body?'), {
+      selector: 'pre',
+    })
+    const guidance = within(mergeDetails).getByText('API method documentation')
+    await expect(signature).not.toBeVisible()
+    await expect(guidance).not.toBeVisible()
+    await userEvent.click(within(merge).getByText('Details'))
+    await waitFor(() => expect(mergeDetails).toHaveAttribute('open'))
+    await expect(signature).toBeVisible()
+    await expect(guidance).toBeVisible()
+    await expect(within(mergeDetails).getByText(/^> \[!NOTE\]/)).toBeVisible()
+    // Opening one card leaves the others closed.
+    await expect(functionDetails).not.toHaveAttribute('open')
+    await expect(
+      within(functionDetails).getByText(/^Lists the open issues of one repository/),
+    ).not.toBeVisible()
+    await userEvent.click(within(savedFunction).getByText('Details'))
+    await waitFor(() => expect(functionDetails).toHaveAttribute('open'))
+    await expect(mergeDetails).toHaveAttribute('open')
+    await userEvent.click(within(merge).getByText('Details'))
+    await waitFor(() => expect(mergeDetails).not.toHaveAttribute('open'))
+    await expect(functionDetails).toHaveAttribute('open')
+    await expect(signature).not.toBeVisible()
+    // The link and the approval hand stay in the summary, outside Details.
+    await expect(mergeDetails).not.toContainElement(
+      within(merge).getByRole('img', { name: /^Needs approval/ }),
+    )
+    await expect(functionDetails).not.toContainElement(current)
     // Reef says what Coral stored in its own words. Only the raw response keeps Coral's.
-    for (const copy of [opened.getByRole('group', { name: 'Search coverage' }), results])
-      await expect(copy).not.toHaveTextContent(/retriever|saved_function|results_found/)
+    await expect(opened.getByRole('region', { name: 'Results (6+)' })).not.toHaveTextContent(
+      /retriever|saved_function|results_found/,
+    )
   },
 }
 /** A response from before Search Hits. Reef shows the stored text. */
@@ -1322,21 +1353,35 @@ export const HistoricalSearchEarlierShape: Story = {
     ).toBeVisible()
   },
 }
-/** The declaration is longer than the cap, so it scrolls inside its block. */
+/** The declaration is longer than the cap, so it scrolls inside its block once Details opens. */
 export const HistoricalDescribeOperation: Story = {
   args: discovery(
     { kind: 'describe', callPath: 'coral.providers.github.issues.create', types: [] },
     stored.describeOperation,
   ),
-  play: async ({ canvasElement }) => {
+  play: async ({ canvasElement, userEvent }) => {
     const opened = await openDetail(canvasElement)
-    await expect(opened.getByRole('heading', { name: 'Create an issue' })).toBeVisible()
-    // The raw response holds the same text, later in the detail.
-    const [declaration] = opened.getAllByText(codeContaining('namespace issues'), {
+    // A compact Result names the target; its documentation waits in a closed Details.
+    const result = within(opened.getByRole('region', { name: 'Result' }))
+    await expect(result.getByText('Create an issue')).toBeVisible()
+    const summary = opened.getByText('Details', { selector: 'summary' })
+    const details = summary.closest('details')!
+    await expect(details).not.toHaveAttribute('open')
+    await expect(within(details).getByRole('heading', { name: 'Declaration' })).not.toBeVisible()
+    await userEvent.click(summary)
+    await waitFor(() => expect(details).toHaveAttribute('open'))
+    const [declaration] = within(details).getAllByText(codeContaining('namespace issues'), {
       selector: 'pre',
     })
+    await expect(declaration).toBeVisible()
     // The block shows 20 of the 24 lines; the other lines scroll.
     await expect(declaration.scrollHeight - declaration.clientHeight).toBeGreaterThan(60)
+    // The native summary takes keyboard focus; closing folds the documentation away again.
+    summary.focus()
+    await expect(summary).toHaveFocus()
+    await userEvent.click(summary)
+    await waitFor(() => expect(details).not.toHaveAttribute('open'))
+    await expect(declaration).not.toBeVisible()
   },
 }
 export const HistoricalDescribeSavedFunction: Story = {
@@ -1348,7 +1393,7 @@ export const HistoricalDescribeSavedFunction: Story = {
     },
     stored.describeFunction,
   ),
-  play: async ({ canvasElement }) => {
+  play: async ({ canvasElement, userEvent }) => {
     const opened = await openDetail(canvasElement)
     // The request states the Call Path, under its label, as the search states its query.
     await expect(opened.getByText('Call path').nextElementSibling).toHaveTextContent(
@@ -1356,6 +1401,11 @@ export const HistoricalDescribeSavedFunction: Story = {
     )
     // The types the agent asked for, when it named any.
     await expect(opened.getByText('Types').nextElementSibling).toHaveTextContent('IssueLabel')
+    // The Result counts the diagnostics; Details holds the source and each diagnostic.
+    await expect(
+      within(opened.getByRole('region', { name: 'Result' })).getByText('1 error'),
+    ).toBeVisible()
+    await userEvent.click(opened.getByText('Details', { selector: 'summary' }))
     await expect(opened.getByRole('heading', { name: 'Source' })).toBeVisible()
     await expect(opened.getByText('error TS2304')).toBeVisible()
     await expect(opened.getByText("Cannot find name 'coral'.")).toBeVisible()
@@ -1435,8 +1485,19 @@ export const PendingApproval: Story = {
   play: async ({ canvasElement, userEvent }) => {
     const dialog = await openDrawer(canvasElement, 'Review action')
     await expectAlignedHeaders(dialog)
-    await userEvent.click(within(dialog).getByText('Technical details', { selector: 'summary' }))
-    await userEvent.click(within(dialog).getByText('Program body', { selector: 'summary' }))
+    // The review decides this one call: no technical details, program body, history or Run
+    // cancel. When the call started closes the list, after who requested it.
+    for (const gone of ['Technical details', 'Program body', 'View in history', 'Cancel run'])
+      await expect(within(dialog).queryByText(gone)).toBeNull()
+    const list = within(dialog).getByText('Requested by', { selector: 'dt' }).closest('dl')!
+    await expect(
+      within(list)
+        .getAllByRole('term')
+        .map((term) => term.textContent),
+    ).toEqual(['Task intent', 'Exec intent', 'Requested by', 'Call started'])
+    // The comment and the decision stay.
+    await userEvent.click(within(dialog).getByText('Add a comment', { selector: 'summary' }))
+    await expect(within(dialog).getByLabelText('Comment (optional)')).toBeVisible()
     await expectPinnedFooter(dialog, ['Deny this call', 'Approve this call'])
   },
 }
@@ -1570,11 +1631,16 @@ export const InvocationWithRunEvidence: Story = {
     )
     await expect(drawer.getByRole('heading', { level: 2, name: 'mail.send' })).toBeVisible()
     await expectAlignedHeaders(await openDrawer(canvasElement, 'Activity details'))
-    const evidence = drawer.getByRole('region', { name: 'Run evidence' })
-    await expect(evidence).toHaveTextContent('The program failed after this call returned.')
-    await expect(drawer.getByText('Operation outcome', { selector: 'summary' })).toBeVisible()
+    // The call's upstream response and the Run's failure each show in their own card.
+    const failure = drawer.getByRole('region', { name: 'Error' })
+    await expect(failure).toHaveTextContent('The program failed after this call returned.')
+    await expect(failure).toHaveTextContent('program_execution_failed')
+    await expect(drawer.getByRole('region', { name: 'Upstream response' })).toBeVisible()
+    await expect(drawer.getByText('program run: failed')).toBeVisible()
+    // The accepted source waits in a closed Details.
     await expect(
       drawer.getByText('Accepted program source', { selector: 'summary' }),
     ).not.toBeVisible()
+    await expect(drawer.getByText('Details', { selector: 'summary' })).toBeVisible()
   },
 }

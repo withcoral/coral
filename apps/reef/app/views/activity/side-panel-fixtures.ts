@@ -5,7 +5,7 @@
 
 import type { ConnectionState } from '../accounts/types'
 import { stored } from './discovery/fixtures'
-import { discoveryView, functionTarget, operationTarget } from './discovery/response'
+import { discoveryView, functionTarget } from './discovery/response'
 import type {
   ActivityPage,
   ActivityRow,
@@ -28,6 +28,11 @@ export const at = '2026-09-18T14:02:00.000Z'
 export const later = '2026-09-18T14:06:02.000Z'
 /** Far enough ahead that a pending deadline stays open in every snapshot. */
 export const deadline = '2030-09-18T14:17:00.000Z'
+/**
+ * A pending action's deadline 15 minutes after the story loads, so a list of actions reads
+ * "Expires in 15 minutes" in every snapshot rather than a count of years in minutes.
+ */
+export const soon = new Date(Date.now() + 15 * 60_000).toISOString()
 export const taskName = `${workspace}/tasks/invoices`
 export const runName = `${workspace}/runs/8f3c`
 export const invocationName = `${workspace}/invocations/mail`
@@ -255,14 +260,14 @@ export const approvalAction = {
   name: approvalName,
   callPath: 'coral.providers.mail.send',
   providerLabel: 'Mail',
-  deadline,
+  deadline: soon,
 }
 export const connectionAction = {
   kind: 'account_connection' as const,
   name: connectionName,
   callPath: '',
   providerLabel: 'Linear',
-  deadline,
+  deadline: soon,
 }
 
 /** What Coral records on the call and its Run once an approval settles. */
@@ -355,7 +360,7 @@ export function connection(
     name: connectionName,
     provider: `${workspace}/providers/linear`,
     state,
-    expiresAt: state === 'pending' ? deadline : null,
+    expiresAt: state === 'pending' ? soon : null,
     ...overrides,
   }
 }
@@ -428,15 +433,22 @@ export function discovery(
   const view = discoveryView(context, response)
   const targets =
     view.kind === 'search' ? view.page.hits : view.kind === 'describe' ? [view.description] : []
-  if (!options.gone)
-    for (const target of targets) {
-      const operation = operationTarget(target.callPath)
-      const path = functionTarget(target.callPath)
-      target.currentHref = operation
-        ? `/${workspace}/providers/${operation.namespace}/ops/${operation.relativePath}`
-        : `/${workspace}/functions/${path}`
-    }
+  for (const target of targets) {
+    const operation = providerOperation(target.callPath)
+    // The loader names an untitled operation by its path inside its provider.
+    if (operation && target.title === target.callPath) target.title = operation.relativePath
+    if (options.gone) continue
+    const path = functionTarget(target.callPath)
+    target.currentHref = operation
+      ? `/${workspace}/providers/${operation.namespace}/ops/${operation.relativePath}`
+      : `/${workspace}/functions/${path}`
+  }
   return { kind: 'discovery', context, response, view }
+}
+/** The gallery's providers all sit at `coral.providers.<namespace>`, as the loader finds them. */
+function providerOperation(callPath: string) {
+  const match = /^coral\.providers\.([^.]+)\.(.+)$/.exec(callPath)
+  return match ? { namespace: match[1], relativePath: match[2] } : null
 }
 
 export const searched: Extract<DiscoveryContext, { kind: 'search' }> = {
@@ -491,6 +503,9 @@ const programError = (overrides: Partial<ProgramError>): ProgramError => ({
   frames: [],
   operationCode: '',
   operationTraceId: '',
+  operationStatus: 0,
+  operationBody: '',
+  operationBodyTruncated: false,
   cause: null,
   errors: [],
   truncated: false,

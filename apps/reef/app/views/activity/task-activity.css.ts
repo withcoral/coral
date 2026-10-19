@@ -54,3 +54,6 @@ export const native = style({
 
 // A panel's own action, after its evidence, at the panel's end edge.
 export const endActions = style({ display: 'flex', justifyContent: 'flex-end' })
+
+/** A card that is a link: it reads as the card, not as underlined link text. */
+export const cardLink = style({ color: 'inherit', textDecoration: 'none' })

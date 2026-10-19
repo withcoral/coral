@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
-import { useFetcher } from 'react-router'
-import { Button, Typography } from '@/wax/components'
+import { useFetcher, useRevalidator } from 'react-router'
+import { Button, List, Typography } from '@/wax/components'
+import { CodeChip } from '@/wax/components/code-chip'
 import { Deadline } from '@/wax/components/deadline'
 import { useShellCsrf } from '@/lib/use-shell-csrf'
 import type { action as resolve } from '@/routes/activity-resolve'
@@ -23,26 +24,25 @@ export function connectHref(provider: string, returnTo: string) {
  * its current actions, each opening its own review. */
 export function RunActions({
   context,
-  runControls,
+  callStartedAt,
+  connectionContext,
   page,
   request,
   unavailable,
   href,
   returnTo,
-  firstHref,
-  nextHref,
 }: {
   /** The Run the actions belong to; an approval review shows it as context. */
   context: RunDetail
-  /** Run-level links and controls an approval review shows in its technical details. */
-  runControls?: ReactNode
+  /** When the call an approval review decides started, if that call is loaded. */
+  callStartedAt?: string
+  /** The Run, as context under a selected connection request's header. */
+  connectionContext?: ReactNode
   page?: ActionPage
   request?: RequestDetail | null
   unavailable?: boolean
   href: (name: string) => string
   returnTo: string
-  firstHref?: string
-  nextHref?: string
 }) {
   const actions = page?.actions ?? []
   // A settled or unrelated selection still shows what the Run waits on now.
@@ -56,7 +56,7 @@ export function RunActions({
           key={request.name}
           detail={request}
           context={context}
-          runControls={runControls}
+          callStartedAt={callStartedAt}
         />
       )}
       {request?.kind === 'account_connection' && (
@@ -64,38 +64,70 @@ export function RunActions({
           request={request}
           providerLabel={actions.find((item) => item.name === request.name)?.providerLabel}
           returnTo={returnTo}
-        />
+        >
+          {connectionContext}
+        </ConnectionAction>
       )}
       {!current && page && page.total !== '0' && (
         <nav className={styles.stack} aria-label="Actions in this run">
           <Typography.BodyStrong>
             {`${page.total} ${page.total === '1' ? 'action needs' : 'actions need'} you.`}
           </Typography.BodyStrong>
-          {actions.map((item) => (
-            <div key={item.name} className={styles.controls}>
-              <Button.InternalLink variant="secondary" to={href(item.name)} preventScrollReset>
-                {item.kind === 'approval'
-                  ? `Review ${item.callPath || 'operation'}`
-                  : `Connect your ${item.providerLabel || 'provider'} account`}
-              </Button.InternalLink>
-              <Deadline at={item.deadline} />
-            </div>
-          ))}
-          <div className={styles.controls}>
-            {firstHref && (
-              <Button.InternalLink variant="bare" to={firstHref} preventScrollReset>
-                First actions
-              </Button.InternalLink>
-            )}
-            {nextHref && (
-              <Button.InternalLink variant="bare" to={nextHref} preventScrollReset>
-                More actions in this run
-              </Button.InternalLink>
-            )}
-          </div>
+          {/* This page of actions, in the cards a search result uses. */}
+          <List.Container as="ul">
+            {actions.map((item) => {
+              const approval = item.kind === 'approval'
+              const target = approval
+                ? item.callPath || 'operation'
+                : `Connect your ${item.providerLabel || 'provider'} account`
+              return (
+                <List.Item as="li" key={item.name}>
+                  <div className={styles.action}>
+                    {approval ? <CodeChip>{target}</CodeChip> : <List.Title>{target}</List.Title>}
+                    <Button.InternalLink
+                      variant="secondary"
+                      size="small"
+                      to={href(item.name)}
+                      preventScrollReset
+                      aria-label={approval ? `Review ${target}` : target}
+                    >
+                      {approval ? 'Review' : 'Connect'}
+                    </Button.InternalLink>
+                  </div>
+                  <div className={styles.actionMeta}>
+                    <Typography.BodySmall variant="tertiary">
+                      {approval ? 'approval' : 'account connection'}
+                    </Typography.BodySmall>
+                    <Deadline at={item.deadline} variant="tertiary" />
+                  </div>
+                </List.Item>
+              )
+            })}
+          </List.Container>
+          {page.incomplete && <MissingActions loaded={actions.length} total={page.total} />}
         </nav>
       )}
     </section>
+  )
+}
+
+/** A page of the Run's actions failed to load: say how many are missing, and read them again. */
+function MissingActions({ loaded, total }: { loaded: number; total: string }) {
+  const revalidator = useRevalidator()
+  return (
+    <div className={styles.controls}>
+      <Typography.BodySmall role="status">
+        {loaded} of {total} actions loaded. The rest did not load.
+      </Typography.BodySmall>
+      <Button.TextButton
+        variant="secondary"
+        size="32"
+        disabled={revalidator.state !== 'idle'}
+        onClick={() => revalidator.revalidate()}
+      >
+        Try again
+      </Button.TextButton>
+    </div>
   )
 }
 
@@ -108,46 +140,58 @@ const settled: Record<Exclude<ConnectionState, 'pending'>, string> = {
     'The account authorization changed. Coral does not switch accounts for waiting calls.',
 }
 
-/** Connect in one click, or decline to fail the waiting calls now. */
+/** A selected connection request leads the panel, as an approval does: its header with the
+ * deadline, then `children` (its Run, as context), then Connect or Decline. One connection can
+ * unblock several waiting calls, so it is never labelled as one call's approval. */
 function ConnectionAction({
   request,
   providerLabel,
   returnTo,
+  children,
 }: {
   request: Extract<RequestDetail, { kind: 'account_connection' }>
   providerLabel?: string
   returnTo: string
+  children?: ReactNode
 }) {
   const csrf = useShellCsrf()
   const connected = useActivityConnected()
   const decline = useFetcher<typeof resolve>({ key: request.name })
   const provider = providerLabel || 'provider'
   const archived = useActivityArchived()
+  const pending = request.state === 'pending'
+  const header = (
+    <DetailHeader
+      // A settled request has left the pending list, which names its provider.
+      title={providerLabel ? `Connect your ${providerLabel} account` : 'Connect your account'}
+      status={request.state}
+      kind="account connection request"
+      heading="h3"
+      meta={pending && request.expiresAt && <Deadline at={request.expiresAt} variant="tertiary" />}
+    />
+  )
   if (request.state !== 'pending')
-    return <Typography.Body role="status">{settled[request.state]}</Typography.Body>
+    return (
+      <div className={styles.stack}>
+        {header}
+        {children}
+        <Typography.Body role="status">{settled[request.state]}</Typography.Body>
+      </div>
+    )
   return (
     <div className={styles.stack}>
       {/* A shared Account Connection Request is not this one call's Approval. */}
-      <DetailHeader
-        title={`Connect your ${provider} account`}
-        status={request.state}
-        kind="account connection request"
-        sticky={false}
-        heading="h3"
-      />
+      {header}
+      {children}
       {archived ? (
         <Typography.Body role="status">
           {restoreFirst(archived, `connect your ${provider} account`)}
         </Typography.Body>
       ) : (
         <>
-          <Typography.BodySmall>
-            Connect your {provider} account to continue. One connection can unblock several waiting
-            calls.
-          </Typography.BodySmall>
-          {/* Like an approval: the deadline and the secondary choice lead, the primary one ends. */}
+          <Typography.BodySmall>Connect your {provider} account to continue.</Typography.BodySmall>
+          {/* Like an approval: the secondary choice leads, the primary one ends. */}
           <PanelFooter>
-            {request.expiresAt && <Deadline at={request.expiresAt} />}
             <decline.Form method="post" action="/activity/resolve">
               <input type="hidden" name="csrf" value={csrf} />
               <input type="hidden" name="name" value={request.name} />

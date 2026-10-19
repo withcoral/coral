@@ -8,6 +8,8 @@ import { ActionReviewSession } from '../actions/review'
 import type { ActivityPage, ActivityRow, RequestDetail } from './types'
 
 const workspace = 'workspaces/finance'
+/** 15 minutes after the story loads, so each deadline reads "Expires in 15 minutes". */
+const soon = new Date(Date.now() + 15 * 60_000).toISOString()
 const run: Extract<ActivityRow, { kind: 'run' }> = {
   kind: 'run',
   name: `${workspace}/runs/reminders`,
@@ -32,14 +34,14 @@ const run: Extract<ActivityRow, { kind: 'run' }> = {
         name: `${workspace}/approvals/mail`,
         callPath: 'coral.providers.mail.send',
         providerLabel: 'Mail',
-        deadline: '2030-09-22T09:15:00Z',
+        deadline: soon,
       },
       {
         kind: 'approval',
         name: `${workspace}/approvals/update`,
         callPath: 'coral.providers.billing.updateInvoice',
         providerLabel: 'Billing',
-        deadline: '2030-09-22T09:15:00Z',
+        deadline: soon,
       },
     ],
   },
@@ -57,7 +59,7 @@ const request: Extract<RequestDetail, { kind: 'approval' }> = {
   taskIntent: 'Chase overdue invoices for the Finance workspace',
   state: 'pending',
   actionable: true,
-  deadline: '2030-09-22T09:15:00Z',
+  deadline: soon,
   approver: '',
   decidedAt: null,
   comment: null,
@@ -83,10 +85,22 @@ const accountRun: typeof run = {
         name: `${workspace}/accountConnections/linear`,
         callPath: '',
         providerLabel: 'Linear',
-        deadline: '2030-09-22T09:15:00Z',
+        deadline: soon,
       },
     ],
   },
+}
+const accountCall = {
+  ...accountRun,
+  name: `${workspace}/invocations/linear`,
+  run: accountRun.name,
+  provider: `${workspace}/providers/linear`,
+  operation: 'listIssues',
+  callPath: 'coral.providers.linear.listIssues',
+  state: 'pending' as const,
+  outcome: 'unknown' as const,
+  dispatchedAt: null,
+  waitingNanos: '1',
 }
 const page: ActivityPage = {
   rows: [
@@ -175,6 +189,36 @@ function StoryActivity({ page: initial }: { page: ActivityPage }) {
             terminal: { kind: 'unavailable' },
           }
         : null),
+  }
+  // A call waiting on the shared Linear connection, reached on its own.
+  if (selected === accountCall.name) {
+    const connection = accountRun.actionPage!.actions[0]
+    value.selectedRow = { ...accountCall, kind: 'invocation' }
+    value.detail = {
+      kind: 'invocation',
+      invocation: accountCall,
+      arguments: '{"assignee":"me","limit":50}',
+      result: { kind: 'unknown' },
+      requests: [{ kind: 'account_connection', name: connection.name }],
+      request:
+        query.get('request') === connection.name
+          ? {
+              kind: 'account_connection',
+              name: connection.name,
+              provider: 'linear',
+              state: 'pending',
+              expiresAt: connection.deadline,
+            }
+          : null,
+      requestUnavailable: false,
+      context: {
+        kind: 'run',
+        run: accountRun,
+        source: "return await coral.providers.linear.listIssues({ assignee: 'me' })",
+        linkedFunctions: [],
+        terminal: { kind: 'unavailable' },
+      },
+    }
   }
   if (value.detail?.kind === 'run' && value.detail.request?.kind === 'approval') {
     const context = value.detail
@@ -508,4 +552,64 @@ export const ReviewHeaderOverArgumentsLight: Story = {
 export const ReviewHeaderOverArgumentsDark: Story = {
   ...reviewHeaderOverArguments,
   globals: { backgrounds: { value: 'dark' } },
+}
+/** From a Run's action list, the keyboard reaches each card's review in order, and Enter opens
+ * that exact review. */
+export const ActionListKeyboard: Story = {
+  parameters: { initialEntry: `/workspaces/finance/activity?record=${run.name}` },
+  play: async ({ canvasElement, userEvent }) => {
+    const body = within(canvasElement.ownerDocument.body)
+    const nav = await body.findByRole('navigation', { name: 'Actions in this run' })
+    const [mail, update] = within(nav).getAllByRole('link', { name: /^Review / })
+    await expect(mail).toHaveAccessibleName('Review coral.providers.mail.send')
+    await expect(update).toHaveAccessibleName('Review coral.providers.billing.updateInvoice')
+    for (const time of nav.querySelectorAll('time'))
+      await expect(time).toHaveTextContent('Expires in 15 minutes')
+    mail.focus()
+    await userEvent.tab()
+    await expect(update).toHaveFocus()
+    await userEvent.keyboard('{Enter}')
+    // The second action's own review opens, with its own arguments.
+    await waitFor(() =>
+      expect(body.getByRole('button', { name: 'Approve this call' })).toBeVisible(),
+    )
+    await expect(body.getAllByText(/reminderSent/).length).toBeGreaterThan(0)
+    await expect(body.queryByRole('navigation', { name: 'Actions in this run' })).toBeNull()
+  },
+}
+/** A call waiting on a connection links to that connection on its Run, where Connect and
+ * Decline are; the whole card is the one link, reached by keyboard. */
+export const ConnectionFromCall: Story = {
+  parameters: {
+    initialEntry: `/workspaces/finance/activity?record=${accountCall.name}&request=${accountRun.actionPage!.actions[0].name}`,
+  },
+  globals: { viewport: { value: 'mobile1', isRotated: false } },
+  play: async ({ canvasElement, userEvent }) => {
+    const body = within(canvasElement.ownerDocument.body)
+    const card = await body.findByRole('region', { name: 'Account connection' })
+    await expect(card).toHaveTextContent('connection request: pending')
+    // One link to the request: the whole card, with no icon and no second "Inspect" row.
+    await expect(body.queryByRole('link', { name: 'Inspect account connection' })).toBeNull()
+    const open = within(card).getByRole('link', {
+      name: 'Open account connection request: pending',
+    })
+    await expect(card.firstElementChild).toBe(open)
+    await expect(open.querySelector('svg, button')).toBeNull()
+    const dialog = card.closest('[role="dialog"]') as HTMLElement
+    await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+    // Tab reaches the card, and it shows that it has focus.
+    open.focus()
+    await expect(open).toHaveFocus()
+    await expect(getComputedStyle(open).outlineStyle).not.toBe('none')
+    await userEvent.keyboard('{Enter}')
+    // The connection opens on its Run, with the controls to act on it.
+    await waitFor(() =>
+      expect(
+        body.getByRole('heading', { level: 3, name: 'Connect your Linear account' }),
+      ).toBeVisible(),
+    )
+    await expect(body.getByRole('button', { name: 'Connect Linear' })).toBeVisible()
+    await expect(body.getByRole('button', { name: 'Decline' })).toBeVisible()
+    await expect(body.queryByRole('region', { name: 'Account connection' })).toBeNull()
+  },
 }

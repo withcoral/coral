@@ -297,6 +297,10 @@ function disclosure(title: string) {
   const summary = screen.getByText(title, { selector: 'summary' })
   return summary.closest('details')!
 }
+/** The review's first list: why the call runs. */
+function contextList() {
+  return screen.getByText('Requested by', { selector: 'dt' }).closest('dl') as HTMLElement
+}
 /** Label and value of each row in `scope`, in order. */
 function rows(scope: HTMLElement) {
   const terms = within(scope).queryAllByRole('term')
@@ -321,24 +325,25 @@ describe('approval review layout', () => {
     expect(within(review).getByText('approval request')).toBeInTheDocument()
     expect(review).toHaveTextContent('Provider: Mail')
     expect(review).toHaveTextContent('Approval required')
-    expect(rows(screen.getByRole('region', { name: 'Context' }))).toEqual([
+    // Why the call runs, in one list without a heading.
+    expect(screen.queryByRole('heading', { name: 'Context' })).not.toBeInTheDocument()
+    expect(rows(contextList())).toEqual([
       ['Task intent', 'Chase overdue invoices'],
       ['Exec intent', 'Send invoice reminders'],
       ['Requested by', 'Collections agent · Finance'],
     ])
     expect(disclosure('Arguments (1)')).toHaveAttribute('open')
-    expect(disclosure('Program body')).not.toHaveAttribute('open')
-    expect(disclosure('Program body')).toHaveTextContent(approvalContext.source)
+    // No program body: the review decides this one call, not the program.
+    expect(review).not.toHaveTextContent('Program body')
+    expect(review).not.toHaveTextContent(approvalContext.source)
     expect(disclosure('Add a comment')).not.toHaveAttribute('open')
-    expect(rows(disclosure('Technical details'))).toEqual([
-      ['Workspace', approvalContext.run.workspace],
-      ['Provider', approval.provider],
-      ['Deadline', approval.deadline],
-      ['Approval request ID', approval.name],
-    ])
+    // No technical details: the workspace, provider and request names are not for reading.
+    expect(review).not.toHaveTextContent('Technical details')
+    for (const id of [approvalContext.run.workspace, approval.provider, approval.name])
+      expect(review).not.toHaveTextContent(id)
     expect(review).not.toHaveTextContent('Approval applies only to this call')
     // The order a reviewer reads: why, what exactly, then how to decide.
-    const order = ['Context', 'Arguments (1)', 'Program body', 'Technical details', 'Add a comment']
+    const order = ['Task intent', 'Arguments (1)', 'Add a comment']
     const positions = order.map((text) => review.textContent!.indexOf(text))
     expect(positions).toEqual(positions.toSorted((a, b) => a - b))
     expect(review.textContent!.indexOf('Add a comment')).toBeLessThan(
@@ -346,9 +351,31 @@ describe('approval review layout', () => {
     )
   })
 
+  // Catches: a review dated by its Run or its deadline instead of its call.
+  it('states when its call started, after who requested it', () => {
+    renderRoute(
+      <ActionReviewSession request={approval}>
+        <ApprovalReview
+          detail={approval}
+          context={approvalContext}
+          callStartedAt="2026-09-22T09:00:05Z"
+        />
+      </ActionReviewSession>,
+      { entry: '/activity', csrf: 'test-csrf' },
+    )
+    const list = contextList()
+    expect(
+      rows(list)
+        .map(([term]) => term)
+        .slice(-2),
+    ).toEqual(['Requested by', 'Call started'])
+    expect(rows(list).at(-1)![1]).toBe('22 Sep 2026, 09:00:05 UTC')
+    expect(list.querySelector('time')).toHaveAttribute('dateTime', '2026-09-22T09:00:05Z')
+  })
+
   it('omits context it does not have instead of inventing it', () => {
     renderStatic({ ...approval, taskIntent: undefined })
-    expect(rows(screen.getByRole('region', { name: 'Context' }))).toEqual([
+    expect(rows(contextList())).toEqual([
       ['Exec intent', 'Send invoice reminders'],
       ['Requested by', 'Collections agent · Finance'],
     ])
@@ -415,14 +442,17 @@ describe('approval review layout', () => {
     expect(screen.queryByRole('button', { name: /this call/ })).not.toBeInTheDocument()
     expect(screen.queryByText('Add a comment')).not.toBeInTheDocument()
     expect(screen.queryByText('Program body')).not.toBeInTheDocument()
-    const decision = screen.queryByRole('region', { name: 'Decision' })
-    if (decided)
-      expect(rows(decision!)).toEqual([
+    // The decision reads in a list of its own, without a heading.
+    expect(screen.queryByRole('heading', { name: 'Decision' })).not.toBeInTheDocument()
+    const decision = screen.queryByText('Reviewed by', { selector: 'dt' })?.closest('dl')
+    if (decided) {
+      expect(rows(decision as HTMLElement)).toEqual([
         ['Reviewed by', 'You'],
-        ['Decided', '2026-09-22T09:01:00Z'],
+        ['Decided', '22 Sep 2026, 09:01:00 UTC'],
         ['Comment', 'Checked the recipient.'],
       ])
-    else expect(decision).not.toBeInTheDocument()
+      expect(decision!.querySelector('time')).toHaveAttribute('dateTime', '2026-09-22T09:01:00Z')
+    } else expect(decision).toBeFalsy()
   })
 })
 

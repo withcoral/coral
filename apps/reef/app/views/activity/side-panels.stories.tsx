@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react'
 import { createRoutesStub } from 'react-router'
 import { expect, waitFor, within } from 'storybook/test'
+import { listStyles } from '@/wax/components/list'
 import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
 import type { ConnectionState } from '../accounts/types'
@@ -43,6 +44,7 @@ import {
 } from './side-panel-fixtures'
 import type {
   ActivityPage,
+  DiscoveryContext,
   InteractionEvidence,
   InteractionRow,
   InvocationDetail,
@@ -250,14 +252,17 @@ const describeCall = (callPath: string) =>
 export const SearchResults = panel(
   'Search · results, complete coverage',
   toolPage(searchCall, discovery(searched, stored.complete)),
-  { evidence: ['github pulls', 'coral.providers.github.pulls.merge'] },
+  { evidence: ['github pulls', 'coral.providers.github.pulls.merge', 'Results (5+)'] },
 )
 /** Compact results on a phone: long call paths wrap inside their row, beside their link. */
 export const SearchResultsNarrow: Story = {
   ...panel(
     'Search · results, narrow screen',
     toolPage(searchCall, discovery(searched, stored.complete)),
-    { evidence: 'coral.providers.github.pulls.getMergeAsyncResult', narrow: true },
+    {
+      evidence: ['coral.providers.github.pulls.getMergeAsyncResult', 'Results (5+)'],
+      narrow: true,
+    },
   ),
   play: async (context) => {
     await meta.play(context)
@@ -274,28 +279,76 @@ export const SearchResultsNarrow: Story = {
         await expect(box.left >= edge.left && box.right <= edge.right).toBe(true)
       }
     }
+    // Each card's own Details opens inside it; long signatures and descriptions wrap.
+    for (const row of rows) {
+      const summary = within(row).getByText('Details', { selector: 'summary' })
+      await context.userEvent.click(summary)
+      const details = summary.closest('details')!
+      await expect(details).toHaveAttribute('open')
+      await expect(within(details).getByText('Signature')).toBeVisible()
+      await expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth)
+      await expect(details.querySelector('pre')!.scrollWidth).toBeLessThanOrEqual(
+        details.querySelector('pre')!.clientWidth,
+      )
+    }
+    await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+    for (const row of rows) await context.userEvent.click(within(row).getByText('Details'))
+    for (const row of rows) await expect(row.querySelector('details')).not.toHaveAttribute('open')
   },
 }
 export const SearchProviderFiltered = panel(
   'Search · one provider, saved functions skipped',
   toolPage(searchCall, discovery({ ...searched, provider: 'github' }, providerFilteredSearch)),
-  { evidence: 'github pulls' },
+  { evidence: ['github pulls', 'Results (5+)', 'skipped by the provider filter'] },
 )
 export const SearchPartialCoverage = panel(
   'Search · partial coverage',
   toolPage(searchCall, discovery(searched, stored.partial)),
-  { evidence: 'github pulls' },
+  { evidence: ['github pulls', 'Results (3)', 'Results may be missing.'] },
 )
 export const SearchFailedCoverage = panel(
   'Search · a kind could not be searched',
   toolPage(searchCall, discovery(searched, stored.error)),
-  { evidence: 'github pulls' },
+  { evidence: ['github pulls', 'Results (1)', 'Results are missing.'] },
+)
+/** A later page counts only its own results; nothing matched and nothing remains. */
+export const SearchLaterPageEmpty = panel(
+  'Search · a later page with no results',
+  toolPage(
+    searchCall,
+    discovery({ ...searched, cursor: 'next-page' }, JSON.stringify({ hits: [], has_more: false })),
+  ),
+  { evidence: ['a later page, up to 5 results', 'Results (0)', 'This page has no results.'] },
 )
 export const SearchMixedResults = panel(
   'Search · operations and saved functions',
   toolPage(searchCall, discovery({ ...searched, query: 'github issues by label' }, stored.mixed)),
-  { evidence: 'github issues by label' },
+  { evidence: ['github issues by label', 'Results (6+)'] },
 )
+/** Only a result that retained documentation gets Details; the other keeps its summary. */
+export const SearchSparseResults: Story = {
+  ...panel(
+    'Search · a result without retained documentation',
+    toolPage(searchCall, discovery(searched, stored.sparse)),
+    { evidence: ['Results (2)', 'coral.providers.github.pulls.get'] },
+  ),
+  play: async (context) => {
+    await meta.play(context)
+    const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
+    const [documented, bare] = within(
+      within(dialog).getByRole('list', { name: 'Results in rank order' }),
+    ).getAllByRole('listitem')
+    await expect(within(bare).getByText('coral.providers.github.pulls.get')).toBeVisible()
+    await expect(bare.querySelector('details')).toBeNull()
+    await expect(within(bare).queryByText('Details')).toBeNull()
+    const summary = within(documented).getByText('Details', { selector: 'summary' })
+    const description = within(documented).getByText(/^Lists the open issues of one repository/)
+    await expect(description).not.toBeVisible()
+    await context.userEvent.click(summary)
+    await expect(description).toBeVisible()
+    await expect(within(documented).queryByText('Guidance')).toBeNull()
+  },
+}
 export const SearchTargetsGone = panel(
   'Search · results no longer in the catalog',
   toolPage(searchCall, discovery(searched, stored.complete, { gone: true })),
@@ -306,98 +359,661 @@ export const SearchEarlierShape = panel(
   toolPage(searchCall, discovery(searched, stored.earlierShape)),
   { evidence: 'typescript_declaration' },
 )
-export const DescribeOperation = panel(
-  'Describe · operation',
-  toolPage(
-    describeCall('issues.create'),
-    discovery(
-      { kind: 'describe', callPath: 'coral.providers.github.issues.create', types: [] },
-      stored.describeOperation,
+const describedOperation: Extract<DiscoveryContext, { kind: 'describe' }> = {
+  kind: 'describe',
+  callPath: 'coral.providers.github.issues.create',
+  types: [],
+}
+const describedFunction: Extract<DiscoveryContext, { kind: 'describe' }> = {
+  kind: 'describe',
+  callPath: 'coral.functions.github.openIssuesByLabel',
+  types: ['Issue', 'Label'],
+}
+/** A panel's one list of facts: no heading, and the same gap between every pair of rows, so
+ * the times read on from the parameters before them. Details may hold lists of its own. */
+async function expectOneEvenList(dialog: HTMLElement, terms: string[]) {
+  const lists = [...dialog.querySelectorAll('dl')].filter((list) => !list.closest('details'))
+  await expect(lists).toHaveLength(1)
+  const [list] = lists
+  await expect(list.closest('section')!.querySelector('h4')).toBeNull()
+  await expect(
+    within(list)
+      .getAllByRole('term')
+      .map((term) => term.textContent),
+  ).toEqual(terms)
+  const rows = [...list.children].map((row) => row.getBoundingClientRect())
+  const gaps = rows.slice(1).map((row, index) => Math.round(row.top - rows[index].bottom))
+  for (const gap of gaps) await expect(gap).toBe(gaps[0])
+}
+/** A describe reads like a search: what it asked, its times, a compact Result, then a closed
+ * Details that holds every retained part of the documentation. Opening shows `folded`;
+ * closing hides it again. */
+function describeStory(
+  story: Story,
+  folded: string[],
+  options: { terms: string[]; fits?: boolean; carded?: boolean },
+): Story {
+  return {
+    ...story,
+    play: async (context) => {
+      await meta.play(context)
+      const body = within(context.canvasElement.ownerDocument.body)
+      const dialog = await body.findByRole('dialog')
+      const opened = within(dialog)
+      // What it asked and its times read as one evenly spaced list, without a Describe heading.
+      await expect(opened.queryByRole('heading', { name: 'Describe' })).toBeNull()
+      await expectOneEvenList(dialog, options.terms)
+      await expect(opened.queryByText('Technical details')).toBeNull()
+      const summary = opened.getByText('Details', { selector: 'summary' })
+      const details = summary.closest('details')!
+      await expect(details).not.toHaveAttribute('open')
+      // A described target keeps Details at the foot of its Result card.
+      const card = details.parentElement!
+      if (options.carded) {
+        const result = opened.getByRole('region', { name: 'Result' })
+        await expect(result).toContainElement(card)
+        await expect(card.lastElementChild).toBe(details)
+        await expect(within(card).getAllByRole('link').length).toBeGreaterThan(0)
+      }
+      // A describe never shows its raw response, inline or folded.
+      await expect(opened.queryByText('Raw response')).toBeNull()
+      await expect(dialog).not.toHaveTextContent('"opaque"')
+      await expect(dialog.querySelectorAll('details')).toHaveLength(1)
+      const closedHeight = card.getBoundingClientRect().height
+      await context.userEvent.click(summary)
+      await expect(details).toHaveAttribute('open')
+      for (const text of folded) {
+        const shown = within(details).getByText(text)
+        await expect(shown).toBeVisible()
+        if (options.carded) await expect(card).toContainElement(shown)
+      }
+      if (options.carded) {
+        await expect(card.getBoundingClientRect().height).toBeGreaterThan(closedHeight)
+        await expect(details.getBoundingClientRect().width).toBeGreaterThan(card.clientWidth * 0.8)
+      }
+      if (options.fits) {
+        await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+        // The card clips, so check that nothing inside it is wider than the card either.
+        await expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth)
+      }
+      await context.userEvent.click(summary)
+      await expect(details).not.toHaveAttribute('open')
+    },
+  }
+}
+export const DescribeOperation = describeStory(
+  panel(
+    'Describe · operation',
+    toolPage(
+      describeCall('issues.create'),
+      discovery(describedOperation, stored.describeOperation),
     ),
+    { evidence: ['Create an issue', 'GitHub', 'Result'] },
   ),
-  { evidence: 'Create an issue' },
+  ['Declaration', 'API method documentation'],
+  { terms: ['Call path', 'Provider', 'Intent', 'Started', 'Completed'], carded: true },
 )
-export const DescribeSavedFunction = panel(
-  'Describe · saved function, with diagnostics',
-  toolPage(
-    describeCall('openIssuesByLabel'),
-    discovery(
-      { kind: 'describe', callPath: 'coral.functions.github.openIssuesByLabel', types: [] },
-      stored.describeFunction,
+export const DescribeSavedFunction = describeStory(
+  panel(
+    'Describe · saved function, with diagnostics',
+    toolPage(
+      describeCall('openIssuesByLabel'),
+      discovery(describedFunction, stored.describeFunction),
     ),
+    { evidence: ['1 error', 'Issue', 'Label'] },
   ),
-  { evidence: ["Cannot find name 'coral'."] },
+  ['Source', "Cannot find name 'coral'."],
+  { terms: ['Call path', 'Types', 'Intent', 'Started', 'Completed'], carded: true },
+)
+/** Long call paths and long documentation stay inside a phone screen, open or closed. */
+export const DescribeNarrow = describeStory(
+  panel(
+    'Describe · long documentation, narrow screen',
+    toolPage(
+      describeCall('issues.create'),
+      discovery(describedOperation, stored.describeOperation),
+    ),
+    { evidence: 'coral.providers.github.issues.create', narrow: true },
+  ),
+  ['Declaration'],
+  {
+    terms: ['Call path', 'Provider', 'Intent', 'Started', 'Completed'],
+    fits: true,
+    carded: true,
+  },
+)
+/** A describe that retained nothing to describe shows its notice and times, then ends: no
+ * Details holding only the record name, no raw response and no rule left below the notice. */
+function noticeStory(story: Story, notice: string, times: string[]): Story {
+  return {
+    ...story,
+    play: async (context) => {
+      await meta.play(context)
+      const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
+      const opened = within(dialog)
+      const shown = opened.getByText(notice)
+      await expect(shown).toBeVisible()
+      const timing = [...dialog.querySelectorAll('dl')].at(-1)!
+      await expect(
+        within(timing)
+          .getAllByRole('term')
+          .map((term) => term.textContent),
+      ).toEqual(times)
+      await expect(dialog.querySelector('details')).toBeNull()
+      for (const gone of ['Details', 'Raw response', 'Technical details'])
+        await expect(opened.queryByText(gone)).toBeNull()
+      await expect(dialog).not.toHaveTextContent('"opaque"')
+      const after = [...dialog.querySelectorAll('*')].filter(
+        (element) =>
+          shown.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING &&
+          !shown.contains(element),
+      )
+      // Only what renders can draw a rule; an empty footer slot does not render.
+      const rules = after.filter((element) => {
+        const style = getComputedStyle(element)
+        return (
+          element.getClientRects().length > 0 &&
+          (element.tagName === 'HR' ||
+            (style.borderTopStyle !== 'none' && style.borderTopWidth !== '0px'))
+        )
+      })
+      await expect(rules.map((element) => `${element.tagName}.${element.className}`)).toEqual([])
+    },
+  }
+}
+export const DescribeRejected = noticeStory(
+  panel(
+    'Describe · rejected',
+    toolPage(
+      interaction('describe', 'rejected', {
+        intent: 'Inspect the inputs before calling it',
+        name: `${searchCall.name}-rejected-describe`,
+      }),
+      { kind: 'rejection', code: 'invalid_argument', message: 'Unknown call path.' },
+    ),
+    { evidence: ['Rejected: invalid_argument', 'Unknown call path.'] },
+  ),
+  'Unknown call path.',
+  ['Started', 'Completed'],
+)
+export const DescribeUnknown = noticeStory(
+  panel(
+    'Describe · completion unknown',
+    toolPage(
+      interaction('describe', 'unknown', {
+        intent: 'Inspect the inputs before calling it',
+        name: `${searchCall.name}-unknown-describe`,
+      }),
+      { kind: 'unknown' },
+    ),
+    { evidence: 'Completion is unknown or incomplete.' },
+  ),
+  'Completion is unknown or incomplete. External effects may be uncertain.',
+  ['Started'],
+)
+export const DescribeContextUnavailable = noticeStory(
+  panel(
+    'Describe · request context unavailable',
+    toolPage(describeCall('opaque'), discovery({ kind: 'unknown' }, '{"opaque":true}')),
+    { evidence: 'The request context is unavailable.' },
+  ),
+  'The request context is unavailable.',
+  ['Started', 'Completed'],
 )
 
 // Tool calls: other evidence -------------------------------------------------------
 
 const execCall = (outcome: InteractionOutcome, overrides: Partial<InteractionRow> = {}) =>
   interaction('exec', outcome, { intent: 'Send invoice reminders', ...overrides })
+const admissionError = "program.ts(3,7): error TS2304: Cannot find name 'invoices'."
+/** A tsc report with a long line, indentation and a caret, as Coral stores it. */
+const longAdmissionError = [
+  "program.ts(12,41): error TS2345: Argument of type '{ owner: string; repo: string; state: \"open\"; labels: string[]; per_page: number; }' is not assignable to parameter of type 'ListForRepoInput'.",
+  "  Object literal may only specify known properties, and 'labels' does not exist in type 'ListForRepoInput'.",
+  '    const issues = await coral.providers.github.issues.listForRepo({ owner, repo, state: "open", labels })',
+  '                                                                                         ^',
+].join('\n')
+/**
+ * An exec submission states its times and intent, its outcome only in the badge, then the exact error of a
+ * rejection in the card a search result uses, or a notice. It keeps no technical details and no
+ * Run link: the submission's outcome is not the Run's.
+ */
+function execStory(
+  story: Story,
+  expected: {
+    times: string[]
+    outcome: string
+    error?: string
+    notice?: string
+    fits?: boolean
+    unknown?: boolean
+  },
+): Story {
+  return {
+    ...story,
+    play: async (context) => {
+      await meta.play(context)
+      const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
+      const opened = within(dialog)
+      const lists = dialog.querySelectorAll('dl')
+      await expect(lists).toHaveLength(1)
+      await expect(
+        within(lists[0])
+          .getAllByRole('term')
+          .map((term) => term.textContent),
+      ).toEqual(expected.times)
+      // The title is the intent, so no Intent row repeats it.
+      await expect(opened.queryByText('Intent', { selector: 'dt' })).toBeNull()
+      // The header badge states the submission outcome, once; no row repeats it.
+      const header = dialog.querySelector('header')!
+      await expect(within(header).getByText(expected.outcome)).toBeVisible()
+      await expect(opened.getAllByText(expected.outcome)).toHaveLength(1)
+      await expect(dialog).not.toHaveTextContent('Submission outcome')
+      for (const heading of ['Context', 'Call'])
+        await expect(opened.queryByRole('heading', { name: heading })).toBeNull()
+      for (const gone of ['Technical details', 'Run accepted', 'Open execution', 'Rejected:'])
+        await expect(dialog).not.toHaveTextContent(gone)
+      await expect(dialog.querySelector('details')).toBeNull()
+      await expect(opened.queryAllByRole('link')).toHaveLength(0)
+      if (expected.notice) await expect(opened.getByText(expected.notice)).toBeVisible()
+      if (expected.unknown) {
+        // The warning icon and the badge say it; no sentence repeats it.
+        await expect(within(header).getByText('unknown / incomplete')).toBeVisible()
+        await expect(header.querySelector('svg')).toBeVisible()
+        await expect(dialog).not.toHaveTextContent('Completion is unknown')
+        await expect(dialog).not.toHaveTextContent('External effects may be uncertain')
+      }
+      const region = opened.queryByRole('region', { name: 'Error' })
+      if (expected.error === undefined) {
+        await expect(region).toBeNull()
+        return
+      }
+      // The same Wax list and card a search result uses, holding only the exact error.
+      await expect(region).toHaveClass(listStyles.container)
+      const card = region!.firstElementChild as HTMLElement
+      await expect(card).toHaveClass(listStyles.item)
+      const code = card.querySelector('pre')!
+      await expect(code).toBeVisible()
+      await expect(code.textContent).toBe(expected.error)
+      await expect(card.textContent).toBe(expected.error)
+      if (expected.fits) {
+        // A long diagnostic wraps inside its card, keeping its lines and indentation.
+        await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+        await expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth)
+        await expect(code.scrollWidth).toBeLessThanOrEqual(code.clientWidth)
+        await expect(getComputedStyle(code).whiteSpace).toBe('pre-wrap')
+        const edge = card.getBoundingClientRect()
+        const box = code.getBoundingClientRect()
+        await expect(box.left >= edge.left && box.right <= edge.right).toBe(true)
+      }
+    },
+  }
+}
+const saveCall = (outcome: InteractionOutcome) =>
+  interaction('save_function', outcome, { intent: 'Save the reminder batch' })
+const deleteCall = (outcome: InteractionOutcome) =>
+  interaction('delete_function', outcome, { intent: 'Remove the old reminder batch' })
+/** A save or a delete retains only the function's identity, a Coral-generated ID. */
+const savedId = '0199a7c2-3b4d-7e5f-8a6b-1c2d3e4f5a6b'
+const savedReference = `${workspace}/savedFunctions/${savedId}`
+const saveError = 'reminders.ts(1,1): error TS1128: Declaration or statement expected.\n  }\n  ^'
+const deleteError = "Saved function 'billing.oldReminders' does not exist."
+/**
+ * A save or a delete states its intent, the function it changed (its ID, with no link: no route
+ * opens a function by ID), then its times, in one evenly spaced list. Its outcome shows only in
+ * the badge. A rejection shows the exact error in the card a search result uses; otherwise a
+ * notice may follow. The call retained no source, declaration or diagnostics, so nothing folds
+ * into Details, and no record path or workspace shows.
+ */
+function functionStory(
+  story: Story,
+  expected: {
+    times: string[]
+    outcome: string
+    changed?: 'Deleted'
+    error?: string
+    notice?: string
+    /** Text a save without that evidence must not show. */
+    silent?: string[]
+    fits?: boolean
+  },
+): Story {
+  return {
+    ...story,
+    play: async (context) => {
+      await meta.play(context)
+      const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
+      const opened = within(dialog)
+      for (const text of expected.silent ?? []) await expect(dialog).not.toHaveTextContent(text)
+      // The title is the intent, so no Intent row repeats it.
+      await expectOneEvenList(dialog, [
+        ...(expected.changed ? [expected.changed] : []),
+        ...expected.times,
+      ])
+      const header = dialog.querySelector('header')!
+      await expect(within(header).getByText(expected.outcome)).toBeVisible()
+      await expect(opened.getAllByText(expected.outcome)).toHaveLength(1)
+      for (const heading of ['Context', 'Call', 'Result'])
+        await expect(opened.queryByRole('heading', { name: heading })).toBeNull()
+      for (const gone of [
+        'Submission outcome',
+        'Technical details',
+        'Workspace',
+        'workspaces/',
+        'Rejected:',
+        'Completion is unknown',
+      ])
+        await expect(dialog).not.toHaveTextContent(gone)
+      await expect(dialog.querySelector('details')).toBeNull()
+      await expect(opened.queryAllByRole('link')).toHaveLength(0)
+      if (expected.notice) await expect(opened.getByText(expected.notice)).toBeVisible()
+      if (expected.changed) {
+        const value = opened.getByText(expected.changed, { selector: 'dt' }).nextElementSibling!
+        await expect(value.textContent).toBe(savedId)
+        await expect(value.querySelector('code')).toBeVisible()
+      } else {
+        // A save states no target: it retained only an ID that no page opens.
+        await expect(opened.queryByText('Saved', { selector: 'dt' })).toBeNull()
+        await expect(dialog).not.toHaveTextContent(savedId)
+      }
+      const error = opened.queryByRole('region', { name: 'Error' })
+      let card: HTMLElement | null = null
+      if (expected.error === undefined) await expect(error).toBeNull()
+      else {
+        await expect(error).toHaveClass(listStyles.container)
+        card = error!.firstElementChild as HTMLElement
+        await expect(card).toHaveClass(listStyles.item)
+        await expect(card.textContent).toBe(expected.error)
+        await expect(card.querySelector('pre')).toBeVisible()
+      }
+      if (expected.fits) {
+        await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+        const edge = (card ?? dialog.querySelector('dl')!).getBoundingClientRect()
+        for (const part of (card ?? dialog.querySelector('dl')!).querySelectorAll('code, pre')) {
+          const box = part.getBoundingClientRect()
+          await expect(box.left >= edge.left && box.right <= edge.right).toBe(true)
+        }
+        if (card) await expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth)
+      }
+    },
+  }
+}
 const toolEvidence = {
   discovery: SearchResults,
-  run: panel(
-    'Exec submission · accepted, run started',
-    toolPage(execCall('succeeded', { acceptedRun: run().name }), {
-      kind: 'run',
-      reference: run().name,
-    }),
-    { evidence: 'Send invoice reminders' },
+  run: execStory(
+    panel(
+      'Exec submission · accepted, run started',
+      toolPage(execCall('succeeded', { acceptedRun: run().name }), {
+        kind: 'run',
+        reference: run().name,
+      }),
+      { evidence: 'Send invoice reminders' },
+    ),
+    { times: ['Started', 'Completed'], outcome: 'succeeded' },
   ),
-  function: panel(
-    'Save function · saved',
-    toolPage(interaction('save_function', 'succeeded', { intent: 'Save the reminder batch' }), {
-      kind: 'function',
-      reference: `${workspace}/savedFunctions/reminders`,
-    }),
-    { evidence: `${workspace}/savedFunctions/reminders` },
+  function: functionStory(
+    panel(
+      'Save function · saved',
+      toolPage(saveCall('succeeded'), { kind: 'function', reference: savedReference }),
+      { evidence: 'Save the reminder batch' },
+    ),
+    { times: ['Started', 'Completed'], outcome: 'succeeded' },
   ),
-  rejection: panel(
-    'Exec submission · rejected',
-    toolPage(execCall('rejected'), {
-      kind: 'rejection',
-      code: 'program_admission_failed',
-      message: "program.ts(3,7): error TS2304: Cannot find name 'invoices'.",
-    }),
-    { evidence: ['program_admission_failed', "Cannot find name 'invoices'."] },
+  rejection: execStory(
+    panel(
+      'Exec submission · rejected',
+      toolPage(execCall('rejected'), {
+        kind: 'rejection',
+        code: 'program_admission_failed',
+        message: admissionError,
+      }),
+      { evidence: "Cannot find name 'invoices'." },
+    ),
+    { times: ['Started', 'Completed'], outcome: 'rejected', error: admissionError },
   ),
-  unknown: panel(
-    'Exec submission · completion unknown',
-    toolPage(execCall('unknown'), { kind: 'unknown' }),
-    { evidence: 'Send invoice reminders' },
+  unknown: execStory(
+    panel(
+      'Exec submission · completion unknown',
+      toolPage(execCall('unknown', { completedAt: null }), { kind: 'unknown' }),
+      { evidence: 'Send invoice reminders' },
+    ),
+    { times: ['Started'], outcome: 'unknown / incomplete', unknown: true },
   ),
 } satisfies Record<InteractionEvidence['kind'], Story>
 export const ExecAccepted = toolEvidence.run
 export const ExecRejected = toolEvidence.rejection
 export const ExecCompletionUnknown = toolEvidence.unknown
-export const SaveFunctionSaved = toolEvidence.function
-export const DeleteFunctionDeleted = panel(
-  'Delete function · deleted',
-  toolPage(
-    interaction('delete_function', 'succeeded', { intent: 'Remove the old reminder batch' }),
-    {
-      kind: 'function',
-      reference: `${workspace}/savedFunctions/old-reminders`,
-    },
+/** A long tsc report on a phone: it wraps inside its card and keeps its lines. */
+export const ExecRejectedNarrow = execStory(
+  panel(
+    'Exec submission · rejected, long diagnostic, narrow screen',
+    toolPage(execCall('rejected'), {
+      kind: 'rejection',
+      code: 'program_admission_failed',
+      message: longAdmissionError,
+    }),
+    { evidence: "'labels' does not exist in type 'ListForRepoInput'", narrow: true },
   ),
-  { evidence: `${workspace}/savedFunctions/old-reminders` },
+  {
+    times: ['Started', 'Completed'],
+    outcome: 'rejected',
+    error: longAdmissionError,
+    fits: true,
+  },
 )
-export const SaveFunctionRejected = panel(
-  'Save function · rejected',
-  toolPage(interaction('save_function', 'rejected', { intent: 'Save the reminder batch' }), {
-    kind: 'rejection',
-    code: 'saved_function_admission_failed',
-    message: 'reminders.ts(1,1): error TS1128: Declaration or statement expected.',
-  }),
-  { evidence: 'saved_function_admission_failed' },
+/** A rejection that kept no message still says it failed, and why if Coral kept a code. */
+export const ExecRejectedWithoutMessage = execStory(
+  panel(
+    'Exec submission · rejected, no message',
+    toolPage(execCall('rejected'), {
+      kind: 'rejection',
+      code: 'program_admission_failed',
+      message: '',
+    }),
+    { evidence: 'Rejected with no message: program_admission_failed' },
+  ),
+  {
+    times: ['Started', 'Completed'],
+    outcome: 'rejected',
+    notice: 'Rejected with no message: program_admission_failed',
+  },
 )
-export const SearchRejected = panel(
-  'Search · rejected',
-  toolPage(interaction('search', 'rejected'), {
-    kind: 'rejection',
-    code: 'invalid_cursor',
-    message: 'Search cursor does not match this request',
+/** A submission whose stored evidence is missing says so, without guessing a Run. */
+export const ExecEvidenceUnavailable = execStory(
+  panel(
+    'Exec submission · evidence unavailable',
+    toolPage(execCall('succeeded'), { kind: 'unknown' }),
+    { evidence: 'The submission evidence is unavailable.' },
+  ),
+  {
+    times: ['Started', 'Completed'],
+    outcome: 'succeeded',
+    notice: 'The submission evidence is unavailable.',
+  },
+)
+export const SaveFunctionSaved = toolEvidence.function
+/** A save on a phone: its intent and times, nothing wider than the screen. */
+export const SaveFunctionNarrow = functionStory(
+  panel(
+    'Save function · saved, narrow screen',
+    toolPage(saveCall('succeeded'), { kind: 'function', reference: savedReference }),
+    { evidence: 'Save the reminder batch', narrow: true },
+  ),
+  { times: ['Started', 'Completed'], outcome: 'succeeded', fits: true },
+)
+export const SaveFunctionRejected = functionStory(
+  panel(
+    'Save function · rejected',
+    toolPage(saveCall('rejected'), {
+      kind: 'rejection',
+      code: 'saved_function_admission_failed',
+      message: saveError,
+    }),
+    { evidence: 'Declaration or statement expected.' },
+  ),
+  { times: ['Started', 'Completed'], outcome: 'rejected', error: saveError },
+)
+/** A long compiler report on a phone wraps inside its card and keeps its lines. */
+export const SaveFunctionRejectedNarrow = functionStory(
+  panel(
+    'Save function · rejected, long diagnostic, narrow screen',
+    toolPage(saveCall('rejected'), {
+      kind: 'rejection',
+      code: 'saved_function_admission_failed',
+      message: longAdmissionError,
+    }),
+    { evidence: "'labels' does not exist in type 'ListForRepoInput'", narrow: true },
+  ),
+  { times: ['Started', 'Completed'], outcome: 'rejected', error: longAdmissionError, fits: true },
+)
+export const SaveFunctionRejectedWithoutMessage = functionStory(
+  panel(
+    'Save function · rejected, no message',
+    toolPage(saveCall('rejected'), {
+      kind: 'rejection',
+      code: 'saved_function_admission_failed',
+      message: '',
+    }),
+    { evidence: 'Save the reminder batch' },
+  ),
+  {
+    times: ['Started', 'Completed'],
+    outcome: 'rejected',
+    silent: ['Rejected with no message', 'saved_function_admission_failed'],
+  },
+)
+export const SaveFunctionCompletionUnknown = functionStory(
+  panel('Save function · completion unknown', toolPage(saveCall('unknown'), { kind: 'unknown' }), {
+    evidence: 'Save the reminder batch',
   }),
-  { evidence: 'invalid_cursor' },
+  { times: ['Started'], outcome: 'unknown / incomplete' },
+)
+export const SaveFunctionEvidenceUnavailable = functionStory(
+  panel(
+    'Save function · evidence unavailable',
+    toolPage(saveCall('succeeded'), { kind: 'unknown' }),
+    { evidence: 'Save the reminder batch' },
+  ),
+  { times: ['Started', 'Completed'], outcome: 'succeeded', silent: ['evidence is unavailable'] },
+)
+export const DeleteFunctionDeleted = functionStory(
+  panel(
+    'Delete function · deleted',
+    toolPage(deleteCall('succeeded'), { kind: 'function', reference: savedReference }),
+    { evidence: savedId },
+  ),
+  { times: ['Started', 'Completed'], outcome: 'succeeded', changed: 'Deleted' },
+)
+export const DeleteFunctionNarrow = functionStory(
+  panel(
+    'Delete function · deleted, narrow screen',
+    toolPage(deleteCall('succeeded'), { kind: 'function', reference: savedReference }),
+    { evidence: savedId, narrow: true },
+  ),
+  { times: ['Started', 'Completed'], outcome: 'succeeded', changed: 'Deleted', fits: true },
+)
+export const DeleteFunctionRejected = functionStory(
+  panel(
+    'Delete function · rejected',
+    toolPage(deleteCall('rejected'), {
+      kind: 'rejection',
+      code: 'not_found',
+      message: deleteError,
+    }),
+    { evidence: deleteError },
+  ),
+  { times: ['Started', 'Completed'], outcome: 'rejected', error: deleteError },
+)
+export const DeleteFunctionRejectedNarrow = functionStory(
+  panel(
+    'Delete function · rejected, long message, narrow screen',
+    toolPage(deleteCall('rejected'), {
+      kind: 'rejection',
+      code: 'not_found',
+      message: longAdmissionError,
+    }),
+    { evidence: "'labels' does not exist in type 'ListForRepoInput'", narrow: true },
+  ),
+  { times: ['Started', 'Completed'], outcome: 'rejected', error: longAdmissionError, fits: true },
+)
+export const DeleteFunctionCompletionUnknown = functionStory(
+  panel(
+    'Delete function · completion unknown',
+    toolPage(deleteCall('unknown'), { kind: 'unknown' }),
+    { evidence: 'Remove the old reminder batch' },
+  ),
+  { times: ['Started'], outcome: 'unknown / incomplete' },
+)
+export const DeleteFunctionEvidenceUnavailable = functionStory(
+  panel(
+    'Delete function · evidence unavailable',
+    toolPage(deleteCall('succeeded'), { kind: 'unknown' }),
+    { evidence: 'The delete evidence is unavailable.' },
+  ),
+  {
+    times: ['Started', 'Completed'],
+    outcome: 'succeeded',
+    notice: 'The delete evidence is unavailable.',
+  },
+)
+/** A rejected search states its outcome in the badge and its exact error in the card a search
+ * result uses: no "Rejected: code" line, no results and no raw response. */
+function searchRejectedStory(story: Story, code: string, message: string, fits = false): Story {
+  return {
+    ...story,
+    play: async (context) => {
+      await meta.play(context)
+      const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
+      const opened = within(dialog)
+      await expect(opened.getAllByText('rejected')).toHaveLength(1)
+      await expectOneEvenList(dialog, ['Started', 'Completed'])
+      for (const gone of ['Rejected:', code, 'Results', 'Raw response', 'Technical details'])
+        await expect(dialog).not.toHaveTextContent(gone)
+      await expect(dialog.querySelector('details')).toBeNull()
+      const error = opened.getByRole('region', { name: 'Error' })
+      await expect(error).toHaveClass(listStyles.container)
+      const card = error.firstElementChild as HTMLElement
+      await expect(card).toHaveClass(listStyles.item)
+      await expect(card.textContent).toBe(message)
+      await expect(card.querySelector('pre')).toBeVisible()
+      if (fits) {
+        await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+        await expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth)
+      }
+    },
+  }
+}
+export const SearchRejected = searchRejectedStory(
+  panel(
+    'Search · rejected',
+    toolPage(interaction('search', 'rejected'), {
+      kind: 'rejection',
+      code: 'invalid_cursor',
+      message: 'Search cursor does not match this request',
+    }),
+    { evidence: 'Search cursor does not match this request' },
+  ),
+  'invalid_cursor',
+  'Search cursor does not match this request',
+)
+const longSearchError = [
+  'Search cursor does not match this request: eyJ2ZXJzaW9uIjoxLCJwb3NpdGlvbiI6NSwiZGlnZXN0IjoiNWMyMDc2MWY2MzJkZjYyZWI2NzY0MDNiMjY3Y2Q4NGMxZTE2NzNlM2Y0MTMyMDI2Y2M0N2ZhNDRiOTcyYWE3NiJ9',
+  '  query: "github pulls"  provider: all',
+].join('\n')
+/** A long error on a phone wraps inside its card and keeps its lines. */
+export const SearchRejectedNarrow = searchRejectedStory(
+  panel(
+    'Search · rejected, long error, narrow screen',
+    toolPage(interaction('search', 'rejected'), {
+      kind: 'rejection',
+      code: 'invalid_cursor',
+      message: longSearchError,
+    }),
+    { evidence: 'query: "github pulls"', narrow: true },
+  ),
+  'invalid_cursor',
+  longSearchError,
+  true,
 )
 
 // Program Runs ---------------------------------------------------------------
@@ -419,6 +1035,9 @@ export const RunRunning: Story = {
     const list = within(dialog).getByText('Started', { selector: 'dt' }).closest('dl')!
     const end = list.getBoundingClientRect().right
     await expect(Math.abs(cancel.getBoundingClientRect().right - end)).toBeLessThanOrEqual(1)
+    // Its duration reads in whole time, with no fraction of a second, and keeps counting.
+    const duration = within(list).getByText('Duration', { selector: 'dt' }).nextElementSibling!
+    await expect(duration.textContent).toMatch(/^(\d+s|\d+m \d+s|\d+h \d+m)$/)
   },
 }
 export const RunRunningReconnecting = panel(
@@ -426,29 +1045,244 @@ export const RunRunningReconnecting = panel(
   runPage(runDetail(run())),
   { live: reconnecting, evidence: 'Send invoice reminders' },
 )
-export const RunWaitingOnActions = panel(
-  'Program run · waiting on several actions',
-  runPage(
-    runDetail(
-      run({
-        requiresAction: true,
-        actionPage: {
-          total: '3',
-          next: 'next-action',
-          actions: [
-            approvalAction,
-            {
-              ...approvalAction,
-              name: `${workspace}/approvals/update`,
-              callPath: 'coral.providers.billing.updateInvoice',
-              providerLabel: 'Billing',
-            },
-          ],
-        },
-      }),
+/** A Run's current actions, one card each in the list a search result uses: what each is, its
+ * review link, its kind and its deadline. The count is the Run's total; this page shows two. */
+function actionsStory(
+  story: Story,
+  expected: { total: string; cards: { target: string; link: string; kind: string }[] },
+  options: { fits?: boolean; reached?: number; missing?: string } = {},
+): Story {
+  return {
+    ...story,
+    play: async (context) => {
+      await meta.play(context)
+      const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
+      const nav = within(dialog).getByRole('navigation', { name: 'Actions in this run' })
+      await expect(
+        within(nav).getByText(
+          `${expected.total} ${expected.total === '1' ? 'action needs' : 'actions need'} you.`,
+        ),
+      ).toBeVisible()
+      const list = within(nav).getByRole('list')
+      await expect(list).toHaveClass(listStyles.container)
+      const items = within(list).getAllByRole('listitem')
+      await expect(items).toHaveLength(expected.cards.length)
+      for (const [index, card] of expected.cards.entries()) {
+        const item = items[index]
+        await expect(item).toHaveClass(listStyles.item)
+        await expect(within(item).getByText(card.target)).toBeVisible()
+        await expect(within(item).getByText(card.kind)).toBeVisible()
+        const link = within(item).getByRole('link', { name: card.link })
+        await expect(link).toBeVisible()
+        await expect(link.getAttribute('href')).toContain('request=')
+        const time = item.querySelector('time')!
+        await expect(time).toBeVisible()
+        await expect(time).toHaveTextContent(
+          index === options.reached ? 'Deadline reached.' : 'Expires in 15 minutes',
+        )
+      }
+      // Every action is listed, so nothing links to another page of them.
+      await expect(
+        within(nav).queryByRole('link', { name: /actions in this run|First actions/ }),
+      ).toBeNull()
+      // A list a failed page left short says so, and offers to read it again.
+      if (options.missing) {
+        await expect(within(nav).getByRole('status')).toHaveTextContent(options.missing)
+        await expect(within(nav).getByRole('button', { name: 'Try again' })).toBeVisible()
+      } else await expect(within(nav).queryByRole('status')).toBeNull()
+      // The Run's own cancel control stays below, at the panel's end.
+      await expect(within(dialog).getByRole('button', { name: 'Cancel run' })).toBeVisible()
+      if (options.fits) {
+        await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+        for (const item of items) {
+          const edge = item.getBoundingClientRect()
+          for (const part of item.querySelectorAll('code, a, time')) {
+            const box = part.getBoundingClientRect()
+            await expect(box.left >= edge.left - 1 && box.right <= edge.right + 1).toBe(true)
+          }
+        }
+      }
+    },
+  }
+}
+export const RunWaitingOnActions = actionsStory(
+  panel(
+    'Program run · waiting on several actions',
+    runPage(
+      runDetail(
+        run({
+          requiresAction: true,
+          actionPage: {
+            total: '3',
+            next: '',
+            actions: [
+              approvalAction,
+              {
+                ...approvalAction,
+                name: `${workspace}/approvals/update`,
+                callPath: 'coral.providers.billing.updateInvoice',
+                providerLabel: 'Billing',
+              },
+              connectionAction,
+            ],
+          },
+        }),
+      ),
     ),
+    { evidence: 'coral.providers.mail.send' },
   ),
-  { evidence: 'coral.providers.mail.send' },
+  {
+    total: '3',
+    cards: [
+      {
+        target: 'coral.providers.mail.send',
+        link: 'Review coral.providers.mail.send',
+        kind: 'approval',
+      },
+      {
+        target: 'coral.providers.billing.updateInvoice',
+        link: 'Review coral.providers.billing.updateInvoice',
+        kind: 'approval',
+      },
+      {
+        target: 'Connect your Linear account',
+        link: 'Connect your Linear account',
+        kind: 'account connection',
+      },
+    ],
+  },
+)
+/** Twelve actions, more than one screen on a phone: every one is listed, the list scrolls with
+ * the panel, and Tab reaches each review in order. */
+const manyActions = Array.from({ length: 12 }, (_, index) =>
+  index % 4 === 3
+    ? {
+        ...connectionAction,
+        name: `${workspace}/accountConnections/provider-${index}`,
+        providerLabel: `Provider ${index}`,
+      }
+    : {
+        ...approvalAction,
+        name: `${workspace}/approvals/action-${index}`,
+        callPath: `coral.providers.billing.invoices.sendOverdueReminder${index}`,
+      },
+)
+const manyCards = manyActions.map((item) =>
+  item.kind === 'approval'
+    ? { target: item.callPath, link: `Review ${item.callPath}`, kind: 'approval' }
+    : {
+        target: `Connect your ${item.providerLabel} account`,
+        link: `Connect your ${item.providerLabel} account`,
+        kind: 'account connection',
+      },
+)
+const manyStory = actionsStory(
+  panel(
+    'Program run · waiting on twelve actions, narrow screen',
+    runPage(
+      runDetail(
+        run({ requiresAction: true, actionPage: { total: '12', next: '', actions: manyActions } }),
+      ),
+    ),
+    { evidence: manyCards[11].target, narrow: true },
+  ),
+  { total: '12', cards: manyCards },
+  { fits: true },
+)
+export const RunWaitingOnManyActionsNarrow: Story = {
+  ...manyStory,
+  play: async (context) => {
+    await manyStory.play!(context)
+    const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
+    const nav = within(dialog).getByRole('navigation', { name: 'Actions in this run' })
+    const links = within(nav).getAllByRole('link')
+    // Each link opens its own action's exact review, in the Run's order.
+    const requests = links.map((link) =>
+      new URL(link.getAttribute('href')!, 'http://reef').searchParams.get('request'),
+    )
+    await expect(requests).toEqual(manyActions.map((item) => item.name))
+    // Tab moves through the reviews in list order.
+    links[0].focus()
+    for (const link of links.slice(1)) {
+      await context.userEvent.tab()
+      await expect(link).toHaveFocus()
+    }
+    // The last card scrolls into view inside the panel.
+    await expect(links.at(-1)).toBeVisible()
+  },
+}
+/** A later page of actions failed: the list shows what loaded and says how many are missing. */
+export const RunWaitingOnActionsIncomplete = actionsStory(
+  panel(
+    'Program run · some actions did not load',
+    runPage(
+      runDetail(
+        run({
+          requiresAction: true,
+          actionPage: {
+            total: '150',
+            next: '',
+            incomplete: true,
+            actions: [approvalAction, connectionAction],
+          },
+        }),
+      ),
+    ),
+    { evidence: 'The rest did not load.' },
+  ),
+  {
+    total: '150',
+    cards: [
+      {
+        target: 'coral.providers.mail.send',
+        link: 'Review coral.providers.mail.send',
+        kind: 'approval',
+      },
+      {
+        target: 'Connect your Linear account',
+        link: 'Connect your Linear account',
+        kind: 'account connection',
+      },
+    ],
+  },
+  { missing: '2 of 150 actions loaded. The rest did not load.' },
+)
+const longActionPath =
+  'coral.providers.enterpriseResourcePlanning.accountsReceivable.invoices.sendOverdueReminderToPrimaryBillingContact'
+/** On a phone, a long call path wraps inside its card; an approval and a connection read apart,
+ * and a deadline that has passed says so. */
+export const RunWaitingOnActionsNarrow = actionsStory(
+  panel(
+    'Program run · waiting on an approval and a connection, narrow screen',
+    runPage(
+      runDetail(
+        run({
+          requiresAction: true,
+          actionPage: {
+            total: '2',
+            next: '',
+            actions: [
+              { ...approvalAction, callPath: longActionPath },
+              { ...connectionAction, deadline: later },
+            ],
+          },
+        }),
+      ),
+    ),
+    { evidence: 'Connect your Linear account', narrow: true },
+  ),
+  {
+    total: '2',
+    cards: [
+      { target: longActionPath, link: `Review ${longActionPath}`, kind: 'approval' },
+      {
+        target: 'Connect your Linear account',
+        link: 'Connect your Linear account',
+        kind: 'account connection',
+      },
+    ],
+  },
+  { fits: true, reached: 1 },
 )
 export const RunRequestUnavailable = panel(
   'Program run · selected request unavailable',
@@ -524,22 +1358,77 @@ export const FinalValue: Story = {
     await expect(dialog).not.toHaveTextContent('coral.emit')
   },
 }
-export const RunSucceededWithoutFinalValue = panel(
-  'Program run · succeeded, no final value',
-  runPage(runDetail(endedRun('succeeded'), { terminal: { kind: 'succeeded', finalValue: null } })),
-)
+/** A Run that returned nothing shows no card and no sentence about it. */
+export const RunSucceededWithoutFinalValue = lean({
+  ...panel(
+    'Program run · succeeded, no final value',
+    runPage(
+      runDetail(endedRun('succeeded'), { terminal: { kind: 'succeeded', finalValue: null } }),
+    ),
+  ),
+  play: async (context) => {
+    await meta.play(context)
+    const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
+    await expect(within(dialog).queryByRole('region', { name: 'Final value' })).toBeNull()
+  },
+})
+/** Text no record panel shows: boilerplate about absent evidence, outcome prose the badge
+ * already states, and technical scaffolding. */
+const scaffolding = [
+  'Technical details',
+  'Terminal outcome',
+  'Terminal evidence is unavailable',
+  'returned no final value',
+  'No retained outcome',
+  'record #',
+  'Failure details',
+  'Run ID',
+  'Invocation ID',
+  'Whole-run controls',
+  'Retained request',
+]
+/** A record panel that states only what helps: no scaffolding, no heading over its list, and
+ * its error, when it has one, in view in the error card. */
+function lean(
+  story: Story,
+  options: { error?: string[]; card?: string; fits?: boolean } = {},
+): Story {
+  return {
+    ...story,
+    play: async (context) => {
+      await story.play?.(context)
+      const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
+      const opened = within(dialog)
+      for (const text of scaffolding) await expect(dialog).not.toHaveTextContent(text)
+      for (const heading of ['Context', 'Call', 'Run evidence', 'Decision'])
+        await expect(opened.queryByRole('heading', { name: heading })).toBeNull()
+      if (options.error) {
+        const card = opened.getByRole('region', { name: 'Error' })
+        await expect(card).toHaveClass(listStyles.container)
+        await expect(card.closest('details')).toBeNull()
+        for (const text of options.error) await expect(card).toHaveTextContent(text)
+      }
+      if (options.card)
+        await expect(opened.getByRole('region', { name: options.card })).toBeVisible()
+      if (options.fits) await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+    },
+  }
+}
 const failed = (
   code: RunFailureCode,
   error: Extract<RunDetail['terminal'], { kind: 'failed' }>['error'] = null,
 ) =>
-  panel(
-    `Program run · failed, ${code.replaceAll('_', ' ')}`,
-    runPage(
-      runDetail(endedRun('failed'), {
-        terminal: { kind: 'failed', code, message: failureMessages[code], error },
-      }),
+  lean(
+    panel(
+      `Program run · failed, ${code.replaceAll('_', ' ')}`,
+      runPage(
+        runDetail(endedRun('failed'), {
+          terminal: { kind: 'failed', code, message: failureMessages[code], error },
+        }),
+      ),
+      { evidence: failureMessages[code] },
     ),
-    { evidence: failureMessages[code] },
+    { error: [code, failureMessages[code]] },
   )
 const failures = {
   program_rejected: failed('program_rejected', {
@@ -564,23 +1453,49 @@ const runStates = {
   running: RunRunning,
   succeeded: RunSucceededWithFinalValue,
   failed: RunFailedGroupedProgramError,
-  canceled: panel(
-    'Program run · canceled',
-    runPage(runDetail(endedRun('canceled'), { terminal: { kind: 'canceled' } })),
+  canceled: lean(
+    panel(
+      'Program run · canceled',
+      runPage(runDetail(endedRun('canceled'), { terminal: { kind: 'canceled' } })),
+    ),
   ),
-  timed_out: panel(
-    'Program run · timed out',
-    runPage(runDetail(endedRun('timed_out'), { terminal: { kind: 'timed_out' } })),
+  timed_out: lean(
+    panel(
+      'Program run · timed out',
+      runPage(runDetail(endedRun('timed_out'), { terminal: { kind: 'timed_out' } })),
+    ),
   ),
-  interrupted: panel(
-    'Program run · interrupted',
-    runPage(runDetail(endedRun('interrupted'), { terminal: { kind: 'interrupted' } })),
+  interrupted: lean(
+    panel(
+      'Program run · interrupted',
+      runPage(runDetail(endedRun('interrupted'), { terminal: { kind: 'interrupted' } })),
+    ),
   ),
-  unknown: panel(
-    'Program run · state unknown, terminal evidence unavailable',
-    runPage(runDetail(endedRun('unknown'))),
+  unknown: lean(
+    panel(
+      'Program run · state unknown, terminal evidence unavailable',
+      runPage(runDetail(endedRun('unknown'))),
+    ),
   ),
 } satisfies Record<RunState, Story>
+/** A long failure on a phone wraps inside its card. */
+export const RunFailedNarrow = lean(
+  panel(
+    'Program run · failed, long error, narrow screen',
+    runPage(
+      runDetail(endedRun('failed'), {
+        terminal: {
+          kind: 'failed',
+          code: 'program_execution_failed',
+          message: `TypeError: Cannot read properties of undefined (reading '${'invoiceOwnerPrimaryBillingContact'.repeat(4)}')\n    at remind (program.ts:12:41)`,
+          error: null,
+        },
+      }),
+    ),
+    { evidence: 'program.ts:12:41', narrow: true },
+  ),
+  { error: ['program_execution_failed', 'program.ts:12:41'], fits: true },
+)
 export const RunCanceled = runStates.canceled
 export const RunTimedOut = runStates.timed_out
 export const RunInterrupted = runStates.interrupted
@@ -665,17 +1580,19 @@ const ended = (outcome: InvocationOutcome, name: string, evidence?: string) =>
   )
 const invocationOutcomes = {
   upstream_outcome: invocationStates.ended,
-  coral_failure: ended(
-    'coral_failure',
-    'Operation call · ended, Coral failure',
-    invocationResults.coral_failure.message,
+  coral_failure: lean(
+    ended(
+      'coral_failure',
+      'Operation call · ended, Coral failure',
+      invocationResults.coral_failure.message,
+    ),
+    { error: [invocationResults.coral_failure.message] },
   ),
-  run_terminated: ended(
-    'run_terminated',
-    'Operation call · ended, run terminated it before dispatch',
+  run_terminated: lean(
+    ended('run_terminated', 'Operation call · ended, run terminated it before dispatch'),
   ),
-  indeterminate: ended('indeterminate', 'Operation call · ended, result indeterminate'),
-  unknown: ended('unknown', 'Operation call · ended, outcome unknown'),
+  indeterminate: lean(ended('indeterminate', 'Operation call · ended, result indeterminate')),
+  unknown: lean(ended('unknown', 'Operation call · ended, outcome unknown')),
 } satisfies Record<InvocationOutcome, Story>
 export const InvocationUpstreamOutcome = invocationOutcomes.upstream_outcome
 export const InvocationCoralFailure = invocationOutcomes.coral_failure
@@ -778,25 +1695,59 @@ const approvalPage = (
   request: ReturnType<typeof approval>,
   context?: Parameters<typeof approvalDetail>[1],
 ) => invocationPage(approvalDetail(request, context))
-export const ApprovalPending = panel(
-  'Approval · pending, you can decide',
-  approvalPage(approval()),
-  { evidence: ['coral.providers.mail.send', 'owner@example.com'] },
+/** An approval states its own status in its header, and no badge for its Run under it. A
+ * decided one keeps who decided, when, and the comment. */
+function approvalStory(story: Story, label: string, comment?: string): Story {
+  return {
+    ...story,
+    play: async (context) => {
+      await meta.play(context)
+      const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
+      const review = within(dialog).getByRole('region', { name: /^Review / })
+      await expect(within(review.querySelector('header')!).getByText(label)).toBeVisible()
+      await expect(dialog).not.toHaveTextContent('program run:')
+      if (comment) {
+        const decision = within(review).getByText('Reviewed by', { selector: 'dt' }).closest('dl')!
+        await expect(decision).toHaveTextContent('Decided')
+        await expect(decision).toHaveTextContent(comment)
+      }
+    },
+  }
+}
+export const ApprovalPending = approvalStory(
+  panel('Approval · pending, you can decide', approvalPage(approval()), {
+    evidence: ['coral.providers.mail.send', 'owner@example.com'],
+  }),
+  'Approval required',
 )
 const approvals = {
   pending: ApprovalPending,
-  approved: panel('Approval · approved, with comment', approvalPage(approval(settle('approved'))), {
-    evidence: 'Checked the exact invoice recipient.',
-  }),
-  declined: panel('Approval · denied, with comment', approvalPage(approval(settle('declined'))), {
-    evidence: 'This owner left the company.',
-  }),
-  expired: panel('Approval · expired', approvalPage(approval(settle('expired'))), {
-    evidence: 'owner@example.com',
-  }),
-  closed: panel('Approval · closed when the run ended', approvalPage(approval(settle('closed'))), {
-    evidence: 'owner@example.com',
-  }),
+  approved: approvalStory(
+    panel('Approval · approved, with comment', approvalPage(approval(settle('approved'))), {
+      evidence: 'Checked the exact invoice recipient.',
+    }),
+    'Approved',
+    'Checked the exact invoice recipient.',
+  ),
+  declined: approvalStory(
+    panel('Approval · denied, with comment', approvalPage(approval(settle('declined'))), {
+      evidence: 'This owner left the company.',
+    }),
+    'Denied',
+    'This owner left the company.',
+  ),
+  expired: approvalStory(
+    panel('Approval · expired', approvalPage(approval(settle('expired'))), {
+      evidence: 'owner@example.com',
+    }),
+    'Expired',
+  ),
+  closed: approvalStory(
+    panel('Approval · closed when the run ended', approvalPage(approval(settle('closed'))), {
+      evidence: 'owner@example.com',
+    }),
+    'Closed',
+  ),
 } satisfies Record<ApprovalState, Story>
 export const ApprovalApproved = approvals.approved
 export const ApprovalDenied = approvals.declined
@@ -903,20 +1854,102 @@ export const ApprovalArgumentsUnicode = argumentStory('unicode and escapes')
 // Account connections --------------------------------------------------------
 
 const connectionPage = (state: ConnectionState) => runPage(connectionDetail(connection(state)))
+/**
+ * A selected connection request leads the panel as an approval does: one header (the
+ * request's, with its kind, live deadline and state, and the one close control), then the Run
+ * as context, then Connect or Decline pinned to the drawer's bottom. No Run header, no Run
+ * cancel, and no sentence about other calls.
+ */
+function connectionStory(
+  story: Story,
+  state: ConnectionState,
+  options: { reconnecting?: boolean; fits?: boolean } = {},
+): Story {
+  return {
+    ...story,
+    play: async (context) => {
+      await meta.play(context)
+      const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
+      const opened = within(dialog)
+      const headers = dialog.querySelectorAll('header')
+      await expect(headers).toHaveLength(1)
+      const header = within(headers[0])
+      await expect(header.getByRole('heading', { level: 3 }).textContent).toBe(
+        state === 'pending' ? 'Connect your Linear account' : 'Connect your account',
+      )
+      await expect(header.getByText('account connection request')).toBeVisible()
+      await expect(header.getByText(state.replaceAll('_', ' '))).toBeVisible()
+      await expect(
+        opened.queryAllByRole('button', { name: 'Close details' }).length,
+      ).toBeLessThanOrEqual(1)
+      for (const close of opened.queryAllByRole('button', { name: 'Close details' }))
+        await expect(headers[0]).toContainElement(close)
+      // No Run heading: the dialog's own accessible title is its only h2.
+      await expect(dialog.querySelectorAll('header h2')).toHaveLength(0)
+      // The header is the request's; the Run shows only as context below it.
+      await expect(headers[0]).not.toHaveTextContent('program run')
+      await expect(dialog).not.toHaveTextContent('One connection can unblock')
+      await expect(opened.queryByRole('button', { name: 'Cancel run' })).toBeNull()
+      // The Run follows as context, its times named as the Run's.
+      const list = dialog.querySelector('dl')!
+      await expect(
+        within(list)
+          .getAllByRole('term')
+          .map((term) => term.textContent),
+      ).toEqual(['Exec intent', 'Requested by', 'Run duration', 'Run started'])
+      if (state === 'pending') {
+        await expect(header.getByText('Expires in 15 minutes')).toBeVisible()
+        await expect(opened.getByText('Connect your Linear account to continue.')).toBeVisible()
+        const decline = opened.getByRole('button', { name: 'Decline' })
+        const connect = opened.getByRole('button', { name: 'Connect Linear' })
+        const footer = decline.closest('footer')!
+        await expect(footer).toContainElement(connect)
+        await expect(footer.querySelector('time')).toBeNull()
+        // The panel's own footer, pinned to the drawer's bottom as an approval's is.
+        await expect(getComputedStyle(footer).position).toBe('sticky')
+        await expect(footer.closest('section')!.parentElement).toBe(
+          dialog.querySelector('section')!.parentElement,
+        )
+        // While the live view reconnects, neither choice is offered.
+        await expect(decline).toHaveProperty('disabled', Boolean(options.reconnecting))
+        await expect(connect).toHaveProperty('disabled', Boolean(options.reconnecting))
+      } else {
+        await expect(opened.getByRole('status')).toBeVisible()
+        await expect(opened.queryByRole('button', { name: /Decline|Connect/ })).toBeNull()
+      }
+      if (options.fits) await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+    },
+  }
+}
 const connections = {
-  pending: panel('Account connection · pending', connectionPage('pending'), {
-    evidence: 'Read my open Linear issues',
-  }),
-  connected: panel('Account connection · connected', connectionPage('connected')),
-  declined: panel('Account connection · declined', connectionPage('declined')),
-  expired: panel('Account connection · expired', connectionPage('expired')),
-  route_changed: panel(
-    'Account connection · account setting changed',
-    connectionPage('route_changed'),
+  pending: connectionStory(
+    panel('Account connection · pending', connectionPage('pending'), {
+      evidence: 'Read my open Linear issues',
+    }),
+    'pending',
   ),
-  authorization_changed: panel(
-    'Account connection · account authorization changed',
-    connectionPage('authorization_changed'),
+  connected: connectionStory(
+    panel('Account connection · connected', connectionPage('connected')),
+    'connected',
+  ),
+  declined: connectionStory(
+    panel('Account connection · declined', connectionPage('declined')),
+    'declined',
+  ),
+  expired: connectionStory(
+    panel('Account connection · expired', connectionPage('expired')),
+    'expired',
+  ),
+  route_changed: connectionStory(
+    panel('Account connection · account setting changed', connectionPage('route_changed')),
+    'route_changed',
+  ),
+  authorization_changed: connectionStory(
+    panel(
+      'Account connection · account authorization changed',
+      connectionPage('authorization_changed'),
+    ),
+    'authorization_changed',
   ),
 } satisfies Record<ConnectionState, Story>
 export const ConnectionPending = connections.pending
@@ -925,15 +1958,19 @@ export const ConnectionDeclined = connections.declined
 export const ConnectionExpired = connections.expired
 export const ConnectionRouteChanged = connections.route_changed
 export const ConnectionAuthorizationChanged = connections.authorization_changed
-export const ConnectionPendingReconnecting = panel(
-  'Account connection · pending, reconnecting',
-  connectionPage('pending'),
-  { live: reconnecting },
+export const ConnectionPendingReconnecting = connectionStory(
+  panel('Account connection · pending, reconnecting', connectionPage('pending'), {
+    live: reconnecting,
+  }),
+  'pending',
+  { reconnecting: true },
 )
-export const ConnectionPendingNarrow = panel(
-  'Account connection · pending, narrow screen',
-  connectionPage('pending'),
-  { narrow: true },
+export const ConnectionPendingNarrow = connectionStory(
+  panel('Account connection · pending, narrow screen', connectionPage('pending'), {
+    narrow: true,
+  }),
+  'pending',
+  { fits: true },
 )
 
 // Run output and events --------------------------------------------------------
@@ -1105,22 +2142,28 @@ export const RunEndedTimedOut = endings.timed_out
 export const RunEndedInterrupted = endings.interrupted
 export const RunEndedUnknown = endings.unknown
 const events = {
-  'run.started': panel(
-    'run.started',
-    eventPage(event(1, { kind: 'run.started' }), 'execution accepted'),
+  'run.started': lean(
+    panel('run.started', eventPage(event(1, { kind: 'run.started' }), 'execution accepted')),
   ),
-  'invocation.started': panel(
-    'invocation.started',
-    eventPage(event(4, { kind: 'invocation.started', invocation: invocation().name }), 'run event'),
+  'invocation.started': lean(
+    panel(
+      'invocation.started',
+      eventPage(
+        event(4, { kind: 'invocation.started', invocation: invocation().name }),
+        'run event',
+      ),
+    ),
   ),
   'invocation.ended': CallEndedUpstreamOutcome,
   'program.emitted': EmittedObject,
   'program.logged': LoggedInfo,
   'run.cancellation_requested': CancellationByUser,
   'run.ended': RunEndedFailed,
-  unknown: panel(
-    'Run event · kind unknown to this version',
-    eventPage(event(11, { kind: 'unknown' }), 'run event'),
+  unknown: lean(
+    panel(
+      'Run event · kind unknown to this version',
+      eventPage(event(11, { kind: 'unknown' }), 'run event'),
+    ),
   ),
 } satisfies Record<RunEvent['kind'], Story>
 export const RunStarted = events['run.started']

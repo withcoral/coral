@@ -1,3 +1,4 @@
+import { duration } from './duration'
 import {
   createContext,
   memo,
@@ -144,13 +145,6 @@ function rowStatus(row: ActivityRow): RowStatus {
         label: row.eventKind === 'program.logged' ? 'diagnostic' : 'retained',
       }
   }
-}
-export function duration(nanos: string | number) {
-  const ms = Number(nanos) / 1_000_000
-  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ${Math.floor(ms / 1000) % 60}s`
-  return `${Math.floor(ms / 3_600_000)}h ${Math.floor(ms / 60_000) % 60}m`
 }
 function rowDuration(row: ActivityRow) {
   if ('durationNanos' in row)
@@ -1009,3 +1003,5 @@ export function Activity({
     </RowActionsContext>
   )
 }
+
+export { duration } from './duration'

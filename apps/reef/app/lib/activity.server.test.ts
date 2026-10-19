@@ -427,7 +427,8 @@ function runDetail(
             actionPage: {
               actions: options.resolved || input.actionAfter ? [] : execution.actionPage.actions,
               total: options.resolved ? 0n : 1n,
-              nextAction: options.resolved || input.actionAfter ? '' : 'action-cursor',
+              // One page holds up to 100 pending actions, so one action has no next page.
+              nextAction: '',
             },
           },
           accountConnection:
@@ -713,20 +714,20 @@ describe('hierarchical activity through the private server interface', () => {
       )
     }
   })
-  it('continues the selected Run action window without discarding an independently authorized review', async () => {
+  it('opens an exact review beside the Run, ignoring an action cursor from an older link', async () => {
     const { api, calls } = coral(list(), ...reviewReads())
     const page = await loadActivity(
       request({ record: run, request: approval, actionsAfter: 'action-cursor' }),
       api,
       { scope },
     )
-    expect(calls.find((call) => call.method === 'run')?.input).toMatchObject({
-      name: run,
-      actionAfter: 'action-cursor',
-    })
+    // The Run's actions start at the first page; the old cursor does not skip any.
+    expect(calls.filter((call) => call.method === 'run').map((call) => call.input)).toEqual([
+      expect.objectContaining({ name: run, actionAfter: '' }),
+    ])
     expect(page.detail).toMatchObject({
       kind: 'invocation',
-      context: { run: { actionPage: { actions: [], total: '1', next: '' } } },
+      context: { run: { actionPage: { total: '1', next: '' } } },
       request: { name: approval, arguments: '{"to":"private@example.com"}' },
     })
   })
@@ -1554,5 +1555,126 @@ describe('links from before continuous loading', () => {
     const page = await loadActivity(request({ after: neighbor, load: 'page' }), api, { scope })
     expect(page.rows.map((row) => row.name)).toEqual([task, neighbor])
     expect(calls.find((call) => call.method === 'roots')?.input).toMatchObject({ after: neighbor })
+  })
+})
+
+// Pending actions as Coral pages them, for the selected Run.
+const approvalAt = (index: number) => ({
+  request: {
+    request: { case: 'approval' as const, value: `${workspace}/approvals/action-${index}` },
+  },
+  callPath: `coral.providers.mail.send${index}`,
+  providerLabel: 'Mail',
+  deadlineAtUnixNanos: 902_000_000_000n,
+})
+const connectionAt = (index: number) => ({
+  request: {
+    request: {
+      case: 'accountConnection' as const,
+      value: `${workspace}/accountConnections/action-${index}`,
+    },
+  },
+  callPath: '',
+  providerLabel: 'Linear',
+  deadlineAtUnixNanos: 902_000_000_000n,
+})
+const range = (from: number, to: number) =>
+  Array.from({ length: to - from }, (_, offset) => from + offset)
+/** Coral's action pages for the Run, keyed by the cursor that reads each; `fail` refuses one. */
+function pagedRun(
+  pages: Record<string, { actions: ReturnType<typeof approvalAt>[]; next: string }>,
+  total: bigint,
+  fail?: string,
+): Handlers {
+  return {
+    activity: {
+      inspectRun: (input) => {
+        if (input.actionAfter === fail) refuse('action page unavailable', Code.Unavailable)
+        const page = pages[input.actionAfter ?? '']
+        return {
+          run: {
+            ...execution,
+            actionPage: { actions: page.actions, total, nextAction: page.next },
+          },
+          submittedSource: 'return null;',
+          linkedFunctions: [],
+          events: [],
+        }
+      },
+    },
+  }
+}
+const names = (page: ActivityPage) =>
+  page.detail?.kind === 'run' ? page.detail.run.actionPage!.actions.map((item) => item.name) : []
+describe('every pending action of the selected Run', () => {
+  // Three pages: two full pages of 100, approvals and connections mixed, then a short one that
+  // repeats the last action of the page before it, as a page read during a change can.
+  const pages = {
+    '': { actions: range(0, 100).map(approvalAt), next: 'cursor-1' },
+    'cursor-1': {
+      actions: range(100, 200).map((index) =>
+        index % 3 ? approvalAt(index) : connectionAt(index),
+      ),
+      next: 'cursor-2',
+    },
+    'cursor-2': { actions: [approvalAt(199), approvalAt(200), approvalAt(201)], next: '' },
+  } as Record<string, { actions: ReturnType<typeof approvalAt>[]; next: string }>
+  const expected = range(0, 202).map((index) =>
+    index >= 100 && index < 200 && index % 3 === 0
+      ? `${workspace}/accountConnections/action-${index}`
+      : `${workspace}/approvals/action-${index}`,
+  )
+
+  it('reads every page from the first, in Coral order, once per page and without duplicates', async () => {
+    const { api, calls } = coral(list(), taskDetail(), pagedRun(pages, 202n))
+    const page = await loadActivity(request({ record: run, actionsAfter: 'stale-cursor' }), api, {
+      scope,
+    })
+    // One read per page, starting at the first page whatever the link said.
+    expect(
+      calls
+        .filter((call) => call.method === 'run')
+        .map((call) => (call.input as { actionAfter: string }).actionAfter),
+    ).toEqual(['', 'cursor-1', 'cursor-2'])
+    expect(names(page)).toEqual(expected)
+    expect(page.detail).toMatchObject({
+      kind: 'run',
+      run: { actionPage: { total: '202', next: '' } },
+    })
+    expect(page.detail?.kind === 'run' && page.detail.run.actionPage!.incomplete).toBeFalsy()
+  })
+
+  it('reads one page when one page holds every action', async () => {
+    const { api, calls } = coral(
+      list(),
+      taskDetail(),
+      pagedRun({ '': { actions: range(0, 3).map(approvalAt), next: '' } }, 3n),
+    )
+    const page = await loadActivity(request({ record: run }), api, { scope })
+    expect(calls.filter((call) => call.method === 'run')).toHaveLength(1)
+    expect(names(page)).toHaveLength(3)
+  })
+
+  it('keeps the pages it read and says the list is incomplete when a later page fails', async () => {
+    const { api, calls } = coral(list(), taskDetail(), pagedRun(pages, 202n, 'cursor-1'))
+    const page = await loadActivity(request({ record: run }), api, { scope })
+    expect(calls.filter((call) => call.method === 'run')).toHaveLength(2)
+    expect(names(page)).toEqual(expected.slice(0, 100))
+    expect(page.detail).toMatchObject({
+      kind: 'run',
+      run: { actionPage: { total: '202', next: '', incomplete: true } },
+    })
+  })
+
+  it('stops at a cursor it has already followed and says the list is incomplete', async () => {
+    const looping = { ...pages, 'cursor-2': { ...pages['cursor-2'], next: 'cursor-1' } }
+    const { api, calls } = coral(list(), taskDetail(), pagedRun(looping, 300n))
+    const page = await loadActivity(request({ record: run }), api, { scope })
+    expect(calls.filter((call) => call.method === 'run')).toHaveLength(3)
+    expect(names(page)).toEqual(expected)
+    expect(page.detail).toMatchObject({
+      kind: 'run',
+      run: { actionPage: { incomplete: true } },
+    })
   })
 })

@@ -44,6 +44,7 @@ import type {
   RunEvent,
   RunTerminal,
   RunFailureCode,
+  ActionPage,
 } from '@/views/activity/types'
 import {
   privateHeaders,
@@ -293,6 +294,56 @@ function runView(value: ActivityRun): ExecutionRow {
           next: value.actionPage.nextAction,
         }
       : undefined,
+  }
+}
+/**
+ * Every pending action of a selected Run, from `first` on. Coral returns up to 100 actions a
+ * page, so a Run with more takes one more read per 100. Actions keep Coral's order, and an
+ * action that a later page repeats appears once. A page that fails, or a cursor already
+ * followed, ends the walk: the list keeps what it read and says it is incomplete. A Run cannot
+ * hold more pending actions than its total, so the walk stops after the pages that total needs.
+ */
+async function allRunActions(
+  api: ActivityApi,
+  run: string,
+  first: ActionPage,
+  signal: AbortSignal | undefined,
+): Promise<ActionPage> {
+  const actions = [...first.actions]
+  const seen = new Set<string>()
+  let next = first.next
+  let incomplete = false
+  const pages = Math.ceil(Number(first.total) / 100) + 1
+  for (let read = 1; next; read++) {
+    if (seen.has(next) || read > pages) {
+      incomplete = true
+      break
+    }
+    seen.add(next)
+    try {
+      const value = await api.activity.inspectRun(
+        { name: run, pageSize: 1, actionAfter: next },
+        { signal },
+      )
+      const page = value.run?.actionPage
+      if (!page) {
+        incomplete = true
+        break
+      }
+      actions.push(...page.actions.flatMap(actionSummaryView))
+      next = page.nextAction
+    } catch (error) {
+      if (signal?.aborted) throw error
+      incomplete = true
+      break
+    }
+  }
+  const names = new Set<string>()
+  return {
+    actions: actions.filter((item) => !names.has(item.name) && Boolean(names.add(item.name))),
+    total: first.total,
+    next: '',
+    ...(incomplete && { incomplete }),
   }
 }
 function actionSummaryView(value: ActivityActionSummary): ActionSummary[] {
@@ -611,7 +662,8 @@ async function selectedDetail(
           {
             name: run,
             pageSize: 1,
-            actionAfter: query.get('actionsAfter') ?? '',
+            // The Run's actions start at the first page; an older link's cursor skips none.
+            actionAfter: '',
             accountConnection: /^workspaces\/[^/]+\/accountConnections\/[^/]+$/.test(
               selectedRequest,
             )
@@ -630,6 +682,7 @@ async function selectedDetail(
           throw new ConnectError('unavailable', Code.NotFound)
         }
         const row = runView(value.run)
+        if (row.actionPage) row.actionPage = await allRunActions(api, run, row.actionPage, signal)
         if (selectInitialRequest && !query.has('request') && name === run) {
           const first = row.actionPage?.actions[0]
           if (first?.kind === 'account_connection') {

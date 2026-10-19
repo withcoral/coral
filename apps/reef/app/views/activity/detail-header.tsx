@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { Typography } from '@/wax/components'
 import type { IconName, IconPlateTone } from '@/wax/components/icon'
 import { Pill } from '@/wax/components/pill'
@@ -36,6 +37,7 @@ export function DetailHeader({
   sticky,
   heading,
   showStatus = true,
+  meta,
 }: {
   title: string
   /** The exact retained state; it selects the tone and icon. */
@@ -49,6 +51,8 @@ export function DetailHeader({
   heading?: 'h2' | 'h3'
   /** False when the title already says what the record is, so a badge would only repeat it. */
   showStatus?: boolean
+  /** More about the record under its kind, such as a live deadline. */
+  meta?: ReactNode
 }) {
   const tone = tones[status] ?? 'gray'
   return (
@@ -64,6 +68,7 @@ export function DetailHeader({
           {provider && (
             <Typography.BodySmall variant="tertiary">Provider: {provider}</Typography.BodySmall>
           )}
+          {meta}
         </>
       }
       status={showStatus && <Pill color={tone}>{label}</Pill>}

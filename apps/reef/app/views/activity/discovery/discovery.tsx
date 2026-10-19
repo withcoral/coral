@@ -1,5 +1,4 @@
 import classNames from 'classnames'
-import { Link } from 'react-router'
 import { useId } from 'react'
 import { Banner, Button, List, Typography } from '@/wax/components'
 import { CodeBlock } from '@/wax/components/code-block'
@@ -27,49 +26,38 @@ import * as styles from './discovery.css'
 /** A declaration or a source stays open, but takes less than one screen. */
 const DECLARATION_LINES = 20
 
-/** One retained `search` or `describe` attempt, as the agent received it then. */
+/** One retained `search` or `describe` attempt, as the agent received it then. Each result
+ * card keeps its retained documentation in a closed Details inside the card. A describe
+ * never shows its raw response; a search Reef cannot read shows as stored. */
 export function DiscoveryEvidence({
   evidence,
+  record,
+  describe = false,
 }: {
   evidence: Extract<InteractionEvidence, { kind: 'discovery' }>
+  /** The selected record's name, kept in a describe's Details. */
+  record?: string | null
+  /** The attempt was a `describe`, even when its stored request context is unavailable. */
+  describe?: boolean
 }) {
   const { context, view, response } = evidence
+  const raw = view.kind === 'raw' && !describe
   return (
     <div className={styles.stack}>
-      {context.kind === 'describe' && (
-        <dl className={styles.facts}>
-          <Fact label="Call path">
-            <CodeChip>{context.callPath}</CodeChip>
-          </Fact>
-          {context.types.length > 0 && (
-            <Fact label="Types">
-              {context.types.map((name) => (
-                <CodeChip key={name}>{name}</CodeChip>
-              ))}
-            </Fact>
-          )}
-        </dl>
-      )}
       {view.kind === 'search' && <SearchLedger page={view.page} />}
-      {view.kind === 'describe' && <DescriptionDocument description={view.description} />}
+      {view.kind === 'describe' && (
+        <DescriptionResult description={view.description} record={record} />
+      )}
       {view.kind === 'raw' &&
         (context.kind === 'unknown' ? (
           <Typography.Body>The request context is unavailable.</Typography.Body>
         ) : (
           <Banner variant="info" title="Stored in an earlier shape">
-            Reef cannot show this response in the current layout. The stored response follows.
+            Reef cannot show this response in the current layout.
+            {raw && ' The stored response follows.'}
           </Banner>
         ))}
-      {/* A search shows only its results; a response Reef cannot read shows as stored. */}
-      {view.kind === 'raw' ? (
-        <RawResponse response={response} />
-      ) : (
-        context.kind !== 'search' && (
-          <Disclosure title="Raw response">
-            <RawResponse response={response} />
-          </Disclosure>
-        )
-      )}
+      {raw && <RawResponse response={response} />}
     </div>
   )
 }
@@ -110,14 +98,50 @@ export function SearchParameters({
   )
 }
 
+/** What a describe asked for, as a search states its query, then `children`: the call's own
+ * times, in the same list. The Provider is the described Operation's, from the stored
+ * response. The panel's subtitle names the call, so the list has no heading. */
+export function DescribeParameters({
+  context,
+  description,
+  intent,
+  children,
+}: {
+  context: Extract<DiscoveryContext, { kind: 'describe' }>
+  description: Description | null
+  intent: string
+  children?: React.ReactNode
+}) {
+  return (
+    <DescriptionList.List>
+      <DescriptionList.Row label="Call path">
+        <CodeChip>{context.callPath}</CodeChip>
+      </DescriptionList.Row>
+      {context.types.length > 0 && (
+        <DescriptionList.Row label="Types">
+          <span className={styles.row}>
+            {context.types.map((name) => (
+              <CodeChip key={name}>{name}</CodeChip>
+            ))}
+          </span>
+        </DescriptionList.Row>
+      )}
+      {description?.operation && (
+        <DescriptionList.Row label="Provider">
+          {description.operation.providerLabel}
+        </DescriptionList.Row>
+      )}
+      {intent && <DescriptionList.Row label="Intent">{intent}</DescriptionList.Row>}
+      {children}
+    </DescriptionList.List>
+  )
+}
+
 const toneColors = { success: 'green', neutral: 'gray', warning: 'amber', error: 'red' } as const
 
-/** A "+" on a count says more matched. A trimmed page lists no such count, so it says it once. */
+/** Per-kind coverage. A "+" on a count says more matched than Coral returned. */
 function CoverageStrip({ page }: { page: SearchPage }) {
   const tone = worstTone(page.coverage)
-  const counted = page.coverage.some(
-    (coverage) => coverage.state === 'results_found' && coverage.hasMore,
-  )
   return (
     <div
       className={classNames(styles.coverage, {
@@ -131,11 +155,6 @@ function CoverageStrip({ page }: { page: SearchPage }) {
         const line = coverageLine(coverage)
         return <CoverageRow key={coverage.kind} {...line} />
       })}
-      {page.hasMore && !counted && (
-        <Typography.BodySmall variant="tertiary">
-          More results were available after this page.
-        </Typography.BodySmall>
-      )}
     </div>
   )
 }
@@ -161,21 +180,23 @@ function CoverageRow({
   )
 }
 
-/** A trimmed page states coverage only for a kind whose results may be missing. */
+/** A trimmed page states coverage only for a kind whose results may be missing. Coral
+ * stores no total match count, so the heading counts this page and a "+" says more remain. */
 function SearchLedger({ page }: { page: SearchPage }) {
   const id = useId()
   return (
     <section className={styles.stack} aria-labelledby={id}>
       <Typography.BodySmallStrong as="h4" id={id}>
-        Result
+        Results ({page.hits.length}
+        {page.hasMore && '+'})
       </Typography.BodySmallStrong>
-      {(page.coverage.length > 0 || page.hasMore) && <CoverageStrip page={page} />}
+      {page.coverage.length > 0 && <CoverageStrip page={page} />}
       {page.hits.length === 0 ? (
         <Typography.Body>This page has no results.</Typography.Body>
       ) : (
         <List.Container as="ol" aria-label="Results in rank order">
           {page.hits.map((hit) => (
-            <List.Item as="li" key={hit.callPath}>
+            <List.Item as="li" key={hit.callPath} className={styles.detailed}>
               <Hit hit={hit} />
             </List.Item>
           ))}
@@ -185,8 +206,8 @@ function SearchLedger({ page }: { page: SearchPage }) {
   )
 }
 
-/** One compact result: what it is, where it lives, and why it matched. Today's catalog page
- * holds its signature and description. */
+/** One compact result: what it is, where it lives, and why it matched. What else the page
+ * retained about it waits in Details at the foot of the same card. */
 function Hit({ hit }: { hit: SearchHit }) {
   return (
     <>
@@ -200,7 +221,36 @@ function Hit({ hit }: { hit: SearchHit }) {
         <CurrentIconLink target={hit} />
       </div>
       <MatchedIn matched={hit.matched} />
+      <HitDetails hit={hit} />
     </>
+  )
+}
+
+/** The guidance, description and signature the page retained for a result, as Coral cut them.
+ * A result that retained none of them has no Details. */
+function HitDetails({ hit }: { hit: SearchHit }) {
+  const guidance = hit.guidanceSnippet?.trim() ? hit.guidanceSnippet : null
+  const description = hit.descriptionSnippet.trim() ? hit.descriptionSnippet : null
+  const signature = hit.signatureLine.trim() ? hit.signatureLine : null
+  if (guidance === null && description === null && signature === null) return null
+  return (
+    <Disclosure title="Details">
+      {guidance !== null && (
+        <dl className={styles.facts}>
+          <Fact label="Guidance">{guidance}</Fact>
+        </dl>
+      )}
+      {/* Cut Markdown: shown as the text Coral kept. */}
+      {description !== null && (
+        <Typography.Body className={styles.snippet}>{description}</Typography.Body>
+      )}
+      {signature !== null && (
+        <>
+          <Typography.HeadingXSmall as="h5">Signature</Typography.HeadingXSmall>
+          <CodeBlock value={signature} format="typescript" framed wrap />
+        </>
+      )}
+    </Disclosure>
   )
 }
 
@@ -336,17 +386,6 @@ function CurrentIconLink({
     />
   )
 }
-function CurrentLink({ target }: { target: Pick<SearchHit, 'kind' | 'currentHref'> }) {
-  if (target.currentHref === null) return null
-  return (
-    <Typography.BodySmall>
-      <Link to={target.currentHref}>
-        {target.kind === 'operation' ? 'Open current operation' : 'Open current function'}
-      </Link>
-    </Typography.BodySmall>
-  )
-}
-
 const diagnosticColors = {
   error: 'red',
   warning: 'amber',
@@ -354,30 +393,76 @@ const diagnosticColors = {
   message: 'gray',
 } as const
 
-function DescriptionDocument({ description }: { description: Description }) {
+/** A describe's target, as compact as a search result: what it is, where it lives, its
+ * flags and tags. The documentation stays in Details at the foot of the same card. */
+function DescriptionResult({
+  description,
+  record,
+}: {
+  description: Description
+  record?: string | null
+}) {
+  const id = useId()
   const { operation, savedFunction } = description
+  const problems = (['error', 'warning'] as const)
+    .map((category) => ({
+      category,
+      count: savedFunction?.diagnostics.filter((item) => item.category === category).length ?? 0,
+    }))
+    .filter(({ count }) => count > 0)
   return (
-    <>
-      <div className={styles.row}>
-        <Typography.HeadingSmall as="h3">{description.title}</Typography.HeadingSmall>
-        <KindPill kind={description.kind} />
-        {operation && <Flags operation={operation} />}
-      </div>
-      {operation && (
-        <dl className={styles.facts}>
-          <Fact label="Provider">{operation.providerLabel}</Fact>
-          {operation.tags.length > 0 && (
-            <Fact label="Tags">
-              <span className={styles.row}>
-                {operation.tags.map((tag) => (
-                  <Pill key={tag} color="graySubtle" size="small">
-                    {tag}
-                  </Pill>
-                ))}
-              </span>
-            </Fact>
+    <section className={styles.stack} aria-labelledby={id}>
+      <Typography.BodySmallStrong as="h4" id={id}>
+        Result
+      </Typography.BodySmallStrong>
+      <List.Container>
+        <List.Item className={styles.detailed}>
+          <div className={styles.row}>
+            <List.Title>{description.title}</List.Title>
+            <KindPill kind={description.kind} />
+            {operation && <Flags operation={operation} approval="icon" />}
+          </div>
+          <div className={styles.row}>
+            <CodeChip>{description.callPath}</CodeChip>
+            <CurrentIconLink target={description} />
+          </div>
+          {(operation?.tags.length || problems.length > 0) && (
+            <div className={styles.row}>
+              {operation?.tags.map((tag) => (
+                <Pill key={tag} color="graySubtle" size="small">
+                  {tag}
+                </Pill>
+              ))}
+              {problems.map(({ category, count }) => (
+                <Pill key={category} color={diagnosticColors[category]} size="small">
+                  {count} {category}
+                  {count === 1 ? '' : 's'}
+                  {savedFunction?.diagnosticsTruncated ? '+' : ''}
+                </Pill>
+              ))}
+            </div>
           )}
-          {operation.guidance && <Fact label="Guidance">{operation.guidance}</Fact>}
+          <DescribeDetails description={description} record={record} />
+        </List.Item>
+      </List.Container>
+    </section>
+  )
+}
+
+/** Everything a describe retained beyond its Result, closed until you open it. */
+function DescribeDetails({
+  description,
+  record,
+}: {
+  description: Description
+  record?: string | null
+}) {
+  const savedFunction = description.savedFunction
+  return (
+    <Disclosure title="Details">
+      {description.operation?.guidance && (
+        <dl className={styles.facts}>
+          <Fact label="Guidance">{description.operation.guidance}</Fact>
         </dl>
       )}
       <Markdown>{description.description}</Markdown>
@@ -425,8 +510,14 @@ function DescriptionDocument({ description }: { description: Description }) {
           )}
         </>
       )}
-      <CurrentLink target={description} />
-    </>
+      {record && (
+        <dl className={styles.facts}>
+          <Fact label="Record">
+            <Typography.Code className={styles.record}>{record}</Typography.Code>
+          </Fact>
+        </dl>
+      )}
+    </Disclosure>
   )
 }
 

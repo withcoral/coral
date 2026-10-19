@@ -2,7 +2,7 @@
 import { act, screen, within } from '@testing-library/react'
 import { useEffect, useState } from 'react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { markupRoute, renderRoute } from '@/test-support/route'
 import { ActivityDetail } from './detail'
@@ -68,9 +68,9 @@ it('keeps exact evidence and a receipt after the selected request leaves pending
   expect(html).toContain('exact-recipient')
   expect(html).toContain('Approved')
   expect(html).not.toContain('Approve this call')
-  // The review's own decision leads; the Run's state is a badge named for the Run.
+  // The review's own decision leads; no badge repeats the Run's state under it.
   expect(html).not.toContain('Run state')
-  expect(html).toContain('program run: running')
+  expect(html).not.toContain('program run:')
 })
 function runDetail(actions: typeof run.actionPage, request: typeof approvalRequest) {
   return markup({
@@ -112,7 +112,7 @@ it('offers what the Run waits on now beside a settled selection, but not beside 
   expect(current).toContain('Approve this call')
   expect(current).not.toContain('request=workspaces%2Ffinance%2Fapprovals%2Ftwo')
 })
-it('shows purpose and caller once, and keeps Run diagnostics behind one technical disclosure', () => {
+it('shows purpose and caller once, with nothing but the call to decide on', () => {
   const selected = { ...run, actorLabel: 'You', agent: '' }
   const html = markup({
     ...pendingPage,
@@ -136,25 +136,12 @@ it('shows purpose and caller once, and keeps Run diagnostics behind one technica
   expect(html).not.toContain('Requested purpose:')
   expect(html).not.toContain('1 action needs you.')
   expect(html).not.toContain('Approval needed')
-  // The review keeps its own technical details; the Run's are not repeated below it.
-  const technical = [...container.querySelectorAll('details')].filter(
-    (element) => element.querySelector('summary')?.textContent === 'Technical details',
-  )
-  expect(technical).toHaveLength(1)
-  expect(technical[0].textContent).toContain(approvalRequest.name)
-  expect(technical[0].hasAttribute('open')).toBe(false)
-  // The Run's history link and cancel control move into the review's technical details.
-  expect(technical[0].textContent).toContain('View in history')
-  expect(technical[0].textContent).toContain('Cancel run')
-  expect(html.match(/View in history/g)).toHaveLength(1)
-  expect(html).not.toContain('Accepted program source')
-  const history = [...technical[0].querySelectorAll('a')].find(
-    (link) => link.textContent === 'View in history',
-  )!
-  const url = new URL(history.getAttribute('href')!, 'http://reef')
-  expect(url.pathname).toBe('/workspaces/finance/activity')
-  expect(url.searchParams.get('record')).toBeNull()
-  expect(url.searchParams.get('anchor')).toBe(run.name)
+  // No technical details, no raw request ID, and no program body, history link or Run cancel.
+  expect(html).not.toContain('Technical details')
+  // The decision form still posts the exact request; it just is not shown.
+  expect(container.textContent).not.toContain(approvalRequest.name)
+  for (const gone of ['View in history', 'Cancel run', 'Program body', 'Accepted program source'])
+    expect(container.textContent).not.toContain(gone)
 })
 it.each([true, false])(
   'exposes approval controls only after exact review when current availability is %s',
@@ -261,22 +248,24 @@ it.each([true, false])(
     const fact = (term: string) =>
       within(container).getByText(term, { selector: 'dt' }).nextElementSibling
     expectInstant(fact('Started'), call.startedAt, '22 Sep 2026, 09:00:05 UTC')
-    expect(fact('Duration')).toHaveTextContent('2.000 s')
+    expect(fact('Duration')).toHaveTextContent('2s')
     expectInstant(fact('Ended'), call.endedAt!, '22 Sep 2026, 09:00:07 UTC')
     expect(within(container).queryByText('Initiated by')).toBeNull()
-    expect(fact('Waiting time')).toHaveTextContent('0.001 s')
-    expect(fact('Dispatch')).toHaveTextContent(call.dispatchedAt!)
+    // Under a second of waiting reads as none: no time shows that has not passed.
+    expect(fact('Waiting time')).toHaveTextContent('0s')
+    expectInstant(fact('Dispatch'), call.dispatchedAt!, '22 Sep 2026, 09:00:06 UTC')
     // The header badge states the call's outcome; no State row repeats it.
     expect(within(container).queryByText('State', { selector: 'dt' })).toBeNull()
     expect(within(container.querySelector('header')!).getByText('upstream outcome')).toBeTruthy()
-    const technical = within(container)
-      .getByText('Technical details', { selector: 'summary' })
-      .closest('details')!
-    expect(technical).not.toHaveAttribute('open')
+    expect(container.textContent).not.toContain('Technical details')
+    expect(container.textContent).not.toContain(call.name)
     if (withRun) {
-      expect(technical).toHaveTextContent('Cancel run')
-      expect(technical).toHaveTextContent('Whole-run controls')
-      expect(container.textContent).toContain('Send invoice reminders')
+      // The Run's intent leads the list; its controls stay in view.
+      expect(fact('Run intent')).toHaveTextContent('Send invoice reminders')
+      expect(
+        within(container).getByRole('button', { name: 'Cancel run' }).closest('details'),
+      ).toBeNull()
+      expect(container.textContent).not.toContain('Whole-run controls')
     } else expect(container.textContent).not.toContain('Send invoice reminders')
   },
 )
@@ -337,35 +326,31 @@ it('keeps the supplied Run evidence and source beside a selected call, apart fro
   })
   const disclosure = (title: string) =>
     within(container).getByText(title, { selector: 'summary' }).closest('details')!
-  // The call's outcome and the Run's terminal evidence are visible, each under its own label.
-  expect(disclosure('Operation outcome')).toHaveAttribute('open')
-  expect(disclosure('Operation outcome')).toHaveTextContent('call-outcome')
-  expect(disclosure('Operation outcome')).not.toHaveTextContent('exact-run-failure')
-  const evidence = within(container)
-    .getByRole('heading', { level: 3, name: 'Run evidence' })
-    .closest('section')!
-  expect(evidence).toHaveTextContent('program run: failed')
-  expect(evidence).not.toHaveTextContent('Run state')
-  expect(within(evidence).getByText('Failure details', { selector: 'summary' })).toBeTruthy()
-  expect(evidence).toHaveTextContent('exact-run-failure')
-  expect(evidence).not.toHaveTextContent('call-outcome')
-  // Source, snapshots, and the original submission stay retained, behind technical details.
-  const technical = disclosure('Technical details')
-  expect(technical).not.toHaveAttribute('open')
+  // The call's outcome and the Run's terminal evidence are visible, each in its own card.
+  const upstream = container.querySelector('[aria-label="Upstream response"]')!
+  expect(upstream).toHaveTextContent('call-outcome')
+  expect(upstream).not.toHaveTextContent('exact-run-failure')
+  expect(within(container).getByText('program run: failed')).toBeTruthy()
+  expect(container.textContent).not.toContain('Run state')
+  const failure = container.querySelector('[aria-label="Error"]')!
+  expect(failure).toHaveTextContent('program_execution_failed')
+  expect(failure).toHaveTextContent('exact-run-failure')
+  expect(failure).not.toHaveTextContent('call-outcome')
+  expect(failure.closest('details')).toBeNull()
+  // Source, snapshots, and the original submission stay retained, folded in Details.
+  const details = disclosure('Details')
+  expect(details).not.toHaveAttribute('open')
   expect(disclosure('Accepted program source')).toHaveTextContent('exact-accepted-source')
   expect(disclosure('Saved-function snapshot: billing.remind')).toHaveTextContent('exact-snapshot')
   for (const title of ['Accepted program source', 'Saved-function snapshot: billing.remind'])
-    expect(technical.contains(disclosure(title))).toBe(true)
-  const original = within(technical).getByText('Inspect original exec submission')
+    expect(details.contains(disclosure(title))).toBe(true)
+  const original = within(details).getByText('Inspect original exec submission')
   expect(new URL(original.getAttribute('href')!, 'http://reef').searchParams.get('record')).toBe(
     submission,
   )
-  // Run timing is labeled as the Run's, apart from the call's own.
-  expectInstant(
-    within(technical).getByText('Run ended', { selector: 'dt' }).nextElementSibling,
-    failed.endedAt,
-    '22 Sep 2026, 09:01:00 UTC',
-  )
+  // The Run's own times and IDs belong to the Run's panel.
+  for (const gone of ['Run ended', 'Run ID', 'Technical details', failed.name])
+    expect(container.textContent).not.toContain(gone)
 })
 
 it.each([
@@ -800,7 +785,7 @@ it.each<[string, RunDetail, string | null]>([
       within(timing)
         .getAllByRole('term')
         .map((term) => term.textContent),
-    ).toEqual(['Started', ...(ended ? ['Ended'] : []), 'Duration'])
+    ).toEqual(['Duration', 'Started', ...(ended ? ['Ended'] : [])])
     const fact = (term: string) =>
       within(timing).getByText(term, { selector: 'dt' }).nextElementSibling
     expectInstant(fact('Started'), detail.run.startedAt, '22 Sep 2026, 09:00:00 UTC')
@@ -886,16 +871,103 @@ it('leads a search with what it asked, then its intent and timing, and only its 
     expect(within(container).queryByRole('heading', { name: heading })).toBeNull()
   for (const gone of ['Submission outcome', 'Raw response', 'Technical details', 'searched'])
     expect(container.textContent).not.toContain(gone)
-  // Results and the truth about coverage stay. A trimmed page states no per-kind
-  // coverage, so it says once that more results remain.
+  // One Results heading counts the page and leads the ranked results. A trimmed page
+  // states no per-kind coverage, and its heading already says more remain.
   const results = container.querySelector('[aria-label="Results in rank order"]')!
   expect(results.querySelectorAll(':scope > li')).toHaveLength(5)
-  const coverage = container.querySelector('[aria-label="Search coverage"]')!
-  expect(coverage.textContent).toBe('More results were available after this page.')
-  // One Result heading leads the coverage and the ranked results.
-  const result = within(container).getByRole('heading', { name: 'Result' })
-  expect(result.compareDocumentPosition(coverage) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-  expect(result.closest('section')!.contains(results)).toBe(true)
+  const heading = within(container).getByRole('heading', { name: 'Results (5+)' })
+  expect(heading.closest('section')!.contains(results)).toBe(true)
+  expect(container.querySelector('[aria-label="Search coverage"]')).toBeNull()
+  expect(container.textContent).not.toContain('More results were available')
+})
+
+/** A stored trimmed search page with `count` operation hits. */
+const trimmedPage = (count: number, more: boolean, statuses?: unknown[]) =>
+  JSON.stringify({
+    hits: Array.from({ length: count }, (_, index) => ({
+      call_path: `coral.providers.github.pulls.op${index}`,
+      signature_line: `op${index}(input: {}): Promise<unknown>`,
+      description_snippet: '',
+    })),
+    has_more: more,
+    ...(statuses && { retriever_statuses: statuses }),
+  })
+const failedOperations = {
+  retriever: 'operation',
+  state: 'error',
+  coverage: {
+    eligible_units: 3,
+    searched_units: 0,
+    failed_units: 3,
+    returned_count: 0,
+    has_more: false,
+  },
+}
+
+// Catches: a heading that counts the limit, invents a total, or drops a coverage warning.
+// Coral stores no total match count: only the page's hits and whether more remain.
+it.each<[string, string, typeof searchContext | undefined, string, string[]]>([
+  ['a complete page', trimmedPage(2, false), undefined, 'Results (2)', []],
+  ['a page with more after it', stored.complete, undefined, 'Results (5+)', []],
+  ['an empty page', trimmedPage(0, false), undefined, 'Results (0)', []],
+  [
+    'a later page, counting only its own results',
+    trimmedPage(3, true),
+    { ...searchContext, cursor: 'next-page' } as unknown as typeof searchContext,
+    'Results (3+)',
+    [],
+  ],
+  [
+    'partial coverage',
+    stored.partial,
+    undefined,
+    'Results (3)',
+    ['1 of 3 providers failed', 'Results may be missing.'],
+  ],
+  [
+    'a kind that could not be searched',
+    stored.error,
+    undefined,
+    'Results (1)',
+    ['could not search', 'Results are missing.'],
+  ],
+  [
+    'an empty page whose search failed',
+    trimmedPage(0, false, [failedOperations]),
+    undefined,
+    'Results (0)',
+    ['could not search', 'Results are missing.'],
+  ],
+  [
+    'an untrimmed page with per-kind counts',
+    stored.untrimmed,
+    undefined,
+    'Results (5+)',
+    ['100+ found', 'none match'],
+  ],
+])('heads %s with its own count', (_, response, context, heading, coverage) => {
+  const evidence = discovered(context ?? searchContext, response)
+  const container = document.createElement('div')
+  container.innerHTML = markup({
+    ...pendingPage,
+    selected: null,
+    selectedRow: null,
+    detail: tool({ tool: 'search' }, evidence),
+  })
+  const view =
+    evidence.kind === 'discovery' && evidence.view.kind === 'search' ? evidence.view : null
+  const title = within(container).getByRole('heading', { name: heading })
+  const section = title.closest('section')!
+  // The count is the results Coral returned on this page, not the page limit.
+  expect(section.querySelectorAll('[aria-label="Results in rank order"] > li')).toHaveLength(
+    view!.page.hits.length,
+  )
+  if (view!.page.hits.length === 0) expect(section).toHaveTextContent('This page has no results.')
+  const strip = section.querySelector('[aria-label="Search coverage"]')
+  if (coverage.length === 0) expect(strip).toBeNull()
+  for (const text of coverage) expect(strip).toHaveTextContent(text)
+  expect(container.textContent).not.toContain('More results were available')
+  expect(container.textContent).not.toMatch(/Results \(\d+\/\d+\)/)
 })
 
 /** Today's catalog page for each result, except the second, which is gone. */
@@ -962,14 +1034,62 @@ it.each([
         paths === 1 ? '1 declaration path' : `${paths} declaration paths`,
       )
     expect(row.textContent).not.toContain('Matched declaration paths')
-    expect(row.querySelector('details')).toBeNull()
-    // The catalog keeps the full details: no rank, signature, description or guidance here.
     expect(row.textContent!.startsWith(String(index + 1))).toBe(false)
-    expect(row.querySelector('pre')).toBeNull()
-    expect(row.textContent).not.toContain(hit.signatureLine)
-    expect(row.textContent).not.toContain(hit.descriptionSnippet.slice(0, 40))
-    expect(row.textContent).not.toContain('Guidance:')
+    // The card's own closed Details, at its foot, holds the retained signature, description
+    // and guidance exactly; the summary above it shows none of them.
+    const details = row.querySelector(':scope > details')!
+    expect(row.querySelectorAll('details')).toHaveLength(1)
+    expect(row.lastElementChild).toBe(details)
+    expect(details).not.toHaveAttribute('open')
+    expect(details.querySelector('summary')!.textContent).toBe('Details')
+    expect(details.querySelector('pre')!.textContent).toBe(hit.signatureLine)
+    expect(within(details as HTMLElement).getByText('Signature')).toBeTruthy()
+    expect(details.textContent).toContain(hit.descriptionSnippet)
+    if (hit.guidanceSnippet === null) expect(details.textContent).not.toContain('Guidance')
+    else expect(factIn(details, 'Guidance')!.textContent).toBe(hit.guidanceSnippet)
+    const summary = row.cloneNode(true) as HTMLElement
+    summary.querySelector('details')!.remove()
+    expect(summary.querySelector('pre')).toBeNull()
+    expect(summary.textContent).not.toContain(hit.signatureLine)
+    if (hit.descriptionSnippet)
+      expect(summary.textContent).not.toContain(hit.descriptionSnippet.slice(0, 40))
+    expect(summary.textContent).not.toContain('Guidance')
   })
+})
+
+// Catches: an empty Details toggle on a result that retained no documentation, or a Details
+// that shows a part the result did not retain.
+it.each<[string, Record<string, unknown>, string[] | null]>([
+  ['nothing beyond its call path', { signature_line: '', description_snippet: ' ' }, null],
+  [
+    'only guidance',
+    { signature_line: '', description_snippet: '', guidance_snippet: 'Ask first.' },
+    ['Guidance', 'Ask first.'],
+  ],
+  [
+    'only a signature',
+    { signature_line: 'get(input: {}): Promise<unknown>', description_snippet: '' },
+    ['Signature', 'get(input: {}): Promise<unknown>'],
+  ],
+])('gives a result with %s Details only for what it retained', (_, retained, shown) => {
+  const container = searchPanel(
+    JSON.stringify({
+      hits: [{ call_path: 'coral.providers.github.pulls.get', ...retained }],
+      has_more: false,
+    }),
+  )
+  const row = container.querySelector('[aria-label="Results in rank order"] > li')!
+  expect(row.querySelector('code')!.textContent).toBe('coral.providers.github.pulls.get')
+  const details = row.querySelector('details')
+  if (shown === null) {
+    expect(details).toBeNull()
+    expect(row.textContent).not.toContain('Details')
+    return
+  }
+  expect(details).not.toBeNull()
+  for (const text of shown) expect(details).toHaveTextContent(text)
+  for (const absent of ['Guidance', 'Signature'].filter((part) => !shown.includes(part)))
+    expect(details).not.toHaveTextContent(absent)
 })
 
 it('shows a search stored in an earlier shape as stored', () => {
@@ -979,25 +1099,463 @@ it('shows a search stored in an earlier shape as stored', () => {
   expect(container.textContent).not.toContain('Technical details')
 })
 
-it('keeps a describe call, apart from search, with its raw response and technical details', () => {
+type Described = Extract<DiscoveryContext, { kind: 'describe' }>
+const describedOperation: Described = {
+  kind: 'describe',
+  callPath: 'coral.providers.github.issues.create',
+  types: [],
+}
+const describedFunction: Described = {
+  kind: 'describe',
+  callPath: 'coral.functions.github.openIssuesByLabel',
+  types: ['Issue', 'Label'],
+}
+/** A retained `describe` call, selected, with `evidence` as Coral stored it. */
+const describePanel = (evidence: InteractionEvidence, overrides: Partial<InteractionRow> = {}) => {
+  const name = `${workspace}/tasks/one/interactions/describe`
   const container = document.createElement('div')
   container.innerHTML = markup({
     ...pendingPage,
-    selected: null,
+    selected: name,
+    selectedRow: null,
+    detail: tool({ tool: 'describe', name, intent: 'Check the inputs', ...overrides }, evidence),
+  })
+  return { container, name }
+}
+const detailsOf = (container: HTMLElement) =>
+  within(container).getByText('Details', { selector: 'summary' }).closest('details')!
+
+// Catches: a describe panel that buries its target under generic headings, or drops
+// retained documentation when it folds it away.
+it.each([
+  {
+    case: 'an operation',
+    context: describedOperation,
+    response: stored.describeOperation,
+    asked: ['Call path', 'Provider', 'Intent'],
+    title: 'Create an issue',
+    kind: 'operation',
+    summary: ['issues'],
+    folded: ['namespace issues', 'Any user with pull access', 'API method documentation'],
+  },
+  {
+    case: 'a saved function with diagnostics',
+    context: describedFunction,
+    response: stored.describeFunction,
+    asked: ['Call path', 'Types', 'Intent'],
+    title: 'coral.functions.github.openIssuesByLabel',
+    kind: 'saved function',
+    summary: ['1 error'],
+    folded: [
+      'function openIssuesByLabel',
+      'const limit = input.limit ?? 20',
+      "Cannot find name 'coral'.",
+      'error TS2304',
+    ],
+  },
+])('shows a describe of $case like a search, with its documentation in Details', (row) => {
+  const evidence = discovered(row.context, row.response)
+  const { container, name } = describePanel(evidence)
+  const header = container.querySelector('header')!
+  expect(within(header).getByRole('heading', { level: 2 }).textContent).toBe(row.context.callPath)
+  expect(within(header).getByText('describe')).toBeTruthy()
+  // One list without a heading, as the subtitle names the call: what the agent asked, then
+  // the call's own times, so no section gap splits them. Details holds lists of its own.
+  const lists = [...container.querySelectorAll('dl')].filter((list) => !list.closest('details'))
+  expect(lists).toHaveLength(1)
+  const [asked] = lists
+  expect(asked.closest('section')!.querySelector('h4')).toBeNull()
+  expect(within(container).queryByRole('heading', { name: 'Describe' })).toBeNull()
+  expect(terms(asked)).toEqual([...row.asked, 'Started', 'Completed'])
+  expect(factIn(asked, 'Call path')).toHaveTextContent(row.context.callPath)
+  if (row.context.types.length)
+    expect(factIn(asked, 'Types')).toHaveTextContent(row.context.types.join(''))
+  expect(factIn(asked, 'Intent')).toHaveTextContent('Check the inputs')
+  expectInstant(factIn(asked, 'Completed'), interaction.completedAt!, '22 Sep 2026, 09:00:00 UTC')
+  for (const heading of ['Context', 'Call'])
+    expect(within(container).queryByRole('heading', { name: heading })).toBeNull()
+  for (const gone of ['Submission outcome', 'Technical details'])
+    expect(container.textContent).not.toContain(gone)
+  // A compact Result names the target, its kind and its exact call path.
+  const result = within(container).getByRole('heading', { name: 'Result' }).closest('section')!
+  expect(result).toHaveTextContent(row.title)
+  expect(result).toHaveTextContent(row.kind)
+  expect(result.querySelector('code')!.textContent).toBe(row.context.callPath)
+  for (const text of row.summary) expect(result).toHaveTextContent(text)
+  // Every retained part of the documentation stays, folded into a closed Details at the
+  // foot of the same Result card, so opening it grows that card.
+  const details = detailsOf(container)
+  expect(details).not.toHaveAttribute('open')
+  const card = details.parentElement!
+  expect(result.contains(card)).toBe(true)
+  expect(card.lastElementChild).toBe(details)
+  expect(card).toHaveTextContent(row.title)
+  expect(card.querySelector('code')!.textContent).toBe(row.context.callPath)
+  expect(result.querySelectorAll('details')).toHaveLength(1)
+  for (const text of row.folded) expect(details).toHaveTextContent(text)
+  const summary = card.cloneNode(true) as HTMLElement
+  summary.querySelector('details')!.remove()
+  for (const text of row.folded) expect(summary).not.toHaveTextContent(text)
+  for (const text of row.summary) expect(summary).toHaveTextContent(text)
+  expect(details).toHaveTextContent(name)
+  // A describe shows its documentation, not the raw response it was read from.
+  expect(container.textContent).not.toContain('Raw response')
+  expect(container.querySelectorAll('details')).toHaveLength(1)
+})
+
+it('keeps every retained operation fact when it folds the documentation away', () => {
+  const evidence = discovered(describedOperation, stored.describeOperation)
+  if (evidence.kind !== 'discovery' || evidence.view.kind !== 'describe') throw new Error()
+  const { container } = describePanel(evidence)
+  const description = evidence.view.description
+  const details = detailsOf(container)
+  expect(details.querySelector('pre')!.textContent).toBe(description.declaration)
+  expect(factIn(container.querySelector('dl')!, 'Provider')).toHaveTextContent(
+    description.operation!.providerLabel,
+  )
+})
+
+it.each<[string, InteractionEvidence, Partial<InteractionRow>, string[]]>([
+  [
+    'a rejected describe',
+    { kind: 'rejection', code: 'invalid_argument', message: 'Unknown call path' },
+    { outcome: 'rejected' },
+    ['Rejected: invalid_argument', 'Unknown call path'],
+  ],
+  [
+    'a describe whose completion is unknown',
+    { kind: 'unknown' },
+    { outcome: 'unknown', completedAt: null },
+    ['Completion is unknown or incomplete.'],
+  ],
+  [
+    'a describe whose request context is unavailable',
+    {
+      kind: 'discovery',
+      context: { kind: 'unknown' },
+      response: '{"opaque":true}',
+      view: { kind: 'raw' },
+    },
+    {},
+    ['The request context is unavailable.'],
+  ],
+  [
+    'a describe stored in an earlier shape',
+    discovered(describedOperation, '{"opaque":true}'),
+    {},
+    ['Stored in an earlier shape', 'Reef cannot show this response in the current layout.'],
+  ],
+])('shows only the notice for %s, with no Details', (_, evidence, overrides, notices) => {
+  const { container, name } = describePanel(evidence, overrides)
+  for (const notice of notices) expect(container.textContent).toContain(notice)
+  const lists = container.querySelectorAll('dl')
+  expect(lists).toHaveLength(1)
+  // The call's own times close its one list.
+  const times = overrides.completedAt === null ? ['Started'] : ['Started', 'Completed']
+  expect(terms(lists[0]).slice(-times.length)).toEqual(times)
+  // Nothing retained to describe: no Details holding only the record name, and no raw response.
+  expect(container.querySelector('details')).toBeNull()
+  expect(container.querySelector('hr')).toBeNull()
+  expect(container.textContent).not.toContain(name)
+  for (const gone of ['Details', 'Raw response', 'opaque', 'The stored response follows.'])
+    expect(container.textContent).not.toContain(gone)
+  expect(within(container).queryByRole('heading', { name: 'Result' })).toBeNull()
+})
+
+/** A retained `exec` submission, selected, with `evidence` as Coral stored it. */
+const execPanel = (overrides: Partial<InteractionRow>, evidence: InteractionEvidence) => {
+  const name = `${workspace}/tasks/one/interactions/exec`
+  const container = document.createElement('div')
+  container.innerHTML = markup({
+    ...pendingPage,
+    selected: name,
+    selectedRow: null,
+    detail: tool({ tool: 'exec', name, intent: 'Send invoice reminders', ...overrides }, evidence),
+  })
+  return { container, name }
+}
+/** The Wax list and card classes a search result uses. */
+const resultCard = () => {
+  const card = searchPanel(stored.complete).querySelector(
+    '[aria-label="Results in rank order"] > li',
+  )!
+  return { list: card.parentElement!.classList[0], item: card.classList[0] }
+}
+const diagnostic =
+  "program.ts(3,7): error TS2304: Cannot find name 'invoices'.\n    const total = invoices.length\n          ^"
+
+// Catches: an exec submission that buries its error under generic headings, prose or a
+// disclosure, or that claims more than the submission itself proves.
+it.each<{
+  case: string
+  overrides: Partial<InteractionRow>
+  evidence: InteractionEvidence
+  error?: string
+  notice?: string
+}>([
+  {
+    case: 'an accepted submission',
+    overrides: { outcome: 'succeeded', acceptedRun: run.name },
+    evidence: { kind: 'run', reference: run.name },
+  },
+  {
+    case: 'a rejected submission',
+    overrides: { outcome: 'rejected' },
+    evidence: { kind: 'rejection', code: 'program_admission_failed', message: diagnostic },
+    error: diagnostic,
+  },
+  {
+    case: 'a rejected submission without a message',
+    overrides: { outcome: 'rejected' },
+    evidence: { kind: 'rejection', code: 'program_admission_failed', message: ' ' },
+    notice: 'Rejected with no message: program_admission_failed',
+  },
+  {
+    // The badge, the icon and the outcome row already say it; no sentence repeats it.
+    case: 'a submission whose completion is unknown',
+    overrides: { outcome: 'unknown', completedAt: null },
+    evidence: { kind: 'unknown' },
+  },
+  {
+    case: 'a submission whose evidence is unavailable',
+    overrides: { outcome: 'succeeded' },
+    evidence: { kind: 'unknown' },
+    notice: 'The submission evidence is unavailable.',
+  },
+])('shows $case with its times and intent, and its outcome only in the badge', (row) => {
+  const { container, name } = execPanel(row.overrides, row.evidence)
+  const header = container.querySelector('header')!
+  expect(within(header).getByRole('heading', { level: 2 }).textContent).toBe(
+    'Send invoice reminders',
+  )
+  expect(within(header).getByText('exec submission')).toBeTruthy()
+  // One list, without a heading: the times together, then the intent and the outcome.
+  const lists = container.querySelectorAll('dl')
+  expect(lists).toHaveLength(1)
+  expect(lists[0].closest('section')!.querySelector('h4')).toBeNull()
+  const completed = row.overrides.completedAt !== null
+  // The title is the intent, so no Intent row repeats it.
+  expect(terms(lists[0])).toEqual(['Started', ...(completed ? ['Completed'] : [])])
+  expectInstant(factIn(lists[0], 'Started'), interaction.startedAt, '22 Sep 2026, 09:00:00 UTC')
+  // The header badge states the submission outcome, once; no row repeats it.
+  const badge =
+    row.overrides.outcome === 'unknown' ? 'unknown / incomplete' : row.overrides.outcome!
+  expect(within(header).getByText(badge)).toBeTruthy()
+  expect(within(container).getAllByText(badge)).toHaveLength(1)
+  expect(container.textContent).not.toContain('Submission outcome')
+  for (const heading of ['Context', 'Call'])
+    expect(within(container).queryByRole('heading', { name: heading })).toBeNull()
+  for (const gone of ['Run accepted', 'Open execution', 'Technical details', 'Rejected:', name])
+    expect(container.textContent).not.toContain(gone)
+  expect(container.querySelector('details')).toBeNull()
+  expect(container.querySelector('a')).toBeNull()
+  // The exact error, whitespace and all, in the card a search result uses.
+  const card = container.querySelector('pre')?.parentElement ?? null
+  if (row.error === undefined) expect(card).toBeNull()
+  else {
+    const { list, item } = resultCard()
+    expect(card!.textContent).toBe(row.error)
+    expect(card!.querySelector('pre')!.textContent).toBe(row.error)
+    expect(card!.classList).toContain(item)
+    expect(card!.parentElement!.classList).toContain(list)
+    expect(within(container).getByRole('region', { name: 'Error' })).toBe(card!.parentElement)
+  }
+  if (row.notice) expect(container.textContent).toContain(row.notice)
+  if (row.overrides.outcome === 'unknown') {
+    expect(within(header).getByText('unknown / incomplete')).toBeTruthy()
+    expect(header.querySelector('svg')).not.toBeNull()
+    expect(container.textContent).not.toContain('Completion is unknown')
+    expect(container.textContent).not.toContain('External effects may be uncertain')
+  }
+  // A submission's outcome is the submission's, not the Run's.
+  expect(container.textContent).not.toMatch(/Run (succeeded|completed|accepted)/)
+})
+
+/** A retained `save_function` or `delete_function` call, selected, with `evidence` as stored. */
+const functionPanel = (overrides: Partial<InteractionRow>, evidence: InteractionEvidence) => {
+  const name = `${workspace}/tasks/one/interactions/${overrides.tool}`
+  const container = document.createElement('div')
+  container.innerHTML = markup({
+    ...pendingPage,
+    selected: name,
+    selectedRow: null,
+    detail: tool({ name, ...overrides }, evidence),
+  })
+  return { container, name }
+}
+const savedFunctionId = '0199a7c2-3b4d-7e5f-8a6b-1c2d3e4f5a6b'
+const savedFunction = `${workspace}/savedFunctions/${savedFunctionId}`
+const functionCalls = [
+  {
+    tool: 'save_function',
+    subtitle: 'save function',
+    intent: 'Save the reminder batch',
+    // A save states no target: it retained only an ID that no page opens.
+    done: null,
+    noun: 'save',
+    notices: false,
+    code: 'saved_function_admission_failed',
+    message: 'reminders.ts(1,1): error TS1128: Declaration or statement expected.\n  }\n  ^',
+  },
+  {
+    tool: 'delete_function',
+    subtitle: 'delete function',
+    intent: 'Remove the old reminder batch',
+    done: 'Deleted',
+    noun: 'delete',
+    notices: true,
+    code: 'not_found',
+    message: "Saved function 'billing.oldReminders' does not exist.\n  path: billing.oldReminders",
+  },
+]
+const functionCases = functionCalls.flatMap((call) =>
+  (
+    [
+      {
+        case: `a ${call.noun} that succeeded`,
+        overrides: { outcome: 'succeeded' },
+        evidence: { kind: 'function', reference: savedFunction },
+      },
+      {
+        case: `a rejected ${call.noun}`,
+        overrides: { outcome: 'rejected' },
+        evidence: { kind: 'rejection', code: call.code, message: call.message },
+        error: call.message,
+      },
+      {
+        case: `a rejected ${call.noun} without a message`,
+        overrides: { outcome: 'rejected' },
+        evidence: { kind: 'rejection', code: call.code, message: '' },
+        // A save without a message shows only its badge: no fallback sentence.
+        notice: call.notices ? `Rejected with no message: ${call.code}` : undefined,
+      },
+      {
+        case: `a ${call.noun} whose completion is unknown`,
+        overrides: { outcome: 'unknown', completedAt: null },
+        evidence: { kind: 'unknown' },
+      },
+      {
+        case: `a ${call.noun} whose evidence is unavailable`,
+        overrides: { outcome: 'succeeded' },
+        evidence: { kind: 'unknown' },
+        notice: call.notices ? `The ${call.noun} evidence is unavailable.` : undefined,
+      },
+    ] as {
+      case: string
+      overrides: Partial<InteractionRow>
+      evidence: InteractionEvidence
+      error?: string
+      notice?: string
+    }[]
+  ).map((row) => ({ ...row, call })),
+)
+
+// Catches: a save or delete that buries what it changed or why it failed under generic
+// headings, repeats its outcome, shows its record path or workspace, or shows a function's
+// documentation that the call did not retain.
+it.each(functionCases)('shows $case with its intent, target, then times', (row) => {
+  const { call } = row
+  const { container, name } = functionPanel(
+    { tool: call.tool, intent: call.intent, ...row.overrides },
+    row.evidence,
+  )
+  const header = container.querySelector('header')!
+  expect(within(header).getByRole('heading', { level: 2 }).textContent).toBe(call.intent)
+  expect(within(header).getByText(call.subtitle)).toBeTruthy()
+  // One list without a heading: the intent, the function it changed, then the times at the
+  // end. The badge states the outcome once.
+  const lists = container.querySelectorAll('dl')
+  expect(lists).toHaveLength(1)
+  expect(lists[0].closest('section')!.querySelector('h4')).toBeNull()
+  const completed = row.overrides.completedAt !== null
+  const changed = row.evidence.kind === 'function' && call.done !== null
+  // The title is the intent, so no Intent row repeats it.
+  expect(terms(lists[0])).toEqual([
+    ...(changed ? [call.done!] : []),
+    'Started',
+    ...(completed ? ['Completed'] : []),
+  ])
+  expectInstant(factIn(lists[0], 'Started'), interaction.startedAt, '22 Sep 2026, 09:00:00 UTC')
+  const badge =
+    row.overrides.outcome === 'unknown' ? 'unknown / incomplete' : row.overrides.outcome!
+  expect(within(header).getByText(badge)).toBeTruthy()
+  expect(within(container).getAllByText(badge)).toHaveLength(1)
+  for (const heading of ['Context', 'Call', 'Result'])
+    expect(within(container).queryByRole('heading', { name: heading })).toBeNull()
+  for (const gone of [
+    'Submission outcome',
+    'Technical details',
+    'Workspace',
+    'Rejected:',
+    'Completion is unknown',
+    name,
+    savedFunction,
+    'workspaces/',
+  ])
+    expect(container.textContent).not.toContain(gone)
+  // The call kept no source, declaration or diagnostics, so nothing folds into Details.
+  expect(container.querySelector('details')).toBeNull()
+  // It retained only the function's ID. No route opens a function by ID, so it has no link.
+  expect(container.querySelector('a')).toBeNull()
+  if (changed) expect(factIn(lists[0], call.done!)!.textContent).toBe(savedFunctionId)
+  else {
+    expect(within(container).queryByText('Saved', { selector: 'dt' })).toBeNull()
+    expect(container.textContent).not.toContain(savedFunctionId)
+  }
+  const { list, item } = resultCard()
+  const error = container.querySelector('section[aria-label="Error"]')
+  if (row.error === undefined) expect(error).toBeNull()
+  else {
+    const card = error!.firstElementChild!
+    expect(error!.classList).toContain(list)
+    expect(card.classList).toContain(item)
+    expect(card.textContent).toBe(row.error)
+    expect(card.querySelector('pre')!.textContent).toBe(row.error)
+  }
+  if (row.notice) expect(container.textContent).toContain(row.notice)
+  if (!call.notices)
+    for (const gone of ['Rejected with no message', 'evidence is unavailable', call.code])
+      expect(container.textContent).not.toContain(gone)
+})
+
+// Catches: a rejected search that repeats its outcome as a "Rejected: code" line, hides its
+// exact error, or shows results it never returned.
+it.each([
+  ['a one-line error', 'invalid_cursor', 'Search cursor does not match this request'],
+  [
+    'a multi-line error',
+    'invalid_argument',
+    'limit must be between 1 and 50\n  got: 500\n    at search(limit)',
+  ],
+])('shows a search rejected with %s in the card a result uses', (_, code, message) => {
+  const name = `${workspace}/tasks/one/interactions/search`
+  const container = document.createElement('div')
+  container.innerHTML = markup({
+    ...pendingPage,
+    selected: name,
     selectedRow: null,
     detail: tool(
-      { tool: 'describe' },
-      discovered(
-        { kind: 'describe', callPath: 'coral.providers.github.issues.create', types: [] },
-        stored.describeOperation,
-      ),
+      { tool: 'search', name, outcome: 'rejected' },
+      { kind: 'rejection', code, message },
     ),
   })
-  expect(within(container).getByRole('heading', { name: 'Call' })).toBeTruthy()
-  for (const kept of ['Submission outcome', 'Raw response', 'Technical details'])
-    expect(container.textContent).toContain(kept)
-  const completed = within(container).getByText('Completed', { selector: 'dt' }).nextElementSibling
-  expectInstant(completed, interaction.completedAt!, '22 Sep 2026, 09:00:00 UTC')
+  const header = container.querySelector('header')!
+  expect(within(header).getByRole('heading', { level: 2 }).textContent).toBe(interaction.intent)
+  expect(within(header).getByText('search')).toBeTruthy()
+  expect(within(container).getAllByText('rejected')).toHaveLength(1)
+  const lists = container.querySelectorAll('dl')
+  expect(lists).toHaveLength(1)
+  expect(terms(lists[0])).toEqual(['Started', 'Completed'])
+  for (const gone of ['Rejected:', code, 'Results', 'Raw response', 'Technical details'])
+    expect(container.textContent).not.toContain(gone)
+  expect(container.querySelector('details')).toBeNull()
+  const error = container.querySelector('section[aria-label="Error"]')!
+  const card = error.firstElementChild!
+  const { list, item } = resultCard()
+  expect(error.classList).toContain(list)
+  expect(card.classList).toContain(item)
+  expect(card.textContent).toBe(message)
+  expect(card.querySelector('pre')!.textContent).toBe(message)
 })
 
 const succeeded = (finalValue: string | null): RunDetail => ({
@@ -1018,18 +1576,15 @@ it.each<[string, Detail, string | null]>([
     '18450.70',
   ],
 ])(
-  'shows what %s returned in a Final value card, or says it returned nothing',
+  'shows what %s returned in a Final value card, or nothing when it returned nothing',
   (_, detail, value) => {
     const container = document.createElement('div')
     container.innerHTML = markup({ ...pendingPage, selected: null, selectedRow: null, detail })
     const card = container.querySelector('[aria-label="Final value"]')
-    if (value === null) {
-      expect(card).toBeNull()
-      expect(container.textContent).toContain('The program returned no final value.')
-    } else {
-      expect(card!.querySelector('pre')!.textContent).toContain(value)
-      expect(container.textContent).not.toContain('The program returned no final value.')
-    }
+    // No value shows no card and no sentence; JSON null is a value and has its card.
+    if (value === null) expect(card).toBeNull()
+    else expect(card!.querySelector('pre')!.textContent).toContain(value)
+    expect(container.textContent).not.toContain('returned no final value')
     expect(within(container).queryByText('Final value', { selector: 'summary' })).toBeNull()
   },
 )
@@ -1162,7 +1717,8 @@ it.each<[string, RunEvent, boolean, string, string[], string | null]>([
   },
 )
 
-it('keeps the time and record line for other run events', () => {
+// Catches: a run event that loses its time when no row is selected, or shows it raw.
+it('states another run event its time once, in its list', () => {
   const container = document.createElement('div')
   container.innerHTML = markup({
     ...pendingPage,
@@ -1170,7 +1726,9 @@ it('keeps the time and record line for other run events', () => {
     selectedRow: null,
     detail: event({ ...at, kind: 'run.started' }),
   })
-  expect(container.textContent).toContain(`${at.occurredAt} · record #4`)
+  const [list] = container.querySelectorAll('dl')
+  expectInstant(factIn(list, 'Started'), at.occurredAt, '22 Sep 2026, 09:00:00 UTC')
+  expect(container.textContent).not.toContain('record #')
 })
 
 it('keeps the whole log message and emitted value in the body', () => {
@@ -1191,7 +1749,7 @@ it('keeps the whole log message and emitted value in the body', () => {
   }
 })
 
-it('keeps another run event record identity behind technical details', () => {
+it('keeps no record path for another run event, but its header badge', () => {
   const name = `${run.name}/events/7`
   const container = document.createElement('div')
   container.innerHTML = markup({
@@ -1204,17 +1762,133 @@ it('keeps another run event record identity behind technical details', () => {
       event: { kind: 'run.started', sequence: '7', occurredAt: run.startedAt },
     },
   })
-  const technical = within(container)
-    .getByText('Technical details', { selector: 'summary' })
-    .closest('details')!
-  expect(technical).not.toHaveAttribute('open')
-  expect(technical).toHaveTextContent(name)
+  expect(container.textContent).not.toContain('Technical details')
+  expect(container.textContent).not.toContain(name)
   // Other record kinds retain their header status icon and badge.
   expect(container.querySelector('header svg')).not.toBeNull()
   expect(within(container.querySelector('header')!).getByText('retained')).toBeTruthy()
 })
 
 const runActions = () => screen.getByRole('region', { name: 'Run actions' })
+
+// Catches: a Run's action list that loses an action's identity, its exact review, its
+// deadline or the next page, or that stops using the cards a search result uses.
+it('lists what the Run waits on as cards, each opening its exact review', () => {
+  const approval = {
+    kind: 'approval' as const,
+    name: `${workspace}/approvals/send`,
+    callPath: 'coral.providers.mail.send',
+    providerLabel: 'Mail',
+    deadline: '2030-09-22T09:15:00Z',
+  }
+  const connection = {
+    kind: 'account_connection' as const,
+    name: `${workspace}/accountConnections/linear`,
+    callPath: '',
+    providerLabel: 'Linear',
+    deadline: '2030-09-22T09:20:00Z',
+  }
+  const waiting = {
+    ...run,
+    requiresAction: true,
+    actionPage: { total: '2', next: '', actions: [approval, connection] },
+  }
+  renderRoute(
+    <ActionReviewSession>
+      <ActivityDetail
+        page={{
+          ...pendingPage,
+          selected: waiting.name,
+          selectedRow: waiting,
+          detail: {
+            kind: 'run',
+            run: waiting,
+            request: null,
+            source: 'return null;',
+            linkedFunctions: [],
+            terminal: { kind: 'unavailable' },
+          },
+        }}
+      />
+    </ActionReviewSession>,
+    { entry: '/activity' },
+  )
+  const nav = within(runActions()).getByRole('navigation', { name: 'Actions in this run' })
+  // The count is the Run's total, and the list holds every one of them.
+  expect(within(nav).getByText('2 actions need you.')).toBeInTheDocument()
+  const list = within(nav).getByRole('list')
+  const items = within(list).getAllByRole('listitem')
+  expect(items).toHaveLength(2)
+  const { list: listClass, item: itemClass } = resultCard()
+  expect(list.classList).toContain(listClass)
+  for (const item of items) expect(item.classList).toContain(itemClass)
+  const [first, second] = items
+  // An approval names its exact call path; a connection names its provider account.
+  expect(first.querySelector('code')!.textContent).toBe(approval.callPath)
+  expect(within(first).getByText('approval')).toBeInTheDocument()
+  expect(within(second).getByText('Connect your Linear account')).toBeInTheDocument()
+  expect(within(second).getByText('account connection')).toBeInTheDocument()
+  for (const [item, action, label] of [
+    [first, approval, 'Review coral.providers.mail.send'],
+    [second, connection, 'Connect your Linear account'],
+  ] as const) {
+    const link = within(item).getByRole('link', { name: label })
+    expect(new URL(link.getAttribute('href')!, 'http://reef').searchParams.get('request')).toBe(
+      action.name,
+    )
+    expect(item.querySelector('time')).toHaveAttribute('dateTime', action.deadline)
+  }
+  // The loader reads every page, so the list is whole: nothing links to another page.
+  expect(within(nav).queryByRole('link', { name: /actions in this run|First actions/ })).toBeNull()
+  expect(within(nav).queryByRole('status')).toBeNull()
+})
+
+// Catches: a list that hides the actions a failed page left out, or claims to be whole.
+it('says how many actions loaded when a page of them failed, and offers to try again', () => {
+  const waiting = {
+    ...run,
+    requiresAction: true,
+    actionPage: {
+      total: '150',
+      next: '',
+      incomplete: true,
+      actions: Array.from({ length: 100 }, (_, index) => ({
+        kind: 'approval' as const,
+        name: `${workspace}/approvals/action-${index}`,
+        callPath: `coral.providers.mail.send${index}`,
+        providerLabel: 'Mail',
+        deadline: '2030-09-22T09:15:00Z',
+      })),
+    },
+  }
+  renderRoute(
+    <ActionReviewSession>
+      <ActivityDetail
+        page={{
+          ...pendingPage,
+          selected: waiting.name,
+          selectedRow: waiting,
+          detail: {
+            kind: 'run',
+            run: waiting,
+            request: null,
+            source: 'return null;',
+            linkedFunctions: [],
+            terminal: { kind: 'unavailable' },
+          },
+        }}
+      />
+    </ActionReviewSession>,
+    { entry: '/activity' },
+  )
+  const nav = within(runActions()).getByRole('navigation', { name: 'Actions in this run' })
+  expect(within(nav).getByText('150 actions need you.')).toBeInTheDocument()
+  expect(within(within(nav).getByRole('list')).getAllByRole('listitem')).toHaveLength(100)
+  expect(within(nav).getByRole('status')).toHaveTextContent(
+    '100 of 150 actions loaded. The rest did not load.',
+  )
+  expect(within(nav).getByRole('button', { name: 'Try again' })).toBeInTheDocument()
+})
 
 describe('an account connection the Run waits on', () => {
   const connection: Extract<RequestDetail, { kind: 'account_connection' }> = {
@@ -1306,6 +1980,76 @@ describe('an account connection the Run waits on', () => {
     expect(within(footer).getByRole('button', { name: 'Connect Linear' })).toBeInTheDocument()
   })
 
+  // Catches: a selected connection request under the Run's own header, with Run controls or
+  // prose it does not need.
+  it.each(['pending', 'declined', 'expired', 'connected'] as const)(
+    'leads a %s connection request with its own header, then the Run as context',
+    (state) => {
+      renderConnection({ ...connection, state })
+      // One header, the request's: no program run header, title or badge.
+      const headers = document.querySelectorAll('header')
+      expect(headers).toHaveLength(1)
+      const header = headers[0]
+      // A settled request has left the pending list that names its provider.
+      expect(within(header).getByRole('heading', { level: 3 }).textContent).toBe(
+        state === 'pending' ? 'Connect your Linear account' : 'Connect your account',
+      )
+      expect(within(header).getByText('account connection request')).toBeInTheDocument()
+      expect(within(header).getByText(state)).toBeInTheDocument()
+      expect(screen.queryByRole('heading', { level: 2 })).not.toBeInTheDocument()
+      expect(document.body).not.toHaveTextContent('program run')
+      // A pending request's deadline reads in the header, as an approval's does.
+      const deadline = header.querySelector('time')
+      if (state === 'pending') expect(deadline).toHaveAttribute('dateTime', connection.expiresAt)
+      else expect(deadline).toBeNull()
+      // The Run follows as context, below the header, its times labelled as the Run's.
+      const list = document.querySelector('dl')!
+      expect(header.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(terms(list)).toEqual(['Exec intent', 'Requested by', 'Run duration', 'Run started'])
+      expect(factIn(list, 'Exec intent')).toHaveTextContent(run.intent!)
+      expect(factIn(list, 'Requested by')).toHaveTextContent('Collections agent · Finance')
+      expectInstant(factIn(list, 'Run started'), run.startedAt, '22 Sep 2026, 09:00:00 UTC')
+      // No Run cancel and no extra sentence about several calls.
+      expect(screen.queryByRole('button', { name: 'Cancel run' })).not.toBeInTheDocument()
+      expect(document.body).not.toHaveTextContent('One connection can unblock')
+      if (state === 'pending') {
+        expect(document.body).toHaveTextContent('Connect your Linear account to continue.')
+        const footer = screen.getByRole('button', { name: 'Decline' }).closest('footer')!
+        expect(within(footer).getByRole('button', { name: 'Connect Linear' })).toBeInTheDocument()
+        expect(footer.querySelector('time')).toBeNull()
+      } else expect(within(runActions()).getByRole('status')).toBeInTheDocument()
+      expect(document.body.textContent).not.toMatch(/Approve|Deny|Arguments/)
+    },
+  )
+
+  it('keeps Cancel run on the Run itself when no request is selected', () => {
+    renderRoute(
+      <ActionReviewSession>
+        <ActivityDetail
+          page={{
+            ...pendingPage,
+            selected: waiting.name,
+            selectedRow: waiting,
+            detail: {
+              kind: 'run',
+              run: waiting,
+              request: null,
+              source: 'return null;',
+              linkedFunctions: [],
+              terminal: { kind: 'unavailable' },
+            },
+          }}
+        />
+      </ActionReviewSession>,
+      { entry: '/activity' },
+    )
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(run.intent!)
+    expect(screen.getByRole('button', { name: 'Cancel run' })).toBeInTheDocument()
+    expect(
+      within(runActions()).getByRole('link', { name: 'Connect your Linear account' }),
+    ).toBeInTheDocument()
+  })
+
   it('shows a connection reached from one call as retained context, with nothing to act on', () => {
     const call: InvocationRow = {
       ...run,
@@ -1331,7 +2075,12 @@ describe('an account connection the Run waits on', () => {
               invocation: call,
               arguments: '{}',
               result: { kind: 'unknown' },
-              requests: [],
+              // The same connection, another approval, and a reference that no longer resolves.
+              requests: [
+                { kind: 'account_connection', name: connection.name },
+                { kind: 'approval', name: `${workspace}/approvals/other` },
+                { kind: 'unknown' },
+              ],
               request: connection,
               requestUnavailable: false,
               context: {
@@ -1348,9 +2097,11 @@ describe('an account connection the Run waits on', () => {
       { entry: '/activity' },
     )
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(call.callPath)
-    expect(screen.getByText('Request ID', { selector: 'dt' }).nextElementSibling).toHaveTextContent(
-      connection.name,
-    )
+    // The retained connection shows in a card with its state and deadline, not its raw ID.
+    const card = screen.getByRole('region', { name: 'Account connection' })
+    expect(card).toHaveTextContent('connection request: pending')
+    expect(card.querySelector('time')).toHaveAttribute('dateTime', connection.expiresAt)
+    expect(document.body).not.toHaveTextContent(connection.name)
     expect(screen.queryByRole('button', { name: /Connect|Decline/ })).not.toBeInTheDocument()
     // The call, its Run and the retained connection each keep their own state, named apart.
     expect(screen.queryByText('State', { selector: 'dt' })).not.toBeInTheDocument()
@@ -1358,6 +2109,64 @@ describe('an account connection the Run waits on', () => {
     expect(screen.getByText('connection request: pending')).toBeInTheDocument()
     expect(screen.getByText('program run: running')).toBeInTheDocument()
     expect(document.body).not.toHaveTextContent('Run state')
+    // The whole card is the one link: it opens the connection on its Run, where you act on it.
+    const open = card.querySelector('a')!
+    expect(open).toBe(card.firstElementChild)
+    expect(open).toHaveAccessibleName('Open account connection request: pending')
+    expect(open).toHaveTextContent('connection request: pending')
+    expect(open.querySelector('a, button, svg')).toBeNull()
+    const target = new URL(open.getAttribute('href')!, 'http://reef')
+    expect(target.searchParams.get('record')).toBe(run.name)
+    expect(target.searchParams.get('request')).toBe(connection.name)
+    // No second link for the same request; other requests keep theirs.
+    expect(screen.queryByRole('link', { name: 'Inspect account connection' })).toBeNull()
+    expect(screen.getAllByRole('link', { name: /account connection/ })).toEqual([open])
+    const approval = screen.getByRole('link', { name: 'Inspect approval' })
+    expect(new URL(approval.getAttribute('href')!, 'http://reef').searchParams.get('request')).toBe(
+      `${workspace}/approvals/other`,
+    )
+    expect(document.body).toHaveTextContent('This request reference is unavailable.')
+  })
+
+  // Catches: a connection link that reopens the same call instead of the request you act on.
+  it("links a call's connection to its Run, where you can act on it", () => {
+    const call: InvocationRow = {
+      ...run,
+      name: `${workspace}/invocations/waiting`,
+      run: run.name,
+      state: 'pending',
+      outcome: 'unknown',
+      dispatchedAt: null,
+      waitingNanos: '0',
+      provider: connection.provider,
+      operation: 'list',
+      callPath: 'coral.providers.linear.list',
+    }
+    renderRoute(
+      <ActionReviewSession>
+        <ActivityDetail
+          page={{
+            ...pendingPage,
+            selected: call.name,
+            selectedRow: { ...call, kind: 'invocation' },
+            detail: {
+              kind: 'invocation',
+              invocation: call,
+              arguments: '{}',
+              result: { kind: 'unknown' },
+              requests: [{ kind: 'account_connection', name: connection.name }],
+              request: null,
+              requestUnavailable: false,
+            },
+          }}
+        />
+      </ActionReviewSession>,
+      { entry: '/activity' },
+    )
+    const link = screen.getByRole('link', { name: 'Inspect account connection' })
+    const target = new URL(link.getAttribute('href')!, 'http://reef')
+    expect(target.searchParams.get('record')).toBe(run.name)
+    expect(target.searchParams.get('request')).toBe(connection.name)
   })
 
   it('holds Connect and Decline while the live view reconnects', () => {
@@ -1380,5 +2189,371 @@ describe('an account connection the Run waits on', () => {
     expect(screen.getByRole('button', { name: 'Decline' })).toBeDisabled()
     await userEvent.click(screen.getByRole('button', { name: 'Decline' }))
     expect(declines).toHaveLength(1)
+  })
+})
+
+/** One record's panel, as static markup in a container. */
+const show = (detail: Detail, selected: string | null = null) => {
+  const container = document.createElement('div')
+  container.innerHTML = markup({ ...pendingPage, selected, selectedRow: null, detail })
+  return container
+}
+// Catches: an approval review that adds its Run's state under its own decision, or drops the
+// Run's actual failure.
+it.each([
+  ['pending', { state: 'pending', actionable: true }, 'Approval required'],
+  [
+    'approved',
+    {
+      state: 'approved',
+      actionable: false,
+      approver: 'owner',
+      approverLabel: 'You',
+      decidedAt: '2026-09-22T09:01:00Z',
+      comment: 'Fine.',
+    },
+    'Approved',
+  ],
+  [
+    'denied',
+    {
+      state: 'declined',
+      actionable: false,
+      approver: 'owner',
+      approverLabel: 'You',
+      decidedAt: '2026-09-22T09:01:00Z',
+      comment: 'Wrong recipient.',
+    },
+    'Denied',
+  ],
+  ['expired', { state: 'expired', actionable: false }, 'Expired'],
+  ['closed', { state: 'closed', actionable: false }, 'Closed'],
+] as const)(
+  'shows a %s approval with its own status and no Run badge',
+  (state, overrides, label) => {
+    const pending = state === 'pending'
+    const failed = !pending
+    const container = show(
+      {
+        ...runPanel(
+          pending
+            ? { ...run, state: 'running', endedAt: null, requiresAction: true }
+            : { ...run, state: 'failed', endedAt: '2026-09-22T09:05:00Z', requiresAction: false },
+        ),
+        request: { ...approvalRequest, ...overrides },
+        terminal: failed
+          ? {
+              kind: 'failed',
+              code: 'program_execution_failed',
+              message: 'exact-run-failure',
+              error: null,
+            }
+          : { kind: 'unavailable' },
+      } as RunDetail,
+      run.name,
+    )
+    const review = within(container).getByRole('region', { name: /^Review / })
+    expect(within(review.querySelector('header')!).getByText(label)).toBeTruthy()
+    expect(container.textContent).not.toContain('program run:')
+    if ('comment' in overrides) {
+      const decision = within(container).getByText('Reviewed by', { selector: 'dt' }).closest('dl')!
+      expect(terms(decision)).toEqual(['Reviewed by', 'Decided', 'Comment'])
+      expect(factIn(decision, 'Comment')).toHaveTextContent(overrides.comment)
+    }
+    // The Run's actual failure stays, in its error card.
+    const failure = container.querySelector('[aria-label="Error"]')
+    if (failed) {
+      expect(failure).toHaveTextContent('program_execution_failed')
+      expect(failure).toHaveTextContent('exact-run-failure')
+    } else expect(failure).toBeNull()
+  },
+)
+
+describe('each record states only what helps, once', () => {
+  const scaffolding = ['Technical details', 'Context', 'Call', 'Run evidence', 'Retained request']
+  const expectNoScaffolding = (container: HTMLElement) => {
+    for (const heading of scaffolding)
+      expect(within(container).queryByRole('heading', { name: heading })).toBeNull()
+    expect(container.textContent).not.toContain('Technical details')
+  }
+  const ended = { state: 'failed' as const, endedAt: '2026-09-22T09:05:00Z' }
+
+  // Catches: a Run that pads its panel with sentences about evidence it does not have, repeats
+  // its badge, or folds a failure away; and a no-value that reads like a JSON null.
+  it.each<[string, RunDetail['terminal'], Partial<typeof run>, string[], string[]]>([
+    [
+      'returned no value',
+      { kind: 'succeeded', finalValue: null },
+      { state: 'succeeded' },
+      [],
+      ['returned no final value'],
+    ],
+    [
+      'returned JSON null',
+      { kind: 'succeeded', finalValue: 'null' },
+      { state: 'succeeded' },
+      ['null'],
+      [],
+    ],
+    ['was canceled', { kind: 'canceled' }, { state: 'canceled' }, [], ['Terminal outcome']],
+    ['timed out', { kind: 'timed_out' }, { state: 'timed_out' }, [], ['Terminal outcome']],
+    [
+      'ended without terminal evidence',
+      { kind: 'unavailable' },
+      { state: 'interrupted' },
+      [],
+      ['Terminal evidence is unavailable'],
+    ],
+    [
+      'failed',
+      {
+        kind: 'failed',
+        code: 'program_execution_failed',
+        message: 'TypeError: invoices is not iterable\n    at main (program.ts:3:7)',
+        error: {
+          name: 'TypeError',
+          message: 'invoices is not iterable',
+          frames: [{ source: 'program.ts', line: 3, column: 7 }],
+          operationCode: '',
+          operationTraceId: '',
+          operationStatus: 0,
+          operationBody: '',
+          operationBodyTruncated: false,
+          truncated: false,
+          circular: false,
+          causeOmitted: false,
+          omittedErrors: 0,
+          cause: null,
+          errors: [],
+        },
+      },
+      {},
+      [
+        'program_execution_failed',
+        'TypeError: invoices is not iterable\n    at main (program.ts:3:7)',
+        'program.ts:3:7',
+      ],
+      ['Failure details'],
+    ],
+  ])('shows a Run that %s with only its own evidence', (_, terminal, overrides, shown, gone) => {
+    const container = show({
+      ...runPanel({ ...ended, ...overrides }),
+      terminal,
+    } as RunDetail)
+    const lists = container.querySelectorAll('dl')
+    expect(lists).toHaveLength(1)
+    // Its times close the list.
+    expect(terms(lists[0])).toEqual(['Duration', 'Started', 'Ended'])
+    expectNoScaffolding(container)
+    for (const text of gone) expect(container.textContent).not.toContain(text)
+    // A failure is never folded away.
+    expect(container.querySelector('details')).toBeNull()
+    const card = container.querySelector<HTMLElement>(
+      '[aria-label="Final value"], [aria-label="Error"]',
+    )
+    if (shown.length === 0) expect(card).toBeNull()
+    for (const text of shown) expect(card!.textContent).toContain(text)
+  })
+
+  // Catches: an operation call that buries its controls, shows raw IDs, or hides its error.
+  it.each<[string, InvocationDetail['result'], string[], string[]]>([
+    [
+      'a Coral failure',
+      { kind: 'coral_failure', code: 'operation_disabled', message: 'The operation is disabled.' },
+      ['Coral failure: operation_disabled', 'The operation is disabled.'],
+      [],
+    ],
+    [
+      'an upstream result',
+      { kind: 'upstream_outcome', value: '{"status":200}' },
+      ['"status": 200'],
+      ['HTTP status and MCP isError'],
+    ],
+    ['no retained result', { kind: 'unknown' }, [], ['No retained outcome']],
+    [
+      'an incomplete dispatch',
+      { kind: 'indeterminate' },
+      ['External effects may be uncertain.'],
+      [],
+    ],
+  ])(
+    'shows an operation call with %s, its controls in view and no raw IDs',
+    (_, result, shown, gone) => {
+      const live = { ...run, state: 'running' as const, endedAt: null }
+      const detail: InvocationDetail = {
+        ...invocationPanel({}),
+        result,
+        context: {
+          ...runPanel(live, {
+            ...interaction,
+            tool: 'exec',
+            name: `${workspace}/tasks/one/interactions/exec`,
+          }),
+          source: 'exact-accepted-source',
+        },
+      }
+      const container = show(detail)
+      expectNoScaffolding(container)
+      for (const id of [detail.invocation.name, run.name])
+        expect(container.textContent).not.toContain(id)
+      for (const text of [...gone, 'Run ID', 'Invocation ID', 'Whole-run controls'])
+        expect(container.textContent).not.toContain(text)
+      // One list, its times last.
+      const lists = [...container.querySelectorAll('dl')].filter((list) => !list.closest('details'))
+      expect(lists).toHaveLength(1)
+      const times = ['Duration', 'Started', ...(detail.invocation.endedAt ? ['Ended'] : [])]
+      expect(terms(lists[0]).slice(-times.length)).toEqual(times)
+      // The whole-run controls stay in view; the accepted source folds into Details.
+      expect(
+        within(container).getByRole('button', { name: 'Cancel run' }).closest('details'),
+      ).toBeNull()
+      expect(
+        within(container).getByRole('link', { name: 'View in history' }).closest('details'),
+      ).toBeNull()
+      const details = within(container)
+        .getByText('Details', { selector: 'summary' })
+        .closest('details')!
+      expect(details).toHaveTextContent('exact-accepted-source')
+      for (const text of shown) {
+        expect(container.textContent).toContain(text)
+        expect(details.textContent).not.toContain(text)
+      }
+    },
+  )
+
+  // Catches: an approval review that keeps raw IDs, the program body or the Run's controls, or
+  // that dates the request by its Run or its deadline.
+  it.each([
+    ['from its Run', false],
+    ['from its call', true],
+  ])('reviews an approval reached %s with only the call to decide on', (_, fromCall) => {
+    const live = { ...run, state: 'running' as const, endedAt: null, requiresAction: true }
+    const call = {
+      ...invocationPanel({ state: 'pending', outcome: 'unknown', endedAt: null }),
+      request: approvalRequest,
+      context: { ...runPanel(live), source: 'exact-program-source' },
+    } as InvocationDetail
+    const container = show(
+      fromCall
+        ? call
+        : ({
+            ...runPanel(live),
+            source: 'exact-program-source',
+            request: approvalRequest,
+          } as RunDetail),
+      run.name,
+    )
+    expect(container.textContent).not.toContain('Technical details')
+    for (const id of [approvalRequest.name, approvalRequest.provider, workspace])
+      expect(container.textContent).not.toContain(id)
+    for (const heading of ['Context', 'Decision'])
+      expect(within(container).queryByRole('heading', { name: heading })).toBeNull()
+    // No program body, history link or Run cancel: the review decides this one call.
+    for (const gone of ['Program body', 'exact-program-source', 'View in history', 'Cancel run'])
+      expect(container.textContent).not.toContain(gone)
+    expect(container.textContent).toContain('exact-recipient')
+    expect(container.textContent).toContain('Approve this call')
+    // The call's own start, when the call is loaded; never the Run's start or the deadline.
+    const list = within(container).getByText('Requested by', { selector: 'dt' }).closest('dl')!
+    if (fromCall) {
+      expect(terms(list).slice(-2)).toEqual(['Requested by', 'Call started'])
+      expectInstant(
+        factIn(list, 'Call started'),
+        call.invocation.startedAt,
+        '22 Sep 2026, 09:00:00 UTC',
+      )
+    } else expect(terms(list).at(-1)).toBe('Requested by')
+    expect(container.textContent).not.toMatch(/^Started$/m)
+  })
+
+  // Catches: a duration with fractions of a second, ended or still counting.
+  it("states a Run's duration in whole seconds", () => {
+    const container = show(
+      runPanel({
+        state: 'succeeded',
+        durationNanos: '263001000000',
+        endedAt: '2026-09-22T09:05:00Z',
+        requiresAction: false,
+      }),
+    )
+    expect(factIn(container.querySelector('dl')!, 'Duration')).toHaveTextContent('4m 23s')
+  })
+  it('counts a running Run up in whole seconds', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] })
+    try {
+      renderRoute(
+        <ActivityConnectedContext value>
+          <ActionReviewSession>
+            <ActivityDetail
+              page={{
+                ...pendingPage,
+                selected: null,
+                selectedRow: null,
+                detail: runPanel({
+                  state: 'running',
+                  durationNanos: '999000000',
+                  endedAt: null,
+                  requiresAction: false,
+                }),
+              }}
+            />
+          </ActionReviewSession>
+        </ActivityConnectedContext>,
+        { entry: '/activity' },
+      )
+      const term = screen.getByText('Duration', { selector: 'dt' })
+      expect(term.nextElementSibling!.textContent).toBe('0s')
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+      })
+      expect(term.nextElementSibling!.textContent).toBe('1s')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // Catches: a tool call whose list repeats the title, or keeps a record path.
+  it.each<[string, Partial<InteractionRow>, InteractionEvidence]>([
+    [
+      'an exec submission',
+      { tool: 'exec', outcome: 'succeeded' },
+      { kind: 'run', reference: run.name },
+    ],
+    [
+      'a save',
+      { tool: 'save_function' },
+      { kind: 'function', reference: `${workspace}/savedFunctions/id` },
+    ],
+    [
+      'a delete',
+      { tool: 'delete_function' },
+      { kind: 'function', reference: `${workspace}/savedFunctions/id` },
+    ],
+    ['another tool', { tool: 'inspect' }, { kind: 'unknown' }],
+  ])('does not repeat the title of %s as its Intent', (_, overrides, evidence) => {
+    const name = `${workspace}/tasks/one/interactions/call`
+    const container = show(tool({ intent: 'Send reminders', name, ...overrides }, evidence), name)
+    expect(within(container).getByRole('heading', { level: 2 }).textContent).toBe('Send reminders')
+    expect(within(container).queryByText('Intent', { selector: 'dt' })).toBeNull()
+    expectNoScaffolding(container)
+    expect(container.textContent).not.toContain(name)
+    expect(container.querySelectorAll('dl')).toHaveLength(1)
+  })
+
+  // Catches: a run event that repeats its time as raw text or keeps its record path.
+  it.each<[string, RunEvent, string[]]>([
+    [
+      'a cancellation request',
+      { ...at, kind: 'run.cancellation_requested', actorKind: 'user', actor: 'Avery' },
+      ['Avery'],
+    ],
+    ['a run start', { ...at, kind: 'run.started' }, []],
+  ])('shows %s without its record path or raw time', (_, value, shown) => {
+    const name = `${run.name}/events/4`
+    const container = show(event(value), name)
+    expectNoScaffolding(container)
+    for (const text of [name, 'record #', run.startedAt])
+      expect(container.textContent).not.toContain(text)
+    for (const text of shown) expect(container.textContent).toContain(text)
   })
 })

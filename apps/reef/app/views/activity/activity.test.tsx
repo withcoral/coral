@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { useEffect, useState } from 'react'
 import { expect, it, onTestFinished, vi } from 'vitest'
 import { markupRoute, renderRoute } from '@/test-support/route'
-import { Activity } from './activity'
+import { Activity, duration } from './activity'
 import { ActivityArchivedContext } from './live'
 import { ActionReviewSession } from '../actions/review'
 import { activityPage, approval, approvalRequest, run as waiting, workspace } from './fixtures'
@@ -418,4 +418,18 @@ it('keeps a child that started after midnight under its parent and its day', () 
   expect(dayRecords('Mon 28 Sep 2026')).toEqual([goal.intent, 'you'])
   expect(headingLevel(goal.intent)).toBe('2')
   expect(screen.getByText('00:04:00')).toHaveAttribute('title', '2026-09-29 00:04:00 UTC')
+})
+
+// Catches: a duration that shows fractions of a second, or time that has not passed yet.
+it.each([
+  [0, '0s'],
+  [999_999_999, '0s'],
+  [1_000_000_000, '1s'],
+  [1_999_999_999, '1s'],
+  [59_999_999_999, '59s'],
+  [263_001_000_000, '4m 23s'],
+  [3_600_000_000_000, '1h 0m'],
+])('shows %d ns as whole time, %s', (nanos, text) => {
+  expect(duration(nanos)).toBe(text)
+  expect(duration(String(nanos))).toBe(text)
 })

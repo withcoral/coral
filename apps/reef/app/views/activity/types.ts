@@ -165,6 +165,8 @@ export interface ActionPage {
   actions: ActionSummary[]
   total: string
   next: string
+  /** A selected Run's list stopped before its last page: a page failed or a cursor repeated. */
+  incomplete?: boolean
 }
 /** One pending request, with a Run that waits on it as context. */
 export interface PendingAction {

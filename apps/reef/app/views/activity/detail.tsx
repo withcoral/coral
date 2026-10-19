@@ -1,6 +1,8 @@
 import { useId } from 'react'
+import { duration } from './duration'
 import { Link } from 'react-router'
-import { Typography } from '@/wax/components'
+import { List, Typography } from '@/wax/components'
+import { CodeChip } from '@/wax/components/code-chip'
 import { Disclosure } from '@/wax/components/disclosure'
 import { Elapsed } from '@/wax/components/elapsed'
 import { CodeBlock as Native } from '@/wax/components/code-block'
@@ -18,7 +20,7 @@ import type {
 import { CancelRun } from '../actions/review'
 import { RunActions } from '../actions/run-actions'
 import { Arguments } from '../actions/arguments'
-import { DiscoveryEvidence, SearchParameters } from './discovery/discovery'
+import { DescribeParameters, DiscoveryEvidence, SearchParameters } from './discovery/discovery'
 import { DetailHeader, StateBadge } from './detail-header'
 import { ContextImpact } from './context-impact'
 import { Instant } from './instant'
@@ -28,7 +30,8 @@ import { useActivityConnected } from './live'
 import { useActivityNavigation } from './navigation'
 import * as styles from './task-activity.css'
 
-const seconds = (milliseconds: number) => `${(milliseconds / 1000).toFixed(3)} s`
+/** An elapsed time in whole seconds, as the Activity table shows it. */
+const seconds = (milliseconds: number) => duration(milliseconds * 1_000_000)
 
 export function ActivityDetail({ page }: { page: ActivityPage }) {
   const detail = page.detail
@@ -55,31 +58,56 @@ function ExecutionDetail({
   detail: RunDetail
   operation: InvocationDetail | null
 }) {
-  const { href, query, revealHref } = useActivityNavigation(page)
+  const { href } = useActivityNavigation(page)
   const connected = useActivityConnected()
   const request = operation?.request ?? detail.request
   const running = detail.run.state === 'running'
-  // An approval review names the call, shows this Run as its context, and carries the
-  // Run's history link and cancel control in its own technical details.
+  // An approval review names the call and decides only it: no program, history or Run cancel.
   const review = request?.kind === 'approval'
+  // A selected connection request leads the panel as an approval does; the Run is its context.
+  const connection = request?.kind === 'account_connection'
+  const run = detail.run
+  const runContext = connection && (
+    <DescriptionList.List>
+      {(detail.submission?.intent || run.intent) && (
+        <DescriptionList.Row label="Exec intent">
+          {detail.submission?.intent || run.intent}
+        </DescriptionList.Row>
+      )}
+      <DescriptionList.Row label="Requested by">
+        {run.actorLabel || (run.agent ? 'Agent unavailable' : 'You')} ·{' '}
+        {run.workspaceLabel || 'Workspace unavailable'}
+      </DescriptionList.Row>
+      {/* A connection request records no start of its own; these times are the Run's. */}
+      <DescriptionList.Row label="Run duration">
+        <Elapsed
+          milliseconds={Number(run.durationNanos) / 1_000_000}
+          running={connected && running}
+        >
+          {seconds}
+        </Elapsed>
+      </DescriptionList.Row>
+      <DescriptionList.Row label="Run started">
+        <Instant value={run.startedAt} />
+      </DescriptionList.Row>
+      {run.endedAt && (
+        <DescriptionList.Row label="Run ended">
+          <Instant value={run.endedAt} />
+        </DescriptionList.Row>
+      )}
+    </DescriptionList.List>
+  )
   return (
     <Panel>
-      {!review && (
+      {!review && !connection && (
         <>
           <DetailHeader
             title={detail.submission?.intent || detail.run.intent || 'No intent recorded'}
             status={detail.run.state}
             kind="program run"
           />
+          {/* Its times together, last. */}
           <DescriptionList.List>
-            <DescriptionList.Row label="Started">
-              <Instant value={detail.run.startedAt} />
-            </DescriptionList.Row>
-            {detail.run.endedAt && (
-              <DescriptionList.Row label="Ended">
-                <Instant value={detail.run.endedAt} />
-              </DescriptionList.Row>
-            )}
             <DescriptionList.Row label="Duration">
               <Elapsed
                 milliseconds={Number(detail.run.durationNanos) / 1_000_000}
@@ -88,50 +116,38 @@ function ExecutionDetail({
                 {seconds}
               </Elapsed>
             </DescriptionList.Row>
+            <DescriptionList.Row label="Started">
+              <Instant value={detail.run.startedAt} />
+            </DescriptionList.Row>
+            {detail.run.endedAt && (
+              <DescriptionList.Row label="Ended">
+                <Instant value={detail.run.endedAt} />
+              </DescriptionList.Row>
+            )}
           </DescriptionList.List>
         </>
       )}
       <RunActions
         context={detail}
-        runControls={
-          review && (
-            <>
-              <Link
-                to={revealHref(
-                  operation
-                    ? { ...operation.invocation, kind: 'invocation' }
-                    : { ...detail.run, kind: 'run' },
-                  { select: false },
-                )}
-                preventScrollReset
-              >
-                View in history
-              </Link>
-              {running && <CancelRun name={detail.run.name} />}
-            </>
-          )
-        }
+        callStartedAt={operation?.invocation.startedAt}
+        connectionContext={runContext}
         page={detail.run.actionPage}
         request={request}
         unavailable={operation?.requestUnavailable ?? detail.requestUnavailable}
         href={(name) => href({ record: detail.run.name, request: name })}
         returnTo={href({})}
-        firstHref={query.has('actionsAfter') ? href({ actionsAfter: null }) : undefined}
-        nextHref={
-          detail.run.actionPage?.next
-            ? href({ actionsAfter: detail.run.actionPage.next })
-            : undefined
-        }
       />
       {operation && <InvocationOutcome detail={operation} />}
-      {/* A Run that waits on you is running; its actions already say so. */}
-      {review && !(detail.run.requiresAction && running) && (
+      {/* An approval states its own status; a connection request shows its Run's state, unless
+          the Run waits on you, which its actions already say. */}
+      {connection && !(detail.run.requiresAction && running) && (
         <div>
           <StateBadge entity="program run" state={detail.run.state} />
         </div>
       )}
-      <TerminalEvidence terminal={detail.terminal} running={running} />
-      {!review && running && (
+      <TerminalEvidence terminal={detail.terminal} />
+      {/* A selected request decides itself; the Run's cancel stays on the Run's own panel. */}
+      {!review && !connection && running && (
         <div className={styles.endActions}>
           <CancelRun name={detail.run.name} variant="destructive" />
         </div>
@@ -159,16 +175,29 @@ function AcceptedSource({ detail }: { detail: RunDetail }) {
   )
 }
 
-/** One exact call, leading with its own identity. Its Run, when retained, is context:
- * the Run's intent, evidence, source and whole-run controls, never the call's identity or outcome. */
+/** One exact call, leading with its own identity. Its Run, when retained, is context: the Run's
+ * intent and outcome, its accepted source in Details, and its whole-run controls. Raw IDs and
+ * the Run's own times stay out: the Run's panel holds them. */
 function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: InvocationDetail }) {
   const { recordHref, revealHref, href } = useActivityNavigation(page)
   const connected = useActivityConnected()
   const context = detail.context
   const call = detail.invocation
-  const evidenceId = useId()
   const execIntent = context?.submission?.intent || context?.run.intent
-  const cancel = context && context.run.state === 'running' && <CancelRun name={context.run.name} />
+  const running = context?.run.state === 'running'
+  // A connection request belongs to the call's Run, which is where you connect or decline.
+  const connectionHref = (name: string) => href({ record: call.run, request: name })
+  const expiresId = useId()
+  // The selected connection's card links to it, so the list does not repeat it.
+  const selected = detail.request
+  const otherRequests = detail.requests.filter(
+    (request) =>
+      !(
+        selected?.kind === 'account_connection' &&
+        request.kind === 'account_connection' &&
+        request.name === selected.name
+      ),
+  )
   return (
     <Panel>
       <DetailHeader
@@ -179,9 +208,23 @@ function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: In
         kind="operation"
         provider={detail.invocation.provider}
       />
+      {/* What the call belongs to and how it waited, then its times together, last. */}
       <DescriptionList.List>
-        <DescriptionList.Row label="Started">
-          <Instant value={call.startedAt} />
+        {execIntent && <DescriptionList.Row label="Run intent">{execIntent}</DescriptionList.Row>}
+        <DescriptionList.Row label="Dispatch">
+          {detail.invocation.dispatchedAt ? (
+            <Instant value={detail.invocation.dispatchedAt} />
+          ) : (
+            'Not started'
+          )}
+        </DescriptionList.Row>
+        <DescriptionList.Row label="Waiting time">
+          <Elapsed
+            milliseconds={Number(detail.invocation.waitingNanos) / 1_000_000}
+            running={connected && detail.invocation.state === 'pending'}
+          >
+            {seconds}
+          </Elapsed>
         </DescriptionList.Row>
         <DescriptionList.Row label="Duration">
           <Elapsed
@@ -191,122 +234,93 @@ function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: In
             {seconds}
           </Elapsed>
         </DescriptionList.Row>
+        <DescriptionList.Row label="Started">
+          <Instant value={call.startedAt} />
+        </DescriptionList.Row>
         {call.endedAt && (
           <DescriptionList.Row label="Ended">
             <Instant value={call.endedAt} />
           </DescriptionList.Row>
         )}
-        <DescriptionList.Row label="Waiting time">
-          <Elapsed
-            milliseconds={Number(detail.invocation.waitingNanos) / 1_000_000}
-            running={connected && detail.invocation.state === 'pending'}
-          >
-            {seconds}
-          </Elapsed>
-        </DescriptionList.Row>
-        <DescriptionList.Row label="Dispatch">
-          {detail.invocation.dispatchedAt ? (
-            <time dateTime={detail.invocation.dispatchedAt}>{detail.invocation.dispatchedAt}</time>
-          ) : (
-            'Not started'
-          )}
-        </DescriptionList.Row>
       </DescriptionList.List>
       {detail.invocation.requiresAction && <Typography.Body>Requires your action.</Typography.Body>}
-      {execIntent && (
-        <DescriptionList.List title="Context">
-          <DescriptionList.Row label="Exec intent">{execIntent}</DescriptionList.Row>
-        </DescriptionList.List>
-      )}
       <Arguments source={detail.arguments} />
       {detail.requestUnavailable && <Typography.Body>This request is unavailable.</Typography.Body>}
       {/* A shared Account Connection Request is Run-level: retained here, not actioned as this call's own Approval. */}
       {detail.request?.kind === 'account_connection' && (
-        <>
-          <DescriptionList.List title="Retained request">
-            <DescriptionList.Row label="Request ID">{detail.request.name}</DescriptionList.Row>
-            {detail.request.expiresAt && (
-              <DescriptionList.Row label="Expires">{detail.request.expiresAt}</DescriptionList.Row>
-            )}
-          </DescriptionList.List>
-          <div>
+        <List.Container as="section" aria-label="Account connection">
+          {/* The whole card opens the request on its Run, where Connect and Decline are. */}
+          <List.Item
+            as={Link}
+            to={connectionHref(detail.request.name)}
+            preventScrollReset
+            interactive
+            className={styles.cardLink}
+            aria-label={`Open account connection request: ${detail.request.state.replaceAll('_', ' ')}`}
+            aria-describedby={detail.request.expiresAt ? expiresId : undefined}
+          >
             <StateBadge entity="connection request" state={detail.request.state} />
-          </div>
-        </>
+            {detail.request.expiresAt && (
+              <Typography.BodySmall variant="tertiary" id={expiresId}>
+                Expires <Instant value={detail.request.expiresAt} />
+              </Typography.BodySmall>
+            )}
+          </List.Item>
+        </List.Container>
       )}
       <InvocationOutcome detail={detail} />
       {/* The Run's own outcome, apart from this call's: a Run can fail after a call succeeds. */}
       {context && (
-        <section className={styles.stack} aria-labelledby={evidenceId}>
-          <Typography.BodySmallStrong as="h3" id={evidenceId}>
-            Run evidence
-          </Typography.BodySmallStrong>
+        <>
           <div>
             <StateBadge entity="program run" state={context.run.state} />
           </div>
-          <TerminalEvidence terminal={context.terminal} running={context.run.state === 'running'} />
-        </section>
+          <TerminalEvidence terminal={context.terminal} />
+        </>
       )}
-      {!!detail.requests.length && (
-        <Disclosure title="Retained requests" open>
-          <Typography.BodySmall>
-            These references do not indicate current action availability.
-          </Typography.BodySmall>
-          {detail.requests.map((request, index) =>
-            request.kind === 'unknown' ? (
-              <Typography.Body key={index}>This request reference is unavailable.</Typography.Body>
-            ) : (
-              <Typography.Body as="p" key={request.name}>
-                <Link to={href({ request: request.name })} preventScrollReset>
+      {!!otherRequests.length && (
+        <List.Container as="ul" aria-label="Requests for this call">
+          {otherRequests.map((request, index) => (
+            <List.Item as="li" key={request.kind === 'unknown' ? index : request.name}>
+              {request.kind === 'unknown' ? (
+                <Typography.Body>This request reference is unavailable.</Typography.Body>
+              ) : (
+                <Link
+                  to={
+                    request.kind === 'approval'
+                      ? href({ request: request.name })
+                      : connectionHref(request.name)
+                  }
+                  preventScrollReset
+                >
                   Inspect {request.kind === 'approval' ? 'approval' : 'account connection'}
                 </Link>
-              </Typography.Body>
-            ),
-          )}
-        </Disclosure>
-      )}
-      <Disclosure title="Technical details">
-        <DescriptionList.List>
-          <DescriptionList.Row label="Invocation ID">{detail.invocation.name}</DescriptionList.Row>
-        </DescriptionList.List>
-        {context && (
-          <>
-            <DescriptionList.List title="Run">
-              <DescriptionList.Row label="Run ID">{context.run.name}</DescriptionList.Row>
-              <DescriptionList.Row label="Run started">
-                <Instant value={context.run.startedAt} />
-              </DescriptionList.Row>
-              {context.run.endedAt && (
-                <DescriptionList.Row label="Run ended">
-                  <Instant value={context.run.endedAt} />
-                </DescriptionList.Row>
               )}
-              <DescriptionList.Row label="Run duration">
-                <Elapsed
-                  milliseconds={Number(context.run.durationNanos) / 1_000_000}
-                  running={connected && context.run.state === 'running'}
-                >
-                  {seconds}
-                </Elapsed>
-              </DescriptionList.Row>
-            </DescriptionList.List>
+            </List.Item>
+          ))}
+        </List.Container>
+      )}
+      {context && (
+        <>
+          <Disclosure title="Details">
             {context.submission && (
               <Link to={recordHref(context.submission.name)} preventScrollReset>
                 Inspect original exec submission
               </Link>
             )}
             <AcceptedSource detail={context} />
-            <Typography.BodySmallStrong>Whole-run controls</Typography.BodySmallStrong>
+          </Disclosure>
+          <div className={styles.endActions}>
             <Link
               to={revealHref({ ...detail.invocation, kind: 'invocation' }, { select: false })}
               preventScrollReset
             >
               View in history
             </Link>
-            {cancel}
-          </>
-        )}
-      </Disclosure>
+            {running && <CancelRun name={context.run.name} variant="destructive" />}
+          </div>
+        </>
+      )}
     </Panel>
   )
 }
@@ -336,19 +350,59 @@ function RecordDetail({ page }: { page: ActivityPage }) {
   const label = detail.kind === 'tool' && status === 'unknown' ? 'unknown / incomplete' : undefined
   // A log or an emission states its time here; its title names it and a card holds its content.
   const payload = detail.kind === 'output' && hasPayload(detail.event) ? detail.event : null
-  const started = row?.startedAt ?? payload?.occurredAt
+  // A run event states its own time when no row does.
+  const started = row?.startedAt ?? (detail.kind === 'output' ? detail.event.occurredAt : undefined)
   // A search is titled by its intent; it leads with what it asked and its times, then results.
   const search = detail.kind === 'tool' && detail.interaction.tool === 'search' ? detail : null
   const asked =
     search?.evidence.kind === 'discovery' && search.evidence.context.kind === 'search'
       ? search.evidence.context
       : null
+  // A describe reads like a search: what it asked, its times, a compact Result, then Details.
+  const describe = detail.kind === 'tool' && detail.interaction.tool === 'describe' ? detail : null
+  const described =
+    describe?.evidence.kind === 'discovery' && describe.evidence.context.kind === 'describe'
+      ? {
+          context: describe.evidence.context,
+          description:
+            describe.evidence.view.kind === 'describe' ? describe.evidence.view.description : null,
+        }
+      : null
+  // An exec submission states its times and intent, then any error; its badge states its outcome.
+  const exec = detail.kind === 'tool' && detail.interaction.tool === 'exec' ? detail : null
+  // A save or a delete states its intent, the function a delete removed, then its times; a
+  // rejection shows its error below.
+  const save =
+    detail.kind === 'tool' &&
+    (detail.interaction.tool === 'save_function' || detail.interaction.tool === 'delete_function')
+      ? detail
+      : null
+  const deleted = save?.interaction.tool === 'delete_function'
+  // A tool call's intent, unless the title already states it.
+  const intent = detail.kind === 'tool' &&
+    detail.interaction.intent &&
+    detail.interaction.intent !== title && (
+      <DescriptionList.Row label="Intent">{detail.interaction.intent}</DescriptionList.Row>
+    )
+  // The call's own times, closing the one list a search, describe, exec or save shows.
+  const times = detail.kind === 'tool' && (
+    <>
+      <DescriptionList.Row label="Started">
+        <Instant value={detail.interaction.startedAt} />
+      </DescriptionList.Row>
+      {detail.interaction.completedAt && (
+        <DescriptionList.Row label="Completed">
+          <Instant value={detail.interaction.completedAt} />
+        </DescriptionList.Row>
+      )}
+    </>
+  )
   return (
     <Panel>
       <DetailHeader title={title} status={status} label={label} kind={kind} showStatus={!payload} />
-      {/* A Task states its own facts in its Task list below. */}
-      {started && detail.kind !== 'task' && !search && (
-        <DescriptionList.List title={payload ? undefined : 'Context'}>
+      {/* A Task and a tool call state their own facts in their lists below. */}
+      {started && detail.kind === 'output' && (
+        <DescriptionList.List>
           <DescriptionList.Row label="Started">
             <Instant value={started} />
           </DescriptionList.Row>
@@ -399,49 +453,69 @@ function RecordDetail({ page }: { page: ActivityPage }) {
       {detail.kind === 'tool' && (
         <>
           {asked && <SearchParameters context={asked} />}
-          {search ? (
+          {/* What a describe asked and its times read as one list, with no gap between them. */}
+          {described ? (
+            <DescribeParameters
+              context={described.context}
+              description={described.description}
+              intent={detail.interaction.intent}
+            >
+              {times}
+            </DescribeParameters>
+          ) : search || describe ? (
+            <DescriptionList.List>{times}</DescriptionList.List>
+          ) : save ? (
             <DescriptionList.List>
-              <DescriptionList.Row label="Started">
-                <Instant value={detail.interaction.startedAt} />
-              </DescriptionList.Row>
-              {detail.interaction.completedAt && (
-                <DescriptionList.Row label="Completed">
-                  <Instant value={detail.interaction.completedAt} />
+              {intent}
+              {/* The call retains only the function's ID. No route opens a function by ID, so
+                  a delete shows the ID without a link, and a save states no target. */}
+              {deleted && save.evidence.kind === 'function' && (
+                <DescriptionList.Row label="Deleted">
+                  <CodeChip>{savedFunctionId(save.evidence.reference)}</CodeChip>
                 </DescriptionList.Row>
               )}
+              {times}
             </DescriptionList.List>
           ) : (
-            <DescriptionList.List title="Call">
-              <DescriptionList.Row label="Intent">{detail.interaction.intent}</DescriptionList.Row>
-              <DescriptionList.Row label="Submission outcome">
-                {detail.interaction.outcome === 'unknown'
-                  ? 'unknown / incomplete'
-                  : detail.interaction.outcome}
-              </DescriptionList.Row>
-              {detail.interaction.completedAt && (
-                <DescriptionList.Row label="Completed">
-                  <Instant value={detail.interaction.completedAt} />
-                </DescriptionList.Row>
-              )}
+            // The header badge states the outcome.
+            <DescriptionList.List>
+              {intent}
+              {times}
             </DescriptionList.List>
           )}
-          <Evidence evidence={detail.evidence} recordHref={recordHref} />
-          {!search && (
-            <Disclosure title="Technical details">
-              <Typography.Code className={styles.native}>{page.selected}</Typography.Code>
-            </Disclosure>
+          {!search && !describe ? (
+            <CallEvidence
+              evidence={detail.evidence}
+              outcome={detail.interaction.outcome}
+              // A save says nothing beyond its badge when it kept no message or evidence.
+              unavailable={
+                deleted
+                  ? 'The delete evidence is unavailable.'
+                  : save
+                    ? null
+                    : exec
+                      ? 'The submission evidence is unavailable.'
+                      : 'The call evidence is unavailable.'
+              }
+              noMessage={!save || deleted}
+              recordHref={recordHref}
+            />
+          ) : search && detail.evidence.kind === 'rejection' && detail.evidence.message.trim() ? (
+            // The badge states the rejection; the card holds its exact error.
+            <ErrorCard message={detail.evidence.message} />
+          ) : (
+            <Evidence
+              evidence={detail.evidence}
+              recordHref={recordHref}
+              record={page.selected}
+              describe={describe !== null}
+            />
           )}
         </>
       )}
       {detail.kind === 'output' && (
         <>
           <EventEvidence event={detail.event} recordHref={recordHref} />
-          {/* A log or an emission is its content; it keeps no technical details. */}
-          {!payload && (
-            <Disclosure title="Technical details">
-              <Typography.Code className={styles.native}>{page.selected}</Typography.Code>
-            </Disclosure>
-          )}
         </>
       )}
     </Panel>
@@ -502,21 +576,14 @@ function InvocationOutcome({ detail }: { detail: InvocationDetail }) {
   if (detail.invocation.state !== 'ended') return null
   switch (detail.result.kind) {
     case 'upstream_outcome':
-      return (
-        <Disclosure title="Operation outcome" open>
-          <Typography.BodySmall>
-            Your program receives only a declared success. It receives any other response as an
-            operation error.
-          </Typography.BodySmall>
-          <Native value={detail.result.value} format="json" />
-        </Disclosure>
-      )
+      // What the provider answered, which says nothing of whether the goal succeeded.
+      return <ValueCard value={detail.result.value} format="json" label="Upstream response" />
     case 'coral_failure':
       return (
-        <>
-          <Typography.Body>Coral failure: {detail.result.code}</Typography.Body>
-          <Native value={detail.result.message} />
-        </>
+        <ErrorCard
+          message={detail.result.message}
+          reason={`Coral failure: ${detail.result.code}`}
+        />
       )
     case 'indeterminate':
       return (
@@ -528,20 +595,24 @@ function InvocationOutcome({ detail }: { detail: InvocationDetail }) {
     case 'run_terminated':
       return <Typography.Body>The run terminated this call before dispatch.</Typography.Body>
     default:
-      return <Typography.Body>No retained outcome is available.</Typography.Body>
+      return null
   }
 }
 
 function Evidence({
   evidence,
   recordHref,
+  record,
+  describe,
 }: {
   evidence: InteractionEvidence
   recordHref: (name: string) => string
+  record?: string | null
+  describe?: boolean
 }) {
   switch (evidence.kind) {
     case 'discovery':
-      return <DiscoveryEvidence evidence={evidence} />
+      return <DiscoveryEvidence evidence={evidence} record={record} describe={describe} />
     case 'rejection':
       return (
         <>
@@ -566,6 +637,71 @@ function Evidence({
       return <Native value={evidence.reference} />
   }
 }
+/** What an exec submission, a save or a delete retained. A rejection shows its exact error in the card
+ * a search result uses. An accepted submission shows nothing more: its Run is a row of its
+ * own, and the submission's outcome says nothing about how the Run ends. A delete states the
+ * function it removed in its list; a save states no target. */
+function CallEvidence({
+  evidence,
+  outcome,
+  unavailable,
+  noMessage,
+  recordHref,
+}: {
+  evidence: InteractionEvidence
+  outcome: string
+  /** What a known outcome without its evidence says; null says nothing. */
+  unavailable: string | null
+  /** Whether a rejection without a message says so, with its code. */
+  noMessage: boolean
+  recordHref: (name: string) => string
+}) {
+  switch (evidence.kind) {
+    case 'run':
+      return null
+    case 'function':
+      return null
+    case 'rejection':
+      return evidence.message.trim() ? (
+        <ErrorCard message={evidence.message} />
+      ) : noMessage ? (
+        <Typography.Body>
+          Rejected with no message{evidence.code ? `: ${evidence.code}` : '.'}
+        </Typography.Body>
+      ) : null
+    case 'unknown':
+      // An unknown outcome already shows in the badge and its icon.
+      return outcome === 'unknown' || unavailable === null ? null : (
+        <Typography.Body>{unavailable}</Typography.Body>
+      )
+    default:
+      return <Evidence evidence={evidence} recordHref={recordHref} />
+  }
+}
+/** An error's exact message, whitespace and all, in the card a search result uses. `reason`
+ * names its kind when the badge does not; `children` adds what else it retained. */
+function ErrorCard({
+  message,
+  reason,
+  children,
+}: {
+  message: string
+  reason?: string
+  children?: React.ReactNode
+}) {
+  return (
+    <List.Container as="section" aria-label="Error">
+      <List.Item>
+        {reason && <Typography.BodySmallStrong>{reason}</Typography.BodySmallStrong>}
+        <Native value={message} />
+        {children}
+      </List.Item>
+    </List.Container>
+  )
+}
+/** The ID in `workspaces/{workspace}/savedFunctions/{id}`, else the name as stored. */
+const savedFunctionId = (name: string) =>
+  /^workspaces\/[^/]+\/savedFunctions\/([^/]+)$/.exec(name)?.[1] ?? name
 type PayloadEvent = Extract<RunEvent, { kind: 'program.logged' | 'program.emitted' }>
 const hasPayload = (event: RunEvent): event is PayloadEvent =>
   event.kind === 'program.logged' || event.kind === 'program.emitted'
@@ -580,11 +716,9 @@ function EventEvidence({
     return <ValueCard value={event.message} format="text" label="Log message" />
   if (event.kind === 'program.emitted')
     return <ValueCard value={event.value} format="json" label="Emitted value" />
+  // Its time is in the list above.
   return (
     <>
-      <Typography.BodySmall>
-        {event.occurredAt} · record #{event.sequence}
-      </Typography.BodySmall>
       {event.kind === 'run.cancellation_requested' && (
         <Typography.Body>
           Requested by: {event.actorKind} {event.actor}
@@ -602,29 +736,25 @@ function EventEvidence({
     </>
   )
 }
-function TerminalEvidence({ terminal, running }: { terminal: RunTerminal; running: boolean }) {
+/** What a Run's end retained. A returned value, JSON null included, shows in its card; a Run
+ * that returned nothing shows none. A failure shows its reason, message and program error in
+ * the error card, never folded away. The badge already states a cancel, a time-out or an
+ * interruption, and a missing record adds nothing to it. */
+function TerminalEvidence({ terminal }: { terminal: RunTerminal }) {
   switch (terminal.kind) {
     case 'succeeded':
       // A program's return value, apart from anything it emitted while it ran.
-      return terminal.finalValue === null ? (
-        <Typography.Body>The program returned no final value.</Typography.Body>
-      ) : (
+      return terminal.finalValue === null ? null : (
         <ValueCard value={terminal.finalValue} format="json" label="Final value" />
       )
     case 'failed':
       return (
-        <Disclosure title="Failure details" open>
-          <Typography.Body>{terminal.code}</Typography.Body>
-          <Native value={terminal.message} />
+        <ErrorCard message={terminal.message} reason={terminal.code}>
           {terminal.error && <ErrorDetail error={terminal.error} />}
-        </Disclosure>
+        </ErrorCard>
       )
-    case 'unavailable':
-      return running ? null : <Typography.Body>Terminal evidence is unavailable.</Typography.Body>
     default:
-      return (
-        <Typography.Body>Terminal outcome: {terminal.kind.replaceAll('_', ' ')}</Typography.Body>
-      )
+      return null
   }
 }
 function ErrorDetail({ error }: { error: ProgramError }) {
