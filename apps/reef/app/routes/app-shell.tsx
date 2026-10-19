@@ -20,6 +20,7 @@ import { WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
 import { ShellFormContext } from '@/views/management/forms'
 import { ToastContainer } from '@/wax/components/toast'
 import { BreadcrumbRoot } from '@/wax/components/breadcrumbs/breadcrumbs'
+import { NavigationRoot } from '@/wax/components/navigation-frame/navigation-frame'
 import { formContext, management, managementFailure, privateHeaders } from '@/lib/management.server'
 import { sidebarWorkspaceView } from '@/lib/management-views.server'
 import type { SidebarWorkspace } from '@/components/sidebar/sidebar'
@@ -84,37 +85,39 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
   return (
     <LocalDeploymentContext value={loaderData.auth.mode === 'disabled'}>
       <ShellFormContext value={loaderData.form}>
-        <div className={styles.layout}>
-          <Sidebar
-            actionCounts={actionCounts}
-            auth={loaderData.auth}
-            organizationOwner={loaderData.organizationOwner}
-            userName={loaderData.userName}
-            initialIsMinimized={rootData?.sidebarIsMinimized ?? false}
-            workspaces={loaderData.workspaces}
-            archivedWorkspaces={loaderData.archivedWorkspaces}
-            workspace={workspace}
-            form={loaderData.form}
-          />
-          <ContentContainer>
-            <ToastContainer />
-            {/* Every page in a workspace names it first in its breadcrumb. */}
-            <BreadcrumbRoot
-              value={
-                workspace
-                  ? {
-                      id: 'workspace',
-                      type: 'link',
-                      text: workspace.displayName,
-                      to: workspace.path,
-                    }
-                  : null
-              }
-            >
-              <Outlet />
-            </BreadcrumbRoot>
-          </ContentContainer>
-        </div>
+        <NavigationRoot>
+          <div className={styles.layout}>
+            <Sidebar
+              actionCounts={actionCounts}
+              auth={loaderData.auth}
+              organizationOwner={loaderData.organizationOwner}
+              userName={loaderData.userName}
+              initialIsMinimized={rootData?.sidebarIsMinimized ?? false}
+              workspaces={loaderData.workspaces}
+              archivedWorkspaces={loaderData.archivedWorkspaces}
+              workspace={workspace}
+              form={loaderData.form}
+            />
+            <ContentContainer>
+              <ToastContainer />
+              {/* Every page in a workspace names it first in its breadcrumb. */}
+              <BreadcrumbRoot
+                value={
+                  workspace
+                    ? {
+                        id: 'workspace',
+                        type: 'link',
+                        text: workspace.displayName,
+                        to: workspace.path,
+                      }
+                    : null
+                }
+              >
+                <Outlet />
+              </BreadcrumbRoot>
+            </ContentContainer>
+          </div>
+        </NavigationRoot>
       </ShellFormContext>
     </LocalDeploymentContext>
   )

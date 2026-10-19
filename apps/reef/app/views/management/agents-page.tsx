@@ -150,13 +150,13 @@ export function AgentsPage({ workspace: w, agents, nextPage, form, result }: Age
         <Table.Body>
           {shown.map((a) => (
             <Table.Row key={a.name} to={a.path}>
-              <Table.Cell wrap>
+              <Table.Cell title={a.displayName}>
                 <Table.RowLink to={a.path}>{a.displayName}</Table.RowLink>
               </Table.Cell>
-              <Table.Cell wrap>
+              <Table.Cell>
                 <Status blockers={a.accessBlockers} />
               </Table.Cell>
-              <Table.Cell wrap>
+              <Table.Cell>
                 <Person person={a.creator} currentUser={w.currentUser} compact />
               </Table.Cell>
               <Table.Cell actions>

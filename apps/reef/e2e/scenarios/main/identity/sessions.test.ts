@@ -105,8 +105,8 @@ test('Unverified email prevents grants, not eligible login or existing access', 
       await step('Open the Workspace without a second email-verification ceremony', async () => {
         await page.goto(`/${workspace.name}`)
         await breadcrumb(page, 'Unverified profile').waitFor()
-        // The Overview's compact member row carries the email as its hover title.
-        await page.getByTitle(actor.email, { exact: true }).waitFor()
+        // The Overview's compact member row carries the name and email as its hover title.
+        await page.getByTitle(actor.email).waitFor()
         await page.getByRole('button', { name: 'Edit workspace name', exact: true }).click()
         await page.getByRole('textbox', { name: 'Workspace name', exact: true }).waitFor()
       })
