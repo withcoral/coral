@@ -166,11 +166,8 @@ pub(super) async fn insert_events(
     run_id: &RunId,
     events: &[super::ChunkEvent<'_>],
 ) -> Result<(), Error> {
-    use sea_query::{Alias, ValueTuple};
+    use sea_query::ValueTuple;
 
-    let rows = Alias::new("chunk");
-    let last = Alias::new("last");
-    let column = |index: usize| Expr::col((rows.clone(), Alias::new(format!("column{index}"))));
     for batch in events.chunks(EVENT_INSERT_ROWS) {
         let tuples = batch
             .iter()
@@ -192,24 +189,24 @@ pub(super) async fn insert_events(
         let last_sequence = Query::select()
             .expr_as(
                 Expr::expr(Expr::col(ProgramRunEvents::Sequence).max()).if_null(0_i64),
-                Alias::new("sequence"),
+                ProgramRunEvents::Sequence,
             )
             .from(ProgramRunEvents::Table)
             .and_where(Expr::col(ProgramRunEvents::WorkspaceId).eq(workspace_id.to_string()))
             .and_where(Expr::col(ProgramRunEvents::RunId).eq(run_id.to_string()))
             .to_owned();
         let mut select = Query::select();
-        for (index, event_column) in EVENT_COLUMNS.iter().enumerate() {
+        for (position, event_column) in EVENT_COLUMNS.iter().enumerate() {
+            let value = Expr::col((EventInsert::Chunk, values_column(position)));
             if *event_column == ProgramRunEvents::Sequence {
-                select
-                    .expr(Expr::col((last.clone(), Alias::new("sequence"))).add(column(index + 1)));
+                select.expr(Expr::col((EventInsert::Last, ProgramRunEvents::Sequence)).add(value));
             } else {
-                select.expr(column(index + 1));
+                select.expr(value);
             }
         }
         select
-            .from_values(tuples, rows.clone())
-            .from_subquery(last_sequence, last.clone());
+            .from_values(tuples, EventInsert::Chunk)
+            .from_subquery(last_sequence, EventInsert::Last);
         let statement = Query::insert()
             .into_table(ProgramRunEvents::Table)
             .columns(EVENT_COLUMNS)
@@ -224,6 +221,44 @@ pub(super) async fn insert_events(
 /// Rows per Event insert statement: the ADR's chunk cap, so a capped chunk is
 /// one statement and a larger one stays under both backends' bind limits.
 const EVENT_INSERT_ROWS: usize = 1000;
+
+/// The derived tables of the Event insert: the chunk's value rows and the
+/// one-row subquery holding the Run's last sequence.
+#[derive(Iden)]
+enum EventInsert {
+    Chunk,
+    Last,
+}
+
+/// The column of a `VALUES` table at `position`. Neither backend lets a
+/// `VALUES` table in `FROM` name its columns, and both name them
+/// `column1`, `column2`, ... in order, so the chunk rows follow
+/// [`EVENT_COLUMNS`] order and are read back by position.
+fn values_column(position: usize) -> sea_query::Alias {
+    sea_query::Alias::new(format!("column{}", position + 1))
+}
+
+/// The Run's last Event sequence as a scalar expression correlated with a
+/// `program_run_records` row, `0` before `run.started`. Read beside the Run
+/// row in one read snapshot; never beside `hold_run`, whose statement
+/// snapshot on Postgres predates the lock wait.
+pub(super) fn last_event_sequence() -> Expr {
+    use super::ProgramRunRecords;
+
+    let last = Query::select()
+        .expr(Expr::col(ProgramRunEvents::Sequence).max())
+        .from(ProgramRunEvents::Table)
+        .and_where(
+            Expr::col((ProgramRunEvents::Table, ProgramRunEvents::WorkspaceId))
+                .equals((ProgramRunRecords::Table, ProgramRunRecords::WorkspaceId)),
+        )
+        .and_where(
+            Expr::col((ProgramRunEvents::Table, ProgramRunEvents::RunId))
+                .equals((ProgramRunRecords::Table, ProgramRunRecords::Id)),
+        )
+        .to_owned();
+    Expr::expr(Expr::SubQuery(None, Box::new(last.into()))).if_null(0_i64)
+}
 
 /// The Event columns, in the order the insert and its value rows use. The
 /// `Sequence` entry carries the row's offset within its statement.

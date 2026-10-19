@@ -24,6 +24,7 @@ pub(crate) use claims::{
     claim_execution_worker, mark_execution_started, release_unstarted_worker_claim,
     renew_worker_claim,
 };
+use events::last_event_sequence;
 pub(crate) use events::{NewEvent, event_page_in_transaction, output_page_in_transaction};
 pub(crate) use ledger::{Chunk, ChunkEvent, commit_chunk};
 pub(crate) use retention::{delete_retained_history, retention_activity};
@@ -212,21 +213,18 @@ const RUN_COLUMNS: [ProgramRunRecords; 26] = [
     ProgramRunRecords::ChunkSequence,
 ];
 
-/// The Run's last Event sequence, read beside its row in one read snapshot.
-/// Event numbering is data on the Event rows; the observation index answers
-/// this from its end.
-fn last_event_sequence() -> Expr {
-    Expr::cust(
-        "COALESCE((SELECT MAX(program_run_events.sequence) FROM program_run_events \
-         WHERE program_run_events.workspace_id = program_run_records.workspace_id \
-         AND program_run_events.run_id = program_run_records.id), 0) AS last_event_sequence",
-    )
+/// Columns a Run read computes beside the row, named as `RunRow` decodes them.
+#[derive(Iden)]
+enum ComputedRunColumns {
+    LastEventSequence,
 }
 
+/// The Run row with its last Event sequence, which the observation index
+/// answers from its end; Event numbering is data on the Event rows.
 fn base_run_select() -> sea_query::SelectStatement {
     Query::select()
         .columns(RUN_COLUMNS)
-        .expr(last_event_sequence())
+        .expr_as(last_event_sequence(), ComputedRunColumns::LastEventSequence)
         .from(ProgramRunRecords::Table)
         .to_owned()
 }
