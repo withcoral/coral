@@ -317,19 +317,7 @@ impl RunModule {
         started_at_unix_nanos: i64,
     ) -> Result<RunRecord, Error> {
         let request = run.request_termination(kind, requester, started_at_unix_nanos)?;
-        if run_repository::request_termination(transaction, run, &request).await?
-            && let Some(requester) = request.requester
-        {
-            run_repository::insert_event(
-                transaction,
-                &run.workspace_id,
-                &run.id,
-                run.next_event_sequence,
-                run_repository::NewEvent::CancellationRequested(requester),
-                started_at_unix_nanos,
-            )
-            .await?;
-        }
+        run_repository::request_termination(transaction, run, &request).await?;
         run_repository::find_exact_in_transaction(transaction, &run.workspace_id, &run.id)
             .await?
             .ok_or(Error::RunNotFound)
@@ -350,15 +338,13 @@ impl RunModule {
         let termination = run
             .termination
             .ok_or_else(|| Error::CorruptData("Run has no termination to finish".into()))?;
-        let _finished = run_repository::finish_termination(
+        run_repository::finish_termination(
             transaction,
             &run,
-            termination.kind,
             &termination.kind.outcome(),
             terminal_at_unix_nanos,
         )
-        .await?;
-        Ok(())
+        .await
     }
 }
 

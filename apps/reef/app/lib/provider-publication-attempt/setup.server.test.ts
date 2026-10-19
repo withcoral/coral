@@ -371,6 +371,21 @@ it.each([
   expect(createProviderSetup).not.toHaveBeenCalled()
 })
 
+// Reef once decoded uploads as UTF-8 text, which refused every gzipped document.
+it('sends an uploaded document to Coral as its exact bytes', async () => {
+  const gzipped = new Uint8Array([0x1f, 0x8b, 0x08, 0x00, 0xff])
+  const createProviderSetup = vi.fn(() => ({}))
+  const api = fakeManagement({ setups: { createProviderSetup } })
+  const form = new FormData()
+  form.set('source', 'file')
+  form.set('document', new File([gzipped], 'openapi.json.gz'))
+  await prepareSetup(api, 'workspaces/w', form)
+  expect(createProviderSetup).toHaveBeenCalledWith(
+    expect.objectContaining({ input: { case: 'openapiDocument', value: gzipped } }),
+    expect.anything(),
+  )
+})
+
 /** Reads a recipe's bundled document as the source form posts it. */
 async function prepareRecipe(recipe: string) {
   const createProviderSetup = vi.fn(() => ({}))
@@ -389,7 +404,10 @@ describe('bundled recipe documents', () => {
     const { createProviderSetup } = await prepareRecipe('gmail')
     expect(createProviderSetup).toHaveBeenCalledWith(
       expect.objectContaining({
-        input: { case: 'openapiDocument', value: recipeDocument('gmail') },
+        input: {
+          case: 'openapiDocument',
+          value: new TextEncoder().encode(recipeDocument('gmail')!),
+        },
       }),
       expect.anything(),
     )

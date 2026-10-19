@@ -486,7 +486,10 @@ function invocationDetail(options: AgentOption & { resolved?: boolean } = {}): H
         },
         argumentsJson: '{"to":"private@example.com"}',
         outcome: options.resolved
-          ? { case: 'upstreamOutcomeJson', value: '{"data":null,"metadata":{"status":404}}' }
+          ? {
+              case: 'upstreamOutcomeJson',
+              value: '{"status":404,"data":null,"metadata":{"kind":"http"}}',
+            }
           : undefined,
         requests: [{ request: { case: 'approval', value: approval } }],
       }),
@@ -1299,7 +1302,7 @@ describe('hierarchical activity through the private server interface', () => {
       kind: 'invocation',
       result: {
         kind: 'upstream_outcome',
-        value: '{"data":null,"metadata":{"status":404}}',
+        value: '{"status":404,"data":null,"metadata":{"kind":"http"}}',
       },
     })
   })

@@ -80,12 +80,13 @@ test('Large OpenAPI documents work by upload and URL; oversized documents explai
       await openCustomSource(page)
       await page.getByLabel('OpenAPI URL', { exact: true }).fill(`${upstream.origin}/large.json`)
       await page.getByRole('button', { name: 'Read', exact: true }).click()
+      // The uploaded provider already has the document's title.
+      await page.getByLabel('Display name', { exact: true }).fill('Downloaded document')
       await confirmConfiguration(page)
       await acceptOperations(page)
       await setNamespace(page, 'downloaded')
       await page.getByRole('button', { name: 'Add provider', exact: true }).click()
       await waitForPublication(page)
-      // Both providers share the document's title, so the new one is named by its path.
       const downloaded = new URL(page.url()).pathname
       await waitForProviderStatus(page, { path: downloaded }, 'Ready', { available: 1, total: 1 })
     })

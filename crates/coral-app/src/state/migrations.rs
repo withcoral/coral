@@ -1,34 +1,22 @@
-//! Application composition of the marker and domain-owned migration plans.
+//! Application of Coral's one migration plan and recognition of its ledger.
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-
-/// Applies every current domain-owned migration as one validated plan.
-///
-/// The app contributes only the fresh-state marker. Domain plans live beside
-/// their owning Modules and use globally unique versions because they share one
-/// `SQLx` ledger. Combining them before execution preserves strict
-/// missing-migration validation on later startups.
+/// Applies Coral's migration plan, validating every applied migration.
 pub(crate) async fn migrate_current(database: &coral_db::Database) -> Result<(), coral_db::Error> {
-    database.migrate(&current_migrator()).await
+    database.migrate(coral_db::migration_plan()).await
 }
 
-/// The app marker and every domain plan, combined into one plan ordered by version.
-pub(crate) fn current_migrator() -> sqlx::migrate::Migrator {
-    sqlx::migrate::Migrator::with_migrations(
-        current_migrations()
-            .into_iter()
-            .cloned()
-            .collect::<Vec<_>>(),
-    )
-}
-
-pub(super) fn rows_match_known_migration_prefix(rows: &[(i64, Vec<u8>, bool)]) -> bool {
-    let migrations = current_migrations();
+/// Reports whether `rows` are the first migrations of `system`'s half of the
+/// plan, applied in order with matching checksums.
+pub(super) fn rows_match_known_migration_prefix(
+    rows: &[(i64, Vec<u8>, bool)],
+    system: coral_db::DatabaseSystem,
+) -> bool {
+    let migrations = &coral_db::migration_plan().for_system(system).migrations;
     !rows.is_empty()
         && rows.len() <= migrations.len()
         && rows
             .iter()
-            .zip(migrations)
+            .zip(migrations.iter())
             .all(|((version, checksum, success), migration)| {
                 *success
                     && *version == migration.version
@@ -36,60 +24,51 @@ pub(super) fn rows_match_known_migration_prefix(rows: &[(i64, Vec<u8>, bool)]) -
             })
 }
 
-fn current_migrations() -> Vec<&'static sqlx::migrate::Migration> {
-    let mut migrations = MIGRATOR
-        .migrations
-        .iter()
-        .chain(coral_auth::migrator().migrations.iter())
-        .chain(coral_workspace::migrator().migrations.iter())
-        .chain(coral_task::migrator().migrations.iter())
-        .chain(coral_catalog::migrator().migrations.iter())
-        .chain(coral_provider::migrator().migrations.iter())
-        .chain(coral_policy::migrator().migrations.iter())
-        .chain(coral_run::migrator().migrations.iter())
-        .chain(coral_functions::migrator().migrations.iter())
-        .chain(coral_search::migrator().migrations.iter())
-        .collect::<Vec<_>>();
-    migrations.sort_by_key(|migration| migration.version);
-    migrations
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{current_migrations, rows_match_known_migration_prefix};
+    use coral_db::DatabaseSystem;
+
+    use super::rows_match_known_migration_prefix;
 
     #[test]
     fn migration_rows_allow_pending_suffix_and_reject_drift() {
-        let current_rows = current_rows();
-        assert!(rows_match_known_migration_prefix(&current_rows));
+        for (system, other) in [
+            (DatabaseSystem::Sqlite, DatabaseSystem::Postgres),
+            (DatabaseSystem::Postgres, DatabaseSystem::Sqlite),
+        ] {
+            let current_rows = current_rows(system);
+            assert!(rows_match_known_migration_prefix(&current_rows, system));
+            // The two halves differ, so one database's ledger is not the other's.
+            assert!(!rows_match_known_migration_prefix(&current_rows, other));
 
-        let mut pending_suffix = current_rows.clone();
-        pending_suffix.pop();
-        assert!(rows_match_known_migration_prefix(&pending_suffix));
-        assert!(!rows_match_known_migration_prefix(&[]));
+            let mut pending_suffix = current_rows.clone();
+            pending_suffix.pop();
+            assert!(rows_match_known_migration_prefix(&pending_suffix, system));
+            assert!(!rows_match_known_migration_prefix(&[], system));
 
-        let mut missing_first = current_rows.clone();
-        missing_first.remove(0);
-        assert!(!rows_match_known_migration_prefix(&missing_first));
+            let mut missing_first = current_rows.clone();
+            missing_first.remove(0);
+            assert!(!rows_match_known_migration_prefix(&missing_first, system));
 
-        let mut failed_row = current_rows.clone();
-        failed_row
-            .first_mut()
-            .expect("at least one embedded migration")
-            .2 = false;
-        assert!(!rows_match_known_migration_prefix(&failed_row));
+            let mut failed_row = current_rows.clone();
+            failed_row
+                .first_mut()
+                .expect("at least one embedded migration")
+                .2 = false;
+            assert!(!rows_match_known_migration_prefix(&failed_row, system));
 
-        let mut bad_checksum = current_rows;
-        bad_checksum
-            .first_mut()
-            .expect("at least one embedded migration")
-            .1 = b"not the embedded checksum".to_vec();
-        assert!(!rows_match_known_migration_prefix(&bad_checksum));
+            let mut bad_checksum = current_rows;
+            bad_checksum
+                .first_mut()
+                .expect("at least one embedded migration")
+                .1 = b"not the embedded checksum".to_vec();
+            assert!(!rows_match_known_migration_prefix(&bad_checksum, system));
+        }
     }
 
     #[tokio::test]
     async fn current_migration_plan_can_be_validated_again_on_restart() {
-        let fixture = coral_test_support::TestDatabase::new(&super::current_migrator())
+        let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
             .await
             .expect("apply current migrations");
         let restarted = fixture.connect_peer().await.expect("reopen the database");
@@ -98,20 +77,11 @@ mod tests {
             .expect("validate current migrations again");
     }
 
-    #[test]
-    fn domain_migration_versions_are_globally_unique() {
-        let migrations = current_migrations();
-        for (left, right) in migrations.iter().zip(migrations.iter().skip(1)) {
-            assert_ne!(
-                left.version, right.version,
-                "domain migration versions share one SQLx ledger"
-            );
-        }
-    }
-
-    fn current_rows() -> Vec<(i64, Vec<u8>, bool)> {
-        current_migrations()
-            .into_iter()
+    fn current_rows(system: DatabaseSystem) -> Vec<(i64, Vec<u8>, bool)> {
+        coral_db::migration_plan()
+            .for_system(system)
+            .migrations
+            .iter()
             .map(|migration| {
                 (
                     migration.version,

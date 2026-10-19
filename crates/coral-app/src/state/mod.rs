@@ -10,8 +10,6 @@ mod lock;
 mod migrations;
 
 pub(crate) use database_config::DatabaseConfig;
-#[cfg(test)]
-pub(crate) use migrations::current_migrator;
 
 pub(crate) use initialization::{InitializedState, initialize as initialize_state};
 pub(crate) use layout::AppStateLayout;

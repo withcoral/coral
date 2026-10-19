@@ -20,7 +20,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 coral-workspace = { workspace = true, features = ["test-fixtures"] }
-coral-policy.workspace = true
 coral-provider = { workspace = true, features = ["test-fixtures"] }
 coral-search = { workspace = true, features = ["test-fixtures"] }
 coral-test-support.workspace = true

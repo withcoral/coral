@@ -372,7 +372,6 @@ CREATE TABLE provider_lifecycle_events (
         'provider_setup.expired', 'provider_publication.completed',
 
         'provider.disabled', 'provider.updated', 'provider.restored', 'provider.deleted', 'provider.oauth_client_secret_rotated',
-        'provider.builtin_installed',
         'provider.credential_route_changed',
         'provider_account_authorization.started', 'provider_account_authorization.exchanging',
         'provider_account_authorization.completed', 'provider_account.connected', 'provider_account.deleted', 'provider_account.disconnected',

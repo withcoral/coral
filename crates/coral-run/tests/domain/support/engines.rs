@@ -227,12 +227,13 @@ impl ProgramEngine for InvokingEngine {
                     error.to_string(),
                 )),
             },
-            Err(coral_v8::OperationHostError::Rejected { .. }) => {
-                ExecutionCompletion::Failed(crate::RunFailure::new(
-                    RunFailureCode::ProgramRejected,
-                    "Program rejected".to_string(),
-                ))
-            }
+            Err(
+                coral_v8::OperationHostError::Rejected { .. }
+                | coral_v8::OperationHostError::Upstream { .. },
+            ) => ExecutionCompletion::Failed(crate::RunFailure::new(
+                RunFailureCode::ProgramRejected,
+                "Program rejected".to_string(),
+            )),
             Err(coral_v8::OperationHostError::Fatal) => ExecutionCompletion::ProgramHostTerminated,
         }
     }

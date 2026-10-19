@@ -98,7 +98,6 @@ impl StoredDeclarationFields {
         let graph = &self.graph;
         let input_declared = match operation.execution_binding() {
             ExecutionBinding::Http(binding) => crate::openapi::declares_input(
-                operation.relative_path(),
                 operation.input_schema(),
                 binding,
                 graph,
@@ -106,7 +105,6 @@ impl StoredDeclarationFields {
                     .get_or_init(|| crate::openapi::typescript_names(graph)),
             ),
             ExecutionBinding::Mcp(binding) => crate::mcp::declares_input(
-                operation.relative_path(),
                 operation.input_schema(),
                 binding,
                 graph,

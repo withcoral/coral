@@ -199,7 +199,7 @@ mod tests {
     }
 
     async fn readiness_fixture() -> ReadinessFixture {
-        let database = TestDatabase::new(&crate::state::current_migrator())
+        let database = TestDatabase::new(coral_db::migration_plan())
             .await
             .expect("migrated database");
         coral_search::prepare_storage(database.database().as_ref())

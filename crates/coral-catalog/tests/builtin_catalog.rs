@@ -29,7 +29,7 @@ async fn publish_builtin(
 
 #[tokio::test]
 async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
-    let fixture = TestDatabase::new(coral_catalog::migrator()).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
     let mut transaction = database.begin().await.unwrap();
     let first = publish_builtin(&mut transaction, 1).await;
@@ -66,7 +66,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         "\"openapi_document\"",
         "\"openapi_url\"",
         "\"mcp_url\"",
-        "function createProvider(input: {",
+        "export default function (input: {",
         r#""credentialRoute": "none" | "fixed" | "caller""#,
         r#""displayName"?: string"#,
         r#""namespace": string"#,
@@ -137,7 +137,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
 
 #[tokio::test]
 async fn a_builtin_generation_pins_its_catalog_identity_and_decodes_any_well_formed_one() {
-    let fixture = TestDatabase::new(coral_catalog::migrator()).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
     let mut transaction = database.begin().await.unwrap();
     let first = publish_builtin(&mut transaction, 1).await;

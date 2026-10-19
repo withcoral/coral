@@ -71,8 +71,9 @@ test('Consent uses private HTTP independently of HTTPS-only server requests and 
         await page.goto(`/workspaces/${workspace}/providers/new`)
         await chooseFile(page, 'consent.json', Buffer.from(JSON.stringify(document)))
         await page.getByRole('button', { name: 'Read', exact: true }).click()
-        // Each attempt adds to one workspace, and Configuration refuses a namespace in use.
-        await page.getByLabel('Namespace', { exact: true }).fill(`consent_${++attempts}`)
+        // Each attempt adds to one workspace, and Configuration refuses a name or namespace in use.
+        await page.getByLabel('Display name', { exact: true }).fill(`Consent ${++attempts}`)
+        await page.getByLabel('Namespace', { exact: true }).fill(`consent_${attempts}`)
         await confirmConfiguration(page)
         await acceptOperations(page)
         await chooseAccount(page, 'shared')

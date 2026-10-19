@@ -1,5 +1,5 @@
 .PHONY: install docker-build reef-docker-build docker-test rust-checks
-.PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-tests
+.PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-tests load-test
 .PHONY: license-check lint-proto reef-image-checks
 
 # Images build and test with Docker or Podman.
@@ -107,6 +107,15 @@ export CORAL_TEST_POSTGRES_URL LOCAL_POSTGRES_IMAGE LOCAL_POSTGRES_CONTAINER LOC
 
 postgres-tests:
 	@node scripts/postgres-tests.mjs $(RUST_WORKSPACE_TESTS) --profile postgres
+
+# Run coordination load harness. Not a gate: its cells (fan-out, emit,
+# concurrent Runs) measure one busy Workspace against the probes the rest of the
+# server runs. Options and reports are described in scripts/load.mjs.
+#   make load-test LOAD_ARGS="--calls 30,101 --latency 0,5,20 --release"
+#   make load-test LOAD_ARGS="--backend sqlite"
+#   make load-test LOAD_ARGS="--cells fanout --mode hold"
+load-test:
+	@node scripts/load.mjs $(LOAD_ARGS)
 
 # ----------------------------------------------------------------------------
 # Dependency license scan

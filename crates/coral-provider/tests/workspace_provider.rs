@@ -32,12 +32,7 @@ async fn harness() -> (
     ProviderModule,
     AuthenticatedUser,
 ) {
-    let migrator = coral_test_support::combined_migrator(&[
-        coral_workspace::migrator(),
-        coral_catalog::migrator(),
-        coral_provider::migrator(),
-    ]);
-    let db = TestDatabase::new(&migrator)
+    let db = TestDatabase::new(coral_db::migration_plan())
         .await
         .expect("create domain test database");
     let workspaces = WorkspaceModule::new(db.database());

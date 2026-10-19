@@ -135,10 +135,10 @@ impl UpstreamSender for RejectingUpstream {
 
 pub(crate) fn scripted_http_result(data: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
+        "status": 200,
         "data": data,
         "metadata": {
             "kind": "http",
-            "status": 200,
             "headers": [],
             "mediaType": null,
             "charset": null,

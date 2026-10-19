@@ -109,6 +109,7 @@ fn agent_provider_view(
         provider: Some(super::providers::provider_view(
             &value.readiness.provider,
             &value.readiness.blockers,
+            None,
         )),
         account_use: Some(match value.account {
             AgentAccountUse::None => AccountUse::NoAccount(()),
