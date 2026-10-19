@@ -403,7 +403,15 @@ impl RunModule {
             .await?
             .ok_or(Error::ClaimMismatch)?;
         if run.state.is_terminal() {
-            return Err(Error::RunEnded);
+            // An earlier attempt of this very interruption may have landed
+            // without an answer: the row then carries the claim it wrote.
+            let recorded_by_us = run.state == RunState::Interrupted
+                && run.execution_claim_id.as_deref() == Some(takeover_claim_id.unwrap_or(claim_id));
+            return if recorded_by_us {
+                Ok(())
+            } else {
+                Err(Error::RunEnded)
+            };
         }
         let held_claim = run
             .execution_claim_id
@@ -412,7 +420,13 @@ impl RunModule {
         if held_claim != Some(claim_id) {
             return Err(Error::ClaimMismatch);
         }
-        let now = self.now()?.max(run.accepted_at_unix_nanos);
+        // Never before a termination an outside writer already recorded.
+        let now = self.now()?.max(run.accepted_at_unix_nanos).max(
+            run.termination
+                .map_or(run.accepted_at_unix_nanos, |termination| {
+                    termination.started_at_unix_nanos
+                }),
+        );
         let termination = match run.termination {
             Some(termination) => termination,
             None => {
@@ -435,11 +449,11 @@ impl RunModule {
         Ok(())
     }
 
-    /// [`Self::interrupt_owned_run`] until the database answers: an attempt
-    /// the database does not answer is followed by another after a bounded
-    /// backoff, and the next hold reads whether the previous one landed. Ends
-    /// only on the record, a claim mismatch or an ended Run, never on the
-    /// clock.
+    /// [`Self::interrupt_owned_run`] until it lands: the last write a Run
+    /// gets, so every answer but a claim mismatch or an ended Run is followed
+    /// by another attempt after a bounded backoff (a rejection included,
+    /// which a chunk commit would not retry), and the next hold reads whether
+    /// the previous one landed. Never ends on the clock.
     pub(crate) async fn record_interruption(
         &self,
         workspace_id: &WorkspaceId,
@@ -447,13 +461,17 @@ impl RunModule {
         claim_id: &str,
         takeover_claim_id: Option<&str>,
     ) -> Result<(), Error> {
-        crate::execution::until_answered(
-            run_id,
-            "interruption",
-            || true,
-            || self.interrupt_owned_run(workspace_id, run_id, claim_id, takeover_claim_id),
-        )
-        .await
+        let mut backoff = crate::execution::Backoff::new(run_id, "interruption");
+        loop {
+            match self
+                .interrupt_owned_run(workspace_id, run_id, claim_id, takeover_claim_id)
+                .await
+            {
+                Err(fenced @ (Error::ClaimMismatch | Error::RunEnded)) => return Err(fenced),
+                Err(error) => backoff.wait(&error).await,
+                Ok(()) => return Ok(()),
+            }
+        }
     }
 }
 

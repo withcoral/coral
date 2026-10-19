@@ -291,6 +291,8 @@ impl InvocationObserver for ApprovalWaitProbe {
 /// owner's task on its next message when armed.
 pub(crate) struct CommitProbe {
     commits: AtomicUsize,
+    /// Attempts still to fail as unanswered before they write.
+    unanswered: AtomicUsize,
     hold: Mutex<Option<oneshot::Receiver<()>>>,
     held: AtomicBool,
     lose: Mutex<Option<oneshot::Receiver<()>>>,
@@ -302,6 +304,7 @@ impl CommitProbe {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             commits: AtomicUsize::new(0),
+            unanswered: AtomicUsize::new(0),
             hold: Mutex::new(None),
             held: AtomicBool::new(false),
             lose: Mutex::new(None),
@@ -313,6 +316,12 @@ impl CommitProbe {
     /// Chunk commit attempts so far, recommits included.
     pub(crate) fn commits(&self) -> usize {
         self.commits.load(Ordering::SeqCst)
+    }
+
+    /// Fails the next `count` chunk commit attempts as unanswered before
+    /// they write, as a database that drops the connection would.
+    pub(crate) fn unanswer_next_attempts(&self, count: usize) {
+        self.unanswered.store(count, Ordering::SeqCst);
     }
 
     /// Holds the next chunk commit before its transaction until the sender
@@ -357,6 +366,14 @@ impl ExecutionObserver for CommitProbe {
             self.held.store(true, Ordering::SeqCst);
             let _released = release.await;
         }
+    }
+
+    async fn chunk_commit_unanswered(&self) -> bool {
+        self.unanswered
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
     }
 
     async fn chunk_commit_answer_lost(&self) -> bool {

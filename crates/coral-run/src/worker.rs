@@ -5,7 +5,7 @@
 use coral_workspace::AuthenticatedPrincipal;
 
 use crate::engine::{ExecutionCompletion, ProgramPackage};
-use crate::lifecycle::RunTerminationKind;
+use crate::lifecycle::{RunRecord, RunTerminationKind};
 use crate::owner::{self, OwnerHandle};
 use crate::termination::ShutdownAction;
 use crate::types::AcceptedRun;
@@ -76,7 +76,7 @@ impl RunModule {
             Err(Error::ClaimMismatch | Error::RunEnded) => {
                 tracing::warn!(
                     run_id = %run.id,
-                    "Run of a failed Run Owner was ended by another writer first"
+                    "Run of a failed Run Owner was already ended"
                 );
             }
             Err(error) => {
@@ -114,7 +114,7 @@ impl RunModule {
             && run.termination.is_none()
             && run.execution_claim_id.as_deref() == Some(claim_id)
         {
-            return Self::package_of_started_run(transaction, accepted).await;
+            return self.resume_start(transaction, &run, accepted).await;
         }
         if run.state != RunState::Running
             || run.termination.is_some()
@@ -203,11 +203,30 @@ impl RunModule {
 
     /// The package of a Run whose start mark this owner's earlier attempt
     /// landed without an answer: the Program has not started yet, and this
-    /// is its one start.
-    async fn package_of_started_run(
+    /// is its one start. A deadline that passed meanwhile is recorded here
+    /// instead, as the first attempt would have.
+    async fn resume_start(
+        &self,
         mut transaction: coral_db::Transaction<'_>,
+        run: &RunRecord,
         accepted: &AcceptedRun,
     ) -> Result<Option<ProgramPackage>, Error> {
+        let now = self.now()?.max(run.accepted_at_unix_nanos);
+        if now >= run.deadline_at_unix_nanos {
+            let run = self
+                .request_termination(
+                    &mut transaction,
+                    run,
+                    RunTerminationKind::TimedOut,
+                    None,
+                    now,
+                )
+                .await?;
+            self.finish_termination_in_transaction(&mut transaction, &run, now)
+                .await?;
+            transaction.commit().await?;
+            return Ok(None);
+        }
         let package = run_repository::load_package_in_transaction(
             &mut transaction,
             &accepted.workspace_id,

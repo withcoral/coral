@@ -375,18 +375,20 @@ pub enum Error {
 }
 
 impl Error {
-    /// Whether the database gave no usable answer: the operation may or may
-    /// not have taken effect, and a reread decides. Every other error is the
-    /// database's or the domain's definite answer.
+    /// Whether the database gave no answer to a write (a lost connection, a
+    /// pool timeout, a lock or serialization race): the write may or may not
+    /// have taken effect, and a reread decides. Every other error, a
+    /// constraint violation included, is the database's or the domain's
+    /// definite answer.
     #[must_use]
     pub(crate) fn is_operational(&self) -> bool {
-        matches!(
-            self,
-            Self::Database(_)
-                | Self::Workspace(coral_workspace::Error::Database(_))
-                | Self::Provider(coral_provider::Error::Database(_))
-                | Self::Policy(coral_policy::Error::Database(_))
-        )
+        match self {
+            Self::Database(error)
+            | Self::Workspace(coral_workspace::Error::Database(error))
+            | Self::Provider(coral_provider::Error::Database(error))
+            | Self::Policy(coral_policy::Error::Database(error)) => error.is_unanswered(),
+            _ => false,
+        }
     }
 
     /// Returns a definite safe rejection; operational uncertainty has no invented outcome.

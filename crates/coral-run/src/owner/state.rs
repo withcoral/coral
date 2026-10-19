@@ -560,6 +560,14 @@ impl OwnerState {
 /// The Run Owner's loop: applies `message` to `state` at `now_unix_nanos` and
 /// returns what the hosting task runs. No I/O happens here.
 pub(crate) fn apply(state: &mut OwnerState, message: Message, now_unix_nanos: i64) -> Vec<Effect> {
+    // A commit that succeeded counts before the owner judges its liveness:
+    // its message may have waited in the mailbox past a bound the commit
+    // itself met.
+    if matches!(message, Message::Committed | Message::Started(Ok(Some(_)))) {
+        let mut effects = apply_message(state, message, now_unix_nanos);
+        effects.extend(state.check_liveness(now_unix_nanos));
+        return effects;
+    }
     let mut effects = state.check_liveness(now_unix_nanos);
     effects.extend(apply_message(state, message, now_unix_nanos));
     effects

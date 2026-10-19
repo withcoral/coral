@@ -159,12 +159,14 @@ impl CommitRejection {
 impl From<Error> for CommitRejection {
     /// The rejection a definite answer means. The head is read under the Run
     /// hold until slice 6, so a head mismatch under a matching claim can only
-    /// mean the row changed under the lock: corruption, already.
+    /// mean the row changed under the lock: corruption, already. A row that
+    /// does not decode is a failure like any other definite answer, with its
+    /// own reason.
     fn from(error: Error) -> Self {
         match error {
             Error::ClaimMismatch => Self::ClaimMismatch,
             Error::RunEnded => Self::RunEnded,
-            Error::HeadMismatch | Error::CorruptData(_) => Self::Corrupt,
+            Error::HeadMismatch => Self::Corrupt,
             _definite => Self::Failed,
         }
     }

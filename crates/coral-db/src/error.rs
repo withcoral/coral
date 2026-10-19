@@ -49,6 +49,29 @@ impl Error {
             _ => false,
         }
     }
+
+    /// Reports whether the backend gave no answer to a write: the connection
+    /// or pool failed, or a lock or serialization race left the statement
+    /// unapplied. The write may be retried; whether it took effect is for the
+    /// caller to read back. Every other error is the backend's definite
+    /// answer, a constraint violation included.
+    #[must_use]
+    pub fn is_unanswered(&self) -> bool {
+        match self {
+            Self::WriterBusy => true,
+            Self::Sqlx(error) => match error {
+                sqlx::Error::Database(_) => sqlx_error_is_serialization_conflict(error),
+                sqlx::Error::Io(_)
+                | sqlx::Error::Tls(_)
+                | sqlx::Error::Protocol(_)
+                | sqlx::Error::PoolTimedOut
+                | sqlx::Error::PoolClosed
+                | sqlx::Error::WorkerCrashed => true,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
 }
 
 /// Reports a timed-out wait for the `SQLite` writer as [`Error::WriterBusy`].
@@ -84,7 +107,22 @@ fn is_conflict_code(code: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_conflict_code;
+    use super::{Error, is_conflict_code};
+
+    #[test]
+    fn an_unanswered_write_is_a_lost_connection_or_a_race_never_a_rejection() {
+        assert!(Error::WriterBusy.is_unanswered());
+        assert!(Error::Sqlx(sqlx::Error::PoolTimedOut).is_unanswered());
+        assert!(Error::Sqlx(sqlx::Error::PoolClosed).is_unanswered());
+        assert!(Error::Sqlx(sqlx::Error::WorkerCrashed).is_unanswered());
+        assert!(
+            Error::Sqlx(sqlx::Error::Io(std::io::Error::other("connection reset"))).is_unanswered()
+        );
+        assert!(!Error::Sqlx(sqlx::Error::RowNotFound).is_unanswered());
+        assert!(!Error::Sqlx(sqlx::Error::ColumnNotFound("x".into())).is_unanswered());
+        assert!(!Error::ObservationUnavailable.is_unanswered());
+        assert!(!Error::Config("bad".into()).is_unanswered());
+    }
 
     #[test]
     fn conflict_codes_cover_both_backends() {

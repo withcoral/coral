@@ -53,7 +53,7 @@ impl<'a> Backoff<'a> {
             write = self.write,
             attempt = self.attempts,
             error = %error,
-            "Run Owner write got no answer from the database; retrying"
+            "Run Owner write did not land; retrying after a backoff"
         );
         tokio::time::sleep(retry_backoff(self.attempts)).await;
     }
@@ -97,6 +97,12 @@ pub(crate) trait ExecutionObserver: Send + Sync {
 
     /// The Run Owner is about to commit one chunk; a test may hold it here.
     async fn before_chunk_commit(&self) {}
+
+    /// One chunk commit is about to begin its transaction; `true` fails it as
+    /// one the database never answered, before it writes.
+    async fn chunk_commit_unanswered(&self) -> bool {
+        false
+    }
 
     /// One chunk commit landed; `true` loses its answer, so the owner resolves
     /// the commit as one the database never answered.

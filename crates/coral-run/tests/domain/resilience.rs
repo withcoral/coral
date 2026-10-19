@@ -110,23 +110,20 @@ async fn a_commit_whose_answer_is_lost_before_it_landed_is_recommitted_as_built_
     let (workspace_id, principal, run_id) = started_run(&fixture, "lost-before").await;
     let before = fixture.run_record(&workspace_id, &run_id).await;
     let commits_before = probe.commits();
-    // The Run has its one `run.started` Event: the next Event insert fails.
-    fixture
-        .inject_fault("CREATE UNIQUE INDEX reject_run_events ON program_run_events(run_id)")
-        .await;
+    // The database answers neither of the next two attempts before they
+    // write; the reread finds the head where it was each time, and the
+    // chunk is recommitted as built until it lands.
+    probe.unanswer_next_attempts(2);
 
     gates.go.send(()).expect("start the burst");
     wait_until(|| engine.acknowledged.load(Ordering::SeqCst) == 1).await;
-    // Each attempt fails at the Event insert; the reread finds the head where
-    // it was, and the chunk is recommitted as built.
     wait_until(|| probe.commits() >= commits_before + 2).await;
     assert_eq!(
         fixture.run_record(&workspace_id, &run_id).await,
         before,
-        "nothing landed while the database refused the chunk"
+        "nothing landed while the database did not answer"
     );
 
-    fixture.inject_fault("DROP INDEX reject_run_events").await;
     wait_until_async_within(Duration::from_secs(10), async || {
         fixture
             .run_record(&workspace_id, &run_id)
@@ -135,6 +132,11 @@ async fn a_commit_whose_answer_is_lost_before_it_landed_is_recommitted_as_built_
             > before.chunk_sequence
     })
     .await;
+    assert_eq!(
+        probe.commits() - commits_before,
+        3,
+        "two unanswered attempts, one landed"
+    );
     let landed = fixture.run_record(&workspace_id, &run_id).await;
     assert_eq!(landed.chunk_sequence - before.chunk_sequence, 1);
     assert_eq!(
@@ -153,6 +155,54 @@ async fn a_commit_whose_answer_is_lost_before_it_landed_is_recommitted_as_built_
         emitted_values(&fixture.events_after(&workspace_id, &run_id, 0).await),
         vec![serde_json::json!("one")],
         "the recommit landed the Emission once"
+    );
+}
+
+/// A rejection the database answers with is definite: the chunk is not
+/// retried, the owner stops, and the Program's end records Interrupted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_definite_database_rejection_stops_the_owner_without_a_retry() {
+    let (engine, gates) = BurstEngine::new(vec!["\"one\"".to_string()]);
+    let probe = CommitProbe::new();
+    let fixture = quiet_fixture(engine.clone(), probe.clone()).await;
+    let (workspace_id, principal, run_id) = started_run(&fixture, "rejected").await;
+    let before = fixture.run_record(&workspace_id, &run_id).await;
+    let claim_id = before.execution_claim_id.clone().expect("started Run");
+    let owner = fixture
+        .runs
+        .owners
+        .find(&run_id, &claim_id)
+        .expect("the owner is live");
+    let commits_before = probe.commits();
+    // The Run has its one `run.started` Event: the next Event insert is
+    // rejected.
+    fixture
+        .inject_fault("CREATE UNIQUE INDEX reject_run_events ON program_run_events(run_id)")
+        .await;
+
+    gates.go.send(()).expect("start the burst");
+    wait_until(|| engine.acknowledged.load(Ordering::SeqCst) == 1).await;
+    wait_until(|| owner.stop().is_requested()).await;
+    assert_eq!(
+        probe.commits() - commits_before,
+        1,
+        "a rejection is not retried"
+    );
+    assert_eq!(fixture.run_record(&workspace_id, &run_id).await, before);
+
+    fixture.inject_fault("DROP INDEX reject_run_events").await;
+    gates.release.send(()).expect("release the Program");
+    let terminal = wait_for_terminal(&fixture.runs, &principal, &workspace_id, &run_id).await;
+    assert_eq!(terminal.state(), RunState::Interrupted);
+    let events = fixture
+        .events_after(&workspace_id, &run_id, last_sequence(&before))
+        .await;
+    assert!(
+        matches!(
+            events.as_slice(),
+            [ended] if matches!(ended.kind(), RunEventKind::Ended { state: RunState::Interrupted, .. })
+        ),
+        "the rejected Emission is not on the ledger: {events:?}"
     );
 }
 
@@ -379,7 +429,9 @@ async fn an_owner_task_that_panics_mid_run_has_the_supervisor_record_interrupted
     let before = fixture.run_record(&workspace_id, &run_id).await;
     let claim_id = before.execution_claim_id.clone().expect("started Run");
 
-    // The Emission's message is the next one the owner's task dequeues.
+    // Once the Program executes, the owner has consumed its start: the
+    // Emission's message is the next one its task dequeues.
+    wait_until(|| engine.started.load(Ordering::SeqCst)).await;
     probe.panic_on_next_message();
     gates.go.send(()).expect("start the burst");
     wait_until_async_within(Duration::from_secs(10), async || {

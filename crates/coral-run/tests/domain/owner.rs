@@ -1,6 +1,7 @@
-//! The Run Owner (ADR 0018, slice 2): Program requests answer at Applied, the
-//! Run Ledger lands in chunks, the lease rides every commit, and a claim
-//! mismatch stops the owner. The last test drives `apply` without a database.
+//! The Run Owner (ADR 0018): Program requests answer at Applied (at Recorded
+//! while the owner is suspect), the Run Ledger lands in chunks, the lease
+//! rides every commit, and a claim mismatch stops the owner. The last test
+//! drives `apply` without a database.
 use super::*;
 
 use crate::owner::{
@@ -940,6 +941,25 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert_eq!(state.phase(), Phase::Retired);
     }
 
+    // A commit that succeeded counts before the liveness judgement: its
+    // message may reach the owner past the self-interrupt bound.
+    {
+        let mut state = started(LIMITS);
+        let (effects, _) = emit(&mut state, 10, 100);
+        deliver(effects);
+        apply(&mut state, Message::Drained, 101);
+        assert!(state.has_commit_in_flight());
+        let effects = apply(&mut state, Message::Committed, 2 + 3 * LEASE + 5);
+        assert!(
+            effects
+                .iter()
+                .all(|effect| matches!(effect, Effect::Commit { .. })),
+            "{effects:?}"
+        );
+        assert_eq!(state.phase(), Phase::Running);
+        assert!(!state.is_suspect());
+    }
+
     // Past the Run deadline the deadline ends the Run, not the owner's
     // liveness bound.
     {
@@ -955,8 +975,8 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert_eq!(state.phase(), Phase::Running);
     }
 
-    // A corrupt ledger: the owner stops loudly, the request on the lost chunk
-    // and pending work learn it, and the Program's end writes nothing.
+    // A corrupt ledger: the owner stops loudly, pending work learns it, and
+    // the Program's end writes nothing.
     {
         let mut state = started(LIMITS);
         let (effects, _) = emit(&mut state, 10, 300);

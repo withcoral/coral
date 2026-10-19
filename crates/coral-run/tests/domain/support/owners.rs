@@ -11,6 +11,8 @@ use coral_db::Transaction;
 /// while the Program is still running.
 pub(crate) struct BurstEngine {
     pub(crate) values: Vec<String>,
+    /// The Program is executing: the owner has applied its start.
+    pub(crate) started: AtomicBool,
     pub(crate) acknowledged: AtomicUsize,
     pub(crate) rejected: AtomicUsize,
     go: Mutex<Option<mpsc::Receiver<()>>>,
@@ -29,6 +31,7 @@ impl BurstEngine {
         (
             Arc::new(Self {
                 values,
+                started: AtomicBool::new(false),
                 acknowledged: AtomicUsize::new(0),
                 rejected: AtomicUsize::new(0),
                 go: Mutex::new(Some(go_receiver)),
@@ -59,6 +62,7 @@ impl ProgramEngine for BurstEngine {
         host: Arc<dyn coral_v8::ProgramHost>,
         stop: Arc<ExecutionStop>,
     ) -> ExecutionCompletion {
+        self.started.store(true, Ordering::SeqCst);
         if !Self::wait(&self.go) {
             return ExecutionCompletion::ProgramHostTerminated;
         }

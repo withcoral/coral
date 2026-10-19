@@ -296,10 +296,16 @@ struct Written {
 
 impl Written {
     /// Whether `run` carries the chunk: the lease an attempt renewed is on
-    /// the row.
+    /// the row, and the head has moved past the one the attempt was built
+    /// on. The commit makes its lease instant distinct from the one it found
+    /// on the row, so a coarse clock cannot make the previous chunk's lease
+    /// pass for this one.
     fn landed_on(self, run: &RunRecord) -> bool {
         self.lease_until_unix_nanos.is_some()
             && run.worker_claim_expires_at_unix_nanos == self.lease_until_unix_nanos
+            && self
+                .head_before
+                .is_none_or(|head| run.chunk_sequence > head)
     }
 }
 
@@ -412,11 +418,7 @@ async fn reread_until_resolved(
 fn resolve(run: &RunRecord, claim_id: &str, written: Written) -> Resolution {
     let head_before = written.head_before;
     if written.landed_on(run) {
-        return if head_before.is_some_and(|head| run.chunk_sequence <= head) {
-            Resolution::Rejected(CommitRejection::Corrupt)
-        } else {
-            Resolution::Landed
-        };
+        return Resolution::Landed;
     }
     if run.execution_claim_id.as_deref() != Some(claim_id) {
         return Resolution::Rejected(CommitRejection::ClaimMismatch);
@@ -459,6 +461,10 @@ async fn commit_once(
     let claim_id = accepted.claim_id.as_str();
     #[cfg(test)]
     module.execution_observer.before_chunk_commit().await;
+    #[cfg(test)]
+    if module.execution_observer.chunk_commit_unanswered().await {
+        return Attempt::Unanswered(Error::Database(coral_db::Error::WriterBusy));
+    }
     let outcome: Result<(), CommitFailure> = async {
         let mut transaction = module.database.begin().await.map_err(Error::from)?;
         let run = run_repository::hold_run(&mut transaction, &accepted.workspace_id, &accepted.id)
@@ -496,7 +502,12 @@ async fn commit_once(
                 ChunkItem::Work(_) => events.extend(produced_by_work.next().into_iter().flatten()),
             }
         }
-        let lease_until = module.execution_policy.lease_until(now)?;
+        // The renewed lease marks this chunk on the row; it never repeats the
+        // instant already there.
+        let mut lease_until = module.execution_policy.lease_until(now)?;
+        if Some(lease_until) == run.worker_claim_expires_at_unix_nanos {
+            lease_until = lease_until.saturating_add(1);
+        }
         written.lease_until_unix_nanos = Some(lease_until);
         run_repository::commit_chunk(
             &mut transaction,
@@ -509,7 +520,7 @@ async fn commit_once(
         transaction.commit().await.map_err(Error::from)?;
         #[cfg(test)]
         if module.execution_observer.chunk_commit_answer_lost().await {
-            return Err(Error::Database(coral_db::Error::ObservationUnavailable).into());
+            return Err(Error::Database(coral_db::Error::WriterBusy).into());
         }
         Ok(())
     }
