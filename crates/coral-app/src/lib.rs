@@ -1,7 +1,7 @@
 //! Application composition for the Coral runtime.
 //!
 //! [`start_runtime`] is what the `coral` executable calls. `coral-app` owns
-//! the fresh-state fence, database and domain migration assembly, current
+//! the fresh-state fence, database migration, current
 //! authentication protocol machinery, listener lifecycle, readiness, and
 //! telemetry exporter configuration. Product behavior belongs
 //! to transport-neutral domain crates.

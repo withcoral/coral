@@ -410,7 +410,7 @@ async fn on_activity_change<T>(f: &Fixture, mut read: impl AsyncFnMut() -> Optio
 }
 
 #[tokio::test]
-async fn invocation_wire_preserves_mcp_is_error_as_native_data_not_coral_failure() {
+async fn invocation_wire_rejects_an_mcp_is_error_and_keeps_its_native_data() {
     let f = Fixture::new().await;
     let server = MockServer::start().await;
     Mock::given(method("POST")).respond_with(|request: &wiremock::Request| {
@@ -456,10 +456,18 @@ async fn invocation_wire_preserves_mcp_is_error_as_native_data_not_coral_failure
         "return await coral.providers.evidence.read({private: 'argument'});",
     )
     .await;
-    assert!(matches!(
-        terminal(&f, &run).await.terminal,
-        Some(wire::inspect_run_response::Terminal::Succeeded(_))
-    ));
+    let Some(wire::inspect_run_response::Terminal::Failed(failure)) =
+        terminal(&f, &run).await.terminal
+    else {
+        panic!("an uncaught isError fails the Run")
+    };
+    let error = failure.error.expect("Program error");
+    assert_eq!(error.operation_code, "error_response");
+    assert_eq!(
+        error.operation_status, 0,
+        "an MCP outcome has no HTTP status"
+    );
+    assert!(error.operation_body.contains("private native error"));
     let exact = invocation(&f, &run).await;
     assert_eq!(
         exact.invocation.unwrap().outcome(),
@@ -1149,7 +1157,8 @@ async fn invocation(f: &Fixture, run: &coral_run::RunId) -> wire::InspectInvocat
 }
 
 #[tokio::test]
-async fn invocation_wire_keeps_http_error_status_as_native_outcome_and_coral_failure_separate() {
+async fn invocation_wire_rejects_an_http_error_status_with_its_evidence_and_keeps_coral_failures_separate()
+ {
     let f = Fixture::new().await;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1162,10 +1171,14 @@ async fn invocation_wire_keeps_http_error_status_as_native_outcome_and_coral_fai
     let source = "return await coral.providers.evidence.read({body: {private: 'argument'}});";
     let run = start(&f, source).await;
     let detail = terminal(&f, &run).await;
-    assert_eq!(
-        detail.run.unwrap().state(),
-        wire::ActivityRunState::Succeeded
-    );
+    let Some(wire::inspect_run_response::Terminal::Failed(failure)) = &detail.terminal else {
+        panic!("an uncaught upstream error fails the Run")
+    };
+    let error = failure.error.as_ref().expect("Program error");
+    assert_eq!(error.operation_code, "error_response");
+    assert_eq!(error.operation_status, 418);
+    assert_eq!(error.operation_body, r#"{"private":[null,42]}"#);
+    assert!(!error.operation_body_truncated);
     let exact = invocation(&f, &run).await;
     assert_eq!(
         exact.invocation.as_ref().unwrap().outcome(),
@@ -1177,7 +1190,7 @@ async fn invocation_wire_keeps_http_error_status_as_native_outcome_and_coral_fai
         panic!("complete native outcome")
     };
     let native: serde_json::Value = serde_json::from_str(&native).unwrap();
-    assert_eq!(native.pointer("/metadata/status"), Some(&json!(418)));
+    assert_eq!(native.get("status"), Some(&json!(418)));
     assert_eq!(native.get("data"), Some(&json!({"private": [null, 42]})));
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&exact.arguments_json).unwrap(),

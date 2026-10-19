@@ -73,17 +73,6 @@ impl CancellationCaller {
     }
 }
 
-/// Every domain migration plan a Run test database installs.
-pub(crate) const MIGRATION_PLANS: [&sqlx::migrate::Migrator; 7] = [
-    coral_workspace::migrator(),
-    coral_catalog::migrator(),
-    coral_provider::migrator(),
-    coral_policy::migrator(),
-    crate::migrator(),
-    coral_functions::migrator(),
-    coral_search::migrator(),
-];
-
 pub(crate) struct TestModules {
     pub(crate) test_database: TestDatabase,
     pub(crate) database: Arc<coral_db::Database>,
@@ -122,8 +111,7 @@ impl TestModules {
         invocation_observer: Arc<dyn InvocationObserver>,
         execution_observer: Arc<dyn ExecutionObserver>,
     ) -> Self {
-        let migrator = coral_test_support::combined_migrator(&MIGRATION_PLANS);
-        let fixture = TestDatabase::new(&migrator)
+        let fixture = TestDatabase::new(coral_db::migration_plan())
             .await
             .expect("create Program Run test database");
         let database = fixture.database();
@@ -392,6 +380,125 @@ impl TestModules {
             provider_id,
             policy_target,
         }
+    }
+
+    /// Accepts `source` durably without launching it: a running, unclaimed Run
+    /// that no worker touches, so a test can write its Run Ledger itself.
+    pub(crate) async fn staged_run(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        workspace_id: &coral_workspace::WorkspaceId,
+        source: &str,
+    ) -> crate::RunId {
+        let prepared = self
+            .runs
+            .prepare(principal, workspace_id, submission(source))
+            .await
+            .expect("prepare the Program");
+        let mut transaction = self.database.begin().await.expect("begin acceptance");
+        let staged = self
+            .runs
+            .accept_in_transaction(&mut transaction, prepared)
+            .await
+            .expect("accept the Program");
+        transaction.commit().await.expect("commit acceptance");
+        staged.run_id().clone()
+    }
+
+    /// Gives a staged Run `claim_id` as its worker and execution claim, with a
+    /// lease that ends at `lease_until_unix_nanos`, as the worker does before
+    /// the first Program statement runs.
+    pub(crate) async fn claim_run(
+        &self,
+        workspace_id: &coral_workspace::WorkspaceId,
+        run_id: &crate::RunId,
+        claim_id: &str,
+        lease_until_unix_nanos: i64,
+    ) {
+        let mut transaction = self.database.begin().await.expect("begin claim");
+        let run = crate::run_repository::hold_run(&mut transaction, workspace_id, run_id)
+            .await
+            .expect("hold the Run")
+            .expect("staged Run exists");
+        let now = self.clock.now_unix_nanos().expect("clock");
+        assert!(
+            crate::run_repository::claim_execution_worker(
+                &mut transaction,
+                &run,
+                claim_id,
+                lease_until_unix_nanos,
+                now,
+            )
+            .await
+            .expect("claim the worker")
+        );
+        assert!(
+            crate::run_repository::mark_execution_started(&mut transaction, &run, claim_id, now)
+                .await
+                .expect("mark execution started")
+        );
+        transaction.commit().await.expect("commit claim");
+    }
+
+    /// The Run row as the repository decodes it, from a fresh read snapshot.
+    pub(crate) async fn run_record(
+        &self,
+        workspace_id: &coral_workspace::WorkspaceId,
+        run_id: &crate::RunId,
+    ) -> crate::lifecycle::RunRecord {
+        let mut transaction = self
+            .database
+            .begin_read_snapshot()
+            .await
+            .expect("begin read snapshot");
+        let run = crate::run_repository::find_exact_in_transaction(
+            &mut transaction,
+            workspace_id,
+            run_id,
+        )
+        .await
+        .expect("read the Run")
+        .expect("Run exists");
+        transaction.commit().await.expect("end read snapshot");
+        run
+    }
+
+    /// The previous release's Event counter on the Run row.
+    pub(crate) async fn compatibility_counter(
+        &self,
+        workspace_id: &coral_workspace::WorkspaceId,
+        run_id: &crate::RunId,
+    ) -> i64 {
+        crate::run_repository::next_event_sequence(&self.database, workspace_id, run_id)
+            .await
+            .expect("read the compatibility counter")
+    }
+
+    /// Every Event after `after_sequence`, from a fresh read snapshot.
+    pub(crate) async fn events_after(
+        &self,
+        workspace_id: &coral_workspace::WorkspaceId,
+        run_id: &crate::RunId,
+        after_sequence: u64,
+    ) -> Vec<RunEvent> {
+        let mut transaction = self
+            .database
+            .begin_read_snapshot()
+            .await
+            .expect("begin read snapshot");
+        let (events, has_more) = crate::run_repository::event_page_in_transaction(
+            &mut transaction,
+            workspace_id,
+            run_id,
+            after_sequence,
+            crate::RUN_EVENT_PAGE_MAX,
+            crate::ValueLimits::default(),
+        )
+        .await
+        .expect("read Events");
+        transaction.commit().await.expect("end read snapshot");
+        assert!(!has_more, "the test reads every Event in one page");
+        events
     }
 
     pub(crate) async fn expire_worker_claim(

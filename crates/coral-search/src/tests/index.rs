@@ -659,6 +659,47 @@ async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
 }
 
 #[tokio::test]
+async fn a_failed_preparation_after_a_notice_leaves_a_failed_state() {
+    // Without the state, the Provider reads as pending until a reconcile
+    // pass fails the same way and records it.
+    for by_generation in [true, false] {
+        let upstream = MockServer::start().await;
+        let world = World::publish_tracer(&upstream).await;
+        let generation = world
+            .stored_entries(&world.tracer)
+            .await
+            .generation_id()
+            .clone();
+        world
+            .modules
+            .fixture
+            .execute_fixture_sql("ALTER TABLE materialized_operations RENAME TO hidden_operations")
+            .await
+            .expect("hide the catalog's Operations");
+
+        if by_generation {
+            world.index.index_generation(
+                world.workspace.clone(),
+                world.tracer.clone(),
+                generation.clone(),
+            );
+        } else {
+            world
+                .index
+                .index_active_generation(world.workspace.clone(), world.tracer.clone());
+        }
+        world.index.settled().await;
+
+        let [state] = world.states().await.try_into().expect("one state row");
+        assert_eq!(
+            (state.generation_id.as_str(), state.state.as_str()),
+            (generation.to_string().as_str(), "failed"),
+            "by generation: {by_generation}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_no_op_regeneration_keeps_the_indexed_generation_and_a_rewrite_leaves_the_same_rows() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
@@ -976,6 +1017,43 @@ async fn a_write_stalled_past_its_limit_rolls_back_and_frees_later_writes() {
     );
 }
 
+#[tokio::test]
+async fn a_failure_waits_for_a_busy_writer_to_record_its_state() {
+    // A write that runs past its limit keeps SQLite's one writer until its
+    // statement ends. The failure it leaves must still be recorded once the
+    // writer is free, or the Provider reads as pending until a reconcile
+    // pass. Postgres has no single writer: a blocked write waits on locks.
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    if world.modules.search.database.system() == DatabaseSystem::Postgres {
+        return;
+    }
+    let entries = world.stored_entries(&world.tracer).await;
+    let database = Arc::new(
+        world
+            .modules
+            .fixture
+            .connect_peer_with_writer_wait(std::time::Duration::from_millis(50))
+            .await
+            .expect("open a handle with a short writer wait"),
+    );
+    let index = SearchIndex::new(database.clone(), RECONCILE_INTERVAL)
+        .with_write_limit(std::time::Duration::from_secs(1));
+
+    let blocker = database.begin().await.expect("hold the writer");
+    notify(&index, &entries);
+    tokio::join!(index.settled(), async {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        blocker.rollback().await.expect("release the writer");
+    });
+
+    let [state] = world.states().await.try_into().expect("one state row");
+    assert_eq!(
+        (state.generation_id.as_str(), state.state.as_str()),
+        (entries.generation_id().to_string().as_str(), "failed")
+    );
+}
+
 /// A small Provider with one Operation and no credentials.
 const LEDGER: &str = r#"{
   "openapi": "3.1.0",
@@ -1023,6 +1101,147 @@ async fn an_inert_index_writes_nothing_when_notified() {
 
     assert_eq!(world.indexed_generations().await, Vec::<String>::new());
     assert_eq!(world.states().await, []);
+}
+
+#[tokio::test]
+async fn search_index_states_follow_each_providers_active_generation() {
+    use crate::SearchIndexFailure;
+    use crate::SearchIndexState::{Failed, Indexed, Pending};
+
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    assert_eq!(
+        world.search_index_states(None).await,
+        BTreeMap::from([(world.tracer.clone(), Pending), (ledger.clone(), Pending)]),
+        "a Generation no attempt has reached"
+    );
+
+    world.fail_an_attempt().await;
+    let failed = || Failed {
+        reason: Some(SearchIndexFailure::Database),
+    };
+    assert_eq!(
+        world.search_index_states(None).await,
+        BTreeMap::from([(world.tracer.clone(), failed()), (ledger.clone(), failed())]),
+        "the injected fault is a database error"
+    );
+
+    notify(&world.index, &world.stored_entries(&world.tracer).await);
+    world.index.settled().await;
+    assert_eq!(
+        world.search_index_states(None).await,
+        BTreeMap::from([(world.tracer.clone(), Indexed), (ledger.clone(), failed())])
+    );
+
+    world
+        .modules
+        .regenerate_workspace_provider(
+            &change(world.user.clone(), 60, '6'),
+            &world.workspace,
+            &ledger,
+            &serde_json::from_str(&LEDGER.replace("List ledger entries", "List every entry"))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(
+        world.search_index_states(None).await,
+        BTreeMap::from([(world.tracer.clone(), Indexed), (ledger.clone(), Pending)]),
+        "a superseded Generation's failure is not the Provider's state"
+    );
+    assert_eq!(
+        world.search_index_states(Some(&world.tracer)).await,
+        BTreeMap::from([(world.tracer.clone(), Indexed)])
+    );
+}
+
+#[tokio::test]
+async fn a_failure_without_a_known_kind_reports_no_reason() {
+    // A row written before Coral recorded the kind holds none; a row written
+    // by a later Coral may hold a kind this one does not know.
+    for kind in ["NULL", "'a_later_kind'"] {
+        let upstream = MockServer::start().await;
+        let world = World::publish_tracer(&upstream).await;
+        world.fail_an_attempt().await;
+        world
+            .modules
+            .fixture
+            .execute_fixture_sql(&format!(
+                "UPDATE search_index_states SET error_kind = {kind}"
+            ))
+            .await
+            .expect("replace the recorded kind");
+
+        assert_eq!(
+            world.search_index_states(None).await,
+            BTreeMap::from([(
+                world.tracer.clone(),
+                crate::SearchIndexState::Failed { reason: None }
+            )]),
+            "error_kind = {kind}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_failed_state_read_reports_no_states_and_logs_the_error() {
+    // Search state is information only (ADR 0017): a read that fails must not
+    // fail the Provider inspection that asked for it.
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql("ALTER TABLE search_index_states RENAME TO hidden_index_states")
+        .await
+        .expect("hide the state rows");
+
+    let logs = CapturedLogs::default();
+    let states = {
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default().with(logs.clone()),
+        );
+        world
+            .modules
+            .search
+            .inspect_search_index_states(&world.user, &world.workspace, None)
+            .await
+            .expect("a failed state read never fails the inspection")
+    };
+
+    assert!(states.is_empty(), "{states:?}");
+    let [event] = logs.events().try_into().expect("one log event");
+    assert_eq!(event.level, tracing::Level::WARN);
+    assert_eq!(
+        event.fields.get("workspace_id"),
+        Some(&world.workspace.to_string())
+    );
+}
+
+#[tokio::test]
+async fn search_index_states_require_workspace_inspection() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let outsider = organization_user(world.modules.search.database.clone(), "user:outsider").await;
+    world.fail_an_attempt().await;
+    let before = world.states().await;
+
+    let denied = world
+        .modules
+        .search
+        .inspect_search_index_states(&outsider, &world.workspace, None)
+        .await;
+
+    assert!(
+        matches!(
+            denied,
+            Err(crate::Error::Workspace(
+                coral_workspace::Error::WorkspaceNotFound
+            ))
+        ),
+        "{denied:?}"
+    );
+    assert_eq!(world.states().await, before, "the denial changed nothing");
 }
 
 /// Notifies the index that the Generation the entries name became active, as
@@ -1106,6 +1325,18 @@ impl World {
             .map(|active| active.provider().clone())
             .find(|candidate| candidate.id() == provider)
             .expect("active Provider")
+    }
+
+    /// Each Provider's search index state, as the owner inspects it.
+    async fn search_index_states(
+        &self,
+        provider: Option<&coral_provider::ProviderId>,
+    ) -> BTreeMap<coral_provider::ProviderId, crate::SearchIndexState> {
+        self.modules
+            .search
+            .inspect_search_index_states(&self.user, &self.workspace, provider)
+            .await
+            .expect("inspect the search index states")
     }
 
     /// Publishes a second Provider, "ledger", from [`LEDGER`].
@@ -1301,6 +1532,14 @@ impl World {
             .expect("count the rows");
         transaction.rollback().await.unwrap();
         (terms, totals.into_iter().next())
+    }
+
+    /// Runs one reconcile pass whose every Generation attempt fails with a
+    /// database error, then lets later attempts succeed.
+    async fn fail_an_attempt(&self) {
+        self.reject_complete_states().await;
+        self.index.reconcile().await;
+        self.allow_complete_states().await;
     }
 
     /// Makes every `complete` state row fail to insert, so an attempt fails

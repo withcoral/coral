@@ -117,7 +117,9 @@ async fn read_update(
     actions: Vec<RequiredAction>,
 ) -> Result<RunUpdate, Error> {
     let after_sequence = observation.cursor().map_or(0, RunCursor::event_sequence);
-    let last_sequence = run.next_event_sequence - 1;
+    let last_sequence = run
+        .last_event_sequence
+        .ok_or_else(|| Error::CorruptData("observed Run was read without its Events".into()))?;
     if after_sequence > last_sequence {
         return Err(Error::InvalidInput("Run cursor is invalid".to_string()));
     }

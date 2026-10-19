@@ -32,6 +32,9 @@ pub(super) fn run_error(error: coral_run::Error) -> Status {
         | coral_run::Error::InvocationRejected(_)
         | coral_run::Error::InvocationPersistence(_)
         | coral_run::Error::RunEventPersistence(_)
+        | coral_run::Error::ClaimMismatch
+        | coral_run::Error::HeadMismatch
+        | coral_run::Error::RunEnded
         | coral_run::Error::ProgramHostTerminated
         | coral_run::Error::Provider(_)
         | coral_run::Error::Policy(_)
@@ -201,6 +204,18 @@ fn program_error(value: &coral_run::ProgramError) -> wire::ActivityProgramError 
             .as_ref()
             .and_then(|o| o.trace_id.clone())
             .unwrap_or_default(),
+        operation_status: value
+            .operation
+            .as_ref()
+            .and_then(|o| o.status)
+            .map(u32::from)
+            .unwrap_or_default(),
+        operation_body: value
+            .operation
+            .as_ref()
+            .and_then(|o| o.body.clone())
+            .unwrap_or_default(),
+        operation_body_truncated: value.operation.as_ref().is_some_and(|o| o.body_truncated),
         cause: value.cause.as_ref().map(|c| Box::new(program_error(c))),
         errors: value.errors.iter().map(program_error).collect(),
         truncated: value.truncated,

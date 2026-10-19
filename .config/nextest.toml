@@ -16,6 +16,12 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 [profile.postgres]
 test-threads = 4
 
+# The Run fan-out load harness (`scripts/load.mjs`) runs one ignored test for
+# minutes by design and owns the whole pool; never kill it and never share it.
+[profile.load]
+test-threads = 1
+slow-timeout = { period = "120s" }
+
 # CI's runner reads these reports from disk to show slow and failing tests.
 [profile.default.junit]
 path = "junit.xml"

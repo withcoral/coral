@@ -69,10 +69,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     const { setup, attempt } = await loadAttempt(api, parent, parsed)
     const callbackUrl = callbackRedirectUri(request, context)
     const chosen = recipeById(attempt.recipe)
-    // Configuration refuses a namespace another provider has, before the person goes on to sign in.
-    const takenNamespaces = setup
-      ? (await listAllProviders(api, parent)).map((provider) => provider.namespace)
-      : []
+    // Configuration refuses a namespace or name another provider has, before the person goes on to sign in.
+    const providers = setup ? await listAllProviders(api, parent) : []
+    const takenNamespaces = providers.map((provider) => provider.namespace)
+    const takenDisplayNames = providers.map((provider) => provider.displayName)
     return data(
       {
         // Recipes are offered only before a source is read.
@@ -84,6 +84,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         recipeDocumentationUrl:
           setup && chosen ? recipeDocumentationUrl(chosen, setup.credentialMethod) : null,
         takenNamespaces,
+        takenDisplayNames,
         // The shell reads a top-level Workspace to keep the sidebar in place.
         workspace,
         basePath,

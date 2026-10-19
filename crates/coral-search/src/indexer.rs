@@ -9,10 +9,14 @@ pub(crate) mod functions;
 pub(crate) mod operations;
 mod repository;
 
+pub(crate) use repository::generation_outcomes_in_workspace;
+
 #[cfg(any(test, feature = "test-fixtures"))]
 pub(crate) use repository::{generation_states_in_workspace, operation_rows_in_workspace};
 
 use async_trait::async_trait;
+
+use crate::SearchIndexFailure;
 use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
 
@@ -40,6 +44,22 @@ pub(crate) enum IndexError {
     /// Database access failed.
     #[error(transparent)]
     Database(#[from] coral_db::Error),
+}
+
+impl IndexError {
+    /// The kind a failed Generation attempt records. A Saved Function error
+    /// never fails a Generation.
+    pub(crate) const fn failure(&self) -> Option<SearchIndexFailure> {
+        match self {
+            Self::InvalidEntry(_) => Some(SearchIndexFailure::InvalidEntry),
+            Self::TimedOut(_) => Some(SearchIndexFailure::TimedOut),
+            Self::Clock => Some(SearchIndexFailure::Clock),
+            Self::Corrupt(_) => Some(SearchIndexFailure::Corrupt),
+            Self::Provider(_) => Some(SearchIndexFailure::Provider),
+            Self::Database(_) => Some(SearchIndexFailure::Database),
+            Self::SavedFunctions(_) => None,
+        }
+    }
 }
 
 /// Writes one Search Entity kind into the search-owned tables.

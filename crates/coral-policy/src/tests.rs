@@ -1321,13 +1321,7 @@ async fn test_modules() -> (
     ProviderModule,
     OperationPolicyModule,
 ) {
-    let migrator = coral_test_support::combined_migrator(&[
-        coral_workspace::migrator(),
-        coral_catalog::migrator(),
-        coral_provider::migrator(),
-        crate::migrator(),
-    ]);
-    let fixture = TestDatabase::new(&migrator)
+    let fixture = TestDatabase::new(coral_db::migration_plan())
         .await
         .expect("create policy test database");
     let database = fixture.database();

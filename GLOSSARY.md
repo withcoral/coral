@@ -390,6 +390,11 @@ failed, how many results the kind returned, and whether more remain. A kind that
 skipped, not incomplete. A page states coverage only for a kind whose results may be missing. Coverage describes one
 page at the time of the search, not the current catalog.
 
+**Search Index State**: Whether Universal Search has indexed a Provider's active Generation: pending until the first
+attempt completes, then indexed or failed by its outcome. A later attempt can turn failed into indexed. A superseded
+Generation's state is never the Provider's. Reef shows pending and failed on the Provider and its Operations. The state never
+changes what a caller may invoke. _Avoid_: search readiness, index health
+
 **Description Snippet**: The bounded window of an Entity's description that a Search Hit shows: around the first
 matched query term when the description matched, otherwise its beginning.
 
@@ -567,8 +572,12 @@ Programs. _Avoid_:
 Execution attachment, client transport, File Collection binding
 
 **Upstream Outcome**: A complete upstream result received for one Operation Invocation and represented according to its
-Execution Binding. HTTP status and MCP `isError` remain upstream facts: Coral does not classify an Upstream Outcome as
-success or error. _Avoid_: Provider Outcome, Upstream Error, Coral Failure, normalized response
+Execution Binding. Coral retains it whole, whether the Program receives it as an Operation Result or through an
+Operation Error. _Avoid_: Provider Outcome, Upstream Error, Coral Failure, normalized response
+
+**Declared Success**: An Upstream Outcome that its Operation declares as a success, and the only one a Program receives
+as an Operation Result. A body that misses its schema is still a Declared Success. _Avoid_: ok result, upstream success
+state
 
 **Coral Failure**: A safe, coded inability to produce a complete Upstream Outcome for one Operation Invocation. It
 excludes Run-level termination and unexpected host defects and makes no public claim about dispatch, external effects,
@@ -580,27 +589,26 @@ Upstream failure, transport failure, Program failure
 does not reshape the value into normalized rows or make upstream schema conformance a condition of success. _Avoid_:
 Provider-native Result, row projection, normalized query result
 
-**Operation Result**: The caller-facing `{ data, metadata }` projection of one complete Upstream Outcome. Its mandatory
-metadata carries safe execution-specific response facts; it has no `ok` discriminator or Coral-defined upstream success
-state. _Avoid_: Program outcome, failure union, Upstream Error
+**Operation Result**: The caller-facing projection of one Declared Success: `{ status, data, metadata }` for HTTP, and
+`{ data, metadata }` for MCP. Its mandatory metadata carries safe execution-specific response facts. _Avoid_: Program
+outcome, failure union, Upstream Error
 
-**Operation Error (`OperationError`)**: The Coral-owned JavaScript `Error` subclass by which a known, safe Coral Failure
-rejects one Operation call. Programs reference the non-constructible class as `coral.OperationError`. It has a stable
-code and W3C trace identifier, carries no upstream evidence or retry claim, and is distinct from Run-level termination
-or an unexpected host defect. _Avoid_: Upstream Error, Program failure, provider response
+**Operation Error (`OperationError`)**: The non-constructible JavaScript `Error` subclass, `coral.OperationError`, that
+rejects an Operation call that produced no Declared Success. When Coral rejects an Upstream Outcome, the error carries
+it. For a Coral Failure it carries only a stable code and an optional trace identifier, and makes no claim about whether
+the call took effect. _Avoid_: Upstream Error, Program failure, provider response
 
 **MCP Content Block (`McpContentBlock`)**: One ordered member of an MCP-backed Operation's content sequence,
 distinguished by its content type. Binary image, audio, and embedded-resource payloads carry their bounded
 provider-native base64 data inline. _Avoid_: Return value, attachment
 
 **MCP Operation Result**: The complete result of one upstream MCP tool call, retaining its ordered MCP Content Blocks
-separately from its tool-typed structured content and metadata. An explicit `isError: true` remains part of the resolved
-Upstream Outcome. _Avoid_: Flattened tool result, preferred structured content, Operation Error
+separately from its tool-typed structured content and metadata. An explicit `isError: true` is not a Declared Success,
+so the Program receives the result through an Operation Error. _Avoid_: Flattened tool result, preferred structured
+content
 
-**HTTP Operation Result**: The Operation Result of one complete HTTP response. A typed HTTP Operation declares it
-as `HttpResult<Data, Status, MediaType>` when the response matches a declared status and media type and decodes, and as
-`HttpUnknownResult` otherwise, with untyped data and at least one decode diagnostic. An Operation whose schema Coral
-cannot type declares one untyped result in full.
+**HTTP Operation Result**: The Operation Result of one HTTP Declared Success, which carries its status beside its data.
+An Operation whose schema Coral cannot type declares one untyped result in full.
 
 **MCP Resource Reference (`McpResourceRef`)**: An opaque, Provider-bound reference created from an upstream MCP resource
 link. Reading it is a separate Provider Operation; Coral never auto-fetches it. _Avoid_: Raw resource URI, Binary Value
@@ -713,8 +721,8 @@ Owner receives no access to another User's Runs. Other Members cannot inspect an
 Owner without a Workspace Membership sees no Runs there. Credential provisioning alone grants no Run access.
 Loss of Workspace access stops future reads but does not delete history. The Run is identified independently of the
 request used to start or observe it. Caller disconnection does not end the Run; completion, explicit cancellation, or
-Coral policy does. A handled Operation Error does not fail the Run, while an unhandled one does; an Upstream Outcome
-does not determine Run status. _Avoid_: Program request, connection-scoped execution, Principal-owned Run
+Coral policy does. A handled Operation Error does not fail the Run, while an unhandled one does, including one that
+carries an Upstream Outcome. _Avoid_: Program request, connection-scoped execution, Principal-owned Run
 
 **Program Run Event**: An immutable, sequenced observation recorded during a Coral Program Run for incremental
 consumption and audit. It describes Run execution, including cancellation and recovery effects, but does not duplicate

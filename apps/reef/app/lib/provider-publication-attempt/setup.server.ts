@@ -594,19 +594,12 @@ export async function prepareSetup(
       }
     if (file.size > OPENAPI_DOCUMENT_MAX_BYTES)
       return { problem: `Choose a file up to ${OPENAPI_DOCUMENT_SIZE_LABEL}.` }
-    let text: string
-    try {
-      text = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer())
-    } catch {
-      return {
-        problem: 'This file is not text. Select a JSON or YAML OpenAPI document.',
-      }
-    }
+    // Coral reads the file's bytes, so it can unzip a gzipped document.
     return {
       setup: await api.setups.createProviderSetup({
         parent,
         provider,
-        input: { case: 'openapiDocument', value: text },
+        input: { case: 'openapiDocument', value: new Uint8Array(await file.arrayBuffer()) },
         discoveryCredential: '',
       }),
     }
@@ -620,7 +613,7 @@ export async function prepareSetup(
       setup: await api.setups.createProviderSetup({
         parent,
         provider,
-        input: { case: 'openapiDocument', value: text },
+        input: { case: 'openapiDocument', value: new TextEncoder().encode(text) },
         discoveryCredential: '',
       }),
     }

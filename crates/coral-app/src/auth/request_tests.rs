@@ -310,19 +310,8 @@ struct Fixture {
     server: coral_mcp::RunningMcpHttpServer,
 }
 impl Fixture {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the fixture wires every Module that the HTTP contract reaches"
-    )]
     async fn new() -> Self {
-        let fixture =
-            coral_test_support::TestDatabase::new(&coral_test_support::combined_migrator(&[
-                coral_workspace::migrator(),
-                coral_task::migrator(),
-                // `start_task` lists the Providers the caller can search.
-                coral_catalog::migrator(),
-                coral_provider::migrator(),
-            ]))
+        let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
             .await
             .unwrap();
         let database = fixture.database();

@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
-use crate::run_repository::NewEvent;
 use coral_workspace::WorkspaceId;
 
 use crate::engine::Clock;
+use crate::run_repository::{Chunk, NewEvent};
 use crate::{
     Error, PROGRAM_LOG_MESSAGE_MAX_BYTES, ProgramLogLevel, ProgramValue, RunId, run_repository,
 };
@@ -95,15 +95,11 @@ impl ProgramOutputWriter {
         if !run.output_fits(bytes) {
             return Err(Error::ProgramValueTooLarge);
         }
-        run_repository::advance_event_sequence(&mut transaction, &run, &self.claim_id, 1, bytes)
-            .await?;
-        run_repository::insert_event(
+        run_repository::commit_chunk(
             &mut transaction,
-            &run.workspace_id,
-            &run.id,
-            run.next_event_sequence,
-            event,
-            occurred_at_unix_nanos,
+            Chunk::new(&run, Some(&self.claim_id))
+                .event(event, occurred_at_unix_nanos)
+                .output_bytes(run.output_total(bytes)?),
         )
         .await?;
         transaction.commit().await?;

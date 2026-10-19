@@ -38,27 +38,15 @@ impl Fixture {
     }
 
     async fn new() -> Self {
-        let migrator = coral_test_support::combined_migrator_with(
-            &[
-                coral_workspace::migrator(),
-                crate::migrator(),
-                coral_functions::migrator(),
-                coral_catalog::migrator(),
-                coral_provider::migrator(),
-                coral_policy::migrator(),
-                coral_run::migrator(),
-                coral_search::migrator(),
-            ],
-            [sqlx::migrate::Migration::new(
-                9000,
-                "Task fault controls".into(),
-                sqlx::migrate::MigrationType::Simple,
-                sqlx::SqlStr::from_static(
-                    "CREATE TABLE task_test_fault_parent (id INTEGER PRIMARY KEY); CREATE TABLE task_test_fault_child (id INTEGER PRIMARY KEY CHECK (id > 0), parent_id INTEGER REFERENCES task_test_fault_parent(id) DEFERRABLE INITIALLY DEFERRED);",
-                ),
-                false,
-            )],
-        );
+        let migrator = coral_test_support::migration_plan_with([sqlx::migrate::Migration::new(
+            9000,
+            "Task fault controls".into(),
+            sqlx::migrate::MigrationType::Simple,
+            sqlx::SqlStr::from_static(
+                "CREATE TABLE task_test_fault_parent (id INTEGER PRIMARY KEY); CREATE TABLE task_test_fault_child (id INTEGER PRIMARY KEY CHECK (id > 0), parent_id INTEGER REFERENCES task_test_fault_parent(id) DEFERRABLE INITIALLY DEFERRED);",
+            ),
+            false,
+        )]);
         let fixture = TestDatabase::new(&migrator).await.unwrap();
         let database = fixture.database();
         coral_search::prepare_storage(&database).await.unwrap();

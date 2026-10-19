@@ -319,6 +319,13 @@ message ActivityProgramError {
   uint32 omitted_errors = 10;
   // This error refers back to one of its own causes.
   bool circular = 11;
+  // HTTP status of the upstream response that rejected the Operation call,
+  // or 0 when there was none.
+  uint32 operation_status = 12;
+  // Start of that response's JSON-encoded data, at most 1 KiB, or empty.
+  string operation_body = 13;
+  // operation_body leaves out the rest of the data.
+  bool operation_body_truncated = 14;
 }
 // Run lifecycle states.
 enum ActivityRunState {

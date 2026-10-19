@@ -9,6 +9,7 @@ import { ArchivedBanner, ManagementLayout, trail } from './layout'
 import { Person } from './person'
 import type { ActionResult, AgentView, FormContext, WorkspaceView } from './types'
 import * as styles from './management.css'
+import { filterQuery } from '@/utils/filter-query'
 
 type StatusFilter = 'all' | 'ready' | 'blocked'
 
@@ -39,10 +40,10 @@ export function AgentsPage({ workspace: w, agents, nextPage, form, result }: Age
   const agentsPath = `${w.path}/agents`
   const [input, setInput] = useState('')
   const [status, setStatus] = useState<StatusFilter>('all')
-  const query = useDeferredValue(input).trim()
+  const query = filterQuery(useDeferredValue(input))
   const shown = agents.filter(
     (a) =>
-      a.displayName.toLowerCase().includes(query.toLowerCase()) &&
+      query.matches(a.displayName) &&
       (status === 'all' || (status === 'blocked') === a.accessBlockers.length > 0),
   )
   const table = Table.useRowCursor({ filterId: FILTER_ID })
@@ -133,7 +134,7 @@ export function AgentsPage({ workspace: w, agents, nextPage, form, result }: Age
         ) : (
           shown.length === 0 && (
             <Table.Status>
-              {query ? `No agents match “${query}”.` : 'No agents match.'}
+              {query.text ? `No agents match “${query.text}”.` : 'No agents match.'}
             </Table.Status>
           )
         )}

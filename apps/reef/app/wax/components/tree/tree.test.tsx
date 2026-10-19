@@ -1,6 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 
+import { filterQuery } from '@/utils/filter-query'
+
 import { Tree, filterNodes, type TreeNode } from './tree'
 
 const nodes: TreeNode[] = [
@@ -21,24 +23,24 @@ const nodes: TreeNode[] = [
 
 describe('filterNodes', () => {
   it('returns every node when nothing is searched for', () => {
-    expect(filterNodes(nodes, '')).toBe(nodes)
+    expect(filterNodes(nodes, filterQuery(''))).toBe(nodes)
   })
 
   it('keeps a branch only for the children that match', () => {
-    const [group, ...rest] = filterNodes(nodes, 'logs.send')
+    const [group, ...rest] = filterNodes(nodes, filterQuery('logs.send'))
     expect(rest).toEqual([])
     expect(group.id).toBe('group:logs')
     expect(group.children?.map((child) => child.id)).toEqual(['logs.send'])
   })
 
   it('matches a leaf on its label when it declares no search terms', () => {
-    expect(filterNodes([{ id: 'one', label: 'Solitary' }], 'solit').map((n) => n.id)).toEqual([
-      'one',
-    ])
+    expect(
+      filterNodes([{ id: 'one', label: 'Solitary' }], filterQuery('solit')).map((n) => n.id),
+    ).toEqual(['one'])
   })
 
   it('drops a branch whose children all fail to match', () => {
-    expect(filterNodes(nodes, 'nothing-matches-this')).toEqual([])
+    expect(filterNodes(nodes, filterQuery('nothing-matches-this'))).toEqual([])
   })
 })
 
