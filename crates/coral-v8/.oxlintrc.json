@@ -7,13 +7,32 @@
   },
   "ignorePatterns": ["vendor/**"],
   "rules": {
-    // The Rust host and these scripts share globals named __coral*.
-    "no-underscore-dangle": "off"
+    // The globals that the Rust host and these scripts share.
+    "no-underscore-dangle": [
+      "error",
+      {
+        "allow": [
+          "__coralAnalyzeSavedFunctionCallPaths",
+          "__coralAnalyzeSavedFunctionDependencies",
+          "__coralAnalyzeSavedFunctionPaths",
+          "__coralCompile",
+          "__coralCompileLinkedProgram",
+          "__coralConfigureCompiler",
+          "__coralForbiddenAmbientGlobals",
+          "__coralOperationInvoke",
+          "__coralPrepareSavedFunction",
+          "__coralProgramEmit",
+          "__coralProgramLog",
+          "__coralTypeScriptVersion"
+        ]
+      }
+    ]
   },
   "overrides": [
     {
       // compiler.rs joins these files into one function scope, so a file's
       // top-level declaration can be another file's dependency.
+      // scripts/check-compiler-bridge.mjs lints the joined bridge instead.
       "files": ["src/js/compiler/**"],
       "rules": {
         "no-unused-vars": "off"
