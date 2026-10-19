@@ -97,10 +97,9 @@ describe('checked-in recipes', () => {
       // The owner of a third-party repository can rewrite a branch, and a changed
       // `servers` URL would send credentials to their host.
       if ('openapi' in recipe.source && 'url' in recipe.source.openapi) {
-        const prefix = 'https://raw.githubusercontent.com/'
-        const { url } = recipe.source.openapi
-        if (url.startsWith(prefix)) {
-          const [owner, , ref] = url.slice(prefix.length).split('/')
+        const url = URL.parse(recipe.source.openapi.url)
+        if (url?.hostname.replace(/\.$/, '') === 'raw.githubusercontent.com') {
+          const [, owner, , ref] = url.pathname.split('/')
           const name = owner.toLowerCase()
           if (!VENDOR_GITHUB_OWNERS.has(name)) {
             expect(
