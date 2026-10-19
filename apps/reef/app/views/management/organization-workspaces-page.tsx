@@ -57,25 +57,25 @@ export function OrganizationWorkspacesPage({
       ),
   )
   return (
-    <ManagementLayout breadcrumbs={trail([], 'Workspaces')}>
-      {workspaces.length > 0 && (
-        <CatalogToolbar
-          filter={{
-            id: FILTER_ID,
-            label: 'Filter workspaces',
-            shortcut: '$mod+f',
-            value: input,
-            onChange: setInput,
-          }}
-        >
-          <CatalogFilterMenu
-            ariaLabel="Filter workspaces by state"
-            options={STATE_FILTERS}
-            value={state}
-            onChange={setState}
-          />
-        </CatalogToolbar>
-      )}
+    <ManagementLayout breadcrumbs={trail([], 'Workspaces')} titled compact>
+      {/* The toolbar holds the page's title, so it stays when no rows do. */}
+      <CatalogToolbar
+        title="Workspaces"
+        filter={{
+          id: FILTER_ID,
+          label: 'Filter workspaces',
+          shortcut: '$mod+f',
+          value: input,
+          onChange: setInput,
+        }}
+      >
+        <CatalogFilterMenu
+          ariaLabel="Filter workspaces by state"
+          options={STATE_FILTERS}
+          value={state}
+          onChange={setState}
+        />
+      </CatalogToolbar>
       <Table.Container
         ariaLabel="Workspaces"
         variant="card"

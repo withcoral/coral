@@ -7,7 +7,7 @@ import { breakpoints } from '@/styles/breakpoints'
 import { TOP_BAR_HEIGHT_PX } from './constants'
 
 // A breadcrumb link's height: the one row the bar holds.
-const LINK_HEIGHT_PX = 36
+const LINK_HEIGHT_PX = 32
 
 export const container = style({
   display: 'flex',
@@ -31,12 +31,7 @@ export const topBar = style({
   paddingBlock: (TOP_BAR_HEIGHT_PX - LINK_HEIGHT_PX) / 2,
   paddingInline: 24,
   '@media': {
-    [`screen and (max-width: ${breakpoints.mobile})`]: {
-      gap: 12,
-      minHeight: 44,
-      paddingBlock: 0,
-      paddingInline: 16,
-    },
+    [`screen and (max-width: ${breakpoints.mobile})`]: { gap: 12, paddingInline: 16 },
   },
 })
 
@@ -57,7 +52,7 @@ export const frame = recipe({
     width: '100%',
     '@media': {
       [`screen and (max-width: ${breakpoints.mobile})`]: { padding: '24px 16px', gap: 24 },
-      // A short window keeps its height for the content under the tall top bar.
+      // A short window gives its height to the content, not the spacing around it.
       'screen and (max-height: 480px)': { gap: 16, paddingBlock: 16 },
     },
   },
@@ -74,8 +69,18 @@ export const frame = recipe({
       false: {},
       true: { height: '100%', minHeight: 0 },
     },
+    compact: {
+      false: {},
+      true: {
+        gap: 16,
+        padding: 24,
+        '@media': {
+          [`screen and (max-width: ${breakpoints.mobile})`]: { gap: 16, padding: '24px 16px' },
+        },
+      },
+    },
   },
-  defaultVariants: { bounded: false },
+  defaultVariants: { bounded: false, compact: false },
 })
 
 export const header = style({
