@@ -842,6 +842,51 @@ export const StandaloneExecution: Story = {
     },
   },
 }
+/** An uncaught upstream error shows the response's status and the start of its body. */
+export const UpstreamOperationError: Story = {
+  args: {
+    page: {
+      ...page,
+      selected: standalone.name,
+      selectedRow: standalone,
+      detail: {
+        kind: 'run',
+        run: standalone,
+        source: 'return await coral.providers.billing.listInvoices({});',
+        linkedFunctions: [],
+        terminal: {
+          kind: 'failed',
+          code: 'program_rejected',
+          message: 'OperationError: The upstream service returned an error',
+          error: {
+            name: 'OperationError',
+            message: 'The upstream service returned an error',
+            frames: [{ source: 'Program', line: 1, column: 14 }],
+            operationCode: 'error_response',
+            operationTraceId: '',
+            operationStatus: 404,
+            operationBody: '{"message":"No invoices for this account"',
+            operationBodyTruncated: true,
+            cause: null,
+            errors: [],
+            truncated: false,
+            causeOmitted: false,
+            omittedErrors: 0,
+            circular: false,
+          },
+        },
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const drawer = within(await within(canvasElement.ownerDocument.body).findByRole('dialog'))
+    await expect(drawer.getByText('Upstream HTTP status: 404')).toBeVisible()
+    await expect(
+      drawer.getByText(codeContaining('No invoices for this account'), { selector: 'pre' }),
+    ).toBeVisible()
+    await expect(drawer.getByText('This is the start of the data.')).toBeVisible()
+  },
+}
 export const RetainedSource: Story = {
   args: {
     page: {
@@ -937,7 +982,7 @@ export const Upstream404: Story = {
         ...detail,
         result: {
           kind: 'upstream_outcome',
-          value: '{"data":{"message":"Not found"},"metadata":{"status":404}}',
+          value: '{"status":404,"data":{"message":"Not found"},"metadata":{"kind":"http"}}',
         },
       },
     },
@@ -961,7 +1006,7 @@ export const ExactNativeInteger: Story = {
         requests: [],
         result: {
           kind: 'upstream_outcome',
-          value: '{"data":{"id":9007199254740993},"metadata":{"status":200}}',
+          value: '{"status":200,"data":{"id":9007199254740993},"metadata":{"kind":"http"}}',
         },
       },
     },

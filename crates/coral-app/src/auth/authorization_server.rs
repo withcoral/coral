@@ -778,7 +778,7 @@ mod tests {
     #[tokio::test]
     async fn serves_metadata_and_stops_cleanly() {
         let dir = authorization_server("");
-        let fixture = coral_test_support::TestDatabase::new(coral_auth::migrator())
+        let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
             .await
             .unwrap();
         let server = server(&dir)
@@ -831,7 +831,7 @@ mod tests {
         let dir = authorization_server(
             "trusted_clients = ['https://reef.example.test/.well-known/oauth-client']\n",
         );
-        let fixture = coral_test_support::TestDatabase::new(coral_auth::migrator())
+        let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
             .await
             .unwrap();
         let running = server(&dir)
@@ -962,7 +962,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_auth_support_has_no_user_oauth_or_registration_routes() {
-        let fixture = coral_test_support::TestDatabase::new(coral_auth::migrator())
+        let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
             .await
             .unwrap();
         let local = CoralAuthorizationServer::start_local(

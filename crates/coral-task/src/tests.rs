@@ -491,12 +491,7 @@ fn task_ids(tasks: Vec<crate::Task>) -> Vec<crate::TaskId> {
 }
 
 pub(crate) async fn test_modules() -> (TestDatabase, WorkspaceModule, TaskModule) {
-    let migrator = coral_test_support::combined_migrator(&[
-        coral_workspace::migrator(),
-        crate::migrator(),
-        coral_run::migrator(),
-    ]);
-    let fixture = TestDatabase::new(&migrator)
+    let fixture = TestDatabase::new(coral_db::migration_plan())
         .await
         .expect("create Workspace and Task test database");
     let database = fixture.database();

@@ -1239,7 +1239,7 @@ fn sorted_actions(actions: impl IntoIterator<Item = LifecycleAction>) -> Vec<Lif
 }
 
 async fn test_module() -> (TestDatabase, WorkspaceModule) {
-    let fixture = TestDatabase::new(crate::migrator())
+    let fixture = TestDatabase::new(coral_db::migration_plan())
         .await
         .expect("create Workspace test database");
     let module = WorkspaceModule::new(fixture.database());
@@ -1302,14 +1302,12 @@ async fn remove_membership_authority(
     reason = "one upgrade covers each Membership state the backfill meets"
 )]
 async fn upgrade_makes_enabled_organization_owners_designated_owners_everywhere() {
-    let migrations = &crate::migrator().migrations;
-    let before_backfill = sqlx::migrate::Migrator::with_migrations(
+    let before_backfill = coral_test_support::edited_migration_plan(|migrations| {
         migrations
-            .iter()
+            .into_iter()
             .filter(|migration| migration.version < 22)
-            .cloned()
-            .collect(),
-    );
+            .collect()
+    });
     let fixture = TestDatabase::new(&before_backfill)
         .await
         .expect("create database from before the backfill");
@@ -1384,7 +1382,7 @@ async fn upgrade_makes_enabled_organization_owners_designated_owners_everywhere(
 
     fixture
         .database()
-        .migrate(crate::migrator())
+        .migrate(coral_db::migration_plan())
         .await
         .expect("apply the backfill");
 

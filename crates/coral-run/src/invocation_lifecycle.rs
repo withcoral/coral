@@ -1,9 +1,10 @@
 //! Invocation completion and termination decisions. Every write joins the
-//! caller's Run-held transaction, including Approval closure and Run Events.
+//! caller's Run-held transaction: the Invocation and Approval rows through
+//! their repositories, the Events through one Run Ledger chunk.
 
 use crate::invocation::{AdmittedInvocation, InvocationCompletion};
 use crate::lifecycle::RunRecord;
-use crate::run_repository::NewEvent;
+use crate::run_repository::{Chunk, NewEvent};
 use crate::{
     CoralFailure, Error, InvocationId, InvocationResultKind, approval, invocation_repository,
     run_repository,
@@ -47,6 +48,12 @@ impl UnfinishedInvocation {
     }
 }
 
+/// Ends the Invocation and commits `invocation.ended` under the worker's claim.
+///
+/// When another completion already won: a failure with the same code as the
+/// recorded one returns `true` without a second Event (the durable decision
+/// is the one delivered), a recorded failure that prevents continuation is
+/// `Error::InvocationRejected`, and anything else returns `false`.
 pub(super) async fn finish(
     transaction: &mut Transaction<'_>,
     admitted: &AdmittedInvocation,
@@ -90,15 +97,10 @@ pub(super) async fn finish(
         }
         return Ok(false);
     }
-    if let InvocationCompletion::Upstream { result_json } = completion {
-        run_repository::record_invocation_output(
-            transaction,
-            run,
-            &admitted.claim_id,
-            result_json.len(),
-        )
-        .await?;
-    }
+    let output_bytes = match completion {
+        InvocationCompletion::Upstream { result_json } => run.output_total(result_json.len())?,
+        InvocationCompletion::Failure(_) => run.accumulated_output_bytes,
+    };
     approval::close_for_invocation(
         transaction,
         &admitted.workspace_id,
@@ -106,26 +108,14 @@ pub(super) async fn finish(
         ended_at_unix_nanos,
     )
     .await?;
-    if admitted.dispatch_started {
-        run_repository::advance_event_sequence_after_dispatch(
-            transaction,
-            &admitted.workspace_id,
-            &admitted.run_id,
-            &admitted.claim_id,
-            run.next_event_sequence,
-            1,
-        )
-        .await?;
-    } else {
-        run_repository::advance_event_sequence(transaction, run, &admitted.claim_id, 1, 0).await?;
-    }
-    run_repository::insert_event(
+    run_repository::commit_chunk(
         transaction,
-        &admitted.workspace_id,
-        &admitted.run_id,
-        run.next_event_sequence,
-        NewEvent::InvocationEnded(&admitted.id, completion.result_kind()),
-        ended_at_unix_nanos,
+        Chunk::new(run, Some(&admitted.claim_id))
+            .event(
+                NewEvent::InvocationEnded(&admitted.id, completion.result_kind()),
+                ended_at_unix_nanos,
+            )
+            .output_bytes(output_bytes),
     )
     .await?;
     Ok(true)
@@ -147,14 +137,12 @@ pub(super) async fn finish_approval_failure(
         .execution_claim_id
         .as_deref()
         .ok_or(Error::ProgramHostTerminated)?;
-    run_repository::advance_event_sequence(tx, run, claim, 1, 0).await?;
-    run_repository::insert_event(
+    run_repository::commit_chunk(
         tx,
-        &run.workspace_id,
-        &run.id,
-        run.next_event_sequence,
-        NewEvent::InvocationEnded(invocation, InvocationResultKind::CoralFailure),
-        now,
+        Chunk::new(run, Some(claim)).event(
+            NewEvent::InvocationEnded(invocation, InvocationResultKind::CoralFailure),
+            now,
+        ),
     )
     .await
 }
@@ -168,28 +156,21 @@ pub(super) async fn end_nonterminal_for_run(
     if invocations.is_empty() {
         return Ok(());
     }
-    if run.execution_claim_id.is_none() {
+    let Some(claim) = run.execution_claim_id.as_deref() else {
         return Err(Error::CorruptData(
             "unclaimed Run has nonterminal Invocations".into(),
         ));
-    }
-    let increment = u64::try_from(invocations.len())
-        .map_err(|_error| Error::CorruptData("Run Event sequence overflowed".into()))?;
-    run_repository::advance_event_sequence_during_termination(
-        transaction,
-        &run.workspace_id,
-        &run.id,
-        run.next_event_sequence,
-        increment,
-    )
-    .await?;
-    for (offset, invocation) in invocations.into_iter().enumerate() {
+    };
+    // One chunk ends every nonterminal Invocation: their rows, their pending
+    // Approval Requests, and their `invocation.ended` Events commit together.
+    let mut chunk = Chunk::new(run, Some(claim));
+    for invocation in &invocations {
         let (result_kind, result_json) =
             invocation.settle_for_termination(transaction, run).await?;
         if !invocation_repository::end_for_termination(
             transaction,
             run,
-            &invocation,
+            invocation,
             result_kind,
             result_json.as_deref(),
             ended_at_unix_nanos,
@@ -207,21 +188,10 @@ pub(super) async fn end_nonterminal_for_run(
             ended_at_unix_nanos,
         )
         .await?;
-        let offset = u64::try_from(offset)
-            .map_err(|_error| Error::CorruptData("Run Event sequence overflowed".into()))?;
-        let sequence = run
-            .next_event_sequence
-            .checked_add(offset)
-            .ok_or_else(|| Error::CorruptData("Run Event sequence overflowed".into()))?;
-        run_repository::insert_event(
-            transaction,
-            &run.workspace_id,
-            &run.id,
-            sequence,
+        chunk = chunk.event(
             NewEvent::InvocationEnded(&invocation.id, result_kind),
             ended_at_unix_nanos,
-        )
-        .await?;
+        );
     }
-    Ok(())
+    run_repository::commit_chunk(transaction, chunk).await
 }

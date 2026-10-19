@@ -8,6 +8,7 @@ import type {
   SetupView,
 } from './types'
 import * as styles from './providers.css'
+import { filterQuery } from '@/utils/filter-query'
 
 /** The one label each credential method has, wherever a method is named. */
 export const authenticationLabels: Record<CredentialMethod | '', string> = {
@@ -253,11 +254,9 @@ export function OperationDetails({
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(0)
   const id = useId()
-  const search = query.trim().toLowerCase()
-  const matches = operations.filter(
-    (operation) =>
-      operation.key.toLowerCase().includes(search) ||
-      operation.reasons?.some((reason) => reason.toLowerCase().includes(search)),
+  const search = filterQuery(query)
+  const matches = operations.filter((operation) =>
+    search.matches(operation.key, ...(operation.reasons ?? [])),
   )
   const pageSize = 50
   const currentPage = Math.min(page, Math.max(0, Math.ceil(matches.length / pageSize) - 1))

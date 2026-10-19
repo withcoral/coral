@@ -25,9 +25,11 @@
 //! - [`UniversalSearchModule::inspect_provider_readiness`] derives caller readiness
 //!   from the Operation eligibility rule discovery uses, without reading Saved
 //!   Functions or the index.
-//! - [`migrator`] adds the search index's portable tables to the shared chain,
-//!   and [`prepare_storage`] checks the database features and applies the
-//!   backend-specific search stream at boot.
+//! - [`UniversalSearchModule::inspect_search_index_states`] reports whether
+//!   the index holds each Provider's active Generation, apart from readiness.
+//! - [`prepare_storage`] runs at boot after `Database::migrate` applies `coral_db::migration_plan()` and creates the
+//!   search index's portable tables. It checks the database features and
+//!   applies the backend-specific search stream.
 //! - [`SearchIndex`] writes the search-owned index in the background when a
 //!   committing workflow notifies it, and its reconcile task converges the
 //!   index on what the owners hold.
@@ -44,6 +46,7 @@ mod error;
 mod evidence;
 mod hit;
 mod index;
+mod index_state;
 mod indexer;
 mod page;
 pub mod projection;
@@ -81,24 +84,13 @@ pub use types::{
     SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX, SEARCH_EVIDENCE_PATH_MAX_BYTES,
     SEARCH_EVIDENCE_PATHS_MAX, SEARCH_PAGE_MAX_BYTES, SEARCH_QUERY_MAX_BYTES,
     SEARCH_RESULT_LIMIT_MAX, SavedFunctionAuthoringDescription, SearchCursor, SearchEvidence,
-    SearchHit, SearchInput, SearchLimit, SearchPage, SearchQuery, SearchRequest,
-    provider_filter_value,
+    SearchHit, SearchIndexFailure, SearchIndexState, SearchInput, SearchLimit, SearchPage,
+    SearchQuery, SearchRequest, provider_filter_value,
 };
 
 /// How many ranked Search Entities each retriever hands the engine. The
 /// fused union of the windows is the result universe a cursor pages through.
 const RETRIEVAL_WINDOW: usize = 100;
-
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-
-/// Returns Universal Search's portable migrations for the shared chain.
-///
-/// Process bootstrap runs [`prepare_storage`] after the chain for the
-/// backend-specific objects on top of these tables.
-#[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
-    &MIGRATOR
-}
 
 /// Transport-neutral Universal Search Module.
 #[derive(Clone)]

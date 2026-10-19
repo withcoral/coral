@@ -38,7 +38,7 @@ pub use search::{
     ActiveGeneration, ActiveProvider, GenerationEntries, HydratedOperation, LoadedGenerations,
     OperationEntry, active_generations_in_transaction, active_providers_in_transaction,
     hydrate_operation_in_transaction, operation_material_by_relative_path_in_transaction,
-    prepare_active_generation_entries_in_transaction,
+    prepare_active_generation_entries_in_transaction, workspace_active_generations_in_transaction,
 };
 mod program_setup;
 #[cfg(test)]
@@ -104,14 +104,6 @@ use publication::{NoopPublicationObserver, PublicationObserver, PublicationPoint
 // The dev-dependency on this crate exists for the integration tests' feature.
 #[cfg(test)]
 use coral_provider as _;
-
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-
-/// Returns the Provider Module's domain-owned migration plan.
-#[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
-    &MIGRATOR
-}
 
 /// Workspace Provider publication and lifecycle Module.
 #[derive(Clone)]

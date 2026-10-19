@@ -1,8 +1,7 @@
-//! An Operation's result: the envelopes, one per response, reduced to the
-//! `data` types of the success responses. An HTTP Operation names each typed
-//! response `HttpResult<Data, Status, MediaType>` (see
-//! [`coral_catalog::HTTP_RESULT`]); an MCP Operation's envelope is a
-//! `{ data; metadata }` object without a status.
+//! An Operation's result: the envelopes, one per declared success, reduced to
+//! their `data` types. An HTTP Operation names each one
+//! `HttpResult<Data, Status, MediaType>` (see [`coral_catalog::HTTP_RESULT`]);
+//! an MCP Operation's envelope is a `{ data; metadata }` object.
 
 use std::collections::HashSet;
 
@@ -11,22 +10,20 @@ use super::tree::{Member, Type};
 
 impl Renderer<'_> {
     /// An Operation's result: the envelope with the `data` types of its
-    /// success responses. An `HttpResult` is a success when its status is
-    /// 2xx codes or the 2xx range; any other envelope counts as success
-    /// unless its data is `unknown`.
+    /// declared successes. An MCP envelope with `unknown` data contributes
+    /// nothing.
     pub(super) fn operation_result(&self, result: &Type) -> String {
         let Some(envelopes) = envelopes(result) else {
             return self.result(result, &mut HashSet::new());
         };
         let mut data = Vec::<String>::new();
         for envelope in envelopes {
-            let Some((value, status)) = response(envelope) else {
+            let Some(value) = response(envelope) else {
                 continue;
             };
-            let success = status.map_or(value != &Type::Plain("unknown".to_string()), |status| {
-                status_is_success(status)
-            });
-            if !success {
+            // An untyped HTTP success stays in the union; an MCP envelope
+            // without a declared output contributes nothing.
+            if matches!(envelope, Type::Object(_)) && value == &Type::Plain("unknown".to_string()) {
                 continue;
             }
             // Split on the type tree, so the data types of several responses
@@ -71,14 +68,13 @@ pub(super) fn envelopes(result: &Type) -> Option<Vec<&Type>> {
     })
 }
 
-/// One response's `data` type and, for an `HttpResult`, its status.
-/// `HttpUnknownResult` is never a success, so it yields nothing.
-pub(super) fn response(envelope: &Type) -> Option<(&Type, Option<&Type>)> {
+/// One declared success's `data` type.
+pub(super) fn response(envelope: &Type) -> Option<&Type> {
     match envelope {
-        Type::Object(members) => Some((property(members, "data")?, None)),
+        Type::Object(members) => property(members, "data"),
         Type::Named { name, arguments } if name == coral_catalog::HTTP_RESULT => {
             match arguments.as_slice() {
-                [data, status, _media_type] => Some((data, Some(status))),
+                [data, _status, _media_type] => Some(data),
                 _ => None,
             }
         }
@@ -90,21 +86,5 @@ fn property<'t>(members: &'t [Member], wanted: &str) -> Option<&'t Type> {
     members.iter().find_map(|member| match member {
         Member::Property { name, value, .. } if name == wanted => Some(value),
         _ => None,
-    })
-}
-
-pub(super) fn status_is_success(status: &Type) -> bool {
-    let codes = match status {
-        Type::Union(parts) => parts.iter().collect::<Vec<_>>(),
-        single => vec![single],
-    };
-    codes.into_iter().all(|code| match code {
-        Type::Plain(code) => code
-            .parse::<u16>()
-            .is_ok_and(|code| (200..300).contains(&code)),
-        Type::Named { name, arguments } => {
-            arguments.is_empty() && name == coral_catalog::HTTP_SUCCESS_STATUS
-        }
-        _ => false,
     })
 }

@@ -221,14 +221,21 @@ test('policy forms submit the workspace-local provider identifier, not an instal
 
 // Catches: the table keeping providers the rail filter took out, that filter
 // dropping the selection under those providers, or a rail entry's Show only
-// button not filling the rail filter.
+// button keeping another provider whose name contains its name.
 test('the rail filter narrows the table to the same providers', async () => {
-  renderPage()
+  const enterprise = provider('00000000-0000-4000-8000-000000000003', 'GitHub Enterprise', 'ghe', [
+    'gists.list',
+  ])
+  renderPage({ providers: [github, enterprise, weather] })
   await user.click(checkbox('Select repos.get'))
-  expect(providerGroups()).toEqual(['GitHub', 'Weather'])
+  expect(providerGroups()).toEqual(['GitHub', 'GitHub Enterprise', 'Weather'])
 
+  await user.click(screen.getByRole('button', { name: 'Show only GitHub' }))
+  expect(screen.getByLabelText('Filter providers')).toHaveValue('^GitHub$')
+  expect(providerGroups()).toEqual(['GitHub'])
+
+  await filterProviders('')
   await user.click(screen.getByRole('button', { name: 'Show only Weather' }))
-  expect(screen.getByLabelText('Filter providers')).toHaveValue('Weather')
   expect(providerGroups()).toEqual(['Weather'])
   expect(rowNames()).toEqual(['getForecast'])
   expect(selectionCount()).toBe('1 selected')
@@ -306,7 +313,8 @@ test('selection builds up across filters and the menu shows all of it', async ()
 })
 
 // Catches: the filter matching text the row does not show, such as the call
-// path's namespace, or not marking where the name matches.
+// path's namespace, not marking where the name matches, or not reading the
+// shared filter syntax.
 test('the operation filter matches only the name and bolds each match', async () => {
   renderPage()
   await filterOperations('weather')
@@ -316,6 +324,11 @@ test('the operation filter matches only the name and bolds each match', async ()
   expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
   expect(boldIn('repos.get')).toEqual(['e', 'e'])
   expect(boldIn('getForecast')).toEqual(['e', 'e'])
+
+  // The filter reads the same syntax as every filter field.
+  await filterOperations('^re*get$')
+  expect(rowNames()).toEqual(['repos.get'])
+  expect(boldIn('repos.get')).toEqual(['re', 'get'])
 })
 
 // Catches: one member's selection not rolling up to its provider and the

@@ -44,7 +44,7 @@ coral-workspace = { workspace = true, features = ["test-fixtures"] }
 # Integration tests build this library without `cfg(test)`.
 coral-provider = { workspace = true, features = ["test-fixtures"] }
 coral-administration.workspace = true
-coral-functions.workspace = true
 tempfile.workspace = true
 wiremock.workspace = true
 coral-test-support.workspace = true
+flate2.workspace = true

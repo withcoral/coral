@@ -4,12 +4,10 @@ use crate::EntityKind;
 const USER: &str = r#"type User = { "login": string; "name": string | null; "email": string | null; "company": string | null; "blog": string | null; "location": string | null; "bio": string | null };"#;
 const MILESTONE: &str = r#"type Milestone = { "title": string; "creator": User; "labels": Array<Label>; "parent": Issue | null; "due_on": string | null; "closed_at": string | null; "description": string | null; "html_url": string | null; "node_id": string | null };"#;
 const LABEL: &str = r#"type Label = { "name": string };"#;
-const PROBLEM: &str = r#"type Problem = { "message": string };"#;
 /// Always whole: the input, the callable, the wrapper and the top level.
 const WHOLE: &str = r#"type OwnerInput = string;
-namespace issues { function list(input: { "owner": OwnerInput }): Promise<HttpResult<Array<Issue>, 200, "application/json"> | HttpResult<Problem, 404, "application/json"> | HttpUnknownResult>; }
-type HttpResult<Data, Status, MediaType> = { data: Data; status: Status; mediaType: MediaType };
-type HttpUnknownResult = { data: unknown };
+export default function (input: { "owner": OwnerInput }): Promise<HttpResult<Array<Issue>, 200, "application/json">>;
+type HttpResult<Data, Status, MediaType> = { status: Status; data: Data; mediaType: MediaType };
 type Issue = { "id": number; "user": User; "milestone": Milestone };"#;
 
 fn stub(name: &str, fields: &str) -> String {
@@ -23,9 +21,8 @@ fn not_shown(names: &str) -> String {
 }
 
 /// Each row is one rule. The remaining types of `issues.list` are placed in
-/// the order User and Milestone (the top level's), Label (one level down),
-/// then Problem (the error data's). Label and Problem are no longer whole
-/// than as stubs, so they are never stubbed.
+/// the order User and Milestone (the top level's), then Label (one level
+/// down). Label is no longer whole than as a stub, so it is never stubbed.
 #[test]
 fn describe_fits_the_remaining_types_to_the_budget() {
     let user_stub = stub("User", "login; name; email; company; blog; location; bio");
@@ -33,8 +30,8 @@ fn describe_fits_the_remaining_types_to_the_budget() {
         "Milestone",
         "title; creator; labels; parent; due_on; closed_at; description; html_url; node_id",
     );
-    let issues_list = [USER, MILESTONE, LABEL, PROBLEM, WHOLE].join("\n");
-    let all_whole = [USER, MILESTONE, LABEL, PROBLEM]
+    let issues_list = [USER, MILESTONE, LABEL, WHOLE].join("\n");
+    let all_whole = [USER, MILESTONE, LABEL]
         .iter()
         .map(|text| text.len() + 1)
         .sum::<usize>();
@@ -59,19 +56,15 @@ function forecast(input: { "city": string }): Promise<{ data: { days: Array<Day>
             operation,
             &[],
             all_whole - 1,
-            [WHOLE, USER, &milestone_stub, LABEL, PROBLEM].join("\n"),
+            [WHOLE, USER, &milestone_stub, LABEL].join("\n"),
         ),
         (
-            "what does not fit is listed by name, the error data's types last",
+            "what does not fit is listed by name",
             &issues_list,
             operation,
             &[],
             0,
-            [
-                WHOLE,
-                &not_shown(r#""User", "Milestone", "Label", "Problem""#),
-            ]
-            .join("\n"),
+            [WHOLE, &not_shown(r#""User", "Milestone", "Label""#)].join("\n"),
         ),
         (
             "a stub fits where its full type does not",
@@ -82,7 +75,7 @@ function forecast(input: { "city": string }): Promise<{ data: { days: Array<Day>
             [
                 WHOLE,
                 &user_stub,
-                &not_shown(r#""Milestone", "Label", "Problem""#),
+                &not_shown(r#""Milestone", "Label""#),
             ]
             .join("\n"),
         ),

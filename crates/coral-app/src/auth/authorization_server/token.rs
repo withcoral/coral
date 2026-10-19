@@ -780,7 +780,7 @@ mod tests {
         assert!(value.get("scope").is_none());
         let expires_in = get("expires_in").as_u64().expect("expires_in");
         assert!(expires_in > 0 && expires_in <= session.access_token_ttl().as_secs());
-        let fixture = coral_test_support::TestDatabase::new(coral_workspace::migrator())
+        let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
             .await
             .unwrap();
         let organization = coral_workspace::OrganizationModule::new(fixture.database());
