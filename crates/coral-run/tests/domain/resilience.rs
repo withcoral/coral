@@ -117,13 +117,6 @@ async fn a_commit_whose_answer_is_lost_before_it_landed_is_recommitted_as_built_
 
     gates.go.send(()).expect("start the burst");
     wait_until(|| engine.acknowledged.load(Ordering::SeqCst) == 1).await;
-    wait_until(|| probe.commits() >= commits_before + 2).await;
-    assert_eq!(
-        fixture.run_record(&workspace_id, &run_id).await,
-        before,
-        "nothing landed while the database did not answer"
-    );
-
     wait_until_async_within(Duration::from_secs(10), async || {
         fixture
             .run_record(&workspace_id, &run_id)

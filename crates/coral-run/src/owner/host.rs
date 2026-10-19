@@ -387,8 +387,9 @@ async fn commit_until_answered(
 }
 
 /// Rereads the Run row after an attempt the database did not answer, backing
-/// off between rereads it does not answer either, until the row says what
-/// the attempt did. `None` once the owner retired meanwhile.
+/// off between rereads that fail (a reread that fails is no answer either,
+/// whatever its error), until the row says what the attempt did. `None` once
+/// the owner retired meanwhile.
 async fn reread_until_resolved(
     module: &RunModule,
     accepted: &AcceptedRun,
@@ -406,8 +407,7 @@ async fn reread_until_resolved(
             run_repository::find_exact(&module.database, &accepted.workspace_id, &accepted.id)
                 .await;
         match reread {
-            Err(unanswered) if unanswered.is_operational() => error = unanswered,
-            Err(definite) => return Some(Resolution::Rejected(CommitRejection::from(definite))),
+            Err(failed) => error = failed,
             Ok(None) => return Some(Resolution::Rejected(CommitRejection::ClaimMismatch)),
             Ok(Some(run)) => return Some(resolve(&run, &accepted.claim_id, written)),
         }

@@ -206,23 +206,31 @@ impl OwnerState {
     /// chunk is written until the database answers. A chunk still in flight
     /// may land meanwhile; its outcome changes nothing here.
     fn interrupt(&mut self, last_commit_age_nanos: i64) -> Vec<Effect> {
+        let mut effects = self.stop_pending(|| Error::ProgramHostTerminated);
+        self.completion = None;
+        self.phase = Phase::Interrupting;
+        effects.push(Effect::Interrupt {
+            last_commit_age_nanos,
+        });
+        effects
+    }
+
+    /// Stops the Program and settles everything it waits on with the error
+    /// `lost` makes: the request on the chunk in flight, every pending
+    /// request and work item. The caller decides the phase that follows.
+    fn stop_pending(&mut self, lost: impl Fn() -> Error) -> Vec<Effect> {
         let mut effects = Vec::new();
         if let Some(flight) = self.in_flight.take() {
             effects.extend(
                 flight
                     .waiters
                     .into_iter()
-                    .map(|reply| Effect::Reply(reply, Err(Error::ProgramHostTerminated))),
+                    .map(|reply| Effect::Reply(reply, Err(lost()))),
             );
         }
-        effects.extend(self.abandon_pending(|| Error::ProgramHostTerminated));
+        effects.extend(self.abandon_pending(&lost));
         self.stop_requested = true;
-        self.completion = None;
-        self.phase = Phase::Interrupting;
         effects.push(Effect::TerminateProgram);
-        effects.push(Effect::Interrupt {
-            last_commit_age_nanos,
-        });
         effects
     }
 
@@ -509,18 +517,7 @@ impl OwnerState {
     /// terminated, nothing pending commits, and every waiting request learns
     /// its outcome is unknown.
     fn rejected(&mut self, cause: CommitRejection) -> Vec<Effect> {
-        let mut effects = Vec::new();
-        if let Some(flight) = self.in_flight.take() {
-            effects.extend(
-                flight
-                    .waiters
-                    .into_iter()
-                    .map(|reply| Effect::Reply(reply, Err(cause.lost()))),
-            );
-        }
-        effects.extend(self.abandon_pending(|| cause.lost()));
-        self.stop_requested = true;
-        effects.push(Effect::TerminateProgram);
+        let mut effects = self.stop_pending(|| cause.lost());
         match self.phase {
             Phase::Running => self.phase = Phase::Stopped(cause),
             Phase::Ending => {

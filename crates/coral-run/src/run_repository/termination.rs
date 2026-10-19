@@ -20,27 +20,10 @@ pub(crate) async fn request_termination(
     run: &RunRecord,
     request: &crate::lifecycle::RequestedTermination<'_>,
 ) -> Result<(), Error> {
-    let RunTermination {
-        kind,
-        started_at_unix_nanos,
-        deadline_at_unix_nanos,
-    } = request.termination;
-    let mut values = vec![
-        (
-            ProgramRunRecords::TerminationKind,
-            Expr::val(kind.as_storage_str()),
-        ),
-        (
-            ProgramRunRecords::TerminationStartedAtUnixNanos,
-            Expr::val(started_at_unix_nanos),
-        ),
-        (
-            ProgramRunRecords::TerminationDeadlineAtUnixNanos,
-            Expr::val(deadline_at_unix_nanos),
-        ),
-    ];
+    let mut values = termination_values(&request.termination);
     let mut chunk = Chunk::new(run, run.execution_claim_id.as_deref());
     if let Some(requester) = request.requester {
+        let started_at_unix_nanos = request.termination.started_at_unix_nanos;
         values.extend([
             (
                 ProgramRunRecords::CancellationRequestedAtUnixNanos,
@@ -144,20 +127,7 @@ pub(crate) async fn interrupt_run(
     new_execution_claim_id: Option<&str>,
     terminal_at_unix_nanos: i64,
 ) -> Result<(), Error> {
-    let mut values = vec![
-        (
-            ProgramRunRecords::TerminationKind,
-            Expr::val(termination.kind.as_storage_str()),
-        ),
-        (
-            ProgramRunRecords::TerminationStartedAtUnixNanos,
-            Expr::val(termination.started_at_unix_nanos),
-        ),
-        (
-            ProgramRunRecords::TerminationDeadlineAtUnixNanos,
-            Expr::val(termination.deadline_at_unix_nanos),
-        ),
-    ];
+    let mut values = termination_values(termination);
     // A Run that never started has no execution claim to take over: its
     // row pairs the execution claim with the start mark, and the released
     // worker claim is all the fence a late start mark needs.
@@ -234,6 +204,24 @@ async fn finish_terminal_run(
             terminal_at_unix_nanos,
         );
     commit_chunk_with(transaction, chunk, values).await
+}
+
+/// The Run row columns that record a termination.
+fn termination_values(termination: &RunTermination) -> Vec<(ProgramRunRecords, Expr)> {
+    vec![
+        (
+            ProgramRunRecords::TerminationKind,
+            Expr::val(termination.kind.as_storage_str()),
+        ),
+        (
+            ProgramRunRecords::TerminationStartedAtUnixNanos,
+            Expr::val(termination.started_at_unix_nanos),
+        ),
+        (
+            ProgramRunRecords::TerminationDeadlineAtUnixNanos,
+            Expr::val(termination.deadline_at_unix_nanos),
+        ),
+    ]
 }
 
 fn released_worker_claim() -> [(ProgramRunRecords, Expr); 2] {

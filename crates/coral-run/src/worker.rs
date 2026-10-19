@@ -159,25 +159,17 @@ impl RunModule {
             return Ok(None);
         }
         if started_at >= run.deadline_at_unix_nanos {
-            let run = self
-                .request_termination(
-                    &mut transaction,
-                    &run,
-                    RunTerminationKind::TimedOut,
-                    None,
-                    started_at,
-                )
-                .await?;
-            self.finish_termination_in_transaction(&mut transaction, &run, started_at)
-                .await?;
-            transaction.commit().await?;
-            return Ok(None);
+            return self
+                .time_out_before_start(transaction, &run, started_at)
+                .await;
         }
         if let Err(error) = authority.and_then(|evidence| {
             evidence.require_current_at(started_at)?;
             Ok(())
         }) {
-            if error.is_operational() {
+            // A database that failed, definitely or not, has not said
+            // anything about authority.
+            if error.database_error().is_some() {
                 return Err(error);
             }
             run_repository::finish_unstarted_run(
@@ -213,19 +205,7 @@ impl RunModule {
     ) -> Result<Option<ProgramPackage>, Error> {
         let now = self.now()?.max(run.accepted_at_unix_nanos);
         if now >= run.deadline_at_unix_nanos {
-            let run = self
-                .request_termination(
-                    &mut transaction,
-                    run,
-                    RunTerminationKind::TimedOut,
-                    None,
-                    now,
-                )
-                .await?;
-            self.finish_termination_in_transaction(&mut transaction, &run, now)
-                .await?;
-            transaction.commit().await?;
-            return Ok(None);
+            return self.time_out_before_start(transaction, run, now).await;
         }
         let package = run_repository::load_package_in_transaction(
             &mut transaction,
@@ -236,6 +216,29 @@ impl RunModule {
         .ok_or_else(|| Error::CorruptData("started Run has no Program package".to_string()))?;
         transaction.commit().await?;
         Ok(Some(package))
+    }
+
+    /// Ends a Run whose deadline passed before its Program started: the
+    /// timeout and its terminal chunk, committed here, and nothing to run.
+    async fn time_out_before_start(
+        &self,
+        mut transaction: coral_db::Transaction<'_>,
+        run: &RunRecord,
+        now_unix_nanos: i64,
+    ) -> Result<Option<ProgramPackage>, Error> {
+        let run = self
+            .request_termination(
+                &mut transaction,
+                run,
+                RunTerminationKind::TimedOut,
+                None,
+                now_unix_nanos,
+            )
+            .await?;
+        self.finish_termination_in_transaction(&mut transaction, &run, now_unix_nanos)
+            .await?;
+        transaction.commit().await?;
+        Ok(None)
     }
 
     /// The terminal write for the Program's completion, after the owner has

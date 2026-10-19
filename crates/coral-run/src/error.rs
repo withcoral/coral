@@ -382,12 +382,51 @@ impl Error {
     /// definite answer.
     #[must_use]
     pub(crate) fn is_operational(&self) -> bool {
+        self.database_error()
+            .is_some_and(coral_db::Error::is_unanswered)
+    }
+
+    /// The database error behind this one, through the module errors that
+    /// wrap it (a Provider's Catalog or Workspace error, a Policy's Provider
+    /// or Workspace error, a Saved Function's Workspace error).
+    #[must_use]
+    pub(crate) fn database_error(&self) -> Option<&coral_db::Error> {
+        fn workspace(error: &coral_workspace::Error) -> Option<&coral_db::Error> {
+            match error {
+                coral_workspace::Error::Database(error) => Some(error),
+                _ => None,
+            }
+        }
+        fn catalog(error: &coral_catalog::Error) -> Option<&coral_db::Error> {
+            match error {
+                coral_catalog::Error::Database(error) => Some(error),
+                _ => None,
+            }
+        }
+        fn provider(error: &coral_provider::Error) -> Option<&coral_db::Error> {
+            match error {
+                coral_provider::Error::Database(error) => Some(error),
+                coral_provider::Error::Catalog(error) => catalog(error),
+                coral_provider::Error::Workspace(error) => workspace(error),
+                _ => None,
+            }
+        }
         match self {
-            Self::Database(error)
-            | Self::Workspace(coral_workspace::Error::Database(error))
-            | Self::Provider(coral_provider::Error::Database(error))
-            | Self::Policy(coral_policy::Error::Database(error)) => error.is_unanswered(),
-            _ => false,
+            Self::Database(error) => Some(error),
+            Self::Workspace(error) => workspace(error),
+            Self::Provider(error) => provider(error),
+            Self::Policy(error) => match error {
+                coral_policy::Error::Database(error) => Some(error),
+                coral_policy::Error::Provider(error) => provider(error),
+                coral_policy::Error::Workspace(error) => workspace(error),
+                _ => None,
+            },
+            Self::Functions(error) => match error {
+                coral_functions::Error::Database(error) => Some(error),
+                coral_functions::Error::Workspace(error) => workspace(error),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -417,7 +456,51 @@ impl Error {
 
 #[cfg(test)]
 mod tests {
-    use super::CoralFailure;
+    use super::{CoralFailure, Error};
+
+    #[test]
+    fn an_unanswered_database_error_is_operational_through_every_module_wrapper() {
+        type Wrap = fn(coral_db::Error) -> Error;
+        let unanswered = || coral_db::Error::WriterBusy;
+        let definite = || coral_db::Error::Sqlx(sqlx::Error::RowNotFound);
+        let wrapped: [(Wrap, &str); 5] = [
+            (|error| Error::Database(error), "run"),
+            (
+                |error| Error::Workspace(coral_workspace::Error::Database(error)),
+                "workspace",
+            ),
+            (
+                |error| {
+                    Error::Provider(coral_provider::Error::Catalog(
+                        coral_catalog::Error::Database(error),
+                    ))
+                },
+                "provider catalog",
+            ),
+            (
+                |error| {
+                    Error::Policy(coral_policy::Error::Provider(
+                        coral_provider::Error::Workspace(coral_workspace::Error::Database(error)),
+                    ))
+                },
+                "policy provider workspace",
+            ),
+            (
+                |error| {
+                    Error::Functions(coral_functions::Error::Workspace(
+                        coral_workspace::Error::Database(error),
+                    ))
+                },
+                "functions workspace",
+            ),
+        ];
+        for (wrap, label) in wrapped {
+            assert!(wrap(unanswered()).is_operational(), "{label}");
+            assert!(!wrap(definite()).is_operational(), "{label}");
+        }
+        assert!(!Error::RunNotFound.is_operational());
+        assert!(!Error::ClaimMismatch.is_operational());
+    }
 
     #[test]
     fn durable_failure_codes_are_distinct_except_the_output_limit_alias() {

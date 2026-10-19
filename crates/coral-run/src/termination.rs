@@ -378,9 +378,9 @@ impl RunModule {
 
     /// Interrupts the Run `claim_id` owns in one chunk: the Program's pending
     /// Invocations end `run_terminated`, dispatching ones `indeterminate`,
-    /// their Approval Requests close, and the Run ends `interrupted`, or with
-    /// the termination an outside writer already recorded (a cancellation
-    /// wins). The self-interrupt path of a Run Owner that cannot commit, and
+    /// their Approval Requests close, and the Run ends `interrupted` (or
+    /// `timed_out` past its deadline), or with the termination an outside
+    /// writer already recorded (a cancellation wins). The self-interrupt path of a Run Owner that cannot commit, and
     /// of the supervisor that takes over a Run whose owner task ended without
     /// retiring; `takeover_claim_id` is the claim the supervisor mints so that
     /// nothing still in flight under `claim_id` can land afterwards.
@@ -404,8 +404,9 @@ impl RunModule {
             .ok_or(Error::ClaimMismatch)?;
         if run.state.is_terminal() {
             // An earlier attempt of this very interruption may have landed
-            // without an answer: the row then carries the claim it wrote.
-            let recorded_by_us = run.state == RunState::Interrupted
+            // without an answer: the row then carries the claim it wrote and
+            // the outcome it chose.
+            let recorded_by_us = matches!(run.state, RunState::Interrupted | RunState::TimedOut)
                 && run.execution_claim_id.as_deref() == Some(takeover_claim_id.unwrap_or(claim_id));
             return if recorded_by_us {
                 Ok(())
@@ -427,8 +428,13 @@ impl RunModule {
                     termination.started_at_unix_nanos
                 }),
         );
+        // Past the deadline the Run timed out, as every deadline path records.
         let termination = match run.termination {
             Some(termination) => termination,
+            None if now >= run.deadline_at_unix_nanos => {
+                run.request_termination(RunTerminationKind::TimedOut, None, now)?
+                    .termination
+            }
             None => {
                 run.request_termination(RunTerminationKind::Interrupted, None, now)?
                     .termination

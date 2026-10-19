@@ -124,6 +124,48 @@ mod tests {
         assert!(!Error::Config("bad".into()).is_unanswered());
     }
 
+    /// A busy writer the backend reports is unanswered; a constraint it
+    /// enforces is a definite rejection.
+    #[tokio::test]
+    async fn a_busy_writer_is_unanswered_and_a_constraint_violation_is_not() {
+        use sqlx::Connection as _;
+        let directory = tempfile::tempdir().expect("temp dir");
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(directory.path().join("errors.sqlite"))
+            .create_if_missing(true)
+            .busy_timeout(std::time::Duration::ZERO);
+        let mut first = sqlx::SqliteConnection::connect_with(&options)
+            .await
+            .expect("first connection");
+        let mut second = sqlx::SqliteConnection::connect_with(&options)
+            .await
+            .expect("second connection");
+        sqlx::raw_sql("CREATE TABLE rows (id INTEGER PRIMARY KEY); INSERT INTO rows VALUES (1)")
+            .execute(&mut first)
+            .await
+            .expect("arrange");
+
+        let duplicate = sqlx::raw_sql("INSERT INTO rows VALUES (1)")
+            .execute(&mut first)
+            .await
+            .expect_err("a duplicate key is rejected");
+        let duplicate = Error::Sqlx(duplicate);
+        assert!(duplicate.is_unique_violation());
+        assert!(!duplicate.is_unanswered(), "{duplicate}");
+
+        sqlx::raw_sql("BEGIN IMMEDIATE")
+            .execute(&mut first)
+            .await
+            .expect("hold the writer");
+        let busy = sqlx::raw_sql("BEGIN IMMEDIATE")
+            .execute(&mut second)
+            .await
+            .expect_err("the second writer is busy");
+        let busy = Error::Sqlx(busy);
+        assert!(busy.is_serialization_conflict());
+        assert!(busy.is_unanswered(), "{busy}");
+    }
+
     #[test]
     fn conflict_codes_cover_both_backends() {
         for code in ["40001", "40P01", "5", "6", "517", "261", "262"] {
