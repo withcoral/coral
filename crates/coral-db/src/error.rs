@@ -25,6 +25,12 @@ pub enum Error {
     /// A migration could not be validated or applied.
     #[error(transparent)]
     Migration(#[from] sqlx::migrate::MigrateError),
+    /// `SQLite` migrations left rows whose foreign keys match no row.
+    #[error("migrations left foreign keys that match no row in: {tables}")]
+    MigrationForeignKeys {
+        /// The tables that hold those rows, comma-separated.
+        tables: String,
+    },
 }
 
 impl Error {

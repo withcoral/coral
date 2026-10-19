@@ -44,8 +44,14 @@ pub struct Provider {
     /// Derived configuration and inspected-Agent blockers from one read snapshot.
     #[prost(enumeration = "ProviderBlocker", repeated, tag = "9")]
     pub blockers: ::prost::alloc::vec::Vec<i32>,
+    /// Search state of the active Generation, read apart from the blockers.
+    #[prost(enumeration = "SearchIndexState", tag = "10")]
+    pub search_index_state: i32,
+    /// Why the last attempt failed. Unspecified unless search_index_state is FAILED.
+    #[prost(enumeration = "SearchIndexFailureReason", tag = "11")]
+    pub search_index_failure_reason: i32,
     /// Immutable Workspace-unique Provider Call Root, such as coral.providers.github.
-    #[prost(string, tag = "10")]
+    #[prost(string, tag = "12")]
     pub call_root: ::prost::alloc::string::String,
 }
 /// Lists Providers owned by one authorized Workspace.
@@ -840,9 +846,9 @@ pub mod create_provider_setup_request {
     /// Exactly one source.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Input {
-        /// One exact OpenAPI document (JSON or YAML text).
-        #[prost(string, tag = "2")]
-        OpenapiDocument(::prost::alloc::string::String),
+        /// One exact OpenAPI document file: JSON or YAML text, optionally gzipped.
+        #[prost(bytes, tag = "2")]
+        OpenapiDocument(::prost::alloc::vec::Vec<u8>),
         /// One exact normalized MCP discovery snapshot.
         #[prost(string, tag = "3")]
         McpSnapshot(::prost::alloc::string::String),
@@ -1101,6 +1107,94 @@ impl ProviderBlocker {
             "PROVIDER_BLOCKER_ACCOUNT_SETTING_INCOMPATIBLE" => {
                 Some(Self::AccountSettingIncompatible)
             }
+            _ => None,
+        }
+    }
+}
+/// Whether search has indexed the Provider's active Generation. Information
+/// only: it never changes what a caller may invoke.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SearchIndexState {
+    /// Not supplied, not recognized by this client, or not read.
+    Unspecified = 0,
+    /// No indexing attempt has reached the active Generation yet.
+    Pending = 1,
+    /// Search holds the active Generation's Operations.
+    Indexed = 2,
+    /// The last attempt failed: search cannot find the Operations until a retry succeeds.
+    Failed = 3,
+}
+impl SearchIndexState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SEARCH_INDEX_STATE_UNSPECIFIED",
+            Self::Pending => "SEARCH_INDEX_STATE_PENDING",
+            Self::Indexed => "SEARCH_INDEX_STATE_INDEXED",
+            Self::Failed => "SEARCH_INDEX_STATE_FAILED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SEARCH_INDEX_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "SEARCH_INDEX_STATE_PENDING" => Some(Self::Pending),
+            "SEARCH_INDEX_STATE_INDEXED" => Some(Self::Indexed),
+            "SEARCH_INDEX_STATE_FAILED" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+/// Why search could not index the active Generation: the kind of error, never
+/// its message, which can hold internal detail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SearchIndexFailureReason {
+    /// Not failed, not recognized by this client, or recorded before Coral kept the kind.
+    Unspecified = 0,
+    /// An Operation could not become a search entry.
+    InvalidEntry = 1,
+    /// The write did not finish within its limit.
+    TimedOut = 2,
+    /// The system clock could not stamp the attempt.
+    Clock = 3,
+    /// The search index holds a value it does not admit.
+    Corrupt = 4,
+    /// Reading or preparing the Provider's Generation failed.
+    Provider = 5,
+    /// Database access failed.
+    Database = 6,
+}
+impl SearchIndexFailureReason {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SEARCH_INDEX_FAILURE_REASON_UNSPECIFIED",
+            Self::InvalidEntry => "SEARCH_INDEX_FAILURE_REASON_INVALID_ENTRY",
+            Self::TimedOut => "SEARCH_INDEX_FAILURE_REASON_TIMED_OUT",
+            Self::Clock => "SEARCH_INDEX_FAILURE_REASON_CLOCK",
+            Self::Corrupt => "SEARCH_INDEX_FAILURE_REASON_CORRUPT",
+            Self::Provider => "SEARCH_INDEX_FAILURE_REASON_PROVIDER",
+            Self::Database => "SEARCH_INDEX_FAILURE_REASON_DATABASE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SEARCH_INDEX_FAILURE_REASON_UNSPECIFIED" => Some(Self::Unspecified),
+            "SEARCH_INDEX_FAILURE_REASON_INVALID_ENTRY" => Some(Self::InvalidEntry),
+            "SEARCH_INDEX_FAILURE_REASON_TIMED_OUT" => Some(Self::TimedOut),
+            "SEARCH_INDEX_FAILURE_REASON_CLOCK" => Some(Self::Clock),
+            "SEARCH_INDEX_FAILURE_REASON_CORRUPT" => Some(Self::Corrupt),
+            "SEARCH_INDEX_FAILURE_REASON_PROVIDER" => Some(Self::Provider),
+            "SEARCH_INDEX_FAILURE_REASON_DATABASE" => Some(Self::Database),
             _ => None,
         }
     }
@@ -5523,6 +5617,16 @@ pub struct ActivityProgramError {
     /// This error refers back to one of its own causes.
     #[prost(bool, tag = "11")]
     pub circular: bool,
+    /// HTTP status of the upstream response that rejected the Operation call,
+    /// or 0 when there was none.
+    #[prost(uint32, tag = "12")]
+    pub operation_status: u32,
+    /// Start of that response's JSON-encoded data, at most 1 KiB, or empty.
+    #[prost(string, tag = "13")]
+    pub operation_body: ::prost::alloc::string::String,
+    /// operation_body leaves out the rest of the data.
+    #[prost(bool, tag = "14")]
+    pub operation_body_truncated: bool,
 }
 /// An event or outcome that carries no data.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

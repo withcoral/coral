@@ -5,7 +5,7 @@
 //! success data are always whole, outside the budget. The top level is the
 //! type the data is, such as `PullRequestSimple` in `Array<PullRequestSimple>`;
 //! inline data is its own top level. The remaining types are placed in
-//! breadth-first order from the success data, with the error data's after:
+//! breadth-first order from the success data:
 //!
 //! 1. Each type is placed as a stub, its field names only, if the stub
 //!    fits. A type with no fields, or no longer whole than as a stub, is
@@ -25,7 +25,7 @@ mod tests;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use super::envelope::{envelopes, response, status_is_success};
+use super::envelope::{envelopes, response};
 use super::syntax;
 use super::tree::{Declarations, Member, Signature, TopLevel, Type};
 use crate::{EntityKind, Error};
@@ -234,8 +234,8 @@ struct Roles<'d> {
 
 impl<'d> Roles<'d> {
     /// Types are claimed in this order, each by its first role: the inputs,
-    /// the wrapper, the top level, the types the success data reaches, those
-    /// the error data reaches, then any type nothing reaches.
+    /// the wrapper, the top level, the types the success data reaches, then
+    /// any type nothing reaches.
     fn of(graph: &TypeGraph<'d>, kind: EntityKind) -> Self {
         let callable = &graph.declarations.callable;
         let result = ResultData::of(callable, kind);
@@ -251,7 +251,6 @@ impl<'d> Roles<'d> {
         let mut start = graph.references(result.success.iter().copied());
         start.extend(graph.references(top.iter().filter_map(|name| graph.body(name))));
         let mut rest = reached.breadth_first(start);
-        rest.extend(reached.breadth_first(graph.references(result.error.iter().copied())));
         rest.extend(reached.claim(graph.names()));
         frame.extend(top);
         Self {
@@ -263,11 +262,10 @@ impl<'d> Roles<'d> {
 }
 
 /// Where a callable's result types start: the names its wrapper mentions,
-/// and the data of its success and error responses.
+/// and the data of its declared successes.
 struct ResultData<'d> {
     wrapper: Vec<&'d str>,
     success: Vec<&'d Type>,
-    error: Vec<&'d Type>,
 }
 
 impl<'d> ResultData<'d> {
@@ -278,7 +276,6 @@ impl<'d> ResultData<'d> {
         let mut data = Self {
             wrapper: Vec::new(),
             success: Vec::new(),
-            error: Vec::new(),
         };
         let envelopes = match kind {
             EntityKind::Operation => callable.result.as_ref().and_then(envelopes),
@@ -290,19 +287,15 @@ impl<'d> ResultData<'d> {
         };
         for envelope in envelopes {
             let mentioned = all_names(envelope);
-            let Some((response_data, status)) = response(envelope) else {
-                // Another envelope, such as an unknown response's: whole.
+            let Some(response_data) = response(envelope) else {
+                // An envelope without readable data: whole.
                 data.wrapper.extend(mentioned);
                 continue;
             };
             let in_data = all_names(response_data);
             data.wrapper
                 .extend(mentioned.into_iter().filter(|name| !in_data.contains(name)));
-            if status.is_none_or(status_is_success) {
-                data.success.push(response_data);
-            } else {
-                data.error.push(response_data);
-            }
+            data.success.push(response_data);
         }
         data
     }

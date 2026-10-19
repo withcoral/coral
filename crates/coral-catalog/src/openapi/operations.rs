@@ -7,6 +7,8 @@ use std::collections::{BTreeMap, HashSet};
 pub(super) struct LocatedOperation {
     pub key: OperationKey,
     pub path: String,
+    /// The query a path key such as `/v1/models?beta=true` fixes.
+    pub query: Option<String>,
     pub method: HttpMethod,
     pub object: Map<String, Value>,
     pub pointer: String,
@@ -42,6 +44,13 @@ pub(super) fn locate_operations(
                 "an OpenAPI Operation path does not begin with '/' or is unsafe",
             ));
         }
+        // OpenAPI forbids a query in a path key, but generated documents such
+        // as Anthropic's still fix one there.
+        let (template, query) = path
+            .split_once('?')
+            .map_or((path.as_str(), None), |(template, query)| {
+                (template, Some(query).filter(|query| !query.is_empty()))
+            });
         let path_item = resolve_reference_object(
             document,
             &child_pointer("#/paths", path),
@@ -81,7 +90,8 @@ pub(super) fn locate_operations(
             };
             operations.push(LocatedOperation {
                 key,
-                path: path.clone(),
+                path: template.to_owned(),
+                query: query.map(str::to_owned),
                 method,
                 object: object.clone(),
                 pointer,

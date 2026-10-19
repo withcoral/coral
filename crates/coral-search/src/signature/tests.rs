@@ -1,15 +1,14 @@
 use super::{Callable, SIGNATURE_LINE_MAX_BYTES, signature_line};
 
-const HTTP_RESULT_ALIASES: &str = "type HttpResult<Data, Status, MediaType> = { data: Data; metadata: { readonly kind: \"http\"; readonly status: Status; readonly mediaType: MediaType; readonly decodeDiagnostics: readonly [] } };\n\
-     type HttpUnknownResult = { data: unknown; metadata: { readonly kind: \"http\"; readonly status: number; readonly decodeDiagnostics: readonly [{ readonly code: string }] } };\n";
+const HTTP_RESULT_ALIASES: &str = "type HttpResult<Data, Status, MediaType> = { status: Status; data: Data; metadata: { readonly kind: \"http\"; readonly mediaType: MediaType; readonly decodeDiagnostics: readonly { readonly code: string }[] } };\n";
 
-/// The aliases an HTTP Operation's result needs, and the result.
+/// The aliases an HTTP Operation's result needs, and the result: one
+/// envelope per declared success.
 fn http_result(branches: &[(&str, &str)]) -> (&'static str, String) {
-    let mut envelopes = branches
+    let envelopes = branches
         .iter()
         .map(|(data, status)| format!("HttpResult<{data}, {status}, \"application/json\">"))
         .collect::<Vec<_>>();
-    envelopes.push("HttpUnknownResult".to_string());
     (
         HTTP_RESULT_ALIASES,
         format!("Promise<{}>", envelopes.join(" | ")),
@@ -23,52 +22,94 @@ fn http_result(branches: &[(&str, &str)]) -> (&'static str, String) {
 )]
 fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
     let list_issues = {
-        let (aliases, result) = http_result(&[("Array<Issue>", "200"), ("Error", "404")]);
+        let (aliases, result) = http_result(&[("Array<Issue>", "200")]);
         format!(
             "{aliases}type GetParameter0Input = string;\n\
              type GetParameter2Input = \"open\" | \"closed\" | \"all\";\n\
              type GetParameter3Input = number;\n\
-             type Issue = ({{ \"id\"?: number; \"labels\"?: Array<Label>; \"title\"?: string }} & Record<string, unknown>);\n\
-             type Label = ({{ \"color\"?: string; \"name\": string }} & Record<string, unknown>);\n\
-             namespace issues {{ function list(input: {{ \"owner\": GetParameter0Input; \"per_page\"?: GetParameter3Input; \"state\"?: GetParameter2Input }}): {result}; }}"
+             type Issue = {{ \"id\"?: number; \"labels\"?: Array<Label>; \"title\"?: string }};\n\
+             type Label = {{ \"color\"?: string; \"name\": string }};\n\
+             export default function (input: {{ \"owner\": GetParameter0Input; \"per_page\"?: GetParameter3Input; \"state\"?: GetParameter2Input }}): {result};"
         )
     };
     let create_issue = {
-        let (aliases, result) = http_result(&[
-            ("Issue", "201"),
-            ("Issue | IssueDraft", "200 | 202"),
-            ("Problem", "number"),
-        ]);
+        let (aliases, result) = http_result(&[("Issue", "201"), ("IssueDraft", "202")]);
         format!(
-            "{aliases}type BodyInput = ({{ \"labels\"?: Array<LabelInput>; \"meta\"?: ({{ \"x\"?: string }} & Record<string, unknown>); \"title\": string }} & Record<string, unknown>);\n\
+            "{aliases}type BodyInput = {{ \"labels\"?: Array<LabelInput>; \"meta\"?: {{ \"x\"?: string }}; \"title\": string }};\n\
              type Parameter0Input = string;\n\
-             function createIssue(input: {{ \"body\": BodyInput; \"owner\": Parameter0Input }}): {result};"
+             export default function (input: {{ \"body\": BodyInput; \"owner\": Parameter0Input }}): {result};"
         )
     };
     let nested_mcp = "type McpSafeMeta = Record<string, unknown>;\n\
-         function forecast(input: ({ \"city\": string; \"options\"?: ({ \"units\"?: \"c\" | \"f\" } & Record<string, unknown>); \"days\"?: Array<number> } & Record<string, unknown>)): Promise<{ data: { content: Array<McpContentBlock>; structuredContent?: unknown; isError?: boolean }; metadata: { kind: \"mcp\"; _meta?: McpSafeMeta } }>;";
-    let status_ranges = {
-        let (aliases, result) = http_result(&[
-            ("Array<Name>", "HttpStatus2xx"),
-            ("Problem", "HttpStatus4xx"),
-            ("Outage", "HttpStatus5xx"),
-        ]);
+         export default function (input: { \"city\": string; \"options\"?: { \"units\"?: \"c\" | \"f\" }; \"days\"?: Array<number> }): Promise<{ data: { content: Array<McpContentBlock>; structuredContent?: unknown; isError?: false }; metadata: { kind: \"mcp\"; _meta?: McpSafeMeta } }>;";
+    let status_range = {
+        let (aliases, result) = http_result(&[("Array<Name>", "HttpStatus2xx")]);
         format!(
             "{aliases}const HttpStatusRangeBrand: unique symbol;\n\
              type HttpStatus2xx = number & {{ readonly [HttpStatusRangeBrand]: \"2xx\" }};\n\
-             type HttpStatus4xx = number & {{ readonly [HttpStatusRangeBrand]: \"4xx\" }};\n\
-             type HttpStatus5xx = number & {{ readonly [HttpStatusRangeBrand]: \"5xx\" }};\n\
-             function names(): {result};"
+             export default function (): {result};"
+        )
+    };
+    let named_with_inline = {
+        let (aliases, result) =
+            http_result(&[("(Issue & { \"triage\"?: { \"type\"?: string } })", "200")]);
+        format!(
+            "{aliases}type Issue = {{ \"id\": number }};\nexport default function (): {result};"
+        )
+    };
+    let inline_only = {
+        let (aliases, result) = http_result(&[
+            ("({ \"a\"?: string } & { \"b\"?: string })", "200"),
+            ("(Record<string, unknown> & Record<string, unknown>)", "201"),
+        ]);
+        format!("{aliases}export default function (): {result};")
+    };
+    let typed_and_untyped = {
+        let (aliases, result) = http_result(&[("Thing", "200"), ("unknown", "202")]);
+        format!(
+            "{aliases}type Thing = {{ \"id\": string }};\nexport default function (): {result};"
+        )
+    };
+    let shadowed_record = {
+        let (aliases, result) = http_result(&[("(Thing & Record<string, unknown>)", "200")]);
+        format!(
+            "{aliases}type Record<K, V> = {{ \"key\": K; \"value\": V }};\ntype Thing = {{ \"id\": string }};\nexport default function (): {result};"
+        )
+    };
+    let aliased_open_record = {
+        let (aliases, result) = http_result(&[("(Thing & Extra)", "200")]);
+        format!(
+            "{aliases}type Extra = Record<string, unknown>;\ntype Thing = {{ \"id\": string }};\nexport default function (): {result};"
+        )
+    };
+    let shadowed_record_input = "type Record<K, V> = { \"key\": K; \"value\": V };\nexport default function (input: { \"q\": string } & Record<string, unknown>): number;";
+    let default_only = {
+        let (aliases, result) = http_result(&[("Thing", "number")]);
+        format!(
+            "{aliases}type Thing = {{ \"id\": string }};\nexport default function (): {result};"
         )
     };
     let argumentless = {
         let (aliases, result) = http_result(&[("string", "200")]);
-        format!("{aliases}function ping(): {result};")
+        format!("{aliases}export default function (): {result};")
     };
     let fallback = "function raw(input: unknown): Promise<{ data: unknown; metadata: { readonly kind: \"http\" } }>;";
     let named_input = "interface Input {\n    value: number;\n    nested: {\n        a: string;\n    };\n    tags?: string[];\n}\nexport default function run(input: Input): number;\nexport {};\n";
     let anonymous =
         "export default function (input: {\n    q: string;\n}): {\n    n: number;\n};\n";
+    let inferred = "export default function pullRequestDetails(input: {\n    repo: string;\n    number: number;\n}): Promise<{\n    title: string;\n    merged_at: string | null;\n    base: {\n        ref: string;\n    };\n    linked: string[];\n}>;\n";
+    let listed = "export default function openPrs(input: {\n    repo: string;\n}): Promise<{\n    number: number;\n    author: {\n        login: string;\n    };\n}[]>;\n";
+    let generic_array = "export default function openIssuesByLabel(input: {\n    label: string;\n}): Promise<Array<{\n    number: number;\n    title: string;\n}>>;\n";
+    let readonly_array = "export default function labels(): ReadonlyArray<{ name: string }>;";
+    let named_union = "interface Row { id: number }\nexport default function find(input: { id: number }): Promise<Row | undefined>;";
+    let named_intersection = "interface Base { id: number }\nexport default function tagged(): Promise<Base & { tag: string }>;";
+    let aliased_promise =
+        "type Result = Promise<{ title: string }>;\nexport default function aliased(): Result;";
+    let union_elements = "interface Row { id: number }\nexport default function rows(): Promise<(Row | undefined)[]>;";
+    let union_generic =
+        "export default function events(): Array<{ kind: \"a\" } | { kind: \"b\" }>;";
+    let mapped_result =
+        "export default function mapped(): Promise<{ [K in \"a\" | \"b\"]: number }>;";
     let arrow = "declare const g: (input: {\n    q: string;\n}) => number;\nexport default g;\n";
     let alias_union = "type Mode = 'a' | 'b';\ntype Modes = Mode[];\ninterface Out { x: number }\nexport default function f(input: { mode: Mode; modes?: Modes; limit?: number }): Promise<Out[]>;";
     let recursive = "type Tree = Tree[] | string;\nexport default function walk(input: { tree: Tree }): number;";
@@ -95,17 +136,52 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
         (
             nested_mcp,
             Callable::Operation { leaf: "forecast" },
-            "forecast(input: { city: string; options?: {…}; days?: Array<number> }): Promise<{ data: object }>",
+            "forecast(input: { city: string; options?: {…}; days?: Array<number> }): Promise<{ data: {…} }>",
         ),
         (
-            status_ranges.as_str(),
+            status_range.as_str(),
             Callable::Operation { leaf: "names" },
             "names(): Promise<{ data: Array<Name> }>",
         ),
         (
+            named_with_inline.as_str(),
+            Callable::Operation { leaf: "update" },
+            "update(): Promise<{ data: Issue & {…} }>",
+        ),
+        (
+            inline_only.as_str(),
+            Callable::Operation { leaf: "merged" },
+            "merged(): Promise<{ data: {…} }>",
+        ),
+        (
+            typed_and_untyped.as_str(),
+            Callable::Operation { leaf: "accept" },
+            "accept(): Promise<{ data: Thing | unknown }>",
+        ),
+        (
+            shadowed_record.as_str(),
+            Callable::Operation { leaf: "pair" },
+            "pair(): Promise<{ data: Thing & Record<string, unknown> }>",
+        ),
+        (
+            aliased_open_record.as_str(),
+            Callable::Operation { leaf: "extra" },
+            "extra(): Promise<{ data: Thing }>",
+        ),
+        (
+            shadowed_record_input,
+            Callable::SavedFunction { leaf: "lookup" },
+            "lookup(input: { q: string } & Record<string, unknown>): number",
+        ),
+        (
+            default_only.as_str(),
+            Callable::Operation { leaf: "thing" },
+            "thing(): Promise<{ data: Thing }>",
+        ),
+        (
             argumentless.as_str(),
-            Callable::Operation { leaf: "ping" },
-            "ping(): Promise<{ data: string }>",
+            Callable::Operation { leaf: "delete" },
+            "delete(): Promise<{ data: string }>",
         ),
         (
             fallback,
@@ -120,7 +196,61 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
         (
             anonymous,
             Callable::SavedFunction { leaf: "count" },
-            "count(input: { q: string }): object",
+            "count(input: { q: string }): { n: number }",
+        ),
+        (
+            inferred,
+            Callable::SavedFunction {
+                leaf: "pullRequestDetails",
+            },
+            "pullRequestDetails(input: { repo: string; number: number }): Promise<{ title: string; merged_at: string | null; base: {…}; linked: string[] }>",
+        ),
+        (
+            listed,
+            Callable::SavedFunction { leaf: "openPrs" },
+            "openPrs(input: { repo: string }): Promise<{ number: number; author: {…} }[]>",
+        ),
+        (
+            generic_array,
+            Callable::SavedFunction {
+                leaf: "openIssuesByLabel",
+            },
+            "openIssuesByLabel(input: { label: string }): Promise<Array<{ number: number; title: string }>>",
+        ),
+        (
+            readonly_array,
+            Callable::SavedFunction { leaf: "labels" },
+            "labels(): ReadonlyArray<{ name: string }>",
+        ),
+        (
+            named_union,
+            Callable::SavedFunction { leaf: "find" },
+            "find(input: { id: number }): Promise<{ id: number } | undefined>",
+        ),
+        (
+            named_intersection,
+            Callable::SavedFunction { leaf: "tagged" },
+            "tagged(): Promise<{ id: number } & { tag: string }>",
+        ),
+        (
+            aliased_promise,
+            Callable::SavedFunction { leaf: "aliased" },
+            "aliased(): Promise<{ title: string }>",
+        ),
+        (
+            union_elements,
+            Callable::SavedFunction { leaf: "rows" },
+            "rows(): Promise<({ id: number } | undefined)[]>",
+        ),
+        (
+            union_generic,
+            Callable::SavedFunction { leaf: "events" },
+            "events(): Array<{ kind: \"a\" } | { kind: \"b\" }>",
+        ),
+        (
+            mapped_result,
+            Callable::SavedFunction { leaf: "mapped" },
+            "mapped(): Promise<…>",
         ),
         (
             arrow,
@@ -130,7 +260,7 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
         (
             alias_union,
             Callable::SavedFunction { leaf: "f" },
-            "f(input: { mode: \"a\" | \"b\"; modes?: (\"a\" | \"b\")[]; limit?: number }): Promise<Out[]>",
+            "f(input: { mode: \"a\" | \"b\"; modes?: (\"a\" | \"b\")[]; limit?: number }): Promise<{ x: number }[]>",
         ),
         (
             recursive,

@@ -13,7 +13,7 @@ fn context(id: &str, role: OrganizationRole) -> ChangeContext {
 
 #[tokio::test]
 async fn only_current_organization_owners_can_inspect_members_for_removal() {
-    let fixture = TestDatabase::new(crate::migrator()).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let organization = OrganizationModule::new(fixture.database());
     let owner = context("owner", OrganizationRole::Owner);
     let member = context("member", OrganizationRole::Member);
@@ -63,7 +63,7 @@ async fn only_current_organization_owners_can_inspect_members_for_removal() {
 
 #[tokio::test]
 async fn concurrent_administration_cannot_remove_the_last_enabled_owner() {
-    let fixture = TestDatabase::new(crate::migrator()).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let organization = OrganizationModule::new(fixture.database());
     let first = context("first", OrganizationRole::Owner);
     let second = context("second", OrganizationRole::Owner);
@@ -96,7 +96,7 @@ async fn concurrent_administration_cannot_remove_the_last_enabled_owner() {
 
 #[tokio::test]
 async fn disabled_user_cannot_use_retained_owner_context_or_dispatch() {
-    let fixture = TestDatabase::new(crate::migrator()).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let organization = OrganizationModule::new(fixture.database());
     let workspaces = crate::WorkspaceModule::new(fixture.database());
     let administrator = context("administrator", OrganizationRole::Owner);
@@ -150,7 +150,7 @@ async fn disabled_user_cannot_use_retained_owner_context_or_dispatch() {
 
 #[tokio::test]
 async fn login_preserves_coral_role_and_disablement() {
-    let fixture = TestDatabase::new(crate::migrator()).await.unwrap();
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let organization = OrganizationModule::new(fixture.database());
     let owner = context("owner", OrganizationRole::Owner);
     let member = context("member", OrganizationRole::Member);

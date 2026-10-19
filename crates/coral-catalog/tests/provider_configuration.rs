@@ -121,7 +121,7 @@ async fn fingerprints_retain_confirmed_selection_provenance_and_persisted_config
         .fingerprint()
     );
 
-    let fixture = coral_test_support::TestDatabase::new(coral_catalog::migrator())
+    let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
         .await
         .unwrap();
     let database = fixture.database();

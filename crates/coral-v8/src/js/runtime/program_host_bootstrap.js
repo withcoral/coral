@@ -130,8 +130,9 @@
     configurable: false,
   });
 
-  // Returned only to the host; Programs cannot mint Coral Failures.
-  return (code, message, traceId, stack) => {
+  // Returned only to the host; Programs cannot mint an OperationError. An
+  // upstream rejection carries the complete outcome the Program did not receive.
+  return (code, message, traceId, stack, outcome) => {
     const error = new NativeError(message);
     setPrototypeOf(error, OperationError.prototype);
     defineProperties(error, {
@@ -140,6 +141,15 @@
     });
     if (traceId !== undefined) {
       defineProperties(error, { traceId: { __proto__: null, value: traceId } });
+    }
+    if (outcome !== undefined) {
+      if (outcome.status !== undefined) {
+        defineProperties(error, { status: { __proto__: null, value: outcome.status } });
+      }
+      defineProperties(error, {
+        data: { __proto__: null, value: outcome.data },
+        metadata: { __proto__: null, value: outcome.metadata },
+      });
     }
     return error;
   };

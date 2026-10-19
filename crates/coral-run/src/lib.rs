@@ -137,7 +137,7 @@ use coral_workspace::{
     AuthenticatedPrincipal, WorkspaceAction, WorkspaceId, WorkspaceModule, WorkspaceRole,
 };
 
-pub use coral_v8::{IsolateLimits, ProgramError};
+pub use coral_v8::{IsolateLimits, ProgramError, ProgramOperationError};
 pub use coral_value::ValueLimits;
 use engine::{Clock, ProgramEngine, SystemClock, V8ProgramEngine};
 pub use error::{CoralFailure, Error, Rejection};
@@ -159,14 +159,6 @@ pub use types::{
     RunFailure, RunFailureCode, RunId, RunObservation, RunState, RunSubmission, RunTerminalOutcome,
     RunTimeout, RunUpdate, SOURCE_MAP_MAX_BYTES,
 };
-
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-
-/// Returns the Program Run Module's domain-owned migration plan.
-#[must_use]
-pub const fn migrator() -> &'static sqlx::migrate::Migrator {
-    &MIGRATOR
-}
 
 #[cfg(test)]
 struct TestObservers {

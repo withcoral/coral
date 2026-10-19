@@ -3,6 +3,7 @@ import { Button, Card, Inputs, ScrollArea, Typography } from '@/wax/components'
 import { Logo } from '@/wax/components/logo'
 import { byService, type RecipeIcons, type SourceChoice } from '@/lib/provider-recipes/choice'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
+import { filterQuery } from '@/utils/filter-query'
 import * as styles from './providers.css'
 
 /**
@@ -123,14 +124,12 @@ export function ProviderCatalog({
 }) {
   const [query, setQuery] = useState('')
   const search = useRef<HTMLInputElement>(null)
-  const needle = query.trim().toLowerCase()
-  const matches = <T,>(items: readonly T[], text: (item: T) => string) =>
-    items.filter((item) => text(item).toLowerCase().includes(needle))
+  const catalogQuery = filterQuery(query)
   // Only what the card shows, so every match explains itself.
-  // A service matches by any of its recipes, and then offers them all.
+  // A service matches by any of its recipes' names and ids, and then offers them all.
   const services = byService(recipes)
-  const serviceMatches = matches(services, ({ choices }) =>
-    choices.map((recipe) => `${recipe.displayName} ${recipe.id}`).join(' '),
+  const serviceMatches = services.filter(({ choices }) =>
+    catalogQuery.matches(...choices.flatMap((recipe) => [recipe.displayName, recipe.id])),
   )
   const nothingMatches = serviceMatches.length === 0
   // Find-in-page cannot reach rows the catalog is scrolling past, so the
@@ -170,7 +169,7 @@ export function ProviderCatalog({
           >
             {nothingMatches
               ? ''
-              : needle
+              : catalogQuery.text
                 ? `${serviceMatches.length} of ${providerCount(services.length)}`
                 : providerCount(services.length)}
           </Typography.BodySmall>
