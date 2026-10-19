@@ -8,11 +8,11 @@ icons:
 
 # Ubiquiti publishes its OpenAPI documents only inside the pages of
 # developer.ui.com. This third-party repository copies them from there every
-# day without changes. The Site Manager API has one version, so this path is
-# stable.
+# day without changes. The URL pins a commit from 2026-10-18, so the document
+# changes only when a reviewed change bumps it.
 source:
   openapi:
-    url: https://raw.githubusercontent.com/opastorello/unifi-api-docs/main/site-manager/v1.0.0/openapi.json
+    url: https://raw.githubusercontent.com/opastorello/unifi-api-docs/e0daebb75e9f56ce875391e57eccf8d872976cc3/site-manager/v1.0.0/openapi.json
 
 authentication:
   options:

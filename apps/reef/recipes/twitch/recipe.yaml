@@ -4,9 +4,12 @@ schema_version: 1
 id: twitch
 display_name: Twitch
 description: Streams, channels, videos, clips, chat and moderation from Twitch.
+# Twitch publishes no OpenAPI document, so this is a community document from
+# the twitch-api-swagger project. The URL pins a commit from 2026-08-13, so the
+# document changes only when a reviewed change bumps it.
 source:
   openapi:
-    url: https://raw.githubusercontent.com/DmitryScaletta/twitch-api-swagger/main/openapi.json
+    url: https://raw.githubusercontent.com/DmitryScaletta/twitch-api-swagger/0ae1eacb5e7a65fe3502a1f6bf42195b728b28ba/openapi.json
 authentication:
   options:
     access_token:

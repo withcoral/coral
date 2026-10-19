@@ -17,11 +17,11 @@ inputs:
 
 # Ubiquiti publishes its OpenAPI documents only inside the pages of
 # developer.ui.com. This third-party repository copies them from there every
-# day without changes. Each Protect release has its own path, so this URL pins
-# the latest release when the recipe was written.
+# day without changes. The URL pins a commit from 2026-10-18 and the latest
+# Protect release when the recipe was written. Bump both in a reviewed change.
 source:
   openapi:
-    url: https://raw.githubusercontent.com/opastorello/unifi-api-docs/main/protect/v7.3.70/openapi.json
+    url: https://raw.githubusercontent.com/opastorello/unifi-api-docs/e0daebb75e9f56ce875391e57eccf8d872976cc3/protect/v7.3.70/openapi.json
 
 authentication:
   options:

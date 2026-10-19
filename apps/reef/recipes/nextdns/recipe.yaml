@@ -9,13 +9,14 @@ icons:
 
 # NextDNS publishes no OpenAPI document, so this is a community document from
 # the nextdns-mcp project (MIT). It covers every documented endpoint except
-# analytics/domains;series. It tracks main because the repo is active and
-# lints the document in CI. NextDNS labels its API as beta.
+# analytics/domains;series. The URL pins a commit from 2026-10-19, so the
+# document changes only when a reviewed change bumps it. NextDNS labels its API
+# as beta.
 # logs/stream sends server-sent events, and logs/download redirects to a
 # temporary CSV file.
 source:
   openapi:
-    url: https://raw.githubusercontent.com/dmeiser/nextdns-mcp/main/src/nextdns_mcp/nextdns-openapi.yaml
+    url: https://raw.githubusercontent.com/dmeiser/nextdns-mcp/4ede4974257a2a2d9a4e15f33d0ed540dcf8ae5a/src/nextdns_mcp/nextdns-openapi.yaml
 
 authentication:
   default: api_key
