@@ -27,7 +27,7 @@
 //!   Functions or the index.
 //! - [`UniversalSearchModule::inspect_search_index_states`] reports whether
 //!   the index holds each Provider's active Generation, apart from readiness.
-//! - [`prepare_storage`] runs at boot after `coral_db::migration_plan()` creates the
+//! - [`prepare_storage`] runs at boot after `Database::migrate` applies `coral_db::migration_plan()` and creates the
 //!   search index's portable tables. It checks the database features and
 //!   applies the backend-specific search stream.
 //! - [`SearchIndex`] writes the search-owned index in the background when a
