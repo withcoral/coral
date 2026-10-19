@@ -303,6 +303,39 @@ impl WorkspaceModule {
         repository::membership_workspace_ids(transaction, user_id).await
     }
 
+    /// Lists every Workspace, in any state, inside an owning read snapshot.
+    ///
+    /// Only work the process does for itself, such as boot, uses this; it
+    /// checks no authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns persistence or corrupt-data failures.
+    pub async fn workspace_ids_in_transaction(
+        &self,
+        transaction: &mut coral_db::Transaction<'_>,
+    ) -> Result<Vec<WorkspaceId>, Error> {
+        repository::workspace_ids(transaction).await
+    }
+
+    /// Holds one Workspace, in any state, inside an owning write transaction,
+    /// so writes that depend on what the Workspace holds commit one at a time.
+    /// `false` means the Workspace does not exist.
+    ///
+    /// Only work the process does for itself, such as boot, uses this; it
+    /// checks no authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns persistence failures.
+    pub async fn hold_in_transaction(
+        &self,
+        transaction: &mut coral_db::Transaction<'_>,
+        workspace_id: &WorkspaceId,
+    ) -> Result<bool, Error> {
+        repository::hold_workspace(transaction, workspace_id).await
+    }
+
     /// Checks one Workspace-sensitive action inside an owning transaction.
     ///
     /// This transaction-compatible repository facet takes no hold, so a read

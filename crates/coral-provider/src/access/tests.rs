@@ -327,7 +327,7 @@ async fn exact_provider_reads_report_an_unparseable_stored_call_root_as_corrupt(
         CredentialRoute::None,
     )
     .await;
-    // A database created before Call Roots stores the bare namespace.
+    // A bare namespace, as stored before Call Roots, is not a Call Root.
     db.execute_fixture_sql(&format!(
         "UPDATE provider_records SET namespace = 'legacy' WHERE id = '{}'",
         provider.id()
@@ -346,6 +346,72 @@ async fn exact_provider_reads_report_an_unparseable_stored_call_root_as_corrupt(
     let access =
         crate::access::exact_in_transaction(&mut transaction, workspace.id(), provider.id()).await;
     assert!(matches!(access, Err(Error::CorruptData(_))), "{access:?}");
+    transaction.rollback().await.unwrap();
+}
+
+/// A database from before Provider rows stored their Call Root: the upgrade
+/// prefixes each stored namespace, so the Provider loads and its Operations
+/// keep their Call Paths.
+#[tokio::test]
+async fn upgrade_stores_the_call_root_of_each_provider_an_owner_added() {
+    let before_call_roots = coral_test_support::edited_migration_plan(|migrations| {
+        migrations
+            .into_iter()
+            .filter(|migration| migration.version < 28)
+            .collect()
+    });
+    let db = coral_test_support::TestDatabase::new(&before_call_roots)
+        .await
+        .expect("create database from before Call Roots");
+    let database = db.database();
+    let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
+    let providers = crate::ProviderModule::with_running_catalog(
+        coral_outbound::DestinationPolicy::default(),
+        database.clone(),
+        workspaces.clone(),
+    );
+    let owner = organization_user(database.clone(), "user:upgrade", OrganizationRole::Owner).await;
+    let context = change_context(owner.clone(), 10, 'a');
+    let workspace = workspaces
+        .create(&context, WorkspaceDisplayName::parse("Upgrade").unwrap())
+        .await
+        .unwrap();
+    let provider = publish_provider(
+        &providers,
+        &context,
+        workspace.id(),
+        CREDENTIAL_FREE_OPENAPI,
+        "weather",
+        CredentialRoute::None,
+    )
+    .await;
+    db.execute_fixture_sql(&format!(
+        "UPDATE provider_records SET namespace = 'weather' WHERE id = '{}'",
+        provider.id()
+    ))
+    .await
+    .unwrap();
+
+    database
+        .migrate(coral_db::migration_plan())
+        .await
+        .expect("apply the upgrade");
+
+    let inspected = providers
+        .inspect_provider(&owner, workspace.id(), provider.id())
+        .await
+        .unwrap();
+    assert_eq!(inspected.call_root().as_str(), "coral.providers.weather");
+    let mut transaction = database.begin().await.unwrap();
+    let resolved = crate::resolve_owner_operation_in_transaction(
+        &mut transaction,
+        workspace.id(),
+        "coral.providers.weather.getForecast",
+    )
+    .await
+    .unwrap()
+    .map(|target| target.provider_access().id().clone());
+    assert_eq!(resolved.as_ref(), Some(provider.id()));
     transaction.rollback().await.unwrap();
 }
 

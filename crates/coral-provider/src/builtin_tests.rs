@@ -842,3 +842,126 @@ async fn only_an_owner_inspects_the_builtin_provider() {
         }
     }
 }
+
+/// A boot installs the Built-in Provider in each Workspace that has none, such
+/// as one created before Coral had it, in any Workspace state, with Coral as
+/// actor. A Workspace that has one changes nothing.
+#[tokio::test]
+async fn a_boot_installs_the_builtin_provider_only_where_a_workspace_has_none() {
+    let arranged = BuiltinWorkspace::new().await;
+    let context = change_context(arranged.owner.clone(), 15, '2');
+    let mut missing = Vec::new();
+    for name in ["Earlier", "Archived"] {
+        missing.push(
+            arranged
+                .workspaces
+                .create(&context, WorkspaceDisplayName::parse(name).unwrap())
+                .await
+                .unwrap(),
+        );
+    }
+    let [earlier, archived] = missing.as_slice() else {
+        unreachable!("two Workspaces were created");
+    };
+    arranged
+        .workspaces
+        .archive(&context, archived.id())
+        .await
+        .unwrap();
+    let mut expected = vec![earlier.id().clone(), archived.id().clone()];
+    expected.sort();
+    let mut without = arranged
+        .providers
+        .workspaces_without_builtin()
+        .await
+        .unwrap();
+    without.sort();
+    assert_eq!(without, expected);
+    let before = arranged.events().await.len();
+
+    let database = arranged.fixture.database();
+    for workspace in [&arranged.workspace, earlier, archived] {
+        let mut transaction = database.begin().await.unwrap();
+        let installed = arranged
+            .providers
+            .install_missing_builtin_in_transaction(&mut transaction, workspace.id(), 20)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        let name = workspace.display_name().as_str();
+        assert_eq!(
+            installed.is_some(),
+            workspace.id() != arranged.workspace.id(),
+            "{name}"
+        );
+        if let Some(provider) = installed {
+            assert_eq!(provider.call_root(), &ProviderCallRoot::Builtin, "{name}");
+        }
+    }
+
+    assert!(
+        arranged
+            .providers
+            .workspaces_without_builtin()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(arranged.events().await.len(), before);
+    let [event] = arranged
+        .providers
+        .list_lifecycle_events(&arranged.owner, earlier.id())
+        .await
+        .unwrap()
+        .try_into()
+        .expect("the install records one event");
+    assert_eq!(event.action(), LifecycleAction::BuiltinProviderInstalled);
+    assert!(matches!(event.actor(), LifecycleActor::Coral), "{event:?}");
+}
+
+/// Two processes that boot together each try the install; one installs, and
+/// the other then finds the Workspace has one.
+#[tokio::test]
+async fn two_processes_that_boot_together_install_one_builtin_provider() {
+    let (fixture, workspaces, first) = test_modules().await;
+    let owner = organization_user(fixture.database(), "user:owner", OrganizationRole::Member).await;
+    let workspace = workspaces
+        .create(
+            &change_context(owner, 10, '1'),
+            WorkspaceDisplayName::parse("Earlier").unwrap(),
+        )
+        .await
+        .unwrap();
+    let peer = std::sync::Arc::new(fixture.connect_peer().await.unwrap());
+    let second = ProviderModule::new(
+        coral_outbound::DestinationPolicy::default(),
+        peer.clone(),
+        coral_workspace::WorkspaceModule::new(peer.clone()),
+        running(),
+    );
+    let install = |process: &ProviderModule, database: std::sync::Arc<coral_db::Database>, at| {
+        let process = process.clone();
+        let workspace_id = workspace.id().clone();
+        async move {
+            let mut transaction = database.begin().await.unwrap();
+            let installed = process
+                .install_missing_builtin_in_transaction(&mut transaction, &workspace_id, at)
+                .await
+                .unwrap();
+            transaction.commit().await.unwrap();
+            installed.is_some()
+        }
+    };
+
+    let (left, right) = tokio::join!(
+        install(&first, fixture.database(), 20),
+        install(&second, peer, 21),
+    );
+
+    assert_eq!(
+        [left, right].iter().filter(|installed| **installed).count(),
+        1,
+        "{left:?} {right:?}"
+    );
+    assert!(first.workspaces_without_builtin().await.unwrap().is_empty());
+}
