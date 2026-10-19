@@ -106,11 +106,16 @@ impl RunRow {
         let state = RunState::from_storage_str(&self.state)?;
         let chunk_sequence = u64::try_from(self.chunk_sequence)
             .map_err(|_error| Error::CorruptData("Run has invalid Ledger head".to_string()))?;
+        // Acceptance writes `run.started` with the row and retention deletes the
+        // row with its Events, so a snapshot that finds none is corrupt. A row
+        // read under `hold_run` carries no value at all.
         let last_event_sequence = self
             .last_event_sequence
-            .map(u64::try_from)
-            .transpose()
-            .map_err(|_error| Error::CorruptData("Run has invalid Event sequence".to_string()))?;
+            .map(|last| u64::try_from(last).ok().filter(|last| *last >= 1))
+            .map(|last| {
+                last.ok_or_else(|| Error::CorruptData("Run has invalid Event sequence".to_string()))
+            })
+            .transpose()?;
 
         if self.deadline_at_unix_nanos < self.accepted_at_unix_nanos
             || self.shutdown_grace_nanos <= 0

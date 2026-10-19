@@ -36,7 +36,11 @@ impl UnfinishedInvocation {
 }
 
 /// Ends the Invocation and commits `invocation.ended` under the worker's claim.
-/// Returns `false` when another completion already won.
+///
+/// When another completion already won: a failure with the same code as the
+/// recorded one returns `true` without a second Event (the durable decision
+/// is the one delivered), a recorded failure that prevents continuation is
+/// `Error::InvocationRejected`, and anything else returns `false`.
 pub(super) async fn finish(
     transaction: &mut Transaction<'_>,
     admitted: &AdmittedInvocation,
@@ -81,10 +85,7 @@ pub(super) async fn finish(
         return Ok(false);
     }
     let output_bytes = match completion {
-        InvocationCompletion::Upstream { result_json } => run
-            .accumulated_output_bytes
-            .checked_add(result_json.len())
-            .ok_or_else(|| Error::CorruptData("Run output bytes overflowed".into()))?,
+        InvocationCompletion::Upstream { result_json } => run.output_total(result_json.len())?,
         InvocationCompletion::Failure(_) => run.accumulated_output_bytes,
     };
     approval::close_for_invocation(

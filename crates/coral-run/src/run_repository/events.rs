@@ -230,10 +230,11 @@ enum EventInsert {
     Last,
 }
 
-/// The column of a `VALUES` table at `position`. Neither backend lets a
-/// `VALUES` table in `FROM` name its columns, and both name them
-/// `column1`, `column2`, ... in order, so the chunk rows follow
-/// [`EVENT_COLUMNS`] order and are read back by position.
+/// The column of the chunk's `VALUES` table at `position`. The statement does
+/// not alias those columns (`from_values` names only the table, and SQLite has
+/// no column-alias syntax for it), so both backends fall back to their default
+/// `column1`, `column2`, ... names; the chunk rows follow [`EVENT_COLUMNS`]
+/// order and are read back by position.
 fn values_column(position: usize) -> sea_query::Alias {
     sea_query::Alias::new(format!("column{}", position + 1))
 }

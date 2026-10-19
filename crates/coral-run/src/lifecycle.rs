@@ -33,9 +33,16 @@ impl RunRecord {
     /// Checks Emissions, Logs, Invocation results, and the Final Value against
     /// the shared budget. The Final Value is checked only at Run completion.
     pub(crate) fn output_fits(&self, additional: usize) -> bool {
+        self.output_total(additional)
+            .is_ok_and(|total| total <= self.value_limits.run_output_bytes())
+    }
+
+    /// The Run Output Budget total after `additional` bytes, as a chunk writes
+    /// it. Overflow is corrupt state, not a budget decision.
+    pub(crate) fn output_total(&self, additional: usize) -> Result<usize, Error> {
         self.accumulated_output_bytes
             .checked_add(additional)
-            .is_some_and(|total| total <= self.value_limits.run_output_bytes())
+            .ok_or_else(|| Error::CorruptData("Run output bytes overflowed".into()))
     }
 
     pub(crate) fn program_work_is_current(&self, claim_id: &str, now_unix_nanos: i64) -> bool {

@@ -99,7 +99,7 @@ impl ProgramOutputWriter {
             &mut transaction,
             Chunk::new(&run, Some(&self.claim_id))
                 .event(event, occurred_at_unix_nanos)
-                .output_bytes(run.accumulated_output_bytes.saturating_add(bytes)),
+                .output_bytes(run.output_total(bytes)?),
         )
         .await?;
         transaction.commit().await?;
