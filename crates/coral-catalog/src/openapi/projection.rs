@@ -80,8 +80,8 @@ pub(super) fn project_typescript(
         };
         if response.content().is_empty() {
             // A body for a success that declares no content is still a
-            // success, so only a no-content status promises `null`.
-            let data = if matches!(response.status(), HttpResponseStatus::Code(204 | 205)) {
+            // success, so only a 204, which carries no body, promises `null`.
+            let data = if response.status() == HttpResponseStatus::Code(204) {
                 "null"
             } else {
                 "unknown"

@@ -25,8 +25,8 @@ declare namespace coral {
   /**
    * Rejects an Operation call that produced no declared success. When Coral
    * rejects the upstream's response, \`data\` and \`metadata\` hold it, and
-   * \`status\` its HTTP status. Without \`data\`, there is no response to read,
-   * and the call may or may not have taken effect.
+   * \`status\` its HTTP status. Without \`data\`, it carries only a Coral
+   * failure code, and the call may or may not have taken effect.
    */
   class OperationError extends Error {
     private constructor();

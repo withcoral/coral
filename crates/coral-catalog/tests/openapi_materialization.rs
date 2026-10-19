@@ -469,6 +469,11 @@ paths:
       operationId: deleteThing
       responses:
         '204': { description: deleted }
+  /reset:
+    post:
+      operationId: resetView
+      responses:
+        '205': { description: reset }
   /with-default:
     get:
       operationId: withDefault
@@ -531,6 +536,8 @@ paths:
         // A success that declares no content has untyped data.
         ("getUntyped", "r.data.anything;", vec![18046]),
         ("deleteThing", "const nothing: null = r.data;", vec![]),
+        // A 205 can still carry a body the runtime passes through.
+        ("resetView", "r.data.anything;", vec![18046]),
         // `default` beside a declared 2xx is thrown.
         ("withDefault", "if (r.status === 500) {}", vec![2367]),
         (

@@ -642,16 +642,19 @@ impl HttpExecutionBinding {
         if !matches!(status, 200..=299) {
             return SuccessSelection::ErrorStatus;
         }
-        let successes = self.declared_successes();
+        let declares_2xx = self
+            .responses
+            .iter()
+            .any(|response| response.status().is_success());
         match self.response_for(status) {
+            // A 2xx status selects `default` only when no 2xx response matches.
             Some(response)
-                if successes
-                    .iter()
-                    .any(|success| std::ptr::eq(*success, response)) =>
+                if response.status().is_success()
+                    || (response.status() == HttpResponseStatus::Default && !declares_2xx) =>
             {
                 SuccessSelection::Declared(response)
             }
-            None if redirected && successes.is_empty() => SuccessSelection::Untyped,
+            None if redirected && self.declared_successes().is_empty() => SuccessSelection::Untyped,
             _ => SuccessSelection::Undeclared,
         }
     }

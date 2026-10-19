@@ -307,7 +307,7 @@ pub(crate) fn tools() -> Vec<Tool> {
             mutation_annotations("Delete Function", true, false),
         ),
         tool::<ExecArguments, crate::projection::RunUpdateResult<'_>>(
-            "Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole Operation Result. Log diagnostics with `console.log`. A thrown `coral.OperationError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `status`, `data` and `metadata`, so catch it to treat a 404 as an answer. Without `data`, there is no response to read, and the call may or may not have taken effect.",
+            "Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole Operation Result. Log diagnostics with `console.log`. A thrown `coral.OperationError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.",
             mutation_annotations("Execute Program", true, true),
         ),
         tool::<WaitArguments, crate::projection::RunUpdateResult<'_>>(

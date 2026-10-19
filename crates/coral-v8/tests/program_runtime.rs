@@ -1332,7 +1332,8 @@ fn an_uncaught_error_response_retains_its_status_and_a_bounded_body() {
         }
     );
 
-    // The Program cannot replace what the diagnostics retain.
+    // A caught and rethrown error still reaches the uncaught path with the
+    // outcome the host retained.
     let operation = rejected(
         serde_json::json!({"field": "city"}),
         r#"try { await coral.providers.weather.getForecast(); }

@@ -76,6 +76,13 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
             "{aliases}type Record<K, V> = {{ \"key\": K; \"value\": V }};\ntype Thing = {{ \"id\": string }};\nexport default function (): {result};"
         )
     };
+    let aliased_open_record = {
+        let (aliases, result) = http_result(&[("(Thing & Extra)", "200")]);
+        format!(
+            "{aliases}type Extra = Record<string, unknown>;\ntype Thing = {{ \"id\": string }};\nexport default function (): {result};"
+        )
+    };
+    let shadowed_record_input = "type Record<K, V> = { \"key\": K; \"value\": V };\nexport default function (input: { \"q\": string } & Record<string, unknown>): number;";
     let default_only = {
         let (aliases, result) = http_result(&[("Thing", "number")]);
         format!(
@@ -142,6 +149,16 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
             shadowed_record.as_str(),
             Callable::Operation { leaf: "pair" },
             "pair(): Promise<{ data: Thing & Record<string, unknown> }>",
+        ),
+        (
+            aliased_open_record.as_str(),
+            Callable::Operation { leaf: "extra" },
+            "extra(): Promise<{ data: Thing }>",
+        ),
+        (
+            shadowed_record_input,
+            Callable::SavedFunction { leaf: "lookup" },
+            "lookup(input: { q: string } & Record<string, unknown>): number",
         ),
         (
             default_only.as_str(),
