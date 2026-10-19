@@ -64,7 +64,7 @@ async fn account_authority_loss_fences_already_prepared_credentials_for_both_rou
         fixture.runs = fixture.runs.with_accounts(accounts.clone());
         let run = fixture.runs.start(&operation.principal, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast(); } catch (e) { return e.code; } return 'unexpected dispatch';",
         )).await.unwrap();
-        wait_until(|| gate.entered.load(Ordering::SeqCst)).await;
+        wait_until(|| gate.entered()).await;
         accounts
             .disconnect(&context, &scope, &operation.provider_id, account_id)
             .await
@@ -155,7 +155,7 @@ async fn reconnect_fences_prepared_credentials_without_changing_account_or_route
         let mut runs = fixture.live_runs(None).with_accounts(accounts.clone());
         runs.invocation_observer = gate.clone();
         let pending = runs.start(&operation.principal, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }")).await.unwrap();
-        wait_until(|| gate.entered.load(Ordering::SeqCst)).await;
+        wait_until(|| gate.entered()).await;
         let reconnect = accounts
             .start_reconnect(
                 &context,
@@ -639,7 +639,7 @@ async fn a_token_renewed_during_the_fence_hold_is_the_one_dispatched() {
     let (gate, release) = FenceGate::blocking();
     account.runs.invocation_observer = gate.clone();
     let (run, approved) = account.start_approved().await;
-    wait_until(|| gate.entered.load(Ordering::SeqCst)).await;
+    wait_until(|| gate.entered()).await;
     let owner = &account.operation.workspace_id;
     let mut tx = account.fixture.database.begin().await.unwrap();
     let target = coral_provider::resolve_invocation_operation_in_transaction(

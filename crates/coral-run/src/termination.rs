@@ -383,6 +383,19 @@ pub(crate) struct ShutdownAction {
 }
 
 impl ShutdownAction {
+    /// A shutdown for the Run Owner's in-memory tests, which never settle it.
+    #[cfg(test)]
+    pub(crate) fn for_apply_test() -> Self {
+        Self {
+            run_id: RunId::generate(),
+            workspace_id: WorkspaceId::parse(&uuid::Uuid::nil().to_string())
+                .expect("the nil UUID parses"),
+            claim_id: "claim".to_string(),
+            accepted_at_unix_nanos: 0,
+            deadline_at_unix_nanos: i64::MAX,
+        }
+    }
+
     pub(crate) fn from_run(run: &RunRecord) -> Result<Self, Error> {
         let termination = run.termination.ok_or_else(|| {
             Error::CorruptData("started Run shutdown has no termination evidence".to_string())

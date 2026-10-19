@@ -29,7 +29,7 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
         )
         .await
         .unwrap();
-    wait_until(|| gate.entered.load(Ordering::SeqCst)).await;
+    wait_until(|| gate.entered()).await;
     let scope = HistoryScope::Personal(None);
     let page = fixture
         .runs

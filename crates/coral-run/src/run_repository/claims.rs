@@ -1,8 +1,10 @@
 //! The execution-start mark and the worker-claim release.
 //!
-//! The worker claim itself is written by acceptance: no `running` Run is ever
-//! unclaimed, and the Run Owner that acceptance creates renews the lease with
-//! every chunk it commits.
+//! The worker claim itself is written by acceptance, so a Run is claimed from
+//! its first durable moment, and the Run Owner renews the lease with every
+//! chunk it commits. Recovery still releases an expired claim that never
+//! reached its start mark, leaving that Run unclaimed until the expired-lease
+//! sweep (slice 9) ends it.
 
 use coral_db::Transaction;
 use sea_query::{Expr, ExprTrait as _, Query};

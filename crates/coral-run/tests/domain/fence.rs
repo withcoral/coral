@@ -57,7 +57,7 @@ async fn organization_ownership_neither_grants_nor_retains_workspace_authority()
         .start(&actor, &operation.workspace_id, submission(source))
         .await
         .unwrap();
-    wait_until(|| gate.entered.load(Ordering::SeqCst)).await;
+    wait_until(|| gate.entered()).await;
     coral_administration::AccessLifecycleModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
@@ -107,7 +107,7 @@ async fn workspace_membership_loss_at_the_fence_blocks_dispatch() {
         .await;
     let run = fixture.runs.start(&operation.principal, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast(); } catch (e) { return e.code; } return 'unexpected dispatch';",
     )).await.unwrap();
-    wait_until(|| gate.entered.load(Ordering::SeqCst)).await;
+    wait_until(|| gate.entered()).await;
     let admin = fixture.workspace_admin(&operation).await;
     coral_administration::AccessLifecycleModule::new(
         fixture.database.clone(),
@@ -274,7 +274,7 @@ async fn an_organization_downgrade_keeps_current_explicit_workspace_authority() 
         )
         .await
         .unwrap();
-    wait_until(|| gate.entered.load(Ordering::SeqCst)).await;
+    wait_until(|| gate.entered()).await;
     organization
         .set_role(
             &administrator,
@@ -315,7 +315,7 @@ async fn user_disablement_cannot_be_undone_by_stale_login_or_administration() {
         .await;
     let run = fixture.runs.start(&operation.principal, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast(); } catch (e) { return e.code; } return 'unexpected dispatch';",
     )).await.unwrap();
-    wait_until(|| gate.entered.load(Ordering::SeqCst)).await;
+    wait_until(|| gate.entered()).await;
     // Another Module instance represents administration on another worker.
     let authority = coral_workspace::OrganizationModule::new(fixture.database.clone());
     let administrator = organization_admin(&fixture).await;
@@ -497,7 +497,7 @@ async fn provider_disablement_at_the_fence_blocks_dispatch() {
         .unwrap();
     let run = fixture.runs.start(&actor, &workspace, submission("try { await coral.providers.weather.getForecast(); } catch (e) { return e.code; } return 'unexpected dispatch';",
     )).await.unwrap();
-    wait_until(|| gate.entered.load(Ordering::SeqCst)).await;
+    wait_until(|| gate.entered()).await;
     fixture
         .providers
         .disable_provider(&context, &workspace, provider.id())
@@ -732,7 +732,7 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
             )
             .await
             .expect("accept racing Program");
-        wait_until(|| observer.entered.load(Ordering::SeqCst)).await;
+        wait_until(|| observer.entered()).await;
 
         match race {
             FenceRace::Run => {
@@ -855,7 +855,7 @@ async fn admitted_invocation_dispatches_its_retained_generation_after_provider_r
         )
         .await
         .expect("accept Program");
-    wait_until(|| observer.entered.load(Ordering::SeqCst)).await;
+    wait_until(|| observer.entered()).await;
 
     let replacement_document = serde_json::json!({
         "openapi": "3.1.0",

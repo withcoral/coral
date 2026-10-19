@@ -80,6 +80,10 @@ pub(crate) struct OwnerState {
     limits: OwnerLimits,
     /// No more Program requests: an outside writer asked execution to stop.
     stop_requested: bool,
+    /// The recorded termination is settled: the Run is terminal, nothing more
+    /// commits, and the owner retires once the commit in flight has answered.
+    settled: bool,
+    /// The Program's completion, kept until its terminal write has answered.
     completion: Option<ExecutionCompletion>,
     /// The exact Run Output Budget total: recorded plus applied.
     output_total: usize,
@@ -96,6 +100,7 @@ impl OwnerState {
             phase: Phase::Starting,
             limits,
             stop_requested: false,
+            settled: false,
             completion: None,
             output_total: 0,
             recorded_total: 0,
@@ -140,12 +145,15 @@ impl OwnerState {
     /// Row work and dispatch results are accepted while the owner can still
     /// commit them: an Invocation that ends after the Program did, during the
     /// terminal write, or while a recorded termination is being settled, still
-    /// records its outcome (it waits for the terminal write's answer first).
+    /// records its outcome. Work that arrives during the terminal write commits
+    /// once that write has answered: before the settle, or before the terminal
+    /// write runs again when it refused a Run with a nonterminal Invocation.
     fn accepts_work(&self) -> bool {
-        matches!(
-            self.phase,
-            Phase::Running | Phase::Ending | Phase::Completing | Phase::Settling
-        )
+        !self.settled
+            && matches!(
+                self.phase,
+                Phase::Running | Phase::Ending | Phase::Completing | Phase::Settling
+            )
     }
 
     fn output_fits(&self, bytes: usize) -> bool {
@@ -266,13 +274,16 @@ impl OwnerState {
         if !self.accepts_work() {
             return vec![Effect::Abandon(work, Error::ProgramHostTerminated)];
         }
-        self.push(ChunkItem::Work(work), 0, 0);
+        // Row work may append one Event of its own inside the transaction;
+        // reserve it so a chunk never exceeds the Events cap.
+        self.push(ChunkItem::Work(work), 1, 0);
         Vec::new()
     }
 
     /// Commit-when-free: the oldest pending chunk, once nothing is in flight.
     fn commit_when_free(&mut self) -> Vec<Effect> {
         if self.in_flight.is_some()
+            || self.settled
             || !matches!(self.phase, Phase::Running | Phase::Ending | Phase::Settling)
         {
             return Vec::new();
@@ -309,9 +320,41 @@ impl OwnerState {
             );
         }
         match self.phase {
+            Phase::Settling if self.settled => effects.extend(self.retire()),
             Phase::Running | Phase::Settling => effects.extend(self.commit_when_free()),
             Phase::Ending => effects.extend(self.advance_ending()),
             Phase::Starting | Phase::Completing | Phase::Stopped(_) | Phase::Retired => {}
+        }
+        effects
+    }
+
+    /// Retires the owner: whatever is still pending will never commit.
+    fn retire(&mut self) -> Vec<Effect> {
+        self.phase = Phase::Retired;
+        let mut effects = self.abandon_pending(|| Error::ProgramHostTerminated);
+        effects.push(Effect::Retire);
+        effects
+    }
+
+    /// Settles every pending request and work item with the error `lost` makes.
+    fn abandon_pending(&mut self, lost: impl Fn() -> Error) -> Vec<Effect> {
+        let pending = self
+            .closed
+            .drain(..)
+            .chain(std::iter::once(std::mem::take(&mut self.open)));
+        let mut effects = Vec::new();
+        for chunk in pending {
+            for item in chunk.items {
+                if let ChunkItem::Work(work) = item {
+                    effects.push(Effect::Abandon(work, lost()));
+                }
+            }
+            effects.extend(
+                chunk
+                    .waiters
+                    .into_iter()
+                    .map(|reply| Effect::Reply(reply, Err(lost()))),
+            );
         }
         effects
     }
@@ -324,12 +367,11 @@ impl OwnerState {
         if self.pending_chunks() > 0 {
             return self.commit_when_free();
         }
-        if let Some(completion) = self.completion.take() {
+        if let Some(completion) = &self.completion {
             self.phase = Phase::Completing;
-            vec![Effect::CompleteExecution(completion)]
+            vec![Effect::CompleteExecution(completion.clone())]
         } else {
-            self.phase = Phase::Retired;
-            vec![Effect::Retire]
+            self.retire()
         }
     }
 
@@ -351,8 +393,7 @@ impl OwnerState {
                 vec![Effect::CompleteExecution(completion)]
             }
             Phase::Stopped(CommitRejection::ClaimMismatch | CommitRejection::RunEnded) => {
-                self.phase = Phase::Retired;
-                vec![Effect::Retire]
+                self.retire()
             }
             Phase::Starting
             | Phase::Ending
@@ -375,39 +416,22 @@ impl OwnerState {
                     .map(|reply| Effect::Reply(reply, Err(cause.lost()))),
             );
         }
-        let pending = self
-            .closed
-            .drain(..)
-            .chain(std::iter::once(std::mem::take(&mut self.open)));
-        for chunk in pending {
-            for item in chunk.items {
-                if let ChunkItem::Work(work) = item {
-                    effects.push(Effect::Abandon(work, cause.lost()));
-                }
-            }
-            effects.extend(
-                chunk
-                    .waiters
-                    .into_iter()
-                    .map(|reply| Effect::Reply(reply, Err(cause.lost()))),
-            );
-        }
+        effects.extend(self.abandon_pending(|| cause.lost()));
         self.stop_requested = true;
         effects.push(Effect::TerminateProgram);
         match self.phase {
             Phase::Running => self.phase = Phase::Stopped(cause),
             Phase::Ending => {
-                let completion = self.completion.take();
                 if let (CommitRejection::Refused | CommitRejection::Failed, Some(completion)) =
-                    (cause, completion)
+                    (cause, &self.completion)
                 {
                     self.phase = Phase::Completing;
-                    effects.push(Effect::CompleteExecution(completion));
+                    effects.push(Effect::CompleteExecution(completion.clone()));
                 } else {
-                    self.phase = Phase::Retired;
-                    effects.push(Effect::Retire);
+                    effects.extend(self.retire());
                 }
             }
+            Phase::Settling if self.settled => effects.extend(self.retire()),
             // The settle in progress ends the Run; the owner retires with it.
             Phase::Starting
             | Phase::Settling
@@ -442,11 +466,25 @@ pub(crate) fn apply(state: &mut OwnerState, message: Message, now_unix_nanos: i6
             state.phase = Phase::Running;
             vec![Effect::StartProgram(package)]
         }
-        Message::Started(Ok(None) | Err(_))
-        | Message::Completed(Ok(None) | Err(_))
-        | Message::Settled => {
-            state.phase = Phase::Retired;
-            vec![Effect::Retire]
+        // The terminal write refused a Run with a nonterminal Invocation (or
+        // failed). Work that arrived meanwhile may be that Invocation's end:
+        // record it and write the end again; otherwise retire and leave the
+        // Run to recovery.
+        Message::Completed(Err(_)) if state.pending_chunks() > 0 => {
+            state.phase = Phase::Ending;
+            state.advance_ending()
+        }
+        Message::Started(Ok(None) | Err(_)) | Message::Completed(Ok(None) | Err(_)) => {
+            state.retire()
+        }
+        Message::Settled => {
+            state.settled = true;
+            if state.in_flight.is_some() {
+                // The chunk in flight answers its waiters first.
+                Vec::new()
+            } else {
+                state.retire()
+            }
         }
         Message::Emit { value, reply } => state.output(
             OwnedEventKind::Emitted(value.into_encoded_json()),
@@ -472,6 +510,7 @@ pub(crate) fn apply(state: &mut OwnerState, message: Message, now_unix_nanos: i6
         Message::CommitRejected(rejection) => state.rejected(rejection),
         Message::Completed(Ok(Some(shutdown))) => {
             state.phase = Phase::Settling;
+            state.completion = None;
             let mut effects = vec![Effect::Settle(shutdown)];
             effects.extend(state.commit_when_free());
             effects

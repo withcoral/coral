@@ -374,7 +374,7 @@ async fn agent_lifecycle_loss_before_dispatch_blocks_send_but_allows_secret_free
             agent_scope(&fixture, &operation.principal, &operation.workspace_id).await;
         let accepted = fixture.runs.start(&agent, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast(); } catch (error) { if (error.code !== 'dispatch_authority_lost') throw error; } coral.emit('still computing'); return 42;",
         )).await.unwrap();
-        wait_until(|| gate.entered.load(Ordering::SeqCst)).await;
+        wait_until(|| gate.entered()).await;
         loss.apply(
             &fixture,
             &operation.principal,
@@ -602,7 +602,7 @@ async fn rotation_during_a_pending_invocation_changes_neither_authority_nor_hist
         .start(&agent, &operation.workspace_id, submission("invoke"))
         .await
         .unwrap();
-    wait_until(|| gate.entered.load(Ordering::SeqCst)).await;
+    wait_until(|| gate.entered()).await;
     let before = fixture
         .runs
         .observe(

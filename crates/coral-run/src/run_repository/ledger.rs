@@ -1,7 +1,8 @@
 //! The Run Ledger head and the one chunk-commit write path (ADR 0018).
 //!
 //! A chunk is everything one Run write carries: its Events, the Run Output
-//! Budget total after them, and the worker lease renewal.
+//! Budget total after them, and, for the Run Owner's chunks, the worker lease
+//! renewal.
 //! [`commit_chunk`] writes it in the caller's transaction under one predicate,
 //! the execution claim id and the head the chunk was built on, and moves the
 //! head by one. The Run-scoped rows a chunk carries (Invocation rows, Approval

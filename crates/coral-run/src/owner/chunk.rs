@@ -14,10 +14,11 @@ use super::handle::Reply;
 
 /// Row work items after which a chunk closes. Each held recheck and fence is
 /// its own sequence of round trips inside the commit transaction, so this
-/// bounds how long one commit holds the Run row and the Workspace, Provider,
-/// Account and policy rows it reads, and keeps every commit well inside a
-/// lease. Aligned with the Fan-out Limit (ADR 0018); slice 4 replaces the
-/// per-Invocation fence with one check per chunk.
+/// bounds how many of them one commit holds the Run row and the Workspace,
+/// Provider, Account and policy rows through; it bounds a count, not a
+/// duration, and at the round-trip latencies the load harness measures it
+/// keeps a commit well inside a lease. Aligned with the Fan-out Limit (ADR
+/// 0018); slice 4 replaces the per-Invocation fence with one check per chunk.
 pub(crate) const CHUNK_WORK_CAP: usize = 32;
 
 /// Row work that joins the owner's chunk commit: an Invocation row insert, a

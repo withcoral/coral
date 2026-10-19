@@ -140,7 +140,7 @@ impl ApprovalGatedOperation {
             .start(&actor, &operation.workspace_id, submission("invoke"))
             .await
             .unwrap();
-        wait_until(|| gate.entered.load(Ordering::SeqCst)).await;
+        wait_until(|| gate.entered()).await;
         let run = accepted.run_id().clone();
         let waiting = fixture
             .runs

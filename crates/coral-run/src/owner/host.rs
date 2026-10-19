@@ -70,16 +70,24 @@ pub(crate) async fn host(
             }
         };
         // A clock that fails is an operational failure like a failed commit:
-        // the owner stops, and the terminal write decides what the Run records.
-        let (message, now) = match module.now() {
-            Ok(now) => (message, now.max(accepted.accepted_at_unix_nanos)),
-            Err(_clock) => (
-                Message::CommitRejected(CommitRejection::Failed),
-                accepted.accepted_at_unix_nanos,
-            ),
+        // the owner stops first, then still applies the message it dequeued,
+        // so a Program that ends under a broken clock still reaches its
+        // terminal write (which fails on the same clock and retires the owner).
+        effects = Vec::new();
+        let now = match module.now() {
+            Ok(now) => now.max(accepted.accepted_at_unix_nanos),
+            Err(_clock) => {
+                effects = apply(
+                    &mut state,
+                    Message::CommitRejected(CommitRejection::Failed),
+                    accepted.accepted_at_unix_nanos,
+                );
+                accepted.accepted_at_unix_nanos
+            }
         };
-        effects = apply(&mut state, message, now);
-        // Apply everything that arrived meanwhile in order, then commit when free.
+        effects.extend(apply(&mut state, message, now));
+        // Apply everything that arrived meanwhile: effect outcomes first, then
+        // Program requests, each in its own arrival order; then commit when free.
         loop {
             let next = match mailbox.internal.try_recv() {
                 Ok(message) => message,

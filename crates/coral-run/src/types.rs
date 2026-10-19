@@ -898,7 +898,9 @@ impl AppliedOutputCap {
     pub const DEFAULT_BYTES: usize = 8 * 1024 * 1024;
 
     /// Accepts a cap of at least twice the chunk bytes cap, so one full chunk
-    /// in flight and one being built never exceed it on their own.
+    /// in flight and one being built never exceed it on their own. A single
+    /// Event larger than the chunk bytes cap commits alone and can exceed the
+    /// cap by itself; the cap then holds every request until it is recorded.
     ///
     /// # Errors
     ///

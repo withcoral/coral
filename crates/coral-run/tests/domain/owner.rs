@@ -7,6 +7,7 @@ use crate::owner::{
     CHUNK_WORK_CAP, ChunkWork, CommitRejection, Effect, Message, OwnerLimits, OwnerState, Phase,
     apply,
 };
+use crate::termination::ShutdownAction;
 use crate::{AppliedOutputCap, CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, CoralFailure};
 use coral_db::Transaction;
 
@@ -107,7 +108,7 @@ async fn a_burst_of_emits_commits_in_chunks_and_stays_prefix_complete() {
     gates.go.send(()).expect("start the burst");
     wait_until(|| engine.acknowledged.load(Ordering::SeqCst) == EMITS).await;
     assert_eq!(engine.rejected.load(Ordering::SeqCst), 0);
-    assert!(commit_gate.entered.load(Ordering::SeqCst));
+    assert!(commit_gate.entered());
     assert_eq!(fixture.run_record(&workspace_id, &run_id).await, started);
     assert!(
         fixture
@@ -288,7 +289,9 @@ async fn a_claim_mismatch_on_commit_stops_the_owner_ends_v8_and_changes_nothing_
         "{:?}",
         settled.lock().expect("settle lock")
     );
-    assert!(owner.stop().is_requested(), "V8 is terminated at once");
+    // The work settles from the commit task; the owner terminates the Program
+    // when the rejection reaches its loop.
+    wait_until(|| owner.stop().is_requested()).await;
     gates.release.send(()).expect("release the Program");
     wait_until(|| !fixture.runs.has_owner(&run_id)).await;
 
@@ -400,10 +403,7 @@ type Answer = tokio::sync::oneshot::Receiver<Result<(), Error>>;
 
 fn result(state: &mut OwnerState, bytes: usize, now: i64) -> (Vec<Effect>, Answer, Settled) {
     let (reply, receiver) = reply();
-    let settled = Arc::new(Mutex::new(None));
-    let work = Box::new(ProbeWork {
-        settled: settled.clone(),
-    });
+    let (work, settled) = probe_work();
     (
         apply(state, Message::InvocationResult { bytes, work, reply }, now),
         receiver,
@@ -804,4 +804,118 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
             [Effect::Retire]
         ));
     }
+
+    // Row work reserves one Event: the Events cap counts it with the Emissions.
+    {
+        let mut state = started(LIMITS);
+        for index in 0..CHUNK_EVENTS_CAP - 1 {
+            let (effects, _) = emit(&mut state, 10, 70 + i64::try_from(index).expect("small"));
+            deliver(effects);
+        }
+        assert!(apply(&mut state, Message::Work(probe_work().0), 2_000).is_empty());
+        assert_eq!(state.pending_chunks(), 1, "the work closed the chunk");
+        let effects = apply(&mut state, Message::Drained, 2_001);
+        let [Effect::Commit { chunk, .. }] = effects.as_slice() else {
+            panic!("{effects:?}");
+        };
+        assert_eq!(chunk.events, CHUNK_EVENTS_CAP);
+        assert_eq!(chunk.items.len(), CHUNK_EVENTS_CAP);
+    }
+
+    // A refused terminal write (a nonterminal Invocation) with an Invocation
+    // end waiting: the end commits first, then the write runs again; refused
+    // with nothing pending, the owner retires and leaves the Run to recovery.
+    {
+        let mut state = started(LIMITS);
+        let effects = apply(
+            &mut state,
+            Message::ProgramEnded(ExecutionCompletion::Succeeded(FinalValue::Absent)),
+            80,
+        );
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::TerminateProgram, Effect::CompleteExecution(_)]
+            ),
+            "{effects:?}"
+        );
+        let (effects, mut late, late_work) = result(&mut state, 10, 81);
+        assert!(deliver(effects).is_empty());
+        assert!(matches!(answered(&mut late), Some(Ok(()))));
+        let refused = || Message::Completed(Err(Error::InvocationPersistence("open".into())));
+        let effects = apply(&mut state, refused(), 82);
+        assert!(
+            matches!(effects.as_slice(), [Effect::Commit { .. }]),
+            "{effects:?}"
+        );
+        assert_eq!(state.phase(), Phase::Ending);
+        let effects = apply(&mut state, Message::Committed, 83);
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::CompleteExecution(ExecutionCompletion::Succeeded(
+                    FinalValue::Absent
+                ))]
+            ),
+            "{effects:?}"
+        );
+        assert!(late_work.lock().expect("settle").is_none());
+        assert!(matches!(
+            apply(&mut state, refused(), 84).as_slice(),
+            [Effect::Retire]
+        ));
+        assert_eq!(state.phase(), Phase::Retired);
+    }
+
+    // A settled termination with a chunk in flight: the owner retires only
+    // once that chunk has answered, and accepts nothing more meanwhile.
+    {
+        let mut state = started(LIMITS);
+        deliver(apply(
+            &mut state,
+            Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
+            90,
+        ));
+        let (effects, _, _) = result(&mut state, 10, 91);
+        deliver(effects);
+        let effects = apply(
+            &mut state,
+            Message::Completed(Ok(Some(ShutdownAction::for_apply_test()))),
+            92,
+        );
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::Settle(_), Effect::Commit { .. }]
+            ),
+            "{effects:?}"
+        );
+        assert!(apply(&mut state, Message::Settled, 93).is_empty());
+        assert_eq!(state.phase(), Phase::Settling);
+        let (effects, mut refused, refused_work) = result(&mut state, 10, 94);
+        assert!(deliver(effects).is_empty());
+        assert!(matches!(
+            answered(&mut refused),
+            Some(Err(Error::InvocationPersistence(_)))
+        ));
+        assert!(matches!(
+            refused_work.lock().expect("settle").as_ref(),
+            Some(Err(Error::ProgramHostTerminated))
+        ));
+        assert!(matches!(
+            apply(&mut state, Message::Committed, 95).as_slice(),
+            [Effect::Retire]
+        ));
+        assert_eq!(state.phase(), Phase::Retired);
+    }
+}
+
+fn probe_work() -> (Box<dyn ChunkWork>, Settled) {
+    let settled = Arc::new(Mutex::new(None));
+    (
+        Box::new(ProbeWork {
+            settled: settled.clone(),
+        }),
+        settled,
+    )
 }

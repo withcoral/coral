@@ -81,6 +81,11 @@ impl UpstreamSender for ProductionUpstream {
         dispatch: ReadyDispatch,
         stop: Arc<ExecutionStop>,
     ) -> Result<UpstreamOutcome, UpstreamSendError> {
+        // A stop that is already set never launches the upstream side effect;
+        // one that arrives during the send loses to a complete outcome.
+        if stop.is_requested() {
+            return Err(UpstreamSendError::Canceled);
+        }
         let send = async {
             match dispatch {
                 ReadyDispatch::Http(ready) => {

@@ -277,7 +277,7 @@ async fn required_actions_show_pending_approval_and_clear_without_a_run_event() 
         )
         .await
         .unwrap();
-    wait_until(|| gate.entered.load(Ordering::SeqCst)).await;
+    wait_until(|| gate.entered()).await;
     let waiting = fixture
         .runs
         .observe(

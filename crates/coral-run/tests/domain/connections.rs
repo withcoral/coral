@@ -1096,7 +1096,7 @@ async fn caller_connection_reconnect_preserves_account_and_fences_prepared_dispa
     let (gate, release) = FenceGate::blocking();
     runs.invocation_observer = gate.clone();
     let later = runs.start(&operation.principal, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }")).await.unwrap();
-    wait_until(|| gate.entered.load(Ordering::SeqCst)).await;
+    wait_until(|| gate.entered()).await;
     for secret in ["different-account", "existing-account"] {
         let reconnect = accounts
             .start_reconnect(

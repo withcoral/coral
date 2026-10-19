@@ -58,30 +58,11 @@ impl RunModule {
         else {
             return Ok(None);
         };
-        let now = self.now()?.max(run.accepted_at_unix_nanos);
         if run.state != RunState::Running
             || run.termination.is_some()
             || run.execution_started()
             || run.worker_claim_id.as_deref() != Some(claim_id)
-            || run
-                .worker_claim_expires_at_unix_nanos
-                .is_none_or(|expires_at| now >= expires_at)
         {
-            transaction.commit().await?;
-            return Ok(None);
-        }
-        if now >= run.deadline_at_unix_nanos {
-            let run = self
-                .request_termination(
-                    &mut transaction,
-                    &run,
-                    RunTerminationKind::TimedOut,
-                    None,
-                    now,
-                )
-                .await?;
-            self.finish_termination_in_transaction(&mut transaction, &run, now)
-                .await?;
             transaction.commit().await?;
             return Ok(None);
         }
@@ -109,7 +90,31 @@ impl RunModule {
         )
         .await?
         .ok_or_else(|| Error::CorruptData("accepted Run has no Program package".to_string()))?;
+        // The start mark is predicated on the lease and the deadline at its own
+        // instant, after the authority and package reads under the hold.
         let started_at = self.now()?.max(run.accepted_at_unix_nanos);
+        if run
+            .worker_claim_expires_at_unix_nanos
+            .is_none_or(|expires_at| started_at >= expires_at)
+        {
+            transaction.commit().await?;
+            return Ok(None);
+        }
+        if started_at >= run.deadline_at_unix_nanos {
+            let run = self
+                .request_termination(
+                    &mut transaction,
+                    &run,
+                    RunTerminationKind::TimedOut,
+                    None,
+                    started_at,
+                )
+                .await?;
+            self.finish_termination_in_transaction(&mut transaction, &run, started_at)
+                .await?;
+            transaction.commit().await?;
+            return Ok(None);
+        }
         if let Err(error) = authority.and_then(|evidence| {
             evidence.require_current_at(started_at)?;
             Ok(())
@@ -124,7 +129,7 @@ impl RunModule {
                     RunFailureCode::RunAuthorityLost,
                     "Run authority was lost before Program execution started".to_string(),
                 )),
-                now,
+                started_at,
             )
             .await?;
             transaction.commit().await?;

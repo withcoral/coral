@@ -332,7 +332,7 @@ impl InFlight {
 
     async fn entered(&self) {
         match self {
-            Self::Waiting { gate, .. } => wait_until(|| gate.entered.load(Ordering::SeqCst)).await,
+            Self::Waiting { gate, .. } => wait_until(|| gate.entered()).await,
             Self::Dispatching { upstream } => {
                 wait_until(|| upstream.entered.load(Ordering::SeqCst)).await;
             }
@@ -724,7 +724,7 @@ async fn recovery_ends_a_pending_invocation_without_dispatch() {
         )
         .await
         .expect("accept Program");
-    wait_until(|| observer.entered.load(Ordering::SeqCst)).await;
+    wait_until(|| observer.entered()).await;
     let accepted_at = retained_events(
         &fixture.runs,
         &operation.principal,

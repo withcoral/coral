@@ -25,35 +25,57 @@ impl ExecutionObserver for ClaimGate {
     }
 }
 
-/// Holds the Run Owner's first chunk commit (after its start mark) until
-/// released; every later commit passes.
-pub(crate) struct CommitGate {
+/// Holds the first caller that reaches it until released; every later caller
+/// passes. The gates below embed it at the hook they hold.
+pub(crate) struct BlockingGate {
     pub(crate) entered: AtomicBool,
     release: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
-impl CommitGate {
-    pub(crate) fn blocking() -> (Arc<Self>, oneshot::Sender<()>) {
+impl BlockingGate {
+    pub(crate) fn new() -> (Self, oneshot::Sender<()>) {
         let (sender, receiver) = oneshot::channel();
         (
-            Arc::new(Self {
+            Self {
                 entered: AtomicBool::new(false),
                 release: Mutex::new(Some(receiver)),
-            }),
+            },
             sender,
         )
+    }
+
+    /// Marks the gate entered and, for the first caller, waits for the
+    /// release. The result says whether the sender released it or was dropped.
+    pub(crate) async fn hold(&self) -> Result<(), oneshot::error::RecvError> {
+        let release = self.release.lock().expect("gate lock").take();
+        self.entered.store(true, Ordering::SeqCst);
+        match release {
+            Some(release) => release.await,
+            None => Ok(()),
+        }
+    }
+}
+
+/// Holds the Run Owner's first chunk commit (after its start mark) until
+/// released; every later commit passes.
+pub(crate) struct CommitGate(BlockingGate);
+
+impl CommitGate {
+    pub(crate) fn blocking() -> (Arc<Self>, oneshot::Sender<()>) {
+        let (gate, release) = BlockingGate::new();
+        (Arc::new(Self(gate)), release)
+    }
+
+    pub(crate) fn entered(&self) -> bool {
+        self.0.entered.load(Ordering::SeqCst)
     }
 }
 
 #[async_trait]
 impl ExecutionObserver for CommitGate {
     async fn before_chunk_commit(&self) {
-        let release = self.release.lock().expect("commit gate lock").take();
-        self.entered.store(true, Ordering::SeqCst);
-        if let Some(release) = release {
-            // A dropped sender releases the commit too.
-            let _released = release.await;
-        }
+        // A dropped sender releases the commit too.
+        let _released = self.0.hold().await;
     }
 }
 
@@ -124,23 +146,25 @@ impl InvocationObserver for ApprovalWaitGate {
 
 pub(crate) struct FenceGate {
     pub(crate) fences: ObservedFences,
-    pub(crate) entered: AtomicBool,
-    pub(crate) release: Mutex<Option<oneshot::Receiver<()>>>,
+    gate: BlockingGate,
     pub(crate) failure_code: Mutex<Option<&'static str>>,
 }
 
 impl FenceGate {
     pub(crate) fn blocking() -> (Arc<Self>, oneshot::Sender<()>) {
-        let (sender, receiver) = oneshot::channel();
+        let (gate, release) = BlockingGate::new();
         (
             Arc::new(Self {
                 fences: ObservedFences::default(),
-                entered: AtomicBool::new(false),
-                release: Mutex::new(Some(receiver)),
+                gate,
                 failure_code: Mutex::new(None),
             }),
-            sender,
+            release,
         )
+    }
+
+    pub(crate) fn entered(&self) -> bool {
+        self.gate.entered.load(Ordering::SeqCst)
     }
 }
 
@@ -170,16 +194,12 @@ impl InvocationObserver for FenceGate {
     }
 
     async fn before_fence(&self) -> Result<(), Error> {
-        let release = self.release.lock().expect("fence release lock").take();
-        self.entered.store(true, Ordering::SeqCst);
-        if let Some(release) = release {
-            // Unwinding drops the sender. Exit the blocking Program worker without
-            // further database work, even when the test runtime is shutting down.
-            release
-                .await
-                .map_err(|_closed| Error::ProgramHostTerminated)?;
-        }
-        Ok(())
+        // Unwinding drops the sender. Exit the blocking Program worker without
+        // further database work, even when the test runtime is shutting down.
+        self.gate
+            .hold()
+            .await
+            .map_err(|_closed| Error::ProgramHostTerminated)
     }
 
     fn invocation_failure_committed(&self, code: &'static str) {

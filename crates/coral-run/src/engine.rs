@@ -10,7 +10,8 @@
 //! projection, safe host-error translation, synchronous output calls, and
 //! stop-on-panic behavior. Invocation tasks start independently of V8 polling.
 //! The invoker and the output writer ask the Run Owner, which answers at
-//! Applied; a known Invocation failure is recorded before its Promise settles.
+//! Applied, or at Recorded while the unrecorded output exceeds the Applied cap;
+//! a known Invocation failure is recorded before its Promise settles.
 //! Fatal Invocation errors and task panics request stop even while JavaScript
 //! does not yield. Host defects expose no private diagnostics; output errors
 //! retain their invalid-value, resource-limit, or uncatchable fatal

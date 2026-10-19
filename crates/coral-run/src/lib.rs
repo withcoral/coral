@@ -4,10 +4,12 @@
 //! owns accepted source snapshots and execution. It validates exact
 //! Principal and Workspace attribution, compiles outside database write
 //! transactions, atomically accepts one complete Program package with
-//! `run.started` and the Run's worker claim, and gives every nonterminal Run
-//! one Run Owner (ADR 0018): the in-process actor that alone appends the Run
+//! `run.started` and the Run's worker claim, and gives every launched Run one
+//! Run Owner (ADR 0018): the in-process actor that alone appends the Run
 //! Ledger on every path the Program takes, in chunks, and runs the Run-bound
-//! Operation Invocation and dispatch-fence choreography inside its commits.
+//! Operation Invocation and dispatch-fence choreography inside its commits. A
+//! Run accepted in a caller's transaction and never launched keeps its claim
+//! for recovery.
 //!
 //! # Interface
 //!

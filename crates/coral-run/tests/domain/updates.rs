@@ -73,7 +73,7 @@ async fn updates_preserve_compatible_approved_work_but_replacement_and_settings_
             )
             .await
             .unwrap();
-        wait_until(|| gate.entered.load(Ordering::SeqCst)).await;
+        wait_until(|| gate.entered()).await;
         let setup = fixture
             .providers
             .prepare_setup(
