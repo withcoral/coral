@@ -79,6 +79,11 @@ impl ReadyHttpDispatch {
             format!("{base_path}/{operation_path}")
         };
         url.set_path(&combined_path);
+        let query = match binding.query() {
+            Some(fixed) if !query.is_empty() => format!("{fixed}&{query}"),
+            Some(fixed) => fixed.to_owned(),
+            None => query,
+        };
         if !query.is_empty() {
             let query = match url.query() {
                 Some(existing) if !existing.is_empty() => format!("{existing}&{query}"),

@@ -3409,6 +3409,45 @@ fn response_schema_drives_the_typescript_declaration() {
 }
 
 #[test]
+fn a_query_in_a_path_key_becomes_the_operations_fixed_query() {
+    for (key, expected) in [
+        ("/forecast?beta=true", Ok(Some("beta=true"))),
+        ("/forecast?a=1&b=two", Ok(Some("a=1&b=two"))),
+        ("/forecast?", Ok(None)),
+        ("/forecast?beta={flag}", Err("invalid_operation_path")),
+        ("/forecast?beta=true#top", Err("invalid_operation_path")),
+    ] {
+        let document = WEATHER_OPENAPI.replace("  /forecast:", &format!("  \"{key}\":"));
+        let prepared = configured_ready(&document);
+        let [operation] = prepared.operations() else {
+            panic!("{key}: one Operation");
+        };
+        match expected {
+            Ok(query) => {
+                assert!(operation.diagnostic().is_none(), "{key}");
+                let binding = http_binding(operation);
+                assert_eq!(binding.path_template(), "/forecast", "{key}");
+                assert_eq!(binding.query(), query, "{key}");
+            }
+            Err(code) => {
+                assert_eq!(
+                    operation.availability(),
+                    OperationAvailability::Unavailable,
+                    "{key}"
+                );
+                assert_eq!(
+                    operation
+                        .diagnostic()
+                        .map(coral_catalog::CatalogDiagnostic::code),
+                    Some(code),
+                    "{key}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn malformed_responses_and_servers_make_only_their_operation_unavailable() {
     for (case, document, expected) in [
         (

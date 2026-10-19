@@ -259,6 +259,7 @@ fn parse_failure_location(error: &serde_path_to_error::Error<serde_yaml::Error>)
 struct OperationDraft {
     key: OperationKey,
     path: String,
+    query: Option<String>,
     method: HttpMethod,
     operation: Map<String, Value>,
     operation_pointer: String,
@@ -311,6 +312,7 @@ fn collect_operations(
             Ok(OperationDraft {
                 key: operation.key,
                 path: operation.path,
+                query: operation.query,
                 method: operation.method,
                 operation: operation.object,
                 operation_pointer: operation.pointer,
@@ -353,6 +355,7 @@ fn materialize_operation(
                 draft.method,
                 draft.server_url.clone(),
                 draft.path.clone(),
+                None,
                 HttpRedirectPolicy::Follow,
                 Vec::new(),
                 None,
@@ -487,6 +490,7 @@ fn build_http_binding(
         !credential_parameters.contains(&(parameter.location(), name))
     });
     validate_path_parameters(&draft.path, &parameters)?;
+    validate_path_query(draft.query.as_deref())?;
     let request_body = draft
         .operation
         .contains_key("requestBody")
@@ -498,6 +502,7 @@ fn build_http_binding(
         draft.method,
         draft.server_url.clone(),
         draft.path.clone(),
+        draft.query.clone(),
         HttpRedirectPolicy::Follow,
         parameters,
         request_body,
@@ -756,6 +761,16 @@ fn validate_path_parameters(
         return Err(diagnostic(
             "invalid_operation_path",
             "OpenAPI path parameters do not exactly match the path template",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_path_query(query: Option<&str>) -> Result<(), CatalogDiagnostic> {
+    if query.is_some_and(|query| query.contains(['#', '{', '}'])) {
+        return Err(diagnostic(
+            "invalid_operation_path",
+            "an OpenAPI path query is not fixed text without a fragment",
         ));
     }
     Ok(())

@@ -582,6 +582,37 @@ paths:
     }
 }
 
+#[test]
+fn a_fixed_path_query_precedes_query_arguments() {
+    let prepared = ready(
+        r#"openapi: 3.1.0
+info: { title: Fixed query, version: "1" }
+servers: [{ url: "https://api.example.test/v1" }]
+paths:
+  "/models/{id}?beta=true":
+    get:
+      operationId: read
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer } }
+      responses:
+        "204": { description: done }
+"#,
+    );
+    for (arguments, expected) in [
+        (
+            serde_json::json!({"id": "m"}),
+            "https://api.example.test/v1/models/m?beta=true",
+        ),
+        (
+            serde_json::json!({"id": "m", "limit": 2}),
+            "https://api.example.test/v1/models/m?beta=true&limit=2",
+        ),
+    ] {
+        assert_eq!(plan(&prepared, &arguments).url().as_str(), expected);
+    }
+}
+
 /// One GET Operation at `{server}/v1` + `template`, whose path parameters
 /// `a` and `b` use `parameters` as their serialization fields.
 fn path_operation(server: &str, template: &str, parameters: &str) -> PreparedProviderCatalog {
