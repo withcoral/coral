@@ -522,6 +522,27 @@ pub(super) async fn all_workspaces(
     rows.into_iter().map(WorkspaceRow::decode).collect()
 }
 
+/// Every Workspace identity, in any state, in stable order.
+pub(super) async fn workspace_ids(
+    transaction: &mut Transaction<'_>,
+) -> Result<Vec<WorkspaceId>, Error> {
+    let rows: Vec<(String,)> = transaction
+        .fetch_all(
+            Query::select()
+                .column(WorkspaceRecords::Id)
+                .from(WorkspaceRecords::Table)
+                .order_by(WorkspaceRecords::Id, Order::Asc)
+                .to_owned(),
+        )
+        .await?;
+    rows.into_iter()
+        .map(|(value,)| {
+            WorkspaceId::parse(&value)
+                .map_err(|_error| Error::CorruptData("invalid Workspace id".into()))
+        })
+        .collect()
+}
+
 /// Workspace identities where one User holds a designated Membership, in stable order.
 pub(super) async fn membership_workspace_ids(
     transaction: &mut Transaction<'_>,
