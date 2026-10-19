@@ -5,8 +5,12 @@
 //! object appears as `{…}`, and a named type appears by name, unless it is a
 //! shallow alias: an alias of scalars, literals, or arrays of those, which is
 //! inlined, so an Operation's generated parameter aliases do not hide plain
-//! types. The result type appears by name only; an Operation shows its result
-//! envelope with the `data` types of its success responses. The line is cut
+//! types. An Operation shows its result envelope with the `data` types of its
+//! success responses, by name. A Saved Function's result shows its object's
+//! members one level deep, as the input does, inside its `Promise` and
+//! array, through named types too: the compiler infers most results, so
+//! they have no name to show. A result object the line does not show is the
+//! marker `{…}`. The line is cut
 //! at [`SIGNATURE_LINE_MAX_BYTES`] at a word boundary with a marker. A line
 //! with no marker and no bare type name in its input is complete.
 //!

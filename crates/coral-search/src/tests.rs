@@ -154,7 +154,7 @@ async fn listing_orders_hits_by_call_path() {
     let operation_hit = listed.get(1).expect("Operation hit");
     assert_eq!(
         operation_hit.signature_line(),
-        "getForecast(): Promise<{ data: object }>"
+        "getForecast(): Promise<{ data: {…} }>"
     );
     assert_eq!(
         operation_hit.description_snippet(),
@@ -176,6 +176,44 @@ async fn listing_orders_hits_by_call_path() {
     assert_eq!(
         operation.approval_requirement(),
         ApprovalRequirement::NotRequired
+    );
+}
+
+#[tokio::test]
+async fn saved_function_signature_lines_show_the_inferred_result_fields() {
+    let fixture = TestModules::new().await;
+    let user = organization_user(fixture.search.database.clone(), "user:saved-result").await;
+    let principal = AuthenticatedPrincipal::user(user.clone());
+    let workspace_id = fixture.create_workspace(&user).await;
+    fixture
+        .save_source(
+            &principal,
+            &workspace_id,
+            "github.pullRequestDetails",
+            "Summarize one pull request",
+            r#"export default async function pullRequestDetails(input: { repo: string; number: number }) {
+    return { title: "t", merged_at: null as string | null, base: { ref: "main" }, linked: [input.repo] };
+}"#,
+            20,
+        )
+        .await;
+    fixture.converge().await;
+
+    let page = fixture
+        .search
+        .search(&principal, &workspace_id, &SearchRequest::list())
+        .await
+        .expect("list Saved Functions");
+
+    assert_eq!(
+        page.hits()
+            .iter()
+            .map(crate::SearchHit::signature_line)
+            .collect::<Vec<_>>(),
+        [
+            "pullRequestDetails(input: { repo: string; number: number }): Promise<{ title: string; merged_at: string | null; base: {…}; linked: string[] }>"
+        ],
+        "the fields of a result the compiler infers appear inline"
     );
 }
 
@@ -3742,6 +3780,27 @@ impl TestModules {
         description: &str,
         occurred_at_unix_nanos: i64,
     ) -> coral_functions::SavedFunction {
+        self.save_source(
+            principal,
+            workspace_id,
+            path,
+            description,
+            "export default function run(input: { limit: number }): number { return input.limit; }",
+            occurred_at_unix_nanos,
+        )
+        .await
+    }
+
+    /// Saves `source` as the Saved Function at `path` with `description`.
+    async fn save_source(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        path: &str,
+        description: &str,
+        source: &str,
+        occurred_at_unix_nanos: i64,
+    ) -> coral_functions::SavedFunction {
         self.saved_functions
             .save(
                 &SavedFunctionChangeContext::new(
@@ -3753,10 +3812,7 @@ impl TestModules {
                 SavedFunctionSave::new(
                     SavedFunctionPath::parse(path).expect("Saved Function path"),
                     SavedFunctionDescription::parse(description).expect("description"),
-                    SavedFunctionSource::parse(
-                        "export default function run(input: { limit: number }): number { return input.limit; }",
-                    )
-                    .expect("source"),
+                    SavedFunctionSource::parse(source).expect("source"),
                 ),
             )
             .await

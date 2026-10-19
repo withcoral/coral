@@ -33,7 +33,7 @@ pub(super) fn render(declarations: &Declarations, callable: Callable<'_>) -> Str
         .map(|(index, parameter)| {
             let value = parameter.value.as_ref().map_or_else(String::new, |value| {
                 let shown = if index == 0 {
-                    renderer.input(value)
+                    renderer.inline(value)
                 } else {
                     renderer.member(value, &mut HashSet::new())
                 };
@@ -52,7 +52,7 @@ pub(super) fn render(declarations: &Declarations, callable: Callable<'_>) -> Str
         || "unknown".to_string(),
         |result| match callable {
             Callable::Operation { .. } => renderer.operation_result(result),
-            Callable::SavedFunction { .. } => renderer.result(result, &mut HashSet::new()),
+            Callable::SavedFunction { .. } => renderer.saved_function_result(result),
         },
     );
     format!("{}({parameters}): {result}", callable.leaf())
@@ -112,8 +112,8 @@ impl Renderer<'_> {
         }
     }
 
-    /// The first parameter: an object's members inline one level deep.
-    fn input(&self, type_: &Type) -> String {
+    /// The body of `type_`, followed through every alias.
+    fn resolved<'t>(&'t self, type_: &'t Type) -> &'t Type {
         let mut seen = HashSet::new();
         let mut resolved = type_;
         while let Type::Named { name, arguments } = resolved
@@ -123,7 +123,13 @@ impl Renderer<'_> {
         {
             resolved = body;
         }
-        match resolved {
+        resolved
+    }
+
+    /// The first parameter or a Saved Function's result: an object's members
+    /// inline one level deep.
+    fn inline(&self, type_: &Type) -> String {
+        match self.resolved(type_) {
             Type::Object(members) => self.members(members),
             Type::Intersection(parts)
                 if parts.iter().any(|part| matches!(part, Type::Object(_))) =>
@@ -148,6 +154,29 @@ impl Renderer<'_> {
                 .join(" | "),
             other => self.member(other, &mut HashSet::new()),
         }
+    }
+
+    /// A Saved Function's result: inside its `Promise`, an object's members
+    /// inline one level deep, as in the input, or an array element's. What
+    /// the tree cannot read is the marker.
+    fn saved_function_result(&self, type_: &Type) -> String {
+        if let Type::Named { name, arguments } = type_
+            && name == "Promise"
+            && self.alias(name).is_none()
+            && let [value] = arguments.as_slice()
+        {
+            return format!("Promise<{}>", self.saved_function_result(value));
+        }
+        if let Type::Array { element, readonly } = self.resolved(type_)
+            && let Type::Object(members) = self.resolved(element)
+        {
+            return format!(
+                "{}{}[]",
+                if *readonly { "readonly " } else { "" },
+                self.members(members)
+            );
+        }
+        self.inline(type_)
     }
 
     fn members(&self, members: &[Member]) -> String {
@@ -181,9 +210,10 @@ impl Renderer<'_> {
         self.render(type_, seen, &format!("{{{CUT_MARKER}}}"), CUT_MARKER)
     }
 
-    /// A result type: named types by name, an anonymous object as `object`.
+    /// A result type: named types by name, an anonymous object as the
+    /// marker, so a line that hides one is not complete.
     pub(super) fn result(&self, type_: &Type, seen: &mut HashSet<String>) -> String {
-        self.render(type_, seen, "object", "unknown")
+        self.render(type_, seen, &format!("{{{CUT_MARKER}}}"), "unknown")
     }
 
     /// A type as a key or plain value, with no alias lookups.

@@ -69,8 +69,9 @@ struct SearchHit {
     /// `coral.providers.<namespace>.…` for an Operation,
     /// `coral.functions.…` for a Saved Function.
     call_path: String,
-    /// The callable's input members one level deep and its result type by
-    /// name, at most 512 UTF-8 bytes.
+    /// The callable's input members one level deep; an Operation's result
+    /// type by name, a Saved Function's result members one level deep. At
+    /// most 512 UTF-8 bytes.
     signature_line: String,
     /// At most 512 UTF-8 bytes of the description, around the first matched
     /// term; `…` marks cut text.
