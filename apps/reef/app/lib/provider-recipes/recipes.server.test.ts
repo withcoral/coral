@@ -24,8 +24,8 @@ const recipeLibraries = ['recipes']
 
 /**
  * The GitHub organization each vendor owns, by recipe id. A recipe may track a
- * branch only in its own vendor's organization; any other GitHub document pins
- * a commit.
+ * branch only in its own vendor's organization; any other
+ * raw.githubusercontent.com document pins a commit.
  */
 const VENDOR_GITHUB_OWNERS: Record<string, string> = {
   algolia: 'algolia',
