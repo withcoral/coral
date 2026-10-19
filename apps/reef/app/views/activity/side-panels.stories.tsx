@@ -154,29 +154,85 @@ const eventPage = (event: RunEvent, label: string) =>
 const longGoal =
   'Find every overdue invoice in the Finance workspace, group them by account owner, and send each owner one reminder that lists the invoice numbers, amounts, and due dates.'
 const tasks = {
-  open: panel('Task · open goal', taskPage(task()), {
-    evidence: 'Find overdue invoices and notify their owners',
-  }),
-  success: panel(
-    'Task · goal succeeded, with completion feedback',
-    taskPage(task({ outcome: 'success', endedAt: later }), 'Sent 24 reminders to 9 owners.'),
-    { evidence: 'Sent 24 reminders to 9 owners.' },
-  ),
-  failure: panel(
-    'Task · goal failed, with completion feedback',
-    taskPage(
-      task({ outcome: 'failure', endedAt: later }),
-      'I could not find an operation to export invoices.\nSearch returned no matching operations.',
+  open: contextStory(
+    panel(
+      'Task · open goal, partial context savings',
+      taskPage(task({ contextImpactBytes: '-55500', contextImpactPartial: true })),
+      { evidence: 'Find overdue invoices and notify their owners' },
     ),
-    { evidence: 'I could not find an operation to export invoices.' },
+    { label: '−55.5 kB', meaning: '55.5 kB saved so far', tone: 'saved' },
+  ),
+  success: contextStory(
+    panel(
+      'Task · goal succeeded, with context savings and completion feedback',
+      taskPage(
+        task({ outcome: 'success', endedAt: later, contextImpactBytes: '-2200000' }),
+        'Sent 24 reminders to 9 owners.',
+      ),
+      { evidence: 'Sent 24 reminders to 9 owners.' },
+    ),
+    { label: '−2.2 MB', meaning: '2.2 MB saved', tone: 'saved' },
+  ),
+  failure: contextStory(
+    panel(
+      'Task · goal failed, with context cost and completion feedback',
+      taskPage(
+        task({ outcome: 'failure', endedAt: later, contextImpactBytes: '14500' }),
+        'I could not find an operation to export invoices.\nSearch returned no matching operations.',
+      ),
+      { evidence: 'I could not find an operation to export invoices.' },
+    ),
+    { label: '+14.5 kB', meaning: '14.5 kB added', tone: 'added' },
   ),
 } satisfies Record<TaskOutcome, Story>
 function taskPage(row: ReturnType<typeof task>, feedback?: string) {
   return panelPage(row, { kind: 'task', task: row, ...(feedback !== undefined && { feedback }) })
 }
+/**
+ * The Task's Context row leads its list and matches its table cell exactly: the same
+ * text, meaning and colour. Savings read green and costs red, each with a sign.
+ */
+function contextStory(
+  story: Story,
+  expected: { label: string; meaning: string; tone: 'saved' | 'added' | 'neutral' },
+): Story {
+  return {
+    ...story,
+    play: async (context) => {
+      await meta.play(context)
+      const body = within(context.canvasElement.ownerDocument.body)
+      const opened = await body.findByRole('dialog')
+      const terms = within(opened)
+        .getAllByRole('term')
+        .map((term) => term.textContent)
+      await expect(terms.slice(0, 2)).toEqual(['Context', 'Started'])
+      const shown = within(opened).getByLabelText(expected.meaning)
+      await expect(shown).toHaveTextContent(expected.label)
+      const cell = within(body.getByRole('table')).getByLabelText(expected.meaning)
+      const color = (element: Element) => getComputedStyle(element).color
+      await expect(color(shown)).toBe(color(cell))
+      const [red, green] = color(shown)
+        .match(/\d+(\.\d+)?/g)!
+        .map(Number)
+      if (expected.tone === 'saved') await expect(green).toBeGreaterThan(red)
+      if (expected.tone === 'added') await expect(red).toBeGreaterThan(green)
+    },
+  }
+}
 export const TaskOpen = tasks.open
 export const TaskSucceeded = tasks.success
 export const TaskFailed = tasks.failure
+export const TaskNoContextChange = contextStory(
+  panel(
+    'Task · no net context change',
+    taskPage(task({ outcome: 'success', endedAt: later, contextImpactBytes: '0' })),
+  ),
+  { label: '0 B', meaning: 'No net context change', tone: 'neutral' },
+)
+export const TaskContextUnavailable = contextStory(
+  panel('Task · context total unavailable', taskPage(task({ outcome: 'success', endedAt: later }))),
+  { label: '—', meaning: 'Context impact unavailable', tone: 'neutral' },
+)
 export const TaskLongGoalNarrow = panel(
   'Task · long goal, narrow screen',
   taskPage(task({ intent: longGoal })),

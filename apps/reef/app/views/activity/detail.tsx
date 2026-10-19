@@ -20,6 +20,7 @@ import { RunActions } from '../actions/run-actions'
 import { Arguments } from '../actions/arguments'
 import { DiscoveryEvidence, SearchParameters } from './discovery/discovery'
 import { DetailHeader, StateBadge } from './detail-header'
+import { ContextImpact } from './context-impact'
 import { Instant } from './instant'
 import { ValueCard } from './value-card'
 import { Panel } from './panel'
@@ -371,6 +372,13 @@ function RecordDetail({ page }: { page: ActivityPage }) {
       {detail.kind === 'task' && (
         <>
           <DescriptionList.List>
+            {/* The Task's stored total, as its table row shows it: — when unavailable. */}
+            <DescriptionList.Row label="Context">
+              <ContextImpact
+                bytes={detail.task.contextImpactBytes}
+                partial={detail.task.contextImpactPartial}
+              />
+            </DescriptionList.Row>
             <DescriptionList.Row label="Started">
               <Instant value={detail.task.startedAt} />
             </DescriptionList.Row>

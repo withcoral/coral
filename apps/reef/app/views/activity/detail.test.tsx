@@ -1,7 +1,9 @@
 /** @vitest-environment happy-dom */
-import { screen, within } from '@testing-library/react'
+import { act, screen, within } from '@testing-library/react'
+import { useEffect, useState } from 'react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { markupRoute, renderRoute } from '@/test-support/route'
 import { ActivityDetail } from './detail'
 import { ActionReviewSession } from '../actions/review'
@@ -9,6 +11,7 @@ import { approvalRequest, pendingPage, run, workspace } from './fixtures'
 import { stored } from './discovery/fixtures'
 import { discoveryView } from './discovery/response'
 import { ActivityConnectedContext } from './live'
+import { ContextImpact } from './context-impact'
 import type {
   ActivityPage,
   ActivityRow,
@@ -413,6 +416,7 @@ it.each([
         .getAllByRole('term')
         .map((term) => term.textContent),
     ).toEqual([
+      'Context',
       'Started',
       ...(task.endedAt ? ['Ended'] : []),
       ...(withFeedback ? ['Feedback'] : []),
@@ -424,15 +428,138 @@ it.each([
       expect(value('Feedback').className).toBe(value('Started').className)
       expect(value('Feedback').textContent).toBe(feedback)
     } else expect(within(list).queryByText('Feedback', { selector: 'dt' })).toBeNull()
-    for (const gone of [
-      'Goal outcome',
-      'Completion feedback',
-      'accepts no new tool calls',
-      'Context',
-    ])
+    for (const gone of ['Goal outcome', 'Completion feedback', 'accepts no new tool calls'])
       expect(container.textContent).not.toContain(gone)
   },
 )
+
+// Catches: a Task detail that drops, zeroes or re-formats the context total its table row shows.
+it.each([
+  {
+    outcome: 'success',
+    bytes: '-2200000',
+    partial: false,
+    label: '−2.2 MB',
+    meaning: '2.2 MB saved',
+  },
+  {
+    outcome: 'failure',
+    bytes: '14500',
+    partial: false,
+    label: '+14.5 kB',
+    meaning: '14.5 kB added',
+  },
+  {
+    outcome: 'success',
+    bytes: '0',
+    partial: false,
+    label: '0 B',
+    meaning: 'No net context change',
+  },
+  {
+    outcome: 'open',
+    bytes: undefined,
+    partial: false,
+    label: '—',
+    meaning: 'Context impact unavailable',
+  },
+  {
+    outcome: 'open',
+    bytes: '-55500',
+    partial: true,
+    label: '−55.5 kB',
+    meaning: '55.5 kB saved so far',
+  },
+])(
+  'states a $outcome Task context total of $bytes bytes as its table row does (partial: $partial)',
+  ({ outcome, bytes, partial, label, meaning }) => {
+    const task = {
+      name: `${workspace}/tasks/invoices`,
+      workspace,
+      agent: '',
+      actor: 'opaque-principal',
+      intent: 'Find invoices',
+      outcome,
+      startedAt: '2026-09-22T09:00:00Z',
+      endedAt: outcome === 'open' ? null : '2026-09-22T09:05:00Z',
+      contextImpactBytes: bytes,
+      contextImpactPartial: partial,
+    }
+    const container = document.createElement('div')
+    container.innerHTML = markup({
+      ...pendingPage,
+      selected: task.name,
+      selectedRow: { ...task, kind: 'task' },
+      detail: { kind: 'task', task },
+    })
+    const list = container.querySelector('dl')!
+    const value = within(list).getByText('Context', { selector: 'dt' }).nextElementSibling!
+    const impact = within(value as HTMLElement).getByLabelText(meaning)
+    expect(impact.textContent).toBe(label)
+    // The same element as the table's Context cell: sign, rounding, colour and tooltip.
+    expect(value.innerHTML).toBe(
+      renderToStaticMarkup(<ContextImpact bytes={bytes} partial={partial} />),
+    )
+    expect(within(list).getAllByRole('term')[0].textContent).toBe('Context')
+    // Bytes of context, never a price or a token count.
+    expect(list.textContent).not.toMatch(/[$€]|tokens?\b/)
+  },
+)
+
+/** A page that selects `task` and shows its detail, as the loader returns it. */
+function taskDetailPage(task: Omit<ActivityRow & { kind: 'task' }, 'kind'>): ActivityPage {
+  return {
+    ...pendingPage,
+    selected: task.name,
+    selectedRow: { ...task, kind: 'task' },
+    detail: { kind: 'task', task },
+  }
+}
+
+// Catches: a live page that refreshes the Task but leaves its context total stale.
+it('replaces the Task context total when a live page brings a new one', () => {
+  const task = {
+    name: `${workspace}/tasks/invoices`,
+    workspace,
+    agent: '',
+    actor: 'opaque-principal',
+    intent: 'Find invoices',
+    outcome: 'open',
+    startedAt: '2026-09-22T09:00:00Z',
+    endedAt: null,
+    contextImpactBytes: '-55500',
+    contextImpactPartial: true,
+  }
+  let update!: (next: ActivityPage) => void
+  function LivePage() {
+    const [current, setCurrent] = useState(taskDetailPage(task))
+    useEffect(() => {
+      update = setCurrent
+    }, [])
+    return <ActivityDetail page={current} />
+  }
+  renderRoute(
+    <ActionReviewSession>
+      <LivePage />
+    </ActionReviewSession>,
+    { entry: '/activity' },
+  )
+  const before = screen.getByLabelText('55.5 kB saved so far')
+  expect(before).toHaveTextContent('−55.5 kB')
+  act(() =>
+    update(
+      taskDetailPage({
+        ...task,
+        outcome: 'success',
+        endedAt: '2026-09-22T09:05:00Z',
+        contextImpactBytes: '-2200000',
+        contextImpactPartial: false,
+      }),
+    ),
+  )
+  expect(screen.queryByLabelText('55.5 kB saved so far')).toBeNull()
+  expect(screen.getByLabelText('2.2 MB saved')).toHaveTextContent('−2.2 MB')
+})
 
 const interaction: InteractionRow = {
   agent: '',
