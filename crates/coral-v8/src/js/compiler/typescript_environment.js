@@ -17,7 +17,7 @@ const PROGRAM_COMPILER_OPTIONS = Object.freeze({
 // Authoring-only types for the host root. Callers supply the declarations of
 // the Operations and Saved Functions a source names; a root without them is
 // any. Operations type `coral.providers` and `coral.workspace` together.
-const CORAL_HOST_DECLARATION_FILE_NAME = "coral.d.ts";
+const CORAL_HOST_DECLARATION_FILE_NAME = 'coral.d.ts';
 // Coral's diagnostic codes are outside TypeScript's range.
 // A called `coral.providers` or `coral.workspace` path that names no
 // Operation the caller can call.
@@ -60,7 +60,7 @@ declare const console: {
 }
 
 function callableNode() {
-  return {type: undefined, children: new Map()};
+  return { type: undefined, children: new Map() };
 }
 
 function insertCallable(root, segments, type) {
@@ -76,12 +76,12 @@ function insertCallable(root, segments, type) {
 // analysis cannot see, such as one reached through an alias, is untyped
 // rather than wrong.
 function renderCallableNode(node, open) {
-  const members = [...node.children]
-    .map(([segment, child]) =>
-      `readonly ${JSON.stringify(segment)}: ${renderCallableNode(child, open)};`
-    );
-  if (open) members.push("readonly [segment: string]: any;");
-  const object = `{ ${members.join(" ")} }`;
+  const members = [...node.children].map(
+    ([segment, child]) =>
+      `readonly ${JSON.stringify(segment)}: ${renderCallableNode(child, open)};`,
+  );
+  if (open) members.push('readonly [segment: string]: any;');
+  const object = `{ ${members.join(' ')} }`;
   if (node.type === undefined) return object;
   return node.children.size === 0 ? node.type : `(${node.type}) & ${object}`;
 }
@@ -95,8 +95,8 @@ function renderCallableNode(node, open) {
 function typedRoot(sources, prefix, entries) {
   if (entries == null) return undefined;
   const tree = callableNode();
-  for (const {pathSegments, declaration} of entries) {
-    const callPath = `${prefix}.${pathSegments.join(".")}`;
+  for (const { pathSegments, declaration } of entries) {
+    const callPath = `${prefix}.${pathSegments.join('.')}`;
     const module = JSON.stringify(callPath);
     sources[`declaration-${callPath}.d.ts`] =
       `declare module ${module} {\n${declaration}\nexport {};\n}\n`;
@@ -114,20 +114,20 @@ function typedRoot(sources, prefix, entries) {
 function unknownOperations(operations) {
   const resolved = new Set();
   const namespaces = new Set();
-  for (const {pathSegments} of operations.declarations) {
-    resolved.add(pathSegments.join("."));
+  for (const { pathSegments } of operations.declarations) {
+    resolved.add(pathSegments.join('.'));
     for (let length = 1; length < pathSegments.length; length += 1) {
-      namespaces.add(pathSegments.slice(0, length).join("."));
+      namespaces.add(pathSegments.slice(0, length).join('.'));
     }
   }
   const unknown = [];
-  for (const {segments, start, called} of operations.chains) {
+  for (const { segments, start, called } of operations.chains) {
     if (!called) continue;
     for (let length = 2; length <= segments.length; length += 1) {
-      const key = segments.slice(0, length).join(".");
+      const key = segments.slice(0, length).join('.');
       if (resolved.has(key)) break;
       if (namespaces.has(key)) continue;
-      unknown.push({start, callPath: `coral.${segments.join(".")}`});
+      unknown.push({ start, callPath: `coral.${segments.join('.')}` });
       break;
     }
   }
@@ -141,30 +141,32 @@ function coralSurface(declarations) {
   const sources = {};
   // Operation paths are relative to `coral`, so one tree holds both
   // `providers` and `workspace`.
-  const operations = typedRoot(sources, "coral", declarations?.operations?.declarations);
-  const functions = typedRoot(sources, "coral.functions", declarations?.functions);
+  const operations = typedRoot(sources, 'coral', declarations?.operations?.declarations);
+  const functions = typedRoot(sources, 'coral.functions', declarations?.functions);
   const operationRoot = (root) =>
     operations === undefined
-      ? "any"
+      ? 'any'
       : renderCallableNode(operations.children.get(root) ?? callableNode(), true);
   sources[CORAL_HOST_DECLARATION_FILE_NAME] = coralHostDeclaration(
-    operationRoot("providers"),
-    operationRoot("workspace"),
-    functions === undefined ? "any" : renderCallableNode(functions, false),
+    operationRoot('providers'),
+    operationRoot('workspace'),
+    functions === undefined ? 'any' : renderCallableNode(functions, false),
   );
   return {
     sources,
-    unknownOperations: operations === undefined
-      ? []
-      : unknownOperations(declarations.operations),
+    unknownOperations: operations === undefined ? [] : unknownOperations(declarations.operations),
   };
 }
 
+function diagnosticSortPosition(value) {
+  return value ?? Number.MAX_SAFE_INTEGER;
+}
+
 function sortedDiagnostics(diagnostics) {
-  const position = (value) => value ?? Number.MAX_SAFE_INTEGER;
-  return diagnostics.toSorted((left, right) =>
-    position(left.line) - position(right.line)
-      || position(left.column) - position(right.column)
+  return diagnostics.toSorted(
+    (left, right) =>
+      diagnosticSortPosition(left.line) - diagnosticSortPosition(right.line) ||
+      diagnosticSortPosition(left.column) - diagnosticSortPosition(right.column),
   );
 }
 
@@ -179,20 +181,19 @@ function configureTypeScriptLibraries(librarySources) {
 
 function resolveTypeScriptTarget(targetName) {
   const target = ts.ScriptTarget[targetName];
-  if (typeof target !== "number") {
+  if (typeof target !== 'number') {
     throw new Error(`unknown TypeScript ScriptTarget: ${targetName}`);
   }
   return target;
 }
 
 function normalizedFileName(fileName) {
-  return fileName.replaceAll("\\", "/").split("/").pop();
+  return fileName.replaceAll('\\', '/').split('/').pop();
 }
 
 function librarySourceFile(fileName, normalized, languageVersion) {
-  const version = typeof languageVersion === "object"
-    ? languageVersion.languageVersion
-    : languageVersion;
+  const version =
+    typeof languageVersion === 'object' ? languageVersion.languageVersion : languageVersion;
   const key = `${version}:${normalized}`;
   let file = librarySourceFiles.get(key);
   if (file === undefined) {
@@ -207,13 +208,7 @@ function librarySourceFile(fileName, normalized, languageVersion) {
   return file;
 }
 
-function compilerHost(
-  sourceFileName,
-  source,
-  compilerOptions,
-  outputs,
-  ambientSources,
-) {
+function compilerHost(sourceFileName, source, compilerOptions, outputs, ambientSources) {
   const sourceNames = new Set([sourceFileName, normalizedFileName(sourceFileName)]);
   const supportingSource = (normalized) =>
     ambientSources[normalized] ?? typeScriptLibrarySources[normalized];
@@ -221,27 +216,28 @@ function compilerHost(
     getSourceFile(fileName, languageVersion) {
       const normalized = normalizedFileName(fileName);
       if (
-        !sourceNames.has(fileName)
-        && !sourceNames.has(normalized)
-        && ambientSources[normalized] === undefined
-        && typeScriptLibrarySources[normalized] !== undefined
+        !sourceNames.has(fileName) &&
+        !sourceNames.has(normalized) &&
+        ambientSources[normalized] === undefined &&
+        typeScriptLibrarySources[normalized] !== undefined
       ) {
         return librarySourceFile(fileName, normalized, languageVersion);
       }
-      const text = sourceNames.has(fileName) || sourceNames.has(normalized)
-        ? source
-        : supportingSource(normalized);
+      const text =
+        sourceNames.has(fileName) || sourceNames.has(normalized)
+          ? source
+          : supportingSource(normalized);
       if (text === undefined) return undefined;
       return ts.createSourceFile(fileName, text, languageVersion, true);
     },
     getDefaultLibFileName() {
-      return "lib.es2025.d.ts";
+      return 'lib.es2025.d.ts';
     },
     writeFile(fileName, text) {
       outputs.set(normalizedFileName(fileName), text);
     },
     getCurrentDirectory() {
-      return "/";
+      return '/';
     },
     getCanonicalFileName(fileName) {
       return fileName;
@@ -250,12 +246,15 @@ function compilerHost(
       return true;
     },
     getNewLine() {
-      return "\n";
+      return '\n';
     },
     fileExists(fileName) {
       const normalized = normalizedFileName(fileName);
-      return sourceNames.has(fileName) || sourceNames.has(normalized)
-        || supportingSource(normalized) !== undefined;
+      return (
+        sourceNames.has(fileName) ||
+        sourceNames.has(normalized) ||
+        supportingSource(normalized) !== undefined
+      );
     },
     readFile(fileName) {
       const normalized = normalizedFileName(fileName);
@@ -278,13 +277,7 @@ function virtualTypeScriptProgram(
   outputs = new Map(),
   ambientSources = {},
 ) {
-  const host = compilerHost(
-    sourceFileName,
-    source,
-    compilerOptions,
-    outputs,
-    ambientSources,
-  );
+  const host = compilerHost(sourceFileName, source, compilerOptions, outputs, ambientSources);
   const program = ts.createProgram(
     [sourceFileName, ...Object.keys(ambientSources)],
     compilerOptions,
@@ -307,24 +300,25 @@ function typedVirtualProgram(fileName, source, compilerOptions, declarations) {
     undefined,
     surface.sources,
   );
-  const {program, sourceFile} = typed;
-  if (!sourceFile) throw new Error("typed virtual source is missing");
-  const unknownOperations = surface.unknownOperations.map(({start, callPath}) =>
+  const { program, sourceFile } = typed;
+  if (!sourceFile) throw new Error('typed virtual source is missing');
+  const unknownOperationDiagnostics = surface.unknownOperations.map(({ start, callPath }) =>
     diagnosticPayload({
       file: sourceFile,
       start,
       category: ts.DiagnosticCategory.Error,
       code: UNKNOWN_OPERATION_DIAGNOSTIC_CODE,
       messageText: `${callPath} names no Operation that you can call.`,
-    })
+    }),
   );
   return {
     ...typed,
     advisoryDiagnostics(extra = []) {
       return sortedDiagnostics([
-        ...program.getSemanticDiagnostics(sourceFile)
+        ...program
+          .getSemanticDiagnostics(sourceFile)
           .map((diagnostic) => diagnosticPayload(diagnostic)),
-        ...unknownOperations,
+        ...unknownOperationDiagnostics,
         ...extra,
       ]);
     },

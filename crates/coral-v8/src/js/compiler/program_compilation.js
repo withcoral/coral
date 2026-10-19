@@ -26,7 +26,7 @@ function compileProgramSource(
     wrapperValid,
     validationError,
     diagnostics: (result.diagnostics || []).map((diagnostic) =>
-      diagnosticPayload(diagnostic, authoredMappings)
+      diagnosticPayload(diagnostic, authoredMappings),
     ),
   };
 }
@@ -34,18 +34,14 @@ function compileProgramSource(
 function compileProgram(body, fileName, targetName) {
   const target = resolveTypeScriptTarget(targetName);
   const wrapped = wrapProgramBody(body);
-  const compilerOptions = {...PROGRAM_COMPILER_OPTIONS, target};
-  const {program, sourceFile} = virtualTypeScriptProgram(
+  const compilerOptions = { ...PROGRAM_COMPILER_OPTIONS, target };
+  const { program, sourceFile } = virtualTypeScriptProgram(
     fileName,
     wrapped.source,
     compilerOptions,
   );
-  if (!sourceFile) throw new Error("Program virtual source is missing");
-  const validationError = forbiddenCapabilityError(
-    sourceFile,
-    wrapped.authoredMappings,
-    program,
-  );
+  if (!sourceFile) throw new Error('Program virtual source is missing');
+  const validationError = forbiddenCapabilityError(sourceFile, wrapped.authoredMappings, program);
   return compileProgramSource(
     wrapped.source,
     fileName,
@@ -58,19 +54,19 @@ function compileProgram(body, fileName, targetName) {
 function compileLinkedProgram(body, savedFunctions, fileName, targetName) {
   const target = resolveTypeScriptTarget(targetName);
   if (!Array.isArray(savedFunctions)) {
-    throw new Error("Saved Function closure must be an array");
+    throw new Error('Saved Function closure must be an array');
   }
   const wrapped = wrapProgramBody(body);
-  const compilerOptions = {...PROGRAM_COMPILER_OPTIONS, target};
-  const {program, sourceFile: ordinaryProgram} = virtualTypeScriptProgram(
+  const compilerOptions = { ...PROGRAM_COMPILER_OPTIONS, target };
+  const { program, sourceFile: ordinaryProgram } = virtualTypeScriptProgram(
     fileName,
     wrapped.source,
     compilerOptions,
   );
-  if (!ordinaryProgram) throw new Error("Program virtual source is missing");
+  if (!ordinaryProgram) throw new Error('Program virtual source is missing');
   if (!hasExpectedProgramShape(ordinaryProgram)) {
     return {
-      outputText: "",
+      outputText: '',
       sourceMapText: null,
       authoredMappings: [],
       wrapperValid: false,
@@ -83,32 +79,18 @@ function compileLinkedProgram(body, savedFunctions, fileName, targetName) {
     wrapped.authoredMappings,
     program,
   );
-  for (
-    let index = 0;
-    validationError === undefined && index < savedFunctions.length;
-    index += 1
-  ) {
+  for (let index = 0; validationError === undefined && index < savedFunctions.length; index += 1) {
     const savedFunction = savedFunctions[index];
-    if (typeof savedFunction?.source !== "string") {
-      throw new Error("Saved Function closure contains an invalid source entry");
+    if (typeof savedFunction?.source !== 'string') {
+      throw new Error('Saved Function closure contains an invalid source entry');
     }
     const savedFunctionFileName = `saved_function_${index}.ts`;
-    const {
-      program: savedFunctionProgram,
-      sourceFile: savedFunctionFile,
-    } = virtualTypeScriptProgram(
-      savedFunctionFileName,
-      savedFunction.source,
-      compilerOptions,
-    );
+    const { program: savedFunctionProgram, sourceFile: savedFunctionFile } =
+      virtualTypeScriptProgram(savedFunctionFileName, savedFunction.source, compilerOptions);
     if (!savedFunctionFile) {
-      throw new Error("Saved Function virtual source is missing");
+      throw new Error('Saved Function virtual source is missing');
     }
-    validationError = forbiddenCapabilityError(
-      savedFunctionFile,
-      undefined,
-      savedFunctionProgram,
-    );
+    validationError = forbiddenCapabilityError(savedFunctionFile, undefined, savedFunctionProgram);
   }
   const linked = linkedProgramSource(body, savedFunctions, target);
   return compileProgramSource(

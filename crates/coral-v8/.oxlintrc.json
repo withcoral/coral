@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["eslint", "typescript", "unicorn", "oxc"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error"
+  },
+  "ignorePatterns": ["vendor/**"],
+  "rules": {
+    // The Rust host and these scripts share globals named __coral*.
+    "no-underscore-dangle": "off"
+  },
+  "overrides": [
+    {
+      // compiler.rs joins these files into one function scope, so a file's
+      // top-level declaration can be another file's dependency.
+      "files": ["src/js/compiler/**"],
+      "rules": {
+        "no-unused-vars": "off"
+      }
+    }
+  ]
+}
