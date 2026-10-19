@@ -17,10 +17,15 @@ Install the [desktop app](/getting-started/install-locally) or
   <Step title="Add a provider" id="add-a-provider">
     A [provider](/guides/concepts#providers) gives your agents access to a
     service, such as GitHub or Linear. Your agents can only call the providers
-    you add. You decide which operations run without your approval.
+    in your workspace. Only [workspace owners](/guides/concepts#workspaces) can
+    add a provider.
 
     Choose a provider from Coral's catalog, or add your own from an MCP server
     or an OpenAPI document.
+
+    A new provider starts with a default [policy](/guides/concepts#operation-policy).
+    Operations that read data run without approval. Other operations need
+    approval. Workspace owners can change the policy.
   </Step>
 
   <Step title="Connect your agent" id="connect-an-mcp-client">
