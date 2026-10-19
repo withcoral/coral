@@ -287,6 +287,28 @@ async fn fetch_openapi(
         }
         bytes.extend_from_slice(&chunk);
     }
-    let text = String::from_utf8(bytes).map_err(|_invalid_utf8| Error::InputUnavailable)?;
+    let text =
+        String::from_utf8(gunzip(bytes)?).map_err(|_invalid_utf8| Error::InputUnavailable)?;
     OpenApiDocument::parse(&text).map_err(Error::from)
+}
+
+/// Unzips a gzip file, such as the `.json.gz` document Anthropic's SDKs
+/// publish, and returns any other body unchanged. The document size limit
+/// applies to the unzipped text.
+fn gunzip(bytes: Vec<u8>) -> Result<Vec<u8>, Error> {
+    use std::io::Read as _;
+    const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+    if !bytes.starts_with(&GZIP_MAGIC) {
+        return Ok(bytes);
+    }
+    let limit = crate::OPENAPI_DOCUMENT_MAX_BYTES;
+    let mut text = Vec::new();
+    flate2::read::MultiGzDecoder::new(bytes.as_slice())
+        .take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
+        .read_to_end(&mut text)
+        .map_err(|_corrupt| Error::InputUnavailable)?;
+    if text.len() > limit {
+        return Err(coral_catalog::Error::OpenApiDocumentTooLarge.into());
+    }
+    Ok(text)
 }

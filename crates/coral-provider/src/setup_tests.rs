@@ -1216,6 +1216,48 @@ async fn openapi_url_source_keeps_the_query_that_selects_the_document() {
     server.verify().await;
 }
 
+/// Anthropic's SDKs publish their document only as `scripts/mock-spec.json.gz`.
+#[tokio::test]
+async fn openapi_url_source_unzips_a_gzipped_document() {
+    let harness = harness().await;
+    let (owner, workspace) = workspace_owner(&harness, "user:openapi-gzip").await;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/openapi.json.gz"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_bytes(gzip(&credential_free_openapi(&server))),
+        )
+        .mount(&server)
+        .await;
+    let setup = harness
+        .accounts
+        .prepare_remote_fixture(
+            &change_context(owner.clone(), 10, '2'),
+            workspace.id(),
+            ProviderSetupSource::OpenApiUrl(format!("{}/openapi.json.gz", server.uri())),
+            None,
+        )
+        .await
+        .expect("pin the unzipped document");
+    assert_eq!(setup.state(), ProviderSetupState::AwaitingConfiguration);
+    let suggested = harness
+        .providers
+        .review_setup_configuration(&owner, workspace.id(), setup.id())
+        .await
+        .unwrap()
+        .document
+        .expect("the unzipped text is an OpenAPI document")
+        .suggested;
+    assert_eq!(suggested.display_name, "Open");
+}
+
+fn gzip(text: &str) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(text.as_bytes()).unwrap();
+    encoder.finish().unwrap()
+}
+
 #[tokio::test]
 async fn remote_openapi_accepts_a_32_mib_document() {
     let harness = harness().await;
@@ -1266,6 +1308,20 @@ async fn unsafe_input_urls_and_upstream_failures_are_safe_errors() {
         )
         .mount(&server)
         .await;
+    // Small on the wire, too large once unzipped.
+    Mock::given(method("GET"))
+        .and(path("/huge.gz"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(gzip(&" ".repeat(crate::OPENAPI_DOCUMENT_MAX_BYTES + 1))),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/corrupt.gz"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"\x1f\x8bbody-canary".to_vec()))
+        .mount(&server)
+        .await;
     Mock::given(method("GET"))
         .and(path("/missing"))
         .respond_with(ResponseTemplate::new(404).set_body_string("body-canary"))
@@ -1290,7 +1346,7 @@ async fn unsafe_input_urls_and_upstream_failures_are_safe_errors() {
         assert!(matches!(error, Error::AccountInput), "{error:?}");
         assert!(!format!("{error:?}").contains("secret-canary"));
     }
-    for suffix in ["/redirect", "/huge", "/missing"] {
+    for suffix in ["/redirect", "/huge", "/huge.gz", "/corrupt.gz", "/missing"] {
         let error = harness
             .accounts
             .prepare_remote_fixture(
@@ -1301,7 +1357,7 @@ async fn unsafe_input_urls_and_upstream_failures_are_safe_errors() {
             )
             .await
             .expect_err("unavailable source");
-        if suffix == "/huge" {
+        if suffix.starts_with("/huge") {
             assert!(
                 matches!(
                     error,
