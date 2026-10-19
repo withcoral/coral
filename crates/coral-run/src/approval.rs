@@ -30,6 +30,7 @@ use uuid::Uuid;
 use crate::approval_repository::{self, StoredApproval};
 use crate::engine::{Clock, SystemClock};
 use crate::invocation::AdmittedInvocation;
+use crate::run_repository::OwnedEvent;
 use crate::{
     CoralFailure, Error, InvocationId, RunId, RunState, invocation_repository, run_repository,
 };
@@ -340,21 +341,7 @@ impl ApprovalModule {
                 trace,
             )
             .await?;
-            if state == ApprovalState::Closed
-                && crate::required_actions::run_accepts_actions(&run, now)
-                && let DecisionGate::Rejected(failure) = gate
-            {
-                crate::invocation_lifecycle::finish_approval_failure(
-                    &mut tx,
-                    &run,
-                    &row.invocation_id,
-                    failure,
-                    now,
-                )
-                .await?;
-            } else {
-                settle_rejection(&mut tx, &run, &row, now).await?;
-            }
+            settle_decision(&mut tx, &run, &row, state, gate, now).await?;
         }
         let request = view(
             &mut tx,
@@ -580,13 +567,15 @@ pub(super) async fn pending_for_run(
     approval_repository::pending_for_run(tx, &run.workspace_id, &run.id, now).await
 }
 
-// All private facets join the Invocation-owned transaction with its Run hold.
+// All private facets join the Run Owner's chunk transaction with its Run hold;
+// an Invocation this settles appends its `invocation.ended` to `events`.
 pub(super) async fn gate(
     tx: &mut Transaction<'_>,
     admitted: &AdmittedInvocation,
     run: &RunRecord,
     required: bool,
     now: i64,
+    events: &mut Vec<OwnedEvent>,
 ) -> Result<bool, Error> {
     let row =
         approval_repository::find_for_invocation(tx, &admitted.workspace_id, &admitted.id).await?;
@@ -632,7 +621,7 @@ pub(super) async fn gate(
                 &TraceId::current_or_new(),
             )
             .await?;
-            settle_rejection(tx, run, &row, now).await?;
+            events.extend(settle_rejection(tx, run, &row, now).await?);
         }
     }
     match row.state {
@@ -750,19 +739,55 @@ pub(super) async fn close_for_invocation(
     Ok(())
 }
 
+/// Ends the Invocation a human decision rejected, or a closed request's
+/// Invocation that the gate had already rejected. This decision still writes
+/// outside the Run Owner (until slice 6): the Invocation's end is one chunk
+/// of its own under the Run's claim.
+async fn settle_decision(
+    tx: &mut Transaction<'_>,
+    run: &RunRecord,
+    row: &StoredApproval,
+    state: ApprovalState,
+    gate: DecisionGate,
+    now: i64,
+) -> Result<(), Error> {
+    let mut events = Vec::new();
+    if state == ApprovalState::Closed
+        && crate::required_actions::run_accepts_actions(run, now)
+        && let DecisionGate::Rejected(failure) = gate
+    {
+        events.push(
+            crate::invocation_lifecycle::finish_approval_failure(
+                tx,
+                run,
+                &row.invocation_id,
+                failure,
+                now,
+            )
+            .await?,
+        );
+    } else {
+        events.extend(settle_rejection(tx, run, row, now).await?);
+    }
+    crate::invocation_lifecycle::commit_outside_owner(tx, run, &events).await
+}
+
+/// Ends the Invocation of a declined or expired request and returns its
+/// `invocation.ended`; a request in any other state ends nothing.
 async fn settle_rejection(
     tx: &mut Transaction<'_>,
     run: &RunRecord,
     row: &StoredApproval,
     now: i64,
-) -> Result<(), Error> {
+) -> Result<Option<OwnedEvent>, Error> {
     let failure = match row.state {
         ApprovalState::Declined => CoralFailure::ApprovalDeclined,
         ApprovalState::Expired => CoralFailure::ApprovalExpired,
-        _ => return Ok(()),
+        _ => return Ok(None),
     };
     crate::invocation_lifecycle::finish_approval_failure(tx, run, &row.invocation_id, failure, now)
         .await
+        .map(Some)
 }
 
 async fn transition(

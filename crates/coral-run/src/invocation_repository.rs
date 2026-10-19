@@ -6,8 +6,7 @@ use sqlx::FromRow;
 
 use crate::invocation::{AdmittedInvocation, InvocationCompletion};
 use crate::invocation_lifecycle::{InvocationState, UnfinishedInvocation};
-use crate::run_repository::{Chunk, NewEvent};
-use crate::{CoralFailure, Error, InvocationId, InvocationResultKind, RunId, run_repository};
+use crate::{CoralFailure, Error, InvocationId, InvocationResultKind, RunId};
 
 #[derive(Iden)]
 enum OperationInvocations {
@@ -59,12 +58,11 @@ impl InvocationState {
     }
 }
 
-/// Inserts the admitted Invocation and commits `invocation.started` as one
-/// chunk under the worker's claim.
+/// Inserts the admitted Invocation's row; its `invocation.started` rides the
+/// same Run Ledger chunk.
 pub(super) async fn insert_admission(
     transaction: &mut Transaction<'_>,
     admitted: &AdmittedInvocation,
-    run: &RunRecord,
 ) -> Result<(), Error> {
     let statement = Query::insert()
         .into_table(OperationInvocations::Table)
@@ -104,14 +102,7 @@ pub(super) async fn insert_admission(
         ])
         .to_owned();
     transaction.execute(statement).await?;
-    run_repository::commit_chunk(
-        transaction,
-        Chunk::new(run, Some(&admitted.claim_id)).event(
-            NewEvent::InvocationStarted(&admitted.id),
-            admitted.admitted_at_unix_nanos,
-        ),
-    )
-    .await
+    Ok(())
 }
 
 pub(super) async fn connection_requests_for_run(

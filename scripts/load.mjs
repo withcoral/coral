@@ -23,6 +23,7 @@
 //   --hold-secs S               fanout: steady phase length (default 10)
 //   --emits N                   emit: small values in one Run (default 1000)
 //   --large-emits N             emit: 64 KiB values in one Run (default 64)
+//   --emit-interval MS          emit: pace the Program at one emit per MS (default 0: as fast as emit answers)
 //   --runs N                    concurrent: Runs started at once (default 20)
 //   --latency MS[,MS...]        added downstream round-trip latency through toxiproxy (default 0; postgres only)
 //   --out DIR                   report directory (default target/load/<timestamp>)
@@ -61,6 +62,7 @@ export async function parseArgs(argv) {
     mode: 'approve',
     holdSecs: 10,
     emits: 1000,
+    emitInterval: 0,
     largeEmits: 64,
     runs: 20,
     out: '',
@@ -110,6 +112,9 @@ export async function parseArgs(argv) {
         break
       case '--large-emits':
         options.largeEmits = integer(next(), 1)
+        break
+      case '--emit-interval':
+        options.emitInterval = integer(next(), 0)
         break
       case '--runs':
         options.runs = integer(next(), 1)
@@ -284,17 +289,20 @@ export function plan(options, latency) {
         })
       }
     } else if (cell === 'emit') {
+      const paced = options.emitInterval > 0 ? `-paced${options.emitInterval}` : ''
+      const pacing = options.emitInterval > 0 ? `, one per ${options.emitInterval} ms` : ''
+      const interval = { CORAL_LOAD_EMIT_INTERVAL_MS: String(options.emitInterval) }
       cells.push({
         test: 'run_emit_load',
-        stem: 'emit-small',
-        knobs: { CORAL_LOAD_EMITS: String(options.emits), CORAL_LOAD_EMIT_BYTES: '0' },
-        title: `emit, ${options.emits} small values`,
+        stem: `emit-small${paced}`,
+        knobs: { CORAL_LOAD_EMITS: String(options.emits), CORAL_LOAD_EMIT_BYTES: '0', ...interval },
+        title: `emit, ${options.emits} small values${pacing}`,
       })
       cells.push({
         test: 'run_emit_load',
-        stem: 'emit-64k',
-        knobs: { CORAL_LOAD_EMITS: String(options.largeEmits), CORAL_LOAD_EMIT_BYTES: String(LARGE_EMIT_BYTES) },
-        title: `emit, ${options.largeEmits} values of 64 KiB`,
+        stem: `emit-64k${paced}`,
+        knobs: { CORAL_LOAD_EMITS: String(options.largeEmits), CORAL_LOAD_EMIT_BYTES: String(LARGE_EMIT_BYTES), ...interval },
+        title: `emit, ${options.largeEmits} values of 64 KiB${pacing}`,
       })
     } else if (cell === 'concurrent') {
       cells.push({
@@ -382,7 +390,7 @@ function summarizeEmit(reports) {
     const emitting = phaseOf(r, 'emitting')
     const e = r.emissions
     return [
-      cellName(r, `${r.emits} emits`),
+      cellName(r, `${r.emits} emits${r.interval_ms > 0 ? ` / ${r.interval_ms} ms` : ''}`),
       String(r.value_bytes),
       `${r.run.state}${e.observed === r.emits ? '' : ` (${e.observed}/${r.emits} observed)`}`,
       seconds(r.run.emitting_ms),

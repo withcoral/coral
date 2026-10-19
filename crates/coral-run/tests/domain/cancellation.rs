@@ -136,8 +136,16 @@ async fn durable_cancellation_stops_execution_owned_by_an_independent_worker() {
         .expect("cancel from independent worker");
 
     assert_eq!(canceled.state(), RunState::Canceled);
-    assert!(engine.stopped.load(Ordering::SeqCst));
-    wait_until(|| !fixture.runs.has_active_execution(accepted.run_id())).await;
+    // The canceling worker holds no owner for the Run: it ended the Run on
+    // its own, and the owner stops at its next commit (an idle tick at the
+    // latest), which finds the Run ended.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !engine.stopped.load(Ordering::SeqCst) || fixture.runs.has_owner(accepted.run_id()) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the owner's next commit stops the Program and retires it");
     assert_eq!(engine.executions.load(Ordering::SeqCst), 1);
 }
 
@@ -432,7 +440,7 @@ async fn termination_ends_waiting_invocations_and_marks_unfinished_dispatches_in
                 );
             }
             in_flight.finish_late().await;
-            wait_until(|| !fixture.runs.has_active_execution(accepted.run_id())).await;
+            wait_until(|| !fixture.runs.has_owner(accepted.run_id())).await;
             let after_late_work = fixture
                 .runs
                 .observe(
@@ -600,54 +608,6 @@ async fn deadline_terminates_noncooperative_javascript_without_replay() {
 }
 
 #[tokio::test]
-async fn an_expired_pre_execution_claim_moves_without_replaying_javascript() {
-    let engine = Arc::new(ImmediateEngine::default());
-    let claim_gate = Arc::new(ClaimGate::default());
-    let fixture = TestModules::with_execution_adapters(
-        engine.clone(),
-        Arc::new(RejectingUpstream),
-        Arc::new(NoopInvocationObserver),
-        claim_gate.clone(),
-    )
-    .await;
-    let (workspace_id, principal) = fixture
-        .user_scope("user:movable-claim", "Move unstarted claim")
-        .await;
-    let accepted = fixture
-        .runs
-        .start(&principal, &workspace_id, submission("move-before-start"))
-        .await
-        .expect("accept Program");
-    wait_until(|| claim_gate.entered.load(Ordering::SeqCst)).await;
-    let accepted_at = retained_events(&fixture.runs, &principal, &workspace_id, accepted.run_id())
-        .await
-        .first()
-        .expect("run.started")
-        .occurred_at_unix_nanos();
-    fixture
-        .expire_worker_claim(&workspace_id, accepted.run_id(), accepted_at)
-        .await;
-    fixture
-        .clock
-        .next
-        .store(accepted_at + 2_000_000_000, Ordering::SeqCst);
-
-    fixture
-        .runs
-        .retry_execution(&principal, &workspace_id, accepted.run_id())
-        .await
-        .expect("move execution to a new claim");
-    let terminal =
-        wait_for_terminal(&fixture.runs, &principal, &workspace_id, accepted.run_id()).await;
-    assert_eq!(terminal.state(), RunState::Succeeded);
-    assert_eq!(engine.executions.load(Ordering::SeqCst), 1);
-    claim_gate.release.store(true, Ordering::SeqCst);
-    wait_until(|| claim_gate.finished.load(Ordering::SeqCst) == 2).await;
-    assert_eq!(claim_gate.claims.load(Ordering::SeqCst), 2);
-    assert_eq!(engine.executions.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
 async fn recovery_revokes_a_started_claim_before_late_program_work() {
     let (engine, release) = StaleClaimEngine::new("coral.providers.weather.getForecast");
     let engine = Arc::new(engine);
@@ -706,7 +666,7 @@ async fn recovery_revokes_a_started_claim_before_late_program_work() {
 
     release.send(()).expect("release stale execution");
     wait_until(|| engine.attempted_late_work.load(Ordering::SeqCst)).await;
-    wait_until(|| !fixture.runs.has_active_execution(accepted.run_id())).await;
+    wait_until(|| !fixture.runs.has_owner(accepted.run_id())).await;
     assert!(!engine.emission_succeeded.load(Ordering::SeqCst));
     assert!(!engine.invocation_succeeded.load(Ordering::SeqCst));
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
@@ -815,7 +775,7 @@ async fn recovery_ends_a_pending_invocation_without_dispatch() {
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
     release_fence.send(()).expect("release dispatch fence");
     wait_until(|| engine.finished.load(Ordering::SeqCst)).await;
-    wait_until(|| !fixture.runs.has_active_execution(accepted.run_id())).await;
+    wait_until(|| !fixture.runs.has_owner(accepted.run_id())).await;
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
     let unchanged = fixture
         .runs
@@ -908,7 +868,7 @@ async fn recovery_marks_an_uncertain_dispatch_indeterminate_without_replay() {
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 1);
     upstream.release.store(true, Ordering::SeqCst);
     wait_until(|| upstream.exited.load(Ordering::SeqCst)).await;
-    wait_until(|| !fixture.runs.has_active_execution(accepted.run_id())).await;
+    wait_until(|| !fixture.runs.has_owner(accepted.run_id())).await;
 }
 
 #[tokio::test]
@@ -1057,7 +1017,7 @@ async fn durable_cancellation_wins_completion_and_preserves_principal_confidenti
         .send(ExecutionCompletion::Succeeded(FinalValue::Absent))
         .expect("release losing completion");
     wait_until(|| engine.finished.load(Ordering::SeqCst)).await;
-    wait_until(|| !fixture.runs.has_active_execution(accepted.run_id())).await;
+    wait_until(|| !fixture.runs.has_owner(accepted.run_id())).await;
     let still_canceled = fixture
         .runs
         .observe(

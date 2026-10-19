@@ -45,6 +45,13 @@
 - Open read-only work with `Database::begin_read_snapshot` and non-holding
   checks. `Database::begin` takes SQLite's write lock at `BEGIN`, so it waits
   behind every other writer.
+- A Run's Program paths (Emissions, Logs, Invocation admission, held
+  rechecks, the Dispatch Fence, Invocation completion) write only through its
+  Run Owner: an Event is applied in owner memory and a row write is a
+  `ChunkWork` that joins the owner's chunk commit. Do not open a transaction
+  that holds the Run row from a Program path. See
+  [ADR 0018](docs/adr/0018-run-owner-coordinates-each-run.md) for the writers
+  that still hold the row from outside the owner.
 - Give each independently identified entity one stable ID as its sole primary
   key. Use a composite primary key only when the tuple is the domain identity.
 - For Workspace-owned data, every externally influenced read or write must

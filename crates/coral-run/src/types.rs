@@ -27,6 +27,11 @@ pub const RUN_TIMEOUT_MAX_MS: u64 = 900_000;
 pub const RUN_EVENT_PAGE_MAX: u16 = 100;
 /// Maximum UTF-8 byte length of one Program Log message.
 pub const PROGRAM_LOG_MESSAGE_MAX_BYTES: usize = 64 * 1024;
+/// Events after which the Run Owner closes a Run Ledger chunk.
+pub const CHUNK_EVENTS_CAP: usize = 1000;
+/// Output bytes after which the Run Owner closes a Run Ledger chunk; one larger
+/// Event commits alone.
+pub const CHUNK_BYTES_CAP: usize = 1024 * 1024;
 
 const RUN_CURSOR_FORMAT: u8 = 3;
 const RUN_CURSOR_PAYLOAD_BYTES: usize = 1 + 16 + 8 + 32;
@@ -291,6 +296,11 @@ impl ProgramValue {
 
     pub(crate) fn encoded_json(&self) -> &str {
         &self.encoded_json
+    }
+
+    /// The exact encoded JSON, as the row stores it.
+    pub(crate) fn into_encoded_json(self) -> String {
+        self.encoded_json
     }
 }
 
@@ -856,7 +866,7 @@ impl RunUpdate {
     }
 }
 
-/// Exact immutable attribution and deadline retained by a durable Run.
+/// Exact immutable attribution, deadline and claim retained by a durable Run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AcceptedRun {
     pub(crate) id: RunId,
@@ -866,4 +876,54 @@ pub(crate) struct AcceptedRun {
     pub(crate) deadline_at_unix_nanos: i64,
     pub(crate) shutdown_grace_nanos: i64,
     pub(crate) value_limits: coral_value::ValueLimits,
+    /// The Run Owner's claim, written as the worker claim by acceptance.
+    pub(crate) claim_id: String,
+    /// The first lease, which the owner renews with every chunk it commits.
+    pub(crate) worker_claim_expires_at_unix_nanos: i64,
+}
+
+/// The cap on Program output the Run Owner has applied but not yet recorded.
+///
+/// While the owner holds more than this many unrecorded output bytes, Program
+/// requests answer only once the chunk that carries them commits, so the cap
+/// bounds the loss set and the owner's memory without slowing the admission
+/// burst. Set at process bootstrap; the default is 8 MiB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppliedOutputCap {
+    bytes: usize,
+}
+
+impl AppliedOutputCap {
+    /// The default cap, 8 MiB.
+    pub const DEFAULT_BYTES: usize = 8 * 1024 * 1024;
+
+    /// Accepts a cap of at least twice the chunk bytes cap, so one full chunk
+    /// in flight and one being built never exceed it on their own.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] below `2 ×` [`CHUNK_BYTES_CAP`].
+    pub fn new(bytes: usize) -> Result<Self, Error> {
+        if bytes < 2 * CHUNK_BYTES_CAP {
+            return Err(Error::InvalidInput(format!(
+                "applied output cap must be at least {} bytes, twice the chunk bytes cap",
+                2 * CHUNK_BYTES_CAP
+            )));
+        }
+        Ok(Self { bytes })
+    }
+
+    /// The cap in bytes.
+    #[must_use]
+    pub const fn bytes(self) -> usize {
+        self.bytes
+    }
+}
+
+impl Default for AppliedOutputCap {
+    fn default() -> Self {
+        Self {
+            bytes: Self::DEFAULT_BYTES,
+        }
+    }
 }

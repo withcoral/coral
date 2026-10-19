@@ -1,8 +1,7 @@
 //! The Run Ledger head and the one chunk-commit write path (ADR 0018).
 //!
 //! A chunk is everything one Run write carries: its Events, the Run Output
-//! Budget total after them, and, once the Run Owner writes them, the worker
-//! lease renewal.
+//! Budget total after them, and the worker lease renewal.
 //! [`commit_chunk`] writes it in the caller's transaction under one predicate,
 //! the execution claim id and the head the chunk was built on, and moves the
 //! head by one. The Run-scoped rows a chunk carries (Invocation rows, Approval
@@ -14,7 +13,7 @@ use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
 use sea_query::{Expr, ExprTrait as _, Query};
 
-use super::events::{NewEvent, insert_events};
+use super::events::{NewEvent, OwnedEvent, insert_events};
 use super::{ProgramRunRecords, RunRecord};
 use crate::{Error, RunId, RunState};
 
@@ -65,6 +64,14 @@ impl<'a> Chunk<'a> {
         self
     }
 
+    /// Appends `events` in order after the ones already in the chunk.
+    pub(crate) fn owned_events(mut self, events: &'a [OwnedEvent]) -> Self {
+        for event in events {
+            self = self.event(event.as_new(), event.occurred_at_unix_nanos);
+        }
+        self
+    }
+
     /// Sets the Run Output Budget total this chunk records.
     pub(crate) const fn output_bytes(mut self, total: usize) -> Self {
         self.output_bytes = total;
@@ -72,19 +79,8 @@ impl<'a> Chunk<'a> {
     }
 
     /// Renews the worker lease to `until_unix_nanos` when the Run row still
-    /// holds this chunk's claim as its worker claim.
-    ///
-    /// No writer renews yet: today a starved heartbeat lets the lease lapse and
-    /// the next write self-interrupts the Run, which is what ends a burst that
-    /// exhausts the pool. The Run Owner renews on every chunk once it also
-    /// owns the suspect and self-interrupt rule (slices 2 and 3).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the Run Owner is the first writer to renew per chunk"
-        )
-    )]
+    /// holds this chunk's claim as its worker claim. The Run Owner renews on
+    /// every chunk it commits; a released worker claim is never re-leased.
     pub(crate) const fn renew_lease(mut self, until_unix_nanos: i64) -> Self {
         self.lease_until_unix_nanos = Some(until_unix_nanos);
         self

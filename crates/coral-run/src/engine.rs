@@ -3,17 +3,18 @@
 //! [`execute`] takes an accepted package, Run-bound invoker and output writer,
 //! accepted value limits, and stop control. It runs the selected [`ProgramEngine`]
 //! on a blocking worker and returns [`ExecutionCompletion`], not a durable Run
-//! outcome. It requires a Tokio runtime; callers retain the execution claim,
-//! heartbeat, child shutdown, and final outcome transaction.
+//! outcome. It requires a Tokio runtime; the Run Owner that hosts it retains
+//! the claim, the lease, child shutdown, and the final outcome transaction.
 //!
 //! The private host bridge owns Operation task spawning, JSON and console
 //! projection, safe host-error translation, synchronous output calls, and
 //! stop-on-panic behavior. Invocation tasks start independently of V8 polling.
-//! The invoker commits completion before its Promise can settle; the output
-//! writer commits each Event before a callback returns. Fatal Invocation errors
-//! and task panics request stop even while JavaScript does not yield. Host defects
-//! expose no private diagnostics; output errors retain their invalid-value,
-//! resource-limit, or uncatchable fatal classification.
+//! The invoker and the output writer ask the Run Owner, which answers at
+//! Applied; a known Invocation failure is recorded before its Promise settles.
+//! Fatal Invocation errors and task panics request stop even while JavaScript
+//! does not yield. Host defects expose no private diagnostics; output errors
+//! retain their invalid-value, resource-limit, or uncatchable fatal
+//! classification.
 //!
 //! The existing scripted/V8 engine seam stays internal. V8 owns isolate mechanics
 //! and authored diagnostics; its compiler-only and execution isolates stay separate.

@@ -1,12 +1,15 @@
 //! Emit cell: one Program emits `CORAL_LOAD_EMITS` values, each padded with
-//! `CORAL_LOAD_EMIT_BYTES`, and every Emission is timed from the Program's own
-//! clock (`Date.now()` inside the emitted value) to four points:
+//! `CORAL_LOAD_EMIT_BYTES`, at most one per `CORAL_LOAD_EMIT_INTERVAL_MS`
+//! (0, the default, emits as fast as each `emit` answers), and every Emission
+//! is timed from the Program's own clock (`Date.now()` inside the emitted
+//! value) to four points:
 //!
-//! - `emit_ack_ms`: `await coral.emit(...)` resolved in the Program (today the
-//!   Emission's own commit; Applied under the Run Owner, where emit answers once
-//!   the owner has it in memory).
-//! - `held_ms`: the Emission's `occurred_at`, taken inside the write transaction
-//!   once it holds the Run row (pool wait plus the row hold).
+//! - `emit_ack_ms`: `await coral.emit(...)` resolved in the Program: Applied,
+//!   once the Run Owner has the Emission in memory (before the owner, the
+//!   Emission's own commit).
+//! - `held_ms`: the Emission's `occurred_at`, the owner's apply time (before the
+//!   owner, the time the write transaction got the Run row: pool wait plus the
+//!   row hold).
 //! - `recorded_ms`: a poller on the measurement connection first saw the Emission
 //!   row committed, at `RECORDED_POLL` resolution.
 //! - `visible_ms`: an observer paging through `RunModule::observe` from the Run's
@@ -134,11 +137,12 @@ async fn poll_recorded(
 async fn run_emit_load() {
     let emits = setting_u64("CORAL_LOAD_EMITS", 1000);
     let pad = setting_u64("CORAL_LOAD_EMIT_BYTES", 0);
+    let interval_ms = setting_u64("CORAL_LOAD_EMIT_INTERVAL_MS", 0);
 
     let mut h = Harness::arrange("emit").await;
     let mut probe = h.open_probe().await;
     let recorder_probe = h.open_probe().await;
-    eprintln!("load: emits={emits} pad_bytes={pad}");
+    eprintln!("load: emits={emits} pad_bytes={pad} interval_ms={interval_ms}");
 
     let probes = h.start_probes();
     let mut phases = Vec::new();
@@ -151,9 +155,12 @@ async fn run_emit_load() {
         to: run_started,
     });
 
+    // A paced Program spins on the clock between emits: the sandbox has no
+    // timers, and the point is the gap, not the CPU.
     let program = format!(
-        "const pad = 'x'.repeat({pad}); const acks = []; \
+        "const pad = 'x'.repeat({pad}); const acks = []; let next = Date.now(); \
          for (let i = 0; i < {emits}; i += 1) {{ \
+           while (Date.now() < next) {{}} next += {interval_ms}; \
            const t = Date.now(); await coral.emit({{i, t, pad}}); acks.push(Date.now() - t); \
          }} \
          return {{acks}};"
@@ -230,6 +237,7 @@ async fn run_emit_load() {
         json!({
             "emits": emits,
             "pad_bytes": pad,
+            "interval_ms": interval_ms,
             "value_bytes": value_bytes,
             "recorded_poll_ms": millis(RECORDED_POLL),
             "run": {

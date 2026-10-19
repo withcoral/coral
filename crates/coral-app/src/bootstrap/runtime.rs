@@ -18,7 +18,7 @@ use coral_workspace::WorkspaceModule;
 use super::error::AppError;
 use super::health::EngineReadiness as ListenerReadiness;
 use super::server::{PreparedServerBuilder, RunningServer as GrpcServer, ServerBuilder};
-use super::server_config::{LOCAL_OUTBOUND_DEFAULTS, McpHttpServeConfig};
+use super::server_config::{LOCAL_OUTBOUND_DEFAULTS, McpHttpServeConfig, RuntimeLimits};
 use crate::auth::{AuthServerError, CoralAuthorizationServer, RunningCoralAuthorizationServer};
 
 /// What the launching process says about this launch.
@@ -338,7 +338,7 @@ async fn start_inner(builder: PreparedServerBuilder) -> Result<RunningRuntime, S
         mcp_config,
         &grpc,
         authentication,
-        settings.isolate_limits(),
+        settings.runtime_limits(),
         settings.outbound_policy(),
         settings.human_interface().clone(),
     )
@@ -413,7 +413,7 @@ async fn start_mcp_http(
     settings: McpHttpServeConfig,
     grpc: &GrpcServer,
     authentication: Option<crate::WorkspaceAuthentication>,
-    isolate_limits: coral_run::IsolateLimits,
+    runtime_limits: RuntimeLimits,
     policy: coral_outbound::DestinationPolicy,
     human_interface: coral_mcp::HumanInterfaceUrl,
 ) -> Result<RunningMcpHttpServer, McpStartError> {
@@ -423,7 +423,7 @@ async fn start_mcp_http(
         grpc.database(),
         grpc.provider_accounts(),
         grpc.search_index(),
-        isolate_limits,
+        runtime_limits,
         human_interface,
     )
     .map_err(McpStartError::Runtime)?;
@@ -457,15 +457,17 @@ fn mcp_modules(
     database: Arc<Database>,
     accounts: Option<coral_provider::account::AccountModule>,
     search_index: SearchIndex,
-    isolate_limits: coral_run::IsolateLimits,
+    runtime_limits: RuntimeLimits,
     human_interface: coral_mcp::HumanInterfaceUrl,
 ) -> Result<McpModules, coral_run::Error> {
+    let isolate_limits = runtime_limits.isolate_limits();
     let workspaces = WorkspaceModule::new(Arc::clone(&database));
     let tasks = TaskModule::new(Arc::clone(&database), workspaces.clone());
     let search = UniversalSearchModule::new(Arc::clone(&database), workspaces.clone());
     let saved_functions =
         SavedFunctionModule::new(Arc::clone(&database), workspaces.clone(), isolate_limits)?;
-    let runs = RunModule::new(policy, database, workspaces.clone(), isolate_limits)?;
+    let runs = RunModule::new(policy, database, workspaces.clone(), isolate_limits)?
+        .with_applied_output_cap(runtime_limits.applied_output_cap());
     let runs = match accounts {
         Some(accounts) => runs.with_accounts(accounts),
         None => runs,

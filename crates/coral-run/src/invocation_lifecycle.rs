@@ -1,10 +1,11 @@
 //! Invocation completion and termination decisions. Every write joins the
-//! caller's Run-held transaction: the Invocation and Approval rows through
-//! their repositories, the Events through one Run Ledger chunk.
+//! caller's transaction: the Invocation and Approval rows through their
+//! repositories, and the `invocation.ended` Events are returned for the
+//! caller's Run Ledger chunk, the owner's or an outside writer's own.
 
 use crate::invocation::{AdmittedInvocation, InvocationCompletion};
 use crate::lifecycle::RunRecord;
-use crate::run_repository::{Chunk, NewEvent};
+use crate::run_repository::{Chunk, OwnedEvent, OwnedEventKind};
 use crate::{
     CoralFailure, Error, InvocationId, InvocationResultKind, approval, invocation_repository,
     run_repository,
@@ -12,15 +13,15 @@ use crate::{
 use coral_db::Transaction;
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum InvocationState {
+pub(crate) enum InvocationState {
     Pending,
     Dispatching,
     Ended,
 }
 
-pub(super) struct UnfinishedInvocation {
-    pub(super) id: InvocationId,
-    pub(super) state: InvocationState,
+pub(crate) struct UnfinishedInvocation {
+    pub(crate) id: InvocationId,
+    pub(crate) state: InvocationState,
 }
 
 impl UnfinishedInvocation {
@@ -35,24 +36,31 @@ impl UnfinishedInvocation {
     }
 }
 
-/// Ends the Invocation and commits `invocation.ended` under the worker's claim.
-///
-/// When another completion already won: a failure with the same code as the
-/// recorded one returns `true` without a second Event (the durable decision
-/// is the one delivered), a recorded failure that prevents continuation is
-/// `Error::InvocationRejected`, and anything else returns `false`.
-pub(super) async fn finish(
+/// What ending an Invocation found.
+pub(crate) enum FinishOutcome {
+    /// The Invocation ended now; the Event rides the caller's chunk.
+    Finished(OwnedEvent),
+    /// Another completion already won with the same failure code: the durable
+    /// decision is the one delivered, and no second Event is written.
+    SameFailure,
+    /// Another completion already won with a failure that prevents
+    /// continuation: deliver the durable human decision.
+    Superseded(CoralFailure),
+    /// Another completion already won with something else.
+    Lost,
+}
+
+/// Ends the Invocation and returns its `invocation.ended` for the chunk.
+pub(crate) async fn finish(
     transaction: &mut Transaction<'_>,
     admitted: &AdmittedInvocation,
-    run: &RunRecord,
+    dispatch_started: bool,
     completion: &InvocationCompletion,
     ended_at_unix_nanos: i64,
-) -> Result<bool, Error> {
+) -> Result<FinishOutcome, Error> {
     let expected = match completion {
         InvocationCompletion::Upstream { .. } => InvocationState::Dispatching,
-        InvocationCompletion::Failure(_) if admitted.dispatch_started => {
-            InvocationState::Dispatching
-        }
+        InvocationCompletion::Failure(_) if dispatch_started => InvocationState::Dispatching,
         InvocationCompletion::Failure(_) => InvocationState::Pending,
     };
     if !invocation_repository::finish(
@@ -64,8 +72,6 @@ pub(super) async fn finish(
     )
     .await?
     {
-        // Deliver the durable human decision, not a worker's stale gate failure.
-        // No second Invocation-ended Event is written for an existing winner.
         if let InvocationCompletion::Failure(failure) = completion {
             let existing = invocation_repository::completed_failure(
                 transaction,
@@ -73,21 +79,17 @@ pub(super) async fn finish(
                 &admitted.id,
             )
             .await?;
-            return match existing {
+            return Ok(match existing {
                 // Per-result and cumulative output limits intentionally share one code.
-                Some(existing) if existing.code() == failure.code() => Ok(true),
+                Some(existing) if existing.code() == failure.code() => FinishOutcome::SameFailure,
                 Some(existing) if approval::prevents_continuation(existing) => {
-                    Err(Error::InvocationRejected(existing))
+                    FinishOutcome::Superseded(existing)
                 }
-                _ => Ok(false),
-            };
+                _ => FinishOutcome::Lost,
+            });
         }
-        return Ok(false);
+        return Ok(FinishOutcome::Lost);
     }
-    let output_bytes = match completion {
-        InvocationCompletion::Upstream { result_json } => run.output_total(result_json.len())?,
-        InvocationCompletion::Failure(_) => run.accumulated_output_bytes,
-    };
     approval::close_for_invocation(
         transaction,
         &admitted.workspace_id,
@@ -95,46 +97,50 @@ pub(super) async fn finish(
         ended_at_unix_nanos,
     )
     .await?;
-    run_repository::commit_chunk(
-        transaction,
-        Chunk::new(run, Some(&admitted.claim_id))
-            .event(
-                NewEvent::InvocationEnded(&admitted.id, completion.result_kind()),
-                ended_at_unix_nanos,
-            )
-            .output_bytes(output_bytes),
-    )
-    .await?;
-    Ok(true)
+    Ok(FinishOutcome::Finished(OwnedEvent::new(
+        OwnedEventKind::InvocationEnded(admitted.id.clone(), completion.result_kind()),
+        ended_at_unix_nanos,
+    )))
 }
 
-pub(super) async fn finish_approval_failure(
+/// Ends a pending Invocation with `failure` from an approval decision and
+/// returns its `invocation.ended` for the caller's chunk.
+pub(crate) async fn finish_approval_failure(
     tx: &mut Transaction<'_>,
     run: &RunRecord,
     invocation: &InvocationId,
     failure: CoralFailure,
     now: i64,
-) -> Result<(), Error> {
+) -> Result<OwnedEvent, Error> {
     if !invocation_repository::end_pending_with_failure(tx, run, invocation, failure, now).await? {
         return Err(Error::InvocationPersistence(
             "Approval lost its pending Invocation".into(),
         ));
     }
+    Ok(OwnedEvent::new(
+        OwnedEventKind::InvocationEnded(invocation.clone(), InvocationResultKind::CoralFailure),
+        now,
+    ))
+}
+
+/// Commits `events` as one chunk under the Run's claim, for the writers that
+/// still write outside the Run Owner (approval decisions).
+pub(crate) async fn commit_outside_owner(
+    tx: &mut Transaction<'_>,
+    run: &RunRecord,
+    events: &[OwnedEvent],
+) -> Result<(), Error> {
+    if events.is_empty() {
+        return Ok(());
+    }
     let claim = run
         .execution_claim_id
         .as_deref()
         .ok_or(Error::ProgramHostTerminated)?;
-    run_repository::commit_chunk(
-        tx,
-        Chunk::new(run, Some(claim)).event(
-            NewEvent::InvocationEnded(invocation, InvocationResultKind::CoralFailure),
-            now,
-        ),
-    )
-    .await
+    run_repository::commit_chunk(tx, Chunk::new(run, Some(claim)).owned_events(events)).await
 }
 
-pub(super) async fn end_nonterminal_for_run(
+pub(crate) async fn end_nonterminal_for_run(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
     ended_at_unix_nanos: i64,
@@ -150,10 +156,10 @@ pub(super) async fn end_nonterminal_for_run(
     };
     // One chunk ends every nonterminal Invocation: their rows, their pending
     // Approval Requests, and their `invocation.ended` Events commit together.
-    let mut chunk = Chunk::new(run, Some(claim));
+    let mut events = Vec::with_capacity(invocations.len());
     for invocation in &invocations {
         let result_kind = invocation.termination_result()?;
-        if !invocation_repository::end_for_termination(
+        let event = end_for_termination(
             transaction,
             run,
             invocation,
@@ -161,22 +167,48 @@ pub(super) async fn end_nonterminal_for_run(
             ended_at_unix_nanos,
         )
         .await?
-        {
-            return Err(Error::InvocationPersistence(
-                "Operation Invocation termination lost its race".into(),
-            ));
-        }
-        approval::close_for_invocation(
-            transaction,
-            &run.workspace_id,
-            &invocation.id,
-            ended_at_unix_nanos,
-        )
-        .await?;
-        chunk = chunk.event(
-            NewEvent::InvocationEnded(&invocation.id, result_kind),
-            ended_at_unix_nanos,
-        );
+        .ok_or_else(|| {
+            Error::InvocationPersistence("Operation Invocation termination lost its race".into())
+        })?;
+        events.push(event);
     }
-    run_repository::commit_chunk(transaction, chunk).await
+    run_repository::commit_chunk(
+        transaction,
+        Chunk::new(run, Some(claim)).owned_events(&events),
+    )
+    .await
+}
+
+/// Ends one nonterminal Invocation for a termination: its row, its pending
+/// Approval Request, and its `invocation.ended` for the caller's chunk. `None`
+/// when the row is no longer in the expected state.
+pub(crate) async fn end_for_termination(
+    transaction: &mut Transaction<'_>,
+    run: &RunRecord,
+    invocation: &UnfinishedInvocation,
+    result_kind: InvocationResultKind,
+    ended_at_unix_nanos: i64,
+) -> Result<Option<OwnedEvent>, Error> {
+    if !invocation_repository::end_for_termination(
+        transaction,
+        run,
+        invocation,
+        result_kind,
+        ended_at_unix_nanos,
+    )
+    .await?
+    {
+        return Ok(None);
+    }
+    approval::close_for_invocation(
+        transaction,
+        &run.workspace_id,
+        &invocation.id,
+        ended_at_unix_nanos,
+    )
+    .await?;
+    Ok(Some(OwnedEvent::new(
+        OwnedEventKind::InvocationEnded(invocation.id.clone(), result_kind),
+        ended_at_unix_nanos,
+    )))
 }

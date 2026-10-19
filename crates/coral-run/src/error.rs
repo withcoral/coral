@@ -245,6 +245,10 @@ pub enum Error {
     /// `run.ended`.
     #[error("Program Run Ledger chunk was built on an ended Run")]
     RunEnded,
+    /// The Run Owner stopped before it recorded the request. The outcome is
+    /// unknown: read the Run again.
+    #[error("Program Run Owner stopped before recording the request")]
+    OwnerLost,
     /// A fatal Program host failure stopped execution for recovery.
     #[error("Program host terminated execution")]
     ProgramHostTerminated,

@@ -11,7 +11,7 @@ pub(crate) struct ClaimGate {
 
 #[async_trait]
 impl ExecutionObserver for ClaimGate {
-    async fn worker_claimed(&self, _run_id: &crate::RunId, _claim_id: &str) {
+    async fn owner_starting(&self, _run_id: &crate::RunId, _claim_id: &str) {
         if self.claims.fetch_add(1, Ordering::SeqCst) == 0 {
             self.entered.store(true, Ordering::SeqCst);
             while !self.release.load(Ordering::SeqCst) {
@@ -22,6 +22,38 @@ impl ExecutionObserver for ClaimGate {
 
     fn execution_attempt_finished(&self) {
         self.finished.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// Holds the Run Owner's first chunk commit (after its start mark) until
+/// released; every later commit passes.
+pub(crate) struct CommitGate {
+    pub(crate) entered: AtomicBool,
+    release: Mutex<Option<oneshot::Receiver<()>>>,
+}
+
+impl CommitGate {
+    pub(crate) fn blocking() -> (Arc<Self>, oneshot::Sender<()>) {
+        let (sender, receiver) = oneshot::channel();
+        (
+            Arc::new(Self {
+                entered: AtomicBool::new(false),
+                release: Mutex::new(Some(receiver)),
+            }),
+            sender,
+        )
+    }
+}
+
+#[async_trait]
+impl ExecutionObserver for CommitGate {
+    async fn before_chunk_commit(&self) {
+        let release = self.release.lock().expect("commit gate lock").take();
+        self.entered.store(true, Ordering::SeqCst);
+        if let Some(release) = release {
+            // A dropped sender releases the commit too.
+            let _released = release.await;
+        }
     }
 }
 

@@ -15,6 +15,7 @@ mod mcp;
 mod memory;
 mod observation;
 mod output;
+mod owner;
 mod refresh;
 mod required_actions;
 mod scoping;

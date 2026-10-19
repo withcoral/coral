@@ -6,12 +6,6 @@ use crate::run_repository::{Chunk, NewEvent, commit_chunk, hold_run};
 
 const LEASE_UNTIL: i64 = 1_000_000_000_000;
 
-/// The last Event sequence of a Run read from a snapshot.
-fn last_sequence(run: &crate::lifecycle::RunRecord) -> u64 {
-    run.last_event_sequence
-        .expect("a Run read from a snapshot carries its last Event sequence")
-}
-
 /// A staged Run, claimed by `claim` when one is given, with its row as read.
 async fn arranged_run(
     fixture: &TestModules,

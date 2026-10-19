@@ -147,8 +147,66 @@ pub(crate) enum NewEvent<'a> {
     Ended(RunState, usize),
     InvocationStarted(&'a InvocationId),
     InvocationEnded(&'a InvocationId, InvocationResultKind),
-    Emitted(&'a ProgramValue),
+    /// A Program Emission as its encoded JSON.
+    Emitted(&'a str),
     Logged(ProgramLogLevel, &'a str),
+}
+
+impl NewEvent<'_> {
+    /// The Run Output Budget bytes this Event carries.
+    pub(crate) fn output_bytes(&self) -> usize {
+        match self {
+            Self::Emitted(value) => value.len(),
+            Self::Logged(_, message) => message.len(),
+            Self::Ended(_, bytes) => *bytes,
+            Self::Started
+            | Self::CancellationRequested(_)
+            | Self::InvocationStarted(_)
+            | Self::InvocationEnded(..) => 0,
+        }
+    }
+}
+
+/// An Event a writer holds in memory until its chunk commits: the Run Owner's
+/// applied Events, and the Events a chunk's row work produces inside the
+/// commit transaction.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct OwnedEvent {
+    pub(crate) kind: OwnedEventKind,
+    pub(crate) occurred_at_unix_nanos: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum OwnedEventKind {
+    InvocationStarted(InvocationId),
+    InvocationEnded(InvocationId, InvocationResultKind),
+    /// A Program Emission as its encoded JSON: what the row stores, and all
+    /// the owner keeps in memory until the chunk commits.
+    Emitted(String),
+    Logged(ProgramLogLevel, String),
+}
+
+impl OwnedEvent {
+    pub(crate) const fn new(kind: OwnedEventKind, occurred_at_unix_nanos: i64) -> Self {
+        Self {
+            kind,
+            occurred_at_unix_nanos,
+        }
+    }
+
+    pub(crate) fn as_new(&self) -> NewEvent<'_> {
+        match &self.kind {
+            OwnedEventKind::InvocationStarted(id) => NewEvent::InvocationStarted(id),
+            OwnedEventKind::InvocationEnded(id, kind) => NewEvent::InvocationEnded(id, *kind),
+            OwnedEventKind::Emitted(value) => NewEvent::Emitted(value),
+            OwnedEventKind::Logged(level, message) => NewEvent::Logged(*level, message),
+        }
+    }
+
+    /// The Run Output Budget bytes this Event carries.
+    pub(crate) fn output_bytes(&self) -> usize {
+        self.as_new().output_bytes()
+    }
 }
 
 /// Appends `events` after the Run's last Event, in multi-row statements of at
@@ -299,13 +357,7 @@ fn event_row(
     event: &NewEvent<'_>,
     occurred_at_unix_nanos: i64,
 ) -> Result<[sea_query::Value; 14], Error> {
-    let output_bytes = match event {
-        NewEvent::Emitted(value) => value.encoded_json().len(),
-        NewEvent::Logged(_, message) => message.len(),
-        NewEvent::Ended(_, bytes) => *bytes,
-        _ => 0,
-    };
-    let output_bytes = i64::try_from(output_bytes)
+    let output_bytes = i64::try_from(event.output_bytes())
         .map_err(|_overflow| Error::CorruptData("Event byte count overflow".into()))?;
     let (event_type, payload) = match event {
         NewEvent::Started => ("run.started", EventPayload::default()),
@@ -341,7 +393,7 @@ fn event_row(
         NewEvent::Emitted(value) => (
             "program.emitted",
             EventPayload {
-                value: Some(value.encoded_json()),
+                value: Some(value),
                 ..EventPayload::default()
             },
         ),

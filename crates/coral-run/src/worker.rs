@@ -1,41 +1,34 @@
-//! One worker's execution of an accepted Run: the leased claim, the durable
-//! execution-start mark, claim heartbeats, and the completing terminal write.
-
-use std::sync::Arc;
+//! One Run's execution under its Run Owner: the owner's first chunk (the
+//! execution-start mark under the claim acceptance wrote), the deadline task,
+//! and the terminal write once the Program has ended.
 
 use coral_workspace::AuthenticatedPrincipal;
-use uuid::Uuid;
 
-use crate::engine::{self, ExecutionCompletion, ProgramPackage};
-use crate::execution::ActiveExecution;
-#[cfg(test)]
-use crate::execution::ExecutionObserver;
-use crate::invocation::OperationInvoker;
+use crate::engine::{ExecutionCompletion, ProgramPackage};
 use crate::lifecycle::RunTerminationKind;
-use crate::program_output::ProgramOutputWriter;
+use crate::owner::{self, OwnerHandle};
 use crate::termination::ShutdownAction;
 use crate::types::AcceptedRun;
 use crate::{
     Error, FinalValue, RunFailure, RunFailureCode, RunModule, RunState, RunTerminalOutcome,
     duration_until, invocation_repository, run_repository,
 };
-#[cfg(test)]
-use crate::{RunId, WorkspaceId};
 
 impl RunModule {
+    /// Creates the Run Owner for a durably accepted Run and the task that
+    /// records its deadline. The owner is registered before its task starts,
+    /// so a stop that arrives first still finds it.
     pub(crate) fn schedule_execution(&self, run: AcceptedRun, actor: AuthenticatedPrincipal) {
-        let execution_module = self.clone();
-        let execution_run = run.clone();
-        let _execution_task = tokio::spawn(async move {
-            if execution_module
-                .execute_accepted(execution_run, actor)
-                .await
-                .is_err()
-            {
-                // The durable worker claim is the recovery source. An
-                // operational failure cannot safely invent a terminal result.
-            }
-        });
+        let (handle, mailbox) = OwnerHandle::new(run.id.clone(), run.claim_id.clone());
+        let registration = self.owners.register(handle.clone());
+        let _owner_task = tokio::spawn(owner::host(
+            self.clone(),
+            run.clone(),
+            actor,
+            handle,
+            mailbox,
+            registration,
+        ));
         let deadline_module = self.clone();
         let _deadline_task = tokio::spawn(async move {
             let now = deadline_module
@@ -47,129 +40,17 @@ impl RunModule {
         });
     }
 
-    async fn execute_accepted(
-        &self,
-        accepted: AcceptedRun,
-        actor: AuthenticatedPrincipal,
-    ) -> Result<(), Error> {
-        #[cfg(test)]
-        let _attempt = ExecutionAttemptObservation(self.execution_observer.clone());
-        let Some(claim_id) = self.claim_execution(&accepted).await? else {
-            return Ok(());
-        };
-        let registration = self
-            .active_executions
-            .register(accepted.id.clone(), claim_id.clone());
-        let active = registration.active();
-        let Some(package) = self
-            .start_claimed_execution(&accepted, &actor, &claim_id)
-            .await?
-        else {
-            return Ok(());
-        };
-        let stop = active.stop();
-        let output = ProgramOutputWriter::new(
-            self.database.clone(),
-            accepted.id.clone(),
-            accepted.workspace_id.clone(),
-            claim_id.clone(),
-            self.clock.clone(),
-            accepted.value_limits,
-        );
-        let invoker = OperationInvoker::new(
-            self.accounts.clone(),
-            self.database.clone(),
-            self.workspaces.clone(),
-            actor,
-            accepted.id.clone(),
-            accepted.workspace_id.clone(),
-            accepted.principal.clone(),
-            claim_id.clone(),
-            accepted.deadline_at_unix_nanos,
-            accepted.value_limits,
-            stop.clone(),
-            self.upstream.clone(),
-            self.clock.clone(),
-            #[cfg(test)]
-            self.invocation_observer.clone(),
-        );
-        let heartbeat = self.schedule_claim_heartbeat(&accepted, &claim_id, active.clone());
-        let completion = engine::execute(
-            self.engine.clone(),
-            package,
-            invoker,
-            output,
-            accepted.value_limits,
-            stop,
-        )
-        .await;
-        // Normal execution drained its children. On an engine/host failure,
-        // also wake any detached Invocation tasks before durable shutdown.
-        active.request_stop();
-        active.mark_stopped();
-        heartbeat.abort();
-        self.complete_execution(&accepted, &claim_id, completion)
-            .await
-    }
-
-    async fn claim_execution(&self, accepted: &AcceptedRun) -> Result<Option<String>, Error> {
-        let mut transaction = self.database.begin().await?;
-        let Some(run) =
-            run_repository::hold_run(&mut transaction, &accepted.workspace_id, &accepted.id)
-                .await?
-        else {
-            return Ok(None);
-        };
-        let now = self.now()?.max(run.accepted_at_unix_nanos);
-        if run.state != RunState::Running || run.termination.is_some() || run.execution_started() {
-            transaction.commit().await?;
-            return Ok(None);
-        }
-        if now >= run.deadline_at_unix_nanos {
-            let run = self
-                .request_termination(
-                    &mut transaction,
-                    &run,
-                    RunTerminationKind::TimedOut,
-                    None,
-                    now,
-                )
-                .await?;
-            self.finish_termination_in_transaction(&mut transaction, &run, now)
-                .await?;
-            transaction.commit().await?;
-            return Ok(None);
-        }
-        let claimed_until = now
-            .checked_add(self.execution_policy.claim_lease_nanos())
-            .ok_or_else(|| Error::Clock("worker claim deadline overflowed".to_string()))?;
-        let claim_id = Uuid::new_v4().hyphenated().to_string();
-        let claimed = run_repository::claim_execution_worker(
-            &mut transaction,
-            &run,
-            &claim_id,
-            claimed_until,
-            now,
-        )
-        .await?;
-        transaction.commit().await?;
-        if claimed {
-            #[cfg(test)]
-            self.execution_observer
-                .worker_claimed(&accepted.id, &claim_id)
-                .await;
-            Ok(Some(claim_id))
-        } else {
-            Ok(None)
-        }
-    }
-
-    async fn start_claimed_execution(
+    /// The owner's first chunk: rechecks the Run and the Principal's current
+    /// authority under the Run hold, then writes the execution-start mark and
+    /// returns the package to execute. `None` when there is nothing to run:
+    /// the Run ended or was terminated first, its deadline passed (recorded
+    /// here), its lease lapsed, or authority was lost (the Run fails here).
+    pub(crate) async fn start_execution(
         &self,
         accepted: &AcceptedRun,
         actor: &AuthenticatedPrincipal,
-        claim_id: &str,
     ) -> Result<Option<ProgramPackage>, Error> {
+        let claim_id = accepted.claim_id.as_str();
         let mut transaction = self.database.begin().await?;
         let Some(run) =
             run_repository::hold_run(&mut transaction, &accepted.workspace_id, &accepted.id)
@@ -250,84 +131,38 @@ impl RunModule {
             return Ok(None);
         }
 
-        let started =
-            run_repository::mark_execution_started(&mut transaction, &run, claim_id, started_at)
-                .await?;
+        let lease_until = self.execution_policy.lease_until(started_at)?;
+        run_repository::start_execution(&mut transaction, &run, claim_id, started_at, lease_until)
+            .await?;
         transaction.commit().await?;
-        Ok(started.then_some(package))
+        Ok(Some(package))
     }
 
-    fn schedule_claim_heartbeat(
+    /// The terminal write for the Program's completion, after the owner has
+    /// recorded every chunk it applied. Returns the shutdown still to settle
+    /// when a termination is recorded instead of a completion.
+    ///
+    /// # Errors
+    ///
+    /// A Run cannot complete while a child Invocation is nonterminal; the Run
+    /// then keeps its claim for recovery.
+    pub(crate) async fn complete_execution(
         &self,
         accepted: &AcceptedRun,
-        claim_id: &str,
-        active: Arc<ActiveExecution>,
-    ) -> tokio::task::JoinHandle<()> {
-        let module = self.clone();
-        let accepted = accepted.clone();
-        let claim_id = claim_id.to_string();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(module.execution_policy.claim_heartbeat()).await;
-                if active.stop().is_requested() {
-                    return;
-                }
-                let renewed = async {
-                    let mut transaction = module.database.begin().await?;
-                    if run_repository::hold_run(
-                        &mut transaction,
-                        &accepted.workspace_id,
-                        &accepted.id,
-                    )
-                    .await?
-                    .is_none()
-                    {
-                        return Ok::<bool, Error>(false);
-                    }
-                    let now = module.now()?.max(accepted.accepted_at_unix_nanos);
-                    let claimed_until = now
-                        .checked_add(module.execution_policy.claim_lease_nanos())
-                        .ok_or_else(|| {
-                            Error::Clock("worker claim deadline overflowed".to_string())
-                        })?;
-                    let renewed = run_repository::renew_worker_claim(
-                        &mut transaction,
-                        &accepted.workspace_id,
-                        &accepted.id,
-                        &claim_id,
-                        now,
-                        claimed_until,
-                    )
-                    .await?;
-                    transaction.commit().await?;
-                    Ok(renewed)
-                }
-                .await;
-                if !matches!(renewed, Ok(true)) {
-                    active.request_stop();
-                    return;
-                }
-            }
-        })
-    }
-
-    async fn complete_execution(
-        &self,
-        accepted: &AcceptedRun,
-        claim_id: &str,
         completion: ExecutionCompletion,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<ShutdownAction>, Error> {
+        let claim_id = accepted.claim_id.as_str();
         let mut transaction = self.database.begin().await?;
         let Some(mut run) =
             run_repository::hold_run(&mut transaction, &accepted.workspace_id, &accepted.id)
                 .await?
         else {
-            return Ok(());
+            return Ok(None);
         };
         let now = self.now()?.max(run.accepted_at_unix_nanos);
         if run.state != RunState::Running || run.execution_claim_id.as_deref() != Some(claim_id) {
             transaction.commit().await?;
-            return Ok(());
+            return Ok(None);
         }
         let new_termination = if run.termination.is_some() {
             None
@@ -350,7 +185,7 @@ impl RunModule {
         if run.termination.is_some() {
             let shutdown = ShutdownAction::from_run(&run)?;
             transaction.commit().await?;
-            return self.complete_shutdown(shutdown).await;
+            return Ok(Some(shutdown));
         }
 
         let has_nonterminal_invocation = invocation_repository::has_nonterminal_for_run(
@@ -383,7 +218,7 @@ impl RunModule {
             self.finish_termination_in_transaction(&mut transaction, &run, completed_at)
                 .await?;
             transaction.commit().await?;
-            return Ok(());
+            return Ok(None);
         }
         let outcome = match completion {
             ExecutionCompletion::Succeeded(final_value) => {
@@ -395,7 +230,8 @@ impl RunModule {
                 "host termination creates durable interruption evidence before completion"
             ),
         };
-        // Select the outcome under the same Run hold and transaction as its write.
+        // The Final Value is decided against the recorded total, which the
+        // owner's last chunk wrote from its exact in-memory total.
         let outcome = if let RunTerminalOutcome::Succeeded {
             final_value: FinalValue::Present(value),
         } = &outcome
@@ -411,41 +247,7 @@ impl RunModule {
         run_repository::finish_run(&mut transaction, &run, claim_id, &outcome, completed_at)
             .await?;
         transaction.commit().await?;
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn retry_execution(
-        &self,
-        actor: &AuthenticatedPrincipal,
-        workspace_id: &WorkspaceId,
-        run_id: &RunId,
-    ) -> Result<(), Error> {
-        let mut transaction = self.database.begin_read_snapshot().await?;
-        let run = run_repository::find_exact_in_transaction(&mut transaction, workspace_id, run_id)
-            .await?
-            .ok_or(Error::RunNotFound)?;
-        transaction.commit().await?;
-        let accepted = AcceptedRun {
-            id: run.id,
-            workspace_id: run.workspace_id,
-            principal: run.principal,
-            accepted_at_unix_nanos: run.accepted_at_unix_nanos,
-            deadline_at_unix_nanos: run.deadline_at_unix_nanos,
-            shutdown_grace_nanos: run.shutdown_grace_nanos,
-            value_limits: run.value_limits,
-        };
-        self.execute_accepted(accepted, actor.clone()).await
-    }
-}
-
-#[cfg(test)]
-struct ExecutionAttemptObservation(Arc<dyn ExecutionObserver>);
-
-#[cfg(test)]
-impl Drop for ExecutionAttemptObservation {
-    fn drop(&mut self) {
-        self.0.execution_attempt_finished();
+        Ok(None)
     }
 }
 

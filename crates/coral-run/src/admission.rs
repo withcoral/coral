@@ -8,6 +8,7 @@ use coral_db::Transaction;
 use coral_functions::{SavedFunctionPath, SavedFunctionSelection};
 use coral_workspace::{AuthenticatedPrincipal, Principal, WorkspaceId};
 use tokio::time::timeout;
+use uuid::Uuid;
 
 use crate::engine::{ProgramPackage, SavedFunctionReference};
 use crate::types::AcceptedRun;
@@ -161,6 +162,10 @@ impl RunModule {
             .ok_or_else(|| {
                 Error::InvalidInput("Run deadline exceeds durable time range".to_string())
             })?;
+        // The Run Owner's claim is written with acceptance, so no running Run
+        // is ever unclaimed; the owner renews the lease with every chunk.
+        let worker_claim_expires_at_unix_nanos =
+            self.execution_policy.lease_until(accepted_at_unix_nanos)?;
         let run = AcceptedRun {
             id: RunId::generate(),
             workspace_id: workspace_id.clone(),
@@ -169,6 +174,8 @@ impl RunModule {
             deadline_at_unix_nanos,
             shutdown_grace_nanos: self.execution_policy.shutdown_grace_nanos(),
             value_limits: self.value_limits,
+            claim_id: Uuid::new_v4().hyphenated().to_string(),
+            worker_claim_expires_at_unix_nanos,
         };
         run_repository::insert_acceptance(
             transaction,

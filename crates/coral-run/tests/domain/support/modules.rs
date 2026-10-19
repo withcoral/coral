@@ -401,8 +401,8 @@ impl TestModules {
     }
 
     /// Gives a staged Run `claim_id` as its worker and execution claim, with a
-    /// lease that ends at `lease_until_unix_nanos`, as the worker does before
-    /// the first Program statement runs.
+    /// lease that ends at `lease_until_unix_nanos`, as the test's own writer:
+    /// no owner exists for a staged Run, so the test's chunks are its own.
     pub(crate) async fn claim_run(
         &self,
         workspace_id: &coral_workspace::WorkspaceId,
@@ -416,22 +416,15 @@ impl TestModules {
             .expect("hold the Run")
             .expect("staged Run exists");
         let now = self.clock.now_unix_nanos().expect("clock");
-        assert!(
-            crate::run_repository::claim_execution_worker(
-                &mut transaction,
-                &run,
-                claim_id,
-                lease_until_unix_nanos,
-                now,
-            )
-            .await
-            .expect("claim the worker")
-        );
-        assert!(
-            crate::run_repository::mark_execution_started(&mut transaction, &run, claim_id, now)
-                .await
-                .expect("mark execution started")
-        );
+        crate::run_repository::claim_for_test(
+            &mut transaction,
+            &run,
+            claim_id,
+            lease_until_unix_nanos,
+            now,
+        )
+        .await
+        .expect("claim the staged Run");
         transaction.commit().await.expect("commit claim");
     }
 
@@ -964,6 +957,23 @@ pub(crate) async fn wait_until(predicate: impl Fn() -> bool) {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     panic!("condition did not become true");
+}
+
+/// Like [`wait_until`] for a condition that reads the database.
+pub(crate) async fn wait_until_async(predicate: impl AsyncFn() -> bool) {
+    for _ in 0..200 {
+        if predicate().await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("condition did not become true");
+}
+
+/// The last Event sequence of a Run read from a snapshot.
+pub(crate) fn last_sequence(run: &crate::lifecycle::RunRecord) -> u64 {
+    run.last_event_sequence
+        .expect("a Run read from a snapshot carries its last Event sequence")
 }
 
 pub(crate) async fn organization_admin(fixture: &TestModules) -> ChangeContext {

@@ -1,108 +1,44 @@
-//! Worker-claim and execution-start conditional writes.
+//! The execution-start mark and the worker-claim release.
+//!
+//! The worker claim itself is written by acceptance: no `running` Run is ever
+//! unclaimed, and the Run Owner that acceptance creates renews the lease with
+//! every chunk it commits.
 
 use coral_db::Transaction;
-use coral_workspace::WorkspaceId;
 use sea_query::{Expr, ExprTrait as _, Query};
 
-use super::ProgramRunRecords;
+use super::ledger::commit_chunk_with;
+use super::{Chunk, ProgramRunRecords};
 use crate::lifecycle::RunRecord;
-use crate::{Error, RunId, RunState};
+use crate::{Error, RunState};
 
-pub(crate) async fn claim_execution_worker(
-    transaction: &mut Transaction<'_>,
-    run: &RunRecord,
-    claim_id: &str,
-    claimed_until_unix_nanos: i64,
-    now_unix_nanos: i64,
-) -> Result<bool, Error> {
-    let mut statement = Query::update();
-    statement
-        .table(ProgramRunRecords::Table)
-        .values([
-            (ProgramRunRecords::WorkerClaimId, Expr::val(claim_id)),
-            (
-                ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
-                Expr::val(claimed_until_unix_nanos),
-            ),
-        ])
-        .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(run.workspace_id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::Id).eq(run.id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::State).eq(RunState::Running.as_storage_str()))
-        .and_where(Expr::col(ProgramRunRecords::TerminationKind).is_null())
-        .and_where(Expr::col(ProgramRunRecords::ExecutionClaimId).is_null())
-        .and_where(Expr::col(ProgramRunRecords::DeadlineAtUnixNanos).gt(now_unix_nanos));
-    match (
-        run.worker_claim_id.as_deref(),
-        run.worker_claim_expires_at_unix_nanos,
-    ) {
-        (None, None) => {
-            statement.and_where(Expr::col(ProgramRunRecords::WorkerClaimId).is_null());
-        }
-        (Some(current_claim), Some(expires_at)) if expires_at <= now_unix_nanos => {
-            statement
-                .and_where(Expr::col(ProgramRunRecords::WorkerClaimId).eq(current_claim))
-                .and_where(
-                    Expr::col(ProgramRunRecords::WorkerClaimExpiresAtUnixNanos).eq(expires_at),
-                );
-        }
-        _ => return Ok(false),
-    }
-    Ok(transaction.execute(statement).await? == 1)
-}
-
-pub(crate) async fn mark_execution_started(
+/// The Run Owner's first chunk: the execution-start mark under the claim the
+/// acceptance transaction wrote, with the worker lease renewed. Built before
+/// any execution claim exists, so it is predicated on the claim column being
+/// unset, the head, and a running Run.
+pub(crate) async fn start_execution(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
     claim_id: &str,
     started_at_unix_nanos: i64,
-) -> Result<bool, Error> {
-    let statement = Query::update()
-        .table(ProgramRunRecords::Table)
-        .values([
+    lease_until_unix_nanos: i64,
+) -> Result<(), Error> {
+    commit_chunk_with(
+        transaction,
+        Chunk::new(run, None),
+        vec![
             (ProgramRunRecords::ExecutionClaimId, Expr::val(claim_id)),
             (
                 ProgramRunRecords::ExecutionStartedAtUnixNanos,
                 Expr::val(started_at_unix_nanos),
             ),
-        ])
-        .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(run.workspace_id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::Id).eq(run.id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::State).eq(RunState::Running.as_storage_str()))
-        .and_where(Expr::col(ProgramRunRecords::TerminationKind).is_null())
-        .and_where(Expr::col(ProgramRunRecords::DeadlineAtUnixNanos).gt(started_at_unix_nanos))
-        .and_where(Expr::col(ProgramRunRecords::WorkerClaimId).eq(claim_id))
-        .and_where(
-            Expr::col(ProgramRunRecords::WorkerClaimExpiresAtUnixNanos).gt(started_at_unix_nanos),
-        )
-        .and_where(Expr::col(ProgramRunRecords::ExecutionClaimId).is_null())
-        .to_owned();
-    Ok(transaction.execute(statement).await? == 1)
-}
-
-pub(crate) async fn renew_worker_claim(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    run_id: &RunId,
-    claim_id: &str,
-    now_unix_nanos: i64,
-    claimed_until_unix_nanos: i64,
-) -> Result<bool, Error> {
-    let statement = Query::update()
-        .table(ProgramRunRecords::Table)
-        .value(
-            ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
-            claimed_until_unix_nanos,
-        )
-        .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::Id).eq(run_id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::State).eq(RunState::Running.as_storage_str()))
-        .and_where(Expr::col(ProgramRunRecords::TerminationKind).is_null())
-        .and_where(Expr::col(ProgramRunRecords::DeadlineAtUnixNanos).gt(now_unix_nanos))
-        .and_where(Expr::col(ProgramRunRecords::ExecutionClaimId).eq(claim_id))
-        .and_where(Expr::col(ProgramRunRecords::WorkerClaimId).eq(claim_id))
-        .and_where(Expr::col(ProgramRunRecords::WorkerClaimExpiresAtUnixNanos).gt(now_unix_nanos))
-        .to_owned();
-    Ok(transaction.execute(statement).await? == 1)
+            (
+                ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
+                Expr::val(lease_until_unix_nanos),
+            ),
+        ],
+    )
+    .await
 }
 
 pub(crate) async fn release_unstarted_worker_claim(
@@ -131,4 +67,41 @@ pub(crate) async fn release_unstarted_worker_claim(
         .and_where(Expr::col(ProgramRunRecords::WorkerClaimId).eq(claim_id))
         .to_owned();
     Ok(transaction.execute(statement).await? == 1)
+}
+
+/// Gives a staged Run `claim_id` as its worker and execution claim, as a test's
+/// own writer: no owner exists for it, so nothing fences the test's chunks.
+#[cfg(test)]
+pub(crate) async fn claim_for_test(
+    transaction: &mut Transaction<'_>,
+    run: &RunRecord,
+    claim_id: &str,
+    lease_until_unix_nanos: i64,
+    started_at_unix_nanos: i64,
+) -> Result<(), Error> {
+    let statement = Query::update()
+        .table(ProgramRunRecords::Table)
+        .values([
+            (ProgramRunRecords::WorkerClaimId, Expr::val(claim_id)),
+            (
+                ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
+                Expr::val(lease_until_unix_nanos),
+            ),
+            (ProgramRunRecords::ExecutionClaimId, Expr::val(claim_id)),
+            (
+                ProgramRunRecords::ExecutionStartedAtUnixNanos,
+                Expr::val(started_at_unix_nanos),
+            ),
+        ])
+        .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(run.workspace_id.to_string()))
+        .and_where(Expr::col(ProgramRunRecords::Id).eq(run.id.to_string()))
+        .and_where(Expr::col(ProgramRunRecords::State).eq(RunState::Running.as_storage_str()))
+        .and_where(Expr::col(ProgramRunRecords::ExecutionClaimId).is_null())
+        .to_owned();
+    if transaction.execute(statement).await? != 1 {
+        return Err(Error::CorruptData(
+            "test claim found no unclaimed running Run".to_string(),
+        ));
+    }
+    Ok(())
 }

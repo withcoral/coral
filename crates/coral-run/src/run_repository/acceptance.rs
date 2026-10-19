@@ -85,6 +85,8 @@ pub(crate) async fn insert_acceptance(
             ProgramRunRecords::AcceptedAtUnixNanos,
             ProgramRunRecords::DeadlineAtUnixNanos,
             ProgramRunRecords::ShutdownGraceNanos,
+            ProgramRunRecords::WorkerClaimId,
+            ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
             ProgramRunRecords::ValueLimitsJson,
             ProgramRunRecords::NextEventSequence,
             ProgramRunRecords::AccumulatedOutputBytes,
@@ -99,6 +101,10 @@ pub(crate) async fn insert_acceptance(
             Expr::val(run.accepted_at_unix_nanos),
             Expr::val(run.deadline_at_unix_nanos),
             Expr::val(run.shutdown_grace_nanos),
+            // The Run Owner's worker claim: written with acceptance, so no
+            // running Run is ever unclaimed, and renewed by every chunk.
+            Expr::val(run.claim_id.as_str()),
+            Expr::val(run.worker_claim_expires_at_unix_nanos),
             Expr::val(serde_json::to_string(&run.value_limits).map_err(Error::ProgramValueJson)?),
             // The previous release's Event counter: this release advances it per
             // chunk for that release's writers and never reads it.
@@ -150,7 +156,8 @@ pub(crate) async fn insert_acceptance(
     }
 
     // Acceptance creates the Run Ledger at head 0 with its first Event. There
-    // is no claim to predicate on yet; the row insert itself is the write fence.
+    // is no execution claim to predicate on yet; the row insert itself is the
+    // write fence.
     insert_events(
         transaction,
         &run.workspace_id,

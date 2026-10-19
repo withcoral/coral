@@ -1,6 +1,7 @@
 //! Run termination: durable cancellation, deadline and recovery intent, bounded
 //! child shutdown, and the terminal write that settles pending Invocations.
 
+use std::future::Future;
 use std::time::Duration;
 
 use coral_db::Transaction;
@@ -214,33 +215,43 @@ impl RunModule {
         Ok(())
     }
 
+    /// Stops the Run's owner when this process holds it and settles the
+    /// recorded termination within the shutdown grace. Without a local owner
+    /// the Run is settled elsewhere; this waits for it, and ends the Run
+    /// itself once the grace is out.
     pub(crate) async fn complete_shutdown(&self, shutdown: ShutdownAction) -> Result<(), Error> {
         let now = self.now()?.max(shutdown.accepted_at_unix_nanos);
         let remaining = duration_until(shutdown.deadline_at_unix_nanos, now);
         let drain = async {
-            if let Some(active) = self
-                .active_executions
-                .find(&shutdown.run_id, &shutdown.claim_id)
-            {
-                active.request_stop();
-                active.wait_stopped().await;
+            if let Some(owner) = self.owners.find(&shutdown.run_id, &shutdown.claim_id) {
+                owner.request_stop();
+                owner.wait_stopped().await;
             } else {
                 return self
                     .wait_for_terminal_state(&shutdown.workspace_id, &shutdown.run_id)
                     .await;
             }
-            // Stopping V8 does not settle detached Invocation tasks. A dispatched
-            // Invocation gets the remainder of the shutdown grace to record its
-            // upstream result. An undispatched one can no longer write, so
-            // termination ends it without waiting.
-            while !self
-                .settle_termination(&shutdown.workspace_id, &shutdown.run_id, false)
-                .await?
-            {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            Ok(())
+            self.settle_loop(&shutdown).await
         };
+        self.settle_or_force(remaining, &shutdown, drain).await
+    }
+
+    /// Settles a recorded termination within what is left of the shutdown
+    /// grace, for the Run Owner that found it recorded: the owner keeps
+    /// recording the results of dispatches still in flight until the Run ends.
+    pub(crate) async fn settle_within_grace(&self, shutdown: ShutdownAction) -> Result<(), Error> {
+        let now = self.now()?.max(shutdown.accepted_at_unix_nanos);
+        let remaining = duration_until(shutdown.deadline_at_unix_nanos, now);
+        self.settle_or_force(remaining, &shutdown, self.settle_loop(&shutdown))
+            .await
+    }
+
+    async fn settle_or_force(
+        &self,
+        remaining: Duration,
+        shutdown: &ShutdownAction,
+        drain: impl Future<Output = Result<(), Error>>,
+    ) -> Result<(), Error> {
         match timeout(remaining, drain).await {
             Ok(result) => result,
             Err(_elapsed) => self
@@ -248,6 +259,20 @@ impl RunModule {
                 .await
                 .map(drop),
         }
+    }
+
+    /// Stopping V8 does not settle detached Invocation tasks. A dispatched
+    /// Invocation gets the remainder of the shutdown grace to record its
+    /// upstream result. An undispatched one can no longer write, so
+    /// termination ends it without waiting.
+    async fn settle_loop(&self, shutdown: &ShutdownAction) -> Result<(), Error> {
+        while !self
+            .settle_termination(&shutdown.workspace_id, &shutdown.run_id, false)
+            .await?
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Ok(())
     }
 
     async fn wait_for_terminal_state(
@@ -348,6 +373,7 @@ impl RunModule {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct ShutdownAction {
     run_id: RunId,
     workspace_id: WorkspaceId,

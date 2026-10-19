@@ -20,12 +20,13 @@ mod run_row;
 mod termination;
 
 pub(crate) use acceptance::{insert_acceptance, load_package_in_transaction};
-pub(crate) use claims::{
-    claim_execution_worker, mark_execution_started, release_unstarted_worker_claim,
-    renew_worker_claim,
-};
+#[cfg(test)]
+pub(crate) use claims::claim_for_test;
+pub(crate) use claims::{release_unstarted_worker_claim, start_execution};
 use events::last_event_sequence;
-pub(crate) use events::{NewEvent, event_page_in_transaction, output_page_in_transaction};
+pub(crate) use events::{
+    NewEvent, OwnedEvent, OwnedEventKind, event_page_in_transaction, output_page_in_transaction,
+};
 pub(crate) use ledger::{Chunk, ChunkEvent, commit_chunk};
 pub(crate) use retention::{delete_retained_history, retention_activity};
 use run_row::RunRow;

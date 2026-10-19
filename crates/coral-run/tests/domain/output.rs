@@ -154,8 +154,12 @@ async fn many_emissions_share_a_byte_budget_with_logs_and_survive_limit_failure(
     }
 }
 
+/// Two Invocation results reach the Run Owner before its next commit: the
+/// owner decides each against its exact in-memory total, so the second is
+/// admitted or refused by the byte, and the recorded total is exactly what
+/// was admitted. Operation arguments never count.
 #[tokio::test]
-async fn concurrent_invocation_results_share_output_budget_but_arguments_do_not() {
+async fn invocation_results_share_the_output_budget_by_the_byte_but_arguments_do_not() {
     let fixture = TestModules::with_upstream(
         Arc::new(
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
@@ -169,7 +173,9 @@ async fn concurrent_invocation_results_share_output_budget_but_arguments_do_not(
         .await;
     // Each scripted HTTP result retains 150 JSON bytes, including its metadata.
     // The log and Emission retain six more bytes. Arguments exceed the entire budget.
-    for budget in [306, 305] {
+    // (budget, both results admitted, recorded output bytes)
+    let cases = [(306, true, 306), (305, false, 156)];
+    for (budget, both_admitted, recorded_bytes) in cases {
         let runs = fixture
             .runs
             .clone()
@@ -209,30 +215,46 @@ async fn concurrent_invocation_results_share_output_budget_but_arguments_do_not(
             _ => None,
         })
         .collect::<Vec<_>>();
-        if budget == 306 {
-            assert!(matches!(
-                terminal.terminal_outcome(),
-                Some(RunTerminalOutcome::Succeeded {
-                    final_value: FinalValue::Absent
-                })
-            ));
-            assert_eq!(results, vec![InvocationResultKind::UpstreamOutcome; 2]);
+        if both_admitted {
+            assert!(
+                matches!(
+                    terminal.terminal_outcome(),
+                    Some(RunTerminalOutcome::Succeeded {
+                        final_value: FinalValue::Absent
+                    })
+                ),
+                "{budget}: {terminal:?}"
+            );
+            assert_eq!(
+                results,
+                vec![InvocationResultKind::UpstreamOutcome; 2],
+                "{budget}"
+            );
         } else {
             assert!(
                 matches!(terminal.terminal_outcome(),
                 Some(RunTerminalOutcome::Failed(failure))
                     if failure.code() == RunFailureCode::ProgramRejected
                         && failure.message() == "OperationError: Run output exceeds its limit"),
-                "{terminal:?}"
+                "{budget}: {terminal:?}"
             );
             assert_eq!(
                 results,
                 vec![
                     InvocationResultKind::UpstreamOutcome,
                     InvocationResultKind::CoralFailure
-                ]
+                ],
+                "{budget}"
             );
         }
+        assert_eq!(
+            fixture
+                .run_record(&operation.workspace_id, terminal.run_id())
+                .await
+                .accumulated_output_bytes,
+            recorded_bytes,
+            "{budget}: the recorded total is exactly the admitted bytes"
+        );
         assert!(terminal.events().iter().any(|event| matches!(event.kind(),
             RunEventKind::ProgramEmitted { value } if value.as_json() == &json!("é"))));
         assert!(terminal.events().iter().any(|event| matches!(event.kind(),

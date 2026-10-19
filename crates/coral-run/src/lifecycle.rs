@@ -44,6 +44,18 @@ impl RunRecord {
             .ok_or_else(|| Error::CorruptData("Run output bytes overflowed".into()))
     }
 
+    /// Whether the Run row still takes the Run Owner's chunks: a running Run
+    /// whose claim columns both hold `claim_id`, before its deadline. A lapsed
+    /// lease does not end ownership (a local owner continues while its commits
+    /// show a matching claim), and a recorded termination intent does not stop
+    /// the owner recording what it applied before the intent.
+    pub(crate) fn accepts_owner_chunk(&self, claim_id: &str, now_unix_nanos: i64) -> bool {
+        self.state == RunState::Running
+            && self.execution_claim_id.as_deref() == Some(claim_id)
+            && self.worker_claim_id.as_deref() == Some(claim_id)
+            && now_unix_nanos < self.deadline_at_unix_nanos
+    }
+
     pub(crate) fn program_work_is_current(&self, claim_id: &str, now_unix_nanos: i64) -> bool {
         self.state == RunState::Running
             && self.termination.is_none()
