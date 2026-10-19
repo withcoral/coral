@@ -22,7 +22,7 @@ use crate::{
 };
 
 /// Stable version of the bounded OpenAPI profile materializer.
-pub(crate) const MATERIALIZER_VERSION: &str = "openapi-schema-faithful-search-profile-v4";
+pub(crate) const MATERIALIZER_VERSION: &str = "openapi-schema-faithful-search-profile-v5";
 
 /// Materializes one exact pinned OpenAPI input and carries forward paths owned
 /// by Operation Keys that remain active in the replacement catalog.
