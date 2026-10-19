@@ -24,18 +24,7 @@
     "light": "#B2EAA5"
   },
   "fonts": {
-    "heading": {
-      "family": "Encode Sans Semi Expanded",
-      "weight": 500,
-      "source": "/fonts/encode-sans-semi-expanded/EncodeSansSemiExpanded-500-latin.woff2",
-      "format": "woff2"
-    },
-    "body": {
-      "family": "Encode Sans Semi Expanded",
-      "weight": 400,
-      "source": "/fonts/encode-sans-semi-expanded/EncodeSansSemiExpanded-400-latin.woff2",
-      "format": "woff2"
-    }
+    "family": "Encode Sans Semi Expanded"
   },
   "styling": {
     "codeblocks": {
