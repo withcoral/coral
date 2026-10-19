@@ -295,3 +295,138 @@ async fn default_startup_exposes_the_mcp_contract_with_explicit_human_destinatio
     let rebound = std::net::TcpListener::bind(mcp_addr).expect("MCP port released after shutdown");
     drop(rebound);
 }
+
+/// Starts a composed runtime over `config` and a Workspace, and connects an MCP
+/// client to that Workspace.
+async fn runtime_with_mcp_client(
+    config: &str,
+) -> (
+    TempDir,
+    RunningRuntime,
+    coral_workspace::WorkspaceId,
+    rmcp::service::RunningService<rmcp::RoleClient, ()>,
+) {
+    let temp = TempDir::new().expect("temporary state root");
+    std::fs::write(temp.path().join("config.toml"), config).unwrap();
+    let server = start(ServerBuilder::new().with_config_dir(temp.path()))
+        .await
+        .expect("start composed server");
+    let workspace = WorkspaceModule::new(server.grpc.database())
+        .create(
+            &ChangeContext::new(
+                local_organization_owner(),
+                1,
+                TraceId::parse("22222222222222222222222222222222").expect("trace id"),
+            ),
+            WorkspaceDisplayName::parse("Shared Runs").expect("display name"),
+        )
+        .await
+        .expect("create Workspace");
+    let urls = crate::WorkspaceMcpUrls::new(
+        crate::CanonicalOauthUrl::parse(&format!("http://{}", server.mcp_http_addr()))
+            .expect("MCP origin"),
+    )
+    .expect("Workspace URLs");
+    let client = ()
+        .serve(StreamableHttpClientTransport::from_uri(
+            urls.resource(workspace.id()),
+        ))
+        .await
+        .expect("connect MCP client");
+    (temp, server, workspace.id().clone(), client)
+}
+
+async fn mcp_tool(
+    client: &rmcp::service::RunningService<rmcp::RoleClient, ()>,
+    name: &'static str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    let serde_json::Value::Object(arguments) = arguments else {
+        panic!("tool arguments must be an object");
+    };
+    client
+        .call_tool(rmcp::model::CallToolRequestParams::new(name).with_arguments(arguments))
+        .await
+        .unwrap_or_else(|error| panic!("call {name}: {error}"))
+        .structured_content
+        .unwrap_or_else(|| panic!("{name} returns structured content"))
+}
+
+/// The `[runtime]` section reaches the process's one Run module, which the
+/// gRPC server and the MCP companion share.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_configured_applied_output_cap_reaches_the_shared_run_module() {
+    const CAP: usize = 16 << 20;
+    assert_ne!(CAP, coral_run::AppliedOutputCap::DEFAULT_BYTES);
+    let (_temp, server, _workspace, client) = runtime_with_mcp_client(&format!(
+        "{WEB}[runtime]\napplied_output_cap_bytes = {CAP}\n"
+    ))
+    .await;
+    assert_eq!(server.grpc.runs().applied_output_cap().bytes(), CAP);
+    client.cancel().await.expect("close MCP client");
+    server.shutdown().await.expect("stop composed server");
+}
+
+/// A Run started over MCP and cancelled from Reef over gRPC stops at once:
+/// both surfaces share one set of Run Owners, so the cancel reaches the owner
+/// instead of waiting out the shutdown grace and forcing the Run to end.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reef_cancel_stops_a_run_started_over_mcp_promptly() {
+    use coral_grpc::coral::management::v1::{
+        ActivityRunState, CancelActivityRunRequest, activity_service_client::ActivityServiceClient,
+    };
+    let (_temp, server, workspace, client) = runtime_with_mcp_client(WEB).await;
+    let task = mcp_tool(
+        &client,
+        "start_task",
+        serde_json::json!({"intent": "Spin until cancelled"}),
+    )
+    .await;
+    let task_id = task
+        .get("task_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("task id");
+    // The Program commits nothing after it starts, so only a stop reaches it.
+    let exec = mcp_tool(
+        &client,
+        "exec",
+        serde_json::json!({
+            "task_id": task_id,
+            "intent": "Spin until cancelled",
+            "program": "while (true) {}",
+            "wait_ms": 200,
+        }),
+    )
+    .await;
+    assert_eq!(exec.get("state"), Some(&serde_json::json!("running")));
+    let run_id = exec
+        .get("run_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("run id");
+
+    let mut activity = ActivityServiceClient::connect(server.endpoint_uri().to_owned())
+        .await
+        .expect("connect gRPC client");
+    let mut request = tonic::Request::new(CancelActivityRunRequest {
+        name: format!("workspaces/{workspace}/runs/{run_id}"),
+    });
+    request
+        .metadata_mut()
+        .insert("coral-audience", "reef".parse().expect("audience"));
+    let started = std::time::Instant::now();
+    let cancelled = activity
+        .cancel_activity_run(request)
+        .await
+        .expect("cancel the Run")
+        .into_inner();
+    let elapsed = started.elapsed();
+    assert_eq!(cancelled.state(), ActivityRunState::Canceled);
+    // A cancel that cannot find the owner waits out the 5 s shutdown grace.
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "the cancel waited out the shutdown grace instead of reaching the owner: {elapsed:?}"
+    );
+
+    client.cancel().await.expect("close MCP client");
+    server.shutdown().await.expect("stop composed server");
+}

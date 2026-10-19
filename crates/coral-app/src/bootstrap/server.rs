@@ -474,6 +474,7 @@ fn resolve_database_config(
 /// does not wait for the task to finish.
 pub struct RunningServer {
     accounts: Option<coral_provider::account::AccountModule>,
+    runs: coral_run::RunModule,
     device_recovery: Option<JoinHandle<()>>,
     search_index: coral_search::SearchIndex,
     search_reconcile: JoinHandle<()>,
@@ -604,6 +605,14 @@ impl RunningServer {
         self.search_index.clone()
     }
 
+    /// Shares the process's one Run module with companion runtime composition,
+    /// so a cancel or decision from any surface reaches the Run Owner that
+    /// another surface's Run registered.
+    #[must_use]
+    pub fn runs(&self) -> coral_run::RunModule {
+        self.runs.clone()
+    }
+
     /// Publishes the canonical MCP origin after the companion listener binds.
     /// Bootstrap supplies the validated public origin or actual local listener address.
     /// # Panics
@@ -713,7 +722,7 @@ pub(crate) async fn start_server(
             tasks,
             saved_functions,
             saved_function_deletion,
-            runs,
+            runs: runs.clone(),
         },
         coral_grpc::TransportContext {
             authentication,
@@ -755,6 +764,7 @@ pub(crate) async fn start_server(
         search_index,
         search_reconcile,
         accounts,
+        runs,
         mcp_origin,
         endpoint_uri,
         local_addr,

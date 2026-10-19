@@ -341,7 +341,6 @@ async fn start_inner(builder: PreparedServerBuilder) -> Result<RunningRuntime, S
         &grpc,
         authentication,
         settings.runtime_limits(),
-        settings.outbound_policy(),
         settings.human_interface().clone(),
     )
     .await
@@ -416,15 +415,13 @@ async fn start_mcp_http(
     grpc: &GrpcServer,
     authentication: Option<crate::WorkspaceAuthentication>,
     runtime_limits: RuntimeLimits,
-    policy: coral_outbound::DestinationPolicy,
     human_interface: coral_mcp::HumanInterfaceUrl,
 ) -> Result<RunningMcpHttpServer, McpStartError> {
     let readiness = ListenerReadiness::from_database(grpc.database()).probe();
     let modules = mcp_modules(
-        policy,
         grpc.database(),
-        grpc.provider_accounts(),
         grpc.search_index(),
+        grpc.runs(),
         runtime_limits,
         human_interface,
     )
@@ -453,28 +450,20 @@ async fn start_mcp_http(
 }
 
 /// Composes MCP domain Modules without selecting authentication or Principal.
-/// `search_index` is the running server's, so the process has one index.
+/// `search_index` and `runs` are the running server's, so the process has one
+/// index and one set of Run Owners that every surface reaches.
 fn mcp_modules(
-    policy: coral_outbound::DestinationPolicy,
     database: Arc<Database>,
-    accounts: Option<coral_provider::account::AccountModule>,
     search_index: SearchIndex,
+    runs: RunModule,
     runtime_limits: RuntimeLimits,
     human_interface: coral_mcp::HumanInterfaceUrl,
 ) -> Result<McpModules, coral_run::Error> {
     let workspaces = WorkspaceModule::new(Arc::clone(&database));
     let tasks = TaskModule::new(Arc::clone(&database), workspaces.clone());
     let search = UniversalSearchModule::new(Arc::clone(&database), workspaces.clone());
-    let saved_functions = SavedFunctionModule::new(
-        Arc::clone(&database),
-        workspaces.clone(),
-        runtime_limits.isolate(),
-    )?;
-    let runs = RunModule::new(policy, database, workspaces.clone(), runtime_limits)?;
-    let runs = match accounts {
-        Some(accounts) => runs.with_accounts(accounts),
-        None => runs,
-    };
+    let saved_functions =
+        SavedFunctionModule::new(database, workspaces.clone(), runtime_limits.isolate())?;
     let commands = TaskCommands::new(
         tasks.clone(),
         saved_functions,
