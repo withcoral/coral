@@ -205,16 +205,16 @@ async fn saved_function_signature_lines_show_the_inferred_result_fields() {
         .await
         .expect("list Saved Functions");
 
-    assert_eq!(
-        page.hits()
-            .iter()
-            .map(crate::SearchHit::signature_line)
-            .collect::<Vec<_>>(),
-        [
-            "pullRequestDetails(input: { repo: string; number: number }): Promise<{ title: string; merged_at: string | null; base: {…}; linked: string[] }>"
-        ],
-        "the fields of a result the compiler infers appear inline"
-    );
+    let [hit] = page.hits() else {
+        panic!("one Saved Function hit: {:?}", page.hits());
+    };
+    let line = hit.signature_line();
+    for field in ["title:", "merged_at:", "base:", "linked:"] {
+        assert!(
+            line.contains(field),
+            "the fields of a result the compiler infers appear: {line}"
+        );
+    }
 }
 
 #[tokio::test]

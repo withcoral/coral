@@ -5,14 +5,18 @@
 //! object appears as `{…}`, and a named type appears by name, unless it is a
 //! shallow alias: an alias of scalars, literals, or arrays of those, which is
 //! inlined, so an Operation's generated parameter aliases do not hide plain
-//! types. An Operation shows its result envelope with the `data` types of its
-//! success responses, by name. A Saved Function's result shows its object's
-//! members one level deep, as the input does, inside its `Promise` and
-//! array, through named types too: the compiler infers most results, so
-//! they have no name to show. A result object the line does not show is the
-//! marker `{…}`. The line is cut
-//! at [`SIGNATURE_LINE_MAX_BYTES`] at a word boundary with a marker. A line
-//! with no marker and no bare type name in its input is complete.
+//! types.
+//!
+//! An Operation's result is its envelope with the `data` types of its
+//! success responses, by name. A Saved Function's result is shown as its
+//! input is: an object's members one level deep, named or not. The line
+//! looks inside the result's `Promise` and one level of array. The compiler
+//! infers most Saved Function results, so they have no name to show. A
+//! result object the line does not show is the marker `{…}`.
+//!
+//! The line is cut at [`SIGNATURE_LINE_MAX_BYTES`] at a word boundary with a
+//! marker. A line with no marker and no bare type name in its input is
+//! complete.
 //!
 //! `syntax` reads the declaration with oxc into the small type tree of `tree`;
 //! `render` and `envelope` print the line from that tree, and `abridge`

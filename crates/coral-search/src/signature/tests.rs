@@ -101,6 +101,8 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
     let listed = "export default function openPrs(input: {\n    repo: string;\n}): Promise<{\n    number: number;\n    author: {\n        login: string;\n    };\n}[]>;\n";
     let generic_array = "export default function openIssuesByLabel(input: {\n    label: string;\n}): Promise<Array<{\n    number: number;\n    title: string;\n}>>;\n";
     let readonly_array = "export default function labels(): ReadonlyArray<{ name: string }>;";
+    let named_union = "interface Row { id: number }\nexport default function find(input: { id: number }): Promise<Row | undefined>;";
+    let named_intersection = "interface Base { id: number }\nexport default function tagged(): Promise<Base & { tag: string }>;";
     let mapped_result =
         "export default function mapped(): Promise<{ [K in \"a\" | \"b\"]: number }>;";
     let arrow = "declare const g: (input: {\n    q: string;\n}) => number;\nexport default g;\n";
@@ -214,6 +216,16 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
             readonly_array,
             Callable::SavedFunction { leaf: "labels" },
             "labels(): ReadonlyArray<{ name: string }>",
+        ),
+        (
+            named_union,
+            Callable::SavedFunction { leaf: "find" },
+            "find(input: { id: number }): Promise<{ id: number } | undefined>",
+        ),
+        (
+            named_intersection,
+            Callable::SavedFunction { leaf: "tagged" },
+            "tagged(): Promise<{ id: number } & { tag: string }>",
         ),
         (
             mapped_result,

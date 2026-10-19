@@ -132,27 +132,32 @@ impl Renderer<'_> {
         match self.resolved(type_) {
             Type::Object(members) => self.members(members),
             Type::Intersection(parts)
-                if parts.iter().any(|part| matches!(part, Type::Object(_))) =>
+                if parts
+                    .iter()
+                    .any(|part| matches!(self.resolved(part), Type::Object(_))) =>
             {
                 let shown = parts
                     .iter()
                     .filter(|part| !self.is_open_record(part, &HashSet::new()))
-                    .map(|part| match part {
-                        Type::Object(members) => self.members(members),
-                        other => self.member(other, &mut HashSet::new()),
-                    })
+                    .map(|part| self.inline_part(part))
                     .collect::<Vec<_>>();
                 shown.join(" & ")
             }
             Type::Union(parts) => parts
                 .iter()
-                .map(|part| match part {
-                    Type::Object(members) => self.members(members),
-                    other => self.member(other, &mut HashSet::new()),
-                })
+                .map(|part| self.inline_part(part))
                 .collect::<Vec<_>>()
                 .join(" | "),
             other => self.member(other, &mut HashSet::new()),
+        }
+    }
+
+    /// One part of an inlined union or intersection: an object, named or
+    /// not, as its members; anything else as a member.
+    fn inline_part(&self, part: &Type) -> String {
+        match self.resolved(part) {
+            Type::Object(members) => self.members(members),
+            _ => self.member(part, &mut HashSet::new()),
         }
     }
 
