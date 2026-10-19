@@ -46,6 +46,8 @@ const changes = {
   'adds a migration for one database below the highest version': (repo) =>
     repo.write('crates/coral-db/migrations/sqlite/0001_runs.sql', runs),
   'adds a migration to another crate': (repo) => repo.write('crates/coral-run/migrations/0010_runs.sql', runs),
+  'adds a migration to a coral-db subfolder the plan skips': (repo) =>
+    repo.write('crates/coral-db/migrations/postgress/0010_runs.sql', runs),
 }
 
 for (const [name, change] of Object.entries(changes)) {

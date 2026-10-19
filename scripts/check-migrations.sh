@@ -30,21 +30,23 @@ fi
 # One version sequence per ledger: the shared SQLx chain, then each search stream.
 # The chain's database-specific halves sit in subfolders of its directory.
 chain='crates/coral-db/migrations'
+# SQLx reads the chain's directory and each database's half, nothing deeper.
+chain_runs="^$chain/((postgres|sqlite)/)?[^/]+\.sql$"
 ledgers=("$chain" 'crates/coral-search/streams/postgres' 'crates/coral-search/streams/sqlite')
 pathspecs=()
 for ledger in "${ledgers[@]}"; do pathspecs+=(":(glob)$ledger/**/*.sql"); done
 
 status=0
 
-# The migration plan reads only the chain's directory, so a migration added to
-# another crate's folder would never run.
+# The migration plan reads only the chain's files, so a migration added to
+# another crate's folder, or to another subfolder of the chain, would never run.
 crate_migrations=':(glob)crates/*/migrations/**/*.sql'
 stray="$({
   git diff --no-renames --name-only --diff-filter=A "$fork_point" -- "$crate_migrations"
   git ls-files --others --exclude-standard -- "$crate_migrations"
-} | grep -v "^$chain/" | sort -u || true)"
+} | grep -vE "$chain_runs" | sort -u || true)"
 if [ -n "$stray" ]; then
-  echo "check-migrations: these migrations never run; add them to $chain instead:" >&2
+  echo "check-migrations: these migrations never run; add them to $chain, or its postgres/ or sqlite/ folder, instead:" >&2
   echo "$stray" | sed 's/^/  /' >&2
   status=1
 fi
@@ -58,7 +60,9 @@ fi
 
 for ledger in "${ledgers[@]}"; do
   pathspec=":(glob)$ledger/**/*.sql"
-  on_base="$(git ls-tree -r --name-only "$base_ref" -- "$ledger" | grep -E "^$ledger/([^/]+/)*[^/]+\.sql$" || true)"
+  runs="^$ledger/[^/]+\.sql$"
+  [ "$ledger" != "$chain" ] || runs="$chain_runs"
+  on_base="$(git ls-tree -r --name-only "$base_ref" -- "$ledger" | grep -E "$runs" || true)"
   max="$(echo "$on_base" | sed -nE 's#^.*/0*([0-9]+)_[^/]*$#\1#p' | sort -n | tail -1)"
   # A ledger with no migrations on main yet accepts any version, 0000 included.
   max="${max:--1}"
@@ -66,7 +70,7 @@ for ledger in "${ledgers[@]}"; do
   added="$({
     git diff --no-renames --name-only --diff-filter=A "$fork_point" -- "$pathspec"
     git ls-files --others --exclude-standard -- "$pathspec"
-  } | sort -u)"
+  } | { grep -E "$runs" || true; } | sort -u)"
   while IFS= read -r file; do
     [ -n "$file" ] || continue
     if ! [[ "$(basename "$file")" =~ ^0*([0-9]+)_ ]]; then
