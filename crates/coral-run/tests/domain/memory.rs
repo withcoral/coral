@@ -86,7 +86,7 @@ async fn memory_termination_preserves_output_and_dispatched_uncertainty_without_
         "host failure exposes no private V8 diagnostics"
     );
     assert!(matches!(terminal.events(), [emitted]
-        if matches!(emitted.kind(), RunEventKind::ProgramEmitted { value }
+        if matches!(emitted.kind(), RunEventKind::ProgramEmitted { value, .. }
             if value.as_json() == &serde_json::json!("before memory limit"))));
     assert!(
         retained_events(

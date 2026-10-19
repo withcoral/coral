@@ -161,6 +161,7 @@ fn run_action(now: i64) -> SimpleExpr {
             .and_where(invocation_action(now))
             .to_owned(),
     )
+    .or(crate::emission_approval_repository::run_has_pending(now))
 }
 fn run_select(now: i64) -> SelectStatement {
     Query::select()
@@ -293,6 +294,7 @@ struct InvocationRow {
     provider_id: String,
     operation_key: String,
     call_path: String,
+    middleware_execution_id: Option<String>,
     state: String,
     result_kind: Option<String>,
     started_at: i64,
@@ -329,6 +331,7 @@ pub(crate) async fn exact_invocation(
                 "provider_id",
                 "operation_key",
                 "call_path",
+                "middleware_execution_id",
                 "state",
                 "result_kind",
                 "result_bytes",
@@ -370,6 +373,7 @@ pub(crate) async fn exact_invocation(
         provider: coral_provider::ProviderId::parse(&row.provider_id)?,
         operation: row.operation_key,
         call_path: row.call_path,
+        middleware_execution: row.middleware_execution_id,
         state: match row.state.as_str() {
             "pending" => InvocationStatus::Pending,
             "dispatching" => InvocationStatus::Dispatching,

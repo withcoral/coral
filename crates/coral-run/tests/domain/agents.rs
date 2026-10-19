@@ -185,7 +185,8 @@ impl AgentLoss {
 
 /// The action queue selects actionable approvals in SQL, while approval decisions
 /// check authority and policy in domain code. Each change must move both together,
-/// or a User could be sent to an approval they cannot resolve.
+/// or a User could be sent to an approval they cannot resolve. A Run freezes
+/// its Workspace policy, so a later policy change moves neither.
 #[tokio::test]
 async fn action_queue_and_approval_decisions_agree_after_authority_or_policy_changes() {
     #[derive(Debug, Clone, Copy)]
@@ -261,7 +262,12 @@ async fn action_queue_and_approval_decisions_agree_after_authority_or_policy_cha
                     .unwrap();
             }
         }
-        assert_eq!(agreement().await, (false, false), "{change_case:?}");
+        let expected = if matches!(change_case, Change::Policy(_)) {
+            (true, true)
+        } else {
+            (false, false)
+        };
+        assert_eq!(agreement().await, expected, "{change_case:?}");
     }
 }
 

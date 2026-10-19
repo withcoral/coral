@@ -65,7 +65,7 @@ async fn internal_invocations_do_not_end_waits_and_initial_wait_batches_authored
         .unwrap();
     assert_eq!(output.state(), RunState::Running);
     assert!(matches!(output.events(), [emitted, logged]
-        if matches!(emitted.kind(), RunEventKind::ProgramEmitted { value } if value.as_json() == &serde_json::json!("ready"))
+        if matches!(emitted.kind(), RunEventKind::ProgramEmitted { value, .. } if value.as_json() == &serde_json::json!("ready"))
         && matches!(logged.kind(), RunEventKind::ProgramLogged { message, .. } if message == "ready")));
     assert!(!output.has_more());
 
@@ -242,7 +242,7 @@ async fn authored_pages_skip_internal_records_without_losing_order_or_replay() {
             sequences
         );
         assert!(matches!(page.events(), [emitted, logged]
-            if matches!(emitted.kind(), RunEventKind::ProgramEmitted { value } if value.as_json() == &serde_json::json!(index))
+            if matches!(emitted.kind(), RunEventKind::ProgramEmitted { value, .. } if value.as_json() == &serde_json::json!(index))
             && matches!(logged.kind(), RunEventKind::ProgramLogged { message, .. } if message == &index.to_string())));
         assert_eq!(page.has_more(), index < 2);
         assert_eq!(page.terminal_outcome().is_some(), index == 2);

@@ -142,6 +142,7 @@ impl OutputContracts {
                     "diagnostics_truncated",
                 ],
                 "delete_function" => &["call_path"],
+                "save_middleware" => &["name", "description", "enabled", "scopes", "diagnostics"],
                 "exec" | "wait" | "cancel" => &[
                     "run_id",
                     "state",

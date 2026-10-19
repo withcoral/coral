@@ -465,6 +465,11 @@ fn mcp_modules(
     let search = UniversalSearchModule::new(Arc::clone(&database), workspaces.clone());
     let saved_functions =
         SavedFunctionModule::new(Arc::clone(&database), workspaces.clone(), isolate_limits)?;
+    let middleware = coral_middleware::MiddlewareModule::new(
+        Arc::clone(&database),
+        workspaces.clone(),
+        isolate_limits,
+    )?;
     let runs = RunModule::new(policy, database, workspaces.clone(), isolate_limits)?;
     let runs = match accounts {
         Some(accounts) => runs.with_accounts(accounts),
@@ -476,7 +481,8 @@ fn mcp_modules(
         search,
         search_index,
         runs.clone(),
-    );
+    )
+    .with_middleware(middleware);
     Ok(McpModules::new(
         workspaces,
         tasks,

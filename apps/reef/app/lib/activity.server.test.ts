@@ -8,8 +8,12 @@ import { activityNavigation } from '@/views/activity/navigation'
 import { stored } from '@/views/activity/discovery/fixtures'
 import type { ActivityPage } from '@/views/activity/types'
 import {
+  ActivityApprovalSubject,
   ActivityRunState,
   ActivityInvocationState,
+  ActivityMiddlewarePhase,
+  ActivityMiddlewareScope,
+  ActivityMiddlewareStatus,
   ActivityInvocationOutcome,
 } from '@/generated/coral/management/v1/activity_pb'
 import { AccountConnectionState } from '@/generated/coral/management/v1/account_pb'
@@ -615,6 +619,67 @@ function revealLink(page: ActivityPage, location: string): URL {
 }
 
 describe('hierarchical activity through the private server interface', () => {
+  // Catches: Middleware executions dropped from a Run's children, shown as two phase
+  // rows, or a selected one without its final value or its Run's source context.
+  it('lists one row per Middleware execution and opens its final value', async () => {
+    const executionName = `${run}/middlewareExecutions/execution-1`
+    const middlewareRun: Handlers = {
+      activity: {
+        browseRunEntries: () => ({
+          run: { ...execution, task },
+          entries: [
+            {
+              record: {
+                case: 'middleware',
+                value: {
+                  id: 'execution-1',
+                  run,
+                  middlewareName: 'audit',
+                  position: 0,
+                  scope: ActivityMiddlewareScope.OPERATION,
+                  target: 'coral.providers.mail.send',
+                  phase: ActivityMiddlewarePhase.EXIT,
+                  status: ActivityMiddlewareStatus.SUCCEEDED,
+                  startedAtUnixNanos: 2_000_000_000n,
+                  endedAtUnixNanos: 2_500_000_000n,
+                  durationNanos: 500_000_000n,
+                  previewJson: '{"redacted":true}',
+                },
+              },
+            },
+            {
+              record: {
+                case: 'invocation',
+                value: { ...operation, middlewareExecution: 'execution-1' },
+              },
+            },
+          ],
+          nextAfter: 3n,
+          hasMore: false,
+        }),
+      },
+    }
+    const { api } = coral(list(), taskDetail(), middlewareRun, runDetail())
+    const expanded = await loadActivity(request({ expand: [task, run] }), api, { scope })
+    expect(expanded.branches[run].rows).toMatchObject([
+      {
+        kind: 'middleware',
+        name: executionName,
+        middlewareName: 'audit',
+        scope: 'operation',
+        target: 'coral.providers.mail.send',
+        phase: 'exit',
+        state: 'succeeded',
+      },
+      { kind: 'invocation', middlewareExecution: 'execution-1' },
+    ])
+    const selected = await loadActivity(request({ record: executionName }), api, { scope })
+    expect(selected.detail).toMatchObject({
+      kind: 'middleware',
+      execution: { name: executionName, previewJson: '{"redacted":true}' },
+      context: { kind: 'run', source: 'return secretSource;' },
+    })
+  })
   it('selects and loads the exact operation approval once, but never chooses another action during observation', async () => {
     const { api, calls } = coral(list(), ...reviewReads())
     const input = request({ record: invocation })
@@ -745,6 +810,40 @@ describe('hierarchical activity through the private server interface', () => {
         retainedConnection ? 1 : 0,
       )
     }
+  })
+  // Catches: an Emission approval treated as an Invocation's, so its review was
+  // unavailable, or one that read an operation the Emission does not have.
+  it('reviews an Emission approval on its Run with the exact value to emit', async () => {
+    const emission: Handlers = {
+      activity: {
+        inspectApproval: () => ({
+          name: approval,
+          run,
+          invocation: '',
+          provider: '',
+          callPath: 'coral.emit',
+          argumentsJson: '{"invoice":"INV-7","reviewed":"final"}',
+          subject: ActivityApprovalSubject.EMISSION,
+          state: 'pending',
+          actionable: true,
+        }),
+      },
+    }
+    const { api, calls } = coral(list(), taskDetail(), runEntries(), runDetail(), emission)
+    const page = await loadActivity(request({ record: run, request: approval }), api, { scope })
+    expect(page.unavailable).toBe(false)
+    expect(page.detail).toMatchObject({
+      kind: 'run',
+      request: {
+        kind: 'approval',
+        subject: 'emission',
+        name: approval,
+        callPath: 'coral.emit',
+        arguments: '{"invoice":"INV-7","reviewed":"final"}',
+        actionable: true,
+      },
+    })
+    expect(loaded(calls, 'operation')).toBe(0)
   })
   it('continues the selected Run action window without discarding an independently authorized review', async () => {
     const { api, calls } = coral(list(), ...reviewReads())

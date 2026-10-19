@@ -146,6 +146,38 @@ impl ToolArguments for SaveFunctionArguments {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
+pub(crate) struct SaveMiddlewareArguments {
+    #[schemars(schema_with = "uuid_schema", description = TASK_ID_DESCRIPTION)]
+    pub(crate) task_id: String,
+    #[schemars(
+        length(min = 1, max = TASK_INTENT_MAX_CHARS),
+        description = CALL_INTENT_DESCRIPTION
+    )]
+    pub(crate) intent: String,
+    #[schemars(
+        length(min = 1),
+        description = "Workspace-unique Middleware name: a lowercase letter, then lowercase letters, digits, hyphens or underscores. At most 64 bytes. Saving an existing name replaces its source and description."
+    )]
+    pub(crate) name: String,
+    #[schemars(
+        length(min = 1),
+        description = "What the Middleware does, for the Workspace Owners who review and enable it. At most 1 KiB (1024 UTF-8 bytes), checked by the domain."
+    )]
+    pub(crate) description: String,
+    #[schemars(
+        length(min = 1),
+        description = "No-import TypeScript module with one default callable `(ctx: CoralMiddleware.Invocation, next: CoralMiddleware.Next)`. Await or return `next()` at most once, or return a replacement value. Its own `coral.providers` calls Operations without Workspace policy, and its own `coral.emit` publishes an Emission attributed to it. Program calls to `coral.emit` reach Operation Middleware with `ctx.path` `coral.emit`. It cannot reference `coral.functions`, and its top-level code cannot have effects. At most 64 KiB (65536 UTF-8 bytes), checked by the domain."
+    )]
+    pub(crate) source: String,
+}
+
+impl ToolArguments for SaveMiddlewareArguments {
+    const NAME: &'static str = "save_middleware";
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct DeleteFunctionArguments {
     #[schemars(schema_with = "uuid_schema", description = TASK_ID_DESCRIPTION)]
     pub(crate) task_id: String,
@@ -305,6 +337,10 @@ pub(crate) fn tools() -> Vec<Tool> {
         tool::<DeleteFunctionArguments, crate::projection::DeletedFunction>(
             "Delete one Saved Function.",
             mutation_annotations("Delete Function", true, false),
+        ),
+        tool::<SaveMiddlewareArguments, crate::projection::SavedMiddlewareResult<'_>>(
+            "Workspace Owners only: create or replace one Workspace Middleware, which wraps Program Runs, Saved Function calls or Operation Invocations. Every save leaves it disabled; an Owner reviews it and chooses its scopes, order and activation in Reef.",
+            mutation_annotations("Save Middleware", true, false),
         ),
         tool::<ExecArguments, crate::projection::RunUpdateResult<'_>>(
             "Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole Operation Result. Log diagnostics with `console.log`. A thrown `coral.OperationError` is a known Coral failure; you can report its code and trace identifier.",

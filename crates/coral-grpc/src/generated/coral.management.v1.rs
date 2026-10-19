@@ -5434,6 +5434,10 @@ pub struct ActivityInvocation {
     /// Where the Run's accepted source made the call. Absent if not recorded.
     #[prost(message, optional, tag = "18")]
     pub source_location: ::core::option::Option<ActivitySourceLocation>,
+    /// Middleware execution identity when Middleware made this helper call; empty for
+    /// Program work. Helper calls bypass Workspace policy and Middleware.
+    #[prost(string, tag = "19")]
+    pub middleware_execution: ::prost::alloc::string::String,
 }
 /// Selects one Run. List filters do not apply.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -5582,6 +5586,9 @@ pub struct ActivityProgramEmitted {
     /// The value as JSON. null is a real value.
     #[prost(string, tag = "1")]
     pub value_json: ::prost::alloc::string::String,
+    /// Middleware execution that emitted the value; empty when the Program emitted it.
+    #[prost(string, tag = "2")]
+    pub middleware_execution: ::prost::alloc::string::String,
 }
 /// The Program logged a message.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -5699,6 +5706,7 @@ pub struct ActivityActionSummary {
     #[prost(string, tag = "2")]
     pub call_path: ::prost::alloc::string::String,
     /// The Provider's current display name, or "Unavailable provider" if it was removed.
+    /// Empty for an Emission request, which has no Provider.
     #[prost(string, tag = "3")]
     pub provider_label: ::prost::alloc::string::String,
     /// When this Run stops waiting: the request's deadline or the Run's, whichever is first.
@@ -5795,16 +5803,18 @@ pub struct InspectApprovalResponse {
     /// workspaces/{workspace}/runs/{run} that is waiting.
     #[prost(string, tag = "2")]
     pub run: ::prost::alloc::string::String,
-    /// workspaces/{workspace}/invocations/{invocation} that needs approval.
+    /// workspaces/{workspace}/invocations/{invocation} that needs approval. Empty for an
+    /// Emission request.
     #[prost(string, tag = "3")]
     pub invocation: ::prost::alloc::string::String,
-    /// workspaces/{workspace}/providers/{provider} at the time of the call.
+    /// workspaces/{workspace}/providers/{provider} at the time of the call. Empty for an
+    /// Emission request.
     #[prost(string, tag = "4")]
     pub provider: ::prost::alloc::string::String,
-    /// Path the Program called.
+    /// Path the Program called; coral.emit for an Emission request.
     #[prost(string, tag = "5")]
     pub call_path: ::prost::alloc::string::String,
-    /// Arguments of this call, as JSON.
+    /// Arguments of this call, or the exact value an Emission request would emit, as JSON.
     #[prost(string, tag = "6")]
     pub arguments_json: ::prost::alloc::string::String,
     /// pending, approved, declined, expired or closed. Use actionable to decide whether to
@@ -5827,6 +5837,7 @@ pub struct InspectApprovalResponse {
     #[prost(bool, tag = "12")]
     pub actionable: bool,
     /// The Provider's current display name, or "Unavailable provider" if it was removed.
+    /// Empty for an Emission request, which has no Provider.
     #[prost(string, tag = "13")]
     pub provider_label: ::prost::alloc::string::String,
     /// Label for who decided: "You", their name, or "Unavailable user". Empty if nobody decided.
@@ -5835,6 +5846,13 @@ pub struct InspectApprovalResponse {
     /// Label for who started the Run: "You", the Agent's name, or "Unavailable agent".
     #[prost(string, tag = "15")]
     pub actor_label: ::prost::alloc::string::String,
+    /// What approval permits: one Operation call, or one Program Emission.
+    #[prost(enumeration = "ActivityApprovalSubject", tag = "16")]
+    pub subject: i32,
+    /// Where the Run's accepted source called coral.emit, for an Emission request. Absent
+    /// if not recorded, and for Invocation requests, whose call carries its own location.
+    #[prost(message, optional, tag = "17")]
+    pub source_location: ::core::option::Option<ActivitySourceLocation>,
 }
 /// Selects which pending requests to count.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -6043,7 +6061,10 @@ pub struct InspectTaskInteractionResponse {
     #[prost(message, optional, tag = "1")]
     pub interaction: ::core::option::Option<ActivityInteraction>,
     /// What the call produced. Absent if its outcome is unknown.
-    #[prost(oneof = "inspect_task_interaction_response::Evidence", tags = "2, 3, 5, 6")]
+    #[prost(
+        oneof = "inspect_task_interaction_response::Evidence",
+        tags = "2, 3, 5, 7, 6"
+    )]
     pub evidence: ::core::option::Option<inspect_task_interaction_response::Evidence>,
 }
 /// Nested message and enum types in `InspectTaskInteractionResponse`.
@@ -6060,6 +6081,9 @@ pub mod inspect_task_interaction_response {
         /// Saved Function the call saved or deleted. It may have changed or been deleted since.
         #[prost(string, tag = "5")]
         SavedFunction(::prost::alloc::string::String),
+        /// workspaces/{workspace}/middleware/{middleware} the call saved. It may have changed since.
+        #[prost(string, tag = "7")]
+        Middleware(::prost::alloc::string::String),
         /// Why the call was rejected.
         #[prost(message, tag = "6")]
         Rejection(super::ActivityRejection),
@@ -6139,8 +6163,9 @@ pub struct BrowseRunEntriesRequest {
     /// Optional list scope the Run must belong to. Leave empty to select the Run on its own.
     #[prost(message, optional, tag = "4")]
     pub scope: ::core::option::Option<ActivityScope>,
-    /// Start the page at this Operation call, Event ({run}/events/{sequence}) or Final
-    /// Value ({run}/final). Cannot be combined with after.
+    /// Start the page at this Operation call, Event ({run}/events/{sequence}), Middleware
+    /// execution ({run}/middlewareExecutions/{id}) or Final Value ({run}/final). Cannot be
+    /// combined with after.
     #[prost(string, tag = "5")]
     pub anchor: ::prost::alloc::string::String,
     /// Return the rows around a scroll position. Cannot be combined with after or anchor.
@@ -6167,16 +6192,61 @@ pub struct ActivityEventSummary {
     #[prost(message, optional, tag = "5")]
     pub source_location: ::core::option::Option<ActivitySourceLocation>,
 }
+/// One Middleware execution: a single row with its phase and status.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivityMiddlewareExecution {
+    /// Execution identity within the Run.
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    /// workspaces/{workspace}/runs/{run} that the execution belongs to.
+    #[prost(string, tag = "2")]
+    pub run: ::prost::alloc::string::String,
+    /// Pinned Middleware name.
+    #[prost(string, tag = "3")]
+    pub middleware_name: ::prost::alloc::string::String,
+    /// Pinned chain position, outermost first.
+    #[prost(uint32, tag = "4")]
+    pub position: u32,
+    /// Wrapped invocation level.
+    #[prost(enumeration = "ActivityMiddlewareScope", tag = "5")]
+    pub scope: i32,
+    /// Wrapped Call Path; empty for the Run.
+    #[prost(string, tag = "6")]
+    pub target: ::prost::alloc::string::String,
+    /// Enter or exit phase.
+    #[prost(enumeration = "ActivityMiddlewarePhase", tag = "7")]
+    pub phase: i32,
+    /// Current status.
+    #[prost(enumeration = "ActivityMiddlewareStatus", tag = "8")]
+    pub status: i32,
+    /// When the execution started.
+    #[prost(int64, tag = "9")]
+    pub started_at_unix_nanos: i64,
+    /// When it ended. Absent while running.
+    #[prost(int64, optional, tag = "10")]
+    pub ended_at_unix_nanos: ::core::option::Option<i64>,
+    /// Time elapsed so far, measured once per read.
+    #[prost(int64, tag = "11")]
+    pub duration_nanos: i64,
+    /// Bounded preview of the returned value, as JSON. Never executes Program code.
+    #[prost(string, optional, tag = "12")]
+    pub preview_json: ::core::option::Option<::prost::alloc::string::String>,
+    /// Bounded summary of the failure.
+    #[prost(string, optional, tag = "13")]
+    pub failure_summary: ::core::option::Option<::prost::alloc::string::String>,
+}
 /// One child row of a Run, in order.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActivityRunEntry {
-    /// Exactly one is set. An Operation call appears once, not again at its end Event.
-    #[prost(oneof = "activity_run_entry::Record", tags = "1, 2")]
+    /// Exactly one is set. An Operation call or Middleware execution appears once,
+    /// not again at its end Event.
+    #[prost(oneof = "activity_run_entry::Record", tags = "1, 2, 3")]
     pub record: ::core::option::Option<activity_run_entry::Record>,
 }
 /// Nested message and enum types in `ActivityRunEntry`.
 pub mod activity_run_entry {
-    /// Exactly one is set. An Operation call appears once, not again at its end Event.
+    /// Exactly one is set. An Operation call or Middleware execution appears once,
+    /// not again at its end Event.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Record {
         /// An Operation call.
@@ -6185,6 +6255,9 @@ pub mod activity_run_entry {
         /// An Event, without its payload.
         #[prost(message, tag = "2")]
         Event(super::ActivityEventSummary),
+        /// A Middleware execution.
+        #[prost(message, tag = "3")]
+        Middleware(super::ActivityMiddlewareExecution),
     }
 }
 /// A page of one Run's children.
@@ -6505,6 +6578,150 @@ impl ActivityRunFailureCode {
             "ACTIVITY_RUN_FAILURE_CODE_RUN_AUTHORITY_LOST" => {
                 Some(Self::RunAuthorityLost)
             }
+            _ => None,
+        }
+    }
+}
+/// What one Approval Request would permit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ActivityApprovalSubject {
+    /// Unknown to this client.
+    Unspecified = 0,
+    /// One pending Operation call.
+    Invocation = 1,
+    /// One Program Emission of exactly arguments_json. Operation Middleware required approval.
+    Emission = 2,
+}
+impl ActivityApprovalSubject {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ACTIVITY_APPROVAL_SUBJECT_UNSPECIFIED",
+            Self::Invocation => "ACTIVITY_APPROVAL_SUBJECT_INVOCATION",
+            Self::Emission => "ACTIVITY_APPROVAL_SUBJECT_EMISSION",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ACTIVITY_APPROVAL_SUBJECT_UNSPECIFIED" => Some(Self::Unspecified),
+            "ACTIVITY_APPROVAL_SUBJECT_INVOCATION" => Some(Self::Invocation),
+            "ACTIVITY_APPROVAL_SUBJECT_EMISSION" => Some(Self::Emission),
+            _ => None,
+        }
+    }
+}
+/// Invocation level one Middleware execution wraps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ActivityMiddlewareScope {
+    /// Unknown to this client.
+    Unspecified = 0,
+    /// The Program Run.
+    Run = 1,
+    /// One Saved Function call.
+    Function = 2,
+    /// One Operation Invocation.
+    Operation = 3,
+}
+impl ActivityMiddlewareScope {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ACTIVITY_MIDDLEWARE_SCOPE_UNSPECIFIED",
+            Self::Run => "ACTIVITY_MIDDLEWARE_SCOPE_RUN",
+            Self::Function => "ACTIVITY_MIDDLEWARE_SCOPE_FUNCTION",
+            Self::Operation => "ACTIVITY_MIDDLEWARE_SCOPE_OPERATION",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ACTIVITY_MIDDLEWARE_SCOPE_UNSPECIFIED" => Some(Self::Unspecified),
+            "ACTIVITY_MIDDLEWARE_SCOPE_RUN" => Some(Self::Run),
+            "ACTIVITY_MIDDLEWARE_SCOPE_FUNCTION" => Some(Self::Function),
+            "ACTIVITY_MIDDLEWARE_SCOPE_OPERATION" => Some(Self::Operation),
+            _ => None,
+        }
+    }
+}
+/// Which side of next() one Middleware execution has reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ActivityMiddlewarePhase {
+    /// Unknown to this client.
+    Unspecified = 0,
+    /// Before its continuation settled, including when it never called it.
+    Enter = 1,
+    /// After its continuation settled.
+    Exit = 2,
+}
+impl ActivityMiddlewarePhase {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ACTIVITY_MIDDLEWARE_PHASE_UNSPECIFIED",
+            Self::Enter => "ACTIVITY_MIDDLEWARE_PHASE_ENTER",
+            Self::Exit => "ACTIVITY_MIDDLEWARE_PHASE_EXIT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ACTIVITY_MIDDLEWARE_PHASE_UNSPECIFIED" => Some(Self::Unspecified),
+            "ACTIVITY_MIDDLEWARE_PHASE_ENTER" => Some(Self::Enter),
+            "ACTIVITY_MIDDLEWARE_PHASE_EXIT" => Some(Self::Exit),
+            _ => None,
+        }
+    }
+}
+/// State of one Middleware execution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ActivityMiddlewareStatus {
+    /// Unknown to this client.
+    Unspecified = 0,
+    /// Still running.
+    Running = 1,
+    /// Returned a value.
+    Succeeded = 2,
+    /// Threw, rejected, or finished before its continuation settled.
+    Failed = 3,
+    /// The Run ended while it was running.
+    RunTerminated = 4,
+}
+impl ActivityMiddlewareStatus {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ACTIVITY_MIDDLEWARE_STATUS_UNSPECIFIED",
+            Self::Running => "ACTIVITY_MIDDLEWARE_STATUS_RUNNING",
+            Self::Succeeded => "ACTIVITY_MIDDLEWARE_STATUS_SUCCEEDED",
+            Self::Failed => "ACTIVITY_MIDDLEWARE_STATUS_FAILED",
+            Self::RunTerminated => "ACTIVITY_MIDDLEWARE_STATUS_RUN_TERMINATED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ACTIVITY_MIDDLEWARE_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
+            "ACTIVITY_MIDDLEWARE_STATUS_RUNNING" => Some(Self::Running),
+            "ACTIVITY_MIDDLEWARE_STATUS_SUCCEEDED" => Some(Self::Succeeded),
+            "ACTIVITY_MIDDLEWARE_STATUS_FAILED" => Some(Self::Failed),
+            "ACTIVITY_MIDDLEWARE_STATUS_RUN_TERMINATED" => Some(Self::RunTerminated),
             _ => None,
         }
     }
@@ -11374,6 +11591,937 @@ pub(crate) mod workspace_membership_service_server {
     /// Generated gRPC service name
     pub const SERVICE_NAME: &str = "coral.management.v1.WorkspaceMembershipService";
     impl<T> tonic::server::NamedService for WorkspaceMembershipServiceServer<T> {
+        const NAME: &'static str = SERVICE_NAME;
+    }
+}
+/// Invocation levels one Middleware wraps.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MiddlewareScopes {
+    /// Wrap each Program Run, including linked-module initialization.
+    #[prost(bool, tag = "1")]
+    pub run: bool,
+    /// Wrap each exported Saved Function call.
+    #[prost(bool, tag = "2")]
+    pub function: bool,
+    /// Wrap each Operation Invocation.
+    #[prost(bool, tag = "3")]
+    pub operation: bool,
+}
+/// One advisory TypeScript diagnostic retained with the accepted source.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MiddlewareDiagnostic {
+    /// Category.
+    #[prost(enumeration = "MiddlewareDiagnosticCategory", tag = "1")]
+    pub category: i32,
+    /// Official TypeScript code.
+    #[prost(uint64, tag = "2")]
+    pub code: u64,
+    /// Message text.
+    #[prost(string, tag = "3")]
+    pub message: ::prost::alloc::string::String,
+    /// One-based line, when known.
+    #[prost(uint64, optional, tag = "4")]
+    pub line: ::core::option::Option<u64>,
+    /// One-based column, when known.
+    #[prost(uint64, optional, tag = "5")]
+    pub column: ::core::option::Option<u64>,
+}
+/// One Workspace Middleware.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Middleware {
+    /// workspaces/{workspace}/middleware/{middleware}.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// Workspace-unique Middleware name used by save_middleware.
+    #[prost(string, tag = "2")]
+    pub display_name: ::prost::alloc::string::String,
+    /// What the Middleware does.
+    #[prost(string, tag = "3")]
+    pub description: ::prost::alloc::string::String,
+    /// Accepted TypeScript source. Set only by GetMiddleware.
+    #[prost(string, tag = "4")]
+    pub source: ::prost::alloc::string::String,
+    /// Whether new Runs pin this Middleware.
+    #[prost(bool, tag = "5")]
+    pub enabled: bool,
+    /// Wrapped invocation levels.
+    #[prost(message, optional, tag = "6")]
+    pub scopes: ::core::option::Option<MiddlewareScopes>,
+    /// Zero-based chain position, outermost first.
+    #[prost(uint32, tag = "7")]
+    pub position: u32,
+    /// Increments on every accepted change.
+    #[prost(int64, tag = "8")]
+    pub revision: i64,
+    /// Advisory diagnostics. Set only by GetMiddleware.
+    #[prost(message, repeated, tag = "9")]
+    pub diagnostics: ::prost::alloc::vec::Vec<MiddlewareDiagnostic>,
+    /// Occurrence time of the latest accepted change.
+    #[prost(message, optional, tag = "10")]
+    pub update_time: ::core::option::Option<::prost_types::Timestamp>,
+}
+/// Lists one Workspace's Middleware chain.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListMiddlewareRequest {
+    /// workspaces/{workspace}.
+    #[prost(string, tag = "1")]
+    pub parent: ::prost::alloc::string::String,
+}
+/// The complete chain; a Workspace holds at most 16 Middleware.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListMiddlewareResponse {
+    /// Outermost first, without source or diagnostics.
+    #[prost(message, repeated, tag = "1")]
+    pub middleware: ::prost::alloc::vec::Vec<Middleware>,
+}
+/// Reads one Middleware.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetMiddlewareRequest {
+    /// workspaces/{workspace}/middleware/{middleware}.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+}
+/// Enables or disables one Middleware.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SetMiddlewareEnabledRequest {
+    /// workspaces/{workspace}/middleware/{middleware}.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// Requested activation.
+    #[prost(bool, tag = "2")]
+    pub enabled: bool,
+}
+/// Replaces one Middleware's scopes.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateMiddlewareScopesRequest {
+    /// workspaces/{workspace}/middleware/{middleware}.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// Complete new scopes.
+    #[prost(message, optional, tag = "2")]
+    pub scopes: ::core::option::Option<MiddlewareScopes>,
+}
+/// Moves one Middleware one step.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MoveMiddlewareRequest {
+    /// workspaces/{workspace}/middleware/{middleware}.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// Step direction.
+    #[prost(enumeration = "MiddlewareMoveDirection", tag = "2")]
+    pub direction: i32,
+}
+/// Deletes one Middleware.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteMiddlewareRequest {
+    /// workspaces/{workspace}/middleware/{middleware}.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+}
+/// Confirms deletion.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteMiddlewareResponse {
+    /// The deleted resource name.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+}
+/// Category of one advisory TypeScript diagnostic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum MiddlewareDiagnosticCategory {
+    /// Unknown to this client.
+    Unspecified = 0,
+    /// Informational message.
+    Message = 1,
+    /// Warning.
+    Warning = 2,
+    /// Semantic error that did not block the save.
+    Error = 3,
+    /// Suggestion.
+    Suggestion = 4,
+}
+impl MiddlewareDiagnosticCategory {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "MIDDLEWARE_DIAGNOSTIC_CATEGORY_UNSPECIFIED",
+            Self::Message => "MIDDLEWARE_DIAGNOSTIC_CATEGORY_MESSAGE",
+            Self::Warning => "MIDDLEWARE_DIAGNOSTIC_CATEGORY_WARNING",
+            Self::Error => "MIDDLEWARE_DIAGNOSTIC_CATEGORY_ERROR",
+            Self::Suggestion => "MIDDLEWARE_DIAGNOSTIC_CATEGORY_SUGGESTION",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "MIDDLEWARE_DIAGNOSTIC_CATEGORY_UNSPECIFIED" => Some(Self::Unspecified),
+            "MIDDLEWARE_DIAGNOSTIC_CATEGORY_MESSAGE" => Some(Self::Message),
+            "MIDDLEWARE_DIAGNOSTIC_CATEGORY_WARNING" => Some(Self::Warning),
+            "MIDDLEWARE_DIAGNOSTIC_CATEGORY_ERROR" => Some(Self::Error),
+            "MIDDLEWARE_DIAGNOSTIC_CATEGORY_SUGGESTION" => Some(Self::Suggestion),
+            _ => None,
+        }
+    }
+}
+/// Direction of one reorder step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum MiddlewareMoveDirection {
+    /// Not a valid move.
+    Unspecified = 0,
+    /// One step toward the outermost position.
+    Up = 1,
+    /// One step toward the innermost position.
+    Down = 2,
+}
+impl MiddlewareMoveDirection {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "MIDDLEWARE_MOVE_DIRECTION_UNSPECIFIED",
+            Self::Up => "MIDDLEWARE_MOVE_DIRECTION_UP",
+            Self::Down => "MIDDLEWARE_MOVE_DIRECTION_DOWN",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "MIDDLEWARE_MOVE_DIRECTION_UNSPECIFIED" => Some(Self::Unspecified),
+            "MIDDLEWARE_MOVE_DIRECTION_UP" => Some(Self::Up),
+            "MIDDLEWARE_MOVE_DIRECTION_DOWN" => Some(Self::Down),
+            _ => None,
+        }
+    }
+}
+/// Generated client implementations.
+pub mod middleware_service_client {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
+    /// Owner-only management of Workspace Middleware.
+    ///
+    /// Middleware is Workspace-owned trusted code that wraps Program Runs, Saved
+    /// Function calls, or Operation Invocations. Code is authored through the MCP
+    /// save_middleware tool; this service reads it and manages activation, scopes,
+    /// and chain order. Every change other than activation disables the changed
+    /// Middleware. Callers without Workspace Owner authority get PERMISSION_DENIED
+    /// for a list and NOT_FOUND for one Middleware.
+    #[derive(Debug, Clone)]
+    pub struct MiddlewareServiceClient<T> {
+        inner: tonic::client::Grpc<T>,
+    }
+    impl MiddlewareServiceClient<tonic::transport::Channel> {
+        /// Attempt to create a new client by connecting to a given endpoint.
+        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
+        where
+            D: TryInto<tonic::transport::Endpoint>,
+            D::Error: Into<StdError>,
+        {
+            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
+            Ok(Self::new(conn))
+        }
+    }
+    impl<T> MiddlewareServiceClient<T>
+    where
+        T: tonic::client::GrpcService<tonic::body::Body>,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
+    {
+        pub fn new(inner: T) -> Self {
+            let inner = tonic::client::Grpc::new(inner);
+            Self { inner }
+        }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> MiddlewareServiceClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
+            T: tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                >,
+            >,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+        {
+            MiddlewareServiceClient::new(InterceptedService::new(inner, interceptor))
+        }
+        /// Compress requests with the given encoding.
+        ///
+        /// This requires the server to support it otherwise it might respond with an
+        /// error.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
+            self
+        }
+        /// Enable decompressing responses.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
+        /// Lists the Workspace chain, outermost first, without source.
+        pub async fn list_middleware(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListMiddlewareRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListMiddlewareResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.MiddlewareService/ListMiddleware",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.MiddlewareService",
+                        "ListMiddleware",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Returns one Middleware with its read-only source and diagnostics.
+        pub async fn get_middleware(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetMiddlewareRequest>,
+        ) -> std::result::Result<tonic::Response<super::Middleware>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.MiddlewareService/GetMiddleware",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.MiddlewareService",
+                        "GetMiddleware",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Enables or disables one Middleware for future Runs.
+        pub async fn set_middleware_enabled(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SetMiddlewareEnabledRequest>,
+        ) -> std::result::Result<tonic::Response<super::Middleware>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.MiddlewareService/SetMiddlewareEnabled",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.MiddlewareService",
+                        "SetMiddlewareEnabled",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Replaces one Middleware's scopes and disables it.
+        pub async fn update_middleware_scopes(
+            &mut self,
+            request: impl tonic::IntoRequest<super::UpdateMiddlewareScopesRequest>,
+        ) -> std::result::Result<tonic::Response<super::Middleware>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.MiddlewareService/UpdateMiddlewareScopes",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.MiddlewareService",
+                        "UpdateMiddlewareScopes",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Moves one Middleware one step and disables it. The swapped neighbor keeps its activation.
+        pub async fn move_middleware(
+            &mut self,
+            request: impl tonic::IntoRequest<super::MoveMiddlewareRequest>,
+        ) -> std::result::Result<tonic::Response<super::Middleware>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.MiddlewareService/MoveMiddleware",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.MiddlewareService",
+                        "MoveMiddleware",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Deletes one Middleware. In-progress Runs keep their pinned chain.
+        pub async fn delete_middleware(
+            &mut self,
+            request: impl tonic::IntoRequest<super::DeleteMiddlewareRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DeleteMiddlewareResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.MiddlewareService/DeleteMiddleware",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.MiddlewareService",
+                        "DeleteMiddleware",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+    }
+}
+/// Generated server implementations.
+#[allow(dead_code, unreachable_pub)]
+pub(crate) mod middleware_service_server {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    /// Generated trait containing gRPC methods that should be implemented for use with MiddlewareServiceServer.
+    #[async_trait]
+    pub trait MiddlewareService: std::marker::Send + std::marker::Sync + 'static {
+        /// Lists the Workspace chain, outermost first, without source.
+        async fn list_middleware(
+            &self,
+            request: tonic::Request<super::ListMiddlewareRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListMiddlewareResponse>,
+            tonic::Status,
+        >;
+        /// Returns one Middleware with its read-only source and diagnostics.
+        async fn get_middleware(
+            &self,
+            request: tonic::Request<super::GetMiddlewareRequest>,
+        ) -> std::result::Result<tonic::Response<super::Middleware>, tonic::Status>;
+        /// Enables or disables one Middleware for future Runs.
+        async fn set_middleware_enabled(
+            &self,
+            request: tonic::Request<super::SetMiddlewareEnabledRequest>,
+        ) -> std::result::Result<tonic::Response<super::Middleware>, tonic::Status>;
+        /// Replaces one Middleware's scopes and disables it.
+        async fn update_middleware_scopes(
+            &self,
+            request: tonic::Request<super::UpdateMiddlewareScopesRequest>,
+        ) -> std::result::Result<tonic::Response<super::Middleware>, tonic::Status>;
+        /// Moves one Middleware one step and disables it. The swapped neighbor keeps its activation.
+        async fn move_middleware(
+            &self,
+            request: tonic::Request<super::MoveMiddlewareRequest>,
+        ) -> std::result::Result<tonic::Response<super::Middleware>, tonic::Status>;
+        /// Deletes one Middleware. In-progress Runs keep their pinned chain.
+        async fn delete_middleware(
+            &self,
+            request: tonic::Request<super::DeleteMiddlewareRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DeleteMiddlewareResponse>,
+            tonic::Status,
+        >;
+    }
+    /// Owner-only management of Workspace Middleware.
+    ///
+    /// Middleware is Workspace-owned trusted code that wraps Program Runs, Saved
+    /// Function calls, or Operation Invocations. Code is authored through the MCP
+    /// save_middleware tool; this service reads it and manages activation, scopes,
+    /// and chain order. Every change other than activation disables the changed
+    /// Middleware. Callers without Workspace Owner authority get PERMISSION_DENIED
+    /// for a list and NOT_FOUND for one Middleware.
+    #[derive(Debug)]
+    pub struct MiddlewareServiceServer<T> {
+        inner: Arc<T>,
+        accept_compression_encodings: EnabledCompressionEncodings,
+        send_compression_encodings: EnabledCompressionEncodings,
+        max_decoding_message_size: Option<usize>,
+        max_encoding_message_size: Option<usize>,
+    }
+    impl<T> MiddlewareServiceServer<T> {
+        pub fn new(inner: T) -> Self {
+            Self::from_arc(Arc::new(inner))
+        }
+        pub fn from_arc(inner: Arc<T>) -> Self {
+            Self {
+                inner,
+                accept_compression_encodings: Default::default(),
+                send_compression_encodings: Default::default(),
+                max_decoding_message_size: None,
+                max_encoding_message_size: None,
+            }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
+        where
+            F: tonic::service::Interceptor,
+        {
+            InterceptedService::new(Self::new(inner), interceptor)
+        }
+        /// Enable decompressing requests with the given encoding.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.accept_compression_encodings.enable(encoding);
+            self
+        }
+        /// Compress responses with the given encoding, if the client supports it.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.send_compression_encodings.enable(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.max_decoding_message_size = Some(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.max_encoding_message_size = Some(limit);
+            self
+        }
+    }
+    impl<T, B> tonic::codegen::Service<http::Request<B>> for MiddlewareServiceServer<T>
+    where
+        T: MiddlewareService,
+        B: Body + std::marker::Send + 'static,
+        B::Error: Into<StdError> + std::marker::Send + 'static,
+    {
+        type Response = http::Response<tonic::body::Body>;
+        type Error = std::convert::Infallible;
+        type Future = BoxFuture<Self::Response, Self::Error>;
+        fn poll_ready(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn call(&mut self, req: http::Request<B>) -> Self::Future {
+            match req.uri().path() {
+                "/coral.management.v1.MiddlewareService/ListMiddleware" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListMiddlewareSvc<T: MiddlewareService>(pub Arc<T>);
+                    impl<
+                        T: MiddlewareService,
+                    > tonic::server::UnaryService<super::ListMiddlewareRequest>
+                    for ListMiddlewareSvc<T> {
+                        type Response = super::ListMiddlewareResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ListMiddlewareRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as MiddlewareService>::list_middleware(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListMiddlewareSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.MiddlewareService/GetMiddleware" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetMiddlewareSvc<T: MiddlewareService>(pub Arc<T>);
+                    impl<
+                        T: MiddlewareService,
+                    > tonic::server::UnaryService<super::GetMiddlewareRequest>
+                    for GetMiddlewareSvc<T> {
+                        type Response = super::Middleware;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetMiddlewareRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as MiddlewareService>::get_middleware(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetMiddlewareSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.MiddlewareService/SetMiddlewareEnabled" => {
+                    #[allow(non_camel_case_types)]
+                    struct SetMiddlewareEnabledSvc<T: MiddlewareService>(pub Arc<T>);
+                    impl<
+                        T: MiddlewareService,
+                    > tonic::server::UnaryService<super::SetMiddlewareEnabledRequest>
+                    for SetMiddlewareEnabledSvc<T> {
+                        type Response = super::Middleware;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::SetMiddlewareEnabledRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as MiddlewareService>::set_middleware_enabled(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = SetMiddlewareEnabledSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.MiddlewareService/UpdateMiddlewareScopes" => {
+                    #[allow(non_camel_case_types)]
+                    struct UpdateMiddlewareScopesSvc<T: MiddlewareService>(pub Arc<T>);
+                    impl<
+                        T: MiddlewareService,
+                    > tonic::server::UnaryService<super::UpdateMiddlewareScopesRequest>
+                    for UpdateMiddlewareScopesSvc<T> {
+                        type Response = super::Middleware;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::UpdateMiddlewareScopesRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as MiddlewareService>::update_middleware_scopes(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = UpdateMiddlewareScopesSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.MiddlewareService/MoveMiddleware" => {
+                    #[allow(non_camel_case_types)]
+                    struct MoveMiddlewareSvc<T: MiddlewareService>(pub Arc<T>);
+                    impl<
+                        T: MiddlewareService,
+                    > tonic::server::UnaryService<super::MoveMiddlewareRequest>
+                    for MoveMiddlewareSvc<T> {
+                        type Response = super::Middleware;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::MoveMiddlewareRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as MiddlewareService>::move_middleware(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = MoveMiddlewareSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.MiddlewareService/DeleteMiddleware" => {
+                    #[allow(non_camel_case_types)]
+                    struct DeleteMiddlewareSvc<T: MiddlewareService>(pub Arc<T>);
+                    impl<
+                        T: MiddlewareService,
+                    > tonic::server::UnaryService<super::DeleteMiddlewareRequest>
+                    for DeleteMiddlewareSvc<T> {
+                        type Response = super::DeleteMiddlewareResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::DeleteMiddlewareRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as MiddlewareService>::delete_middleware(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = DeleteMiddlewareSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(
+                            tonic::body::Body::default(),
+                        );
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
+            }
+        }
+    }
+    impl<T> Clone for MiddlewareServiceServer<T> {
+        fn clone(&self) -> Self {
+            let inner = self.inner.clone();
+            Self {
+                inner,
+                accept_compression_encodings: self.accept_compression_encodings,
+                send_compression_encodings: self.send_compression_encodings,
+                max_decoding_message_size: self.max_decoding_message_size,
+                max_encoding_message_size: self.max_encoding_message_size,
+            }
+        }
+    }
+    /// Generated gRPC service name
+    pub const SERVICE_NAME: &str = "coral.management.v1.MiddlewareService";
+    impl<T> tonic::server::NamedService for MiddlewareServiceServer<T> {
         const NAME: &'static str = SERVICE_NAME;
     }
 }

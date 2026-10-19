@@ -62,6 +62,33 @@ export const invocationOutcomes = [
   'indeterminate',
 ] as const
 export type RunState = (typeof runStates)[number] | 'unknown'
+export type MiddlewareScope = 'run' | 'function' | 'operation' | 'unknown'
+export type MiddlewarePhase = 'enter' | 'exit' | 'unknown'
+export type MiddlewareState = 'running' | 'succeeded' | 'failed' | 'run_terminated' | 'unknown'
+/** One Middleware execution: a single row with its phase and state. */
+export interface MiddlewareRow {
+  /** Middleware executions return no payload to the caller. */
+  contextImpactBytes?: string
+  name: string
+  workspace: string
+  run: string
+  middlewareName: string
+  position: number
+  scope: MiddlewareScope
+  /** The wrapped call path; empty for the Run. */
+  target: string
+  phase: MiddlewarePhase
+  state: MiddlewareState
+  startedAt: string
+  endedAt: string | null
+  durationNanos: string
+  /** Bounded preview of the returned value, as JSON. */
+  previewJson: string | null
+  failureSummary: string | null
+  task: string
+  actor: string
+  agent: string
+}
 export type InvocationState = (typeof invocationStates)[number] | 'unknown'
 export type InvocationOutcome = (typeof invocationOutcomes)[number] | 'unknown'
 export interface ExecutionRow {
@@ -93,6 +120,8 @@ export interface InvocationRow extends Omit<ExecutionRow, 'state'> {
   waitingNanos: string
   /** Where the author's code made this call; absent when Coral stored none. */
   sourceLocation?: RecordSourceLocation
+  /** The Middleware execution that made this helper call; empty for Program work. */
+  middlewareExecution?: string
 }
 /**
  * Where in its Run's accepted source the author's code made a record. Line and
@@ -121,7 +150,12 @@ export type RunEvent = { sequence: string; occurredAt: string } & (
   | { kind: 'run.started' | 'unknown' }
   | { kind: 'invocation.started'; invocation: string }
   | { kind: 'invocation.ended'; invocation: string; outcome: InvocationOutcome }
-  | { kind: 'program.emitted'; value: string }
+  | {
+      kind: 'program.emitted'
+      value: string
+      /** Middleware execution that emitted it; absent or empty for Program output. */
+      middlewareExecution?: string
+    }
   | {
       kind: 'program.logged'
       level: 'debug' | 'info' | 'warn' | 'error' | 'unknown'
@@ -186,9 +220,12 @@ export type ActionSummary = Exclude<RequestReference, { kind: 'unknown' }> & {
 export type RequestDetail =
   | {
       kind: 'approval'
+      /** One Program Emission that Middleware held for approval; absent for an operation call. */
+      subject?: 'emission'
       actionable?: boolean
       name: string
       run: string
+      /** Empty for an Emission request. */
       invocation: string
       provider: string
       providerLabel?: string
@@ -226,6 +263,7 @@ export type ActivityRow = { position?: number } & (
   | ({ kind: 'task' } & TaskRow)
   | ({ kind: 'run'; submission?: InteractionRow; hasFinalValue?: boolean } & ExecutionRow)
   | ({ kind: 'invocation' } & InvocationRow)
+  | ({ kind: 'middleware' } & MiddlewareRow)
   | ({ kind: 'tool'; workspace: string; task: string } & InteractionRow)
   | {
       kind: 'output'
@@ -282,6 +320,12 @@ export interface ActivityPage {
         kind: 'output'
         run: string
         event: RunEvent
+        /** The containing Run's authorized source context, when the loader retained it. */
+        context?: RunDetail
+      }
+    | {
+        kind: 'middleware'
+        execution: MiddlewareRow
         /** The containing Run's authorized source context, when the loader retained it. */
         context?: RunDetail
       }

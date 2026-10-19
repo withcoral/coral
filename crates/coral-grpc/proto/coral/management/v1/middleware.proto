@@ -1,0 +1,153 @@
+syntax = "proto3";
+package coral.management.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Owner-only management of Workspace Middleware.
+//
+// Middleware is Workspace-owned trusted code that wraps Program Runs, Saved
+// Function calls, or Operation Invocations. Code is authored through the MCP
+// save_middleware tool; this service reads it and manages activation, scopes,
+// and chain order. Every change other than activation disables the changed
+// Middleware. Callers without Workspace Owner authority get PERMISSION_DENIED
+// for a list and NOT_FOUND for one Middleware.
+service MiddlewareService {
+  // Lists the Workspace chain, outermost first, without source.
+  rpc ListMiddleware(ListMiddlewareRequest) returns (ListMiddlewareResponse);
+  // Returns one Middleware with its read-only source and diagnostics.
+  rpc GetMiddleware(GetMiddlewareRequest) returns (Middleware);
+  // Enables or disables one Middleware for future Runs.
+  rpc SetMiddlewareEnabled(SetMiddlewareEnabledRequest) returns (Middleware);
+  // Replaces one Middleware's scopes and disables it.
+  rpc UpdateMiddlewareScopes(UpdateMiddlewareScopesRequest) returns (Middleware);
+  // Moves one Middleware one step and disables it. The swapped neighbor keeps its activation.
+  rpc MoveMiddleware(MoveMiddlewareRequest) returns (Middleware);
+  // Deletes one Middleware. In-progress Runs keep their pinned chain.
+  rpc DeleteMiddleware(DeleteMiddlewareRequest) returns (DeleteMiddlewareResponse);
+}
+
+// Invocation levels one Middleware wraps.
+message MiddlewareScopes {
+  // Wrap each Program Run, including linked-module initialization.
+  bool run = 1;
+  // Wrap each exported Saved Function call.
+  bool function = 2;
+  // Wrap each Operation Invocation.
+  bool operation = 3;
+}
+
+// Category of one advisory TypeScript diagnostic.
+enum MiddlewareDiagnosticCategory {
+  // Unknown to this client.
+  MIDDLEWARE_DIAGNOSTIC_CATEGORY_UNSPECIFIED = 0;
+  // Informational message.
+  MIDDLEWARE_DIAGNOSTIC_CATEGORY_MESSAGE = 1;
+  // Warning.
+  MIDDLEWARE_DIAGNOSTIC_CATEGORY_WARNING = 2;
+  // Semantic error that did not block the save.
+  MIDDLEWARE_DIAGNOSTIC_CATEGORY_ERROR = 3;
+  // Suggestion.
+  MIDDLEWARE_DIAGNOSTIC_CATEGORY_SUGGESTION = 4;
+}
+
+// One advisory TypeScript diagnostic retained with the accepted source.
+message MiddlewareDiagnostic {
+  // Category.
+  MiddlewareDiagnosticCategory category = 1;
+  // Official TypeScript code.
+  uint64 code = 2;
+  // Message text.
+  string message = 3;
+  // One-based line, when known.
+  optional uint64 line = 4;
+  // One-based column, when known.
+  optional uint64 column = 5;
+}
+
+// One Workspace Middleware.
+message Middleware {
+  // workspaces/{workspace}/middleware/{middleware}.
+  string name = 1;
+  // Workspace-unique Middleware name used by save_middleware.
+  string display_name = 2;
+  // What the Middleware does.
+  string description = 3;
+  // Accepted TypeScript source. Set only by GetMiddleware.
+  string source = 4;
+  // Whether new Runs pin this Middleware.
+  bool enabled = 5;
+  // Wrapped invocation levels.
+  MiddlewareScopes scopes = 6;
+  // Zero-based chain position, outermost first.
+  uint32 position = 7;
+  // Increments on every accepted change.
+  int64 revision = 8;
+  // Advisory diagnostics. Set only by GetMiddleware.
+  repeated MiddlewareDiagnostic diagnostics = 9;
+  // Occurrence time of the latest accepted change.
+  google.protobuf.Timestamp update_time = 10;
+}
+
+// Lists one Workspace's Middleware chain.
+message ListMiddlewareRequest {
+  // workspaces/{workspace}.
+  string parent = 1;
+}
+
+// The complete chain; a Workspace holds at most 16 Middleware.
+message ListMiddlewareResponse {
+  // Outermost first, without source or diagnostics.
+  repeated Middleware middleware = 1;
+}
+
+// Reads one Middleware.
+message GetMiddlewareRequest {
+  // workspaces/{workspace}/middleware/{middleware}.
+  string name = 1;
+}
+
+// Enables or disables one Middleware.
+message SetMiddlewareEnabledRequest {
+  // workspaces/{workspace}/middleware/{middleware}.
+  string name = 1;
+  // Requested activation.
+  bool enabled = 2;
+}
+
+// Replaces one Middleware's scopes.
+message UpdateMiddlewareScopesRequest {
+  // workspaces/{workspace}/middleware/{middleware}.
+  string name = 1;
+  // Complete new scopes.
+  MiddlewareScopes scopes = 2;
+}
+
+// Direction of one reorder step.
+enum MiddlewareMoveDirection {
+  // Not a valid move.
+  MIDDLEWARE_MOVE_DIRECTION_UNSPECIFIED = 0;
+  // One step toward the outermost position.
+  MIDDLEWARE_MOVE_DIRECTION_UP = 1;
+  // One step toward the innermost position.
+  MIDDLEWARE_MOVE_DIRECTION_DOWN = 2;
+}
+
+// Moves one Middleware one step.
+message MoveMiddlewareRequest {
+  // workspaces/{workspace}/middleware/{middleware}.
+  string name = 1;
+  // Step direction.
+  MiddlewareMoveDirection direction = 2;
+}
+
+// Deletes one Middleware.
+message DeleteMiddlewareRequest {
+  // workspaces/{workspace}/middleware/{middleware}.
+  string name = 1;
+}
+
+// Confirms deletion.
+message DeleteMiddlewareResponse {
+  // The deleted resource name.
+  string name = 1;
+}

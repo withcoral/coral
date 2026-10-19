@@ -500,6 +500,97 @@ export const StatusMarkers: Story = {
     },
   },
 }
+const middlewareRow = (
+  id: string,
+  values: Partial<ActivityRow & { kind: 'middleware' }>,
+): ActivityRow & { kind: 'middleware' } => ({
+  kind: 'middleware',
+  name: `${run}/middlewareExecutions/${id}`,
+  workspace,
+  run,
+  middlewareName: 'audit',
+  position: 0,
+  scope: 'operation',
+  target: 'coral.providers.linear.listIssues',
+  phase: 'exit',
+  state: 'succeeded',
+  startedAt: at,
+  endedAt: at,
+  durationNanos: '41000000',
+  previewJson: '{"data":{"issues":3},"redacted":true}',
+  failureSummary: null,
+  task,
+  actor: execution.actor,
+  agent: '',
+  ...values,
+})
+const reviewed = middlewareRow('jev', {
+  middlewareName: 'jev-review',
+  phase: 'enter',
+  state: 'failed',
+  previewJson: null,
+  failureSummary: 'Error: JEV rejected the input',
+})
+const middlewareBranch: ActivityPage = {
+  ...page,
+  branches: {
+    ...page.branches,
+    [run]: {
+      rows: [
+        middlewareRow('run', { scope: 'run', target: '', phase: 'enter', state: 'running' }),
+        middlewareRow('audit', {}),
+        {
+          ...call,
+          name: `${invocation}-helper`,
+          state: 'ended',
+          outcome: 'upstream_outcome',
+          requiresAction: false,
+          callPath: 'coral.providers.sentry.capture',
+          middlewareExecution: 'audit',
+        },
+        reviewed,
+      ],
+      next: '',
+      unavailable: false,
+    },
+  },
+  selected: null,
+  selectedRow: null,
+  detail: null,
+}
+/** Each Middleware execution is one flat row with icons for its phase and state. */
+export const MiddlewareExecutions: Story = {
+  args: { page: middlewareBranch },
+  play: async ({ canvasElement }) => {
+    const table = within(canvasElement).getByRole('table', { name: 'Activity records' })
+    const row = within(recordRow(table, 'audit around coral.providers.linear.listIssues'))
+    // Phase and state each have an icon with a text name, never color alone.
+    await expect(row.getByRole('img', { name: 'exit phase' })).toBeVisible()
+    await expect(row.getByRole('img', { name: 'succeeded' })).toBeVisible()
+    const outer = within(recordRow(table, 'audit around execution'))
+    await expect(outer.getByRole('img', { name: 'enter phase' })).toBeVisible()
+    await expect(outer.getByRole('img', { name: 'running' })).toBeVisible()
+    const helper = within(recordRow(table, 'coral.providers.sentry.capture'))
+    await expect(helper.getByText('by middleware')).toBeVisible()
+  },
+}
+/** A failed Middleware execution says its phase, state and error in words. */
+export const MiddlewareFailure: Story = {
+  args: {
+    page: {
+      ...middlewareBranch,
+      selected: reviewed.name,
+      selectedRow: reviewed,
+      detail: { kind: 'middleware', execution: reviewed },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const drawer = within(await within(canvasElement.ownerDocument.body).findByRole('dialog'))
+    await expect(drawer.getByText('Failed with this error.')).toBeVisible()
+    await expect(drawer.getByText(/Enter\. The wrapped call has not returned/)).toBeVisible()
+    await expect(drawer.getByText('Error: JEV rejected the input')).toBeVisible()
+  },
+}
 export const Collapsed: Story = {
   args: {
     page: {
@@ -1121,6 +1212,34 @@ export const EmissionAfterFailure: Story = {
     await expect(dialog).not.toHaveTextContent('Technical details')
   },
 }
+/** An Emission from Middleware names the execution that emitted it. */
+export const MiddlewareEmission: Story = {
+  args: {
+    page: {
+      ...page,
+      selected: emission.name,
+      selectedRow: emission,
+      detail: {
+        kind: 'output',
+        run,
+        event: {
+          kind: 'program.emitted',
+          sequence: '7',
+          occurredAt: at,
+          value: '{"reviewed":true}',
+          middlewareExecution: 'audit',
+        },
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const drawer = within(await within(canvasElement.ownerDocument.body).findByRole('dialog'))
+    await expect(drawer.getByText(/Middleware emitted this value/)).toBeVisible()
+    await expect(
+      drawer.getByRole('link', { name: 'Open the middleware execution' }),
+    ).toHaveAttribute('href', expect.stringContaining('middlewareExecutions%2Faudit'))
+  },
+}
 const searched: DiscoveryContext = {
   kind: 'search',
   query: 'github pulls',
@@ -1409,6 +1528,48 @@ export const PendingApproval: Story = {
     ])
     const header = within(selected).getByRole('heading', { name: 'mail.send' }).closest('header')
     await expect(header).toContainElement(close)
+  },
+}
+/** Operation Middleware held one Program Emission for approval. It has no operation,
+ * so its Run carries the review: the exact value to emit, and no Provider. */
+export const PendingEmissionApproval: Story = {
+  args: {
+    page: {
+      ...page,
+      selected: run,
+      detail: {
+        ...approvalContext,
+        request: {
+          kind: 'approval',
+          subject: 'emission',
+          taskIntent: goal.intent,
+          actionable: true,
+          name: `${workspace}/approvals/emission`,
+          run,
+          invocation: '',
+          provider: '',
+          providerLabel: '',
+          callPath: 'coral.emit',
+          arguments: JSON.stringify({ invoice: 'INV-7', total: 1250, to: 'owner@example.com' }),
+          state: 'pending',
+          deadline: new Date(Date.now() + 15 * 60_000).toISOString(),
+          approver: '',
+          decidedAt: null,
+          comment: null,
+        },
+      },
+    },
+  },
+  globals: shortScreen,
+  play: async ({ canvasElement }) => {
+    const dialog = await openDrawer(canvasElement, 'Review action')
+    const review = within(dialog).getByRole('region', { name: 'Review coral.emit' })
+    await expect(within(review).getByText('Value to emit', { selector: 'summary' })).toBeVisible()
+    await expect(within(review).queryByText(/Provider/)).not.toBeInTheDocument()
+    // The decisions sit in the panel's footer, outside the review region.
+    await expect(
+      within(dialog).getByRole('button', { name: 'Approve this emission' }),
+    ).toBeVisible()
   },
 }
 export const ResolvedApproval: Story = {

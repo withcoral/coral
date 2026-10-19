@@ -108,7 +108,12 @@ function workspaceDestinations(
     { to: `${w}/providers`, icon: 'Plug', label: 'Providers' },
     { to: `${w}/accounts`, icon: 'KeyRound', label: 'Accounts' },
     { to: `${w}/functions`, icon: 'SquareFunction', label: 'Functions' },
-    ...(owner ? [{ to: `${w}/agents`, icon: 'Bot' as const, label: 'Agents' }] : []),
+    ...(owner
+      ? [
+          { to: `${w}/agents`, icon: 'Bot' as const, label: 'Agents' },
+          { to: `${w}/middleware`, icon: 'Layers' as const, label: 'Middleware' },
+        ]
+      : []),
     // A local deployment has no other people to manage.
     ...(people ? [{ to: `${w}/members`, icon: 'Users' as const, label: 'Members' }] : []),
   ]

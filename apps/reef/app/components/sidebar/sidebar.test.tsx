@@ -190,6 +190,7 @@ test('collapsed, every workspace is a tile and only the current one shows its de
     '/workspaces/ops/accounts',
     '/workspaces/ops/functions',
     '/workspaces/ops/agents',
+    '/workspaces/ops/middleware',
     '/workspaces/ops/members',
     '/workspaces/research',
   ])
@@ -344,6 +345,7 @@ function ownerLinks(id: string) {
     `${w}/accounts`,
     `${w}/functions`,
     `${w}/agents`,
+    `${w}/middleware`,
     `${w}/members`,
   ]
 }

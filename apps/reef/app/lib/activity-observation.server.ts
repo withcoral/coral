@@ -12,7 +12,7 @@ const invalid = () =>
 const name = (value: unknown): value is string =>
   typeof value === 'string' &&
   value.length <= 512 &&
-  /^workspaces\/[\w-]+\/(tasks|runs|invocations)\/[\w-]+(?:\/(interactions\/[\w-]+|events\/\d+|final))?$/.test(
+  /^workspaces\/[\w-]+\/(tasks|runs|invocations)\/[\w-]+(?:\/(interactions\/[\w-]+|events\/\d+|middlewareExecutions\/[\w-]+|final))?$/.test(
     value,
   )
 async function observation(request: Request): Promise<ActivityObservation> {

@@ -131,7 +131,7 @@ async fn final_value_cannot_exceed_the_remaining_durable_output_budget() {
     assert!(
         matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Failed(failure)) if failure.code() == RunFailureCode::ResourceLimitExceeded)
     );
-    assert!(terminal.events().iter().any(|event| matches!(event.kind(), RunEventKind::ProgramEmitted { value } if value.as_json() == &json!("12345"))));
+    assert!(terminal.events().iter().any(|event| matches!(event.kind(), RunEventKind::ProgramEmitted { value, .. } if value.as_json() == &json!("12345"))));
     let accepted = runs
         .start(
             &principal,

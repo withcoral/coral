@@ -536,6 +536,8 @@ pub enum RunEventKind {
     ProgramEmitted {
         /// Exact bounded Program Value published by the Program.
         value: ProgramValue,
+        /// The Middleware execution that emitted it; absent for Program output.
+        middleware_execution: Option<String>,
     },
     /// One diagnostic Program Log became durable separately from output.
     ProgramLogged {
@@ -543,6 +545,18 @@ pub enum RunEventKind {
         level: ProgramLogLevel,
         /// Bounded diagnostic message.
         message: String,
+    },
+    /// One Middleware execution started its enter phase.
+    MiddlewareStarted {
+        /// Stable Middleware execution identity within the Run.
+        execution_id: String,
+    },
+    /// One Middleware execution ended.
+    MiddlewareEnded {
+        /// Stable Middleware execution identity within the Run.
+        execution_id: String,
+        /// Terminal execution status.
+        status: crate::MiddlewareExecutionStatus,
     },
     /// One authorized Principal requested cancellation.
     CancellationRequested {

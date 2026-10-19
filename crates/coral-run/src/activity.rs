@@ -9,6 +9,8 @@ pub enum RunEntryAnchor {
     Event(u64),
     /// An Operation admission.
     Invocation(crate::InvocationId),
+    /// A Middleware execution start.
+    Middleware(String),
     /// The terminal Event.
     Final,
 }
@@ -17,6 +19,7 @@ impl From<&RunEntryAnchor> for RunEntryWindow {
         match anchor {
             RunEntryAnchor::Event(sequence) => Self::Event(*sequence),
             RunEntryAnchor::Invocation(id) => Self::Invocation(id.clone()),
+            RunEntryAnchor::Middleware(id) => Self::Middleware(id.clone()),
             RunEntryAnchor::Final => Self::Final,
         }
     }
@@ -34,6 +37,8 @@ pub enum RunEntryWindow {
     Event(u64),
     /// Start with one exact Operation admission.
     Invocation(crate::InvocationId),
+    /// Start with one exact Middleware execution.
+    Middleware(String),
     /// Terminal event and optional Final Value.
     Final,
     /// Bounded scroll viewport, reanchored in the same authorization snapshot.
@@ -50,6 +55,8 @@ pub enum RunEntryWindow {
 pub enum RunEntry {
     /// Current Operation state, without arguments or result.
     Invocation(InvocationSummary),
+    /// One Middleware execution: a single row with its phase and status.
+    Middleware(crate::MiddlewareExecutionSummary),
     /// Immutable Event identity, without its payload.
     Event {
         /// Stable sequence in the Run.
@@ -162,7 +169,14 @@ impl RunModule {
         let mut next_after = page.after;
         for row in page.rows.into_iter().take(usize::from(limit)) {
             next_after = row.sequence;
-            entries.push(if let Some(invocation) = row.invocation {
+            entries.push(if let Some(execution) = row.middleware {
+                RunEntry::Middleware(
+                    crate::middleware_repository::execution_summary(
+                        tx, workspace, id, &execution, now,
+                    )
+                    .await?,
+                )
+            } else if let Some(invocation) = row.invocation {
                 RunEntry::Invocation(
                     crate::history_repository::exact_invocation(
                         tx,

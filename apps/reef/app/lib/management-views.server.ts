@@ -171,6 +171,6 @@ function diagnosticView(d: SavedFunctionDiagnostic): SavedFunctionDiagnosticView
     column: d.column === undefined ? null : Number(d.column),
   }
 }
-function isoTime(time: Timestamp | undefined) {
+export function isoTime(time: Timestamp | undefined) {
   return time ? new Date(Number(time.seconds) * 1000 + time.nanos / 1_000_000).toISOString() : ''
 }

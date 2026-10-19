@@ -588,6 +588,9 @@ enum StoredEvidence {
     SavedFunction {
         id: String,
     },
+    Middleware {
+        id: String,
+    },
     Rejected {
         failure: StoredFailure,
     },
@@ -656,6 +659,7 @@ fn encode(evidence: &AttemptEvidence) -> Result<String, Error> {
         },
         AttemptEvidence::Run(id) => StoredEvidence::Run { id: id.to_string() },
         AttemptEvidence::SavedFunction(id) => StoredEvidence::SavedFunction { id: id.to_string() },
+        AttemptEvidence::Middleware(id) => StoredEvidence::Middleware { id: id.to_string() },
         AttemptEvidence::Rejected(failure) => StoredEvidence::Rejected {
             failure: StoredFailure {
                 code: failure.code.clone(),
@@ -681,6 +685,10 @@ fn decode(encoded: &str) -> Result<AttemptEvidence, Error> {
         StoredEvidence::SavedFunction { id } => {
             AttemptEvidence::SavedFunction(coral_functions::SavedFunctionId::parse(&id)?)
         }
+        StoredEvidence::Middleware { id } => AttemptEvidence::Middleware(
+            coral_middleware::MiddlewareId::parse(&id)
+                .map_err(|_error| Error::CorruptData("invalid Middleware evidence".into()))?,
+        ),
         StoredEvidence::Rejected { failure } => AttemptEvidence::Rejected(AttemptFailure {
             code: failure.code,
             message: failure.message,

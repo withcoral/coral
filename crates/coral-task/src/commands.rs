@@ -23,6 +23,7 @@ pub struct TaskCommands {
     search: SearchModule,
     index: SearchIndex,
     runs: RunModule,
+    middleware: Option<coral_middleware::MiddlewareModule>,
     #[cfg(test)]
     pub(crate) control: std::sync::Arc<crate::command_tests::Control>,
 }
@@ -42,8 +43,70 @@ impl TaskCommands {
             search,
             index,
             runs,
+            middleware: None,
             #[cfg(test)]
             control: std::sync::Arc::default(),
+        }
+    }
+
+    /// Enables Middleware authoring. Without it, `save_middleware` is unavailable.
+    #[must_use]
+    pub fn with_middleware(mut self, middleware: coral_middleware::MiddlewareModule) -> Self {
+        self.middleware = Some(middleware);
+        self
+    }
+
+    /// Saves one Workspace Middleware, disabled, with atomic attempt completion.
+    ///
+    /// Only a Workspace Owner User can save Middleware. An Owner enables it
+    /// separately after review.
+    ///
+    /// # Errors
+    /// Authorized input and authoring failures are retained; no partial save commits.
+    pub async fn save_middleware(
+        &self,
+        call: &AttributedCommand,
+        name: &str,
+        description: &str,
+        source: &str,
+    ) -> Result<coral_middleware::Middleware, Error> {
+        let middleware = self.middleware.as_ref().ok_or(Error::PermissionDenied(
+            "Middleware authoring is unavailable",
+        ))?;
+        let id = self.begin(call, AttemptKind::Save).await?;
+        let result = async {
+            let save = coral_middleware::MiddlewareSave::new(
+                coral_middleware::MiddlewareName::parse(name)?,
+                coral_middleware::MiddlewareDescription::parse(description)?,
+                coral_middleware::MiddlewareSource::parse(source)?,
+            );
+            let context = coral_middleware::MiddlewareChangeContext::new(
+                call.actor.clone(),
+                now()?,
+                call.trace_id.clone(),
+            );
+            let prepared = middleware
+                .prepare_save(&context, &call.workspace_id, save)
+                .await?;
+            let mut transaction = self.tasks.database.begin().await?;
+            self.hold_attempt(&mut transaction, call).await?;
+            let saved = middleware
+                .save_in_transaction(&mut transaction, prepared)
+                .await?;
+            self.complete(
+                &mut transaction,
+                call,
+                &id,
+                &AttemptEvidence::Middleware(saved.id().clone()),
+            )
+            .await?;
+            transaction.commit().await?;
+            Ok(saved)
+        }
+        .await;
+        match result {
+            Ok(saved) => Ok(saved),
+            Err(error) => Err(self.reject(call, &id, error).await),
         }
     }
 
@@ -326,6 +389,7 @@ impl TaskCommands {
     async fn reject(&self, call: &AttributedCommand, id: &InteractionId, error: Error) -> Error {
         let failure = match &error {
             Error::Functions(error) => error.safe_rejection(),
+            Error::Middleware(error) => error.safe_rejection(),
             Error::Run(error) => error.safe_rejection(),
             Error::Search(error) => error.safe_rejection(),
             _ => None,

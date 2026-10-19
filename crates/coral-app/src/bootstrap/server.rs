@@ -688,6 +688,8 @@ pub(crate) async fn start_server(
     // a request waits for it.
     let search_index = coral_search::SearchIndex::new(Arc::clone(&database), reconcile_interval);
     let mcp_origin = Arc::new(std::sync::OnceLock::new());
+    let middleware =
+        coral_middleware::MiddlewareModule::without_authoring(database.clone(), workspaces.clone());
     let routes = coral_grpc::routes(
         coral_grpc::Dependencies {
             organization: coral_workspace::OrganizationModule::new(database.clone()),
@@ -711,6 +713,7 @@ pub(crate) async fn start_server(
             workspaces,
             providers,
             accounts: accounts.clone(),
+            middleware,
             tasks,
             saved_functions,
             saved_function_deletion,

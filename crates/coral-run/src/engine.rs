@@ -22,12 +22,13 @@
 //! `engine/host.rs`, not the main Run orchestration module.
 
 mod host;
-pub(crate) use host::execute;
+pub(crate) use host::{RunEvidence, execute};
 
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use coral_functions::{SavedFunctionPath, SavedFunctionSelection};
+use coral_middleware::MiddlewareSelection;
 use coral_v8::format_compiler_error;
 
 use crate::execution::ExecutionStop;
@@ -68,11 +69,12 @@ pub(crate) trait ProgramEngine: Send + Sync {
         deadline: Instant,
         source: &str,
         linked: &[SavedFunctionSelection],
+        middleware: &[MiddlewareSelection],
     ) -> Result<ProgramPackage, String> {
-        if linked.is_empty() {
+        if linked.is_empty() && middleware.is_empty() {
             self.compile(deadline, source)
         } else {
-            Err("scripted Program compiler does not support Saved Functions".to_string())
+            Err("scripted Program compiler does not support linked packages".to_string())
         }
     }
 
@@ -154,10 +156,8 @@ impl ProgramEngine for V8ProgramEngine {
         deadline: Instant,
         source: &str,
         linked: &[SavedFunctionSelection],
+        middleware: &[MiddlewareSelection],
     ) -> Result<ProgramPackage, String> {
-        if linked.is_empty() {
-            return self.compile(deadline, source);
-        }
         let sources = linked
             .iter()
             .map(|snapshot| {
@@ -167,9 +167,21 @@ impl ProgramEngine for V8ProgramEngine {
                 )
             })
             .collect::<Vec<_>>();
+        let middleware = middleware
+            .iter()
+            .map(|selection| {
+                coral_v8::LinkedMiddlewareSource::new(
+                    selection.name().as_str().to_string(),
+                    selection.source().as_str().to_string(),
+                    selection.scopes().run,
+                    selection.scopes().function,
+                    selection.scopes().operation,
+                )
+            })
+            .collect::<Vec<_>>();
         let compiled = self
             .compiler
-            .compile_with_saved_functions(deadline, source, &sources)
+            .compile_linked(deadline, source, &sources, &middleware)
             .map_err(format_compiler_error)?;
         package_from_compiled(&compiled)
     }

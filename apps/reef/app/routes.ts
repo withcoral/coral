@@ -62,6 +62,10 @@ export default [
       route('workspaces/:workspace/functions', 'routes/functions.tsx', [
         route(':path', 'routes/function.tsx'),
       ]),
+      // Middleware source opens in a dialog over the list. Its URL stays shareable.
+      route('workspaces/:workspace/middleware', 'routes/middleware.tsx', [
+        route(':middleware', 'routes/middleware-source.tsx'),
+      ]),
       route('workspaces/:workspace/members', 'routes/workspace-members.tsx'),
     ]),
   ]),

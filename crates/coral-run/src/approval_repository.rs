@@ -241,12 +241,19 @@ pub(super) fn pending_invocation(now: i64) -> SimpleExpr {
         .and(col("i", "state").eq("pending"))
         .and(col("a", "state").eq(ApprovalState::Pending.storage()))
         .and(col("a", "deadline_at_unix_nanos").gt(now))
-        .and(coral_policy::history_repository::approval_required(
-            column("workspace_id"),
-            column("provider_id"),
-            column("provider_generation_id"),
-            column("operation_key"),
-        ))
+        .and(
+            // Retained policy wins; legacy Invocations without it read the live rule.
+            col("i", "access_state")
+                .eq(coral_policy::OperationAccessState::ApprovalRequired.as_storage_str())
+                .or(col("i", "access_state").is_null().and(
+                    coral_policy::history_repository::approval_required(
+                        column("workspace_id"),
+                        column("provider_id"),
+                        column("provider_generation_id"),
+                        column("operation_key"),
+                    ),
+                )),
+        )
 }
 
 // Agents' summaries must not load arguments, Account metadata, or comments.

@@ -56,6 +56,7 @@ async fn context_impact_counts_utf8_payloads_once_across_child_pages() {
                     context_impact_bytes,
                     ..
                 } => context_impact_bytes,
+                crate::RunEntry::Middleware(_) => unreachable!("no Middleware in this Run"),
             });
         }
         if !page.has_more {
@@ -144,7 +145,7 @@ async fn many_emissions_share_a_byte_budget_with_logs_and_survive_limit_failure(
             .events()
             .iter()
             .filter_map(|event| match event.kind() {
-                RunEventKind::ProgramEmitted { value } => Some(value.as_json().clone()),
+                RunEventKind::ProgramEmitted { value, .. } => Some(value.as_json().clone()),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -234,7 +235,7 @@ async fn concurrent_invocation_results_share_output_budget_but_arguments_do_not(
             );
         }
         assert!(terminal.events().iter().any(|event| matches!(event.kind(),
-            RunEventKind::ProgramEmitted { value } if value.as_json() == &json!("é"))));
+            RunEventKind::ProgramEmitted { value, .. } if value.as_json() == &json!("é"))));
         assert!(terminal.events().iter().any(|event| matches!(event.kind(),
             RunEventKind::ProgramLogged { message, .. } if message == "é")));
     }
@@ -330,7 +331,7 @@ async fn rejected_invocation_output_leaves_the_remaining_budget_for_program_outp
         ))
     );
     assert!(terminal.events().iter().any(|event| matches!(event.kind(),
-        RunEventKind::ProgramEmitted { value } if value.as_json() == &json!("é"))));
+        RunEventKind::ProgramEmitted { value, .. } if value.as_json() == &json!("é"))));
     assert!(terminal.events().iter().any(|event| matches!(event.kind(),
         RunEventKind::ProgramLogged { message, .. } if message == "é")));
 }

@@ -25,7 +25,7 @@ async fn binary_output_validation_and_cumulative_limits_preserve_earlier_emissio
         .events()
         .iter()
         .filter_map(|event| match event.kind() {
-            RunEventKind::ProgramEmitted { value } => Some(value.as_json()),
+            RunEventKind::ProgramEmitted { value, .. } => Some(value.as_json()),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -77,7 +77,7 @@ async fn emissions_and_logs_are_durable_ordered_and_separate_after_program_failu
         [emitted, debug, info, log, warn, error]
             if matches!(
                     emitted.kind(),
-                    RunEventKind::ProgramEmitted { value }
+                    RunEventKind::ProgramEmitted { value, .. }
                         if value.as_json()
                             == &serde_json::json!({"step": 1, "status": "durable"})
                 )
@@ -180,7 +180,7 @@ async fn invalid_emissions_fail_the_run_unless_the_program_catches_them() {
             .events()
             .iter()
             .filter_map(|event| match event.kind() {
-                RunEventKind::ProgramEmitted { value } => Some(value.as_json().clone()),
+                RunEventKind::ProgramEmitted { value, .. } => Some(value.as_json().clone()),
                 _ => None,
             })
             .collect::<Vec<_>>();

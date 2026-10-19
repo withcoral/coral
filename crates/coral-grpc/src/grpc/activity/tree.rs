@@ -97,6 +97,12 @@ fn entry_anchor(
             |_invalid| Status::invalid_argument("invalid Event identity"),
         )?));
     }
+    if let Some(id) = anchor.strip_prefix(&format!("{name}/middlewareExecutions/")) {
+        if id.is_empty() || id.contains('/') {
+            return Err(Status::invalid_argument("invalid Middleware execution"));
+        }
+        return Ok(coral_run::RunEntryAnchor::Middleware(id.to_owned()));
+    }
     let (owner, id) = resource(anchor, "invocations")?;
     if &owner != workspace {
         return Err(Status::invalid_argument("Invocation Workspace mismatch"));
@@ -173,6 +179,11 @@ pub(super) async fn entries(
                 record: Some(match entry {
                     coral_run::RunEntry::Invocation(value) => {
                         wire::activity_run_entry::Record::Invocation(execution::invocation(value))
+                    }
+                    coral_run::RunEntry::Middleware(value) => {
+                        wire::activity_run_entry::Record::Middleware(execution::middleware(
+                            &workspace, value,
+                        ))
                     }
                     coral_run::RunEntry::Event {
                         sequence,

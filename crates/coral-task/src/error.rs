@@ -22,6 +22,9 @@ pub enum Error {
     /// Functions selected an authoring failure.
     #[error(transparent)]
     Functions(#[from] coral_functions::Error),
+    /// Middleware selected an authoring failure.
+    #[error(transparent)]
+    Middleware(#[from] coral_middleware::Error),
     /// Run selected an admission or observation failure.
     #[error(transparent)]
     Run(#[from] coral_run::Error),

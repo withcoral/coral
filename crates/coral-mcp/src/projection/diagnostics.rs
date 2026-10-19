@@ -32,7 +32,7 @@ impl<'de> Deserialize<'de> for SafeInteger {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Diagnostic {
+pub(crate) struct Diagnostic {
     category: DiagnosticCategory,
     code: SafeInteger,
     message: String,
@@ -159,4 +159,34 @@ impl<'a> TryFrom<&'a coral_run::ProgramError> for ProgramError<'a> {
             circular: error.circular,
         })
     }
+}
+
+pub(super) fn middleware_diagnostics(
+    diagnostics: &[coral_middleware::MiddlewareDiagnostic],
+) -> Result<Vec<Diagnostic>, ToolFailure> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| {
+            Ok(Diagnostic {
+                category: match diagnostic.category {
+                    coral_middleware::MiddlewareDiagnosticCategory::Warning => {
+                        DiagnosticCategory::Warning
+                    }
+                    coral_middleware::MiddlewareDiagnosticCategory::Error => {
+                        DiagnosticCategory::Error
+                    }
+                    coral_middleware::MiddlewareDiagnosticCategory::Suggestion => {
+                        DiagnosticCategory::Suggestion
+                    }
+                    coral_middleware::MiddlewareDiagnosticCategory::Message => {
+                        DiagnosticCategory::Message
+                    }
+                },
+                code: SafeInteger::new(diagnostic.code)?,
+                message: diagnostic.message.clone(),
+                line: diagnostic.line.map(SafeInteger::new).transpose()?,
+                column: diagnostic.column.map(SafeInteger::new).transpose()?,
+            })
+        })
+        .collect()
 }

@@ -6,9 +6,10 @@ use std::task::{Context, Poll, Wake, Waker};
 use crate::source_map::{authored_location, decode_authored};
 use crate::v8_support::{evaluate_script, run_script};
 use crate::{
-    AuthoredLocation, CompiledProgram, ConsoleLevel, Error, ExecutionOutput, IsolateLimits,
-    OperationFuture, OperationHostError, ProgramExecutionControl, ProgramHost,
-    ProgramOutputHostError,
+    AuthoredLocation, AuthoredSource, CompiledProgram, ConsoleLevel, Error, ExecutionOutput,
+    InvocationOrigin, IsolateLimits, MiddlewareExecutionOutcome, MiddlewareExecutionStart,
+    MiddlewareScope, OperationFuture, OperationHostError, OperationPolicy, ProgramExecutionControl,
+    ProgramHost, ProgramOutputHostError,
 };
 
 const FORBIDDEN_AMBIENT_GLOBALS: &str = include_str!("js/forbidden_ambient_globals.js");
@@ -118,17 +119,7 @@ impl ProgramExecutor {
         isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
         isolate.set_promise_reject_callback(track_host_promise_rejection);
         if let Some(host) = host {
-            isolate.set_slot(ProgramHostSlot {
-                host,
-                source_map: source_map.clone(),
-                terminated: Cell::new(false),
-                unhandled_invalid_outputs: Cell::new(0),
-                unhandled_output_limits: Cell::new(0),
-                unhandled_operation_errors: Cell::new(0),
-                unhandled_operation_reasons: RefCell::new(HashMap::new()),
-                pending_operations: Vec::new(),
-                operation_error_factory: None,
-            });
+            isolate.set_slot(ProgramHostSlot::new(host, source_map.clone()));
         }
         v8::scope!(let scope, isolate);
         let context = v8::Context::new(scope, v8::ContextOptions::default());
@@ -153,7 +144,11 @@ impl ProgramExecutor {
             return Err(Error::ProgramHostTerminated);
         }
         let entry = entry?;
-        let promise = v8::Local::<v8::Promise>::try_from(entry).map_err(|_error| {
+        let entry = start_middleware_package(scope, entry);
+        if program_execution_terminated(scope, control) {
+            return Err(Error::ProgramHostTerminated);
+        }
+        let promise = v8::Local::<v8::Promise>::try_from(entry?).map_err(|_error| {
             Error::Engine("Program entry did not evaluate to a Promise".to_string())
         })?;
 
@@ -227,6 +222,44 @@ struct ProgramHostSlot {
     unhandled_operation_reasons: RefCell<HashMap<v8::Global<v8::Object>, v8::Global<v8::Value>>>,
     pending_operations: Vec<(v8::Global<v8::PromiseResolver>, OperationFuture, String)>,
     operation_error_factory: Option<v8::Global<v8::Function>>,
+    middleware_runtime: Option<v8::Global<v8::Object>>,
+}
+
+impl ProgramHostSlot {
+    fn new(host: Arc<dyn ProgramHost>, source_map: sourcemap::SourceMap) -> Self {
+        Self {
+            host,
+            source_map,
+            terminated: Cell::new(false),
+            unhandled_invalid_outputs: Cell::new(0),
+            unhandled_output_limits: Cell::new(0),
+            unhandled_operation_errors: Cell::new(0),
+            unhandled_operation_reasons: RefCell::new(HashMap::new()),
+            pending_operations: Vec::new(),
+            operation_error_factory: None,
+            middleware_runtime: None,
+        }
+    }
+}
+
+// A Middleware package evaluates to a function that receives the private
+// Middleware runtime. Ordinary packages evaluate directly to their Promise.
+fn start_middleware_package<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    entry: v8::Local<'s, v8::Value>,
+) -> Result<v8::Local<'s, v8::Value>, Error> {
+    let Ok(function) = v8::Local::<v8::Function>::try_from(entry) else {
+        return Ok(entry);
+    };
+    let runtime = scope
+        .get_slot::<ProgramHostSlot>()
+        .and_then(|slot| slot.middleware_runtime.clone())
+        .ok_or_else(|| Error::Engine("Middleware package requires a Program host".to_string()))?;
+    let runtime = v8::Local::new(scope, runtime);
+    let receiver = v8::undefined(scope).into();
+    function
+        .call(scope, receiver, &[runtime.into()])
+        .ok_or_else(|| Error::Engine("Middleware package did not start".to_string()))
 }
 
 #[derive(Clone, Copy)]
@@ -415,6 +448,38 @@ fn install_program_host(
             "__coralProgramLog",
             v8::Function::new(scope, program_log_callback),
         ),
+        (
+            "__coralOperationPolicy",
+            v8::Function::new(scope, operation_policy_callback),
+        ),
+        (
+            "__coralCallLocation",
+            v8::Function::new(scope, call_location_callback),
+        ),
+        (
+            "__coralProgramEmitWithPolicy",
+            v8::Function::new(scope, program_emission_policy_callback),
+        ),
+        (
+            "__coralMiddlewareStarted",
+            v8::Function::new(scope, middleware_started_callback),
+        ),
+        (
+            "__coralMiddlewareContinued",
+            v8::Function::new(scope, middleware_continued_callback),
+        ),
+        (
+            "__coralMiddlewareEnded",
+            v8::Function::new(scope, middleware_ended_callback),
+        ),
+        (
+            "__coralFrameGet",
+            v8::Function::new(scope, frame_get_callback),
+        ),
+        (
+            "__coralFrameSet",
+            v8::Function::new(scope, frame_set_callback),
+        ),
     ] {
         let function = function
             .ok_or_else(|| Error::Engine("failed to allocate Program host function".to_string()))?;
@@ -430,18 +495,40 @@ fn install_program_host(
             ));
         }
     }
-    let factory = evaluate_script(
+    let run_id = scope
+        .get_slot::<ProgramHostSlot>()
+        .and_then(|slot| slot.host.run_id());
+    if let Some(run_id) = run_id {
+        let key = v8::String::new(scope, "__coralRunId")
+            .ok_or_else(|| Error::Engine("failed to allocate Program host key".to_string()))?;
+        let value = v8::String::new(scope, &run_id)
+            .ok_or_else(|| Error::Engine("failed to allocate Run identity".to_string()))?;
+        if context.global(scope).set(scope, key.into(), value.into()) != Some(true) {
+            return Err(Error::Engine("failed to install Run identity".to_string()));
+        }
+    }
+    let exports = evaluate_script(
         scope,
         PROGRAM_HOST_BOOTSTRAP,
         "coral_program_host_bootstrap.js",
     )?;
-    let factory = v8::Local::<v8::Function>::try_from(factory)
-        .map_err(|_error| Error::Engine("OperationError factory is invalid".to_string()))?;
+    let exports = v8::Local::<v8::Array>::try_from(exports)
+        .map_err(|_error| Error::Engine("Program host bootstrap is invalid".to_string()))?;
+    let factory = exports
+        .get_index(scope, 0)
+        .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
+        .ok_or_else(|| Error::Engine("OperationError factory is invalid".to_string()))?;
+    let runtime = exports
+        .get_index(scope, 1)
+        .and_then(|value| v8::Local::<v8::Object>::try_from(value).ok())
+        .ok_or_else(|| Error::Engine("Middleware runtime is invalid".to_string()))?;
     let factory = v8::Global::new(scope, factory);
-    scope
+    let runtime = v8::Global::new(scope, runtime);
+    let slot = scope
         .get_slot_mut::<ProgramHostSlot>()
-        .expect("host installed")
-        .operation_error_factory = Some(factory);
+        .expect("host installed");
+    slot.operation_error_factory = Some(factory);
+    slot.middleware_runtime = Some(runtime);
     Ok(())
 }
 
@@ -474,6 +561,30 @@ fn operation_callback(
         return;
     };
     let arguments_json = arguments_json.to_rust_string_lossy(scope);
+    let origin = if let Ok(execution_id) = v8::Local::<v8::String>::try_from(arguments.get(3)) {
+        InvocationOrigin::Middleware {
+            execution_id: execution_id.to_rust_string_lossy(scope),
+        }
+    } else if arguments.get(2).is_undefined() {
+        InvocationOrigin::Program { policy: None }
+    } else {
+        let policy = arguments
+            .get(2)
+            .to_string(scope)
+            .and_then(|policy| OperationPolicy::parse(&policy.to_rust_string_lossy(scope)));
+        let Some(policy) = policy else {
+            reject_operation_promise(
+                scope,
+                &mut return_value,
+                "invalid_input",
+                "Middleware selected an invalid Operation policy",
+            );
+            return;
+        };
+        InvocationOrigin::Program {
+            policy: Some(policy),
+        }
+    };
     let Some(host) = scope
         .get_slot::<ProgramHostSlot>()
         .map(|slot| slot.host.clone())
@@ -489,7 +600,16 @@ fn operation_callback(
     let resolver = v8::Global::new(scope, resolver);
     let frames = capture_program_frames(scope);
     let call_stack = operation_call_stack(&frames);
-    let location = authored_location_of(scope, &frames);
+    // Middleware source is not the Run's authored source. An intercepted
+    // Program call reaches here after its frame returned, so the private
+    // runtime passes the call site it captured when the Program made the call.
+    let location = match &origin {
+        InvocationOrigin::Middleware { .. } => None,
+        InvocationOrigin::Program { .. } if arguments.get(4).is_undefined() => {
+            authored_location_of(scope, &frames)
+        }
+        InvocationOrigin::Program { .. } => passed_location(scope, arguments.get(4)),
+    };
     if let Err(error) = host.value_limits().validate_json(&arguments_json) {
         let resolver = v8::Local::new(scope, resolver);
         let (code, message) = match error {
@@ -504,7 +624,7 @@ fn operation_callback(
         reject_coral_failure(scope, resolver, code, message, None, &call_stack);
         return;
     }
-    let operation = host.invoke(path, arguments_json, location);
+    let operation = host.invoke_with_origin(path, arguments_json, origin, location);
     scope
         .get_slot_mut::<ProgramHostSlot>()
         .expect("host installed")
@@ -552,6 +672,64 @@ fn capture_authored_location(scope: &v8::PinScope<'_, '_>) -> Option<AuthoredLoc
     authored_location_of(scope, &capture_program_frames(scope))
 }
 
+/// Returns the calling authored frame to the private runtime as
+/// `[line, column, savedFunctionPathOrNull]`, or `undefined` when there is none.
+///
+/// The runtime keeps it while Middleware runs and passes it back with the
+/// intercepted call, so the call site does not depend on which frames are on
+/// the stack when the wrapped call finally reaches the host.
+fn call_location_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    _arguments: v8::FunctionCallbackArguments<'_>,
+    mut return_value: v8::ReturnValue,
+) {
+    let Some(location) = capture_authored_location(scope) else {
+        return;
+    };
+    let path: v8::Local<'_, v8::Value> = match &location.source {
+        AuthoredSource::Program => v8::null(scope).into(),
+        AuthoredSource::SavedFunction { path } => match v8::String::new(scope, path) {
+            Some(path) => path.into(),
+            None => return,
+        },
+    };
+    let elements = [
+        v8::Integer::new_from_unsigned(scope, location.line).into(),
+        v8::Integer::new_from_unsigned(scope, location.column).into(),
+        path,
+    ];
+    return_value.set(v8::Array::new_with_elements(scope, &elements).into());
+}
+
+/// Reads a call site that [`call_location_callback`] encoded. Anything else,
+/// including the runtime's `null` for no location, means no location.
+fn passed_location(
+    scope: &mut v8::PinScope<'_, '_>,
+    value: v8::Local<'_, v8::Value>,
+) -> Option<AuthoredLocation> {
+    let encoded = v8::Local::<v8::Array>::try_from(value).ok()?;
+    if encoded.length() != 3 {
+        return None;
+    }
+    let line = encoded.get_index(scope, 0)?.uint32_value(scope)?;
+    let column = encoded.get_index(scope, 1)?.uint32_value(scope)?;
+    let path = encoded.get_index(scope, 2)?;
+    let source = if path.is_null() {
+        AuthoredSource::Program
+    } else {
+        AuthoredSource::SavedFunction {
+            path: v8::Local::<v8::String>::try_from(path)
+                .ok()?
+                .to_rust_string_lossy(scope),
+        }
+    };
+    Some(AuthoredLocation {
+        source,
+        line,
+        column,
+    })
+}
+
 // Bounded emitted locations; existing source-map projection handles them.
 fn operation_call_stack(frames: &[(usize, usize)]) -> String {
     use std::fmt::Write as _;
@@ -572,11 +750,16 @@ fn program_emission_callback(
     arguments: v8::FunctionCallbackArguments<'_>,
     mut return_value: v8::ReturnValue,
 ) {
-    let encoded = if arguments.length() == 1 {
+    let encoded = if (1..=3).contains(&arguments.length()) {
         v8::Local::<v8::String>::try_from(arguments.get(0)).ok()
     } else {
         None
     };
+    // Only the private runtime passes a Middleware execution, for that
+    // Middleware's own attributed Emission.
+    let middleware_execution = v8::Local::<v8::String>::try_from(arguments.get(1))
+        .ok()
+        .map(|id| id.to_rust_string_lossy(scope));
     let Some(encoded) = encoded else {
         reject_output_promise(
             scope,
@@ -586,7 +769,15 @@ fn program_emission_callback(
         return;
     };
     let encoded = encoded.to_rust_string_lossy(scope);
-    let location = capture_authored_location(scope);
+    // An intercepted emit reaches here after the Program's frame returned, so
+    // the private runtime passes the call site it captured at the call.
+    let location = if middleware_execution.is_some() {
+        None
+    } else if arguments.get(2).is_undefined() {
+        capture_authored_location(scope)
+    } else {
+        passed_location(scope, arguments.get(2))
+    };
     let Some(host) = scope
         .get_slot::<ProgramHostSlot>()
         .map(|slot| slot.host.clone())
@@ -601,13 +792,91 @@ fn program_emission_callback(
             coral_value::ValueError::Invalid => ProgramOutputHostError::InvalidValue,
             coral_value::ValueError::TooLarge => ProgramOutputHostError::LimitExceeded,
         });
-    match validated.and_then(|_value| host.emit(&encoded, location)) {
+    let emitted = validated.and_then(|_value| match &middleware_execution {
+        None => host.emit(&encoded, location),
+        Some(execution_id) => host.middleware_emit(&encoded, execution_id),
+    });
+    match emitted {
         Ok(()) => resolve_void_promise(scope, &mut return_value),
         Err(
             error @ (ProgramOutputHostError::InvalidValue | ProgramOutputHostError::LimitExceeded),
         ) => reject_output_promise(scope, &mut return_value, error),
         Err(ProgramOutputHostError::Fatal) => terminate_program_host(scope),
     }
+}
+
+/// The center of the Operation Middleware onion for one intercepted Program
+/// Emission whose final policy is not plainly `enabled`. Called only by the
+/// private runtime with `(encoded, policy, location)`.
+///
+/// Values the host would refuse fail exactly as an ordinary Emission does. A
+/// `disabled` or `approval_required` policy goes to the host, and the Promise
+/// settles only after the host's durable outcome.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "V8's native Function callback Interface requires arguments by value"
+)]
+fn program_emission_policy_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    arguments: v8::FunctionCallbackArguments<'_>,
+    mut return_value: v8::ReturnValue,
+) {
+    let Ok(encoded) = v8::Local::<v8::String>::try_from(arguments.get(0)) else {
+        reject_output_promise(
+            scope,
+            &mut return_value,
+            ProgramOutputHostError::InvalidValue,
+        );
+        return;
+    };
+    let encoded = encoded.to_rust_string_lossy(scope);
+    let policy = arguments
+        .get(1)
+        .to_string(scope)
+        .and_then(|policy| OperationPolicy::parse(&policy.to_rust_string_lossy(scope)));
+    let Some(policy) = policy else {
+        reject_operation_promise(
+            scope,
+            &mut return_value,
+            "invalid_input",
+            "Middleware selected an invalid Operation policy",
+        );
+        return;
+    };
+    let location = passed_location(scope, arguments.get(2));
+    let Some(host) = host_of(scope) else { return };
+    if let Err(error) = host.value_limits().validate_json(&encoded) {
+        let error = match error {
+            coral_value::ValueError::Invalid => ProgramOutputHostError::InvalidValue,
+            coral_value::ValueError::TooLarge => ProgramOutputHostError::LimitExceeded,
+        };
+        reject_output_promise(scope, &mut return_value, error);
+        return;
+    }
+    if policy == OperationPolicy::Enabled {
+        match host.emit(&encoded, location) {
+            Ok(()) => resolve_void_promise(scope, &mut return_value),
+            Err(
+                error @ (ProgramOutputHostError::InvalidValue
+                | ProgramOutputHostError::LimitExceeded),
+            ) => reject_output_promise(scope, &mut return_value, error),
+            Err(ProgramOutputHostError::Fatal) => terminate_program_host(scope),
+        }
+        return;
+    }
+    let Some(resolver) = v8::PromiseResolver::new(scope) else {
+        terminate_program_host(scope);
+        return;
+    };
+    return_value.set(resolver.get_promise(scope).into());
+    let resolver = v8::Global::new(scope, resolver);
+    let call_stack = operation_call_stack(&capture_program_frames(scope));
+    let emission = host.emit_with_policy(encoded, policy, location);
+    scope
+        .get_slot_mut::<ProgramHostSlot>()
+        .expect("host installed")
+        .pending_operations
+        .push((resolver, emission, call_stack));
 }
 
 #[expect(
@@ -950,4 +1219,182 @@ fn serialize_final_value(
 
 fn invalid_final_value() -> Error {
     Error::InvalidProgramValue(INVALID_FINAL_VALUE_MESSAGE.to_string())
+}
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "V8's native Function callback Interface requires arguments by value"
+)]
+fn operation_policy_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    arguments: v8::FunctionCallbackArguments<'_>,
+    mut return_value: v8::ReturnValue,
+) {
+    let Some(path) = arguments.get(0).to_string(scope) else {
+        reject_operation_promise(
+            scope,
+            &mut return_value,
+            "operation_not_found",
+            "Operation Call Path was not found",
+        );
+        return;
+    };
+    let path = path.to_rust_string_lossy(scope);
+    let Some(host) = scope
+        .get_slot::<ProgramHostSlot>()
+        .map(|slot| slot.host.clone())
+    else {
+        terminate_program_host(scope);
+        return;
+    };
+    let Some(resolver) = v8::PromiseResolver::new(scope) else {
+        terminate_program_host(scope);
+        return;
+    };
+    return_value.set(resolver.get_promise(scope).into());
+    let resolver = v8::Global::new(scope, resolver);
+    let call_stack = operation_call_stack(&capture_program_frames(scope));
+    let policy = host.operation_policy(path);
+    scope
+        .get_slot_mut::<ProgramHostSlot>()
+        .expect("host installed")
+        .pending_operations
+        .push((resolver, policy, call_stack));
+}
+
+fn host_of(scope: &mut v8::PinScope<'_, '_>) -> Option<Arc<dyn ProgramHost>> {
+    let host = scope
+        .get_slot::<ProgramHostSlot>()
+        .map(|slot| slot.host.clone());
+    if host.is_none() {
+        terminate_program_host(scope);
+    }
+    host
+}
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "V8's native Function callback Interface requires arguments by value"
+)]
+fn middleware_started_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    arguments: v8::FunctionCallbackArguments<'_>,
+    mut return_value: v8::ReturnValue,
+) {
+    let position = arguments
+        .get(0)
+        .uint32_value(scope)
+        .and_then(|position| usize::try_from(position).ok());
+    let middleware_scope = arguments
+        .get(1)
+        .to_string(scope)
+        .and_then(|value| MiddlewareScope::parse(&value.to_rust_string_lossy(scope)));
+    let target = arguments.get(2);
+    let target = if target.is_undefined() {
+        None
+    } else {
+        target
+            .to_string(scope)
+            .map(|target| target.to_rust_string_lossy(scope))
+    };
+    let (Some(position), Some(middleware_scope)) = (position, middleware_scope) else {
+        terminate_program_host(scope);
+        return;
+    };
+    let Some(host) = host_of(scope) else { return };
+    let start = MiddlewareExecutionStart {
+        position,
+        scope: middleware_scope,
+        target,
+    };
+    match host.middleware_started(&start) {
+        Ok(id) => match v8::String::new(scope, &id) {
+            Some(id) => return_value.set(id.into()),
+            None => terminate_program_host(scope),
+        },
+        Err(_fatal) => terminate_program_host(scope),
+    }
+}
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "V8's native Function callback Interface requires arguments by value"
+)]
+fn middleware_continued_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    arguments: v8::FunctionCallbackArguments<'_>,
+    _return_value: v8::ReturnValue,
+) {
+    let Some(id) = arguments.get(0).to_string(scope) else {
+        terminate_program_host(scope);
+        return;
+    };
+    let id = id.to_rust_string_lossy(scope);
+    let Some(host) = host_of(scope) else { return };
+    if host.middleware_continued(&id).is_err() {
+        terminate_program_host(scope);
+    }
+}
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "V8's native Function callback Interface requires arguments by value"
+)]
+fn middleware_ended_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    arguments: v8::FunctionCallbackArguments<'_>,
+    _return_value: v8::ReturnValue,
+) {
+    let Some(id) = arguments.get(0).to_string(scope) else {
+        terminate_program_host(scope);
+        return;
+    };
+    let id = id.to_rust_string_lossy(scope);
+    let status = arguments
+        .get(1)
+        .to_string(scope)
+        .map(|status| status.to_rust_string_lossy(scope));
+    let value = v8::Local::new(scope, arguments.get(2));
+    let outcome = match status.as_deref() {
+        Some("succeeded") => MiddlewareExecutionOutcome::Succeeded {
+            preview_json: crate::preview::value_preview(scope, value),
+        },
+        Some("failed") => MiddlewareExecutionOutcome::Failed {
+            summary: crate::preview::error_summary(scope, value),
+        },
+        _ => {
+            terminate_program_host(scope);
+            return;
+        }
+    };
+    let Some(host) = host_of(scope) else { return };
+    if host.middleware_ended(&id, outcome).is_err() {
+        terminate_program_host(scope);
+    }
+}
+
+// Continuation-preserved embedder data follows each Promise reaction from the
+// point where it was registered, which gives the trusted runtime one
+// async-context frame per execution point. Programs never receive these natives.
+fn frame_get_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    _arguments: v8::FunctionCallbackArguments<'_>,
+    mut return_value: v8::ReturnValue,
+) {
+    let frame = scope.get_continuation_preserved_embedder_data();
+    if frame.is_object() {
+        return_value.set(frame);
+    }
+}
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "V8's native Function callback Interface requires arguments by value"
+)]
+fn frame_set_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    arguments: v8::FunctionCallbackArguments<'_>,
+    _return_value: v8::ReturnValue,
+) {
+    scope.set_continuation_preserved_embedder_data(arguments.get(0));
 }

@@ -12,6 +12,34 @@ pub(crate) fn assert_final_code(update: &crate::RunUpdate, code: &str) {
     );
 }
 
+/// The Invocation facts of a request that must be an Invocation request.
+pub(crate) struct InvocationSubject<'a> {
+    pub invocation_id: &'a crate::InvocationId,
+    pub provider_id: &'a coral_provider::ProviderId,
+    pub credential_route: coral_provider::access::CredentialRoute,
+    pub provider_account_id: Option<&'a coral_provider::account::ProviderAccountId>,
+}
+
+pub(crate) fn invocation_subject(
+    request: &crate::approval::ApprovalRequest,
+) -> InvocationSubject<'_> {
+    match &request.subject {
+        crate::ApprovalSubject::Invocation {
+            invocation_id,
+            provider_id,
+            credential_route,
+            provider_account_id,
+            ..
+        } => InvocationSubject {
+            invocation_id,
+            provider_id,
+            credential_route: *credential_route,
+            provider_account_id: provider_account_id.as_ref(),
+        },
+        crate::ApprovalSubject::Emission { .. } => panic!("expected an Invocation request"),
+    }
+}
+
 pub(crate) async fn wait_for_approval(
     approvals: &ApprovalModule,
     actor: &AuthenticatedPrincipal,

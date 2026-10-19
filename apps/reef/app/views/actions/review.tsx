@@ -170,6 +170,7 @@ export function ApprovalReview({
   const tone = deciding ? 'amber' : (tones[state] ?? 'gray')
   const run = context.run
   const execIntent = context.submission?.intent || run.intent
+  const emission = detail.subject === 'emission'
   return (
     <section className={styles.review} aria-label={`Review ${detail.callPath}`}>
       <PanelHeader
@@ -179,10 +180,14 @@ export function ApprovalReview({
         title={detail.callPath}
         details={
           <>
-            <Typography.BodySmall variant="tertiary">approval request</Typography.BodySmall>
             <Typography.BodySmall variant="tertiary">
-              Provider: {detail.providerLabel || 'unavailable'}
+              {emission ? 'emission approval request' : 'approval request'}
             </Typography.BodySmall>
+            {!emission && (
+              <Typography.BodySmall variant="tertiary">
+                Provider: {detail.providerLabel || 'unavailable'}
+              </Typography.BodySmall>
+            )}
             {deciding && <Deadline at={detail.deadline} variant="tertiary" />}
           </>
         }
@@ -206,7 +211,14 @@ export function ApprovalReview({
           {run.workspaceLabel || 'Workspace unavailable'}
         </DescriptionList.Row>
       </DescriptionList.List>
-      <Arguments source={detail.arguments} />
+      {emission ? (
+        // The exact bytes Coral emits after approval, so they are never split into fields.
+        <Disclosure title="Value to emit" open>
+          <CodeBlock value={detail.arguments} format="json" />
+        </Disclosure>
+      ) : (
+        <Arguments source={detail.arguments} />
+      )}
       {deciding && (
         <Disclosure title="Program body">
           <CodeBlock value={context.source} format="typescript" />
@@ -215,7 +227,9 @@ export function ApprovalReview({
       <Disclosure title="Technical details">
         <DescriptionList.List>
           <DescriptionList.Row label="Workspace">{run.workspace}</DescriptionList.Row>
-          <DescriptionList.Row label="Provider">{detail.provider}</DescriptionList.Row>
+          {!emission && (
+            <DescriptionList.Row label="Provider">{detail.provider}</DescriptionList.Row>
+          )}
           <DescriptionList.Row label="Deadline">{detail.deadline}</DescriptionList.Row>
           <DescriptionList.Row label="Approval request ID">{detail.name}</DescriptionList.Row>
         </DescriptionList.List>
@@ -285,7 +299,7 @@ export function ApprovalReview({
           >
             {pending && fetcher.formData?.get('intent') === 'decline'
               ? 'Denying…'
-              : 'Deny this call'}
+              : `Deny this ${emission ? 'emission' : 'call'}`}
           </Button.TextButton>
           <Button.TextButton
             type="submit"
@@ -296,7 +310,7 @@ export function ApprovalReview({
           >
             {pending && fetcher.formData?.get('intent') === 'approve'
               ? 'Approving…'
-              : 'Approve this call'}
+              : `Approve this ${emission ? 'emission' : 'call'}`}
           </Button.TextButton>
         </PanelFooter>
       )}

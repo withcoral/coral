@@ -60,6 +60,7 @@ impl ProgramEngine for ClosureReadGateEngine {
         _deadline: std::time::Instant,
         source: &str,
         _linked: &[SavedFunctionSelection],
+        _middleware: &[coral_middleware::MiddlewareSelection],
     ) -> Result<ProgramPackage, String> {
         Ok(ProgramPackage::scripted(source))
     }
@@ -115,6 +116,7 @@ impl ProgramEngine for SnapshotEngine {
         _deadline: std::time::Instant,
         _source: &str,
         linked: &[SavedFunctionSelection],
+        _middleware: &[coral_middleware::MiddlewareSelection],
     ) -> Result<ProgramPackage, String> {
         let linked = linked
             .first()
@@ -531,6 +533,7 @@ impl ProgramEngine for ReferenceScanningEngine {
         _deadline: std::time::Instant,
         _source: &str,
         linked: &[SavedFunctionSelection],
+        _middleware: &[coral_middleware::MiddlewareSelection],
     ) -> Result<ProgramPackage, String> {
         Ok(ProgramPackage::scripted(&linked.len().to_string()))
     }

@@ -77,6 +77,15 @@ impl RunModule {
             self.clock.clone(),
             accepted.value_limits,
         );
+        let emission_approvals = crate::emission_approval::EmissionApprovals::new(
+            self.database.clone(),
+            accepted.workspace_id.clone(),
+            accepted.id.clone(),
+            claim_id.clone(),
+            self.clock.clone(),
+            stop.clone(),
+            accepted.value_limits,
+        );
         let invoker = OperationInvoker::new(
             self.accounts.clone(),
             self.database.clone(),
@@ -94,13 +103,35 @@ impl RunModule {
             #[cfg(test)]
             self.invocation_observer.clone(),
         );
+        let middleware = {
+            let mut transaction = self.database.begin_read_snapshot().await?;
+            let chain = crate::middleware_repository::pinned_chain(
+                &mut transaction,
+                &accepted.workspace_id,
+                &accepted.id,
+            )
+            .await?;
+            transaction.commit().await?;
+            crate::middleware::MiddlewareRecorder::new(
+                self.database.clone(),
+                accepted.id.clone(),
+                accepted.workspace_id.clone(),
+                claim_id.clone(),
+                self.clock.clone(),
+                chain,
+            )
+        };
         let heartbeat = self.schedule_claim_heartbeat(&accepted, &claim_id, active.clone());
         let completion = engine::execute(
             self.engine.clone(),
             package,
             linked_snapshots,
-            invoker,
-            output,
+            engine::RunEvidence {
+                invoker,
+                output,
+                middleware,
+                emission_approvals,
+            },
             accepted.value_limits,
             stop,
         )

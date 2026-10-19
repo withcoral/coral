@@ -33,7 +33,76 @@ impl ActionEvidence {
     }
 }
 
-fn candidates(now: i64) -> SelectStatement {
+/// Current waits on human requests, one relation per request source. Both
+/// keep the Run as `r`, so scoping and authority restriction apply to each.
+struct Candidates {
+    invocations: SelectStatement,
+    emissions: SelectStatement,
+}
+
+impl Candidates {
+    fn restrict(&mut self, authority: &coral_workspace::HistoryAuthority) {
+        crate::history_repository::restrict(&mut self.invocations, authority);
+        crate::history_repository::restrict(&mut self.emissions, authority);
+    }
+
+    fn for_run(&mut self, workspace: &WorkspaceId, run: &RunId) {
+        for select in [&mut self.invocations, &mut self.emissions] {
+            select
+                .and_where(col("r", "workspace_id").eq(workspace.to_string()))
+                .and_where(col("r", "id").eq(run.to_string()));
+        }
+    }
+}
+
+fn candidates(now: i64) -> Candidates {
+    Candidates {
+        invocations: invocation_candidates(now),
+        emissions: emission_candidates(now),
+    }
+}
+
+fn authority_deadline() -> sea_query::SimpleExpr {
+    coral_workspace::history_repository::invoker_deadline(
+        column("r", "workspace_id"),
+        column("r", "principal_id"),
+        column("r", "principal_kind"),
+    )
+}
+
+/// Pending Emission Approval Requests: no Provider and the `coral.emit` Call Path.
+fn emission_candidates(now: i64) -> SelectStatement {
+    Query::select()
+        .from_as(Alias::new("program_run_records"), Alias::new("r"))
+        .join_as(
+            JoinType::InnerJoin,
+            Alias::new("emission_approvals"),
+            Alias::new("e"),
+            crate::emission_approval_repository::pending_for_run_alias(now),
+        )
+        .expr_as(col("r", "workspace_id"), Alias::new("workspace"))
+        .expr_as(col("r", "id"), Alias::new("run"))
+        .expr_as(authority_deadline(), Alias::new("authority_deadline"))
+        .expr_as(
+            Expr::val(crate::emission_approval_repository::EMIT_CALL_PATH),
+            Alias::new("call_path"),
+        )
+        // No Provider: an empty label, unlike a removed Provider's absent one.
+        .expr_as(Expr::val(""), Alias::new("provider_label"))
+        .expr_as(
+            col("r", "deadline_at_unix_nanos"),
+            Alias::new("run_deadline"),
+        )
+        .expr_as(col("e", "id"), Alias::new(RequiredActionRequest::APPROVAL))
+        .expr_as(
+            col("e", "deadline_at_unix_nanos"),
+            Alias::new("approval_deadline"),
+        )
+        .and_where(crate::history_repository::active_run(now))
+        .to_owned()
+}
+
+fn invocation_candidates(now: i64) -> SelectStatement {
     Query::select()
         .from_as(Alias::new("program_run_records"), Alias::new("r"))
         .join_as(
@@ -52,14 +121,7 @@ fn candidates(now: i64) -> SelectStatement {
         )
         .expr_as(col("r", "workspace_id"), Alias::new("workspace"))
         .expr_as(col("r", "id"), Alias::new("run"))
-        .expr_as(
-            coral_workspace::history_repository::invoker_deadline(
-                column("r", "workspace_id"),
-                column("r", "principal_id"),
-                column("r", "principal_kind"),
-            ),
-            Alias::new("authority_deadline"),
-        )
+        .expr_as(authority_deadline(), Alias::new("authority_deadline"))
         .expr_as(col("i", "call_path"), Alias::new("call_path"))
         .expr_as(
             coral_provider::history_repository::display_label(
@@ -98,10 +160,10 @@ fn candidates(now: i64) -> SelectStatement {
         .and_where(col("i", "state").eq("pending"))
         .to_owned()
 }
-fn requests(candidates: &SelectStatement) -> SelectStatement {
-    let branch = |kind: &str, deadline: &str| {
+fn requests(candidates: &Candidates) -> SelectStatement {
+    let branch = |source: &SelectStatement, kind: &str, deadline: &str| {
         Query::select()
-            .from_subquery(candidates.clone(), Alias::new("candidate"))
+            .from_subquery(source.clone(), Alias::new("candidate"))
             .expr_as(col("candidate", "workspace"), Alias::new("workspace"))
             .expr_as(col("candidate", "run"), Alias::new("run"))
             .expr_as(Expr::val(kind), Alias::new("kind"))
@@ -120,21 +182,34 @@ fn requests(candidates: &SelectStatement) -> SelectStatement {
             .and_where(col("candidate", deadline).is_not_null())
             .to_owned()
     };
-    let mut requests = branch(RequiredActionRequest::APPROVAL, "approval_deadline");
+    let mut requests = branch(
+        &candidates.invocations,
+        RequiredActionRequest::APPROVAL,
+        "approval_deadline",
+    );
     requests.union(
         UnionType::All,
-        branch(RequiredActionRequest::CONNECTION, "connection_deadline"),
+        branch(
+            &candidates.invocations,
+            RequiredActionRequest::CONNECTION,
+            "connection_deadline",
+        ),
+    );
+    requests.union(
+        UnionType::All,
+        branch(
+            &candidates.emissions,
+            RequiredActionRequest::APPROVAL,
+            "approval_deadline",
+        ),
     );
     requests
 }
 
 /// Current candidates restricted to `authority`, resolved in the same snapshot.
-fn authorized_candidates(
-    authority: &coral_workspace::HistoryAuthority,
-    now: i64,
-) -> SelectStatement {
+fn authorized_candidates(authority: &coral_workspace::HistoryAuthority, now: i64) -> Candidates {
     let mut candidates = candidates(now);
-    crate::history_repository::restrict(&mut candidates, authority);
+    candidates.restrict(authority);
     candidates
 }
 
@@ -187,9 +262,7 @@ pub(crate) async fn count(
 
 fn grouped_requests(workspace: &WorkspaceId, run: &RunId, now: i64) -> SelectStatement {
     let mut candidates = candidates(now);
-    candidates
-        .and_where(col("r", "workspace_id").eq(workspace.to_string()))
-        .and_where(col("r", "id").eq(run.to_string()));
+    candidates.for_run(workspace, run);
     let fields = [
         "kind",
         "request",

@@ -61,7 +61,9 @@ pub enum OperationAccessState {
 }
 
 impl OperationAccessState {
-    pub(crate) const fn as_storage_str(self) -> &'static str {
+    /// Returns the stable persistence and wire spelling.
+    #[must_use]
+    pub const fn as_storage_str(self) -> &'static str {
         match self {
             Self::Enabled => "enabled",
             Self::ApprovalRequired => "approval_required",
@@ -69,7 +71,12 @@ impl OperationAccessState {
         }
     }
 
-    pub(crate) fn from_storage_str(value: &str) -> Result<Self, Error> {
+    /// Parses the stable persistence spelling.
+    ///
+    /// # Errors
+    ///
+    /// Returns corrupt data for an unknown spelling.
+    pub fn from_storage_str(value: &str) -> Result<Self, Error> {
         match value {
             "enabled" => Ok(Self::Enabled),
             "approval_required" => Ok(Self::ApprovalRequired),
@@ -109,6 +116,17 @@ impl ExactOperationRules {
             .and_then(|operations| operations.get(operation_key))
             .copied()
             .unwrap_or_else(|| crate::default_access_state(hints, http_method))
+    }
+
+    /// Returns every exact rule, by Provider and Operation Key.
+    pub fn rules(
+        &self,
+    ) -> impl Iterator<Item = (&ProviderId, &OperationKey, OperationAccessState)> {
+        self.rules.iter().flat_map(|(provider_id, operations)| {
+            operations
+                .iter()
+                .map(move |(operation_key, state)| (provider_id, operation_key, *state))
+        })
     }
 
     /// Returns every Operation that an exact rule disables. No default is

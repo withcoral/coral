@@ -17,6 +17,8 @@ mod health;
 mod listener;
 #[path = "grpc/management_contracts.rs"]
 mod management_contracts;
+#[path = "grpc/middleware.rs"]
+mod middleware;
 #[path = "grpc/organization_memberships.rs"]
 mod organization_memberships;
 #[path = "grpc/organization_workspaces.rs"]
@@ -55,6 +57,7 @@ struct Fixture {
     tasks: coral_task::TaskModule,
     runs: coral_run::RunModule,
     saved_functions: coral_functions::SavedFunctionModule,
+    middleware: coral_middleware::MiddlewareModule,
     /// The no-op index the Provider workflow and the Task commands notify.
     search_index: coral_search::SearchIndex,
 }
@@ -118,6 +121,7 @@ impl Fixture {
             coral_workspace::migrator(),
             coral_task::migrator(),
             coral_run::migrator(),
+            coral_middleware::migrator(),
             coral_catalog::migrator(),
             coral_provider::migrator(),
             coral_policy::migrator(),
@@ -193,6 +197,12 @@ impl Fixture {
             coral_functions::IsolateLimits::default(),
         )
         .unwrap();
+        let middleware = coral_middleware::MiddlewareModule::new(
+            database.clone(),
+            workspaces.clone(),
+            coral_functions::IsolateLimits::default(),
+        )
+        .unwrap();
         // Search notification tests drive the workflow at its owner.
         let search_index = coral_search::SearchIndex::inert(database.clone());
         let mcp_origin = Arc::new(OnceLock::new());
@@ -231,6 +241,7 @@ impl Fixture {
                     database.clone(),
                     workspaces.clone(),
                 ),
+                middleware: middleware.clone(),
             },
             coral_grpc::TransportContext {
                 authentication,
@@ -258,6 +269,7 @@ impl Fixture {
             runs,
             tasks,
             saved_functions,
+            middleware,
             search_index,
         }
     }
@@ -357,6 +369,12 @@ impl Fixture {
         management::saved_function_service_client::SavedFunctionServiceClient::new(
             self.channel.clone(),
         )
+    }
+
+    fn middleware_client(
+        &self,
+    ) -> management::middleware_service_client::MiddlewareServiceClient<Channel> {
+        management::middleware_service_client::MiddlewareServiceClient::new(self.channel.clone())
     }
 
     fn policies(

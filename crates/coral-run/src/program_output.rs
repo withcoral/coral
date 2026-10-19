@@ -40,10 +40,13 @@ impl ProgramOutputWriter {
         }
     }
 
+    /// Appends one Emission made at `location`. A Middleware's own Emission
+    /// names its running execution, which the same transaction rechecks.
     pub(crate) async fn emit(
         &self,
         encoded_json: &str,
         location: Option<SourceLocation>,
+        middleware_execution: Option<&str>,
     ) -> Result<(), ProgramOutputWriteError> {
         let value = match ProgramValue::with_limits(encoded_json.to_string(), self.limits) {
             Ok(value) => value,
@@ -55,7 +58,24 @@ impl ProgramOutputWriter {
             }
             Err(error) => return Err(ProgramOutputWriteError::Fatal(error)),
         };
-        self.append(Output::Emission(value), location)
+        self.append(
+            Output::Emission(value, middleware_execution.map(str::to_owned)),
+            location,
+            None,
+        )
+        .await
+        .map_err(output_error)
+    }
+
+    /// Appends exactly the bytes of an approved Emission request, checking the
+    /// approval in the same transaction as the Emission.
+    pub(crate) async fn emit_approved(
+        &self,
+        value: ProgramValue,
+        location: Option<SourceLocation>,
+        approval: &crate::approval::ApprovalId,
+    ) -> Result<(), ProgramOutputWriteError> {
+        self.append(Output::Emission(value, None), location, Some(approval))
             .await
             .map_err(output_error)
     }
@@ -75,12 +95,18 @@ impl ProgramOutputWriter {
                 message: message.to_string(),
             },
             location,
+            None,
         )
         .await
         .map_err(output_error)
     }
 
-    async fn append(&self, output: Output, location: Option<SourceLocation>) -> Result<(), Error> {
+    async fn append(
+        &self,
+        output: Output,
+        location: Option<SourceLocation>,
+        approval: Option<&crate::approval::ApprovalId>,
+    ) -> Result<(), Error> {
         let mut transaction = self.database.begin().await?;
         let Some(run) =
             run_repository::hold_run(&mut transaction, &self.workspace_id, &self.run_id).await?
@@ -97,10 +123,34 @@ impl ProgramOutputWriter {
             ));
         }
         let occurred_at_unix_nanos = occurred_at_unix_nanos.max(run.accepted_at_unix_nanos);
+        if let Output::Emission(_, Some(execution)) = &output
+            && !crate::middleware_repository::is_running(
+                &mut transaction,
+                &self.workspace_id,
+                &self.run_id,
+                execution,
+            )
+            .await?
+        {
+            transaction.rollback().await?;
+            return Err(Error::RunEventPersistence(
+                "Middleware Emission has no running execution".to_string(),
+            ));
+        }
+        if let (Some(approval), Output::Emission(value, _)) = (approval, &output) {
+            crate::emission_approval::require_approved(
+                &mut transaction,
+                &run,
+                approval,
+                value,
+                occurred_at_unix_nanos,
+            )
+            .await?;
+        }
         let (bytes, event) = match &output {
-            Output::Emission(value) => (
+            Output::Emission(value, middleware_execution) => (
                 value.encoded_json().len(),
-                NewEvent::Emitted(value, location.as_ref()),
+                NewEvent::Emitted(value, location.as_ref(), middleware_execution.as_deref()),
             ),
             Output::Log { level, message } => (
                 message.len(),
@@ -129,12 +179,13 @@ impl ProgramOutputWriter {
 fn output_error(error: Error) -> ProgramOutputWriteError {
     match error {
         Error::ProgramValueTooLarge => ProgramOutputWriteError::LimitExceeded,
+        Error::InvocationRejected(failure) => ProgramOutputWriteError::Rejected(failure),
         error => ProgramOutputWriteError::Fatal(error),
     }
 }
 
 enum Output {
-    Emission(ProgramValue),
+    Emission(ProgramValue, Option<String>),
     Log {
         level: ProgramLogLevel,
         message: String,
@@ -144,5 +195,7 @@ enum Output {
 pub(crate) enum ProgramOutputWriteError {
     InvalidValue,
     LimitExceeded,
+    /// A catchable Coral Failure, such as an approval that expired at the fence.
+    Rejected(crate::CoralFailure),
     Fatal(Error),
 }

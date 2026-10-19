@@ -173,6 +173,35 @@ export function invocationRow(
   }
 }
 
+/** One Middleware execution wrapping an Operation call in Run `owner`. */
+export function middlewareRow(
+  owner: string,
+  id: string,
+  overrides: Partial<Extract<ActivityRow, { kind: 'middleware' }>> = {},
+): Extract<ActivityRow, { kind: 'middleware' }> {
+  return {
+    kind: 'middleware',
+    name: `${owner}/middlewareExecutions/${id}`,
+    workspace,
+    run: owner,
+    middlewareName: 'audit',
+    position: 0,
+    scope: 'operation',
+    target: 'coral.providers.mail.send',
+    phase: 'exit',
+    state: 'succeeded',
+    startedAt: at,
+    endedAt: at,
+    durationNanos: '1',
+    previewJson: null,
+    failureSummary: null,
+    task: '',
+    actor: 'you',
+    agent: '',
+    ...overrides,
+  }
+}
+
 /** A tool call in Task `parent`, labelled by its intent. */
 export function toolRow(
   parent: string,

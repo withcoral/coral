@@ -184,6 +184,9 @@ pub enum Error {
     /// Exact Operation policy rejected Invocation work.
     #[error(transparent)]
     Policy(#[from] coral_policy::Error),
+    /// Workspace Middleware selection failed during admission.
+    #[error(transparent)]
+    Middleware(#[from] coral_middleware::Error),
     /// The private upstream Adapter could not plan, send, or project a result.
     #[error(transparent)]
     Upstream(#[from] coral_upstream::Error),
