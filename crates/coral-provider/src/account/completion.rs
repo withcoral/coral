@@ -21,6 +21,8 @@ pub(super) struct AuthorizedAccount<'a> {
     pub(super) contract: &'a ProviderCredentialContract,
     pub(super) ciphertext: &'a str,
     pub(super) granted_scope: &'a str,
+    /// When the sealed access token expires, recorded beside the material.
+    pub(super) token_expires_at_unix_nanos: Option<i64>,
 }
 
 /// Publication joins this facet after validating the exact provisional grant.
@@ -171,6 +173,7 @@ impl AccountModule {
             contract: &row.contract,
             ciphertext: &ciphertext,
             granted_scope: row.granted_scope.as_deref().unwrap_or_default(),
+            token_expires_at_unix_nanos: material.token_expires_at_unix_nanos(),
         };
         if repository::connect_account(
             &mut tx,

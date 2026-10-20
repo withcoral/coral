@@ -261,12 +261,22 @@ pub(super) async fn has_dispatch_start(
     })
 }
 
-pub(super) async fn mark_dispatch_started(
+/// Records the dispatch start of every Invocation in `invocation_ids` that
+/// is still `pending` with no start, in one statement, and returns the ones
+/// it moved to `dispatching`. A row another writer ended meanwhile is left
+/// as it is and is not returned.
+pub(super) async fn mark_dispatch_started_batch(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    invocation_id: &InvocationId,
+    run_id: &RunId,
+    invocation_ids: &[InvocationId],
     dispatch_started_at_unix_nanos: i64,
-) -> Result<bool, Error> {
+) -> Result<Vec<InvocationId>, Error> {
+    if invocation_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<String> = invocation_ids.iter().map(ToString::to_string).collect();
+    let id_in = || Expr::col(OperationInvocations::Id).is_in(ids.iter().map(String::as_str));
     let statement = Query::update()
         .table(OperationInvocations::Table)
         .values([
@@ -280,13 +290,44 @@ pub(super) async fn mark_dispatch_started(
             ),
         ])
         .and_where(Expr::col(OperationInvocations::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(OperationInvocations::Id).eq(invocation_id.to_string()))
+        .and_where(Expr::col(OperationInvocations::RunId).eq(run_id.to_string()))
+        .and_where(id_in())
         .and_where(
             Expr::col(OperationInvocations::State).eq(InvocationState::Pending.as_storage_str()),
         )
         .and_where(Expr::col(OperationInvocations::DispatchStartedAtUnixNanos).is_null())
         .to_owned();
-    Ok(transaction.execute_change(statement).await? == 1)
+    let changed = transaction.execute_change(statement).await?;
+    if changed == invocation_ids.len() as u64 {
+        return Ok(invocation_ids.to_vec());
+    }
+    let rows: Vec<(String,)> = transaction
+        .fetch_all(
+            Query::select()
+                .column(OperationInvocations::Id)
+                .from(OperationInvocations::Table)
+                .and_where(
+                    Expr::col(OperationInvocations::WorkspaceId).eq(workspace_id.to_string()),
+                )
+                .and_where(Expr::col(OperationInvocations::RunId).eq(run_id.to_string()))
+                .and_where(id_in())
+                .and_where(
+                    Expr::col(OperationInvocations::State)
+                        .eq(InvocationState::Dispatching.as_storage_str()),
+                )
+                .and_where(
+                    Expr::col(OperationInvocations::DispatchStartedAtUnixNanos)
+                        .eq(dispatch_started_at_unix_nanos),
+                )
+                .to_owned(),
+        )
+        .await?;
+    rows.into_iter().map(|(id,)| invocation_id(&id)).collect()
+}
+
+fn invocation_id(value: &str) -> Result<InvocationId, Error> {
+    InvocationId::parse(value)
+        .map_err(|_error| Error::CorruptData("Invocation has invalid identity".into()))
 }
 
 pub(super) async fn finish(
@@ -514,9 +555,7 @@ pub(super) async fn nonterminal_for_run(
     rows.into_iter()
         .map(|row| {
             Ok(UnfinishedInvocation {
-                id: InvocationId::parse(&row.id).map_err(|_error| {
-                    Error::CorruptData("Invocation has invalid identity".into())
-                })?,
+                id: invocation_id(&row.id)?,
                 state: InvocationState::from_storage_str(&row.state)?,
                 call_path: row.call_path,
             })

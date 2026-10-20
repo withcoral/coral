@@ -98,33 +98,15 @@ impl LifecycleEventRow {
     }
 }
 
-pub(super) async fn hold_access_state_in_transaction(
-    transaction: &mut Transaction<'_>,
-    target: &OperationPolicyTarget,
-) -> Result<bool, Error> {
-    let statement = Query::update()
-        .table(OperationAccessRules::Table)
-        .value(
-            OperationAccessRules::AccessState,
-            Expr::col(OperationAccessRules::AccessState),
-        )
-        .and_where(
-            Expr::col(OperationAccessRules::WorkspaceId).eq(target.workspace_id().to_string()),
-        )
-        .and_where(Expr::col(OperationAccessRules::ProviderId).eq(target.provider_id().to_string()))
-        .and_where(
-            Expr::col(OperationAccessRules::OperationKey).eq(target.operation_key().as_str()),
-        )
-        .to_owned();
-    Ok(transaction.execute(statement).await? == 1)
-}
-
+/// Reads the exact explicit rule holding its row as `lock` says. An absent
+/// rule holds nothing; the first explicit rule's own race is out of scope.
 pub(super) async fn access_state_in_transaction(
     transaction: &mut Transaction<'_>,
     target: &OperationPolicyTarget,
+    lock: coral_db::RowLock,
 ) -> Result<Option<OperationAccessState>, Error> {
     let row: Option<(String,)> = transaction
-        .fetch_optional(
+        .fetch_optional_locked(
             Query::select()
                 .column(OperationAccessRules::AccessState)
                 .from(OperationAccessRules::Table)
@@ -141,6 +123,7 @@ pub(super) async fn access_state_in_transaction(
                         .eq(target.operation_key().as_str()),
                 )
                 .to_owned(),
+            lock,
         )
         .await?;
     row.map(|(value,)| OperationAccessState::from_storage_str(&value))

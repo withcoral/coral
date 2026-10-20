@@ -138,8 +138,19 @@ pub(super) async fn find_membership(
     tx: &mut Transaction<'_>,
     user_id: &UserId,
 ) -> Result<Option<OrganizationMembership>, Error> {
+    find_membership_locked(tx, user_id, coral_db::RowLock::None).await
+}
+
+/// Reads the User's Organization authority row holding it as `lock` says: a
+/// shared hold lets decisions read it side by side while role or disablement
+/// administration, which writes it, waits for them.
+pub(super) async fn find_membership_locked(
+    tx: &mut Transaction<'_>,
+    user_id: &UserId,
+    lock: coral_db::RowLock,
+) -> Result<Option<OrganizationMembership>, Error> {
     let row: Option<(i64, String, i64)> = tx
-        .fetch_optional(
+        .fetch_optional_locked(
             Query::select()
                 .columns([
                     OrganizationAuthorityRecords::Revision,
@@ -150,6 +161,7 @@ pub(super) async fn find_membership(
                 .and_where(Expr::col(OrganizationAuthorityRecords::UserId).eq(user_id.as_str()))
                 .and_where(Expr::col(OrganizationAuthorityRecords::Removed).eq(0_i64))
                 .to_owned(),
+            lock,
         )
         .await?;
     let Some((revision, role, enabled)) = row else {

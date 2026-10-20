@@ -6,7 +6,9 @@
 //! The Invocation creates a request only after Account selection. Its immutable
 //! target and once-selected credentials are the binding, not a second argument
 //! snapshot or a caller-supplied approval target. Private Generation provenance
-//! stays private. Approval validity is checked again inside the dispatch fence.
+//! stays private. The Dispatch Fence checks the approval again, at its own
+//! clock sample, from the decision the held gate recorded: an approval never
+//! changes once made.
 //!
 //! Every transition holds the Run before Workspace authority, just like Invocation
 //! and cancellation. The first terminal transition and its safe lifecycle event
@@ -29,6 +31,7 @@ use uuid::Uuid;
 
 use crate::approval_repository::{self, StoredApproval};
 use crate::engine::{Clock, SystemClock};
+use crate::fence::ApprovalFact;
 use crate::invocation::AdmittedInvocation;
 use crate::run_repository::OwnedEvent;
 use crate::{
@@ -432,8 +435,8 @@ enum DecisionGate {
 /// How a decision gate reads Operation policy.
 #[derive(Clone, Copy)]
 enum PolicyRead {
-    /// Holds the policy until commit, as the worker and a human decision compete
-    /// under the same Run/Workspace holds.
+    /// Holds the policy shared until commit: a policy change waits for the
+    /// decision, as it waits for the Dispatch Fences reading the rule.
     Hold,
     /// Makes the identical decision without acquiring mutation locks.
     Inspect,
@@ -447,20 +450,13 @@ async fn decision_gate(
     now: i64,
     policy_read: PolicyRead,
 ) -> Result<DecisionGate, Error> {
-    match workspaces
+    if let Err(error) = workspaces
         .check_invoking_principal_in_snapshot(tx, &run.workspace_id, &run.principal, now)
         .await
     {
-        Ok(()) => {}
-        Err(
-            coral_workspace::Error::WorkspaceNotFound
-            | coral_workspace::Error::PermissionDenied(_)
-            | coral_workspace::Error::WorkspaceArchived
-            | coral_workspace::Error::AgentNotFound
-            | coral_workspace::Error::AgentDisabled
-            | coral_workspace::Error::AgentRegistrationExpired,
-        ) => return Ok(DecisionGate::Rejected(CoralFailure::AuthorityLost)),
-        Err(error) => return Err(error.into()),
+        return Ok(DecisionGate::Rejected(crate::fence::authority_failure(
+            error,
+        )?));
     }
     let operation =
         coral_catalog::operation_in_transaction(tx, &target.generation, &target.operation)
@@ -479,6 +475,7 @@ async fn decision_gate(
                 &policy_target,
                 operation.hints(),
                 operation.http_method(),
+                coral_db::RowLock::Shared,
             )
             .await?
         }
@@ -569,6 +566,8 @@ pub(super) async fn pending_for_run(
 
 // All private facets join the Run Owner's chunk transaction with its Run hold;
 // an Invocation this settles appends its `invocation.ended` to `events`.
+// Returns the approval the fence decides on once the Invocation is ready,
+// or `None` while a decision is still pending.
 pub(super) async fn gate(
     tx: &mut Transaction<'_>,
     admitted: &AdmittedInvocation,
@@ -576,14 +575,14 @@ pub(super) async fn gate(
     required: bool,
     now: i64,
     events: &mut Vec<OwnedEvent>,
-) -> Result<bool, Error> {
+) -> Result<Option<ApprovalFact>, Error> {
     let row =
         approval_repository::find_for_invocation(tx, &admitted.workspace_id, &admitted.id).await?;
     let mut row = if let Some(row) = row {
         row
     } else {
         if !required {
-            return Ok(true);
+            return Ok(Some(ApprovalFact::NotRequested));
         }
         let deadline = std::cmp::min(
             run.deadline_at_unix_nanos,
@@ -625,17 +624,17 @@ pub(super) async fn gate(
         }
     }
     match row.state {
-        ApprovalState::Pending => Ok(false),
+        ApprovalState::Pending => Ok(None),
         ApprovalState::Approved => {
             if required && now >= row.deadline_at_unix_nanos {
                 Err(Error::InvocationRejected(
                     CoralFailure::ApprovalExpired.into(),
                 ))
             } else {
-                Ok(true)
+                Ok(Some(approval_fact(&row)))
             }
         }
-        ApprovalState::Closed if !required => Ok(true),
+        ApprovalState::Closed if !required => Ok(Some(ApprovalFact::NotRequested)),
         ApprovalState::Declined => Err(Error::InvocationRejected(
             CoralFailure::ApprovalDeclined.into(),
         )),
@@ -648,30 +647,44 @@ pub(super) async fn gate(
     }
 }
 
-/// Returns when this Invocation's approval expires while it is still pending
-/// and unexpired, so a held [`gate`] would write nothing and keep waiting until then.
-pub(super) async fn pending_until_in_snapshot(
+/// This Invocation's Approval Request as a read snapshot shows it, for the
+/// parked-wait precheck.
+pub(super) async fn fact_in_snapshot(
     tx: &mut Transaction<'_>,
     admitted: &AdmittedInvocation,
-    now: i64,
-) -> Result<Option<i64>, Error> {
+) -> Result<ApprovalFact, Error> {
     let row =
         approval_repository::find_for_invocation(tx, &admitted.workspace_id, &admitted.id).await?;
     Ok(row
-        .filter(|row| row.state == ApprovalState::Pending && now < row.deadline_at_unix_nanos)
-        .map(|row| row.deadline_at_unix_nanos))
+        .as_ref()
+        .map_or(ApprovalFact::NotRequested, approval_fact))
 }
 
-pub(super) async fn committed_rejection(
+/// The request's recorded decision as the fence decides on it.
+fn approval_fact(row: &StoredApproval) -> ApprovalFact {
+    match row.state {
+        ApprovalState::Pending => ApprovalFact::Pending {
+            deadline_at_unix_nanos: row.deadline_at_unix_nanos,
+        },
+        ApprovalState::Approved => ApprovalFact::Approved {
+            deadline_at_unix_nanos: row.deadline_at_unix_nanos,
+        },
+        ApprovalState::Declined => ApprovalFact::Declined,
+        ApprovalState::Expired => ApprovalFact::Expired,
+        ApprovalState::Closed => ApprovalFact::Closed,
+    }
+}
+
+/// A failure an outside writer recorded on the Invocation that prevents its
+/// continuation: a declined or expired decision, a disabled Operation, lost
+/// authority.
+pub(super) async fn committed_failure(
     tx: &mut Transaction<'_>,
     admitted: &AdmittedInvocation,
-) -> Result<(), Error> {
+) -> Result<Option<CoralFailure>, Error> {
     let failure =
         invocation_repository::completed_failure(tx, &admitted.workspace_id, &admitted.id).await?;
-    match failure.filter(|failure| prevents_continuation(*failure)) {
-        Some(failure) => Err(Error::InvocationRejected(failure.into())),
-        None => Ok(()),
-    }
+    Ok(failure.filter(|failure| prevents_continuation(*failure)))
 }
 
 pub(super) fn prevents_continuation(failure: CoralFailure) -> bool {
@@ -682,45 +695,6 @@ pub(super) fn prevents_continuation(failure: CoralFailure) -> bool {
             | CoralFailure::OperationDisabled
             | CoralFailure::AuthorityLost
     )
-}
-
-// The Run hold serializes every Approval decision. Load before sampling the
-// fence time so a database wait cannot turn a once-valid approval into a permit.
-pub(super) struct DispatchApproval(Option<StoredApproval>);
-
-impl DispatchApproval {
-    pub(super) fn require_current_at(&self, now: i64) -> Result<(), CoralFailure> {
-        match &self.0 {
-            Some(row)
-                if row.state == ApprovalState::Approved && now < row.deadline_at_unix_nanos =>
-            {
-                Ok(())
-            }
-            Some(row)
-                if row.state == ApprovalState::Expired || now >= row.deadline_at_unix_nanos =>
-            {
-                Err(CoralFailure::ApprovalExpired)
-            }
-            Some(row) if row.state == ApprovalState::Declined => {
-                Err(CoralFailure::ApprovalDeclined)
-            }
-            _ => Err(CoralFailure::ApprovalRequired),
-        }
-    }
-}
-
-pub(super) async fn dispatch_evidence(
-    tx: &mut Transaction<'_>,
-    admitted: &AdmittedInvocation,
-) -> Result<DispatchApproval, Error> {
-    approval_repository::find_for_run_invocation(
-        tx,
-        &admitted.workspace_id,
-        &admitted.run_id,
-        &admitted.id,
-    )
-    .await
-    .map(DispatchApproval)
 }
 
 pub(super) async fn close_for_invocation(

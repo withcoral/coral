@@ -41,7 +41,7 @@ const MAX_PENDING_AUTHORIZATIONS: i64 = 20;
 macro_rules! account_id {
     ($name:ident, $doc:literal) => {
         #[doc = $doc]
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub struct $name(Uuid);
         impl $name {
             /// Parses a canonical opaque identity at a host Adapter.
@@ -221,6 +221,15 @@ enum CredentialMaterial {
 }
 
 impl CredentialMaterial {
+    /// When the material's access token expires, recorded beside the sealed
+    /// material; typed-in values do not expire.
+    const fn token_expires_at_unix_nanos(&self) -> Option<i64> {
+        match self {
+            Self::Values(_) => None,
+            Self::OAuth(token) => token.expires_at,
+        }
+    }
+
     fn seal(&self, vault: &CredentialVault, generation: &str) -> Result<String, Error> {
         match self {
             Self::Values(values) => {
@@ -345,11 +354,23 @@ struct LoadedAccount {
     granted_scope: String,
     refresh_attempt_id: Option<String>,
     refresh_deadline: Option<i64>,
+    /// When the sealed OAuth access token expires, beside the material, so a
+    /// decision reads it without opening the material. `None` for material
+    /// that does not expire, or that was sealed before the column existed.
+    token_expires_at_unix_nanos: Option<i64>,
 }
 
 impl LoadedAccount {
     fn requires_authorization_for(&self, contract: &ProviderCredentialContract) -> bool {
         self.requires_authorization || &self.contract != contract
+    }
+
+    /// Whether this row is still the Account an Invocation selected: the
+    /// same Account and authorization, usable under the retained contract.
+    fn matches_evidence(&self, evidence: &CredentialEvidence) -> bool {
+        self.id == evidence.account_id
+            && self.authorization_version == evidence.authorization_version
+            && !self.requires_authorization_for(&evidence.contract)
     }
 }
 
@@ -639,6 +660,7 @@ impl AccountModule {
             &mut tx,
             owner,
             &row.provider_id,
+            coral_db::RowLock::None,
         )
         .await?;
         if let Some(stored) = stored {
@@ -865,68 +887,73 @@ pub(crate) async fn select_route(
     }
 }
 
-/// Rechecks the exact retained Account authorization without account switching.
-/// The Invocation owner holds current Workspace and Provider authority.
-/// # Errors
-/// Distinguishes caller authorization changes from missing or incompatible credentials.
-pub async fn verify_in_transaction(
-    tx: &mut Transaction<'_>,
-    target: &crate::ResolvedInvocationOperation,
-    principal: &coral_workspace::Principal,
-    selected: Option<&CredentialEvidence>,
-) -> Result<(), Error> {
-    if let Some(evidence) = selected {
-        let target_provider = target.provider_access();
-        repository::hold_evidence(
-            tx,
-            target_provider.workspace_id(),
-            target_provider.id(),
-            evidence,
-        )
-        .await?;
+/// What a dispatch decision reads about the retained Account: whether its
+/// material must be renewed before use. The material itself is never read
+/// here; the dispatch decrypts it outside every lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetainedAccountFact {
+    refresh_claimed: bool,
+    token_expires_at_unix_nanos: Option<i64>,
+}
+
+impl RetainedAccountFact {
+    /// Whether the material must be renewed before a dispatch at
+    /// `now_unix_nanos`: a refresh is claimed, or the access token has
+    /// expired. Material with no recorded expiry is renewed by the dispatch's
+    /// own decryption when it finds the token expired.
+    #[must_use]
+    pub fn needs_refresh_at(self, now_unix_nanos: i64) -> bool {
+        self.refresh_claimed
+            || self
+                .token_expires_at_unix_nanos
+                .is_some_and(|expires_at| now_unix_nanos >= expires_at)
     }
-    verify_selection(tx, target, principal, selected).await
 }
 
-/// Rechecks the retained Account authorization like [`verify_in_transaction`]
-/// without holding the Account. Use it only in a read snapshot, to decide
-/// whether a held recheck is needed.
+/// Rechecks the exact retained Account authorization without account
+/// switching and reads what a dispatch decides on, holding the Account row
+/// as `lock` says. The caller holds, or reads in the same snapshot, the
+/// Workspace and Provider authority the selection depends on.
 /// # Errors
-/// Distinguishes caller authorization changes from missing or incompatible credentials.
-pub async fn verify_in_snapshot(
+/// Distinguishes caller authorization changes from missing or incompatible
+/// credentials.
+pub async fn retained_account_fact_in_transaction(
     tx: &mut Transaction<'_>,
     target: &crate::ResolvedInvocationOperation,
-    principal: &coral_workspace::Principal,
-    selected: Option<&CredentialEvidence>,
-) -> Result<(), Error> {
-    verify_selection(tx, target, principal, selected).await
-}
-
-async fn verify_selection(
-    tx: &mut Transaction<'_>,
-    target: &crate::ResolvedInvocationOperation,
-    principal: &coral_workspace::Principal,
-    selected: Option<&CredentialEvidence>,
-) -> Result<(), Error> {
-    if let Some(evidence) = selected
-        && let CredentialSelection::Caller { principal } = &evidence.selection
+    evidence: &CredentialEvidence,
+    lock: coral_db::RowLock,
+) -> Result<RetainedAccountFact, Error> {
+    let target_provider = target.provider_access();
+    let caller = match &evidence.selection {
+        CredentialSelection::Fixed => None,
+        CredentialSelection::Caller { principal } => Some(intent::Caller::of_principal(principal)?),
+    };
+    let row = repository::scoped_account_locked(
+        tx,
+        target_provider.workspace_id(),
+        target_provider.id(),
+        caller.as_ref(),
+        lock,
+    )
+    .await?;
+    // A caller Account that was reconnected, or disconnected, carries another
+    // authorization than the Invocation selected.
+    if caller.is_some()
+        && row
+            .as_ref()
+            .filter(|row| !row.disconnected)
+            .map(|row| &row.authorization_version)
+            != Some(&evidence.authorization_version)
     {
-        let target_provider = target.provider_access();
-        let current = repository::connected_account(
-            tx,
-            target_provider.workspace_id(),
-            target_provider.id(),
-            principal,
-        )
-        .await?;
-        if current.as_ref().map(|row| &row.version) != Some(&evidence.authorization_version) {
-            return Err(Error::AccountAuthorizationChanged);
-        }
+        return Err(Error::AccountAuthorizationChanged);
     }
-    if select_in_transaction(tx, target, principal).await?.as_ref() != selected {
-        return Err(Error::AccountRequired);
-    }
-    Ok(())
+    let row = row
+        .filter(|row| row.matches_evidence(evidence))
+        .ok_or(Error::AccountRequired)?;
+    Ok(RetainedAccountFact {
+        refresh_claimed: row.refresh_attempt_id.is_some(),
+        token_expires_at_unix_nanos: row.token_expires_at_unix_nanos,
+    })
 }
 
 #[expect(

@@ -250,14 +250,15 @@ impl AccountModule {
                 let material_revision = Uuid::new_v4().to_string();
                 let secret = Secret::new(token.access_token.clone())?;
                 let granted_scope = token.granted_scope();
-                let ciphertext =
-                    CredentialMaterial::OAuth(token).seal(&self.vault, &material_revision)?;
+                let material = CredentialMaterial::OAuth(token);
+                let ciphertext = material.seal(&self.vault, &material_revision)?;
                 repository::replace_refreshed_credentials(
                     &mut tx,
                     row,
                     &material_revision,
                     &ciphertext,
                     &granted_scope,
+                    material.token_expires_at_unix_nanos(),
                 )
                 .await?;
                 refresh_event(
@@ -300,9 +301,7 @@ async fn retained_account(
             shared_account(tx, workspace, provider, evidence.account_id).await?
         }
     };
-    if row.requires_authorization_for(&evidence.contract)
-        || row.authorization_version != evidence.authorization_version
-    {
+    if !row.matches_evidence(evidence) {
         return Err(Error::AccountRequired);
     }
     Ok(row)

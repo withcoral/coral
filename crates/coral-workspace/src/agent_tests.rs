@@ -204,7 +204,13 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
         assert!(expected(
             permitted,
             module
-                .check_dispatch_in_transaction(&mut transaction, &actor, workspace.id(), 15)
+                .check_dispatch_in_transaction(
+                    &mut transaction,
+                    &actor,
+                    workspace.id(),
+                    15,
+                    coral_db::RowLock::Shared,
+                )
                 .await
                 .map(drop)
         ));

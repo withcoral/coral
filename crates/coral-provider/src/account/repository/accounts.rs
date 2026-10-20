@@ -25,12 +25,26 @@ pub(in crate::account) async fn scoped_account(
     provider: &ProviderId,
     caller: Option<&Caller>,
 ) -> Result<Option<LoadedAccount>, Error> {
+    scoped_account_locked(tx, workspace, provider, caller, coral_db::RowLock::None).await
+}
+
+/// [`scoped_account`] holding the row as `lock` says: the Dispatch Fence
+/// reads the Account it decides on shared, so a reconnect, disconnect or
+/// refresh of that Account waits for the decisions in flight.
+pub(in crate::account) async fn scoped_account_locked(
+    tx: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    provider: &ProviderId,
+    caller: Option<&Caller>,
+    lock: coral_db::RowLock,
+) -> Result<Option<LoadedAccount>, Error> {
     let row: Option<AccountRow> = tx
-        .fetch_optional(
+        .fetch_optional_locked(
             current_accounts()
                 .columns(ACCOUNT_COLUMNS)
                 .and_where(account_scope(workspace, provider, caller))
                 .to_owned(),
+            lock,
         )
         .await?;
     row.map(AccountRow::decode).transpose()

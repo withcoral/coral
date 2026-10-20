@@ -143,7 +143,13 @@ async fn disabled_user_cannot_use_retained_owner_context_or_dispatch() {
     let database = fixture.database();
     let mut tx = database.begin().await.unwrap();
     workspaces
-        .check_dispatch_in_transaction(&mut tx, &principal, workspace.id(), 1)
+        .check_dispatch_in_transaction(
+            &mut tx,
+            &principal,
+            workspace.id(),
+            1,
+            coral_db::RowLock::Shared,
+        )
         .await
         .unwrap_err();
 }

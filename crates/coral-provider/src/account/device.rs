@@ -260,6 +260,7 @@ impl AccountModule {
                         .refresh_token
                         .as_ref()
                         .is_some_and(|token| !token.is_empty()),
+                    token.expires_at,
                 )
                 .await?;
                 if discover {

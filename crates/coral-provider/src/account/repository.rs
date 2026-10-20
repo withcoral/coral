@@ -4,13 +4,12 @@
 mod accounts;
 mod encoding;
 mod intent;
-pub(super) use accounts::{ensure_account, scoped_account};
+pub(super) use accounts::{ensure_account, scoped_account, scoped_account_locked};
 pub(super) use encoding::{
     decode_device, decode_flow, decode_token, decode_values, encode_device, encode_flow,
     encode_token, encode_values,
 };
 
-use super::caller::ConnectedAccount;
 use super::connection::LoadedConnection;
 use super::management::AccountInspection;
 use super::{
@@ -97,6 +96,7 @@ enum ProviderAccounts {
     RefreshDeadline,
     RequiresAuthorization,
     Retired,
+    TokenExpiresAtUnixNanos,
     UserId,
     WorkspaceId,
 }
@@ -293,6 +293,10 @@ pub(super) async fn retire_access_account(
             .values([
                 (ProviderAccounts::Retired, Expr::val(1_i64)),
                 (ProviderAccounts::EncryptedCredentials, Expr::val("")),
+                (
+                    ProviderAccounts::TokenExpiresAtUnixNanos,
+                    Expr::val(Option::<i64>::None),
+                ),
                 (ProviderAccounts::AuthorizationVersion, Expr::val(version)),
                 (ProviderAccounts::MaterialRevision, Expr::val(version)),
                 (ProviderAccounts::RequiresAuthorization, Expr::val(1_i64)),
@@ -327,7 +331,7 @@ fn current_accounts() -> sea_query::SelectStatement {
         .to_owned()
 }
 
-const ACCOUNT_COLUMNS: [ProviderAccounts; 14] = [
+const ACCOUNT_COLUMNS: [ProviderAccounts; 15] = [
     ProviderAccounts::Id,
     ProviderAccounts::ProviderId,
     ProviderAccounts::WorkspaceId,
@@ -342,6 +346,7 @@ const ACCOUNT_COLUMNS: [ProviderAccounts; 14] = [
     ProviderAccounts::AutomaticRefresh,
     ProviderAccounts::RefreshAttemptId,
     ProviderAccounts::RefreshDeadline,
+    ProviderAccounts::TokenExpiresAtUnixNanos,
 ];
 
 pub(super) async fn load_authorization(
@@ -415,26 +420,6 @@ pub(super) async fn shared_account(
         )
         .await?;
     row.ok_or(Error::AccountRequired)?.decode()
-}
-
-pub(super) async fn connected_account(
-    tx: &mut Transaction<'_>,
-    workspace: &WorkspaceId,
-    target_provider: &ProviderId,
-    principal: &Principal,
-) -> Result<Option<ConnectedAccount>, Error> {
-    let caller = match principal.kind() {
-        PrincipalKind::User => super::intent::Caller::User(UserId::parse(principal.id().as_str())?),
-        PrincipalKind::Agent => super::intent::Caller::Agent(principal.id().clone()),
-    };
-    Ok(
-        scoped_account(tx, workspace, target_provider, Some(&caller))
-            .await?
-            .filter(|row| !row.disconnected)
-            .map(|row| ConnectedAccount {
-                version: row.authorization_version,
-            }),
-    )
 }
 
 pub(super) async fn user_account(
@@ -754,6 +739,7 @@ pub(super) async fn insert_account(
                 ProviderAccounts::EncryptedCredentials,
                 ProviderAccounts::GrantedScope,
                 ProviderAccounts::AutomaticRefresh,
+                ProviderAccounts::TokenExpiresAtUnixNanos,
                 ProviderAccounts::UserId,
                 ProviderAccounts::AgentId,
             ])
@@ -769,6 +755,7 @@ pub(super) async fn insert_account(
                 Expr::val(account.ciphertext),
                 Expr::val(account.granted_scope),
                 Expr::val(account.automatic_refresh.map(i64::from)),
+                Expr::val(account.token_expires_at_unix_nanos),
                 Expr::val(user.map(UserId::as_str)),
                 Expr::val(agent.map(ToString::to_string)),
             ])
@@ -934,6 +921,10 @@ pub(super) async fn disconnect_account(
             .values([
                 (ProviderAccounts::EncryptedCredentials, Expr::val("")),
                 (
+                    ProviderAccounts::TokenExpiresAtUnixNanos,
+                    Expr::val(Option::<i64>::None),
+                ),
+                (
                     ProviderAccounts::AuthorizationVersion,
                     Expr::val(generation),
                 ),
@@ -1022,6 +1013,10 @@ pub(super) async fn connect_account(
                         ProviderAccounts::EncryptedCredentials,
                         Expr::val(authorized.ciphertext),
                     ),
+                    (
+                        ProviderAccounts::TokenExpiresAtUnixNanos,
+                        Expr::val(authorized.token_expires_at_unix_nanos),
+                    ),
                     (ProviderAccounts::RequiresAuthorization, Expr::val(0_i64)),
                     (
                         ProviderAccounts::GrantedScope,
@@ -1109,6 +1104,7 @@ pub(super) async fn replace_refreshed_credentials(
     material_revision: &str,
     ciphertext: &str,
     granted_scope: &str,
+    token_expires_at_unix_nanos: Option<i64>,
 ) -> Result<(), Error> {
     tx.execute(
         Query::update()
@@ -1121,6 +1117,10 @@ pub(super) async fn replace_refreshed_credentials(
                 (
                     ProviderAccounts::EncryptedCredentials,
                     Expr::val(ciphertext),
+                ),
+                (
+                    ProviderAccounts::TokenExpiresAtUnixNanos,
+                    Expr::val(token_expires_at_unix_nanos),
                 ),
                 (ProviderAccounts::GrantedScope, Expr::val(granted_scope)),
             ])
@@ -1140,6 +1140,10 @@ pub(super) async fn mark_requires_authorization(
             .table(ProviderAccounts::Table)
             .values([
                 (ProviderAccounts::RequiresAuthorization, Expr::val(1_i64)),
+                (
+                    ProviderAccounts::TokenExpiresAtUnixNanos,
+                    Expr::val(Option::<i64>::None),
+                ),
                 (
                     ProviderAccounts::RefreshAttemptId,
                     Expr::val(Option::<String>::None),
@@ -1516,6 +1520,7 @@ struct AccountRow {
     granted_scope: String,
     refresh_attempt_id: Option<String>,
     refresh_deadline: Option<i64>,
+    token_expires_at_unix_nanos: Option<i64>,
 }
 
 impl AccountRow {
@@ -1544,6 +1549,7 @@ impl AccountRow {
             granted_scope: self.granted_scope,
             refresh_attempt_id: self.refresh_attempt_id,
             refresh_deadline: self.refresh_deadline,
+            token_expires_at_unix_nanos: self.token_expires_at_unix_nanos,
         })
     }
 }

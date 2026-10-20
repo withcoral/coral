@@ -1111,26 +1111,56 @@ pub(super) async fn active_generation_for_configuration_in_transaction(
     workspace_id: &WorkspaceId,
     provider_id: &ProviderId,
 ) -> Result<Option<ProviderGenerationId>, Error> {
-    Ok(
-        provider_for_workspace_in_transaction(transaction, workspace_id, provider_id)
-            .await?
-            .map(|provider| provider.generation_id),
+    Ok(provider_for_workspace_in_transaction(
+        transaction,
+        workspace_id,
+        provider_id,
+        coral_db::RowLock::None,
     )
+    .await?
+    .map(|provider| provider.generation_id))
 }
 
+/// Reads the Workspace's Provider at `call_root` with its active Generation,
+/// holding its row as `lock` says, as admission resolves a Call Path.
+pub(super) async fn provider_by_call_root_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    call_root: &crate::ProviderCallRoot,
+    lock: coral_db::RowLock,
+) -> Result<Option<ProviderWithActiveGeneration>, Error> {
+    let row: Option<ProviderWithActiveGenerationRow> = transaction
+        .fetch_optional_locked(
+            Query::select()
+                .columns(stored_provider_columns())
+                .from(ProviderRecords::Table)
+                .and_where(provider_owner_matches_workspace(workspace_id))
+                .and_where(Expr::col(ProviderRecords::Namespace).eq(call_root.as_str()))
+                .to_owned(),
+            lock,
+        )
+        .await?;
+    row.map(ProviderWithActiveGenerationRow::decode).transpose()
+}
+
+/// Reads one Provider of the Workspace with its active Generation, holding
+/// its row as `lock` says: a shared hold lets concurrent Dispatch Fences read
+/// it side by side while a Provider change waits for them.
 pub(super) async fn provider_for_workspace_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     provider_id: &ProviderId,
+    lock: coral_db::RowLock,
 ) -> Result<Option<ProviderWithActiveGeneration>, Error> {
     let row: Option<ProviderWithActiveGenerationRow> = transaction
-        .fetch_optional(
+        .fetch_optional_locked(
             Query::select()
                 .columns(stored_provider_columns())
                 .from(ProviderRecords::Table)
                 .and_where(provider_owner_matches_workspace(workspace_id))
                 .and_where(Expr::col(ProviderRecords::Id).eq(provider_id.to_string()))
                 .to_owned(),
+            lock,
         )
         .await?;
     row.map(ProviderWithActiveGenerationRow::decode).transpose()

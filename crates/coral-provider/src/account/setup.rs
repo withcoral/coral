@@ -37,6 +37,8 @@ pub(crate) struct Provisional {
     pub(super) contract: ProviderCredentialContract,
     pub(super) credential_generation: String,
     pub(super) encrypted_credentials: Option<String>,
+    /// When the sealed access token expires, carried to the Account at promotion.
+    pub(super) token_expires_at_unix_nanos: Option<i64>,
     pub(super) granted_scope: String,
     pub(super) expires_at_unix_nanos: i64,
     pub(super) oauth_client: Option<StoredClient>,
@@ -1247,6 +1249,7 @@ pub(crate) async fn replace_shared(
             .as_deref()
             .ok_or(Error::AccountRequired)?,
         granted_scope: &row.granted_scope,
+        token_expires_at_unix_nanos: row.token_expires_at_unix_nanos,
     };
     if super::repository::connect_account(
         tx,
@@ -1320,6 +1323,7 @@ pub(crate) async fn promote(
                 .as_deref()
                 .ok_or(Error::AccountRequired)?,
             granted_scope: &row.granted_scope,
+            token_expires_at_unix_nanos: row.token_expires_at_unix_nanos,
         },
     )
     .await?;

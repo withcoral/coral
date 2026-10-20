@@ -74,15 +74,18 @@
 //! waits for the chunk. Emissions and Logs remain observable after a later
 //! failure. Invocation admission retains its Provider target, arguments,
 //! child record, and `invocation.started` in one chunk. The Dispatch Fence is
-//! row work inside one chunk commit: under the held Run it checks current
-//! claim/Run, host-fed Organization authority, Workspace and
-//! Agent/Registration, Provider, policy, exact Account authorization and
-//! token-material currency, and Approval evidence, validates the retained
-//! Provider Generation rather than requiring it to remain active, resamples
-//! time after every awaited check, and records the dispatch start. Decryption
-//! and the upstream send run outside every lock; a stop that reaches the
-//! owner first ends a fenced Invocation as `run_terminated` instead of
-//! sending. Missing User caller Accounts attach to durable shared connection
+//! one batched check per chunk commit: under the held Run it reads the
+//! Workspace, Agent/Registration, Provider, policy and Account facts the
+//! chunk's ready Invocations share once, holding their rows shared so fences
+//! of other Runs read beside it and an authority writer waits for it,
+//! decides each Invocation in memory against those facts, the Run facts the
+//! owner holds and the approval its gate recorded, at one clock sample after
+//! the last read, and records every permitted dispatch start in the same
+//! commit; it reads the retained Operation by its Generation id and never
+//! the Account's material. Decryption and the upstream send run outside
+//! every lock, after the pre-send check; a stop that reaches the owner first
+//! ends a fenced Invocation as `run_terminated` instead of sending, and a
+//! fence not yet committed answers terminated at once. Missing User caller Accounts attach to durable shared connection
 //! requests; each Invocation keeps its Run deadline and detaches on selection
 //! or terminal cleanup. Approval is requested only after Account selection and
 //! before credential resolution. Its first decision and safe lifecycle
@@ -115,6 +118,7 @@ mod builtin;
 mod engine;
 mod error;
 mod execution;
+mod fence;
 mod history;
 mod human_interface;
 pub use history::{InvocationStatus, InvocationSummary, RunSummary};

@@ -350,6 +350,21 @@ pub async fn available_search_targets_in_transaction(
     repository::available_search_targets(transaction, generation_id).await
 }
 
+/// Whether the exact private Generation still holds the Operation, by one
+/// existence read of its row: a Generation's package is immutable, so a row
+/// that exists is the one admission retained.
+///
+/// # Errors
+///
+/// Returns a persistence failure.
+pub async fn operation_exists_in_transaction(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+    operation_key: &OperationKey,
+) -> Result<bool, Error> {
+    repository::operation_exists(transaction, generation_id, operation_key).await
+}
+
 /// Loads one Operation from an exact private Generation package.
 ///
 /// # Errors

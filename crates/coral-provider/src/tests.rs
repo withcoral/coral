@@ -160,10 +160,14 @@ pub(crate) async fn verify_retained_operation(
         .begin()
         .await
         .expect("begin Invocation verification");
-    let current =
-        crate::verify_invocation_operation_in_transaction(&mut transaction, workspace_id, retained)
-            .await
-            .expect("verify Invocation Operation");
+    let current = crate::verify_invocation_operation_in_transaction(
+        &mut transaction,
+        workspace_id,
+        retained,
+        coral_db::RowLock::Shared,
+    )
+    .await
+    .expect("verify Invocation Operation");
     transaction
         .rollback()
         .await

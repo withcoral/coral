@@ -15,6 +15,7 @@ async-trait.workspace = true
 base64.workspace = true
 coral-db.workspace = true
 coral-catalog.workspace = true
+coral-credentials.workspace = true
 coral-functions.workspace = true
 coral-policy.workspace = true
 coral-provider.workspace = true
@@ -39,7 +40,6 @@ coral-workspace = { workspace = true, features = ["test-fixtures"] }
 coral-catalog = { workspace = true, features = ["test-fixtures"] }
 coral-provider = { workspace = true, features = ["test-fixtures"] }
 axum = { workspace = true, features = ["http1", "tokio"] }
-coral-credentials.workspace = true
 coral-administration.workspace = true
 tempfile.workspace = true
 coral-search.workspace = true

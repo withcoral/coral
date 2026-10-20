@@ -125,7 +125,7 @@ impl AdvanceFenceTime {
 
 #[async_trait]
 impl InvocationObserver for AdvanceFenceTime {
-    fn fence_checks_loaded(&self) {
+    async fn fence_checks_loaded(&self) {
         self.clock.next.store(self.now, Ordering::SeqCst);
     }
 
@@ -207,6 +207,104 @@ impl InvocationObserver for FenceGate {
             .failure_code
             .lock()
             .expect("Invocation failure observation lock") = Some(code);
+    }
+}
+
+/// Parks every Invocation that reaches the fence until released, so a batch
+/// of ready Invocations asks the owner for its fence together; and parks
+/// every fence again after it has read its facts under their holds, so a
+/// test can see what else proceeds while those holds are in place. Each
+/// park is released on its own; a latch that holds neither only records
+/// each Invocation's fence attempt.
+pub(crate) struct FenceLatch {
+    pub(crate) fences: ObservedFences,
+    /// Invocations that reached the fence.
+    pub(crate) arrived: AtomicUsize,
+    /// Fences that have read their facts and hold them.
+    pub(crate) loaded: AtomicUsize,
+    arrivals: watch::Sender<bool>,
+    loaded_facts: watch::Sender<bool>,
+    failures: watch::Sender<bool>,
+}
+
+impl FenceLatch {
+    /// Holds Invocations before their fence; fences pass once loaded.
+    pub(crate) fn holding_arrivals() -> Arc<Self> {
+        Self::new(true, false, false)
+    }
+
+    /// Holds Invocations before their fence, and fences once loaded.
+    pub(crate) fn holding_both() -> Arc<Self> {
+        Self::new(true, true, false)
+    }
+
+    /// Holds Invocations before their fence, and the commit of every known
+    /// failure, so a fence's own chunk can be observed alone.
+    pub(crate) fn holding_arrivals_and_failures() -> Arc<Self> {
+        Self::new(true, false, true)
+    }
+
+    fn new(hold_arrivals: bool, hold_loaded_facts: bool, hold_failures: bool) -> Arc<Self> {
+        Arc::new(Self {
+            fences: ObservedFences::default(),
+            arrived: AtomicUsize::new(0),
+            loaded: AtomicUsize::new(0),
+            arrivals: watch::channel(!hold_arrivals).0,
+            loaded_facts: watch::channel(!hold_loaded_facts).0,
+            failures: watch::channel(!hold_failures).0,
+        })
+    }
+
+    /// Lets every known failure waiting to be recorded go on.
+    pub(crate) fn release_failures(&self) {
+        self.failures.send_replace(true);
+    }
+
+    /// Lets every Invocation parked before its fence go on, and later ones pass.
+    pub(crate) fn release_arrivals(&self) {
+        self.arrivals.send_replace(true);
+    }
+
+    /// Lets every fence parked on its loaded facts go on, and later ones pass.
+    pub(crate) fn release_loaded(&self) {
+        self.loaded_facts.send_replace(true);
+    }
+
+    pub(crate) async fn until_arrived(&self, count: usize) {
+        wait_until(|| self.arrived.load(Ordering::SeqCst) >= count).await;
+    }
+
+    pub(crate) async fn until_loaded(&self, count: usize) {
+        wait_until(|| self.loaded.load(Ordering::SeqCst) >= count).await;
+    }
+
+    async fn park(gate: &watch::Sender<bool>) {
+        let mut released = gate.subscribe();
+        // A dropped sender never happens: the latch outlives the test.
+        let _released = released.wait_for(|released| *released).await;
+    }
+}
+
+#[async_trait]
+impl InvocationObserver for FenceLatch {
+    async fn before_fence(&self) -> Result<(), Error> {
+        self.arrived.fetch_add(1, Ordering::SeqCst);
+        Self::park(&self.arrivals).await;
+        Ok(())
+    }
+
+    async fn fence_checks_loaded(&self) {
+        self.loaded.fetch_add(1, Ordering::SeqCst);
+        Self::park(&self.loaded_facts).await;
+    }
+
+    async fn before_failure_commit(&self) -> Result<(), Error> {
+        Self::park(&self.failures).await;
+        Ok(())
+    }
+
+    fn fence_attempt_finished(&self, permit: bool, durable_start: bool) {
+        self.fences.record(permit, durable_start);
     }
 }
 

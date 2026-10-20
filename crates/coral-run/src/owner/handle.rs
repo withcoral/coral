@@ -9,6 +9,7 @@ use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::engine::{ExecutionCompletion, ProgramPackage};
 use crate::execution::ExecutionStop;
+use crate::invocation::FenceRequest;
 use crate::termination::ShutdownAction;
 use crate::{Error, ProgramLogLevel, ProgramValue, RunId};
 
@@ -47,6 +48,9 @@ pub(crate) enum Message {
     },
     /// Row work whose outcome is known only once its chunk is recorded.
     Work(Box<dyn ChunkWork>),
+    /// One ready Invocation asks for the Dispatch Fence: it joins the batch
+    /// the next chunk commit decides, and answers once that chunk is recorded.
+    Fence(Box<FenceRequest>),
     /// The Program's execution ended.
     ProgramEnded(ExecutionCompletion),
     /// The chunk in flight landed.
@@ -95,6 +99,7 @@ impl fmt::Debug for Message {
                 .field("work", work)
                 .finish(),
             Self::Work(work) => formatter.debug_tuple("Work").field(work).finish(),
+            Self::Fence(request) => formatter.debug_tuple("Fence").field(request).finish(),
             Self::ProgramEnded(completion) => formatter
                 .debug_tuple("ProgramEnded")
                 .field(completion)
@@ -299,6 +304,15 @@ impl OwnerHandle {
         self.shared
             .sender
             .send(Message::Work(work))
+            .map_err(|_retired| Error::OwnerLost)
+    }
+
+    /// Queues a request for the Dispatch Fence; its outcome arrives through
+    /// the request.
+    pub(crate) fn fence(&self, request: FenceRequest) -> Result<(), Error> {
+        self.shared
+            .sender
+            .send(Message::Fence(Box::new(request)))
             .map_err(|_retired| Error::OwnerLost)
     }
 

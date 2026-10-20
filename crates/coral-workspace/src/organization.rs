@@ -426,6 +426,21 @@ async fn read_membership(
         ))
 }
 
+/// Reads the current User holding the row changed by role/disablement
+/// administration shared until commit, so that administration waits for the
+/// decisions reading it.
+pub(crate) async fn share_user(
+    tx: &mut Transaction<'_>,
+    user_id: &UserId,
+) -> Result<AuthenticatedUser, Error> {
+    repository::find_membership_locked(tx, user_id, coral_db::RowLock::Shared)
+        .await?
+        .ok_or(Error::PermissionDenied(
+            "current Organization authority is unavailable",
+        ))
+        .map(|membership| membership.authenticated())
+}
+
 /// Holds the same row changed by role/disablement administration until commit.
 pub(crate) async fn hold_user(
     tx: &mut Transaction<'_>,

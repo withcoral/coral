@@ -243,6 +243,26 @@ fn authority_statement(workspace_id: &WorkspaceId, user_id: &UserId) -> sea_quer
         .to_owned()
 }
 
+/// Holds the Workspace row shared for the rest of the transaction: decisions
+/// that read it proceed side by side, and the Workspace, Membership and
+/// Agent lifecycle writers, which hold it exclusively, wait for them.
+pub(super) async fn share_workspace(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+) -> Result<bool, Error> {
+    let held: Option<(i64,)> = transaction
+        .fetch_optional_locked(
+            Query::select()
+                .column(WorkspaceRecords::LifecycleVersion)
+                .from(WorkspaceRecords::Table)
+                .and_where(Expr::col(WorkspaceRecords::Id).eq(workspace_id.to_string()))
+                .to_owned(),
+            coral_db::RowLock::Shared,
+        )
+        .await?;
+    Ok(held.is_some())
+}
+
 pub(super) async fn hold_workspace(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,

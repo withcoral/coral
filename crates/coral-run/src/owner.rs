@@ -22,9 +22,9 @@ mod handle;
 mod host;
 mod state;
 
-#[cfg(test)]
-pub(crate) use chunk::CHUNK_WORK_CAP;
 pub(crate) use chunk::ChunkWork;
+#[cfg(test)]
+pub(crate) use chunk::{CHUNK_WORK_CAP, FENCE_BATCH_CAP};
 #[cfg(test)]
 pub(crate) use handle::{CommitRejection, Message, Reply};
 pub(crate) use handle::{OwnerHandle, Owners};

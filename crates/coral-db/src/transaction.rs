@@ -113,6 +113,27 @@ async fn begin_postgres(
     Ok(transaction)
 }
 
+/// How a read inside a write transaction holds the rows it reads.
+///
+/// A decision that reads shared fact rows (a Workspace, a Provider, a policy
+/// rule, an Account) holds them [`Self::Shared`] so that concurrent decisions
+/// read side by side while a writer's `UPDATE` of those rows waits until the
+/// decisions have committed: a change that commits first is seen, one that
+/// commits later does not undo a recorded decision. On Postgres this is
+/// `SELECT ... FOR SHARE`. On `SQLite` a write transaction takes the one
+/// writer lock at `BEGIN IMMEDIATE`, which already excludes every writer, so
+/// the read runs as it is. Use the exclusive no-op `UPDATE` hold only for a
+/// row the transaction goes on to write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowLock {
+    /// A plain read, as in a read snapshot.
+    None,
+    /// Hold the matched rows shared for the rest of the transaction. Only in
+    /// a read-write transaction: Postgres refuses `FOR SHARE` in a read-only
+    /// one.
+    Shared,
+}
+
 /// Opaque identity of one transaction, usable to bind prepared domain evidence.
 #[derive(Clone)]
 pub struct TransactionToken(std::sync::Arc<()>);
@@ -347,6 +368,39 @@ impl Transaction<'_> {
         for<'row> T: FromRow<'row, PgRow>,
     {
         self.fetch_first(statement).await
+    }
+
+    /// Fetches the first matching domain row and holds the matched rows as
+    /// `lock` says for the rest of this transaction. With [`RowLock::None`]
+    /// this is [`Self::fetch_optional`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend query or row-decoding error, including Postgres's
+    /// refusal of a shared hold in a read-only transaction.
+    pub async fn fetch_optional_locked<T>(
+        &mut self,
+        mut statement: SelectStatement,
+        lock: RowLock,
+    ) -> Result<Option<T>, Error>
+    where
+        T: Send + Unpin,
+        for<'row> T: FromRow<'row, SqliteRow>,
+        for<'row> T: FromRow<'row, PgRow>,
+    {
+        self.apply_lock(&mut statement, lock);
+        self.fetch_first(statement).await
+    }
+
+    /// The backend idiom for `lock`: Postgres appends `FOR SHARE`; `SQLite`
+    /// relies on the writer lock its read-write transaction already holds.
+    fn apply_lock(&self, statement: &mut SelectStatement, lock: RowLock) {
+        match (lock, &self.backend) {
+            (RowLock::None, _) | (RowLock::Shared, TransactionBackend::Sqlite(_)) => {}
+            (RowLock::Shared, TransactionBackend::Postgres(_)) => {
+                statement.lock_shared();
+            }
+        }
     }
 
     /// Runs one statement with a `RETURNING` clause and fetches its first row.
