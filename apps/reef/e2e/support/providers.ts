@@ -253,6 +253,10 @@ export function addedProviders<P extends { callRoot: string }>(providers: readon
  * the rail. When the URL names no provider or the Built-in Provider, opens the
  * only added provider's settings instead.
  */
+/** The rail of provider tabs beside the operations table. */
+const providersRail = (page: Page) =>
+  page.getByRole('navigation', { name: 'installed providers', exact: true })
+
 export async function openProviderSettings(page: Page) {
   // A saved change returns to settings. Load them again for fresh data.
   if (/\/providers\/[^/?#]+\/settings$/.test(new URL(page.url()).pathname)) {
@@ -270,7 +274,7 @@ export async function openProviderSettings(page: Page) {
   // the rail; Coral has no gear. Wait for the
   // rail's gears before looking for the routed one, so a rail that has not
   // rendered yet cannot redirect the click.
-  const rail = page.getByRole('navigation', { name: 'installed providers', exact: true })
+  const rail = providersRail(page)
   const gears = rail.getByRole('link', { name: / settings$/ })
   await gears.first().waitFor()
   const routedGear = routed ? rail.locator(`a[href$="/providers/${routed}/settings"]`) : null
@@ -322,16 +326,17 @@ export async function waitForProviderStatus(
   status: string,
   operations?: { available: number; total: number },
 ) {
-  const rail = page.getByRole('navigation', { name: 'installed providers', exact: true })
+  const rail = providersRail(page)
+  const id = typeof provider === 'string' ? null : provider.path.split('/').at(-1)
   const entry =
     typeof provider === 'string'
       ? rail.getByRole('link').filter({ has: page.getByText(provider, { exact: true }) })
-      : rail.locator(`a[href$="/providers/${provider.path.split('/').at(-1)}"]`)
+      : rail.locator(`a[href$="/providers/${id}"]`)
   await entry.getByRole('img', { name: status, exact: true }).first().waitFor()
   const group =
     typeof provider === 'string'
       ? page.getByRole('rowgroup', { name: provider, exact: true })
-      : page.locator(`#provider-group-${provider.path.split('/').at(-1)}`)
+      : page.locator(`#provider-group-${id}`)
   if (!operations) return
   const { available, total } = operations
   await group

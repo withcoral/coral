@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { Cell } from './cell'
 import { Container } from './container'
-import { Group } from './group'
+import { Group, GroupToggle } from './group'
 import { Head } from './head'
 import { Row } from './row'
 
@@ -69,5 +69,37 @@ describe('Table Group', () => {
     expect(heading).toHaveAttribute('data-status', 'success')
     await userEvent.click(heading)
     expect(onClick).toHaveBeenCalledOnce()
+  })
+
+  // Catches: a cursor heading that loses its mark to a record heading's own
+  // state, or a toggle click that also opens the record.
+  it('keeps the cursor mark beside a record heading, and its toggle apart from the row', async () => {
+    const onClick = vi.fn()
+    const onToggle = vi.fn()
+    render(
+      <Container columns={columns}>
+        <Head />
+        <Group
+          label="Task"
+          active
+          heading={
+            <Cell fullWidth>
+              <GroupToggle collapsed={false} label="Task" onToggle={onToggle} />
+              Task
+            </Cell>
+          }
+          headingRow={{ recordKey: 'tasks/one', active: false, onClick }}
+        >
+          <Row>
+            <Cell>child</Cell>
+          </Row>
+        </Group>
+      </Container>,
+    )
+
+    expect(screen.getByRole('row', { name: /Task/ })).toHaveAttribute('data-active')
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse Task' }))
+    expect(onToggle).toHaveBeenCalledOnce()
+    expect(onClick).not.toHaveBeenCalled()
   })
 })

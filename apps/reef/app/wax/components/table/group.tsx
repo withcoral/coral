@@ -90,8 +90,8 @@ export function Group({
       style={{ [GROUP_DEPTH_PROPERTY]: depth } as CSSProperties}
     >
       <Row
-        active={active}
         {...headingRow}
+        active={active || headingRow?.active}
         data-pinned-heading
         data-index={index}
         className={styles.groupHeading({ depth: nested ? 'nested' : 'top' })}
@@ -135,7 +135,11 @@ export function GroupToggle({
       size="22"
       ariaLabel={`${collapsed ? 'Expand' : 'Collapse'} ${label}`}
       aria-expanded={!collapsed}
-      onClick={onToggle}
+      onClick={(event) => {
+        // The toggle is its own control: a heading row's click does not follow it.
+        event.stopPropagation()
+        onToggle()
+      }}
     >
       <Button.Icon name={collapsed ? 'ChevronRight' : 'ChevronDown'} />
     </Button.Container>
