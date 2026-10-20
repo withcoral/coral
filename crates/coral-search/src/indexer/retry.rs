@@ -8,10 +8,11 @@
 //! so removing a Provider and adding it again, or saving a Saved Function
 //! again, retries it at once.
 //!
-//! Only a newer version retries a failure, never an older one, so two
+//! An older version never retries a failure a newer one recorded, so two
 //! processes of different versions do not retry each other's failures pass
 //! after pass.
 
+use std::cmp::Ordering;
 use std::time::Duration;
 
 use super::IndexError;
@@ -66,20 +67,22 @@ impl RetryRule {
     }
 
     /// Whether a pass that starts at `now_unix_nanos` retries the failure:
-    /// its retry time has passed, or a Coral version older than this one, or
-    /// none, recorded it.
+    /// a Coral version older than this one, or none, recorded it, or this
+    /// version recorded it and its retry time has passed. A failure a newer
+    /// version recorded is left to that version: a retry here would record
+    /// this older version, and the newer one would retry again at once.
     pub(super) fn is_due(&self, now_unix_nanos: i64) -> bool {
-        let recorded_by_older = self
-            .coral_version
-            .as_deref()
-            .and_then(Release::parse)
-            .is_none_or(|recorded| {
-                Release::parse(CORAL_VERSION).is_some_and(|this| recorded < this)
-            });
-        recorded_by_older
-            || self
-                .retry_after_unix_nanos
-                .is_some_and(|retry_after| retry_after < now_unix_nanos)
+        let retry_time_passed = self
+            .retry_after_unix_nanos
+            .is_some_and(|retry_after| retry_after < now_unix_nanos);
+        let Some(recorded) = self.coral_version.as_deref().and_then(Release::parse) else {
+            return true;
+        };
+        match Release::parse(CORAL_VERSION).map(|this| recorded.cmp(&this)) {
+            Some(Ordering::Less) => true,
+            Some(Ordering::Greater) => false,
+            Some(Ordering::Equal) | None => retry_time_passed,
+        }
     }
 }
 
@@ -194,21 +197,29 @@ mod tests {
         let pre_release = format!("{major}.{minor}.{patch}-rc.1");
         let newer_patch = format!("{major}.{minor}.{}", patch + 1);
         let newer_major = format!("{}.0.0", major + 1);
-        for (recorded, due) in [
-            (None, true),
-            (Some("not a version"), true),
-            (Some("0.0.0"), true),
-            (Some(pre_release.as_str()), true),
-            (Some(CORAL_VERSION), false),
-            (Some(newer_patch.as_str()), false),
-            (Some(newer_major.as_str()), false),
+        // Whether a failure that repeats, and one whose retry time has
+        // passed, are due under each recorded version.
+        for (recorded, repeating_due, timed_due) in [
+            (None, true, true),
+            (Some("not a version"), true, true),
+            (Some("0.0.0"), true, true),
+            (Some(pre_release.as_str()), true, true),
+            (Some(CORAL_VERSION), false, true),
+            (Some(newer_patch.as_str()), false, false),
+            (Some(newer_major.as_str()), false, false),
         ] {
-            let rule = RetryRule {
-                attempts: Some(1),
-                retry_after_unix_nanos: None,
-                coral_version: recorded.map(str::to_owned),
-            };
-            assert_eq!(rule.is_due(i64::MAX), due, "recorded: {recorded:?}");
+            for (retry_after_unix_nanos, due) in [(None, repeating_due), (Some(0), timed_due)] {
+                let rule = RetryRule {
+                    attempts: Some(1),
+                    retry_after_unix_nanos,
+                    coral_version: recorded.map(str::to_owned),
+                };
+                assert_eq!(
+                    rule.is_due(i64::MAX),
+                    due,
+                    "recorded: {recorded:?}, retry after: {retry_after_unix_nanos:?}"
+                );
+            }
         }
     }
 

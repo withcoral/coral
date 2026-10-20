@@ -69,8 +69,9 @@ impl SearchIndex {
     /// pass goes on. Passes in two processes write the same idempotent rows.
     ///
     /// The retry module's rule decides when a failure is due. A failure that
-    /// repeats until something changes waits for a newer Coral version, so
-    /// it does not hold the mutex pass after pass.
+    /// repeats until something changes waits for a newer Coral version, or,
+    /// for a Saved Function, for another revision, so it does not hold the
+    /// mutex pass after pass.
     ///
     /// The pass runs in a root span, `coral.search.reconcile`, and each step
     /// in a child span. Each span records its `duration_ms`. The statistics

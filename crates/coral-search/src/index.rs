@@ -401,8 +401,8 @@ impl SearchIndex {
     /// Writes one entry under its Workspace's lock. A write that overruns
     /// its limit before it holds the lock waited for another writer, so it
     /// fails as [`IndexError::WriterBusy`], which may pass on a later try.
-    /// One that overruns after fails as [`IndexError::Overran`], which
-    /// repeats until something changes.
+    /// A write that overruns after it takes the lock fails as
+    /// [`IndexError::Overran`], which repeats until something changes.
     async fn write<I: EntityIndexer>(
         &self,
         indexer: &I,
