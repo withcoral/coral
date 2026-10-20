@@ -65,9 +65,11 @@ async fn connect(
 }
 
 /// Two waiting Invocations of one User that find no Account at once open
-/// one connection request: their holds are shared, so both reach the insert,
-/// and the second joins the first's pending row instead of failing the chunk
-/// that carries it on the unique pending index.
+/// one connection request. On Postgres their shared holds let both reach the
+/// insert, and the second joins the first's pending row instead of failing
+/// the chunk that carries it on the unique pending index; on SQLite the write
+/// transaction serializes them at `BEGIN`, and the second's lookup finds the
+/// first's request. Either way the User has one pending request.
 #[tokio::test]
 async fn concurrent_creators_of_one_users_connection_request_share_its_row() {
     const OPERATION: &str = "coral.providers.private.getPrivateForecast";
