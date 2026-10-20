@@ -104,14 +104,9 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      # Pull requests never use the npm cache, as in the npm-install action.
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: ./.github/actions/npm-install
         with:
-          node-version-file: apps/reef/.node-version
-          cache: ${{ github.event_name != 'pull_request' && 'npm' || '' }}
-          cache-dependency-path: crates/coral-v8/package-lock.json
-          package-manager-cache: false
-      - run: npm ci --prefix crates/coral-v8
+          packages: crates/coral-v8
       - run: npm run check --prefix crates/coral-v8
 
   postgres:
@@ -170,7 +165,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/npm-install
         with:
-          apps: reef
+          packages: apps/reef
       # npm test runs every story's play function in Chromium.
       - name: Install Playwright's Chromium
         working-directory: apps/reef
@@ -193,7 +188,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/npm-install
         with:
-          apps: reef
+          packages: apps/reef
       - run: ./dev test
 
   desktop:

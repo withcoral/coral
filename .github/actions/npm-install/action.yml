@@ -1,12 +1,12 @@
 name: Install npm dependencies
 description: >-
-  Installs Node and runs `npm ci` for each named app. Pull requests never use
-  the npm cache, so untrusted code cannot poison what later runs restore.
+  Installs Node and runs `npm ci` for each named package. Pull requests never
+  use the npm cache, so untrusted code cannot poison what later runs restore.
   release.yml installs from a clean state and does not use this action.
 
 inputs:
-  apps:
-    description: Directories under apps/, separated by spaces. The first one sets the Node version.
+  packages:
+    description: Package directories relative to the repository root, separated by spaces. The first one sets the Node version.
     required: true
 
 runs:
@@ -16,15 +16,15 @@ runs:
       id: plan
       shell: bash
       env:
-        APPS: ${{ inputs.apps }}
+        PACKAGES: ${{ inputs.packages }}
       run: |
-        # An app without its own .node-version uses Reef's, as ./dev does.
-        node_version_file="apps/${APPS%% *}/.node-version"
+        # A package without its own .node-version uses Reef's, as ./dev does.
+        node_version_file="${PACKAGES%% *}/.node-version"
         [ -f "$node_version_file" ] || node_version_file=apps/reef/.node-version
         {
           echo "node-version-file=$node_version_file"
           echo 'lockfiles<<EOF'
-          for app in $APPS; do echo "apps/$app/package-lock.json"; done
+          for package in $PACKAGES; do echo "$package/package-lock.json"; done
           echo EOF
         } >> "$GITHUB_OUTPUT"
 
@@ -38,5 +38,5 @@ runs:
     - name: Install dependencies
       shell: bash
       env:
-        APPS: ${{ inputs.apps }}
-      run: for app in $APPS; do npm ci --prefix "apps/$app"; done
+        PACKAGES: ${{ inputs.packages }}
+      run: for package in $PACKAGES; do npm ci --prefix "$package"; done

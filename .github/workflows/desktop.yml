@@ -42,7 +42,7 @@ jobs:
 
       - uses: ./.github/actions/npm-install
         with:
-          apps: desktop
+          packages: apps/desktop
       - run: npm run check --prefix apps/desktop
       - run: npm test --prefix apps/desktop
 
@@ -62,7 +62,7 @@ jobs:
 
       - uses: ./.github/actions/npm-install
         with:
-          apps: desktop reef
+          packages: apps/desktop apps/reef
       - name: Stage a release runtime and Desktop's Reef bundle
         run: npm run stage --prefix apps/desktop
       - name: Package the AppImage
@@ -95,7 +95,7 @@ jobs:
 
       - uses: ./.github/actions/npm-install
         with:
-          apps: desktop reef
+          packages: apps/desktop apps/reef
       - name: Validate macOS entitlements
         run: plutil -lint apps/desktop/resources/entitlements.*.plist
       - name: Stage an arm64 release runtime and Desktop's Reef bundle
@@ -135,7 +135,7 @@ jobs:
 
       - uses: ./.github/actions/npm-install
         with:
-          apps: desktop reef
+          packages: apps/desktop apps/reef
 
       # The supervisor's process handling differs most on Windows: no signals,
       # and a stop that closes the runtime's stdin.

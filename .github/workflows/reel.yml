@@ -51,7 +51,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/npm-install
         with:
-          apps: reef
+          packages: apps/reef
       # Keeps the Reel image's layers and cache mounts between runs.
       - uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2.2.0
         with:
