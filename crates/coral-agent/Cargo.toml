@@ -28,4 +28,5 @@ uuid.workspace = true
 
 [dev-dependencies]
 coral-test-support.workspace = true
+coral-workspace = { workspace = true, features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["test-util"] }

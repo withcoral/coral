@@ -28,7 +28,8 @@ fn at<'a>(value: &'a Value, pointer: &str) -> &'a Value {
     value.pointer(pointer).unwrap_or(&Value::Null)
 }
 
-/// Runs one `exec` with the thread's `task_id`, then answers from its result.
+/// Runs one `exec` with the thread's `task_id`, then answers from its result
+/// and names its Run.
 struct ExecThenAnswer;
 
 #[async_trait]
@@ -42,15 +43,15 @@ impl Model for ExecThenAnswer {
         if let Some(result) = tool_result {
             let page: Value =
                 serde_json::from_str(at(result, "/content").as_str().expect("text")).expect("json");
-            let answer = format!("The answer is {}.", at(&page, "/final_value/value"));
+            let answer = format!(
+                "The answer is {}.\nrun_id: {}",
+                at(&page, "/final_value/value"),
+                at(&page, "/run_id").as_str().expect("run_id")
+            );
             return Ok(ModelResponse {
-                content: vec![json!({
-                    "type": "tool_use",
-                    "id": "toolu_2",
-                    "name": "answer",
-                    "input": {"message": answer, "run_id": at(&page, "/run_id")},
-                })],
-                stop_reason: StopReason::ToolUse,
+                content: vec![json!({"type": "text", "text": answer})],
+                stop_reason: StopReason::EndTurn,
+                usage: None,
             });
         }
         let first = request.messages.first().expect("first message");
@@ -68,6 +69,7 @@ impl Model for ExecThenAnswer {
                 "input": {"task_id": task_id, "intent": "Add the numbers", "program": PROGRAM},
             })],
             stop_reason: StopReason::ToolUse,
+            usage: None,
         })
     }
 }
@@ -230,6 +232,11 @@ async fn agent_answers_through_a_turn_page_that_wait_follows_to_the_end() {
     assert_eq!(at(&page, "/evidence/program"), PROGRAM);
     assert!(at(&page, "/evidence/run_id").is_string());
     assert_eq!(
+        at(&page, "/evidence/value"),
+        42,
+        "the caller can check the answer"
+    );
+    assert_eq!(
         events
             .iter()
             .map(|event| (
@@ -272,10 +279,15 @@ async fn wait_and_cancel_name_exactly_one_run_or_turn() {
 }
 
 #[tokio::test]
-async fn the_agent_calls_only_discovery_and_run_tools_without_turn_ids() {
+async fn the_agent_learns_namespaces_and_calls_only_discovery_and_run_tools() {
     let (_fixture, server) = server(Some(Arc::new(Silent))).await;
     let toolbox = crate::agent_toolbox::McpToolbox::new(server);
 
+    // The fixture connects no Provider.
+    assert_eq!(
+        toolbox.briefing().await.as_deref(),
+        Some("No Provider namespaces are searchable.")
+    );
     let tools = toolbox.tools();
     let names = tools
         .iter()

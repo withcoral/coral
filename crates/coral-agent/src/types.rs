@@ -133,6 +133,43 @@ pub struct Evidence {
     pub run_id: String,
     /// The Program source that Run executed.
     pub program: String,
+    /// The Run's Final Value, so the caller can check the answer against it.
+    /// One whose JSON passes [`EVIDENCE_VALUE_MAX_BYTES`] is kept as the start
+    /// of that JSON, a string, with `value_truncated` set.
+    #[serde(default)]
+    pub value: Option<Value>,
+    /// Whether `value` holds only the start of the Final Value's JSON.
+    #[serde(default)]
+    pub value_truncated: bool,
+}
+
+/// The most Final Value JSON that evidence keeps.
+pub const EVIDENCE_VALUE_MAX_BYTES: usize = 16 * 1024;
+
+impl Evidence {
+    /// Evidence for a succeeded Run, keeping as much of its Final Value as fits.
+    #[must_use]
+    pub fn new(run_id: String, program: String, final_value: Option<&Value>) -> Self {
+        let (value, value_truncated) = match final_value {
+            None => (None, false),
+            Some(value) => {
+                let json = value.to_string();
+                if json.len() <= EVIDENCE_VALUE_MAX_BYTES {
+                    (Some(value.clone()), false)
+                } else {
+                    let end = json.floor_char_boundary(EVIDENCE_VALUE_MAX_BYTES);
+                    let start = json.get(..end).unwrap_or_default();
+                    (Some(Value::String(start.to_owned())), true)
+                }
+            }
+        };
+        Self {
+            run_id,
+            program,
+            value,
+            value_truncated,
+        }
+    }
 }
 
 /// What one turn Event records.

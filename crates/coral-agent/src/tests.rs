@@ -87,7 +87,13 @@ fn tool_use(id: &str, name: &str, input: Value) -> Result<ModelResponse, ModelEr
     Ok(ModelResponse {
         content: vec![block],
         stop_reason: StopReason::ToolUse,
+        usage: Some(usage()),
     })
+}
+
+/// The token counts every scripted reply reports.
+fn usage() -> Value {
+    json!({"input_tokens": 120, "cache_read_input_tokens": 100, "output_tokens": 8})
 }
 
 #[expect(
@@ -101,19 +107,8 @@ fn reply(text: &str) -> Result<ModelResponse, ModelError> {
             json!({"type": "text", "text": text}),
         ],
         stop_reason: StopReason::EndTurn,
+        usage: Some(usage()),
     })
-}
-
-/// Ends the turn through the `answer` tool, naming the answering Run if any.
-fn answer(id: &str, message: &str, run_id: Option<&str>) -> Result<ModelResponse, ModelError> {
-    let mut input = json!({"message": message});
-    if let Some(run_id) = run_id {
-        input
-            .as_object_mut()
-            .expect("input object")
-            .insert("run_id".into(), json!(run_id));
-    }
-    tool_use(id, "answer", input)
 }
 
 /// Tools that replay scripted outcomes and record each call.
@@ -146,6 +141,10 @@ impl Toolbox for ScriptedTools {
         }]
     }
 
+    async fn briefing(&self) -> Option<String> {
+        Some(BRIEFING.into())
+    }
+
     async fn call(&self, name: &str, input: Value) -> ToolOutcome {
         self.calls
             .lock()
@@ -163,6 +162,9 @@ impl Toolbox for ScriptedTools {
     }
 }
 
+const BRIEFING: &str = "Provider namespaces you can search: github, coral.workspace";
+
+/// A Run page that returns `2` when the Run succeeded.
 fn run_outcome(run_id: &str, succeeded: bool, required_actions: Vec<Value>) -> ToolOutcome {
     ToolOutcome {
         text: json!({"run_id": run_id}).to_string(),
@@ -171,6 +173,7 @@ fn run_outcome(run_id: &str, succeeded: bool, required_actions: Vec<Value>) -> T
             run_id: run_id.into(),
             succeeded,
             required_actions,
+            final_value: succeeded.then(|| json!(2)),
         }),
     }
 }
@@ -282,14 +285,12 @@ impl Fixture {
 }
 
 #[tokio::test]
-#[expect(clippy::too_many_lines, reason = "one table of answer cases")]
-async fn the_final_message_carries_the_run_the_agent_names_as_its_answer() {
+async fn the_final_message_carries_the_run_its_last_line_names() {
     struct Case {
         name: &'static str,
         script: Vec<Result<ModelResponse, ModelError>>,
         run_2_succeeds: bool,
         evidence: Option<Evidence>,
-        error_results: usize,
     }
     let exec = |id: &str, program: &str| {
         tool_use(
@@ -298,66 +299,58 @@ async fn the_final_message_carries_the_run_the_agent_names_as_its_answer() {
             json!({"intent": "List my PRs", "program": program}),
         )
     };
-    let answering = Some(Evidence {
-        run_id: "run_1".into(),
-        program: "return 2;".into(),
-    });
+    let answering = || {
+        Some(Evidence::new(
+            "run_1".into(),
+            "return 2;".into(),
+            Some(&json!(2)),
+        ))
+    };
     let cases = [
         Case {
             name: "a later sanity-check Run is not the answer",
             script: vec![
                 exec("t1", "return 2;"),
                 exec("t2", "return 'check';"),
-                answer("t3", "You have 2 unreviewed PRs.", Some("run_1")),
+                reply("You have 2 unreviewed PRs.\nrun_id: run_1"),
             ],
             run_2_succeeds: true,
-            evidence: answering.clone(),
-            error_results: 0,
+            evidence: answering(),
         },
         Case {
-            name: "a Run that did not succeed is refused, and the agent names another",
+            name: "markdown around the line is accepted",
+            script: vec![
+                exec("t1", "return 2;"),
+                reply("You have 2 unreviewed PRs.\n\n`run_id: run_1`\n"),
+            ],
+            run_2_succeeds: true,
+            evidence: answering(),
+        },
+        Case {
+            name: "a Run that did not succeed is no evidence",
             script: vec![
                 exec("t1", "return 2;"),
                 exec("t2", "throw 1;"),
-                answer("t3", "You have 2 unreviewed PRs.", Some("run_2")),
-                answer("t4", "You have 2 unreviewed PRs.", Some("run_1")),
+                reply("You have 2 unreviewed PRs.\nrun_id: run_2"),
             ],
             run_2_succeeds: false,
-            evidence: answering,
-            error_results: 1,
+            evidence: None,
         },
         Case {
-            name: "a text reply after a Run is reminded once, then names it",
+            name: "run_id none names no Run",
             script: vec![
                 exec("t1", "return 2;"),
-                reply("You have 2 unreviewed PRs."),
-                answer("t2", "You have 2 unreviewed PRs.", Some("run_1")),
-            ],
-            run_2_succeeds: true,
-            evidence: Some(Evidence {
-                run_id: "run_1".into(),
-                program: "return 2;".into(),
-            }),
-            error_results: 0,
-        },
-        Case {
-            name: "a second text reply is accepted without a Run",
-            script: vec![
-                exec("t1", "return 2;"),
-                reply("You have 2 unreviewed PRs."),
-                reply("You have 2 unreviewed PRs."),
+                reply("You have 2 unreviewed PRs.\nrun_id: none"),
             ],
             run_2_succeeds: true,
             evidence: None,
-            error_results: 0,
         },
-        // A script that runs out fails the turn, so an extra reminder would show.
+        // A script that runs out fails the turn, so a reminder would show.
         Case {
-            name: "a text reply without a Run needs no reminder",
-            script: vec![reply("You have 2 unreviewed PRs.")],
+            name: "a reply without the line ends the turn without evidence",
+            script: vec![exec("t1", "return 2;"), reply("You have 2 unreviewed PRs.")],
             run_2_succeeds: true,
             evidence: None,
-            error_results: 0,
         },
     ];
     for case in cases {
@@ -381,20 +374,6 @@ async fn the_final_message_carries_the_run_the_agent_names_as_its_answer() {
             case.name
         );
         assert_eq!(update.evidence(), case.evidence.as_ref(), "{}", case.name);
-        let errors = model
-            .requests()
-            .last()
-            .map(|request| {
-                request
-                    .messages
-                    .iter()
-                    .flat_map(|message| message.content.iter())
-                    .filter(|block| block.get("is_error") == Some(&json!(true)))
-                    .count()
-            })
-            .unwrap_or_default();
-        assert_eq!(errors, case.error_results, "{}", case.name);
-        // `answer` belongs to the agent; it is never a step or a toolbox call.
         assert!(
             update.events().iter().all(|event| matches!(
                 event.kind(),
@@ -406,6 +385,93 @@ async fn the_final_message_carries_the_run_the_agent_names_as_its_answer() {
     }
 }
 
+#[test]
+fn evidence_keeps_the_start_of_a_final_value_too_large_to_keep_whole() {
+    let large = json!({"text": "a".repeat(crate::EVIDENCE_VALUE_MAX_BYTES)});
+    let cases = [
+        (json!({"count": 2}), json!({"count": 2}), false),
+        (
+            large.clone(),
+            Value::String(
+                large
+                    .to_string()
+                    .get(..crate::EVIDENCE_VALUE_MAX_BYTES)
+                    .expect("ASCII prefix")
+                    .to_owned(),
+            ),
+            true,
+        ),
+    ];
+    for (final_value, kept, truncated) in cases {
+        let evidence = Evidence::new("run_1".into(), "return v;".into(), Some(&final_value));
+        assert_eq!(evidence.value, Some(kept));
+        assert_eq!(evidence.value_truncated, truncated);
+    }
+}
+
+#[tokio::test]
+async fn each_model_call_records_its_latency_and_reported_usage() {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        role: String,
+        model_latency_millis: Option<i64>,
+        model_usage_json: Option<String>,
+    }
+    let model = ScriptedModel::new(vec![
+        tool_use(
+            "toolu_1",
+            "exec",
+            json!({"intent": "List my PRs", "program": "return 2;"}),
+        ),
+        reply("Done."),
+    ]);
+    let fixture = fixture(model).await;
+    let tools = ScriptedTools::new(vec![run_outcome("run_1", true, Vec::new())]);
+    let turn = fixture
+        .start("List my unreviewed PRs", tools)
+        .await
+        .expect("start");
+    fixture.until(&turn, TurnState::Completed).await;
+
+    let database = fixture.agents.database.clone();
+    let mut transaction = database.begin_read_snapshot().await.expect("read");
+    let rows: Vec<Row> = transaction
+        .fetch_all(
+            sea_query::Query::select()
+                .columns(
+                    ["role", "model_latency_millis", "model_usage_json"].map(sea_query::Alias::new),
+                )
+                .from(sea_query::Alias::new("agent_thread_messages"))
+                .order_by(sea_query::Alias::new("sequence"), sea_query::Order::Asc)
+                .to_owned(),
+        )
+        .await
+        .expect("read thread rows");
+    transaction.commit().await.expect("commit read");
+
+    let recorded = rows
+        .iter()
+        .map(|row| {
+            (
+                row.role.as_str(),
+                row.model_latency_millis.is_some_and(|millis| millis >= 0),
+                row.model_usage_json
+                    .as_deref()
+                    .map(|usage| serde_json::from_str::<Value>(usage).expect("usage JSON")),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        recorded,
+        [
+            ("user", false, None),
+            ("assistant", true, Some(usage())),
+            ("user", false, None),
+            ("assistant", true, Some(usage())),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn tool_results_return_after_the_call_they_answer() {
     let model = ScriptedModel::new(vec![
@@ -414,7 +480,7 @@ async fn tool_results_return_after_the_call_they_answer() {
             "exec",
             json!({"intent": "List my PRs", "program": "return 2;"}),
         ),
-        answer("toolu_2", "Done.", Some("run_1")),
+        reply("Done.\nrun_id: run_1"),
     ]);
     let fixture = fixture(model.clone()).await;
     let tools = ScriptedTools::new(vec![run_outcome("run_1", true, Vec::new())]);
@@ -427,7 +493,6 @@ async fn tool_results_return_after_the_call_they_answer() {
 
     let requests = model.requests();
     let second = requests.get(1).expect("second model request");
-    assert!(second.tools.iter().any(|tool| tool.name == "answer"));
     assert_eq!(
         second.messages.last().expect("tool result message").content,
         vec![json!({
@@ -442,11 +507,7 @@ async fn tool_results_return_after_the_call_they_answer() {
 #[tokio::test]
 async fn a_later_turn_continues_the_same_thread_verbatim() {
     let model = ScriptedModel::new(vec![
-        answer(
-            "toolu_q",
-            "Do you mean PRs you authored, or PRs assigned to you?",
-            None,
-        ),
+        reply("Do you mean PRs you authored, or PRs assigned to you?"),
         reply("You authored 2 PRs that need review."),
     ]);
     let fixture = fixture(model.clone()).await;
@@ -477,25 +538,19 @@ async fn a_later_turn_continues_the_same_thread_verbatim() {
                 crate::Role::User,
                 vec![
                     json!({"type": "text", "text": format!("task_id: {}", fixture.task)}),
+                    json!({"type": "text", "text": BRIEFING}),
                     json!({"type": "text", "text": "List my PRs"}),
                 ]
             ),
             (
                 crate::Role::Assistant,
-                answer(
-                    "toolu_q",
-                    "Do you mean PRs you authored, or PRs assigned to you?",
-                    None
-                )
-                .expect("reply")
-                .content
+                reply("Do you mean PRs you authored, or PRs assigned to you?")
+                    .expect("reply")
+                    .content
             ),
             (
                 crate::Role::User,
-                vec![
-                    json!({"type": "tool_result", "tool_use_id": "toolu_q", "content": "Delivered to the caller."}),
-                    json!({"type": "text", "text": "Authored by me"}),
-                ]
+                vec![json!({"type": "text", "text": "Authored by me"})]
             ),
         ]
     );
@@ -607,7 +662,7 @@ async fn a_run_waiting_for_a_person_puts_the_turn_in_needs_action_until_it_moves
             json!({"intent": "Read PRs", "program": "return 1;"}),
         ),
         tool_use("toolu_2", "wait", json!({"run_id": "run_1"})),
-        answer("toolu_3", "Done.", Some("run_1")),
+        reply("Done.\nrun_id: run_1"),
     ]);
     let fixture = fixture(model.clone()).await;
     let actions = vec![json!({"kind": "account_connection", "request_id": "r1"})];

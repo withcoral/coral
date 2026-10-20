@@ -27,7 +27,7 @@ pub(crate) struct TurnUpdateResult<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "final")]
     final_message: Option<&'a str>,
-    /// The answering Program and its Run. Check it before you rely on the answer.
+    /// The answering Program, its Run and its Final Value. Check the answer against them.
     #[serde(skip_serializing_if = "Option::is_none")]
     evidence: Option<Evidence<'a>>,
     /// Why the turn ended without an answer, and what to send next.
@@ -81,6 +81,12 @@ struct Evidence<'a> {
     #[schemars(schema_with = "crate::arguments::uuid_schema")]
     run_id: &'a str,
     program: &'a str,
+    /// The Run's Final Value. A large one is the start of its JSON, as a string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<&'a Value>,
+    /// Whether `value` holds only the start of the Final Value's JSON.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    value_truncated: bool,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -132,6 +138,8 @@ pub(crate) fn turn_update(update: &TurnUpdate) -> Result<CallToolResult, ToolFai
         evidence: update.evidence().map(|evidence| Evidence {
             run_id: &evidence.run_id,
             program: &evidence.program,
+            value: evidence.value.as_ref(),
+            value_truncated: evidence.value_truncated,
         }),
         failure: update.failure(),
         required_action: update.required_action().map(|action| RequiredAction {

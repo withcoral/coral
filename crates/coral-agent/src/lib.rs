@@ -47,9 +47,9 @@ pub use model::{
 };
 pub use toolbox::{RunObserved, ToolOutcome, ToolSpec, Toolbox};
 pub use types::{
-    AGENT_MESSAGE_MAX_CHARS, AgentMessage, Evidence, RequiredAction, TURN_EVENT_PAGE_MAX,
-    TURN_WAIT_MAX, TurnCursor, TurnEvent, TurnEventKind, TurnId, TurnObservation, TurnState,
-    TurnUpdate,
+    AGENT_MESSAGE_MAX_CHARS, AgentMessage, EVIDENCE_VALUE_MAX_BYTES, Evidence, RequiredAction,
+    TURN_EVENT_PAGE_MAX, TURN_WAIT_MAX, TurnCursor, TurnEvent, TurnEventKind, TurnId,
+    TurnObservation, TurnState, TurnUpdate,
 };
 
 const INTERRUPTED: &str = "Coral restarted while the agent worked. Send the message again.";
@@ -99,6 +99,8 @@ impl AgentModule {
         toolbox: Arc<dyn Toolbox>,
     ) -> Result<TurnId, Error> {
         let turn_id = TurnId::generate();
+        // Read before the write lock; only a new thread uses it.
+        let briefing = toolbox.briefing().await;
         let mut transaction = self.database.begin().await?;
         self.tasks
             .hold_open_in_transaction(&mut transaction, actor, workspace_id, task_id)
@@ -116,17 +118,20 @@ impl AgentModule {
             },
         )
         .await?;
-        // Close calls the last turn left open, such as its `answer`, so the
-        // thread stays a valid sequence of calls and results.
+        // Close calls a canceled or failed turn left open, so the thread stays
+        // a valid sequence of calls and results.
         let mut content = match thread.last() {
             Some(last) if last.role == Role::Assistant => turn::tool_uses(&last.content)
                 .iter()
-                .map(|(id, name, _input)| turn::closing_result(id, name))
+                .map(|(id, _name, _input)| turn::closing_result(id))
                 .collect(),
             _ => Vec::new(),
         };
         if thread.is_empty() {
             content.push(json!({"type": "text", "text": format!("task_id: {task_id}")}));
+            if let Some(briefing) = briefing {
+                content.push(json!({"type": "text", "text": briefing}));
+            }
         }
         content.push(json!({"type": "text", "text": message.as_str()}));
         repository::append_message(
@@ -138,6 +143,7 @@ impl AgentModule {
                 role: Role::User,
                 content,
             },
+            None,
         )
         .await?;
         transaction.commit().await?;

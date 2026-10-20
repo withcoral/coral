@@ -52,6 +52,16 @@ enum AgentThreadMessages {
     TurnId,
     Role,
     ContentJson,
+    ModelLatencyMillis,
+    ModelUsageJson,
+}
+
+/// How one model call went, recorded on the assistant message it produced.
+pub(crate) struct ModelCall<'a> {
+    /// Wall time of the call, retries included.
+    pub(crate) latency_millis: i64,
+    /// Token counts as the provider reported them.
+    pub(crate) usage: Option<&'a Value>,
 }
 
 /// The largest sequence so far, absent when there is none.
@@ -484,6 +494,7 @@ pub(crate) async fn append_message(
     task_id: &TaskId,
     turn_id: &TurnId,
     message: &Message,
+    call: Option<&ModelCall<'_>>,
 ) -> Result<bool, Error> {
     let Some(turn) = find_turn(&mut *transaction, workspace_id, turn_id).await? else {
         return Err(Error::TurnNotFound);
@@ -504,6 +515,7 @@ pub(crate) async fn append_message(
     let sequence = last.and_then(|row| row.last).unwrap_or(0) + 1;
     let content = serde_json::to_string(&message.content)
         .map_err(|_error| Error::CorruptData("Agent thread message did not encode".into()))?;
+    let usage = call.and_then(|call| call.usage).map(Value::to_string);
     transaction
         .execute(
             Query::insert()
@@ -515,6 +527,8 @@ pub(crate) async fn append_message(
                     AgentThreadMessages::TurnId,
                     AgentThreadMessages::Role,
                     AgentThreadMessages::ContentJson,
+                    AgentThreadMessages::ModelLatencyMillis,
+                    AgentThreadMessages::ModelUsageJson,
                 ])
                 .values_panic([
                     Expr::val(workspace_id.to_string()),
@@ -523,6 +537,8 @@ pub(crate) async fn append_message(
                     Expr::val(turn_id.to_string()),
                     Expr::val(message.role.as_str()),
                     Expr::val(content),
+                    Expr::val(call.map(|call| call.latency_millis)),
+                    Expr::val(usage),
                 ])
                 .to_owned(),
         )

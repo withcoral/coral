@@ -63,6 +63,18 @@ impl Toolbox for McpToolbox {
             .collect()
     }
 
+    async fn briefing(&self) -> Option<String> {
+        let namespaces = self.server.provider_namespaces().await.ok()?;
+        Some(if namespaces.is_empty() {
+            "No Provider namespaces are searchable.".to_owned()
+        } else {
+            format!(
+                "Provider namespaces you can search: {}",
+                namespaces.join(", ")
+            )
+        })
+    }
+
     async fn call(&self, name: &str, input: Value) -> ToolOutcome {
         if !AGENT_TOOLS.contains(&name) {
             return error(
@@ -123,13 +135,18 @@ fn run_observed(page: &Value) -> Option<RunObserved> {
         .get("has_more")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let succeeded = state == "succeeded" && !has_more;
     Some(RunObserved {
         run_id,
-        succeeded: state == "succeeded" && !has_more,
+        succeeded,
         required_actions: page
             .get("required_actions")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default(),
+        final_value: page
+            .pointer("/final_value/value")
+            .filter(|_value| succeeded)
+            .cloned(),
     })
 }

@@ -75,6 +75,8 @@ pub struct ModelResponse {
     pub content: Vec<Value>,
     /// Why it stopped.
     pub stop_reason: StopReason,
+    /// Token counts as the provider reported them, when it did.
+    pub usage: Option<Value>,
 }
 
 /// A model call failure. The message is safe to show the caller.
@@ -251,6 +253,7 @@ fn parse_response(payload: &Value) -> Result<ModelResponse, ModelError> {
     Ok(ModelResponse {
         content,
         stop_reason,
+        usage: payload.get("usage").cloned(),
     })
 }
 

@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
 
 use coral_db::Database;
 use coral_task::TaskId;
@@ -11,8 +12,8 @@ use coral_workspace::WorkspaceId;
 use serde_json::{Value, json};
 
 use crate::model::{Message, Model, ModelRequest, Role, StopReason};
-use crate::repository::{self, Ending};
-use crate::toolbox::{RunObserved, ToolSpec, Toolbox};
+use crate::repository::{self, Ending, ModelCall};
+use crate::toolbox::{RunObserved, Toolbox};
 use crate::{Error, Evidence, RequiredAction, TurnEventKind, TurnId, TurnState, now};
 
 /// The most model calls one turn makes before it fails.
@@ -22,64 +23,41 @@ pub(crate) const MAX_MODEL_CALLS: usize = 60;
 pub(crate) const AGENT_INSTRUCTIONS: &str = "\
 You are Coral's data agent. Another agent sent you one message on behalf of a person. \
 You cannot see their conversation, only the messages in this thread. \
-Answer with Coral's tools, then end your turn by calling `answer` once, alone, with your final message.
+Answer with Coral's tools, then end your turn with your final message as plain text, without a tool call.
 
 ## How to work
 - Use the task_id given in the thread for every tool call. The Task is already started.
 - Skip the workflow steps for `start_task`, `save_function` and `end_task` below: the caller owns the Task and decides what to save.
-- Explore with `search`, `describe` and small `exec` Programs until you know the Operations and data shapes.
+- The thread's first message lists the Provider namespaces `search` accepts. Do not search or run Programs to find out which Providers exist.
+- Explore with `search`, `describe` and small `exec` Programs until you know the Operations and data shapes. \
+Make each exploring Program try every candidate call you are considering at once, each in its own try/catch. \
+Return only the fields and text you need, never whole records.
 - Then write one answering Program that makes every call the answer needs and passes values between them. \
-Put values a person might change, such as a repository, a time window or a label, in constants at the top.
+Put values a person might change, such as a repository, a time window or a label, in constants at the top. \
+Return the values your answer states, including the source text behind each key fact, so the caller can check them.
+- In a loop over many records, catch each call's error and count failures by error code, so one failure does not end the Run.
 - When the message says \"me\", \"my\" or \"I\", call the Provider's Operation for the signed-in account. \
 Each Provider has its own identity.
 - Do not change anything in a Provider unless the message asks for that exact change.
 - If a Run returns `required_actions`, call `wait` on it with `wait_ms` 30000 until it ends.
 
 ## Your final message
-- Pass the run_id of the Run whose result answers the message. Leave it out when no Run answers it, such as when you ask a question.
 - Lead with the answer. Keep it short, and summarize long lists with a count and the top items.
+- Quote the source text behind each key fact, with its title, link or ID.
+- If you could not read everything, say how much you covered, and count what failed by error code, such as \"115 channels: not_in_channel\".
 - State each assumption you made for the person as a short clause: who \"me\" is, which repository, what a vague term means.
 - If the message is ambiguous and nothing in the thread resolves it, ask one specific question instead of guessing.
 - If you cannot answer, say what blocked you and what message would let you go on.
-- Do not describe your tool calls. The caller receives the answering Program separately.
+- Do not describe your tool calls. The caller receives the answering Program and its result separately.
+- When a succeeded Run of this turn answers the message, make the last line `run_id: ` and that Run's run_id. \
+Leave the line out when no Run answers, such as when you ask a question.
 
 ";
 
-/// The tool that ends a turn. It belongs to the agent, not to the Adapter's toolbox.
-pub(crate) const ANSWER_TOOL: &str = "answer";
-
-fn answer_spec() -> ToolSpec {
-    ToolSpec {
-        name: ANSWER_TOOL.into(),
-        description: "End your turn with your final message to the caller. Call it alone, once, after your last Run.".into(),
-        input_schema: json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["message"],
-            "properties": {
-                "message": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Your final message: the answer and its assumptions, one question, or what blocked you."
-                },
-                "run_id": {
-                    "type": "string",
-                    "description": "The succeeded Run from this turn whose Program answers the message. Omit it when no Run answers it."
-                }
-            }
-        }),
-    }
-}
-
 /// The tool result a later turn records for a call its turn never answered,
 /// so the thread stays a valid sequence of calls and results.
-pub(crate) fn closing_result(id: &str, name: &str) -> Value {
-    let content = if name == ANSWER_TOOL {
-        "Delivered to the caller."
-    } else {
-        "The turn ended before this call returned."
-    };
-    json!({"type": "tool_result", "tool_use_id": id, "content": content})
+pub(crate) fn closing_result(id: &str) -> Value {
+    json!({"type": "tool_result", "tool_use_id": id, "content": "The turn ended before this call returned."})
 }
 
 /// What one turn needs to run.
@@ -152,14 +130,11 @@ struct Progress {
     programs: HashMap<String, String>,
     /// Runs of this turn that succeeded.
     succeeded: HashSet<String>,
+    /// Final Values by the succeeded Run that returned them.
+    final_values: HashMap<String, Value>,
     /// Whether the turn is recorded as waiting for a person.
     needs_action: bool,
-    /// Whether the agent was already reminded to end through `answer`.
-    reminded: bool,
 }
-
-/// Sent once when a turn with a succeeded Run ends in plain text.
-const ANSWER_REMINDER: &str = "End your turn with the answer tool instead: pass this message and the run_id of the Run that answers it.";
 
 impl Progress {
     /// The evidence for a Run the agent names, if this turn ran it to success.
@@ -167,26 +142,20 @@ impl Progress {
         if !self.succeeded.contains(run_id) {
             return None;
         }
-        self.programs.get(run_id).map(|program| Evidence {
-            run_id: run_id.to_owned(),
-            program: program.clone(),
+        self.programs.get(run_id).map(|program| {
+            Evidence::new(
+                run_id.to_owned(),
+                program.clone(),
+                self.final_values.get(run_id),
+            )
         })
     }
-}
-
-/// What the tool calls of one assistant message led to.
-enum Step {
-    /// Results to return to the model.
-    Results(Vec<Value>),
-    /// The agent answered.
-    Answered(Outcome),
 }
 
 /// Returns the outcome, or `None` when the turn ended elsewhere first.
 async fn drive(context: &TurnContext) -> Result<Option<Outcome>, Error> {
     let system = format!("{AGENT_INSTRUCTIONS}{}", context.toolbox.instructions());
-    let mut tools = context.toolbox.tools();
-    tools.push(answer_spec());
+    let tools = context.toolbox.tools();
     let mut progress = Progress::default();
     for _call in 0..MAX_MODEL_CALLS {
         let messages = {
@@ -202,39 +171,40 @@ async fn drive(context: &TurnContext) -> Result<Option<Outcome>, Error> {
             tools: tools.clone(),
             messages,
         };
+        let started = Instant::now();
         let response = match context.model.respond(&request).await {
             Ok(response) => response,
             Err(error) => return Ok(Some(Outcome::Failed(error.0))),
+        };
+        let call = ModelCall {
+            latency_millis: i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX),
+            usage: response.usage.as_ref(),
         };
         let assistant = Message {
             role: Role::Assistant,
             content: response.content,
         };
-        if !append(context, &assistant).await? {
+        if !append(context, &assistant, Some(&call)).await? {
             return Ok(None);
         }
         let failure = match response.stop_reason {
             StopReason::ToolUse => None,
             StopReason::EndTurn => {
-                let message = final_text(&assistant.content);
+                let text = final_text(&assistant.content);
+                let (message, run_id) = split_run_id(&text);
                 if message.trim().is_empty() {
                     Some("The agent ended without a message. Send the message again.")
-                } else if !progress.succeeded.is_empty() && !progress.reminded {
-                    // An answer backed by a Run should name it. Ask once.
-                    progress.reminded = true;
-                    let reminder = Message {
-                        role: Role::User,
-                        content: vec![json!({"type": "text", "text": ANSWER_REMINDER})],
-                    };
-                    if !append(context, &reminder).await? {
-                        return Ok(None);
-                    }
-                    continue;
                 } else {
-                    // A text reply still answers, but names no Run.
+                    let evidence = run_id.and_then(|run_id| {
+                        let evidence = progress.evidence(run_id);
+                        if evidence.is_none() {
+                            tracing::warn!(turn = %context.turn_id, "Agent named a Run that did not succeed in its turn");
+                        }
+                        evidence
+                    });
                     return Ok(Some(Outcome::Completed {
-                        message,
-                        evidence: None,
+                        message: message.to_owned(),
+                        evidence,
                     }));
                 }
             }
@@ -253,17 +223,15 @@ async fn drive(context: &TurnContext) -> Result<Option<Outcome>, Error> {
                 "The agent asked for a tool without naming one. Send the message again.".into(),
             )));
         }
-        let results = match call_tools(context, calls, &mut progress).await? {
-            Some(Step::Results(results)) => results,
-            Some(Step::Answered(outcome)) => return Ok(Some(outcome)),
-            None => return Ok(None),
+        let Some(results) = call_tools(context, calls, &mut progress).await? else {
+            return Ok(None);
         };
         // All results of one assistant message return in one user message.
         let user = Message {
             role: Role::User,
             content: results,
         };
-        if !append(context, &user).await? {
+        if !append(context, &user, None).await? {
             return Ok(None);
         }
     }
@@ -272,29 +240,35 @@ async fn drive(context: &TurnContext) -> Result<Option<Outcome>, Error> {
     ))))
 }
 
+/// Splits a last line `run_id: <id>` off the final message. Markdown emphasis
+/// around the line, and `none` as the id, are accepted.
+fn split_run_id(text: &str) -> (&str, Option<&str>) {
+    let text = text.trim_end();
+    let (body, last) = text.rsplit_once('\n').unwrap_or(("", text));
+    let line = last.trim().trim_matches(['`', '*', '_']).trim();
+    let Some(rest) = line
+        .get(..7)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("run_id:"))
+        .and_then(|_prefix| line.get(7..))
+    else {
+        return (text, None);
+    };
+    let id = rest.trim().trim_matches(['`', '*', '_']).trim();
+    if id.is_empty() || id.contains(char::is_whitespace) {
+        return (text, None);
+    }
+    let named = (!id.eq_ignore_ascii_case("none")).then_some(id);
+    (body.trim_end(), named)
+}
+
 /// Calls each requested tool in order, or `None` when the turn ended elsewhere meanwhile.
 async fn call_tools(
     context: &TurnContext,
     calls: Vec<(String, String, Value)>,
     progress: &mut Progress,
-) -> Result<Option<Step>, Error> {
-    let alone = calls.len() == 1;
+) -> Result<Option<Vec<Value>>, Error> {
     let mut results = Vec::with_capacity(calls.len());
     for (id, name, input) in calls {
-        if name == ANSWER_TOOL {
-            match answered(&input, alone, progress) {
-                Ok(outcome) => return Ok(Some(Step::Answered(outcome))),
-                Err(problem) => {
-                    results.push(json!({
-                        "type": "tool_result",
-                        "tool_use_id": id,
-                        "content": problem,
-                        "is_error": true,
-                    }));
-                    continue;
-                }
-            }
-        }
         let intent = input
             .get("intent")
             .and_then(Value::as_str)
@@ -317,6 +291,11 @@ async fn call_tools(
             }
             if run.succeeded {
                 progress.succeeded.insert(run.run_id.clone());
+                if let Some(value) = &run.final_value {
+                    progress
+                        .final_values
+                        .insert(run.run_id.clone(), value.clone());
+                }
             }
             if !track_actions(context, run, &mut progress.needs_action).await? {
                 return Ok(None);
@@ -329,29 +308,7 @@ async fn call_tools(
             "is_error": outcome.is_error,
         }));
     }
-    Ok(Some(Step::Results(results)))
-}
-
-/// Accepts an `answer` call, or says what the agent must fix.
-fn answered(input: &Value, alone: bool, progress: &Progress) -> Result<Outcome, String> {
-    if !alone {
-        return Err("Call answer alone, after your other calls have returned.".into());
-    }
-    let message = input
-        .get("message")
-        .and_then(Value::as_str)
-        .filter(|message| !message.trim().is_empty())
-        .ok_or("answer needs a nonblank message.")?;
-    let evidence = match input.get("run_id").and_then(Value::as_str) {
-        None => None,
-        Some(run_id) => Some(progress.evidence(run_id).ok_or_else(|| {
-            format!("Run {run_id} did not succeed in this turn. Pass a succeeded run_id from exec, or leave it out.")
-        })?),
-    };
-    Ok(Outcome::Completed {
-        message: message.to_owned(),
-        evidence,
-    })
+    Ok(Some(results))
 }
 
 /// Records a Run that waits for a person, or that stopped waiting.
@@ -394,7 +351,11 @@ async fn track_actions(
     Ok(recorded)
 }
 
-async fn append(context: &TurnContext, message: &Message) -> Result<bool, Error> {
+async fn append(
+    context: &TurnContext,
+    message: &Message,
+    call: Option<&ModelCall<'_>>,
+) -> Result<bool, Error> {
     let mut transaction = context.database.begin().await?;
     let appended = repository::append_message(
         &mut transaction,
@@ -402,6 +363,7 @@ async fn append(context: &TurnContext, message: &Message) -> Result<bool, Error>
         &context.task_id,
         &context.turn_id,
         message,
+        call,
     )
     .await?;
     transaction.commit().await?;

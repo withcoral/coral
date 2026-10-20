@@ -139,13 +139,7 @@ impl McpServer {
     ) -> Result<CallToolResult, DispatchError> {
         let intent = TaskIntent::parse(&arguments.intent).map_err(invalid_input)?;
         // Read before the Task starts, so a failed read leaves no Task behind.
-        let providers = self
-            .runtime
-            .modules
-            .commands
-            .searchable_providers(&self.runtime.principal, &self.workspace_id)
-            .await
-            .map_err(task_failure)?;
+        let providers = self.provider_namespaces().await?;
         let task = self
             .runtime
             .modules
@@ -160,12 +154,24 @@ impl McpServer {
             .map_err(task_failure)?;
         projection::success(projection::StartedTask {
             task_id: task.id().to_string(),
-            providers: providers
-                .iter()
-                .map(|call_root| coral_search::provider_filter_value(call_root).to_string())
-                .collect(),
+            providers,
         })
         .map_err(DispatchError::Tool)
+    }
+
+    /// The values `search` accepts as `provider`, for this caller.
+    pub(crate) async fn provider_namespaces(&self) -> Result<Vec<String>, DispatchError> {
+        let providers = self
+            .runtime
+            .modules
+            .commands
+            .searchable_providers(&self.runtime.principal, &self.workspace_id)
+            .await
+            .map_err(task_failure)?;
+        Ok(providers
+            .iter()
+            .map(|call_root| coral_search::provider_filter_value(call_root).to_string())
+            .collect())
     }
 
     async fn search(&self, arguments: SearchArguments) -> Result<CallToolResult, DispatchError> {

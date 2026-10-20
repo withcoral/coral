@@ -50,6 +50,10 @@ CREATE TABLE agent_thread_messages (
     turn_id TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
     content_json TEXT NOT NULL,
+    -- An assistant message is one model call: its wall time, retries
+    -- included, and the token counts the provider reported. NULL otherwise.
+    model_latency_millis BIGINT CHECK (model_latency_millis >= 0),
+    model_usage_json TEXT,
     PRIMARY KEY (task_id, sequence),
     FOREIGN KEY (workspace_id, turn_id) REFERENCES agent_turns(workspace_id, id) ON DELETE CASCADE
 );

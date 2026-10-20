@@ -25,6 +25,8 @@ pub struct RunObserved {
     pub succeeded: bool,
     /// The Run's current required actions; empty when none.
     pub required_actions: Vec<Value>,
+    /// The Run's Final Value, once it succeeded.
+    pub final_value: Option<Value>,
 }
 
 /// The result of one tool call.
@@ -46,6 +48,10 @@ pub trait Toolbox: Send + Sync {
 
     /// The tools the model may call.
     fn tools(&self) -> Vec<ToolSpec>;
+
+    /// What a new thread opens with besides the message, such as the Provider
+    /// namespaces `search` accepts. `None` when it cannot be read now.
+    async fn briefing(&self) -> Option<String>;
 
     /// Calls one tool. Failures come back as an error outcome, never a panic.
     async fn call(&self, name: &str, input: Value) -> ToolOutcome;
