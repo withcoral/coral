@@ -1,0 +1,17 @@
+{
+  "name": "coral-v8-js",
+  "private": true,
+  "description": "Lints and formats the JavaScript that coral-v8 embeds",
+  "license": "Apache-2.0",
+  "scripts": {
+    "lint": "oxlint && node scripts/check-compiler-bridge.mjs",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "check": "oxfmt --check && oxlint --deny-warnings && node scripts/check-compiler-bridge.mjs"
+  },
+  "devDependencies": {
+    "oxfmt": "^0.72.0",
+    "oxlint": "^1.87.0"
+  }
+}

@@ -1,11 +1,11 @@
 function programAuthoredMappings(body, generatedLineOffset = 1) {
   const mappings = [];
   if (body.length > 0) {
-    body.split("\n").forEach((_line, index) => {
+    body.split('\n').forEach((_line, index) => {
       mappings.push({
         generatedLine: generatedLineOffset + index,
         generatedColumn: 0,
-        source: "Program",
+        source: 'Program',
         line: index,
         column: 0,
       });
@@ -41,11 +41,7 @@ function hasExpectedProgramShape(sourceFile) {
   if (!ts.isArrowFunction(entry)) return false;
   if (entry.parameters.length !== 0 || !ts.isBlock(entry.body)) return false;
 
-  return (
-    entry.modifiers?.some(
-      (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-    ) === true
-  );
+  return entry.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true;
 }
 
 function authoredMappingAt(mappings, line, column) {
@@ -64,20 +60,11 @@ function diagnosticPayload(diagnostic, authoredMappings) {
   let line;
   let column;
   if (diagnostic.file && diagnostic.start !== undefined) {
-    const position = diagnostic.file.getLineAndCharacterOfPosition(
-      diagnostic.start,
-    );
-    const authored = authoredMappingAt(
-      authoredMappings,
-      position.line,
-      position.character,
-    );
+    const position = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start);
+    const authored = authoredMappingAt(authoredMappings, position.line, position.character);
     if (authored) {
       line = authored.line + 1;
-      column = authored.column
-        + position.character
-        - authored.generatedColumn
-        + 1;
+      column = authored.column + position.character - authored.generatedColumn + 1;
     } else if (authoredMappings === undefined) {
       line = position.line + 1;
       column = position.character + 1;
@@ -86,7 +73,7 @@ function diagnosticPayload(diagnostic, authoredMappings) {
   return {
     category: ts.DiagnosticCategory[diagnostic.category].toLowerCase(),
     code: diagnostic.code,
-    message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+    message: ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'),
     line,
     column,
   };
@@ -94,11 +81,7 @@ function diagnosticPayload(diagnostic, authoredMappings) {
 
 function authoredReferenceLocation(sourceFile, node, authoredMappings) {
   const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-  const authored = authoredMappingAt(
-    authoredMappings,
-    position.line,
-    position.character,
-  );
+  const authored = authoredMappingAt(authoredMappings, position.line, position.character);
   return {
     line: (authored?.line ?? position.line) + 1,
     column: authored

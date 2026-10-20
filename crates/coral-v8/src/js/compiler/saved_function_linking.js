@@ -1,8 +1,8 @@
 function modifiersWithoutExport(modifiers) {
   return modifiers?.filter(
     (modifier) =>
-      modifier.kind !== ts.SyntaxKind.ExportKeyword
-      && modifier.kind !== ts.SyntaxKind.DefaultKeyword,
+      modifier.kind !== ts.SyntaxKind.ExportKeyword &&
+      modifier.kind !== ts.SyntaxKind.DefaultKeyword,
   );
 }
 
@@ -37,7 +37,7 @@ function equivalentPrintedToken(left, right) {
 // cannot move runtime frames away from the original authored token positions.
 function printedStatementMappings(block, sourceFile, authored) {
   const printedFile = ts.createSourceFile(
-    "printed_saved_function.ts",
+    'printed_saved_function.ts',
     block,
     sourceFile.languageVersion,
     true,
@@ -51,16 +51,14 @@ function printedStatementMappings(block, sourceFile, authored) {
   );
   let printedIndex = printedTokens.length - 1;
   let authoredIndex = authoredTokens.length - 1;
-  while (
-    printedIndex >= 0
-    && authoredIndex >= 0
-    && printedTokens[printedIndex].kind === ts.SyntaxKind.SemicolonToken
-    && !equivalentPrintedToken(
-      printedTokens[printedIndex],
-      authoredTokens[authoredIndex],
-    )
-  ) {
-    printedIndex -= 1;
+  if (authoredIndex >= 0) {
+    while (
+      printedIndex >= 0 &&
+      printedTokens[printedIndex].kind === ts.SyntaxKind.SemicolonToken &&
+      !equivalentPrintedToken(printedTokens[printedIndex], authoredTokens[authoredIndex])
+    ) {
+      printedIndex -= 1;
+    }
   }
 
   const mappings = [];
@@ -79,12 +77,12 @@ function printedStatementMappings(block, sourceFile, authored) {
     printedIndex -= 1;
     authoredIndex -= 1;
   }
-  return mappings.reverse();
+  return mappings.toReversed();
 }
 
 function savedFunctionRuntimeBody(source, target) {
   const sourceFile = ts.createSourceFile(
-    "saved_function.ts",
+    'saved_function.ts',
     source,
     target,
     true,
@@ -95,9 +93,7 @@ function savedFunctionRuntimeBody(source, target) {
       (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
     )
   ) {
-    throw new Error(
-      "Saved Function source has syntax errors under the current TypeScript Profile",
-    );
+    throw new Error('Saved Function source has syntax errors under the current TypeScript Profile');
   }
   const capabilityError = forbiddenCapabilityError(sourceFile);
   if (capabilityError !== undefined) {
@@ -106,23 +102,21 @@ function savedFunctionRuntimeBody(source, target) {
 
   const statements = [];
   function retainStatement(emitted, authored) {
-    statements.push({emitted, authored});
+    statements.push({ emitted, authored });
   }
   let defaultExpression;
 
   for (const statement of sourceFile.statements) {
-    const isDefault = statement.modifiers?.some(
-      (modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword,
-    ) === true;
-    const isExported = statement.modifiers?.some(
-      (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
-    ) === true;
+    const isDefault =
+      statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) ===
+      true;
+    const isExported =
+      statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ===
+      true;
 
     if (ts.isFunctionDeclaration(statement) && isDefault && isExported) {
       if (!statement.body) {
-        throw new Error(
-          "Saved Function default export must have a runtime implementation",
-        );
+        throw new Error('Saved Function default export must have a runtime implementation');
       }
       if (statement.name) {
         retainStatement(
@@ -140,27 +134,27 @@ function savedFunctionRuntimeBody(source, target) {
         );
         defaultExpression = ts.factory.createIdentifier(statement.name.text);
       } else {
-        const defaultIdentifier = ts.factory.createUniqueName(
-          "__coralSavedFunctionDefaultExport",
-        );
+        const defaultIdentifier = ts.factory.createUniqueName('__coralSavedFunctionDefaultExport');
         retainStatement(
           ts.factory.createVariableStatement(
             undefined,
             ts.factory.createVariableDeclarationList(
-              [ts.factory.createVariableDeclaration(
-                defaultIdentifier,
-                undefined,
-                undefined,
-                ts.factory.createFunctionExpression(
-                  modifiersWithoutExport(statement.modifiers),
-                  statement.asteriskToken,
+              [
+                ts.factory.createVariableDeclaration(
+                  defaultIdentifier,
                   undefined,
-                  statement.typeParameters,
-                  statement.parameters,
-                  statement.type,
-                  statement.body,
+                  undefined,
+                  ts.factory.createFunctionExpression(
+                    modifiersWithoutExport(statement.modifiers),
+                    statement.asteriskToken,
+                    undefined,
+                    statement.typeParameters,
+                    statement.parameters,
+                    statement.type,
+                    statement.body,
+                  ),
                 ),
-              )],
+              ],
               ts.NodeFlags.Const,
             ),
           ),
@@ -171,19 +165,19 @@ function savedFunctionRuntimeBody(source, target) {
       continue;
     }
     if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
-      const defaultIdentifier = ts.factory.createUniqueName(
-        "__coralSavedFunctionDefaultExport",
-      );
+      const defaultIdentifier = ts.factory.createUniqueName('__coralSavedFunctionDefaultExport');
       retainStatement(
         ts.factory.createVariableStatement(
           undefined,
           ts.factory.createVariableDeclarationList(
-            [ts.factory.createVariableDeclaration(
-              defaultIdentifier,
-              undefined,
-              undefined,
-              statement.expression,
-            )],
+            [
+              ts.factory.createVariableDeclaration(
+                defaultIdentifier,
+                undefined,
+                undefined,
+                statement.expression,
+              ),
+            ],
             ts.NodeFlags.Const,
           ),
         ),
@@ -193,44 +187,42 @@ function savedFunctionRuntimeBody(source, target) {
       continue;
     }
     if (
-      ts.isExportDeclaration(statement)
-      && !statement.moduleSpecifier
-      && statement.exportClause
-      && ts.isNamedExports(statement.exportClause)
-      && statement.exportClause.elements.length === 0
+      ts.isExportDeclaration(statement) &&
+      !statement.moduleSpecifier &&
+      statement.exportClause &&
+      ts.isNamedExports(statement.exportClause) &&
+      statement.exportClause.elements.length === 0
     ) {
       continue;
     }
     if (
-      ts.isExportDeclaration(statement)
-      && !statement.moduleSpecifier
-      && !statement.isTypeOnly
-      && statement.exportClause
-      && ts.isNamedExports(statement.exportClause)
-      && statement.exportClause.elements.length === 1
-      && statement.exportClause.elements[0].name.text === "default"
-      && !statement.exportClause.elements[0].isTypeOnly
+      ts.isExportDeclaration(statement) &&
+      !statement.moduleSpecifier &&
+      !statement.isTypeOnly &&
+      statement.exportClause &&
+      ts.isNamedExports(statement.exportClause) &&
+      statement.exportClause.elements.length === 1 &&
+      statement.exportClause.elements[0].name.text === 'default' &&
+      !statement.exportClause.elements[0].isTypeOnly
     ) {
       const element = statement.exportClause.elements[0];
-      defaultExpression = ts.factory.createIdentifier(
-        (element.propertyName || element.name).text,
-      );
+      defaultExpression = ts.factory.createIdentifier((element.propertyName || element.name).text);
       continue;
     }
     if (isDefault || isExported || ts.isExportDeclaration(statement)) {
-      throw new Error("Saved Function source has an unsupported export shape");
+      throw new Error('Saved Function source has an unsupported export shape');
     }
     retainStatement(statement, statement);
   }
   if (defaultExpression === undefined) {
-    throw new Error("Saved Function source has no runtime default export");
+    throw new Error('Saved Function source has no runtime default export');
   }
 
-  const printer = ts.createPrinter({newLine: ts.NewLineKind.LineFeed});
+  const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
   const blocks = [];
   const mappings = [];
   let generatedLineOffset = 0;
-  for (const {emitted, authored} of statements) {
+  for (const { emitted, authored } of statements) {
     const block = printer.printNode(ts.EmitHint.Unspecified, emitted, sourceFile);
     for (const mapping of printedStatementMappings(block, sourceFile, authored)) {
       mappings.push({
@@ -239,7 +231,7 @@ function savedFunctionRuntimeBody(source, target) {
       });
     }
     blocks.push(block);
-    generatedLineOffset += block.split("\n").length;
+    generatedLineOffset += block.split('\n').length;
   }
   const privateReturn = printer.printNode(
     ts.EmitHint.Unspecified,
@@ -256,30 +248,30 @@ function savedFunctionRuntimeBody(source, target) {
     sourceFile,
   );
   blocks.push(privateReturn);
-  return {text: blocks.join("\n"), mappings};
+  return { text: blocks.join('\n'), mappings };
 }
 
 function linkedProgramSource(body, savedFunctions, target) {
   const pathKeys = new Set();
   for (const savedFunction of savedFunctions) {
     if (
-      !Array.isArray(savedFunction.pathSegments)
-      || savedFunction.pathSegments.length === 0
-      || savedFunction.pathSegments.some((segment) => typeof segment !== "string")
-      || typeof savedFunction.source !== "string"
+      !Array.isArray(savedFunction.pathSegments) ||
+      savedFunction.pathSegments.length === 0 ||
+      savedFunction.pathSegments.some((segment) => typeof segment !== 'string') ||
+      typeof savedFunction.source !== 'string'
     ) {
-      throw new Error("Saved Function closure contains an invalid source entry");
+      throw new Error('Saved Function closure contains an invalid source entry');
     }
-    const key = savedFunction.pathSegments.join(".");
+    const key = savedFunction.pathSegments.join('.');
     if (pathKeys.has(key)) {
-      throw new Error("Saved Function closure contains a duplicate path");
+      throw new Error('Saved Function closure contains a duplicate path');
     }
     pathKeys.add(key);
   }
   for (const key of pathKeys) {
     for (const other of pathKeys) {
       if (key !== other && other.startsWith(`${key}.`)) {
-        throw new Error("Saved Function closure contains a callable namespace conflict");
+        throw new Error('Saved Function closure contains a callable namespace conflict');
       }
     }
   }
@@ -297,7 +289,7 @@ function linkedProgramSource(body, savedFunctions, target) {
   let generatedLine = 0;
   function append(text) {
     sourceParts.push(text);
-    generatedLine += text.split("\n").length - 1;
+    generatedLine += text.split('\n').length - 1;
   }
 
   append(`(async () => {
@@ -371,7 +363,7 @@ function linkedProgramSource(body, savedFunctions, target) {
       authoredMappings.push({
         ...mapping,
         generatedLine: savedFunctionStart + mapping.generatedLine,
-        source: `Saved Function coral.functions.${module.pathSegments.join(".")}`,
+        source: `Saved Function coral.functions.${module.pathSegments.join('.')}`,
       });
     }
     append(`
@@ -393,5 +385,5 @@ function linkedProgramSource(body, savedFunctions, target) {
     })();
   })();
 `);
-  return {source: sourceParts.join(""), authoredMappings};
+  return { source: sourceParts.join(''), authoredMappings };
 }
