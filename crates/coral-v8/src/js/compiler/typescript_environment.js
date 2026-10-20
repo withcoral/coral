@@ -56,6 +56,14 @@ declare const console: {
   readonly warn: (...values: unknown[]) => void;
   readonly error: (...values: unknown[]) => void;
 };
+
+/**
+ * Decodes base64 into a binary string, which holds one byte in each
+ * character. Read UTF-8 text with \`decodeURIComponent(escape(atob(data)))\`.
+ */
+declare function atob(data: string): string;
+/** Encodes a binary string, whose characters are at most U+00FF, as base64. */
+declare function btoa(data: string): string;
 `;
 }
 

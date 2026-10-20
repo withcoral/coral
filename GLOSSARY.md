@@ -686,12 +686,12 @@ process, shared compiler and Program isolate
 
 **Program Runtime Surface**: The secret-free ECMAScript environment in which V8 executes an accepted Program package. It
 provides ordinary objects, arrays, classes, closures, generators, Promises, `async` and `await`, maps, sets, regular
-expressions, dates, JSON, `Intl`, BigInt, Symbol, the bounded Coral `console`, and the `coral` host namespace. BigInt
-and other non-Program Values can be used internally but cannot be emitted or returned as Program Values. It provides no
-timers, DOM, browser, Node, Deno, npm, import, `require`, worker, subprocess, shared-memory, Atomics, filesystem,
-environment, direct-network, credential, or WebAssembly surface. V8 disables code generation from strings, including
-`eval`, `new Function`, and indirect access through `function.constructor`. _Avoid_: Browser sandbox, Node sandbox,
-ambient standard library, dynamic code
+expressions, dates, JSON, `Intl`, BigInt, Symbol, base64 through `atob` and `btoa`, the bounded Coral `console`, and the
+`coral` host namespace. BigInt and other non-Program Values can be used internally but cannot be emitted or returned as
+Program Values. It provides no timers, DOM, browser, Node, Deno, npm, import, `require`, worker, subprocess,
+shared-memory, Atomics, filesystem, environment, direct-network, credential, or WebAssembly surface. V8 disables code
+generation from strings, including `eval`, `new Function`, and indirect access through `function.constructor`. _Avoid_:
+Browser sandbox, Node sandbox, ambient standard library, dynamic code
 
 **Program Admission**: The host step that accepts a submitted TypeScript Program only after Coral has resolved its
 statically named Saved Functions, built the exact source closure, enforced capability and size rules, and emitted

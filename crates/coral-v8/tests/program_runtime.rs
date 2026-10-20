@@ -306,6 +306,106 @@ fn profile_accepts_javascript_and_exposes_the_bounded_ecmascript_surface() {
 }
 
 #[test]
+fn programs_convert_base64_as_html_atob_and_btoa_do() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let cases = [
+        ("decode", r#"return atob("aGVsbG8=");"#, r#""hello""#),
+        (
+            "encode each padding length",
+            r#"return [btoa(""), btoa("a"), btoa("ab"), btoa("abc")];"#,
+            r#"["","YQ==","YWI=","YWJj"]"#,
+        ),
+        (
+            "bytes above ASCII",
+            r#"return [btoa("ÿþ\u0000"), atob("//4A") === "ÿþ\u0000"];"#,
+            r#"["//4A",true]"#,
+        ),
+        (
+            "forgiving decode",
+            r#"return [atob("YQ"), atob("YWI"), atob(" YW\nJj\t"), atob("YQ= =")];"#,
+            r#"["a","ab","abc","a"]"#,
+        ),
+        (
+            "UTF-8 file content wrapped at 60 characters",
+            r#"return decodeURIComponent(escape(atob(
+                "IyBDb3JhbAoKSMOpbGxvLCDimIMg4oCUIGJhc2U2NCBmcm9tIHJlcG9zLmdl\ndENvbnRlbnQuCg==\n",
+            )));"#,
+            r##""# Coral\n\nHéllo, ☃ — base64 from repos.getContent.\n""##,
+        ),
+        (
+            "every byte round trips",
+            r#"
+                const bytes = Array.from({ length: 256 }, (_, byte) => String.fromCharCode(byte)).join("");
+                return atob(btoa(bytes)) === bytes;
+            "#,
+            "true",
+        ),
+        (
+            "invalid input",
+            r#"
+                const failure = (action) => {
+                    try {
+                        action();
+                        return "accepted";
+                    } catch (error) {
+                        return error.name;
+                    }
+                };
+                return [
+                    failure(() => atob("Y")),
+                    failure(() => atob("YQ=")),
+                    failure(() => atob("Y===")),
+                    failure(() => atob("YQ==YQ==")),
+                    failure(() => atob("Y-Q=")),
+                    failure(() => btoa("☃")),
+                    failure(() => atob()),
+                    failure(() => btoa()),
+                ];
+            "#,
+            r#"["InvalidCharacterError","InvalidCharacterError","InvalidCharacterError","InvalidCharacterError","InvalidCharacterError","InvalidCharacterError","TypeError","TypeError"]"#,
+        ),
+    ];
+    let executor = ProgramExecutor::new(IsolateLimits::default());
+
+    for (case, source, expected) in cases {
+        let program = compiler
+            .compile(compilation_deadline(), source)
+            .expect("compile base64 probe");
+        let output = executor.execute(&program).expect(case);
+        assert_eq!(output.final_value_json(), Some(expected), "{case}");
+    }
+}
+
+#[test]
+fn saved_functions_type_check_and_run_atob_and_btoa() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let source = "export default function roundTrip(input: { text: string }): string { return atob(btoa(input.text)); }";
+    let prepared = compiler
+        .prepare_saved_function(compilation_deadline(), source)
+        .expect("prepare a Saved Function that uses base64");
+    assert_eq!(
+        prepared
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| (diagnostic.code(), diagnostic.message()))
+            .collect::<Vec<_>>(),
+        []
+    );
+
+    let program = compiler
+        .compile_with_saved_functions(
+            compilation_deadline(),
+            r#"return coral.functions.text.roundTrip({ text: "hello" });"#,
+            &[linked_source(&["text", "roundTrip"], source)],
+        )
+        .expect("link a Saved Function that uses base64");
+    let output = ProgramExecutor::new(IsolateLimits::default())
+        .execute(&program)
+        .expect("run a Saved Function that uses base64");
+    assert_eq!(output.final_value_json(), Some(r#""hello""#));
+}
+
+#[test]
 fn program_syntax_diagnostics_use_authored_locations_without_a_semantic_gate() {
     let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
     let error = compiler
