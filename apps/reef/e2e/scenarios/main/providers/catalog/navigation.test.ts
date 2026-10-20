@@ -113,17 +113,17 @@ test('Workspace operations preserve deep links, settings, and independent filter
       // A provider's tab shows only that provider.
       await table.getByRole('checkbox', { name: 'Select another', exact: true }).waitFor()
       expect(await group('Catalog').count()).toBe(0)
-      expect(await railEntry('Second catalog').getAttribute('aria-current')).toBe('page')
+      await expect.poll(() => railEntry('Second catalog').getAttribute('aria-current')).toBe('page')
       await railEntry('Catalog').click()
       await page.waitForURL((url) => url.pathname === installation)
-      expect(await railEntry('Catalog').getAttribute('aria-current')).toBe('page')
+      await expect.poll(() => railEntry('Catalog').getAttribute('aria-current')).toBe('page')
       expect(
         await page.getByRole('checkbox', { name: 'Select works', exact: true }).isChecked(),
       ).toBe(true)
       // All providers is the bare list address, and shows every provider.
       await railEntry('All providers').click()
       await page.waitForURL((url) => url.pathname === providersPage)
-      expect(await railEntry('All providers').getAttribute('aria-current')).toBe('page')
+      await expect.poll(() => railEntry('All providers').getAttribute('aria-current')).toBe('page')
       await group('Second catalog').waitFor()
       expect(await group('Catalog').count()).toBe(1)
     })
