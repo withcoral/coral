@@ -65,17 +65,21 @@ function StepperAttemptPage({
     // A typed URL's host names the provider only until the read lands; then the
     // Setup's document does, unless a recipe suggested a name.
     displayName: attempt.suggestedName || (setup ? undefined : recipe?.displayName),
-    // A recipe or the source host suggests the namespace; the person confirms it in Configuration.
     namespace:
       attempt.kind === 'workspace'
         ? (result?.configurationDraft?.namespace ??
-          (attempt.namespace ||
-            (recipe?.id ? recipeNamespace(recipe) : '') ||
-            suggestedNamespace(setup?.sourceHost.split('.')[0] ?? '')))
+          (attempt.namespace || (recipe?.id ? recipeNamespace(recipe) : '') || undefined))
         : '',
   })
+  // Without a recipe, the document's own name suggests the namespace, then the
+  // source host. A host such as raw.githubusercontent.com names where the
+  // document lives, not the service. The person confirms it in Configuration.
+  const shownNamespace =
+    answers.namespace ??
+    (suggestedNamespace(setup?.configuration?.documentDisplayName ?? '') ||
+      suggestedNamespace(setup?.sourceHost.split('.')[0] ?? ''))
   const local: CreationAttempt =
-    attempt.state === 'frozen' ? attempt : { ...attempt, namespace: answers.namespace }
+    attempt.state === 'frozen' ? attempt : { ...attempt, namespace: shownNamespace }
   const { stage, ended } = attemptProgress(local, setup, result)
   const configurationPath = attemptPath(basePath, reviseAttempt(local, 'configuration'))
   // Back from the account question returns to the operations, the step before

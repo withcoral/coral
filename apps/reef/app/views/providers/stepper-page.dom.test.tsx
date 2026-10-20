@@ -80,3 +80,83 @@ it('starts a typed URL again without it in the address, and offers the source fo
   expect(choose).toHaveAttribute('href', basePath)
   expect(screen.getByRole('button', { name: 'Start again' })).toBeEnabled()
 })
+
+// Catches: a namespace named after the host that serves the document, such as
+// `raw` for a spec on raw.githubusercontent.com, rather than after the service.
+it("suggests the namespace from the document's name, not the host that serves it", () => {
+  const github = 'https://raw.githubusercontent.com/PaddleHQ/paddle-openapi/main/openapi.yaml'
+  const document: SetupView = {
+    ...setup,
+    kind: 'openapi',
+    state: 'awaiting_configuration',
+    sourceLabel: github,
+    sourceHost: 'raw.githubusercontent.com',
+    configuration: {
+      revision: '1',
+      confirmed: false,
+      authenticationMethods: ['none'],
+      discoveryAuthorizationRequired: false,
+      automaticClientAvailable: true,
+      issuer: '',
+      resource: '',
+      differences: [],
+      interruptsAccess: null,
+      updating: false,
+      values: {
+        displayName: 'Paddle API',
+        authentication: 'none',
+        headers: [],
+        parameters: [],
+        basic: {
+          username: { source: 'literal', value: '' },
+          password: { source: 'literal', value: '' },
+        },
+        credentialFields: {},
+        authorizationUrl: '',
+        tokenUrl: '',
+        scopes: [],
+        servers: [],
+      },
+      authenticationStatus: 'supported',
+      documentDisplayName: 'Paddle API',
+      servers: [],
+      destinations: {},
+      operationCount: null,
+      operations: [],
+      unavailableOperations: [],
+      diagnostic: '',
+      errors: {},
+    },
+  }
+  renderRoute(
+    <StepperPage
+      workspace={{
+        name: 'workspaces/demo',
+        displayName: 'Demo',
+        state: 'active',
+        etag: 'workspace-etag',
+        effectiveRole: 'owner',
+        currentUser: 'users/test',
+        profile: { user: 'users/test', name: 'Test', email: '', local: true },
+        mcpEndpoint: '',
+        path: '/workspaces/demo',
+      }}
+      basePath={basePath}
+      cancelPath="/workspaces/demo/providers"
+      setup={document}
+      attempt={{
+        state: 'draft',
+        kind: 'workspace',
+        setupId: document.id,
+        configure: false,
+        operationsAccepted: false,
+        account: null,
+        namespace: '',
+      }}
+      callbackUrl=""
+      form={{ csrf: 'test-csrf', requestId: 'test-request' }}
+    />,
+    { entry: `${basePath}?setup=${document.id}` },
+  )
+  expect(screen.getByRole('textbox', { name: /Namespace/ })).toHaveValue('paddle_api')
+})
