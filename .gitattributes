@@ -1,3 +1,7 @@
+# Keep shell scripts LF in Windows checkouts. Git Bash reads a CRLF shebang as
+# `bash\r`.
+*.sh text eol=lf
+
 # Collapse checked-in generated files in GitHub PR diffs.
 
 # Dependency resolver outputs.

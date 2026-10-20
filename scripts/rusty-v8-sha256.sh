@@ -22,7 +22,7 @@ targets=(
 version=$(tr -d '\r' < "$root/Cargo.lock" \
   | awk '$0 == "name = \"v8\"" { getline; gsub(/"/, "", $3); print $3; exit }')
 if [[ -z "$version" ]]; then
-  echo "error: Cargo.lock does not lock v8" >&2
+  echo "rusty-v8-sha256: Cargo.lock does not lock v8" >&2
   exit 1
 fi
 
@@ -46,7 +46,7 @@ if [[ "${1:-}" == --update ]]; then
       name=$(archive "$target")
       digest=$(awk -v name="$name" '$1 == name { print $2 }' <<< "$digests")
       if [[ "$digest" != sha256:* ]]; then
-        echo "error: v$version has no SHA-256 digest for $name" >&2
+        echo "rusty-v8-sha256: v$version has no SHA-256 digest for $name" >&2
         exit 1
       fi
       echo "${digest#sha256:}  v$version/$name"
@@ -60,7 +60,7 @@ target=${1:-$(rustc -vV | tr -d '\r' | sed -n 's/^host: //p')}
 key="v$version/$(archive "$target")"
 sha256=$(tr -d '\r' < "$pins" | awk -v key="$key" '$2 == key { print $1 }')
 if [[ -z "$sha256" ]]; then
-  echo "error: ${pins#"$root/"} pins no $key." >&2
+  echo "rusty-v8-sha256: ${pins#"$root/"} pins no $key." >&2
   echo "Run scripts/rusty-v8-sha256.sh --update after a v8 upgrade, or add $target to its targets." >&2
   exit 1
 fi
