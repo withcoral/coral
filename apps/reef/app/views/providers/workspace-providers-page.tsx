@@ -500,7 +500,7 @@ function ProvidersTableScreen({
     for (const { provider, matching, listed } of visibleByProvider) {
       // The operation the drawer shows opens its provider and group, so its row is there.
       const linked = provider.id === selectedProviderId ? selectedOperation : null
-      const key = `provider:${provider.id}`
+      const key = providerHeadingKey(provider.id)
       const section: ProviderSection = {
         provider,
         index: flat.length,
@@ -541,7 +541,7 @@ function ProvidersTableScreen({
       }
       const groups = new Map<string, OperationView[]>()
       for (const operation of listed) {
-        const label = operation.group || 'Other'
+        const label = groupLabel(operation)
         const members = groups.get(label)
         if (members) members.push(operation)
         else groups.set(label, [operation])
@@ -549,7 +549,7 @@ function ProvidersTableScreen({
       for (const [group, members] of [...groups.entries()].toSorted(([a], [b]) =>
         caseFolded(a).localeCompare(caseFolded(b)),
       )) {
-        const groupKey = `group:${provider.id}:${group}`
+        const groupKey = groupHeadingKey(provider.id, group)
         const groupSection: ProviderSection['groups'][number] = {
           group,
           index: flat.length,
@@ -614,8 +614,8 @@ function ProvidersTableScreen({
   const headingKeys = useMemo(
     () =>
       visibleByProvider.flatMap(({ provider, listed }) => [
-        `provider:${provider.id}`,
-        ...new Set(listed.map((o) => `group:${provider.id}:${o.group || 'Other'}`)),
+        providerHeadingKey(provider.id),
+        ...new Set(listed.map((o) => groupHeadingKey(provider.id, groupLabel(o)))),
       ]),
     [visibleByProvider],
   )
@@ -1240,6 +1240,12 @@ const TableSections = memo(function TableSections({
 })
 
 const OPERATION_FILTER_ID = 'operation-filter'
+
+// A heading's key in the collapsed set and the cursor order.
+const providerHeadingKey = (providerId: string) => `provider:${providerId}`
+const groupHeadingKey = (providerId: string, group: string) => `group:${providerId}:${group}`
+/** The operation group a heading lists the operation under. */
+const groupLabel = (operation: OperationView) => operation.group || 'Other'
 const PROVIDER_GROUP_DOM_ID = 'provider-group-'
 
 function providerGroupDomId(provider: string) {

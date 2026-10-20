@@ -297,6 +297,26 @@ export const TreeCollapseAll: Story = {
     await expect(canvas.getByRole('button', { name: 'Expand all' })).toBeVisible()
   },
 }
+// Enough providers that their collapsed headings still scroll.
+const manyProviders: ProviderView[] = Array.from({ length: 30 }, (_, index) => ({
+  ...weather,
+  id: `prov-many-${index + 1}`,
+  displayName: `API ${String(index + 1).padStart(2, '0')}`,
+  namespace: `api${index + 1}`,
+  path: `/workspaces/demo/providers/prov-many-${index + 1}`,
+}))
+export const TreeExpandAllFromDownTheTable: Story = {
+  render: () => <WorkspaceProvidersPage {...treeProps} providers={manyProviders} />,
+  play: async ({ canvas }) => {
+    // Expanding all from down the table returns it to its top.
+    await userEvent.click(canvas.getByRole('button', { name: 'Collapse all' }))
+    const table = canvas.getByRole('table', { name: 'Operations' })
+    table.scrollTo({ top: table.scrollHeight })
+    await waitFor(() => expect(table.scrollTop).toBeGreaterThan(0))
+    await userEvent.click(canvas.getByRole('button', { name: 'Expand all' }))
+    await waitFor(() => expect(table.scrollTop).toBe(0))
+  },
+}
 export const TreeWithBuiltinProvider: Story = {
   render: () => <WorkspaceProvidersPage {...treeProps} providers={[github, coral, weather]} />,
 }
