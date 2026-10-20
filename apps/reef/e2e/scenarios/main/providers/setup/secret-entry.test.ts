@@ -11,7 +11,6 @@ import {
   confirmConfiguration,
   createWorkspace,
   openProviderSettings,
-  setNamespace,
   waitForProviderStatus,
   waitForPublication,
 } from '../../../../support/providers.ts'
@@ -49,11 +48,12 @@ test('Secret entry with one shared account, then each person’s own account', a
       await page.getByRole('button', { name: 'Read', exact: true }).click()
       // The first provider already has the document's title.
       await page.getByLabel('Display name', { exact: true }).fill('Their ledger')
+      // The suggested namespace, ledger, belongs to the first provider.
+      await page.getByLabel('Namespace', { exact: true }).fill('ledger_theirs')
       await confirmConfiguration(page, 'Bearer token')
       await acceptOperations(page)
       await accountQuestion(page).waitFor()
       expect(await page.getByLabel('Token', { exact: true }).count()).toBe(0)
-      await setNamespace(page, 'ledger_theirs')
       await chooseAccount(page, 'own-later')
       await page.getByRole('button', { name: 'Add provider', exact: true }).click()
       await waitForPublication(page)
