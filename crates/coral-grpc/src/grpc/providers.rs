@@ -40,6 +40,13 @@ pub(super) fn provider_name(provider: &domain::Provider) -> String {
     format!("{}/providers/{}", parent(provider.owner()), provider.id())
 }
 
+pub(super) fn provider_namespace(provider: &domain::Provider) -> String {
+    match provider.call_root() {
+        ProviderCallRoot::Owner(namespace) => namespace.as_str().into(),
+        ProviderCallRoot::Builtin => String::new(),
+    }
+}
+
 pub(super) fn provider_view(
     provider: &domain::Provider,
     blockers: &[domain::access::ProviderBlocker],
@@ -50,10 +57,6 @@ pub(super) fn provider_view(
         CredentialRoute::Caller => wire::credential_route::Kind::Caller,
         CredentialRoute::Fixed => wire::credential_route::Kind::Fixed,
     };
-    let namespace = match provider.call_root() {
-        ProviderCallRoot::Owner(namespace) => namespace.as_str().into(),
-        ProviderCallRoot::Builtin => String::new(),
-    };
     wire::Provider {
         name: provider_name(provider),
         display_name: provider.display_name().into(),
@@ -63,7 +66,7 @@ pub(super) fn provider_view(
         }
         .into(),
         etag: provider.etag(),
-        namespace,
+        namespace: provider_namespace(provider),
         call_root: provider.call_root().as_str().into(),
         credential_route: Some(wire::CredentialRoute { kind: kind.into() }),
         account_setting_version: provider.account_setting_version(),
