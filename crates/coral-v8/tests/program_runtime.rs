@@ -1479,7 +1479,7 @@ fn failure_stacks_name_only_authored_locations() {
         "export default async function fetch() {\n    await coral.providers.weather.getForecast();\n}",
     );
     // (Program, its Saved Functions, the failure's message, its authored frames)
-    let cases: [(&str, Vec<LinkedSavedFunctionSource>, &str, &[&str]); 9] = [
+    let cases: [(&str, Vec<LinkedSavedFunctionSource>, &str, &[&str]); 10] = [
         (
             "const meaning: number = 42;\nvoid meaning;\nthrow new Error(\"private rejection canary\");",
             vec![],
@@ -1529,6 +1529,20 @@ fn failure_stacks_name_only_authored_locations() {
             "Error: asi canary\n",
             &[
                 "at Saved Function coral.functions.debug.asi:3:",
+                "at Program:1:",
+            ],
+        ),
+        // An error frame inside a Saved Function statement with a trailing
+        // comma keeps its line.
+        (
+            "return coral.functions.debug.comma();",
+            vec![linked_source(
+                &["debug", "comma"],
+                "export default function () {\n  throw new Error('comma canary', {\n    cause: 1,\n  },)\n}",
+            )],
+            "Error: comma canary\n",
+            &[
+                "at Saved Function coral.functions.debug.comma:2:",
                 "at Program:1:",
             ],
         ),
@@ -2216,6 +2230,31 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 ("log", at(2, 9)),
             ],
         ),
+        // Saved Function lines follow the same terminators. A private line the
+        // linker writes after a lone CR, U+2028 or U+2029 adds no line of its own
+        // to the authored count.
+        (
+            "coral.functions.terminators.lone()",
+            vec![linked_source(
+                &["terminators", "lone"],
+                "console.info(1)\rexport default (() => {\u{2028}  console.log(2)\u{2029}})\r",
+            )],
+            vec![
+                ("log", in_saved_function("terminators.lone", 1, 9)),
+                ("log", in_saved_function("terminators.lone", 3, 11)),
+            ],
+        ),
+        (
+            "coral.functions.terminators.clause()",
+            vec![linked_source(
+                &["terminators", "clause"],
+                "export {}\u{2028}console.info('a\u{2029}b')\u{2029}const run = () => console.log(1)\rexport { run as default }",
+            )],
+            vec![
+                ("log", in_saved_function("terminators.clause", 2, 9)),
+                ("log", in_saved_function("terminators.clause", 4, 27)),
+            ],
+        ),
         // A trailing CR ends the last authored line; nothing maps past it.
         (
             "console.debug(1); console.error(2);\r",
@@ -2228,8 +2267,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             vec![],
             vec![("log", at(2, 5))],
         ),
-        // Calls inside Saved Function source without semicolons keep their
-        // lines, though the linker reprints that source with semicolons.
+        // Calls inside Saved Function source without semicolons keep their lines.
         (
             "await coral.functions.locations.notify()",
             vec![linked_source(
@@ -2275,8 +2313,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             ],
         ),
         // A template or regular expression earlier on the line cannot shift a
-        // later call's column, and a statement the linker reprints differently
-        // stops only its own mapping, not the next statement's.
+        // later call's column.
         (
             "coral.functions.locations.lexical()",
             vec![linked_source(
@@ -2297,6 +2334,115 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 "/** Logs one value. */\nexport default function documented(value: string) {\n  console.log(`value ${value}`, /x/g.test(value))\n}",
             )],
             vec![("log", in_saved_function("locations.documented", 3, 11))],
+        ),
+        // A trailing comma later in a Saved Function statement leaves every
+        // earlier call in it mapped.
+        (
+            "coral.functions.locations.reprinted()",
+            vec![linked_source(
+                &["locations", "reprinted"],
+                "export default async function () {\n  console.log('a', {\n    b: 1,\n  },)\n}",
+            )],
+            vec![("log", in_saved_function("locations.reprinted", 2, 11))],
+        ),
+        // Export syntax spread over lines and comments leaves later lines in place.
+        (
+            "coral.functions.locations.multiline()",
+            vec![linked_source(
+                &["locations", "multiline"],
+                "export /* keyword */ default\n  // the function\n  async () => {\n    console.log('multiline')\n  }",
+            )],
+            vec![("log", in_saved_function("locations.multiline", 4, 13))],
+        ),
+        (
+            "coral.functions.locations.generated().next()",
+            vec![linked_source(
+                &["locations", "generated"],
+                "export default function* () { console.log('gen'); yield 1 }",
+            )],
+            vec![("log", in_saved_function("locations.generated", 1, 39))],
+        ),
+        // A call inside the default expression itself keeps its column.
+        (
+            "coral.functions.locations.initialized()",
+            vec![linked_source(
+                &["locations", "initialized"],
+                "export default (console.log('init'), () => {})",
+            )],
+            vec![("log", in_saved_function("locations.initialized", 1, 25))],
+        ),
+        // A removed export clause still ends the statement before it.
+        (
+            "coral.functions.locations.clause()",
+            vec![linked_source(
+                &["locations", "clause"],
+                "console.info('first')\nexport {}\n(() => console.log('second'))()\nconst clause = () => {}\nexport { clause as default }",
+            )],
+            vec![
+                ("log", in_saved_function("locations.clause", 1, 9)),
+                ("log", in_saved_function("locations.clause", 3, 16)),
+            ],
+        ),
+        (
+            "coral.functions.locations.shebang()",
+            vec![linked_source(
+                &["locations", "shebang"],
+                "#!/usr/bin/env coral\n'use strict'\nexport default () => console.log('shebang')",
+            )],
+            vec![("log", in_saved_function("locations.shebang", 3, 30))],
+        ),
+        // The private default name cannot collide with an authored binding,
+        // even one spelled with an escape.
+        (
+            "coral.functions.locations.hygiene()",
+            vec![linked_source(
+                &["locations", "hygiene"],
+                "const \\u005f_coralSavedFunctionDefaultExport_1 = 1\nexport default () => console.log(__coralSavedFunctionDefaultExport_1)",
+            )],
+            vec![("log", in_saved_function("locations.hygiene", 2, 30))],
+        ),
+        (
+            "await coral.functions.locations.agen().next()",
+            vec![linked_source(
+                &["locations", "agen"],
+                "export default async function* () { console.log('agen'); yield 1 }",
+            )],
+            vec![("log", in_saved_function("locations.agen", 1, 45))],
+        ),
+        // Several export removals on one line keep the rest of the line in place.
+        (
+            "coral.functions.locations.removals()",
+            vec![linked_source(
+                &["locations", "removals"],
+                "const one = () => console.log('one'); export {}; export { one as default }; console.info('tail')",
+            )],
+            vec![
+                ("log", in_saved_function("locations.removals", 1, 85)),
+                ("log", in_saved_function("locations.removals", 1, 27)),
+            ],
+        ),
+        (
+            "coral.functions.locations.template()",
+            vec![linked_source(
+                &["locations", "template"],
+                "export default () => {\r\n  const s = `\u{1F600}\r\n${1}`; console.log(s)\r\n}",
+            )],
+            vec![("log", in_saved_function("locations.template", 3, 16))],
+        ),
+        // Repeated and parallel calls inside a Saved Function keep their own
+        // call sites.
+        (
+            "await coral.functions.locations.parallel()",
+            vec![linked_source(
+                &["locations", "parallel"],
+                "export default async () => {\n  for (const id of [1, 2]) console.log(id)\n  await Promise.all([coral.providers.demo.getItem({}), coral.providers.demo.getItem({})])\n}",
+            )],
+            vec![
+                ("log", in_saved_function("locations.parallel", 2, 36)),
+                ("log", in_saved_function("locations.parallel", 2, 36)),
+                ("invoke", in_saved_function("locations.parallel", 3, 43)),
+                ("invoke", in_saved_function("locations.parallel", 3, 77)),
+            ],
         ),
         // A binding called with no authored frame on the stack has no location.
         (
@@ -2464,6 +2610,70 @@ fn reading_a_program_error_runs_no_program_code() {
             host.emitted.lock().expect("emissions").is_empty(),
             "{source}"
         );
+    }
+}
+
+#[test]
+fn private_linker_source_maps_to_no_authored_source() {
+    let program = ProgramCompiler::new(IsolateLimits::default())
+        .expect("start compiler")
+        .compile_with_saved_functions(
+            compilation_deadline(),
+            "coral.functions.a(); coral.functions.b(); coral.functions.c();",
+            &[
+                linked_source(&["a"], "export default (() => 1)"),
+                linked_source(&["b"], "console.info(0); export default function () {}"),
+                linked_source(
+                    &["c"],
+                    "const c = () => 1\nexport {}\nexport { c as default }",
+                ),
+            ],
+        )
+        .expect("compile");
+    let source_map =
+        sourcemap::SourceMap::from_slice(program.source_map().as_bytes()).expect("source map");
+    // The runtime reads the nearest preceding token on the same line.
+    let authored = |line: usize, column: usize| {
+        let line = u32::try_from(line).expect("line");
+        let column = u32::try_from(column).expect("column");
+        source_map
+            .lookup_token(line, column)
+            .filter(|token| token.get_dst_line() == line)
+            .and_then(|token| token.get_source().map(str::to_string))
+    };
+    let javascript = program.javascript();
+    // Private source the linker writes: the wrapper, a private default
+    // declaration and name, the statement end left by a removed export
+    // clause, and each private return.
+    let mut found = Vec::new();
+    for (line, text) in javascript.lines().enumerate() {
+        for marker in [
+            "(async () => {",
+            "__coralSavedFunctionDefaults[",
+            "const __coralSavedFunctionDefaultExport_",
+            "__coralSavedFunctionDefaultExport_",
+            "return () =>",
+        ] {
+            for (column, _) in text.match_indices(marker) {
+                found.push(marker);
+                assert_eq!(authored(line, column), None, "{marker} at {line}:{column}");
+            }
+        }
+        if text.trim() == ";" {
+            found.push(";");
+            let column = text.find(';').expect("semicolon");
+            assert_eq!(authored(line, column), None, "; at {line}:{column}");
+        }
+    }
+    for marker in [
+        "(async () => {",
+        "__coralSavedFunctionDefaults[",
+        "const __coralSavedFunctionDefaultExport_",
+        "__coralSavedFunctionDefaultExport_",
+        "return () =>",
+        ";",
+    ] {
+        assert!(found.contains(&marker), "no {marker} in {javascript}");
     }
 }
 

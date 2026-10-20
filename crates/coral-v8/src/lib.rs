@@ -201,7 +201,7 @@ pub struct AuthoredLocation {
     pub source: AuthoredSource,
     /// One-based authored line.
     pub line: u32,
-    /// One-based authored column.
+    /// One-based authored column in UTF-16 code units.
     pub column: u32,
 }
 
