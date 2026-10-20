@@ -336,6 +336,16 @@ mod tests {
                 "does not recognize",
             ),
             (
+                "migration from a newer Coral",
+                format!(
+                    "INSERT INTO _sqlx_migrations \
+                     (version, description, success, checksum, execution_time) \
+                     SELECT version + 1, 'from a newer Coral', success, checksum, execution_time \
+                     FROM _sqlx_migrations WHERE version = {last}"
+                ),
+                "does not recognize",
+            ),
+            (
                 "failed migration",
                 format!("UPDATE _sqlx_migrations SET success = FALSE WHERE version = {last}"),
                 "marker is malformed",

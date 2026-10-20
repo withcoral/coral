@@ -44,6 +44,15 @@ mod tests {
             let mut pending_suffix = current_rows.clone();
             pending_suffix.pop();
             assert!(rows_match_known_migration_prefix(&pending_suffix, system));
+
+            // A newer Coral applied a step this plan does not hold.
+            let mut newer = current_rows.clone();
+            let (last_version, last_checksum, _) = newer
+                .last()
+                .cloned()
+                .expect("at least one embedded migration");
+            newer.push((last_version + 1, last_checksum, true));
+            assert!(!rows_match_known_migration_prefix(&newer, system));
             assert!(!rows_match_known_migration_prefix(&[], system));
 
             let mut missing_first = current_rows.clone();
