@@ -142,7 +142,10 @@ test('The keyboard drives the operations table, its drawer, and its policy', asy
     await step('↓ right after Escape moves the cursor while the drawer closes', async () => {
       // The cursor row has focus, so Enter opens its operation.
       await page.keyboard.press('Enter')
-      await page.getByRole('dialog', { name: 'op002', exact: true }).waitFor()
+      const drawer = page.getByRole('dialog', { name: 'op002', exact: true })
+      await page.waitForURL((url) => url.pathname.endsWith('/ops/op002'))
+      // The drawer has finished opening.
+      await expect.poll(() => drawer.getAttribute('data-starting-style')).toBeNull()
       // The drawer is still animating out when ↓ arrives.
       await page.keyboard.press('Escape')
       await page.keyboard.press('ArrowDown')
