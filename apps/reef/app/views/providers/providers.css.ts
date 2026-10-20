@@ -229,6 +229,8 @@ export const operationDescriptionText = style({
 })
 export const inlineTooltipTarget = style({ display: 'inline-flex' })
 // The column is as wide as its toggles; the header centres over them.
+// The collapse-all toggle starts the column, above the headings' own toggles.
+export const nameHeader = style({ alignItems: 'center', display: 'flex', gap: 8 })
 export const policyHeader = style({ display: 'flex', justifyContent: 'center' })
 // One line: a wrapped outcome pill would change the row's height after a save.
 export const policyCell = style({

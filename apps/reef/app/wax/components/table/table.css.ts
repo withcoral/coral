@@ -418,6 +418,10 @@ export const groupHeadingFirstCell = style({
   ...groupHeadingFirstCellIndent,
 })
 
+// A head cell that starts with a control for every group, such as a collapse-all
+// toggle. It indents as a top-level group heading does, so the two toggles line up.
+export const groupToggleHeading = style({ paddingInlineStart: tableVars.cellPaddingInline.value })
+
 // A cell is the box; the text inside it is a separate element. Truncation needs
 // a block to apply to, and the box is a flex row so that a control dropped in a
 // cell still lines up with the text in its neighbours.

@@ -37,6 +37,7 @@ const productIconNames = [
   'ChevronDown',
   'ChevronLeft',
   'ChevronRight',
+  'ChevronsDownUp',
   'CircleAlert',
   'CircleAlertFull',
   'CircleCheck',

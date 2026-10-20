@@ -19,6 +19,7 @@ import { ChevronDownIcon } from '@/wax/components/icon/custom-icons/chevron-down
 import { ChevronLeftIcon } from '@/wax/components/icon/custom-icons/chevron-left'
 import { ChevronRightIcon } from '@/wax/components/icon/custom-icons/chevron-right'
 import { ChevronUpIcon } from '@/wax/components/icon/custom-icons/chevron-up'
+import { ChevronsDownUpIcon } from '@/wax/components/icon/custom-icons/chevrons-down-up'
 import { ChevronsUpDownIcon } from '@/wax/components/icon/custom-icons/chevrons-up-down'
 import { CircleAlertIcon } from '@/wax/components/icon/custom-icons/circle-alert'
 import { CircleAlertFullIcon } from '@/wax/components/icon/custom-icons/circle-alert-full'
@@ -124,6 +125,7 @@ export const customIcons = {
   ChevronDown: ChevronDownIcon,
   ChevronLeft: ChevronLeftIcon,
   ChevronRight: ChevronRightIcon,
+  ChevronsDownUp: ChevronsDownUpIcon,
   ChevronsUpDown: ChevronsUpDownIcon,
   ChevronUp: ChevronUpIcon,
   CircleAlert: CircleAlertIcon,

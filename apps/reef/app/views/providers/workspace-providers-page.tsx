@@ -921,13 +921,6 @@ function ProvidersTableScreen({
           onChange: setTableFilterInput,
         }}
       >
-        <Button.IconButton
-          variant="secondary"
-          name={anyExpanded ? 'ChevronsDownUp' : 'ChevronsUpDown'}
-          tooltipText={anyExpanded ? 'Collapse all' : 'Expand all'}
-          disabled={sections.length === 0}
-          onClick={toggleAllCollapsed}
-        />
         <PolicyFilterMenu
           value={selectedView ? 'selected' : (policyFilter?.value ?? null)}
           selectedCount={selected.size}
@@ -964,7 +957,20 @@ function ProvidersTableScreen({
                   <span className={visuallyHidden}>Select all matching operations</span>
                 </Inputs.Checkbox>
               </span>
-              <span role="columnheader">Operation name</span>
+              <span
+                role="columnheader"
+                className={classNames(styles.nameHeader, Table.groupToggleHeading)}
+              >
+                <Button.IconButton
+                  variant="bare"
+                  size="22"
+                  name={anyExpanded ? 'ChevronsDownUp' : 'ChevronsUpDown'}
+                  tooltipText={anyExpanded ? 'Collapse all' : 'Expand all'}
+                  disabled={sections.length === 0}
+                  onClick={toggleAllCollapsed}
+                />
+                Operation name
+              </span>
               <span role="columnheader" className={styles.policyHeader}>
                 Policy
               </span>

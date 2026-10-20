@@ -287,6 +287,16 @@ export const TreeCollapsedProvider: Story = {
     await expect(label().height).toBe(before.height)
   },
 }
+export const TreeCollapseAll: Story = {
+  render: () => <WorkspaceProvidersPage {...treeProps} />,
+  play: async ({ canvas }) => {
+    // The header's toggle lines up with the provider headings' toggles.
+    const left = (name: string) => canvas.getByRole('button', { name }).getBoundingClientRect().left
+    await expect(left('Collapse all')).toBe(left('Collapse GitHub'))
+    await userEvent.click(canvas.getByRole('button', { name: 'Collapse all' }))
+    await expect(canvas.getByRole('button', { name: 'Expand all' })).toBeVisible()
+  },
+}
 export const TreeWithBuiltinProvider: Story = {
   render: () => <WorkspaceProvidersPage {...treeProps} providers={[github, coral, weather]} />,
 }
