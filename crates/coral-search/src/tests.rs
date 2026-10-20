@@ -1,5 +1,6 @@
 mod builtin;
 mod describe;
+mod describe_operations;
 mod index;
 mod retrieval;
 mod storage;

@@ -558,12 +558,7 @@ function analyzeSavedFunctionPaths(body, fileName, targetName) {
   );
 }
 
-function analyzeSavedFunctionDependencies(source, fileName, targetName) {
-  const {program, sourceFile} = referenceAnalysisProgram(
-    source,
-    fileName,
-    targetName,
-  );
+function savedFunctionDependencyAnalysis(sourceFile, program) {
   const syntaxError = sourceFile.parseDiagnostics.find(
     (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
   );
@@ -581,4 +576,87 @@ function analyzeSavedFunctionDependencies(source, fileName, targetName) {
     };
   }
   return savedFunctionPathAnalysis(sourceFile, program);
+}
+
+function analyzeSavedFunctionDependencies(source, fileName, targetName) {
+  const {program, sourceFile} = referenceAnalysisProgram(
+    source,
+    fileName,
+    targetName,
+  );
+  return savedFunctionDependencyAnalysis(sourceFile, program);
+}
+
+// The number of segments under `coral` that name an Operation's Call Root:
+// `providers.<namespace>` for an Owner's Provider, `workspace` for the
+// Built-in Provider. Undefined for any other root.
+function operationCallRootLength(segments) {
+  if (segments[0] === "providers") return 2;
+  if (segments[0] === "workspace") return 1;
+  return undefined;
+}
+
+// Each maximal literal `coral.providers` or `coral.workspace` chain, relative
+// to `coral` and cut before its first computed segment, where it starts, and
+// whether it is called. Aliased roots are not followed.
+function operationReferenceChains(sourceFile, program) {
+  const checker = program.getTypeChecker();
+  const chains = [];
+  walkRuntimeNodes(sourceFile, (node) => {
+    if (
+      (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node))
+      && !parentContinuesCoralPath(node)
+    ) {
+      const access = coralAccess(node, checker, sourceFile);
+      if (
+        access?.root === "lexical"
+        && operationCallRootLength(access.segments) !== undefined
+      ) {
+        const computed = access.segments.indexOf(undefined);
+        const segments = access.segments.slice(
+          0,
+          computed === -1 ? undefined : computed,
+        );
+        const called = ts.isCallExpression(node.parent) && node.parent.expression === node;
+        if (segments.length > 1) {
+          chains.push({segments, start: node.getStart(sourceFile), called});
+        }
+      }
+    }
+    return true;
+  });
+  return chains;
+}
+
+// Every chain prefix that could be a Call Path: a Call Root and at least one
+// identifier segment.
+function candidateOperationPaths(chains) {
+  const paths = new Set();
+  for (const {segments} of chains) {
+    const rootLength = operationCallRootLength(segments);
+    for (let length = 2; length <= segments.length; length += 1) {
+      if (!ts.isIdentifierText(segments[length - 1], ts.ScriptTarget.ES2025)) break;
+      if (length > rootLength) {
+        paths.add(`coral.${segments.slice(0, length).join(".")}`);
+      }
+    }
+  }
+  return [...paths].sort();
+}
+
+// The Saved Functions and Operations one Saved Function module names, from
+// one analysis: what its typed preparation needs.
+function analyzeSavedFunctionCallPaths(source, fileName, targetName) {
+  const {program, sourceFile} = referenceAnalysisProgram(
+    source,
+    fileName,
+    targetName,
+  );
+  const dependencies = savedFunctionDependencyAnalysis(sourceFile, program);
+  if (dependencies.validationError !== undefined) return dependencies;
+  const chains = operationReferenceChains(sourceFile, program);
+  return {
+    ...dependencies,
+    operations: {callPaths: candidateOperationPaths(chains), chains},
+  };
 }

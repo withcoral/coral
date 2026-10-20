@@ -6,16 +6,20 @@ use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, Principal, PrincipalId, PrincipalKind,
     PrincipalWorkspaceEvidence, WorkspaceAction, WorkspaceId, WorkspaceModule, WorkspaceRole,
 };
-use tokio::time::timeout;
+use tokio::time::{timeout, timeout_at};
 
-use coral_v8::{COMPILATION_TIMEOUT, format_compiler_error};
+use coral_v8::{
+    COMPILATION_TIMEOUT, CallableDeclaration, CoralDeclarations, SavedFunctionCallPaths,
+    format_compiler_error,
+};
 
+use crate::operation_typing::{self, OperationDeclarationReader};
 use crate::repository;
 use crate::types::{
-    AdministrativeLifecycleEvent, LifecycleAction, SAVED_FUNCTION_DIAGNOSTIC_MAX_COUNT,
-    SavedFunction, SavedFunctionChangeContext, SavedFunctionDeclaration,
-    SavedFunctionDeclarationFieldProjection, SavedFunctionDiagnostic, SavedFunctionId,
-    SavedFunctionPath, SavedFunctionSave,
+    AdministrativeLifecycleEvent, LifecycleAction, SAVED_FUNCTION_DECLARATION_MAX_BYTES,
+    SAVED_FUNCTION_DIAGNOSTIC_MAX_COUNT, SavedFunction, SavedFunctionChangeContext,
+    SavedFunctionDeclaration, SavedFunctionDeclarationFieldProjection, SavedFunctionDiagnostic,
+    SavedFunctionId, SavedFunctionPath, SavedFunctionSave,
 };
 use crate::{Error, SavedFunctionDeletion, SavedFunctionInspection};
 
@@ -42,7 +46,18 @@ pub(crate) struct PreparedSavedFunction {
 }
 
 pub(crate) trait SavedFunctionCompiler: Send + Sync {
-    fn prepare(&self, deadline: Instant, source: &str) -> Result<PreparedSavedFunction, String>;
+    /// Finds the Call Paths to type by `deadline`. `None` leaves the source
+    /// untyped, so `prepare` reports any failure of a source this cannot
+    /// analyze.
+    fn call_paths(&self, deadline: Instant, source: &str) -> Option<SavedFunctionCallPaths>;
+
+    /// Prepares `source`, typed by `declarations` when there are any.
+    fn prepare(
+        &self,
+        deadline: Instant,
+        source: &str,
+        declarations: Option<&CoralDeclarations>,
+    ) -> Result<PreparedSavedFunction, String>;
 }
 
 struct V8SavedFunctionCompiler {
@@ -59,11 +74,29 @@ impl V8SavedFunctionCompiler {
 }
 
 impl SavedFunctionCompiler for V8SavedFunctionCompiler {
-    fn prepare(&self, deadline: Instant, source: &str) -> Result<PreparedSavedFunction, String> {
-        let compiled = self
-            .compiler
-            .prepare_saved_function(deadline, source)
-            .map_err(format_compiler_error)?;
+    fn call_paths(&self, deadline: Instant, source: &str) -> Option<SavedFunctionCallPaths> {
+        self.compiler
+            .saved_function_call_paths(deadline, source)
+            .inspect_err(|error| {
+                tracing::debug!(%error, "Call Path analysis failed; the source is checked untyped");
+            })
+            .ok()
+    }
+
+    fn prepare(
+        &self,
+        deadline: Instant,
+        source: &str,
+        declarations: Option<&CoralDeclarations>,
+    ) -> Result<PreparedSavedFunction, String> {
+        let compiled = match declarations {
+            Some(declarations) => {
+                self.compiler
+                    .prepare_typed_saved_function(deadline, source, declarations)
+            }
+            None => self.compiler.prepare_saved_function(deadline, source),
+        }
+        .map_err(format_compiler_error)?;
         let declaration = SavedFunctionDeclaration::from_compiler(compiled.declaration())
             .map_err(|error| error.to_string())?;
         let declaration_field_projection =
@@ -165,7 +198,8 @@ impl SavedFunctionModule {
     /// transaction rechecks active Workspace authority and every directly named
     /// Saved Function dependency, then commits source, description, declaration,
     /// bounded diagnostics, and one lifecycle Event. Occurrence time is metadata
-    /// and never a stale-write guard.
+    /// and never a stale-write guard. Operations stay untyped; use
+    /// [`Self::prepare_save`] with a reader to type them.
     ///
     /// This save does not notify Universal Search: coral-search depends on
     /// this crate, so the call would be a cycle. A production caller notifies
@@ -182,7 +216,7 @@ impl SavedFunctionModule {
         workspace_id: &WorkspaceId,
         save: SavedFunctionSave,
     ) -> Result<SavedFunction, Error> {
-        let prepared = self.prepare_save(context, workspace_id, save).await?;
+        let prepared = self.prepare_save(context, workspace_id, save, None).await?;
         let mut transaction = self.database.begin().await?;
         let function = self.save_in_transaction(&mut transaction, prepared).await?;
         transaction.commit().await?;
@@ -191,6 +225,13 @@ impl SavedFunctionModule {
 
     /// Prepares non-executing authoring work outside the final write transaction.
     ///
+    /// The source is typed against the current declarations of the Saved
+    /// Functions it names and, through `operations`, of the Operations it names
+    /// that the caller can discover. Without `operations`, `coral.providers`
+    /// and `coral.workspace` stay untyped. A source that cannot be analyzed is
+    /// prepared untyped, so preparation reports its own failure. Type
+    /// diagnostics are advisory.
+    ///
     /// # Errors
     /// Returns authority, compilation, or authoring-limit failures without changes.
     pub async fn prepare_save(
@@ -198,10 +239,17 @@ impl SavedFunctionModule {
         context: &SavedFunctionChangeContext,
         workspace_id: &WorkspaceId,
         save: SavedFunctionSave,
+        operations: Option<&dyn OperationDeclarationReader>,
     ) -> Result<PreparedSave, Error> {
         self.authorize_active(context.actor(), workspace_id).await?;
         let prepared = self
-            .prepare_source(save.path(), save.source().as_str())
+            .prepare_source(
+                context.actor(),
+                workspace_id,
+                save.path(),
+                save.source().as_str(),
+                operations,
+            )
             .await?;
         Ok(PreparedSave {
             context: context.clone(),
@@ -545,22 +593,136 @@ impl SavedFunctionModule {
 
     async fn prepare_source(
         &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
         path: &SavedFunctionPath,
         source: &str,
+        operations: Option<&dyn OperationDeclarationReader>,
     ) -> Result<PreparedSavedFunction, Error> {
         let source_name = format!("Saved Function coral.functions.{}", path.as_str());
-        let source = source.to_string();
-        let compiler = self.compiler.clone();
         let deadline = Instant::now() + COMPILATION_TIMEOUT;
-        let preparation = tokio::task::spawn_blocking(move || compiler.prepare(deadline, &source));
-        match timeout(COMPILATION_TIMEOUT, preparation).await {
-            Err(_elapsed) => Err(Error::SavedFunctionCompilationTimedOut),
-            Ok(Err(_join_error)) => Err(Error::CompilerWorkerStopped),
-            Ok(Ok(Err(message))) => Err(Error::SavedFunctionAdmission(format!(
-                "{source_name}: {message}"
-            ))),
-            Ok(Ok(Ok(prepared))) => Ok(prepared),
+        let preparation = async {
+            let declarations = self
+                .declarations(actor, workspace_id, source, operations, deadline)
+                .await?;
+            let compiler = self.compiler.clone();
+            let source = source.to_string();
+            tokio::task::spawn_blocking(move || {
+                compiler.prepare(deadline, &source, declarations.as_ref())
+            })
+            .await
+            .map_err(|_join_error| Error::CompilerWorkerStopped)?
+            .map_err(|message| Error::SavedFunctionAdmission(format!("{source_name}: {message}")))
+        };
+        timeout(COMPILATION_TIMEOUT, preparation)
+            .await
+            .map_err(|_elapsed| Error::SavedFunctionCompilationTimedOut)?
+    }
+
+    /// The declarations that type `source`: the current ones of the Saved
+    /// Functions it names and, through `operations`, of the Operations it
+    /// names that the caller can discover. `None` leaves it untyped.
+    ///
+    /// Typing stops by its own deadline, so a compile due by `deadline`
+    /// always keeps its reserve. What typing cannot finish stays untyped.
+    async fn declarations(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        source: &str,
+        operations: Option<&dyn OperationDeclarationReader>,
+        deadline: Instant,
+    ) -> Result<Option<CoralDeclarations>, Error> {
+        let Some(typing_deadline) = operation_typing::typing_deadline(deadline) else {
+            tracing::warn!("No time is left to type the source; it is checked untyped");
+            return Ok(None);
+        };
+        let typing = async {
+            let compiler = self.compiler.clone();
+            let analyzed = source.to_string();
+            let Some(named) = tokio::task::spawn_blocking(move || {
+                compiler.call_paths(typing_deadline, &analyzed)
+            })
+            .await
+            .map_err(|_join_error| Error::CompilerWorkerStopped)?
+            else {
+                return Ok(None);
+            };
+            let Some(function_paths) = named
+                .functions()
+                .iter()
+                .map(|reference| SavedFunctionPath::parse(reference.path()).ok())
+                .collect::<Option<Vec<_>>>()
+            else {
+                return Ok(None);
+            };
+            let functions = if function_paths.is_empty() {
+                None
+            } else {
+                Some(
+                    self.function_declarations(actor, workspace_id, &function_paths)
+                        .await?,
+                )
+            };
+            let operations = match operations {
+                Some(reader) => {
+                    operation_typing::operation_declarations(
+                        reader,
+                        named.operations().call_paths(),
+                    )
+                    .await
+                }
+                None => None,
+            };
+            if functions.is_none() && operations.is_none() {
+                return Ok(None);
+            }
+            let mut declarations = CoralDeclarations::new(SAVED_FUNCTION_DECLARATION_MAX_BYTES);
+            if let Some(functions) = functions {
+                declarations = declarations.with_functions(functions);
+            }
+            if let Some(operations) = operations {
+                declarations = declarations.with_operations(named.operations(), operations);
+            }
+            Ok(Some(declarations))
+        };
+        timeout_at(typing_deadline.into(), typing)
+            .await
+            .unwrap_or_else(|_elapsed| {
+                tracing::warn!("Typing was too slow; the source is checked untyped");
+                Ok(None)
+            })
+    }
+
+    /// The current declaration of each named Saved Function the caller owns.
+    async fn function_declarations(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        paths: &[SavedFunctionPath],
+    ) -> Result<Vec<CallableDeclaration>, Error> {
+        let mut functions = Vec::new();
+        if paths.is_empty() {
+            return Ok(functions);
         }
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        for path in paths {
+            if let Some(function) = repository::find_current_in_transaction(
+                &mut transaction,
+                workspace_id,
+                actor.principal(),
+                path,
+            )
+            .await?
+            {
+                functions.push(CallableDeclaration::new(
+                    path.segments(),
+                    function.declaration().as_str().to_string(),
+                ));
+            }
+        }
+        transaction.commit().await?;
+        Ok(functions)
     }
 
     async fn authorize_active(

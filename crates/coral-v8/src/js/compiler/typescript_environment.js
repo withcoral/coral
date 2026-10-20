@@ -14,14 +14,24 @@ const PROGRAM_COMPILER_OPTIONS = Object.freeze({
   noEmitHelpers: false,
 });
 
-// Authoring-only types for the host root. Provider Operations and Saved
-// Functions stay untyped here: their declarations live outside this isolate.
+// Authoring-only types for the host root. Callers supply the declarations of
+// the Operations and Saved Functions a source names; a root without them is
+// any. Operations type `coral.providers` and `coral.workspace` together.
 const CORAL_HOST_DECLARATION_FILE_NAME = "coral.d.ts";
-const CORAL_HOST_DECLARATION = `
+// Coral's diagnostic codes are outside TypeScript's range.
+// A called `coral.providers` or `coral.workspace` path that names no
+// Operation the caller can call.
+const UNKNOWN_OPERATION_DIAGNOSTIC_CODE = 100001;
+// A typed Saved Function declaration saved untyped because it would exceed
+// the declaration limit.
+const DECLARATION_TOO_LARGE_DIAGNOSTIC_CODE = 100002;
+
+function coralHostDeclaration(providersType, workspaceType, functionsType) {
+  return `
 declare namespace coral {
-  const providers: any;
-  const workspace: any;
-  const functions: any;
+  const providers: ${providersType};
+  const workspace: ${workspaceType};
+  const functions: ${functionsType};
   function emit(value: unknown): Promise<void>;
   /**
    * Rejects an Operation call that produced no declared success. When Coral
@@ -47,8 +57,117 @@ declare const console: {
   readonly error: (...values: unknown[]) => void;
 };
 `;
+}
+
+function callableNode() {
+  return {type: undefined, children: new Map()};
+}
+
+function insertCallable(root, segments, type) {
+  let node = root;
+  for (const segment of segments) {
+    if (!node.children.has(segment)) node.children.set(segment, callableNode());
+    node = node.children.get(segment);
+  }
+  node.type = type;
+}
+
+function renderCallableNode(node) {
+  const members = [...node.children]
+    .map(([segment, child]) =>
+      `readonly ${JSON.stringify(segment)}: ${renderCallableNode(child)};`
+    )
+    .join(" ");
+  const object = `{ ${members} }`;
+  if (node.type === undefined) return object;
+  return node.children.size === 0 ? node.type : `(${node.type}) & ${object}`;
+}
+
+// Each supplied declaration is an ambient module named by its Call Path, so
+// the named types of two callables never collide and a diagnostic that names
+// the module names the Call Path. `export {}` keeps those names private, so
+// an emitted Saved Function declaration inlines them or fails to name them.
+// A Call Path cannot contain `-`, so module resolution never finds the file
+// that declares it and loads it a second time.
+function typedRoot(sources, prefix, entries) {
+  if (entries == null) return undefined;
+  const tree = callableNode();
+  for (const {pathSegments, declaration} of entries) {
+    const callPath = `${prefix}.${pathSegments.join(".")}`;
+    const module = JSON.stringify(callPath);
+    sources[`declaration-${callPath}.d.ts`] =
+      `declare module ${module} {\n${declaration}\nexport {};\n}\n`;
+    insertCallable(tree, pathSegments, `typeof import(${module}).default`);
+  }
+  return tree;
+}
+
+// The first prefix of each chain past `coral.<root>` that is neither a
+// declared Call Path nor a namespace of one names nothing the caller can
+// call. It becomes any, so one Coral diagnostic replaces every cascading
+// TypeScript one, and the chain as written is returned to report. A resolved
+// sibling must not make a callable namespace look absent. A chain that is not
+// called may be a namespace whose Operations an alias reaches, so it is any
+// and not reported.
+function typeUnknownOperations(tree, operations) {
+  const resolved = new Set();
+  const namespaces = new Set();
+  for (const {pathSegments} of operations.declarations) {
+    resolved.add(pathSegments.join("."));
+    for (let length = 1; length < pathSegments.length; length += 1) {
+      namespaces.add(pathSegments.slice(0, length).join("."));
+    }
+  }
+  const unknown = [];
+  for (const {segments, start, called} of operations.chains) {
+    for (let length = 2; length <= segments.length; length += 1) {
+      const key = segments.slice(0, length).join(".");
+      if (resolved.has(key)) break;
+      if (namespaces.has(key)) continue;
+      insertCallable(tree, segments.slice(0, length), "any");
+      if (called) unknown.push({start, callPath: `coral.${segments.join(".")}`});
+      break;
+    }
+  }
+  return unknown;
+}
+
+// The declaration files that type the `coral` namespace, and the Operation
+// chains that name nothing the caller can call. Without `declarations`, or
+// without one root's, that root is any.
+function coralSurface(declarations) {
+  const sources = {};
+  // Operation paths are relative to `coral`, so one tree holds both
+  // `providers` and `workspace`.
+  const operations = typedRoot(sources, "coral", declarations?.operations?.declarations);
+  const functions = typedRoot(sources, "coral.functions", declarations?.functions);
+  const unknownOperations = operations === undefined
+    ? []
+    : typeUnknownOperations(operations, declarations.operations);
+  const operationRoot = (root) =>
+    operations === undefined
+      ? "any"
+      : renderCallableNode(operations.children.get(root) ?? callableNode());
+  sources[CORAL_HOST_DECLARATION_FILE_NAME] = coralHostDeclaration(
+    operationRoot("providers"),
+    operationRoot("workspace"),
+    functions === undefined ? "any" : renderCallableNode(functions),
+  );
+  return {sources, unknownOperations};
+}
+
+function sortedDiagnostics(diagnostics) {
+  const position = (value) => value ?? Number.MAX_SAFE_INTEGER;
+  return diagnostics.toSorted((left, right) =>
+    position(left.line) - position(right.line)
+      || position(left.column) - position(right.column)
+  );
+}
 
 let typeScriptLibrarySources;
+// Library files never change, so every program shares one parsed and bound
+// copy, as the TypeScript language service does.
+const librarySourceFiles = new Map();
 
 function configureTypeScriptLibraries(librarySources) {
   typeScriptLibrarySources = librarySources;
@@ -66,6 +185,24 @@ function normalizedFileName(fileName) {
   return fileName.replaceAll("\\", "/").split("/").pop();
 }
 
+function librarySourceFile(fileName, normalized, languageVersion) {
+  const version = typeof languageVersion === "object"
+    ? languageVersion.languageVersion
+    : languageVersion;
+  const key = `${version}:${normalized}`;
+  let file = librarySourceFiles.get(key);
+  if (file === undefined) {
+    file = ts.createSourceFile(
+      fileName,
+      typeScriptLibrarySources[normalized],
+      languageVersion,
+      true,
+    );
+    librarySourceFiles.set(key, file);
+  }
+  return file;
+}
+
 function compilerHost(
   sourceFileName,
   source,
@@ -79,6 +216,14 @@ function compilerHost(
   return {
     getSourceFile(fileName, languageVersion) {
       const normalized = normalizedFileName(fileName);
+      if (
+        !sourceNames.has(fileName)
+        && !sourceNames.has(normalized)
+        && ambientSources[normalized] === undefined
+        && typeScriptLibrarySources[normalized] !== undefined
+      ) {
+        return librarySourceFile(fileName, normalized, languageVersion);
+      }
       const text = sourceNames.has(fileName) || sourceNames.has(normalized)
         ? source
         : supportingSource(normalized);
@@ -145,5 +290,39 @@ function virtualTypeScriptProgram(
     host,
     program,
     sourceFile: program.getSourceFile(sourceFileName),
+  };
+}
+
+// One source typed by `declarations`, or untyped without them.
+function typedVirtualProgram(fileName, source, compilerOptions, declarations) {
+  const surface = coralSurface(declarations);
+  const typed = virtualTypeScriptProgram(
+    fileName,
+    source,
+    compilerOptions,
+    undefined,
+    surface.sources,
+  );
+  const {program, sourceFile} = typed;
+  if (!sourceFile) throw new Error("typed virtual source is missing");
+  const unknownOperations = surface.unknownOperations.map(({start, callPath}) =>
+    diagnosticPayload({
+      file: sourceFile,
+      start,
+      category: ts.DiagnosticCategory.Error,
+      code: UNKNOWN_OPERATION_DIAGNOSTIC_CODE,
+      messageText: `${callPath} names no Operation that you can call.`,
+    })
+  );
+  return {
+    ...typed,
+    advisoryDiagnostics(extra = []) {
+      return sortedDiagnostics([
+        ...program.getSemanticDiagnostics(sourceFile)
+          .map((diagnostic) => diagnosticPayload(diagnostic)),
+        ...unknownOperations,
+        ...extra,
+      ]);
+    },
   };
 }

@@ -26,6 +26,7 @@
 mod deletion;
 mod error;
 mod inspection;
+mod operation_typing;
 mod repository;
 mod saved_function;
 #[cfg(any(test, feature = "test-fixtures"))]
@@ -39,6 +40,7 @@ pub use coral_v8::IsolateLimits;
 pub use deletion::SavedFunctionDeletion;
 pub use error::Error;
 pub use inspection::SavedFunctionInspection;
+pub use operation_typing::{OperationDeclaration, OperationDeclarationReader};
 pub use repository::{hold_source_selection_in_transaction, select_source_in_transaction};
 pub use saved_function::{
     PreparedSave, SavedFunctionModule, delete_current_for_access_removal_in_transaction,

@@ -24,11 +24,25 @@ globalThis.__coralCompile = function compileVirtualProgram(
 };
 globalThis.__coralPrepareSavedFunction = function prepareVirtualSavedFunction(
   source,
+  declarationsJson,
   fileName,
   targetName,
 ) {
-  return compilerResultJson(prepareSavedFunction(source, fileName, targetName));
+  return compilerResultJson(prepareSavedFunction(
+    source,
+    JSON.parse(declarationsJson),
+    fileName,
+    targetName,
+  ));
 };
+globalThis.__coralAnalyzeSavedFunctionCallPaths =
+  function analyzeVirtualSavedFunctionCallPaths(source, fileName, targetName) {
+    return compilerResultJson(analyzeSavedFunctionCallPaths(
+      source,
+      fileName,
+      targetName,
+    ));
+  };
 globalThis.__coralAnalyzeSavedFunctionPaths = function analyzeVirtualProgramPaths(
   source,
   fileName,

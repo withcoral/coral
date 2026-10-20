@@ -756,6 +756,7 @@ dependencies = [
 name = "coral-functions"
 version = "1.1.0"
 dependencies = [
+ "async-trait",
  "coral-catalog",
  "coral-db",
  "coral-test-support",
@@ -767,6 +768,7 @@ dependencies = [
  "sqlx",
  "thiserror",
  "tokio",
+ "tracing",
  "unicode-id-start",
  "uuid",
 ]
@@ -984,11 +986,13 @@ dependencies = [
 name = "coral-task"
 version = "1.1.0"
 dependencies = [
+ "async-trait",
  "coral-administration",
  "coral-catalog",
  "coral-db",
  "coral-functions",
  "coral-outbound",
+ "coral-policy",
  "coral-provider",
  "coral-run",
  "coral-search",

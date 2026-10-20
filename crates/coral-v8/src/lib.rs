@@ -414,6 +414,137 @@ impl LinkedSavedFunctionSource {
     }
 }
 
+/// The Call Paths one Saved Function module names directly, as its typed
+/// preparation needs them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SavedFunctionCallPaths {
+    functions: Vec<SavedFunctionReference>,
+    operations: OperationReferences,
+}
+
+impl SavedFunctionCallPaths {
+    /// Returns the directly named `coral.functions` paths.
+    #[must_use]
+    pub fn functions(&self) -> &[SavedFunctionReference] {
+        &self.functions
+    }
+
+    /// Returns the literal `coral.providers` and `coral.workspace` chains.
+    #[must_use]
+    pub const fn operations(&self) -> &OperationReferences {
+        &self.operations
+    }
+}
+
+/// The literal `coral.providers` and `coral.workspace` chains one source
+/// names. Aliased roots are not followed.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationReferences {
+    call_paths: Vec<String>,
+    chains: Vec<OperationChain>,
+}
+
+impl OperationReferences {
+    /// Returns every chain prefix that could be an Operation Call Path, such
+    /// as `coral.providers.github.repos.get`, so `get.call(...)` still names
+    /// `get`.
+    #[must_use]
+    pub fn call_paths(&self) -> &[String] {
+        &self.call_paths
+    }
+}
+
+/// One literal chain, relative to `coral`, where it starts in the source, and
+/// whether it is called.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct OperationChain {
+    segments: Vec<String>,
+    start: u64,
+    called: bool,
+}
+
+/// One declaration that types a Call Path under `coral.providers`,
+/// `coral.workspace` or `coral.functions`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallableDeclaration {
+    path_segments: Vec<String>,
+    declaration: String,
+}
+
+impl CallableDeclaration {
+    /// Builds one declaration for its path segments: relative to `coral` for
+    /// an Operation, such as `providers.github.repos.get`, and to
+    /// `coral.functions` for a Saved Function.
+    ///
+    /// The declaration is self-contained TypeScript with one
+    /// `export default` callable, as describe and Saved Function save emit it.
+    #[must_use]
+    pub const fn new(path_segments: Vec<String>, declaration: String) -> Self {
+        Self {
+            path_segments,
+            declaration,
+        }
+    }
+}
+
+/// The declarations that type the `coral` namespace for one Saved Function
+/// save.
+///
+/// A root without declarations stays `any`. A typed root holds only the
+/// supplied paths: any other path the source calls is a diagnostic.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoralDeclarations {
+    declaration_max_bytes: usize,
+    operations: Option<TypedOperations>,
+    functions: Option<Vec<CallableDeclaration>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct TypedOperations {
+    chains: Vec<OperationChain>,
+    declarations: Vec<CallableDeclaration>,
+}
+
+impl CoralDeclarations {
+    /// Types nothing yet. A typed Saved Function declaration above
+    /// `declaration_max_bytes` is saved untyped.
+    #[must_use]
+    pub const fn new(declaration_max_bytes: usize) -> Self {
+        Self {
+            declaration_max_bytes,
+            operations: None,
+            functions: None,
+        }
+    }
+
+    /// Types `coral.providers` and `coral.workspace` from the Operations the
+    /// caller can call. `references` are what
+    /// [`ProgramCompiler::saved_function_call_paths`] found in the same
+    /// source.
+    #[must_use]
+    pub fn with_operations(
+        mut self,
+        references: &OperationReferences,
+        declarations: Vec<CallableDeclaration>,
+    ) -> Self {
+        self.operations = Some(TypedOperations {
+            chains: references.chains.clone(),
+            declarations,
+        });
+        self
+    }
+
+    /// Types `coral.functions` from stored Saved Function declarations.
+    #[must_use]
+    pub fn with_functions(mut self, functions: Vec<CallableDeclaration>) -> Self {
+        self.functions = Some(functions);
+        self
+    }
+}
+
 /// TypeScript compiler diagnostic category.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]

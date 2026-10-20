@@ -251,7 +251,103 @@ function projectDeclarationFields(program, sourceFile) {
     .sort((left, right) => left.path.localeCompare(right.path));
 }
 
-function prepareSavedFunction(source, fileName, targetName) {
+function utf8Length(text) {
+  let length = 0;
+  for (const character of text) {
+    const code = character.codePointAt(0);
+    length += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+  }
+  return length;
+}
+
+// Emits one declaration and checks that it names nothing outside itself.
+function emitSavedFunctionDeclaration(program, fileName, compilerOptions) {
+  const outputs = new Map();
+  const emitResult = program.emit(
+    undefined,
+    (outputName, text) => outputs.set(normalizedFileName(outputName), text),
+    undefined,
+    true,
+  );
+  const blockingDiagnostics = emitResult.diagnostics.filter(
+    (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
+  );
+  const declarationName = normalizedFileName(fileName).replace(/\.tsx?$/u, ".d.ts");
+  const declarationText = outputs.get(declarationName);
+  if (blockingDiagnostics.length > 0 || declarationText === undefined) {
+    return {declarationText, blockingDiagnostics};
+  }
+  return {
+    declarationText,
+    blockingDiagnostics,
+    analysis: analyzeDeclaration(declarationText, fileName, compilerOptions),
+  };
+}
+
+// Why a typed declaration cannot be saved, as advisory diagnostics, or
+// undefined when it can. A name the declaration cannot resolve is located in
+// the declaration, not the source, so it is reported at the export.
+function typedDeclarationFailure(emitted, sourceFile, declarationMaxBytes) {
+  const exported = sourceFile.statements.find((statement) =>
+    ts.isExportAssignment(statement)
+    || statement.modifiers?.some((modifier) =>
+      modifier.kind === ts.SyntaxKind.DefaultKeyword
+    )
+  );
+  const atExport = (diagnostic) => diagnosticPayload({
+    ...diagnostic,
+    file: sourceFile,
+    start: exported?.getStart(sourceFile),
+  });
+  if (emitted.blockingDiagnostics.length > 0 || emitted.declarationText === undefined) {
+    return emitted.blockingDiagnostics.map((diagnostic) => diagnosticPayload(diagnostic));
+  }
+  if (emitted.analysis.unresolvedDiagnostics.length > 0) {
+    return emitted.analysis.unresolvedDiagnostics.map(atExport);
+  }
+  if (utf8Length(emitted.declarationText) > declarationMaxBytes) {
+    return [atExport({
+      category: ts.DiagnosticCategory.Error,
+      code: DECLARATION_TOO_LARGE_DIAGNOSTIC_CODE,
+      messageText: `The typed declaration exceeds ${declarationMaxBytes} bytes, so its result is saved as any. Return fewer fields, or annotate the return type.`,
+    })];
+  }
+  return undefined;
+}
+
+function savedFunctionDeclarationResult(emitted, diagnostics, references) {
+  const {declarationText, blockingDiagnostics, analysis} = emitted;
+  if (blockingDiagnostics.length > 0 || declarationText === undefined) {
+    return {
+      declarationText: null,
+      validationError: declarationText === undefined
+        ? "TypeScript emitted no Saved Function declaration"
+        : null,
+      blockingDiagnostics: blockingDiagnostics.map((diagnostic) =>
+        diagnosticPayload(diagnostic)
+      ),
+      diagnostics,
+      references,
+    };
+  }
+  const unresolved = analysis.unresolvedDiagnostics;
+  return {
+    declarationText: unresolved.length === 0 ? declarationText : null,
+    declarationFields: analysis.declarationFields,
+    declarationProjectionError: analysis.declarationFields === undefined
+      ? "declaration_field_projection_failed"
+      : null,
+    validationError: unresolved.length === 0
+      ? null
+      : "Saved Function declaration contains unresolved public type names",
+    blockingDiagnostics: unresolved.map((diagnostic) => diagnosticPayload(diagnostic)),
+    diagnostics,
+    references,
+  };
+}
+
+// Prepares one Saved Function, typed by `declarations` when they are given.
+function prepareSavedFunction(source, declarations, fileName, targetName) {
   const compilerOptions = {
     ...PROGRAM_COMPILER_OPTIONS,
     target: resolveTypeScriptTarget(targetName),
@@ -263,15 +359,8 @@ function prepareSavedFunction(source, fileName, targetName) {
     skipLibCheck: true,
     types: [],
   };
-  const outputs = new Map();
-  const {host, program, sourceFile} = virtualTypeScriptProgram(
-    fileName,
-    source,
-    compilerOptions,
-    outputs,
-    {[CORAL_HOST_DECLARATION_FILE_NAME]: CORAL_HOST_DECLARATION},
-  );
-  if (!sourceFile) throw new Error("Saved Function virtual source is missing");
+  const checked = typedVirtualProgram(fileName, source, compilerOptions, declarations);
+  const {program, sourceFile} = checked;
 
   const syntacticDiagnostics = program.getSyntacticDiagnostics(sourceFile);
   if (syntacticDiagnostics.some((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error)) {
@@ -312,54 +401,29 @@ function prepareSavedFunction(source, fileName, targetName) {
       declarationText: null,
       validationError,
       blockingDiagnostics: [],
-      diagnostics: program.getSemanticDiagnostics(sourceFile).map((diagnostic) =>
-        diagnosticPayload(diagnostic)
-      ),
+      diagnostics: checked.advisoryDiagnostics(),
       references: pathAnalysis.references,
     };
   }
 
-  const emitResult = program.emit(undefined, host.writeFile, undefined, true);
-  const blockingDiagnostics = emitResult.diagnostics.filter(
-    (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
-  );
-  const declarationName = normalizedFileName(fileName).replace(/\.tsx?$/u, ".d.ts");
-  const declarationText = outputs.get(declarationName);
-  if (blockingDiagnostics.length > 0 || declarationText === undefined) {
-    return {
-      declarationText: null,
-      validationError: declarationText === undefined
-        ? "TypeScript emitted no Saved Function declaration"
-        : null,
-      blockingDiagnostics: blockingDiagnostics.map((diagnostic) =>
-        diagnosticPayload(diagnostic)
-      ),
-      diagnostics: program.getSemanticDiagnostics(sourceFile).map((diagnostic) =>
-        diagnosticPayload(diagnostic)
-      ),
-      references: pathAnalysis.references,
-    };
+  const emitted = emitSavedFunctionDeclaration(program, fileName, compilerOptions);
+  const failure = declarations === null
+    ? undefined
+    : typedDeclarationFailure(emitted, sourceFile, declarations.declarationMaxBytes);
+  if (failure === undefined) {
+    return savedFunctionDeclarationResult(
+      emitted,
+      checked.advisoryDiagnostics(),
+      pathAnalysis.references,
+    );
   }
-
-  const declarationAnalysis = analyzeDeclaration(
-    declarationText,
-    fileName,
-    compilerOptions,
+  // Typing never fails a save. A typed declaration that cannot be saved is
+  // emitted again untyped, as it was before callers supplied declarations,
+  // and the diagnostics say why.
+  const untyped = typedVirtualProgram(fileName, source, compilerOptions, null);
+  return savedFunctionDeclarationResult(
+    emitSavedFunctionDeclaration(untyped.program, fileName, compilerOptions),
+    checked.advisoryDiagnostics(failure),
+    pathAnalysis.references,
   );
-  const unresolved = declarationAnalysis.unresolvedDiagnostics;
-  return {
-    declarationText: unresolved.length === 0 ? declarationText : null,
-    declarationFields: declarationAnalysis.declarationFields,
-    declarationProjectionError: declarationAnalysis.declarationFields === undefined
-      ? "declaration_field_projection_failed"
-      : null,
-    validationError: unresolved.length === 0
-      ? null
-      : "Saved Function declaration contains unresolved public type names",
-    blockingDiagnostics: unresolved.map((diagnostic) => diagnosticPayload(diagnostic)),
-    diagnostics: program.getSemanticDiagnostics(sourceFile).map((diagnostic) =>
-      diagnosticPayload(diagnostic)
-    ),
-    references: pathAnalysis.references,
-  };
 }

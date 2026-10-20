@@ -8,12 +8,47 @@ use coral_db::Transaction;
 use coral_functions::SavedFunctionModule;
 use coral_run::RunModule;
 use coral_search::{SearchIndex, SearchPage, SearchRequest, UniversalSearchModule as SearchModule};
+use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The longest Call Path `describe` accepts. It lives here, not in `CallPath::parse`,
 /// until the catalog marks an Operation with a longer Call Path unavailable: search
 /// builds Operation Call Paths through the same type.
 const DESCRIBE_CALL_PATH_MAX_BYTES: usize = 1024;
+
+/// Reads Operation declarations as `describe` would for one caller, so typing
+/// adds nothing the caller cannot already discover.
+struct CallerOperationDeclarations<'a> {
+    search: &'a SearchModule,
+    actor: &'a AuthenticatedPrincipal,
+    workspace_id: &'a WorkspaceId,
+}
+
+#[async_trait::async_trait]
+impl coral_functions::OperationDeclarationReader for CallerOperationDeclarations<'_> {
+    async fn read(
+        &self,
+        call_paths: &[String],
+    ) -> Result<Vec<coral_functions::OperationDeclaration>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let call_paths = call_paths
+            .iter()
+            .filter_map(|call_path| coral_search::CallPath::parse(call_path).ok())
+            .collect::<Vec<_>>();
+        Ok(self
+            .search
+            .describe_operations(self.actor, self.workspace_id, &call_paths)
+            .await?
+            .into_iter()
+            .map(|description| {
+                coral_functions::OperationDeclaration::new(
+                    description.call_path().as_str().to_owned(),
+                    description.typescript_declaration().to_owned(),
+                )
+            })
+            .collect())
+    }
+}
 
 /// Task-aware commands above independently usable operation domains.
 #[derive(Clone)]
@@ -123,7 +158,16 @@ impl TaskCommands {
             let context = Self::function_context(call)?;
             let prepared = self
                 .functions
-                .prepare_save(&context, &call.workspace_id, save)
+                .prepare_save(
+                    &context,
+                    &call.workspace_id,
+                    save,
+                    Some(&CallerOperationDeclarations {
+                        search: &self.search,
+                        actor: &call.actor,
+                        workspace_id: &call.workspace_id,
+                    }),
+                )
                 .await?;
             let mut transaction = self.tasks.database.begin().await?;
             self.hold_attempt(&mut transaction, call).await?;

@@ -11,6 +11,8 @@ mod activity_tests;
 mod execution_history_tests;
 #[path = "search_index_tests.rs"]
 mod search_index_tests;
+#[path = "typed_surface_tests.rs"]
+mod typed_surface_tests;
 
 coral_test_support::provider_setup_fixtures!(coral_provider);
 
@@ -107,6 +109,22 @@ impl Fixture {
     /// Publishes a one-Operation Provider under `namespace`, so a search may
     /// filter by it.
     async fn publish_provider(&self, namespace: &str) {
+        self.publish_openapi(
+            namespace,
+            &serde_json::json!({"openapi": "3.1.0", "info": {"title": "Weather", "version": "1"},
+                "servers": [{"url": "https://weather.example"}], "security": [],
+                "paths": {"/forecast": {"get": {"operationId": "getForecast",
+                "responses": {"200": {"description": "OK"}}}}}}),
+        )
+        .await;
+    }
+
+    /// Publishes an OpenAPI `document` as a Provider under `namespace`.
+    async fn publish_openapi(
+        &self,
+        namespace: &str,
+        document: &serde_json::Value,
+    ) -> coral_provider::Provider {
         let database = self.test_database.database();
         coral_provider::ProviderModule::with_running_catalog(
             coral_outbound::DestinationPolicy::default(),
@@ -116,18 +134,12 @@ impl Fixture {
         .publish_openapi_fixture(
             &ChangeContext::new(self.user.clone(), 15, coral_test_support::trace('2')),
             &self.workspace,
-            coral_catalog::OpenApiDocument::parse(
-                r#"{"openapi": "3.1.0", "info": {"title": "Weather", "version": "1"},
-                "servers": [{"url": "https://weather.example"}], "security": [],
-                "paths": {"/forecast": {"get": {"operationId": "getForecast",
-                "responses": {"200": {"description": "OK"}}}}}}"#,
-            )
-            .unwrap(),
+            coral_catalog::OpenApiDocument::parse(&document.to_string()).unwrap(),
             namespace,
             coral_provider::access::CredentialRoute::None,
         )
         .await
-        .unwrap();
+        .unwrap()
     }
 
     /// Provisions an Organization Member and gives them a Membership in the

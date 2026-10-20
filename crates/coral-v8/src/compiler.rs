@@ -8,9 +8,10 @@ use crate::profile::TYPESCRIPT_PROFILE;
 use crate::source_map::{AuthoredSourceMapping, normalize as normalize_source_map};
 use crate::v8_support::{format_thrown_value, read_global_string, run_script};
 use crate::{
-    CompiledProgram, CompilerDiagnostic, DiagnosticCategory, Error, IsolateLimits,
-    LinkedSavedFunctionSource, ProgramExecutionControl, SavedFunctionCompilation,
-    SavedFunctionDeclarationField, SavedFunctionReference,
+    CompiledProgram, CompilerDiagnostic, CoralDeclarations, DiagnosticCategory, Error,
+    IsolateLimits, LinkedSavedFunctionSource, OperationReferences, ProgramExecutionControl,
+    SavedFunctionCallPaths, SavedFunctionCompilation, SavedFunctionDeclarationField,
+    SavedFunctionReference,
 };
 
 const TYPESCRIPT_SOURCE: &str = include_str!("../vendor/typescript.js");
@@ -132,6 +133,7 @@ impl ProgramCompiler {
 
     /// Emits and validates the self-contained declaration for one Saved Function.
     ///
+    /// `coral.providers`, `coral.workspace` and `coral.functions` are `any`.
     /// Strict semantic diagnostics are returned as advisory authoring evidence.
     /// Syntax, imports, invalid export shape, declaration-emission failure, and
     /// unresolved names in the emitted public declaration are blocking.
@@ -146,7 +148,50 @@ impl ProgramCompiler {
     ) -> Result<SavedFunctionCompilation, Error> {
         let source = source.to_string();
         self.request(deadline, move |compiler| {
-            compiler.prepare_saved_function(&source)
+            compiler.prepare_saved_function(&source, "null")
+        })
+    }
+
+    /// Prepares one Saved Function as [`Self::prepare_saved_function`] does,
+    /// with the Call Paths it names typed by `declarations`.
+    ///
+    /// A result type from `declarations` is inlined into the declaration. When
+    /// it cannot be inlined, or the declaration would exceed the limit in
+    /// `declarations`, the declaration is emitted untyped and a diagnostic says
+    /// why, so typing never fails a save.
+    ///
+    /// # Errors
+    ///
+    /// Returns a blocking authoring or compiler-isolate failure.
+    pub fn prepare_typed_saved_function(
+        &self,
+        deadline: Instant,
+        source: &str,
+        declarations: &CoralDeclarations,
+    ) -> Result<SavedFunctionCompilation, Error> {
+        let declarations_json = serde_json::to_string(declarations)
+            .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
+        let source = source.to_string();
+        self.request(deadline, move |compiler| {
+            compiler.prepare_saved_function(&source, &declarations_json)
+        })
+    }
+
+    /// Finds the Saved Functions and Operations one Saved Function module
+    /// names directly, to type it.
+    ///
+    /// # Errors
+    ///
+    /// Rejects computed or aliased `coral.functions` access and malformed
+    /// module source.
+    pub fn saved_function_call_paths(
+        &self,
+        deadline: Instant,
+        source: &str,
+    ) -> Result<SavedFunctionCallPaths, Error> {
+        let source = source.to_string();
+        self.request(deadline, move |compiler| {
+            compiler.saved_function_call_paths(&source)
         })
     }
 
@@ -309,6 +354,14 @@ struct SavedFunctionPathsOutput {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SavedFunctionCallPathsOutput {
+    references: Vec<SavedFunctionReference>,
+    validation_error: Option<SavedFunctionReferenceError>,
+    operations: Option<OperationReferences>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SavedFunctionReferenceError {
     message: String,
     line: u64,
@@ -375,11 +428,16 @@ impl CompilerIsolate {
         decode_compiled_program(&json)
     }
 
-    fn prepare_saved_function(&mut self, source: &str) -> Result<SavedFunctionCompilation, Error> {
+    fn prepare_saved_function(
+        &mut self,
+        source: &str,
+        declarations_json: &str,
+    ) -> Result<SavedFunctionCompilation, Error> {
         let json = self.call(
             "__coralPrepareSavedFunction",
             &[
                 source,
+                declarations_json,
                 SAVED_FUNCTION_FILE_NAME,
                 TYPESCRIPT_PROFILE.javascript_target(),
             ],
@@ -418,6 +476,29 @@ impl CompilerIsolate {
             output.diagnostics,
             output.references,
         ))
+    }
+
+    fn saved_function_call_paths(&mut self, source: &str) -> Result<SavedFunctionCallPaths, Error> {
+        let json = self.call(
+            "__coralAnalyzeSavedFunctionCallPaths",
+            &[
+                source,
+                SAVED_FUNCTION_FILE_NAME,
+                TYPESCRIPT_PROFILE.javascript_target(),
+            ],
+        )?;
+        let output: SavedFunctionCallPathsOutput = serde_json::from_str(&json)
+            .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
+        match (output.validation_error, output.operations) {
+            (Some(error), _) => Err(invalid_saved_function_reference(error)),
+            (None, Some(operations)) => Ok(SavedFunctionCallPaths {
+                functions: output.references,
+                operations,
+            }),
+            (None, None) => Err(Error::CompilerProtocol(
+                "compiler returned no Operation references".to_string(),
+            )),
+        }
     }
 
     fn saved_function_paths(&mut self, source: &str) -> Result<Vec<SavedFunctionReference>, Error> {

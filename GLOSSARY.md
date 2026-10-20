@@ -532,10 +532,11 @@ upstream values or gate Program admission. _Avoid_: TypeScript facade, SQL hidde
 **Coral TypeScript Profile**: The single explicit authoring and admission profile shared by Reef, Saved Function save,
 MCP `exec`, and server-side Run compilation. It pins one official `typescript.js` version, compiler options, source-map
 behavior, and the ECMAScript declaration libraries supported by Coral's embedded V8. It accepts JavaScript as TypeScript
-source. Reef and Saved Function save report strict semantic diagnostics without making them admission failures; v1
-one-time Program admission parses and emits source but does not compute a full semantic check. The profile exposes no
-DOM, Web Worker, Node, npm, filesystem, authored import, or module-resolution surface. _Avoid_: Runtime TypeScript,
-client-selected compiler, Node TypeScript profile
+source. Reef and Saved Function save report strict semantic diagnostics without making them admission failures. Saved
+Function Save types each Operation and Saved Function that the source names from the declarations that the caller can
+discover. V1 one-time Program admission parses and emits source but does not compute a full semantic check. The profile
+exposes no DOM, Web Worker, Node, npm, filesystem, authored import, or module-resolution surface. _Avoid_: Runtime
+TypeScript, client-selected compiler, Node TypeScript profile
 
 **Program Authoring Limits**: The fixed v1 bounds applied before a Saved Function save or Program Run is accepted. A
 Saved Function Path is at most 256 UTF-8 bytes and 16 segments. A submitted Program or one Saved Function source is at

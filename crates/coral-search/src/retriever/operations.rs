@@ -271,33 +271,56 @@ impl EntityRetriever for OperationRetriever {
         context: RequestContext<'_>,
         call_path: &CallPath,
     ) -> Result<Option<ExactAuthoringDescription>, Error> {
+        Ok(
+            describe_operations(transaction, context, std::slice::from_ref(call_path))
+                .await?
+                .pop()
+                .map(ExactAuthoringDescription::operation),
+        )
+    }
+}
+
+/// The complete description of each Operation in `call_paths` that the
+/// caller can describe, in order. Every other path is omitted. One policy read
+/// and one visibility check per Call Root serve the whole batch.
+pub(crate) async fn describe_operations(
+    transaction: &mut Transaction<'_>,
+    context: RequestContext<'_>,
+    call_paths: &[CallPath],
+) -> Result<Vec<OperationAuthoringDescription>, Error> {
+    let rules =
+        coral_policy::exact_operation_rules_in_transaction(transaction, context.workspace_id)
+            .await?;
+    let mut providers = HashMap::new();
+    let mut descriptions = Vec::new();
+    for call_path in call_paths {
         let Some((call_root, relative_path)) =
             ProviderCallRoot::split_call_path(call_path.as_str())
         else {
-            return Ok(None);
+            continue;
         };
-        let Some(provider) = visible_providers(transaction, context, Some(&call_root))
-            .await?
-            .into_iter()
-            .next()
-        else {
-            return Ok(None);
+        if !providers.contains_key(&call_root) {
+            let provider = visible_providers(transaction, context, Some(&call_root))
+                .await?
+                .into_iter()
+                .next();
+            providers.insert(call_root.clone(), provider);
+        }
+        let Some(Some(provider)) = providers.get(&call_root) else {
+            continue;
         };
         let Some(material) = coral_provider::operation_material_by_relative_path_in_transaction(
             transaction,
-            &provider,
+            provider,
             relative_path,
         )
         .await?
         else {
-            return Ok(None);
+            continue;
         };
-        let rules =
-            coral_policy::exact_operation_rules_in_transaction(transaction, context.workspace_id)
-                .await?;
-        Ok(describe_material(&material, &rules, call_path)?
-            .map(ExactAuthoringDescription::operation))
+        descriptions.extend(describe_material(&material, &rules, call_path)?);
     }
+    Ok(descriptions)
 }
 
 /// The Call Roots of the Workspace's Active Providers that are ready for the

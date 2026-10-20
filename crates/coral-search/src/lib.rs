@@ -445,6 +445,48 @@ impl UniversalSearchModule {
         Ok(())
     }
 
+    /// Describes each Operation in `call_paths` that the caller can describe,
+    /// in one read snapshot.
+    ///
+    /// `describe`'s visibility rules apply. Every other path is omitted, and a
+    /// caller without discovery authority reads nothing, so absence never says
+    /// why. The descriptions are not abridged.
+    ///
+    /// # Errors
+    ///
+    /// Returns safe operational persistence or authoritative-description
+    /// failures.
+    pub async fn describe_operations(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        call_paths: &[CallPath],
+    ) -> Result<Vec<OperationAuthoringDescription>, Error> {
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        let authority = match self
+            .authorize(&mut transaction, actor, workspace_id)
+            .await
+            .map_err(conceal_description_error)
+        {
+            Ok(authority) => authority,
+            Err(Error::AuthoringDescriptionNotFound) => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        let loaded = LoadedGenerations::default();
+        let context = RequestContext {
+            actor,
+            authority: &authority,
+            workspace_id,
+            terms: None,
+            loaded: &loaded,
+        };
+        let descriptions =
+            retriever::operations::describe_operations(&mut transaction, context, call_paths)
+                .await?;
+        transaction.commit().await?;
+        Ok(descriptions)
+    }
+
     /// Asks each retriever in turn for the exact path. Reads no index.
     async fn describe_in_transaction(
         &self,

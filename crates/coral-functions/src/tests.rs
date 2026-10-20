@@ -1022,6 +1022,93 @@ async fn accepted_saved_function_diagnostics_are_bounded() {
     assert!(saved.diagnostics_truncated());
 }
 
+/// Declares `repos.get` for every caller.
+struct DeclaresReposGet;
+
+#[async_trait::async_trait]
+impl crate::OperationDeclarationReader for DeclaresReposGet {
+    async fn read(
+        &self,
+        call_paths: &[String],
+    ) -> Result<Vec<crate::OperationDeclaration>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(call_paths
+            .iter()
+            .filter(|path| *path == "coral.providers.github.repos.get")
+            .map(|path| {
+                crate::OperationDeclaration::new(
+                    path.clone(),
+                    "export default function (input: { \"owner\": string }): Promise<{ data: string }>;".to_owned(),
+                )
+            })
+            .collect())
+    }
+}
+
+/// Never answers.
+struct StalledReader;
+
+#[async_trait::async_trait]
+impl crate::OperationDeclarationReader for StalledReader {
+    async fn read(
+        &self,
+        _call_paths: &[String],
+    ) -> Result<Vec<crate::OperationDeclaration>, Box<dyn std::error::Error + Send + Sync>> {
+        std::future::pending().await
+    }
+}
+
+/// A reader that never answers leaves Operations untyped, and the save still
+/// compiles in time.
+#[tokio::test]
+async fn a_stalled_declaration_read_saves_untyped_in_time() {
+    let fixture = SavedFunctionTestModules::new().await;
+    let (workspace_id, principal) = fixture.user_workspace("user:stalled-typing").await;
+    let readers: [(&str, &dyn crate::OperationDeclarationReader, Vec<u64>); 2] = [
+        ("a reader that answers", &DeclaresReposGet, vec![2353]),
+        ("a reader that never answers", &StalledReader, vec![]),
+    ];
+    for (name, reader, expected) in readers {
+        let started = std::time::Instant::now();
+        let prepared = fixture
+            .saved_functions
+            .prepare_save(
+                &saved_function_change(principal.clone(), 20, 'd'),
+                &workspace_id,
+                SavedFunctionSave::new(
+                    SavedFunctionPath::parse("typing.stalled").expect("path"),
+                    SavedFunctionDescription::parse("Typed").expect("description"),
+                    SavedFunctionSource::parse(
+                        "export default async function f() { return coral.providers.github.repos.get({ owner: \"a\", nope: 1 }); }",
+                    )
+                    .expect("source"),
+                ),
+                Some(reader),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{name}: typing never fails a save: {error:?}"));
+        assert!(
+            started.elapsed() < coral_v8::COMPILATION_TIMEOUT,
+            "{name}: {:?}",
+            started.elapsed()
+        );
+        let mut transaction = fixture.database.begin().await.expect("begin save");
+        let saved = fixture
+            .saved_functions
+            .save_in_transaction(&mut transaction, prepared)
+            .await
+            .expect("save");
+        assert_eq!(
+            saved
+                .diagnostics()
+                .iter()
+                .map(crate::SavedFunctionDiagnostic::code)
+                .collect::<Vec<_>>(),
+            expected,
+            "{name}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn one_users_functions_at_the_same_path_stay_scoped_to_each_workspace() {
     let fixture = SavedFunctionTestModules::new().await;
@@ -1134,10 +1221,19 @@ impl GatedSavedFunctionCompiler {
 }
 
 impl SavedFunctionCompiler for GatedSavedFunctionCompiler {
+    fn call_paths(
+        &self,
+        _deadline: std::time::Instant,
+        _source: &str,
+    ) -> Option<coral_v8::SavedFunctionCallPaths> {
+        None
+    }
+
     fn prepare(
         &self,
         _deadline: std::time::Instant,
         _source: &str,
+        _declarations: Option<&coral_v8::CoralDeclarations>,
     ) -> Result<PreparedSavedFunction, String> {
         (self.gate)()?;
         Ok(PreparedSavedFunction {
