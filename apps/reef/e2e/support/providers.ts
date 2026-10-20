@@ -265,9 +265,9 @@ export async function openProviderSettings(page: Page) {
   // redirect is about to replace.
   await page.waitForURL((url) => /\/providers(?:\/(?!new(?:\/|$))[^/?#]+)?$/.test(url.pathname))
   const routed = /\/providers\/([^/?#]+)/.exec(new URL(page.url()).pathname)?.[1]
-  // The bare list route selects its first provider implicitly, which can be
-  // the Built-in Provider. Each added provider's gear links to its settings
-  // route, beside the provider in the rail; Coral has no gear. Wait for the
+  // The bare list route is the All providers tab and names no provider. Each
+  // added provider's gear links to its settings route, beside the provider in
+  // the rail; Coral has no gear. Wait for the
   // rail's gears before looking for the routed one, so a rail that has not
   // rendered yet cannot redirect the click.
   const rail = page.getByRole('navigation', { name: 'installed providers', exact: true })

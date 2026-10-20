@@ -99,8 +99,7 @@
   Use `Table.useRowCursor` so ↑, ↓ and Enter reach the rows.
 - Match a filter field's text with `filterQuery` (`apps/reef/app/utils/filter-query.ts`),
   not `includes`, so every filter reads `^`, `$` and `*` the same way. To bold
-  the matches, use Wax's `HighlightedMatches`. To match one name exactly, use
-  `exactFilter`.
+  the matches, use Wax's `HighlightedMatches`.
 - Do not show status or meaning with color alone. Pair color with a distinct
   icon shape or text, so color-blind users can read it (WCAG 1.4.1).
 - Browser access to Coral belongs in React Router server loaders, actions, and

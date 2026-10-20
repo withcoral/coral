@@ -23,11 +23,6 @@ type Range = [start: number, end: number]
 
 const EVERYTHING: FilterQuery = { text: '', matches: () => true, ranges: () => [] }
 
-/** The query that matches only `text`, whatever characters it holds. */
-export function exactFilter(text: string) {
-  return `^${text.replace(/[\\*]/g, '\\$&')}$`
-}
-
 export function filterQuery(input: string): FilterQuery {
   const text = input.trim()
   if (!text) return EVERYTHING

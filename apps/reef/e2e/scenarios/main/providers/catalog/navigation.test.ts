@@ -11,6 +11,7 @@ import {
 test('Workspace operations preserve deep links, settings, and independent filters', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {
     let installation = ''
+    let providersPage = ''
     const table = page.getByRole('table', { name: 'Operations', exact: true })
     const filter = page.getByRole('searchbox', { name: 'Filter operations', exact: true })
     await step('Open the workspace operations table', async () => {
@@ -24,7 +25,8 @@ test('Workspace operations preserve deep links, settings, and independent filter
         }),
         'catalog',
       )
-      await page.goto(`/workspaces/${workspace}/providers`)
+      providersPage = `/workspaces/${workspace}/providers`
+      await page.goto(providersPage)
       await table.waitFor()
       // Coral's own provider lists first, so find this provider by its row.
       const action = await table
@@ -37,21 +39,12 @@ test('Workspace operations preserve deep links, settings, and independent filter
       await publishWorkspaceProvider(
         actor.accessToken,
         `workspaces/${workspace}`,
-        // The second provider is taller than the table's port, so scrolling
-        // can bring its heading, or the first catalog's below Coral, to the top.
+        // The second provider is taller than the table's port, so its tab scrolls.
         openApiDocument('Second catalog', {
           another: { summary: 'Another operation' },
           ...Object.fromEntries(Array.from({ length: 24 }, (_, index) => [`more${index}`, {}])),
         }),
         'other',
-      )
-      // The last provider is shorter than the port, so only room after the
-      // table lets a rail click bring it up under the head.
-      await publishWorkspaceProvider(
-        actor.accessToken,
-        `workspaces/${workspace}`,
-        openApiDocument('Tail', { last: {} }),
-        'tail',
       )
       await page.goto(installation)
       await table.waitFor()
@@ -106,7 +99,7 @@ test('Workspace operations preserve deep links, settings, and independent filter
       await filter.fill('orks')
       await table.getByRole('checkbox', { name: 'Select works', exact: true }).waitFor()
     })
-    await step('Keep the selection and filter when the rail moves between providers', async () => {
+    await step('Keep the selection when you change tabs', async () => {
       await page.setViewportSize({ width: 1440, height: 1000 })
       await filter.fill('')
       await page.getByRole('checkbox', { name: 'Select works', exact: true }).check()
@@ -114,49 +107,42 @@ test('Workspace operations preserve deep links, settings, and independent filter
       // The entry, not the gear beside it, whose name ends in " settings".
       const railEntry = (name: string) =>
         rail.getByRole('link', { name: new RegExp(`\\b${name}\\b(?!.* settings$)`) })
+      const group = (name: string) => table.getByRole('rowgroup', { name, exact: true })
       await railEntry('Second catalog').click()
       await page.waitForURL((url) => !url.pathname.startsWith(installation))
-      // Every provider shares one table, so the other provider's rows are already there.
+      // A provider's tab shows only that provider.
       await table.getByRole('checkbox', { name: 'Select another', exact: true }).waitFor()
-      expect(await filter.inputValue()).toBe('')
+      expect(await group('Catalog').count()).toBe(0)
+      await expect.poll(() => railEntry('Second catalog').getAttribute('aria-current')).toBe('page')
+      await railEntry('Catalog').click()
+      await page.waitForURL((url) => url.pathname === installation)
+      await expect.poll(() => railEntry('Catalog').getAttribute('aria-current')).toBe('page')
       expect(
         await page.getByRole('checkbox', { name: 'Select works', exact: true }).isChecked(),
       ).toBe(true)
-      await railEntry('Catalog').click()
-      await page.waitForURL((url) => url.pathname === installation)
-      expect(await railEntry('Catalog').getAttribute('aria-current')).toBe('page')
+      // All providers is the bare list address, and shows every provider.
+      await railEntry('All providers').click()
+      await page.waitForURL((url) => url.pathname === providersPage)
+      await expect.poll(() => railEntry('All providers').getAttribute('aria-current')).toBe('page')
+      await group('Second catalog').waitFor()
+      expect(await group('Catalog').count()).toBe(1)
     })
-    await step('A rail click brings even a short last provider up under the head', async () => {
-      // The port is shorter than the table, but taller than the last provider.
+    await step('A new tab opens at its top', async () => {
+      // A short viewport lets the table scroll.
       await page.setViewportSize({ width: 1440, height: 600 })
-      const rail = page.getByRole('navigation', { name: 'installed providers', exact: true })
-      await rail.getByRole('link', { name: /\bTail\b(?!.* settings$)/ }).click()
-      await page.waitForURL((url) => !url.pathname.startsWith(installation))
-      // The group, unlike its sticky heading, sits where the scroll left it.
-      await expect
-        .poll(() =>
-          table.evaluate((element) => {
-            const head = element.querySelector('[role="row"]')!.getBoundingClientRect().bottom
-            const group = element.querySelector('[role="rowgroup"][aria-label="Tail"]')
-            return group !== null && Math.abs(group.getBoundingClientRect().top - head) <= 2
-          }),
-        )
-        .toBe(true)
-      await page.setViewportSize({ width: 1440, height: 1000 })
-      await page.goto(installation)
+      await page.goto(providersPage)
       await table.waitFor()
-    })
-    await step('Scrolling to another provider addresses it', async () => {
-      // A short table cannot scroll, so the viewport shrinks until it does.
-      await page.setViewportSize({ width: 1440, height: 420 })
-      const wheel = () => page.mouse.wheel(0, 400)
-      await table.hover()
-      await wheel()
-      await wheel()
-      await page.waitForURL((url) => !url.pathname.startsWith(installation))
+      await table.evaluate((element) => {
+        element.scrollTop = 300
+      })
+      await expect.poll(() => table.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+      await page
+        .getByRole('navigation', { name: 'installed providers', exact: true })
+        .getByRole('link', { name: /\bSecond catalog\b(?!.* settings$)/ })
+        .click()
+      await page.waitForURL((url) => url.pathname !== providersPage)
+      await expect.poll(() => table.evaluate((element) => element.scrollTop)).toBe(0)
       await page.setViewportSize({ width: 1440, height: 1000 })
-      await page.goto(installation)
-      await table.waitFor()
     })
     await step('Reject an unknown operation URL', async () => {
       const response = await page.goto(`${installation}/ops/notAnOperation`)

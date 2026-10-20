@@ -158,10 +158,10 @@ test('Opening an operation drawer preserves the table selection', async (context
       )
       // The drawer routes nest under the explicit provider path.
       provider = `/${publication.provider}`
+      // The provider's tab leaves the Built-in Provider's operations out of
+      // every selection.
       await page.goto(provider)
       await table.waitFor()
-      // Leave the Built-in Provider's operations out of every selection.
-      await page.getByRole('searchbox', { name: 'Filter providers' }).fill('Drawer selection')
       await checkbox('first').check()
       await checkbox('second').check()
       expect(await checked()).toBe(2)

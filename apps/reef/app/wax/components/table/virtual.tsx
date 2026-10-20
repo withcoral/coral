@@ -36,12 +36,6 @@ export interface VirtualRowsHandle {
   measureRow: Ref<HTMLDivElement>
   /** The height of every row together, measured where a row has mounted and estimated elsewhere. */
   totalSize: number
-  /**
-   * The room the table needs after its last row so the row at `from` can
-   * scroll up to just under the head. Without it, the browser stops a short
-   * last group partway down the viewport.
-   */
-  tailRoom: (from: number) => number
 }
 
 export interface VirtualRange {
@@ -88,7 +82,6 @@ export function useVirtualRows({
   // Row measurements move the spacers without moving the range, so the total
   // size is part of the handle: a memoized body re-renders on either.
   const totalSize = virtualizer.getTotalSize()
-  const viewportHeight = virtualizer.scrollRect?.height ?? 0
   const range = useMemo(() => ({ first, last }), [first, last])
   const settling = useRef(0)
   useEffect(() => () => cancelAnimationFrame(settling.current), [])
@@ -169,24 +162,8 @@ export function useVirtualRows({
       },
       measureRow: virtualizer.measureElement,
       totalSize,
-      tailRoom: (from) => {
-        const cache = virtualizer.measurementsCache
-        const start = cache[from]
-        const end = cache[cache.length - 1]
-        if (!start || !end) return 0
-        return Math.max(0, viewportHeight - HEADING_HEIGHT_PX[density] - (end.end - start.start))
-      },
     } satisfies VirtualRowsHandle
-  }, [density, range, scrollRef, totalSize, viewportHeight, virtualizer])
-}
-
-/**
- * Room after a table's last row, so the row at `from` can scroll up under the
- * head. Place it last in the `Table.Container`.
- */
-export function VirtualTail({ from, virtual }: { from: number; virtual: VirtualRowsHandle }) {
-  const height = virtual.tailRoom(from)
-  return height > 0 ? <VirtualSpacer height={height} /> : null
+  }, [density, range, scrollRef, totalSize, virtualizer])
 }
 
 /**

@@ -17,8 +17,13 @@ runs:
       shell: bash
       run: rustup show
 
-    - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+    # Unreleased main: v2.9.2 and earlier prune only the first stale entry of a
+    # partially restored target dir. That can drop a crate's build-script
+    # output and keep its fingerprint, so the link fails (Swatinem/rust-cache#377).
+    - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # main after v2.9.2
       with:
+        # Bump to drop every saved cache.
+        prefix-key: v1-rust
         shared-key: ${{ inputs.cache-key }}
         cache-on-failure: true
         save-if: ${{ github.event_name != 'pull_request' }}
