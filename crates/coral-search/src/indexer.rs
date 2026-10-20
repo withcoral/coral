@@ -8,6 +8,7 @@
 pub(crate) mod functions;
 pub(crate) mod operations;
 mod repository;
+mod retry;
 
 pub(crate) use repository::generation_outcomes_in_workspace;
 
@@ -29,6 +30,13 @@ pub(crate) enum IndexError {
     /// The write did not finish within its limit and was rolled back.
     #[error("the index write did not finish within {} seconds", .0.as_secs())]
     TimedOut(std::time::Duration),
+    /// The write waited past its limit to begin or to take its Workspace's
+    /// lock, behind another writer, and was rolled back.
+    #[error(
+        "the index write waited more than {} seconds for another writer",
+        .0.as_secs()
+    )]
+    WriterBusy(std::time::Duration),
     /// The system clock cannot stamp the attempt.
     #[error("system clock is before 1970 or past the durable nanosecond range")]
     Clock,
@@ -52,13 +60,22 @@ impl IndexError {
     pub(crate) const fn failure(&self) -> Option<SearchIndexFailure> {
         match self {
             Self::InvalidEntry(_) => Some(SearchIndexFailure::InvalidEntry),
-            Self::TimedOut(_) => Some(SearchIndexFailure::TimedOut),
+            Self::TimedOut(_) | Self::WriterBusy(_) => Some(SearchIndexFailure::TimedOut),
             Self::Clock => Some(SearchIndexFailure::Clock),
             Self::Corrupt(_) => Some(SearchIndexFailure::Corrupt),
             Self::Provider(_) => Some(SearchIndexFailure::Provider),
             Self::Database(_) => Some(SearchIndexFailure::Database),
             Self::SavedFunctions(_) => None,
         }
+    }
+
+    /// Whether the same attempt fails the same way until something changes:
+    /// an entry that cannot become a row, or work that overran its limit
+    /// without waiting for another writer. A preparation reads a snapshot
+    /// and waits for no writer, so its overrun repeats too. Each other error
+    /// may pass.
+    const fn repeats_until_change(&self) -> bool {
+        matches!(self, Self::InvalidEntry(_) | Self::TimedOut(_))
     }
 }
 
@@ -72,10 +89,14 @@ pub(crate) trait EntityIndexer: Send + Sync {
     /// What the reconcile task compares the index against.
     type Expected: Send + Sync;
 
+    /// The Workspace whose lock the caller takes, with
+    /// [`lock_workspace`], before it writes the entry.
+    fn workspace_id<'e>(&self, entry: &'e Self::Entry) -> &'e WorkspaceId;
+
     /// Writes the entry's rows and state, all or nothing within the
     /// transaction. Writing the same entry again leaves the same rows. The
-    /// first statement takes the Workspace's lock, so the write's
-    /// statistics count sees every write of that Workspace before it.
+    /// caller holds the entry's Workspace lock, so the write's statistics
+    /// count sees every write of that Workspace before it.
     async fn index(
         &self,
         transaction: &mut Transaction<'_>,
@@ -91,9 +112,9 @@ pub(crate) trait EntityIndexer: Send + Sync {
 
     /// Compares the index with `expected`, everything the owners hold now,
     /// and returns what `expected` holds and the index lacks, holds stale, or
-    /// holds as failed; a failure attempted at or after
-    /// `retry_failed_from_unix_nanos` may be left for a later pass. Reads
-    /// only, so a read snapshot serves it.
+    /// holds as failed; a failure whose retry rule is not due at
+    /// `now_unix_nanos` is left for a later pass. Reads only, so a read
+    /// snapshot serves it.
     ///
     /// The caller indexes each returned item in a transaction of its own, so
     /// one failure stays with its item. Once those writes commit, the same
@@ -102,7 +123,7 @@ pub(crate) trait EntityIndexer: Send + Sync {
         &self,
         transaction: &mut Transaction<'_>,
         expected: &'e [Self::Expected],
-        retry_failed_from_unix_nanos: i64,
+        now_unix_nanos: i64,
     ) -> Result<Vec<&'e Self::Expected>, IndexError>;
 }
 
@@ -136,6 +157,15 @@ pub(crate) async fn check_statistics(
         workspaces_checked,
         stale,
     })
+}
+
+/// On Postgres, takes the transaction-scoped lock on the Workspace's search
+/// index writes; `SQLite` serializes every write already.
+pub(crate) async fn lock_workspace(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+) -> Result<(), IndexError> {
+    Ok(repository::lock_workspace(transaction, workspace_id).await?)
 }
 
 /// On Postgres, takes the Workspace's lock and rewrites its ranking

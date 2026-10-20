@@ -87,7 +87,7 @@ async fn a_pass_reindexes_a_function_whose_fingerprint_differs_from_its_revision
 }
 
 #[tokio::test]
-async fn a_pass_retries_a_failed_function_once_the_failure_is_older_than_the_interval() {
+async fn a_pass_retries_a_failed_function_once_its_retry_is_due() {
     // A failed attempt leaves no row. A failure in one process and a success
     // in another can commit together and leave a current row beside a
     // `failed` state row; the same rule applies.
@@ -107,17 +107,23 @@ async fn a_pass_retries_a_failed_function_once_the_failure_is_older_than_the_int
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
+            let retry_after = attempted_at + std::time::Duration::from_mins(5).as_nanos();
             fixture
                 .test_database
                 .execute_fixture_sql(&format!(
                     "INSERT INTO search_index_states (workspace_id, target_id, kind, \
                      saved_function_id, principal_id, principal_kind, state, \
-                     attempted_at_unix_nanos, error) \
+                     attempted_at_unix_nanos, error, failed_attempts, \
+                     retry_after_unix_nanos, failed_coral_version, \
+                     failed_saved_function_revision) \
                      VALUES ('{workspace}', '{function}', 'saved_function', '{function}', \
-                     '{principal}', 'user', 'failed', {attempted_at}, '{INJECTED_FAULT}')",
+                     '{principal}', 'user', 'failed', {attempted_at}, '{INJECTED_FAULT}', 1, \
+                     {retry_after}, '{version}', {revision})",
                     workspace = fixture.workspace,
                     function = saved.id(),
                     principal = fixture.actor.principal().id(),
+                    version = env!("CARGO_PKG_VERSION"),
+                    revision = saved.revision(),
                 ))
                 .await
                 .expect("leave a failed state beside the row");
@@ -148,17 +154,69 @@ async fn a_pass_retries_a_failed_function_once_the_failure_is_older_than_the_int
                 indexed_paths(&fixture).await
             ),
             (failed, paths),
-            "a failure newer than the interval is left alone; row beside failure: \
+            "a failure whose retry is not due is left alone; row beside failure: \
              {row_beside_failure}"
         );
 
-        let short_interval = coral_search::SearchIndex::new(
-            fixture.tasks.database.clone(),
-            std::time::Duration::from_nanos(1),
-        );
-        short_interval.reconcile().await;
+        make_retries_due(&fixture).await;
+        index.reconcile().await;
         assert_eq!(indexed_paths(&fixture).await, ["answer"]);
         assert!(function_states(&fixture).await.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn a_function_whose_write_overran_its_limit_waits_for_a_change() {
+    // A newer Coral version, a row written before Coral recorded one, or a
+    // failure of another revision, such as one whose save notification was
+    // lost, each make the failure due.
+    for change in [
+        "failed_coral_version = '0.0.0'",
+        "failed_coral_version = NULL",
+        "failed_saved_function_revision = 0",
+    ] {
+        let fixture = Fixture::new().await;
+        let goal = fixture.goal().await;
+        let call = fixture.call(&goal, "Save a function");
+        let saved = fixture
+            .commands
+            .save_function(&call, "answer", "Answer", SOURCE)
+            .await
+            .unwrap();
+        fixture.index.settled().await;
+        let stalled = fixture
+            .index
+            .clone()
+            .with_write_limit(std::time::Duration::from_millis(100))
+            .with_stall_after_lock(std::time::Duration::from_hours(1));
+        stalled.index_function(coral_functions::SavedFunctionEntry::from_saved(&saved));
+        stalled.settled().await;
+        let failed = function_states(&fixture).await;
+        let [state] = failed.as_slice() else {
+            panic!("one state row: {failed:?}");
+        };
+        assert_eq!(state.state, "failed");
+        assert!(state.error.contains("did not finish"), "{}", state.error);
+
+        make_retries_due(&fixture).await;
+        fixture.index.reconcile().await;
+        assert_eq!(
+            (
+                function_states(&fixture).await,
+                indexed_paths(&fixture).await
+            ),
+            (failed, Vec::<String>::new()),
+            "a pass under the same Coral version leaves the failure"
+        );
+
+        fixture
+            .test_database
+            .execute_fixture_sql(&format!("UPDATE search_index_states SET {change}"))
+            .await
+            .expect("change what the failure recorded");
+        fixture.index.reconcile().await;
+        assert_eq!(indexed_paths(&fixture).await, ["answer"], "{change}");
+        assert!(function_states(&fixture).await.is_empty(), "{change}");
     }
 }
 
@@ -776,6 +834,18 @@ async fn lose_function_rows(fixture: &Fixture) {
         .execute_fixture_sql("DELETE FROM search_entities WHERE kind = 'saved_function'")
         .await
         .expect("delete the Saved Function rows");
+}
+
+/// Moves every transient failure's retry time into the past.
+async fn make_retries_due(fixture: &Fixture) {
+    fixture
+        .test_database
+        .execute_fixture_sql(
+            "UPDATE search_index_states SET retry_after_unix_nanos = 0 \
+             WHERE retry_after_unix_nanos IS NOT NULL",
+        )
+        .await
+        .expect("make the retries due");
 }
 
 /// Removes the fault [`reject_function_rows`] installed.

@@ -5,12 +5,15 @@
 
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use coral_db::Transaction;
 use coral_functions::SavedFunctionEntry;
+use coral_workspace::WorkspaceId;
 
 use super::repository::{self, FailedFunctionState, FunctionRow, WorkspaceFunction};
+use super::retry::RetryRule;
 use super::{EntityIndexer, IndexError, compact_identifier_variant, now_unix_nanos};
 use crate::CallPath;
 
@@ -24,12 +27,15 @@ impl EntityIndexer for SavedFunctionIndexer {
     type Removal = Infallible;
     type Expected = SavedFunctionEntry;
 
+    fn workspace_id<'e>(&self, entry: &'e SavedFunctionEntry) -> &'e WorkspaceId {
+        entry.workspace_id()
+    }
+
     async fn index(
         &self,
         transaction: &mut Transaction<'_>,
         entry: &SavedFunctionEntry,
     ) -> Result<(), IndexError> {
-        repository::lock_workspace(transaction, entry.workspace_id()).await?;
         let row = function_row(entry, now_unix_nanos()?)?;
         repository::upsert_function_row(transaction, &row).await?;
         repository::delete_function_state(transaction, entry.workspace_id(), entry.id()).await?;
@@ -46,14 +52,13 @@ impl EntityIndexer for SavedFunctionIndexer {
         match *removal {}
     }
 
-    /// Returns each current function with a `failed` state row attempted
-    /// before `retry_failed_from_unix_nanos`, and each function without
-    /// such a row that has no row or a row whose fingerprint differs from its
-    /// definition revision. A newer failure waits for a later pass whatever
-    /// the function's row holds. The state row does not record the revision
-    /// that failed, so a newer revision waits too; a save notifies the index
-    /// of its revision at once all the same. Nothing is left to remove: a
-    /// function's row and state row cascade with it.
+    /// Returns each current function with a `failed` state row whose retry
+    /// rule is due at `now_unix_nanos` or that another revision recorded,
+    /// and each function without such a row that has no row or a row whose
+    /// fingerprint differs from its definition revision. A failure of the
+    /// current revision that is not yet due waits for a later pass whatever
+    /// the function's row holds. Nothing is left to remove: a function's row
+    /// and state row cascade with it.
     ///
     /// The fingerprint is an opaque version marker, compared for equality
     /// only. As text, revision 10 would sort before revision 9.
@@ -61,7 +66,7 @@ impl EntityIndexer for SavedFunctionIndexer {
         &self,
         transaction: &mut Transaction<'_>,
         expected: &'e [SavedFunctionEntry],
-        retry_failed_from_unix_nanos: i64,
+        now_unix_nanos: i64,
     ) -> Result<Vec<&'e SavedFunctionEntry>, IndexError> {
         let fingerprints = repository::recorded_functions(transaction)
             .await?
@@ -71,7 +76,7 @@ impl EntityIndexer for SavedFunctionIndexer {
         let failures = repository::failed_functions(transaction)
             .await?
             .into_iter()
-            .map(|failed| (failed.function, failed.attempted_at_unix_nanos))
+            .map(|failed| (failed.function, (failed.retry, failed.revision)))
             .collect::<HashMap<_, _>>();
         Ok(expected
             .iter()
@@ -81,8 +86,8 @@ impl EntityIndexer for SavedFunctionIndexer {
                     function_id: entry.id().clone(),
                 };
                 match failures.get(&key) {
-                    Some(attempted_at_unix_nanos) => {
-                        *attempted_at_unix_nanos < retry_failed_from_unix_nanos
+                    Some((retry, revision)) => {
+                        *revision != Some(entry.revision()) || retry.is_due(now_unix_nanos)
                     }
                     None => fingerprints.get(&key) != Some(&entry.revision().to_string()),
                 }
@@ -92,25 +97,44 @@ impl EntityIndexer for SavedFunctionIndexer {
 }
 
 /// Records a failed attempt for the function: a `failed` state row with the
-/// error, and no row in the search table. The caller runs this in a fresh
-/// transaction after the attempt's transaction rolled back. A row an earlier
-/// attempt wrote goes too: the search table holds only what indexed, so a
-/// function whose last attempt failed does not rank on stale text.
+/// error, the revision it tried, and its retry rule under
+/// `reconcile_interval`, and no row in the search table. The caller runs
+/// this in a fresh transaction after the attempt's transaction rolled back.
+/// A row an earlier attempt wrote goes too: the search table holds only what
+/// indexed, so a function whose last attempt failed does not rank on stale
+/// text.
 pub(crate) async fn record_failed_attempt(
     transaction: &mut Transaction<'_>,
     entry: &SavedFunctionEntry,
     error: &IndexError,
+    reconcile_interval: Duration,
 ) -> Result<(), IndexError> {
     repository::lock_workspace(transaction, entry.workspace_id()).await?;
+    // A failure of another revision starts the count again.
+    let prior = repository::failed_function_retry_rule(
+        transaction,
+        entry.workspace_id(),
+        entry.id(),
+        entry.revision(),
+    )
+    .await?;
     repository::delete_function_row(transaction, entry.workspace_id(), entry.id()).await?;
+    let attempted_at = now_unix_nanos()?;
     repository::write_failed_function_state(
         transaction,
         FailedFunctionState {
             workspace_id: entry.workspace_id(),
             function_id: entry.id(),
             principal: entry.principal(),
-            attempted_at_unix_nanos: now_unix_nanos()?,
+            attempted_at_unix_nanos: attempted_at,
             error: error.to_string(),
+            retry: RetryRule::after_failure(
+                prior.as_ref(),
+                error,
+                attempted_at,
+                reconcile_interval,
+            ),
+            revision: entry.revision(),
         },
     )
     .await?;

@@ -28,6 +28,7 @@ coral-administration.workspace = true
 coral-outbound.workspace = true
 coral-catalog.workspace = true
 coral-provider = { workspace = true, features = ["test-fixtures"] }
+coral-search = { workspace = true, features = ["test-fixtures"] }
 coral-test-support.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tracing.workspace = true

@@ -48,11 +48,12 @@ impl SearchIndex {
     ///
     /// 1. Indexes every Provider whose active Generation has no `complete`
     ///    state row, one under another Provider display name, or a `failed`
-    ///    one older than the reconcile interval, from the stored Generation.
-    /// 2. Indexes every Saved Function whose `failed` state row is older than
-    ///    the reconcile interval, and every one with no `failed` state row
-    ///    whose row is missing or whose fingerprint differs from its
-    ///    definition revision. A newer failure waits, whatever the row holds.
+    ///    one whose retry is due, from the stored Generation.
+    /// 2. Indexes every Saved Function whose `failed` state row's retry is
+    ///    due, and every one with no `failed` state row whose row is missing
+    ///    or whose fingerprint differs from its definition revision. A
+    ///    failure of the current revision not yet due waits, whatever the
+    ///    row holds.
     /// 3. Removes the rows and state rows of every Generation that is no
     ///    Provider's active Generation. Best effort. Saved Function rows never
     ///    outlive their function.
@@ -66,6 +67,10 @@ impl SearchIndex {
     /// Each Generation and each function is written in a transaction of its
     /// own; a failure is logged and recorded like a notified write's, and the
     /// pass goes on. Passes in two processes write the same idempotent rows.
+    ///
+    /// The retry module's rule decides when a failure is due. A failure that
+    /// repeats until something changes waits for a newer Coral version, so
+    /// it does not hold the mutex pass after pass.
     ///
     /// The pass runs in a root span, `coral.search.reconcile`, and each step
     /// in a child span. Each span records its `duration_ms`. The statistics
@@ -98,8 +103,6 @@ impl SearchIndex {
             tracing::error!(error = %IndexError::Clock, "failed to start a search index reconcile pass");
             return None;
         };
-        let interval = i64::try_from(self.reconcile_interval.as_nanos()).unwrap_or(i64::MAX);
-        let retry_failed_from = now.saturating_sub(interval);
         step(
             tracing::info_span!(
                 "coral.search.reconcile.remove_superseded",
@@ -110,12 +113,12 @@ impl SearchIndex {
         .await;
         step(
             tracing::info_span!("coral.search.reconcile.generations", duration_ms = Empty),
-            self.reconcile_generations(retry_failed_from),
+            self.reconcile_generations(now),
         )
         .await;
         step(
             tracing::info_span!("coral.search.reconcile.functions", duration_ms = Empty),
-            self.reconcile_functions(retry_failed_from),
+            self.reconcile_functions(now),
         )
         .await;
         let span = tracing::info_span!(
@@ -155,16 +158,16 @@ impl SearchIndex {
     }
 
     /// Step 1 of a pass: indexes each active Generation the index lacks,
-    /// holds under an old name, or holds as failed before
-    /// `retry_failed_from`.
-    async fn reconcile_generations(&self, retry_failed_from: i64) {
+    /// holds under an old name, or holds as failed with a retry due at
+    /// `now_unix_nanos`.
+    async fn reconcile_generations(&self, now_unix_nanos: i64) {
         let stale = self
             .within_limit(async {
                 let mut transaction = self.database.begin_read_snapshot().await?;
                 let expected =
                     coral_provider::active_generations_in_transaction(&mut transaction).await?;
                 let stale = OperationIndexer
-                    .reconcile(&mut transaction, &expected, retry_failed_from)
+                    .reconcile(&mut transaction, &expected, now_unix_nanos)
                     .await?
                     .into_iter()
                     .cloned()
@@ -216,10 +219,11 @@ impl SearchIndex {
         .await
     }
 
-    /// Step 2 of a pass: indexes each current Saved Function that failed
-    /// before `retry_failed_from`, and each without a failure that the index
-    /// lacks or holds at another revision. A newer failure waits.
-    async fn reconcile_functions(&self, retry_failed_from: i64) {
+    /// Step 2 of a pass: indexes each current Saved Function whose failure
+    /// has a retry due at `now_unix_nanos` or another revision, and each
+    /// without a failure that the index lacks or holds at another revision.
+    /// A failure of the current revision not yet due waits.
+    async fn reconcile_functions(&self, now_unix_nanos: i64) {
         let stale = self
             .within_limit(async {
                 let mut transaction = self.database.begin_read_snapshot().await?;
@@ -227,7 +231,7 @@ impl SearchIndex {
                     coral_functions::all_saved_function_entries_in_transaction(&mut transaction)
                         .await?;
                 let stale = SavedFunctionIndexer
-                    .reconcile(&mut transaction, &expected, retry_failed_from)
+                    .reconcile(&mut transaction, &expected, now_unix_nanos)
                     .await?
                     .into_iter()
                     .cloned()

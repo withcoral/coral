@@ -2,6 +2,7 @@
 //! Operation and the Generation's state row out.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use coral_catalog::ProviderGenerationId;
@@ -10,6 +11,7 @@ use coral_provider::{ActiveGeneration, GenerationEntries, OperationEntry, Provid
 use coral_workspace::WorkspaceId;
 
 use super::repository::{self, AttemptState, GenerationState, OperationRow, RecordedOutcome};
+use super::retry::RetryRule;
 use super::{EntityIndexer, IndexError, compact_identifier_variant, now_unix_nanos};
 use crate::CallPath;
 
@@ -35,6 +37,10 @@ impl EntityIndexer for OperationIndexer {
     type Removal = OperationRemoval;
     type Expected = ActiveGeneration;
 
+    fn workspace_id<'e>(&self, entries: &'e GenerationEntries) -> &'e WorkspaceId {
+        entries.workspace_id()
+    }
+
     async fn index(
         &self,
         transaction: &mut Transaction<'_>,
@@ -42,7 +48,6 @@ impl EntityIndexer for OperationIndexer {
     ) -> Result<(), IndexError> {
         let workspace_id = entries.workspace_id();
         let generation_id = entries.generation_id();
-        repository::lock_workspace(transaction, workspace_id).await?;
         let attempted_at = now_unix_nanos()?;
         let rows = entries
             .operations()
@@ -86,13 +91,13 @@ impl EntityIndexer for OperationIndexer {
     }
 
     /// Returns each active Generation with no state row, a `complete` one
-    /// under another Provider display name, or a `failed` one attempted
-    /// before `retry_failed_from_unix_nanos`.
+    /// under another Provider display name, or a `failed` one whose retry
+    /// rule is due at `now_unix_nanos`.
     async fn reconcile<'e>(
         &self,
         transaction: &mut Transaction<'_>,
         expected: &'e [ActiveGeneration],
-        retry_failed_from_unix_nanos: i64,
+        now_unix_nanos: i64,
     ) -> Result<Vec<&'e ActiveGeneration>, IndexError> {
         let outcomes = repository::recorded_generations(transaction)
             .await?
@@ -109,9 +114,7 @@ impl EntityIndexer for OperationIndexer {
                     Some(RecordedOutcome::Complete { display_name }) => {
                         display_name != generation.display_name()
                     }
-                    Some(RecordedOutcome::Failed {
-                        attempted_at_unix_nanos,
-                    }) => *attempted_at_unix_nanos < retry_failed_from_unix_nanos,
+                    Some(RecordedOutcome::Failed { retry }) => retry.is_due(now_unix_nanos),
                 }
             })
             .collect())
@@ -199,29 +202,39 @@ impl AttemptedGeneration<'_> {
 }
 
 /// Records a failed attempt for the Generation: a `failed` state row with
-/// the error, and no Operation rows. The caller runs this in a fresh
-/// transaction after the attempt's transaction rolled back. Rows an earlier
-/// attempt wrote go too: a Generation whose state is `failed` counts as not
-/// searched, so none of its rows may rank.
+/// the error and its retry rule under `reconcile_interval`, and no Operation
+/// rows. The caller runs this in a fresh transaction after the attempt's
+/// transaction rolled back. Rows an earlier attempt wrote go too: a
+/// Generation whose state is `failed` counts as not searched, so none of its
+/// rows may rank.
 pub(crate) async fn record_failed_attempt(
     transaction: &mut Transaction<'_>,
     generation: AttemptedGeneration<'_>,
     error: &IndexError,
+    reconcile_interval: Duration,
 ) -> Result<(), IndexError> {
     repository::lock_workspace(transaction, generation.workspace_id).await?;
+    let prior = repository::failed_generation_retry_rule(
+        transaction,
+        generation.workspace_id,
+        generation.generation_id,
+    )
+    .await?;
     repository::delete_generation_rows(
         transaction,
         generation.workspace_id,
         generation.generation_id,
     )
     .await?;
+    let attempted_at = now_unix_nanos()?;
     let state = AttemptState::Failed {
         error: error.to_string(),
         failure: error.failure(),
+        retry: RetryRule::after_failure(prior.as_ref(), error, attempted_at, reconcile_interval),
     };
     repository::write_generation_state(
         transaction,
-        generation_state(generation, now_unix_nanos()?, state),
+        generation_state(generation, attempted_at, state),
     )
     .await?;
     Ok(())

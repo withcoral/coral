@@ -17,7 +17,7 @@ use tracing::instrument::WithSubscriber as _;
 
 use crate::indexer::functions::{self, SavedFunctionIndexer};
 use crate::indexer::operations::{self, AttemptedGeneration, OperationIndexer, OperationRemoval};
-use crate::indexer::{EntityIndexer, IndexError};
+use crate::indexer::{self, EntityIndexer, IndexError};
 
 mod reconcile;
 
@@ -48,13 +48,17 @@ pub struct SearchIndex {
     /// A test-only index whose notifications write nothing.
     #[cfg(any(test, feature = "test-fixtures"))]
     inert: bool,
+    /// A test-only pause in each write once it holds its Workspace's lock.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    stall_after_lock: Option<Duration>,
 }
 
 impl SearchIndex {
     /// Builds the write side over initialized domain persistence whose search
     /// storage [`crate::prepare_storage`] has prepared. The reconcile task
     /// runs a pass every `reconcile_interval`, and a pass retries a failed
-    /// Generation or Saved Function once its failure is older than that.
+    /// Generation or Saved Function by the retry module's rule, whose waits
+    /// start at that interval.
     #[must_use]
     pub fn new(database: Arc<Database>, reconcile_interval: Duration) -> Self {
         Self {
@@ -66,6 +70,8 @@ impl SearchIndex {
             in_flight: Arc::new(watch::Sender::new(0)),
             #[cfg(any(test, feature = "test-fixtures"))]
             inert: false,
+            #[cfg(any(test, feature = "test-fixtures"))]
+            stall_after_lock: None,
         }
     }
 
@@ -89,7 +95,7 @@ impl SearchIndex {
     /// workflow sends ids alone and never waits for the preparation (ADR
     /// 0017). Writing an indexed Generation again rewrites its rows. A failed
     /// preparation or write leaves a `failed` state row, and the reconcile
-    /// task retries the Generation once the failure is old enough.
+    /// task retries the Generation when its retry rule is due.
     ///
     /// A Generation that another publication replaced before the write runs
     /// is skipped: the replacing publication's notification indexes its own.
@@ -303,6 +309,15 @@ impl SearchIndex {
         self
     }
 
+    /// Pauses each later write for `stall` once it holds its Workspace's
+    /// lock, so a test can overrun the write limit after the lock.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub const fn with_stall_after_lock(mut self, stall: Duration) -> Self {
+        self.stall_after_lock = Some(stall);
+        self
+    }
+
     /// Writes one Generation's entries, then logs each search warning their
     /// preparation left. A failure is logged and recorded. The caller holds
     /// the mutex.
@@ -383,21 +398,44 @@ impl SearchIndex {
             .map_err(|_elapsed| IndexError::TimedOut(self.write_limit))?
     }
 
+    /// Writes one entry under its Workspace's lock. A write that overruns
+    /// its limit before it holds the lock waited for another writer, so it
+    /// fails as [`IndexError::WriterBusy`], which may pass on a later try.
     async fn write<I: EntityIndexer>(
         &self,
         indexer: &I,
         entry: &I::Entry,
     ) -> Result<(), IndexError> {
-        self.within_limit(async {
-            let mut transaction = self.database.begin().await?;
-            if let Err(error) = indexer.index(&mut transaction, entry).await {
-                rollback(transaction).await;
-                return Err(error);
-            }
-            transaction.commit().await?;
-            Ok(())
-        })
-        .await
+        let mut locked = false;
+        let written = self
+            .within_limit(async {
+                let mut transaction = self.database.begin().await?;
+                let outcome =
+                    match indexer::lock_workspace(&mut transaction, indexer.workspace_id(entry))
+                        .await
+                    {
+                        Ok(()) => {
+                            locked = true;
+                            #[cfg(any(test, feature = "test-fixtures"))]
+                            if let Some(stall) = self.stall_after_lock {
+                                tokio::time::sleep(stall).await;
+                            }
+                            indexer.index(&mut transaction, entry).await
+                        }
+                        Err(error) => Err(error),
+                    };
+                if let Err(error) = outcome {
+                    rollback(transaction).await;
+                    return Err(error);
+                }
+                transaction.commit().await?;
+                Ok(())
+            })
+            .await;
+        match written {
+            Err(IndexError::TimedOut(limit)) if !locked => Err(IndexError::WriterBusy(limit)),
+            written => written,
+        }
     }
 
     async fn erase<I: EntityIndexer>(
@@ -437,7 +475,13 @@ impl SearchIndex {
     ) -> Result<(), IndexError> {
         self.within_limit(async {
             let mut transaction = self.begin_when_writer_free().await?;
-            operations::record_failed_attempt(&mut transaction, generation, error).await?;
+            operations::record_failed_attempt(
+                &mut transaction,
+                generation,
+                error,
+                self.reconcile_interval,
+            )
+            .await?;
             transaction.commit().await?;
             Ok(())
         })
@@ -450,7 +494,13 @@ impl SearchIndex {
     ) -> Result<(), IndexError> {
         self.within_limit(async {
             let mut transaction = self.begin_when_writer_free().await?;
-            functions::record_failed_attempt(&mut transaction, entry, error).await?;
+            functions::record_failed_attempt(
+                &mut transaction,
+                entry,
+                error,
+                self.reconcile_interval,
+            )
+            .await?;
             transaction.commit().await?;
             Ok(())
         })

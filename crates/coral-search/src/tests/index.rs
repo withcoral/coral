@@ -68,48 +68,121 @@ async fn one_reconcile_pass_indexes_a_published_generation_and_a_second_changes_
 }
 
 #[tokio::test]
-async fn a_pass_retries_a_failed_generation_once_the_failure_is_older_than_the_interval() {
+async fn a_transient_failure_waits_twice_as_long_after_each_attempt() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
-    let generation = world
-        .stored_entries(&world.tracer)
-        .await
-        .generation_id()
-        .to_string();
+    let entries = world.stored_entries(&world.tracer).await;
     world.reject_complete_states().await;
+
     world.index.reconcile().await;
-    let failed = world.states().await;
+    assert_eq!(world.retries().await, [Retry::after(1, RECONCILE_INTERVAL)]);
+    // A notified write always tries, whatever the retry rule.
+    notify(&world.index, &entries);
+    world.index.settled().await;
     assert_eq!(
-        failed
-            .iter()
-            .map(|state| (state.generation_id.as_str(), state.state.as_str()))
-            .collect::<Vec<_>>(),
-        [(generation.as_str(), "failed")]
+        world.retries().await,
+        [Retry::after(2, RECONCILE_INTERVAL * 2)]
     );
+
     world.allow_complete_states().await;
-
     world.index.reconcile().await;
-    assert_eq!(
-        world.states().await,
-        failed,
-        "a failure newer than the interval is left alone"
+    assert!(
+        world.operation_rows().await.is_empty(),
+        "a pass before the retry time leaves the failure"
     );
-    assert!(world.operation_rows().await.is_empty());
-
-    let short_interval = SearchIndex::new(
-        world.modules.search.database.clone(),
-        std::time::Duration::from_nanos(1),
-    );
-    short_interval.reconcile().await;
+    world.make_retries_due().await;
+    world.index.reconcile().await;
     assert_eq!(
         world.states().await,
         [StateRow::complete(
             &world.tracer,
-            &generation,
+            &entries.generation_id().to_string(),
             "Weather Tracer"
         )]
     );
-    assert_eq!(world.indexed_generations().await, [generation]);
+    assert_eq!(world.retries().await, [Retry::none()]);
+}
+
+#[tokio::test]
+async fn a_timeout_after_the_workspace_lock_waits_for_a_newer_coral_version() {
+    // `NULL` is the version of a row written before Coral recorded one.
+    for older_version in ["'0.0.0'", "NULL"] {
+        let upstream = MockServer::start().await;
+        let world = World::publish_tracer(&upstream).await;
+        let entries = world.stored_entries(&world.tracer).await;
+        let stalled = world
+            .index
+            .clone()
+            .with_write_limit(std::time::Duration::from_millis(100))
+            .with_stall_after_lock(std::time::Duration::from_hours(1));
+
+        notify(&stalled, &entries);
+        stalled.settled().await;
+        let [state] = world.states().await.try_into().expect("one state row");
+        assert_eq!(state.state, "failed");
+        let error = state.error.expect("a failed state carries its error");
+        assert!(error.contains("did not finish"), "{error}");
+        assert_eq!(world.retries().await, [Retry::on_new_version(1)]);
+
+        world.make_retries_due().await;
+        let stamps = world.attempt_stamps().await;
+        world.index.reconcile().await;
+        assert_eq!(
+            world.attempt_stamps().await,
+            stamps,
+            "a pass under the same Coral version leaves the failure"
+        );
+
+        world
+            .modules
+            .fixture
+            .execute_fixture_sql(&format!(
+                "UPDATE search_index_states SET failed_coral_version = {older_version}"
+            ))
+            .await
+            .expect("record an older Coral version");
+        world.index.reconcile().await;
+        assert_eq!(
+            world.states().await,
+            [StateRow::complete(
+                &world.tracer,
+                &entries.generation_id().to_string(),
+                "Weather Tracer"
+            )],
+            "older version: {older_version}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_timeout_waiting_for_the_writer_is_transient() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let entries = world.stored_entries(&world.tracer).await;
+    let index = world
+        .index
+        .clone()
+        .with_write_limit(std::time::Duration::from_millis(200));
+    let database = world.modules.search.database.clone();
+
+    // SQLite's writer, or Postgres's lock on the Workspace's index writes.
+    let mut blocker = database.begin().await.expect("hold the writer");
+    crate::indexer::lock_workspace(&mut blocker, &world.workspace)
+        .await
+        .expect("hold the Workspace's index lock");
+    notify(&index, &entries);
+    // Released after the write's limit, within the failure's own limit to
+    // record its state.
+    tokio::join!(index.settled(), async {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        blocker.rollback().await.expect("release the writer");
+    });
+
+    let [state] = world.states().await.try_into().expect("one state row");
+    assert_eq!(state.state, "failed");
+    let error = state.error.expect("a failed state carries its error");
+    assert!(error.contains("waited more than"), "{error}");
+    assert_eq!(world.retries().await, [Retry::after(1, RECONCILE_INTERVAL)]);
 }
 
 #[tokio::test]
@@ -996,11 +1069,17 @@ async fn a_write_stalled_past_its_limit_rolls_back_and_frees_later_writes() {
         .into_iter()
         .next()
         .expect("the stalled write is logged");
+    // SQLite's writer stalls the write before the Workspace's lock;
+    // Postgres's table lock stalls it after.
+    let expected = match database.system() {
+        DatabaseSystem::Sqlite => "waited more than",
+        DatabaseSystem::Postgres => "did not finish",
+    };
     assert!(
         first
             .fields
             .get("error")
-            .is_some_and(|error| error.contains("did not finish")),
+            .is_some_and(|error| error.contains(expected)),
         "{first:?}"
     );
 
@@ -1678,6 +1757,72 @@ impl World {
         stamps
     }
 
+    /// Each Generation state row's retry rule, by Generation.
+    async fn retries(&self) -> Vec<Retry> {
+        let rows: Vec<RetryColumns> = self
+            .modules
+            .search
+            .database
+            .fetch_all(
+                Query::select()
+                    .columns(
+                        [
+                            "attempted_at_unix_nanos",
+                            "failed_attempts",
+                            "retry_after_unix_nanos",
+                            "failed_coral_version",
+                        ]
+                        .map(Alias::new),
+                    )
+                    .from(Alias::new("search_index_states"))
+                    .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
+                    .and_where(Expr::col(Alias::new("kind")).eq("operation"))
+                    .order_by(Alias::new("provider_generation_id"), Order::Asc)
+                    .to_owned(),
+            )
+            .await
+            .expect("read the retry rules");
+        rows.into_iter()
+            .map(|(attempted_at, attempts, retry_after, version)| Retry {
+                attempts,
+                wait_nanos: retry_after.map(|retry_after| retry_after - attempted_at),
+                version_recorded: version
+                    .is_some_and(|version| version == env!("CARGO_PKG_VERSION")),
+            })
+            .collect()
+    }
+
+    /// Each Generation state row's attempt time, by Generation.
+    async fn attempt_stamps(&self) -> Vec<i64> {
+        let rows: Vec<(i64,)> = self
+            .modules
+            .search
+            .database
+            .fetch_all(
+                Query::select()
+                    .column(Alias::new("attempted_at_unix_nanos"))
+                    .from(Alias::new("search_index_states"))
+                    .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
+                    .order_by(Alias::new("target_id"), Order::Asc)
+                    .to_owned(),
+            )
+            .await
+            .expect("read the attempt times");
+        rows.into_iter().map(|(stamp,)| stamp).collect()
+    }
+
+    /// Moves every transient failure's retry time into the past.
+    async fn make_retries_due(&self) {
+        self.modules
+            .fixture
+            .execute_fixture_sql(
+                "UPDATE search_index_states SET retry_after_unix_nanos = 0 \
+                 WHERE retry_after_unix_nanos IS NOT NULL",
+            )
+            .await
+            .expect("make the retries due");
+    }
+
     /// The Workspace's Generation state rows, by Generation.
     async fn states(&self) -> Vec<StateRow> {
         let rows: Vec<StateColumns> = self
@@ -1717,6 +1862,8 @@ impl World {
             .collect()
     }
 }
+
+type RetryColumns = (i64, Option<i64>, Option<i64>, Option<String>);
 
 type StateColumns = (String, String, String, Option<String>, Option<String>);
 
@@ -1810,6 +1957,44 @@ impl StateRow {
             state: "complete".to_string(),
             display_name: Some(display_name.to_string()),
             error: None,
+        }
+    }
+}
+
+/// A state row's retry rule: the failures in a row, how long after the last
+/// one a pass may retry it, and whether this Coral version recorded it.
+#[derive(Debug, PartialEq, Eq)]
+struct Retry {
+    attempts: Option<i64>,
+    wait_nanos: Option<i64>,
+    version_recorded: bool,
+}
+
+impl Retry {
+    /// A transient failure a pass retries `wait` after it.
+    fn after(attempts: i64, wait: std::time::Duration) -> Self {
+        Self {
+            attempts: Some(attempts),
+            wait_nanos: Some(i64::try_from(wait.as_nanos()).expect("a short wait")),
+            version_recorded: true,
+        }
+    }
+
+    /// A failure a pass retries only under another Coral version.
+    const fn on_new_version(attempts: i64) -> Self {
+        Self {
+            attempts: Some(attempts),
+            wait_nanos: None,
+            version_recorded: true,
+        }
+    }
+
+    /// A row with no failure to retry.
+    const fn none() -> Self {
+        Self {
+            attempts: None,
+            wait_nanos: None,
+            version_recorded: false,
         }
     }
 }
