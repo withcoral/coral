@@ -15,6 +15,9 @@ use coral_db::Transaction;
 use coral_workspace::{AuthoritySource, ChangeContext, Principal, PrincipalKind, UserId};
 use uuid::Uuid;
 
+/// How long a User has to complete a connection request before it expires.
+const CONNECTION_REQUEST_LIFETIME_NANOS: i64 = 900_000_000_000;
+
 account_id!(
     ConnectionRequestId,
     "Opaque, non-authorizing Account Connection Request identifier."
@@ -535,44 +538,44 @@ pub async fn resolve_connection_in_transaction(
         // expired or no longer fits the contract reconnects. The request pins the
         // exact Account and its current authorization version, so only this User's
         // explicit completion satisfies it. Coral never replaces credentials itself.
-        // The second attempt serves the creator whose insert met the request
-        // another creator committed between its lookup and its insert: the
-        // lookup then finds that request and judges it like any other.
-        for _ in 0..2 {
-            let previous =
-                repository::pending_connection(tx, target_provider, &user, &contract).await?;
-            if let Some(id) = previous {
-                let mut previous = repository::load_connection(tx, workspace, &user, id).await?;
-                refresh(tx, workspace, &user, &mut previous, now).await?;
-                if previous.contract != contract {
-                    return Err(Error::AccountInput);
-                }
-                if previous.state == ConnectionState::Pending {
-                    return Ok(ConnectionResolution::Waiting(id));
-                }
+        let previous =
+            repository::pending_connection(tx, target_provider, &user, &contract).await?;
+        if let Some(id) = previous {
+            let mut previous = repository::load_connection(tx, workspace, &user, id).await?;
+            refresh(tx, workspace, &user, &mut previous, now).await?;
+            if previous.contract != contract {
+                return Err(Error::AccountInput);
             }
-            let id = ConnectionRequestId(Uuid::new_v4());
-            let expires = now
-                .checked_add(900_000_000_000)
-                .ok_or(Error::AccountInput)?;
-            let account = repository::ensure_account(
-                tx,
-                workspace,
-                target_provider.id(),
-                Some(&super::intent::Caller::User(user.clone())),
-                &contract,
-            )
-            .await?;
-            if repository::insert_connection(tx, target_provider, id, &contract, expires, &account)
-                .await?
-            {
+            if previous.state == ConnectionState::Pending {
                 return Ok(ConnectionResolution::Waiting(id));
             }
         }
-        // The request the second attempt found ended before its insert too:
-        // the Invocation fails its gate like a missing Account, without
-        // inventing a request.
-        return Err(Error::AccountRequired);
+        let id = ConnectionRequestId(Uuid::new_v4());
+        let expires = now
+            .checked_add(CONNECTION_REQUEST_LIFETIME_NANOS)
+            .ok_or(Error::AccountInput)?;
+        let account = repository::ensure_account(
+            tx,
+            workspace,
+            target_provider.id(),
+            Some(&super::intent::Caller::User(user.clone())),
+            &contract,
+        )
+        .await?;
+        if repository::insert_connection(tx, target_provider, id, &contract, expires, &account)
+            .await?
+        {
+            return Ok(ConnectionResolution::Waiting(id));
+        }
+        // Another creator committed this User's request between the lookup
+        // and the insert: it is pending (the index admits no other) and fresh
+        // (committed moments ago with a full lifetime), so it is the one to
+        // wait on. Gone again already, the Invocation fails its gate like a
+        // missing Account, without inventing a request.
+        return match repository::pending_connection(tx, target_provider, &user, &contract).await? {
+            Some(id) => Ok(ConnectionResolution::Waiting(id)),
+            None => Err(Error::AccountRequired),
+        };
     };
     if &row.provider_id != target_provider.id()
         || row.provider_account_setting_version != target_provider.version()
