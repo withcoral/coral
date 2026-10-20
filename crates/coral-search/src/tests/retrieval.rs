@@ -750,13 +750,18 @@ async fn a_stale_match_without_evidence_leaves_an_empty_page() {
 }
 
 #[tokio::test]
-async fn a_query_without_a_searchable_term_is_empty_while_entities_wait() {
-    let corpus = Corpus::unconverged().await;
-    let page = corpus.search(Corpus::query("ab")).await;
-    for kind in [EntityKind::Operation, EntityKind::SavedFunction] {
-        let status = status(&page, kind);
-        assert_eq!(status.state(), RetrieverState::Empty, "{kind:?}");
-        assert_eq!(status.coverage().failed_units(), 0, "{kind:?}");
+async fn a_query_without_a_searchable_term_is_empty_even_while_entities_wait() {
+    // `ab` has no term of three characters; `...` and `___` hold no letter
+    // or digit, so they have no phrase to order by.
+    for corpus in [Corpus::unconverged().await, Corpus::new().await] {
+        for query in ["ab", "...", "___"] {
+            let page = corpus.search(Corpus::query(query)).await;
+            for kind in [EntityKind::Operation, EntityKind::SavedFunction] {
+                let status = status(&page, kind);
+                assert_eq!(status.state(), RetrieverState::Empty, "{query:?}: {kind:?}");
+                assert_eq!(status.coverage().failed_units(), 0, "{query:?}: {kind:?}");
+            }
+        }
     }
 }
 
