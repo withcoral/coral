@@ -54,27 +54,41 @@ from tokenizers import Tokenizer
 FRAME = '{"run_id":"x-%s-x"}'
 REFERENCE = "round"
 API_MODEL = "claude-sonnet-5-5"
-HUGGING_FACE = {
-    "llama3": ("meta-llama/Meta-Llama-3-8B", "NousResearch/Meta-Llama-3-8B"),
-    "qwen3": ("Qwen/Qwen3-8B", None),
-    "gemma3": ("google/gemma-3-1b-it", "unsloth/gemma-3-1b-it"),
-    "mistral": ("mistralai/Mistral-Nemo-Instruct-2407", "unsloth/Mistral-Nemo-Instruct-2407"),
-    "deepseek": ("deepseek-ai/DeepSeek-V3", None),
+# Each tokenizer: the repository and its commit on 2026-10-20, then the open
+# mirror of a gated repository with its commit. Pinned commits keep the
+# snapshot reproducible: a later repository update cannot change a verdict.
+HUGGING_FACE: dict[str, tuple[tuple[str, str], tuple[str, str] | None]] = {
+    "llama3": (
+        ("meta-llama/Meta-Llama-3-8B", "8cde5ca8380496c9a6cc7ef3a8b46a0372a1d920"),
+        ("NousResearch/Meta-Llama-3-8B", "315b20096dc791d381d514deb5f8bd9c8d6d3061"),
+    ),
+    "qwen3": (("Qwen/Qwen3-8B", "b968826d9c46dd6066d109eabc6255188de91218"), None),
+    "gemma3": (
+        ("google/gemma-3-1b-it", "dcc83ea841ab6100d6b47a070329e1ba4cf78752"),
+        ("unsloth/gemma-3-1b-it", "5b11413a10db4e486ef16a20101fd028f8f2499c"),
+    ),
+    "mistral": (
+        ("mistralai/Mistral-Nemo-Instruct-2407", "04d8a90549d23fc6bd7f642064003592df51e9b3"),
+        ("unsloth/Mistral-Nemo-Instruct-2407", "e9976040f42d8a5590ed58cefe973061b3f973b5"),
+    ),
+    "deepseek": (("deepseek-ai/DeepSeek-V3", "e815299b0bcbac849fa540c768ef21845365c9eb"), None),
 }
 
 Counter = Callable[[str], int]
 
 
-def hugging_face_counter(repository: str, mirror: str | None) -> tuple[str, Counter]:
-    """Loads tokenizer.json from the repository, or from its open mirror when access is refused."""
+def hugging_face_counter(
+    repository: tuple[str, str], mirror: tuple[str, str] | None
+) -> tuple[str, Counter]:
+    """Loads tokenizer.json at the pinned commit, from the mirror when access is refused."""
     try:
-        path = hf_hub_download(repository, "tokenizer.json")
-        source = repository
+        path = hf_hub_download(repository[0], "tokenizer.json", revision=repository[1])
+        source = f"{repository[0]}@{repository[1][:8]}"
     except HfHubHTTPError:
         if mirror is None:
             raise
-        path = hf_hub_download(mirror, "tokenizer.json")
-        source = mirror
+        path = hf_hub_download(mirror[0], "tokenizer.json", revision=mirror[1])
+        source = f"{mirror[0]}@{mirror[1][:8]}"
     tokenizer = Tokenizer.from_file(path)
     return source, lambda text: len(tokenizer.encode(text, add_special_tokens=False).ids)
 
@@ -137,11 +151,11 @@ def api_frame_counter() -> Counter:
                 with urllib.request.urlopen(request, timeout=30) as response:
                     return json.load(response)["input_tokens"]
             except urllib.error.HTTPError as error:
-                detail = error.read().decode(errors="replace")[:300]
                 if error.code in (429, 500, 502, 503, 529) and attempt < 7:
-                    time.sleep(float(error.headers.get("retry-after") or 2 * (attempt + 1)))
+                    time.sleep(retry_delay(error.headers.get("retry-after"), attempt))
                     continue
-                sys.exit(f"count_tokens failed: HTTP {error.code}: {detail}")
+                # The response body stays out of the message: it is upstream text.
+                sys.exit(f"count_tokens failed: HTTP {error.code}")
             except (urllib.error.URLError, TimeoutError) as error:
                 if attempt < 7:
                     time.sleep(2 * (attempt + 1))
@@ -150,6 +164,14 @@ def api_frame_counter() -> Counter:
         sys.exit("count_tokens: still failing after 8 attempts")
 
     return count
+
+
+def retry_delay(retry_after: str | None, attempt: int) -> float:
+    """Seconds to wait: a numeric Retry-After header, else a growing backoff.
+    An HTTP-date Retry-After falls back to the backoff."""
+    if retry_after is not None and retry_after.strip().isdigit():
+        return float(retry_after.strip())
+    return 2.0 * (attempt + 1)
 
 
 def read_words(path: Path) -> list[str]:

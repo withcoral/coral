@@ -34,9 +34,10 @@ pub const MAX_WORDS: usize = 5;
 pub const WORD_MAX_LETTERS: usize = 20;
 /// Longest accepted identifier in bytes: five words of twenty letters and four hyphens.
 pub const MAX_LENGTH: usize = MAX_WORDS * WORD_MAX_LETTERS + (MAX_WORDS - 1);
-/// JSON Schema pattern of an accepted identifier: the word form or a canonical lowercase UUID.
-pub const SCHEMA_PATTERN: &str =
-    r"^([a-z]+(-[a-z]+){3,4}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$";
+/// JSON Schema pattern of an accepted identifier: the word form, each word at
+/// most [`WORD_MAX_LETTERS`] letters, or a canonical lowercase UUID. It agrees
+/// with [`validate`] on every value.
+pub const SCHEMA_PATTERN: &str = r"^([a-z]{1,20}(-[a-z]{1,20}){3,4}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$";
 
 /// The word list, in file order: 246 lowercase English words, each one token on
 /// the tokenizers of Claude, GPT, Llama 3, Qwen3, Gemma 3, Mistral and `DeepSeek`.

@@ -1421,6 +1421,7 @@ describe('hierarchical activity through the private server interface', () => {
     'height-word-database-library-power-title',
     'Height-word-database-library',
     'height-word-database-librar1',
+    'abcdefghijklmnopqrstu-word-database-library',
     '00000000-0000-4000-8000-00000000009',
     '../runs/height-word-database-library',
   ])('rejects the Run name %s before asking Coral', async (id) => {

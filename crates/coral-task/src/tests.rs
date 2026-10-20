@@ -519,12 +519,12 @@ async fn a_taken_task_identifier_is_reported_and_writes_nothing() {
         .await
         .expect("create Workspace");
     let principal = AuthenticatedPrincipal::user(user);
-    let task = |id: &str, started_at_unix_nanos: i64| {
+    let task = |id: &str, intent: &str, started_at_unix_nanos: i64| {
         crate::Task::new(
             crate::TaskId::parse(id).expect("identifier"),
             workspace.id().clone(),
             principal.principal().clone(),
-            TaskIntent::parse("Check identifiers").expect("Task intent"),
+            TaskIntent::parse(intent).expect("Task intent"),
             None,
             None,
             started_at_unix_nanos,
@@ -532,22 +532,31 @@ async fn a_taken_task_identifier_is_reported_and_writes_nothing() {
         )
     };
     let taken = "random-big-business-store";
+    let first = task(taken, "Check identifiers", 10);
 
     let mut transaction = tasks.database.begin().await.expect("transaction");
     assert!(
-        crate::repository::insert(&mut transaction, &task(taken, 10))
+        crate::repository::insert(&mut transaction, &first)
             .await
             .expect("first insert")
     );
+    // The conflicting Task differs in every column it can, so an insert that
+    // overwrote the row would show.
     assert!(
-        !crate::repository::insert(&mut transaction, &task(taken, 20))
-            .await
-            .expect("conflicting insert")
+        !crate::repository::insert(
+            &mut transaction,
+            &task(taken, "Overwrite the first Task", 20)
+        )
+        .await
+        .expect("conflicting insert")
     );
     assert!(
-        crate::repository::insert(&mut transaction, &task("height-word-database-library", 30))
-            .await
-            .expect("fresh insert after the conflict")
+        crate::repository::insert(
+            &mut transaction,
+            &task("height-word-database-library", "Check identifiers", 30)
+        )
+        .await
+        .expect("fresh insert after the conflict")
     );
     transaction.commit().await.expect("commit");
     let found = tasks
@@ -559,8 +568,9 @@ async fn a_taken_task_identifier_is_reported_and_writes_nothing() {
         .await
         .expect("get Task");
     assert_eq!(
-        found.started_at_unix_nanos(),
-        10,
+        found.intent(),
+        first.intent(),
         "the conflict changed nothing"
     );
+    assert_eq!(found.started_at_unix_nanos(), 10);
 }

@@ -1145,11 +1145,11 @@ export async function loadActivity(
   return page
 }
 
-// A Run identifier: four or five lowercase words joined by hyphens, or the
-// canonical UUID of a Run from before Coral named Runs with words. The same
-// pattern as `SCHEMA_PATTERN` in `crates/coral-identifier`.
+// A Run identifier: four or five lowercase words of at most 20 letters joined
+// by hyphens, or the canonical UUID of a Run from before Coral named Runs with
+// words. The same pattern as `SCHEMA_PATTERN` in `crates/coral-identifier`.
 const RUN_IDENTIFIER =
-  /^([a-z]+(-[a-z]+){3,4}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/
+  /^([a-z]{1,20}(-[a-z]{1,20}){3,4}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/
 
 export function loadRunActivity(
   request: Request,

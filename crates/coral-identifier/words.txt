@@ -70,6 +70,7 @@ form
 format
 free
 full
+future
 game
 general
 global
@@ -145,7 +146,6 @@ package
 page
 park
 party
-people
 period
 person
 place

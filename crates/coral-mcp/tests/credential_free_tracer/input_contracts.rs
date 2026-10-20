@@ -426,7 +426,7 @@ async fn check_identities(session: &RawSession, task: &str, tools: &[Value]) {
                 "{name}.{field}"
             );
             let validator = validator(schema);
-            // Four or five words, as Coral issues them, or the UUID of an
+            // Four or five words, the shapes Coral accepts, or the UUID of an
             // identifier issued before Coral used words.
             for valid in [
                 "height-word-database-library",
@@ -440,6 +440,7 @@ async fn check_identities(session: &RawSession, task: &str, tools: &[Value]) {
                 "height-word-database".to_string(),
                 "Height-word-database-library".to_string(),
                 "height-word-database-library-power-table".to_string(),
+                "abcdefghijklmnopqrstu-word-database-library".to_string(),
                 "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxx1".to_string(),
                 canonical.to_uppercase(),
                 canonical.replace('-', ""),

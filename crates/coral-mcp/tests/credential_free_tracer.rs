@@ -2492,10 +2492,9 @@ async fn quiet_invocations_do_not_require_history_draining(client: &SdkClient, t
         loop {
             assert_eq!(result.is_error, Some(false), "{result:?}");
             let update = structured(&result);
-            // The two Runs have identifiers of different lengths, and each
-            // Run Update carries its identifier in `run_id` and in the Run
-            // Status Page URL. Measure without it, so only the Invocation
-            // count separates the Runs.
+            // Run identifier lengths vary, and each Run Update carries its
+            // identifier in `run_id` and in the Run Status Page URL. Measure
+            // without it, so only the Invocation count separates the Runs.
             let run_id = update["run_id"].as_str().expect("run_id is text");
             largest_update_bytes = largest_update_bytes.max(
                 serde_json::to_string(&result)
