@@ -166,17 +166,16 @@ impl Renderer<'_> {
 
     /// A Saved Function's result: inside its `Promise`, an object's members
     /// inline one level deep, as in the input, or an array element's. What
-    /// the tree cannot read is the marker, and so is an alias that `seen`
-    /// already followed: its `Promise` would hold itself without end.
+    /// the tree cannot read is the marker, and so is a type that resolves to
+    /// an alias `seen` already followed: its `Promise` would hold itself
+    /// without end.
     fn saved_function_result(&self, type_: &Type, seen: &mut HashSet<String>) -> String {
-        if let Type::Named { name, arguments } = type_
-            && arguments.is_empty()
-            && seen.contains(name)
-            && self.alias(name).is_some()
-        {
-            return CUT_MARKER.to_string();
-        }
         match self.resolved_past(type_, seen) {
+            Type::Named { name, arguments }
+                if arguments.is_empty() && self.alias(name).is_some() =>
+            {
+                return CUT_MARKER.to_string();
+            }
             Type::Named { name, arguments } if self.alias(name).is_none() => {
                 match (name.as_str(), arguments.as_slice()) {
                     ("Promise", [value]) => {
