@@ -196,17 +196,22 @@ const NAMES: &str = r#"{
 #[tokio::test]
 async fn postgres_camel_case_step_splits_indexed_names_and_restates_lengths_and_statistics() {
     coral_test_support::database_only!(Postgres);
-    let through_text_search = coral_test_support::edited_migration_plan(|migrations| {
+    // Every step but 31 and 32, the two under test. This binary publishes
+    // the Provider, and its repositories need every column a later step
+    // outside Universal Search adds, so the plan skips only the steps the
+    // test applies later. Step 33 drops the stream's ledger, which 31 and 32
+    // do not read.
+    let before_camel_case = coral_test_support::edited_migration_plan(|migrations| {
         migrations
             .into_iter()
-            .filter(|migration| migration.version <= 30)
+            .filter(|migration| !(31..=32).contains(&migration.version))
             .collect()
     });
-    let modules = TestModules::with_plan(&through_text_search).await;
+    let modules = TestModules::with_plan(&before_camel_case).await;
     let database = modules.search.database.clone();
     // This binary's statistics count also writes the watermark that step 32
-    // adds. The columns exist only while it indexes, so the database then
-    // has the shape a binary at step 30 left.
+    // adds. The columns exist only while it indexes, so the search tables
+    // then have the shape a binary at step 30 left.
     modules
         .fixture
         .execute_fixture_sql(
