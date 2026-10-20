@@ -437,6 +437,9 @@ const reviewHeaderOverArguments: Story = {
   play: async ({ canvasElement }) => {
     const body = within(canvasElement.ownerDocument.body)
     const review = await body.findByRole('region', { name: `Review ${request.callPath}` })
+    // The drawer slides in from off-screen, so measure only once it rests.
+    const drawer = body.getByRole('dialog')
+    await Promise.all(drawer.getAnimations().map((animation) => animation.finished))
     const heading = within(review).getByRole('heading', { name: 'Arguments to review' })
     const header = review.querySelector('header')!
     let port = heading.parentElement
