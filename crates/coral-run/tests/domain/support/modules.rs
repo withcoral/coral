@@ -1192,6 +1192,7 @@ pub(crate) async fn admitted_invocation(
         target,
         call_path: operation.call_path.clone(),
         arguments_json: "{}".to_string(),
+        source_location: None,
         admitted_at_unix_nanos: now,
     })
 }
@@ -1220,6 +1221,7 @@ pub(crate) fn test_invoker(
         worker_claim_expires_at_unix_nanos: run
             .worker_claim_expires_at_unix_nanos
             .unwrap_or(run.deadline_at_unix_nanos),
+        linked_snapshots: std::collections::HashMap::new(),
     };
     let (owner, _mailbox) = crate::owner::OwnerHandle::new(run.id.clone(), claim_id);
     crate::invocation::OperationInvoker::new(
