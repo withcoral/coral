@@ -609,6 +609,33 @@ function ProvidersTableScreen({
     },
     [virtual],
   )
+  // The headings the view lists, groups inside collapsed providers included,
+  // so collapsing all leaves each provider's groups collapsed when it opens.
+  const headingKeys = useMemo(
+    () =>
+      visibleByProvider.flatMap(({ provider, listed }) => [
+        `provider:${provider.id}`,
+        ...new Set(listed.map((o) => `group:${provider.id}:${o.group || 'Other'}`)),
+      ]),
+    [visibleByProvider],
+  )
+  // A provider shows rows while it is open and lists one open group, or no groups.
+  const anyExpanded = sections.some(
+    (section) =>
+      !section.collapsed &&
+      (section.groups.length === 0 || section.groups.some((group) => !group.collapsed)),
+  )
+  const toggleAllCollapsed = () => {
+    setCollapsed((current) => {
+      const next = new Set(current)
+      for (const key of headingKeys) {
+        if (anyExpanded) next.add(key)
+        else next.delete(key)
+      }
+      return next
+    })
+    tableRef.current?.scrollTo?.({ top: 0 })
+  }
   // A new tab starts at its top. This runs before the reveal, so an
   // operation route still scrolls to its row.
   useEffect(() => {
@@ -894,6 +921,13 @@ function ProvidersTableScreen({
           onChange: setTableFilterInput,
         }}
       >
+        <Button.IconButton
+          variant="secondary"
+          name={anyExpanded ? 'ChevronsDownUp' : 'ChevronsUpDown'}
+          tooltipText={anyExpanded ? 'Collapse all' : 'Expand all'}
+          disabled={sections.length === 0}
+          onClick={toggleAllCollapsed}
+        />
         <PolicyFilterMenu
           value={selectedView ? 'selected' : (policyFilter?.value ?? null)}
           selectedCount={selected.size}
@@ -963,6 +997,8 @@ function ProvidersTableScreen({
               form={form}
               providers={providers}
               selected={selected}
+              showingSelected={selectedView !== null}
+              onShowSelected={() => (selectedView ? setSelectedView(null) : showSelected())}
               onClear={() => {
                 setSelected(new Set())
                 setSelectedView(null)
@@ -1287,15 +1323,20 @@ function BulkPolicyForm({
   form,
   onClear,
   onConfirmed,
+  onShowSelected,
   providers,
   selected,
+  showingSelected,
 }: {
   canChange: boolean
   form: FormContext
   onClear: () => void
   onConfirmed: (confirmed: SelectionKey[]) => void
+  /** Opens the selected view, or leaves it while it shows. */
+  onShowSelected: () => void
   providers: ProviderView[]
   selected: Set<SelectionKey>
+  showingSelected: boolean
 }) {
   const mutations = usePolicyMutations()
   const [access, setAccess] = useState<PolicyState>('approval_required')
@@ -1330,7 +1371,18 @@ function BulkPolicyForm({
     >
       <Fields form={form} intent="policy" />
       <input type="hidden" name="access" value={access} />
-      <Typography.BodyStrong as="span">{`${selected.size.toLocaleString('en-US')} selected`}</Typography.BodyStrong>
+      <Tooltip
+        content={showingSelected ? 'Show all operations.' : 'Show only the selected operations.'}
+      >
+        <Button.TextButton
+          type="button"
+          variant="secondary"
+          aria-pressed={showingSelected}
+          onClick={onShowSelected}
+        >
+          {`${selected.size.toLocaleString('en-US')} selected`}
+        </Button.TextButton>
+      </Tooltip>
       <Picker
         label="Bulk policy"
         options={bulkPolicyOptions}

@@ -207,6 +207,30 @@ test('a collapsed heading hides its rows but still counts and selects them', asy
   expect(rowNames()).toEqual(['issues.create', 'issues.list', 'repos.get', 'getForecast'])
 })
 
+// Catches: a collapse-all that misses the groups of a collapsed provider, or
+// an expand-all that leaves a heading the reader collapsed by hand.
+test('collapse all closes every heading and expand all opens them', async () => {
+  const grouped = provider(github.id, 'GitHub', 'github', [
+    ['repos.get', 'repos'],
+    ['issues.list', 'issues'],
+  ])
+  renderPage({ providers: [grouped, weather] })
+  await user.click(screen.getByRole('button', { name: 'Collapse issues' }))
+  await user.click(screen.getByRole('button', { name: 'Collapse all' }))
+  expect(rowNames()).toEqual([])
+
+  // An opened provider keeps its groups collapsed.
+  await user.click(screen.getByRole('button', { name: 'Expand GitHub' }))
+  expect(rowNames()).toEqual([])
+  expect(screen.getByRole('button', { name: 'Expand repos' })).toBeInTheDocument()
+
+  // While no rows show, the button expands, so it opens every heading.
+  await user.click(screen.getByRole('button', { name: 'Collapse GitHub' }))
+  await user.click(screen.getByRole('button', { name: 'Expand all' }))
+  expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
+  expect(screen.getByRole('button', { name: 'Collapse all' })).toBeInTheDocument()
+})
+
 // Catches: an operation route into a collapsed provider that leaves its row
 // out, so the reveal finds nothing, or that clears the collapse for good.
 test('opening an operation shows its row inside a collapsed provider', async () => {
@@ -380,6 +404,18 @@ test('selection builds up across filters and the menu shows all of it', async ()
   await choosePolicyFilter('Selected (2)')
   expect(screen.getByLabelText('Filter operations')).toHaveValue('')
   expect(rowNames()).toEqual(['issues.list', 'getForecast'])
+
+  // The bulk form's count opens and leaves the same view.
+  await choosePolicyFilter('All policies')
+  await filterOperations('nothing matches')
+  const count = within(bulkForm()).getByRole('button', { name: '2 selected' })
+  await user.click(count)
+  expect(count).toHaveAttribute('aria-pressed', 'true')
+  expect(policyFilterMenu()).toHaveTextContent('Selected')
+  expect(rowNames()).toEqual(['issues.list', 'getForecast'])
+  await user.click(count)
+  expect(count).toHaveAttribute('aria-pressed', 'false')
+  expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
 })
 
 // Catches: the filter matching text the row does not show, such as the call
