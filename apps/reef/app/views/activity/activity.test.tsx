@@ -475,10 +475,9 @@ it.each([
 
 const line = (number: number) => document.querySelector(`[data-line="${number}"]`)
 // Catches: stepping to another record of the same Run remounting the drawer, which reset
-// the source pane's Follow selection, its split and its scroll, or a call highlighted by
-// its order instead of the location Coral stored for it.
+// the source pane, its split and its scroll, or a call highlighted by its order instead
+// of the location Coral stored for it.
 it('keeps one accepted-source split while the selection moves within its Run', async () => {
-  const user = userEvent.setup()
   const source = [
     'export default async function program() {',
     '  await coral.providers.linear.listIssues({})',
@@ -542,13 +541,11 @@ it('keeps one accepted-source split while the selection moves within its Run', a
   )
   await vi.waitFor(() => expect(line(3)).toHaveAttribute('data-highlighted', 'true'))
   const code = line(1)!.closest('pre')
-  await user.click(screen.getByRole('switch', { name: 'Follow selection' }))
 
   await act(() => router.navigate(`/activity?record=${encodeURIComponent(second.name)}`))
   await vi.waitFor(() => expect(line(2)).toHaveAttribute('data-highlighted', 'true'))
   expect(line(3)).not.toHaveAttribute('data-highlighted')
   expect(line(1)!.closest('pre')).toBe(code)
-  expect(screen.getByRole('switch', { name: 'Follow selection' })).not.toBeChecked()
 })
 
 const splitContext = {
@@ -619,46 +616,55 @@ it.each([
   },
 )
 
-// Catches: an output inside the split offering a "Reveal record" link below it, or an
-// output outside the loaded list losing its only way back to its place in history.
-it('leads an output outside the list back to history from its own detail, not below the split', () => {
-  const emitted = {
-    kind: 'output' as const,
-    name: `${run.name}/events/1`,
-    workspace,
-    run: run.name,
-    label: 'emission #1',
-    startedAt,
-    eventKind: 'program.emitted',
-    agent: '',
-  }
-  renderRoute(
-    <Activity
-      page={activityPage({
-        rows: [goal],
-        selected: emitted.name,
-        selectedRow: emitted,
-        detail: {
-          kind: 'output',
-          run: run.name,
-          event: {
-            kind: 'program.emitted',
-            sequence: '1',
-            occurredAt: startedAt,
-            value: '1',
+// Catches: an output inside the split offering a "Reveal record" link below it, an emitted
+// output outside the loaded list losing its only way back to its place in history, or a
+// program log showing "View in history" below its payload.
+it.each([
+  ['program.emitted', { kind: 'program.emitted', value: '1' }, 'coral.emit #1', true],
+  [
+    'program.logged',
+    { kind: 'program.logged', level: 'info', message: 'sent 1' },
+    'console.info #1',
+    false,
+  ],
+] as const)(
+  'leads a %s output outside the list back to history only when it is not a log',
+  (eventKind, payload, title, linked) => {
+    const output = {
+      kind: 'output' as const,
+      name: `${run.name}/events/1`,
+      workspace,
+      run: run.name,
+      label: 'output #1',
+      startedAt,
+      eventKind,
+      agent: '',
+    }
+    renderRoute(
+      <Activity
+        page={activityPage({
+          rows: [goal],
+          selected: output.name,
+          selectedRow: output,
+          detail: {
+            kind: 'output',
+            run: run.name,
+            event: { ...payload, sequence: '1', occurredAt: startedAt },
+            context: splitContext,
           },
-          context: splitContext,
-        },
-      })}
-    />,
-    { entry: '/activity?record=two' },
-  )
-  const drawer = screen.getByRole('dialog')
-  expect(within(drawer).queryByRole('link', { name: 'Reveal record' })).toBeNull()
-  expect(within(drawer).getAllByRole('button', { name: 'Close details' })).toHaveLength(1)
-  const selected = within(drawer).getByRole('region', { name: 'Selected record' })
-  expect(within(selected).getByRole('link', { name: 'View in history' })).toHaveAttribute(
-    'href',
-    revealHref(emitted, { select: false }),
-  )
-})
+        })}
+      />,
+      { entry: '/activity?record=two' },
+    )
+    const drawer = screen.getByRole('dialog')
+    expect(within(drawer).queryByRole('link', { name: 'Reveal record' })).toBeNull()
+    expect(within(drawer).getAllByRole('button', { name: 'Close details' })).toHaveLength(1)
+    // The split, its source and the record's own header stay.
+    expect(within(drawer).getByRole('region', { name: 'Accepted source' })).toBeInTheDocument()
+    const selected = within(drawer).getByRole('region', { name: 'Selected record' })
+    expect(within(selected).getByRole('heading', { level: 2 })).toHaveTextContent(title)
+    const history = within(selected).queryByRole('link', { name: 'View in history' })
+    if (linked) expect(history).toHaveAttribute('href', revealHref(output, { select: false }))
+    else expect(history).toBeNull()
+  },
+)

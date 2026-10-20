@@ -60,18 +60,20 @@ const inProgram = (line: number, name: string) => ({
   ...at(program, line, name),
 })
 
-const PROGRAM = 'Accepted program source'
+// The accepted program is the pane's default document, so it carries no name.
+const PROGRAM = null
 const SNAPSHOT = 'Saved-function snapshot: locations.notify'
 
 /**
- * The open record's accepted-source pane: its document label, its highlighted lines,
+ * The open record's accepted-source pane: its document's name, if any, its highlighted lines,
  * whether the first highlighted line sits inside the pane's visible viewport, and
  * whether it is painted differently from an ordinary line.
  */
 async function shownSource(page: Page) {
   const pane = page.getByRole('dialog').getByRole('region', { name: 'Accepted source' })
   await pane.locator('[data-line]').first().waitFor()
-  const label = await pane.getByText(new RegExp(`^(${PROGRAM}|${SNAPSHOT})$`)).innerText()
+  const named = pane.getByText(SNAPSHOT, { exact: true })
+  const label = (await named.count()) ? await named.innerText() : PROGRAM
   const painted = await pane.evaluate((region) => {
     const lines = [...region.querySelectorAll<HTMLElement>('[data-line]')]
     const highlighted = lines.filter((line) => line.hasAttribute('data-highlighted'))
@@ -127,7 +129,7 @@ export async function sourceLocations(context: TestContext) {
     const run = `workspaces/${workspace}/runs/${observed.update.run_id}`
     const task = `workspaces/${workspace}/tasks/${execute.taskId()}`
 
-    type Shown = { name: string; label: string; line: number }
+    type Shown = { name: string; label: string | null; line: number }
     let savedFunction = ''
     let operations: ActivityInvocation[] = []
     let outputs: ActivityEventSummary[] = []

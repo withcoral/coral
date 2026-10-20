@@ -560,8 +560,9 @@ function RecordDetail({ page, sourceShown }: { page: ActivityPage; sourceShown: 
       {detail.kind === 'output' && (
         <>
           <EventEvidence event={detail.event} recordHref={recordHref} />
-          {/* Inside its Run's split, an output leads back to history itself, as an operation does. */}
-          {sourceShown && row && (
+          {/* Inside its Run's split, an emitted output leads back to history itself, as an
+              operation does. A program log ends at its payload. */}
+          {sourceShown && row && detail.event.kind !== 'program.logged' && (
             <Link to={revealHref(row, { select: false })} preventScrollReset>
               View in history
             </Link>

@@ -268,11 +268,12 @@ async function expectOwnHeader(dialog: HTMLElement, title: string) {
   await expect(close).toBeVisible()
 }
 
-/** One selection: its record's own detail above, its highlighted call in the source below. */
+/** One selection: its record's own detail above, its highlighted call in the source below.
+ * A Saved Function snapshot is named; the accepted program, the pane's default, is not. */
 function selection(
   record: string,
   title: string,
-  documentLabel: string,
+  documentLabel: string | null,
   expected: number[],
 ): Story {
   return {
@@ -283,7 +284,8 @@ function selection(
       })
       const drawer = within(dialog)
       await expectOwnHeader(dialog, title)
-      await expect(drawer.getByText(documentLabel)).toBeVisible()
+      const pane = within(drawer.getByRole('region', { name: 'Accepted source' }))
+      if (documentLabel) await expect(pane.getByText(documentLabel)).toBeVisible()
       await waitFor(() => expect(highlighted(dialog)).toEqual(expected))
       if (expected.length) {
         await expect(drawer.queryByText('Source location unavailable')).not.toBeInTheDocument()
@@ -295,7 +297,8 @@ function selection(
   }
 }
 
-const program = 'Accepted program source'
+// The accepted program is the pane's default document, so it carries no name.
+const program = null
 /** A failed Run's retained error frame, only for the Run's own selection. */
 export const FailedRunFrame = selection(runName, 'Send invoice reminders', program, [1])
 export const SingleOperation = selection(listInvoices.name, 'billing.listInvoices', program, [2])
@@ -314,15 +317,15 @@ export const ConsoleLog = selection(`${runName}/events/7`, 'console.info #7', pr
 export const Emission = selection(`${runName}/events/8`, 'coral.emit #8', program, [130])
 
 /** Moving to another record of the same Run swaps the selected record's own header and
- * keeps the split, the source pane's own scroll position and Follow selection, then
- * reveals on request. */
+ * keeps the split and the source pane, which reveals the new record's line. A Run event
+ * with no call of its own says nothing of a location. */
 export const SameRunNavigation: Story = {
   parameters: { record: `${runName}/events/2` },
   play: async ({ canvasElement, userEvent }) => {
     const dialog = await within(canvasElement.ownerDocument.body).findByRole('dialog')
     const drawer = within(dialog)
-    await expect(drawer.getByText('Source location unavailable')).toBeVisible()
     await expectOwnHeader(dialog, 'Operation call ended: upstream outcome')
+    await expect(drawer.queryByText('Source location unavailable')).toBeNull()
     const code = dialog.querySelector('[data-line]')!.closest('pre')!
     // The source pane's own scrolling viewport, not a wrapper that never scrolls.
     let viewport = code.parentElement!
@@ -338,10 +341,11 @@ export const SameRunNavigation: Story = {
     const split = separator.getAttribute('aria-valuenow')!
     await expect(split).not.toBe('50')
 
-    await userEvent.click(drawer.getByRole('switch', { name: 'Follow selection' }))
-    viewport.scrollTop = 400
-    await waitFor(() => expect(viewport.scrollTop).toBeGreaterThan(0))
-    const manualScroll = viewport.scrollTop
+    viewport.scrollTop = 0
+    const below = () =>
+      dialog.querySelector('[data-line="66"]')!.getBoundingClientRect().top >=
+      viewport.getBoundingClientRect().bottom
+    await waitFor(() => expect(below()).toBe(true))
 
     await userEvent.click(drawer.getByRole('link', { name: 'Open operation call' }))
     await drawer.findByRole('heading', { name: 'mail.send' })
@@ -349,11 +353,8 @@ export const SameRunNavigation: Story = {
     await expect(drawer.queryByRole('heading', { name: 'Send invoice reminders' })).toBeNull()
     await waitFor(() => expect(highlighted(dialog)).toEqual([66]))
     await expect(dialog.querySelector('[data-line]')!.closest('pre')).toBe(code)
-    await expect(viewport.scrollTop).toBe(manualScroll)
     await expect(separator).toHaveAttribute('aria-valuenow', split)
-    await expect(drawer.getByRole('switch', { name: 'Follow selection' })).not.toBeChecked()
-
-    await userEvent.click(drawer.getByRole('switch', { name: 'Follow selection' }))
+    // Line 66 starts out of view; the pane scrolls to it with no toggle to ask.
     await waitFor(() => {
       const line = dialog.querySelector('[data-line="66"]')!.getBoundingClientRect()
       const bounds = viewport.getBoundingClientRect()

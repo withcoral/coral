@@ -257,6 +257,12 @@ it.each<[string, ActivityRow, ReturnType<typeof recordedLocationFor>]>([
     },
     null,
   ],
+  // Catches: a Run event that is no call, such as its end, highlighting a line of the program.
+  [
+    'a Run event that is not a log or an emission',
+    { ...logRow, eventKind: 'run.ended', sourceLocation: at({ kind: 'program' }, 2, 31) },
+    null,
+  ],
   ['a zero line', { ...invocationRow, sourceLocation: at({ kind: 'program' }, 0, 1) }, null],
   [
     'a line past the end',

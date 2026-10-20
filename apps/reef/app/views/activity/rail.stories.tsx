@@ -11,7 +11,7 @@ import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
 import { Activity } from './activity'
 import { ActionReviewSession } from '../actions/review'
-import { activityPage, approvalRequest, run, workspace } from './fixtures'
+import { activityPage, approvalContext, approvalRequest, run, workspace } from './fixtures'
 import type { ActivityPage, ActivityRow } from './types'
 import { emulateReducedMotion, resizeViewport } from '../../../.storybook/browser'
 
@@ -50,7 +50,8 @@ function pageFor(record: string | null): ActivityPage {
               kind: 'run',
               run: selectedRow,
               request: approvalRequest,
-              source: 'return null;',
+              // The program that makes the call this review decides.
+              source: approvalContext.source,
               linkedFunctions: [],
               terminal: { kind: 'unavailable' },
             }

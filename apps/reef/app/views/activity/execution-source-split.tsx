@@ -5,6 +5,7 @@ import { Container as ScrollArea } from '@/wax/components/scroll-area'
 import { PanelClose, PanelFooterSlot, PanelInset, PanelInsetLabel } from './panel'
 import {
   ACCEPTED_PROGRAM_DOCUMENT_ID,
+  madeByCall,
   recordedLocationFor,
   sourceDocumentsFor,
   sourceLocationFor,
@@ -19,7 +20,7 @@ const MIN_PANE_HEIGHT = 120
  * The real Activity drawer's balanced split: the selected record's own detail,
  * independently scrollable, above the Run's persistent, read-only accepted
  * source. Mount this once per Run (key it by `context.run.name`); its split
- * ratio, scroll position, and Follow selection stay put while the caller swaps
+ * ratio and the source's DOM and scroll position stay put while the caller swaps
  * `children` for each record the reader selects inside that same Run, because
  * none of that state lives on the record, only on the Run.
  *
@@ -33,7 +34,9 @@ const MIN_PANE_HEIGHT = 120
  * A highlight comes from retained Coral evidence only: a failed Run's error
  * frame when the Run itself is selected (`sourceLocationFor`), or the location
  * Coral stored for the selected operation, emission or log
- * (`recordedLocationFor`). Anything else says the location is unavailable.
+ * (`recordedLocationFor`). Each newly selected record's line is revealed. Only
+ * an operation, emission or log says its location is unavailable when it has
+ * none: the Run itself and its other events have no call of their own.
  */
 export function ExecutionSourceSplit({
   context,
@@ -57,7 +60,6 @@ export function ExecutionSourceSplit({
   close?: React.ReactNode
   children: React.ReactNode
 }) {
-  const [followSelection, setFollowSelection] = useState(true)
   // The detail pane's share of the split, 0 to 1; the source pane takes the rest.
   const [splitRatio, setSplitRatio] = useState(0.5)
   // The record's decision controls render here, below its scrolling evidence.
@@ -89,7 +91,8 @@ export function ExecutionSourceSplit({
   const location = verified ?? recorded
   const documentId = location?.documentId ?? ACCEPTED_PROGRAM_DOCUMENT_ID
   const document = documents.find((candidate) => candidate.id === documentId) ?? documents[0]!
-  const missingLocationMessage = location ? undefined : 'Source location unavailable'
+  const missingLocationMessage =
+    !location && selectedRow && madeByCall(selectedRow) ? 'Source location unavailable' : undefined
 
   return (
     <div className={styles.root}>
@@ -140,8 +143,6 @@ export function ExecutionSourceSplit({
             document={document}
             highlight={location?.highlight ?? null}
             missingLocationMessage={missingLocationMessage}
-            followSelection={followSelection}
-            onFollowSelectionChange={setFollowSelection}
             // Each record has its own location, so selecting another one reveals it again.
             revealKey={`${context.run.name}:${selectedRow?.name ?? ''}`}
           />

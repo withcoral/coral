@@ -96,11 +96,57 @@ function markup(props: Partial<React.ComponentProps<typeof ExecutionSourceSplit>
   )
 }
 
-it('names the accepted program and says explicitly when no location is recorded', () => {
+const outputRow = (eventKind: string): Extract<ActivityRow, { kind: 'output' }> => ({
+  kind: 'output',
+  name: `${run.name}/events/1`,
+  workspace: 'workspaces/finance',
+  run: run.name,
+  label: 'output #1',
+  startedAt: run.startedAt,
+  eventKind,
+  agent: '',
+})
+
+// Catches: the source pane heading the accepted program, marking it read-only, or offering
+// a Follow selection toggle, whose off state left a new record's line out of view.
+it('shows the accepted program under no heading, read-only label or Follow toggle', () => {
   markup()
-  expect(screen.getByText('Accepted program source')).toBeInTheDocument()
-  expect(screen.getByText('Source location unavailable')).toBeInTheDocument()
   expect(screen.getByText('Selected record detail')).toBeInTheDocument()
+  expect(document.querySelector('[data-line="1"]')).toHaveTextContent(
+    'export default async function program() {',
+  )
+  for (const gone of ['Accepted program source', 'Read-only snapshot', 'Follow selection'])
+    expect(screen.queryByText(gone)).not.toBeInTheDocument()
+  expect(screen.queryByRole('switch')).not.toBeInTheDocument()
+})
+
+// Catches: a missing-location banner for a record that has no call of its own to locate.
+it.each([
+  ['the Run itself, which did not fail', {}],
+  [
+    'a failed Run whose frame is outside its source',
+    {
+      context: context({
+        terminal: {
+          kind: 'failed',
+          code: 'program_execution_failed',
+          message: 'x',
+          error: { ...frameError, frames: [{ source: 'Program', line: 9, column: 1 }] },
+        },
+      }),
+    },
+  ],
+  [
+    'a Run event that is not a log or an emission',
+    {
+      locatable: false,
+      selectedRow: outputRow('invocation.ended'),
+    },
+  ],
+] as const)('says nothing of a location for %s', (_, props) => {
+  markup(props)
+  expect(screen.queryByText('Source location unavailable')).not.toBeInTheDocument()
+  expect(document.querySelectorAll('[data-highlighted]')).toHaveLength(0)
 })
 
 // Catches: the split adding a Run header of its own above the selected record's header,
@@ -192,18 +238,16 @@ it('highlights the line Coral stored for the selected record, in the snapshot it
   expect(screen.getByRole('status')).toHaveTextContent('Line 2')
 })
 
-// Catches: a text match of the call standing in for a location Coral never stored.
-it('says the location is unavailable for a record without a stored one, though its call matches', () => {
-  markup({ context: matchableContext(), locatable: false, selectedRow: invocationRow })
+// Catches: an operation, log or emission with no stored location shown without saying so,
+// or a text match of its call standing in for a location Coral never stored.
+it.each([
+  ['an operation', invocationRow],
+  ['a log', outputRow('program.logged')],
+  ['an emission', outputRow('program.emitted')],
+])('says the location is unavailable for %s without a stored one', (_, selectedRow) => {
+  markup({ context: matchableContext(), locatable: false, selectedRow })
   expect(screen.getByText('Source location unavailable')).toBeInTheDocument()
   expect(document.querySelectorAll('[data-highlighted]')).toHaveLength(0)
-})
-
-it('keeps the resize divider and the Follow selection toggle on', () => {
-  markup()
-  expect(screen.getByRole('separator', { name: /resize/i })).toBeInTheDocument()
-  const toggle = screen.getByRole('switch', { name: 'Follow selection' })
-  expect(toggle).toHaveAttribute('aria-checked', 'true')
 })
 
 it('starts the split balanced 50/50 of the actual available space', () => {
@@ -231,24 +275,32 @@ it('moves the split on a resize, clamped so neither pane shrinks past its minimu
   expect(separator).toHaveAttribute('aria-valuenow', '70')
 })
 
-it('does not reset Follow selection or the split size when the children remount for a new record', async () => {
+it('keeps the split size and the source when the children remount for a new record', async () => {
+  vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+    top: 0,
+    bottom: 400,
+    left: 0,
+    right: 0,
+    height: 400,
+    width: 0,
+  } as DOMRect)
   const user = userEvent.setup()
   const { rerender } = render(
     <ExecutionSourceSplit context={context()} locatable selectedRow={null}>
       <p key="a">First selected record</p>
     </ExecutionSourceSplit>,
   )
-  const toggle = screen.getByRole('switch', { name: 'Follow selection' })
-  await user.click(toggle)
-  expect(toggle).toHaveAttribute('aria-checked', 'false')
+  const separator = screen.getByRole('separator', { name: /resize/i })
+  separator.focus()
+  await user.keyboard('{ArrowDown}')
+  expect(separator).toHaveAttribute('aria-valuenow', '54')
+  const code = document.querySelector('[data-line="1"]')!.closest('pre')
   rerender(
     <ExecutionSourceSplit context={context()} locatable selectedRow={null}>
       <p key="b">Second selected record</p>
     </ExecutionSourceSplit>,
   )
   expect(screen.getByText('Second selected record')).toBeInTheDocument()
-  expect(screen.getByRole('switch', { name: 'Follow selection' })).toHaveAttribute(
-    'aria-checked',
-    'false',
-  )
+  expect(screen.getByRole('separator', { name: /resize/i })).toHaveAttribute('aria-valuenow', '54')
+  expect(document.querySelector('[data-line="1"]')!.closest('pre')).toBe(code)
 })

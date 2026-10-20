@@ -97,11 +97,42 @@ const meta = {
       )
     },
   ],
-  play: async ({ canvasElement, parameters }) => {
+  play: async ({ canvasElement, parameters, args }) => {
     const opened = await within(canvasElement.ownerDocument.body).findByRole('dialog')
     await waitFor(() => expect(opened).toBeVisible())
     for (const text of [parameters.evidence ?? []].flat())
       await expect(opened).toHaveTextContent(text)
+    // An operation, log or emission shows beside its Run's accepted program, highlighted at
+    // the line Coral stored for it, where that program makes its call. Every one has one here.
+    const row = args.page.selectedRow
+    const detail = args.page.detail
+    const call =
+      row?.kind === 'invocation'
+        ? row.callPath.slice(row.callPath.lastIndexOf('.') + 1)
+        : row?.kind === 'output' && row.eventKind === 'program.emitted'
+          ? 'emit'
+          : row?.kind === 'output' && row.eventKind === 'program.logged'
+            ? /^(debug|info|warn|error|log)$/
+            : null
+    if (call && (row?.kind === 'invocation' || row?.kind === 'output')) {
+      const location = row.sourceLocation!
+      await expect(location).toBeDefined()
+      const program =
+        detail?.kind === 'invocation' || detail?.kind === 'output' ? detail.context?.source : null
+      const named = program!.split('\n')[location.line - 1]!.slice(location.column - 1)
+      const called = named.split('(')[0]!
+      if (typeof call === 'string') await expect(called).toBe(call)
+      else await expect(called).toMatch(call)
+      const source = within(opened).getByRole('region', { name: 'Accepted source' })
+      await waitFor(() =>
+        expect(
+          [...source.querySelectorAll<HTMLElement>('[data-highlighted]')].map(
+            (line) => line.dataset.line,
+          ),
+        ).toEqual([`${location.line}`]),
+      )
+      await expect(within(source).getByRole('status')).toHaveTextContent(`Line ${location.line}`)
+    }
     // Beside a Run's source, a decision sits in the record pane's own footer, below the
     // scrolling evidence, so the evidence's fade never covers it. A review's one named
     // region holds both its evidence and that decision.
@@ -193,8 +224,14 @@ const toolPage = (value: InteractionRow, evidence: InteractionEvidence) =>
     interaction: value,
     evidence,
   })
+/** A Run event, beside the Run's accepted program, as Coral's loader reads it. */
 const eventPage = (event: RunEvent, label: string) =>
-  panelPage(outputRow(event, label), { kind: 'output', run: run().name, event })
+  panelPage(outputRow(event, label), {
+    kind: 'output',
+    run: run().name,
+    event,
+    context: runDetail(run()),
+  })
 
 // Tasks ---------------------------------------------------------------------
 
@@ -2198,6 +2235,7 @@ export const ApprovalLongCallPathNarrow = panel(
         reference: 'a'.repeat(160),
       }),
     }),
+    { source: `await ${longCallPath}({ contact, reference })` },
   ),
   { narrow: true, evidence: longCallPath },
 )

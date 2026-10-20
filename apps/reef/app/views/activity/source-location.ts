@@ -7,7 +7,8 @@ import type { ActivityRow, RunDetail } from './types'
 
 export interface SourceDocument {
   id: string
-  label: string
+  /** What the pane names the document; the accepted program, the pane's default, has none. */
+  label?: string
   code: string
 }
 export interface SourceHighlight {
@@ -28,11 +29,7 @@ const SAVED_FUNCTION_FRAME_SOURCE_PREFIX = 'Saved Function coral.functions.'
 /** The accepted program, then every Saved Function the Run linked, as accepted. */
 export function sourceDocumentsFor(context: RunDetail): SourceDocument[] {
   return [
-    {
-      id: ACCEPTED_PROGRAM_DOCUMENT_ID,
-      label: 'Accepted program source',
-      code: context.source,
-    },
+    { id: ACCEPTED_PROGRAM_DOCUMENT_ID, code: context.source },
     ...context.linkedFunctions.map((linked) => ({
       id: savedFunctionDocumentId(linked.savedFunction),
       label: `Saved-function snapshot: ${linked.path}`,
@@ -74,16 +71,26 @@ export function sourceLocationFor(context: RunDetail): SourceLocation | null {
   return { documentId, highlight: { startLine: frame.line, endLine: frame.line } }
 }
 
+/** A record one call in the author's code made: an operation call, a log or an emission. */
+export function madeByCall(
+  row: ActivityRow,
+): row is Extract<ActivityRow, { kind: 'invocation' | 'output' }> {
+  return (
+    row.kind === 'invocation' ||
+    (row.kind === 'output' &&
+      (row.eventKind === 'program.logged' || row.eventKind === 'program.emitted'))
+  )
+}
+
 /**
  * The location Coral stored for an operation call, emission or log, in this
  * Run's accepted program or one of its linked Saved Function snapshots. Null
- * for a record with no stored location, a record of another Run, a snapshot
+ * for any other record, a record with no stored location, a record of another Run, a snapshot
  * this Run did not link, or a line or column outside the document. A column
  * counts UTF-16 code units and may sit one past the end of its line.
  */
 export function recordedLocationFor(context: RunDetail, row: ActivityRow): SourceLocation | null {
-  if ((row.kind !== 'invocation' && row.kind !== 'output') || row.run !== context.run.name)
-    return null
+  if (!madeByCall(row) || row.run !== context.run.name) return null
   const location = row.sourceLocation
   if (!location) return null
   const { document: source } = location

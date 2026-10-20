@@ -16,6 +16,7 @@ import type {
   InvocationOutcome,
   InvocationResult,
   ProgramError,
+  RecordSourceLocation,
   RequestDetail,
   RunDetail,
   RunEvent,
@@ -110,12 +111,41 @@ export function run(overrides: Partial<RunRow> = {}): RunRow {
 export const endedRun = (state: Exclude<RunState, 'running'>, overrides: Partial<RunRow> = {}) =>
   run({ state, endedAt: later, durationNanos: '242000000000', ...overrides })
 
+/**
+ * The program the gallery's Run accepted. Each operation, log and emission the gallery
+ * shows under that Run sits at its own call here (see `programAt`).
+ */
 export const source = `const invoices = await coral.providers.billing.listInvoices({ status: 'overdue' })
 for (const invoice of invoices.data) {
   coral.emit({ invoice: invoice.id, owner: invoice.owner })
   await coral.providers.mail.send({ to: invoice.owner, subject: \`Invoice \${invoice.id} is overdue\` })
 }
+console.debug('overdue invoices', invoices.data.length)
+const issues = await coral.providers.linear.listIssues({ assignee: 'me', limit: 50 })
+if (!issues.data.some((issue) => issue.title.includes('INV-4171')))
+  await coral.providers.linear.createIssue({ title: 'Follow up on INV-4171', teamId: 'FIN' })
+console.info('reminded', invoices.data.length)
+console.warn('owners without an address', 0)
+console.error('reminders that failed', 0)
+console.log('done')
 return { reminded: invoices.data.length }`
+
+/**
+ * Where Coral stores the call `call` in `code`, the gallery's accepted program unless
+ * given: its line, and the column of its last name, as the runtime reports them (1-based,
+ * in UTF-16 units). A call the program does not make fails, so no fixture points nowhere.
+ */
+export function programAt(call: string, code = source): RecordSourceLocation {
+  const lines = code.split('\n')
+  const index = lines.findIndex((line) => line.includes(`${call}(`))
+  if (index < 0) throw new Error(`The program makes no ${call} call.`)
+  const start = lines[index]!.indexOf(`${call}(`)
+  return {
+    document: { kind: 'program' },
+    line: index + 1,
+    column: start + call.lastIndexOf('.') + 2,
+  }
+}
 
 export function runDetail(row: RunRow, overrides: Partial<RunDetail> = {}): RunDetail {
   return {
@@ -131,7 +161,9 @@ export function runDetail(row: RunRow, overrides: Partial<RunDetail> = {}): RunD
   }
 }
 
+/** An operation call of the Run, stored at its call path's call in the accepted program. */
 export function invocation(overrides: Partial<InvocationRow> = {}): InvocationRow {
+  const callPath = overrides.callPath ?? 'coral.providers.mail.send'
   return {
     kind: 'invocation',
     name: invocationName,
@@ -142,7 +174,7 @@ export function invocation(overrides: Partial<InvocationRow> = {}): InvocationRo
     run: runName,
     provider: `${workspace}/providers/mail`,
     operation: 'send',
-    callPath: 'coral.providers.mail.send',
+    callPath,
     state: 'pending',
     outcome: 'unknown',
     startedAt: at,
@@ -151,6 +183,7 @@ export function invocation(overrides: Partial<InvocationRow> = {}): InvocationRo
     requiresAction: false,
     dispatchedAt: null,
     waitingNanos: '221000000000',
+    sourceLocation: 'sourceLocation' in overrides ? overrides.sourceLocation : programAt(callPath),
     ...overrides,
   }
 }
@@ -175,6 +208,7 @@ export const mailArguments = JSON.stringify({
   body: 'Your invoice is ready for review.',
 })
 
+/** The operation's detail, with the Run it ran in as context, as Coral's loader reads it. */
 export function invocationDetail(
   row: InvocationRow,
   overrides: Partial<InvocationDetail> = {},
@@ -187,6 +221,7 @@ export function invocationDetail(
     requests: [],
     request: null,
     requestUnavailable: false,
+    context: runDetail(run()),
     ...overrides,
   }
 }
@@ -319,16 +354,26 @@ const afterApproval = {
   }
 >
 
-/** The approval review: the exact call, inside the Run that waits on it. */
+/**
+ * The approval review: the exact call, inside the Run that waits on it, stored at that
+ * call in the Run's program: the gallery's, or `source`.
+ */
 export function approvalDetail(
   request: Approval,
-  options: { context?: RunRow } = {},
+  options: { context?: RunRow; source?: string } = {},
 ): InvocationDetail {
   const settled =
     request.state === 'pending' ? null : afterApproval[request.state as keyof typeof afterApproval]
+  const code = options.source ?? source
+  const sourceLocation = programAt(request.callPath, code)
   const row = settled
     ? settled.row()
-    : invocation({ name: request.invocation, callPath: request.callPath, requiresAction: true })
+    : invocation({
+        name: request.invocation,
+        callPath: request.callPath,
+        requiresAction: true,
+        sourceLocation,
+      })
   const context =
     options.context ??
     (settled
@@ -342,13 +387,16 @@ export function approvalDetail(
           },
         }))
   return invocationDetail(
-    { ...row, name: request.invocation, callPath: request.callPath },
+    { ...row, name: request.invocation, callPath: request.callPath, sourceLocation },
     {
       arguments: request.arguments,
       result: settled?.result ?? { kind: 'unknown' },
       requests: [{ kind: 'approval', name: request.name }],
       request,
-      context: runDetail(context, settled ? { terminal: settled.terminal } : {}),
+      context: runDetail(context, {
+        source: code,
+        ...(settled && { terminal: settled.terminal }),
+      }),
     },
   )
 }
@@ -485,7 +533,26 @@ export const providerFilteredSearch = JSON.stringify({
   ),
 })
 
+/** The console call that writes a log of each level; Reef reads an unknown level as `log`. */
+const consoleCall = {
+  debug: 'console.debug',
+  info: 'console.info',
+  warn: 'console.warn',
+  error: 'console.error',
+  unknown: 'console.log',
+} satisfies Record<LogLevel, string>
+
+/**
+ * A Run event's row. A log or an emission is stored at its own call in the accepted
+ * program; the Run's other events have no call of their own.
+ */
 export function outputRow(event: RunEvent, label: string): OutputRow {
+  const call =
+    event.kind === 'program.logged'
+      ? consoleCall[event.level]
+      : event.kind === 'program.emitted'
+        ? 'coral.emit'
+        : null
   return {
     kind: 'output',
     name: `${runName}/events/${event.sequence}`,
@@ -496,6 +563,7 @@ export function outputRow(event: RunEvent, label: string): OutputRow {
     eventKind: event.kind,
     agent: `${workspace}/agents/collections`,
     task: taskName,
+    ...(call && { sourceLocation: programAt(call) }),
   }
 }
 

@@ -6,10 +6,25 @@ import { trail } from '@/views/management/layout'
 import { Activity } from './activity'
 import { ActionReviewSession } from '../actions/review'
 import { freezeStoryClock, minutesAfterStoryNow } from './story-clock'
+import { programAt } from './side-panel-fixtures'
 import type { ActivityPage, ActivityRow, RequestDetail } from './types'
 
 const workspace = 'workspaces/finance'
-/** 15 minutes after the stories' fixed clock, so each deadline reads "Expires in 15 minutes". */
+/** The reminders Run's program: each approval it waits on sits at its own call here. */
+const remindersProgram = [
+  'const invoices = await coral.providers.billing.listOverdue({ limit: 10 })',
+  'for (const invoice of invoices) {',
+  '  await coral.providers.mail.send({',
+  '    to: invoice.owner,',
+  '    subject: `Invoice ${invoice.id} is overdue`,',
+  "    body: 'Your invoice is ready for review.',",
+  '  })',
+  '  await coral.providers.billing.updateInvoice({ invoice: invoice.id, reminderSent: true })',
+  '}',
+].join('\n')
+/** The account Run's program, whose one call waits on your Linear connection. */
+const linearProgram = "return await coral.providers.linear.listIssues({ assignee: 'me' })"
+/** 15 minutes after the story loads, so each deadline reads "Expires in 15 minutes". */
 const soon = minutesAfterStoryNow(15)
 const run: Extract<ActivityRow, { kind: 'run' }> = {
   kind: 'run',
@@ -102,6 +117,7 @@ const accountCall = {
   outcome: 'unknown' as const,
   dispatchedAt: null,
   waitingNanos: '1',
+  sourceLocation: programAt('coral.providers.linear.listIssues', linearProgram),
 }
 const page: ActivityPage = {
   rows: [
@@ -176,16 +192,7 @@ function StoryActivity({ page: initial }: { page: ActivityPage }) {
             kind: 'run',
             run: selectedRun,
             request: exact,
-            source: [
-              'const invoices = await coral.providers.billing.listOverdue({ limit: 10 })',
-              'for (const invoice of invoices) {',
-              '  await coral.providers.mail.send({',
-              '    to: invoice.owner,',
-              '    subject: `Invoice ${invoice.id} is overdue`,',
-              "    body: 'Your invoice is ready for review.',",
-              '  })',
-              '}',
-            ].join('\n'),
+            source: selectedRun.name === accountRun.name ? linearProgram : remindersProgram,
             linkedFunctions: [],
             terminal: { kind: 'unavailable' },
           }
@@ -215,7 +222,7 @@ function StoryActivity({ page: initial }: { page: ActivityPage }) {
       context: {
         kind: 'run',
         run: accountRun,
-        source: "return await coral.providers.linear.listIssues({ assignee: 'me' })",
+        source: linearProgram,
         linkedFunctions: [],
         terminal: { kind: 'unavailable' },
       },
@@ -235,6 +242,8 @@ function StoryActivity({ page: initial }: { page: ActivityPage }) {
       outcome: 'unknown' as const,
       dispatchedAt: null,
       waitingNanos: '1',
+      // The approved call, where the Run's program makes it.
+      sourceLocation: programAt(approval.callPath, context.source),
     }
     value.detail = {
       kind: 'invocation',
@@ -297,6 +306,20 @@ export const Combined: Story = {}
 export const ExactReview: Story = {
   parameters: {
     initialEntry: `/workspaces/finance/activity?record=${run.name}&request=${request.name}`,
+  },
+  play: async ({ canvasElement }) => {
+    const body = within(canvasElement.ownerDocument.body)
+    await body.findByRole('region', { name: `Review ${request.callPath}` })
+    // The reviewed call shows beside its Run's program, at the line that makes it.
+    const source = body.getByRole('region', { name: 'Accepted source' })
+    await waitFor(() =>
+      expect(
+        [...source.querySelectorAll<HTMLElement>('[data-highlighted]')].map(
+          (line) => line.dataset.line,
+        ),
+      ).toEqual(['3']),
+    )
+    await expect(within(source).getByRole('status')).toHaveTextContent('Line 3')
   },
 }
 const singleRun: typeof run = {
@@ -394,7 +417,7 @@ export const LargeArguments: Story = {
       detail: {
         kind: 'run',
         run,
-        source: 'return null;',
+        source: remindersProgram,
         linkedFunctions: [],
         terminal: { kind: 'unavailable' },
         request: {
@@ -419,7 +442,7 @@ export const NonObjectArguments: Story = {
       detail: {
         kind: 'run',
         run,
-        source: 'return null;',
+        source: remindersProgram,
         linkedFunctions: [],
         terminal: { kind: 'unavailable' },
         request: { ...request, arguments: '["owner@example.com","INV-4171"]' },
@@ -437,7 +460,7 @@ export const ResolvedSelection: Story = {
       detail: {
         kind: 'run',
         run: { ...run, actionPage: { actions: [], total: '0', next: '' } },
-        source: 'return null;',
+        source: remindersProgram,
         linkedFunctions: [],
         terminal: { kind: 'unavailable' },
         request: {
@@ -491,7 +514,7 @@ const reviewHeaderOverArguments: Story = {
       detail: {
         kind: 'run',
         run: { ...run, actionPage: { actions: [], total: '0', next: '' } },
-        source: 'return null;',
+        source: remindersProgram,
         linkedFunctions: [],
         terminal: { kind: 'unavailable' },
         request: {

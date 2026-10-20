@@ -979,8 +979,8 @@ export function Activity({
                 {detailPage.unavailable ? (
                   <Typography.Body>This history is unavailable.</Typography.Body>
                 ) : runContext ? (
-                  // Records of one Run share one split, so it keeps its sizes, source
-                  // scroll position and Follow selection while the selection moves.
+                  // Records of one Run share one split, so it keeps its sizes and its
+                  // source while the selection moves.
                   <ExecutionSourceSplit
                     key={runContext.run.name}
                     context={runContext}

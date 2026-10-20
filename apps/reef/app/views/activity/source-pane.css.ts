@@ -15,22 +15,13 @@ export const header = style({
   gap: 12,
   flexShrink: 0,
 })
-export const follow = style({
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-  marginInlineStart: 'auto',
-  flexShrink: 0,
-})
-const note = {
+export const location = style({
   display: 'flex',
   alignItems: 'center',
   gap: 4,
   color: theme.content.tertiary,
   ...theme.typography.bodySmall,
-} as const
-export const readOnly = style(note)
-export const location = style(note)
+})
 export const missing = style({
   display: 'flex',
   alignItems: 'center',

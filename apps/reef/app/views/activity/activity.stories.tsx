@@ -8,6 +8,7 @@ import { Activity } from './activity'
 import { ActionReviewSession } from '../actions/review'
 import { stored } from './discovery/fixtures'
 import { discoveryView, functionTarget } from './discovery/response'
+import { programAt } from './side-panel-fixtures'
 import { operationOwner } from '@/lib/call-root'
 import { freezeStoryClock, minutesAfterStoryNow } from './story-clock'
 import type {
@@ -99,6 +100,19 @@ const fadeBelow = (scroller: HTMLElement) =>
 /** A short phone screen: Chromatic reads `viewports`; the Vitest run reads the `viewport` global. */
 const shortScreen = { viewport: { value: 'mobile1', isRotated: false } }
 
+/** The Run's accepted source beside the selected record highlights `line`, and says so. */
+async function expectSourceLine(dialog: HTMLElement, line: number) {
+  const source = within(dialog).getByRole('region', { name: 'Accepted source' })
+  await waitFor(() =>
+    expect(
+      [...source.querySelectorAll<HTMLElement>('[data-highlighted]')].map(
+        (item) => item.dataset.line,
+      ),
+    ).toEqual([`${line}`]),
+  )
+  await expect(within(source).getByRole('status')).toHaveTextContent(`Line ${line}`)
+}
+
 const openDrawer = async (canvasElement: HTMLElement, name?: string) =>
   within(canvasElement.ownerDocument.body).findByRole('dialog', name ? { name } : undefined)
 
@@ -143,6 +157,14 @@ const execution: ActivityRow & { kind: 'run' } = {
     agent: '',
   },
 }
+/** The program the Run accepted; its operation call and its emission sit at their own lines. */
+const program = [
+  "const invoices = await coral.providers.billing.listInvoices({ status: 'overdue' })",
+  'const owner = await coral.providers.crm.getOwner({ invoice: invoices.data[0].id })',
+  "coral.emit({ invoices: 24, groupedBy: 'owner' })",
+  "await coral.providers.mail.send({ to: owner.email, subject: 'Invoice INV-4171 is overdue' })",
+  'return { invoices: 24 }',
+].join('\n')
 const call: ActivityRow & { kind: 'invocation' } = {
   kind: 'invocation',
   name: invocation,
@@ -162,6 +184,7 @@ const call: ActivityRow & { kind: 'invocation' } = {
   requiresAction: true,
   dispatchedAt: null,
   waitingNanos: '221000000000',
+  sourceLocation: programAt('coral.providers.mail.send', program),
 }
 const emission: ActivityRow = {
   kind: 'output',
@@ -172,6 +195,7 @@ const emission: ActivityRow = {
   startedAt: at,
   eventKind: 'program.emitted',
   agent: '',
+  sourceLocation: programAt('coral.emit', program),
 }
 const standalone: ActivityRow & { kind: 'run' } = {
   ...execution,
@@ -201,6 +225,15 @@ const tool = (
   acceptedRun: '',
   agent: '',
 })
+// An approval is always reviewed inside its Run, and any call shows beside the Run's program.
+const approvalContext: RunDetail = {
+  kind: 'run',
+  run: execution,
+  submission: execution.submission,
+  source: program,
+  linkedFunctions: [],
+  terminal: { kind: 'unavailable' },
+}
 const detail: InvocationDetail = {
   kind: 'invocation',
   invocation: call,
@@ -210,15 +243,7 @@ const detail: InvocationDetail = {
   requests: [{ kind: 'approval', name: `${workspace}/approvals/mail` }],
   request: null,
   requestUnavailable: false,
-}
-// An approval is always reviewed inside its Run.
-const approvalContext: RunDetail = {
-  kind: 'run',
-  run: execution,
-  submission: execution.submission,
-  source: 'export default async () => null',
-  linkedFunctions: [],
-  terminal: { kind: 'unavailable' },
+  context: approvalContext,
 }
 const page: ActivityPage = {
   rows: [
@@ -247,6 +272,7 @@ const page: ActivityPage = {
           ...call,
           name: `${workspace}/invocations/list`,
           callPath: 'billing.listInvoices',
+          sourceLocation: programAt('coral.providers.billing.listInvoices', program),
           state: 'ended',
           outcome: 'upstream_outcome',
           requiresAction: false,
@@ -256,6 +282,7 @@ const page: ActivityPage = {
           ...call,
           name: `${workspace}/invocations/uncertain`,
           callPath: 'crm.getOwner',
+          sourceLocation: programAt('coral.providers.crm.getOwner', program),
           state: 'ended',
           outcome: 'indeterminate',
           requiresAction: false,
@@ -313,7 +340,10 @@ export default meta
 type Story = StoryObj<typeof meta>
 export const MixedHistory: Story = {
   play: async ({ canvasElement }) => {
-    const drawer = within(await within(canvasElement.ownerDocument.body).findByRole('dialog'))
+    const dialog = await within(canvasElement.ownerDocument.body).findByRole('dialog')
+    const drawer = within(dialog)
+    // The call shows beside its Run's program, at the line that made it.
+    await expectSourceLine(dialog, 4)
     await expect(drawer.getByText('Arguments (3)')).toBeVisible()
     await expect(drawer.getByRole('button', { name: 'Close details' })).toBeVisible()
     await expect(drawer.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
@@ -420,6 +450,8 @@ export const ContextImpact: Story = {
               ...emission,
               name: `${run}/final`,
               eventKind: 'run.ended',
+              // A Run's end is no call of the program's.
+              sourceLocation: undefined,
               label: 'final value',
               contextImpactBytes: '14500',
             },
@@ -492,6 +524,8 @@ export const StatusMarkers: Story = {
               outcome: 'upstream_outcome',
               requiresAction: false,
               callPath: 'coral.providers.linear.listIssues',
+              // A list layout only; nothing opens it beside a program.
+              sourceLocation: undefined,
             },
             {
               ...call,
@@ -500,6 +534,8 @@ export const StatusMarkers: Story = {
               outcome: 'coral_failure',
               requiresAction: false,
               callPath: 'coral.providers.linear.updateIssue',
+              // A list layout only; nothing opens it beside a program.
+              sourceLocation: undefined,
             },
             {
               ...call,
@@ -508,6 +544,8 @@ export const StatusMarkers: Story = {
               outcome: 'indeterminate',
               requiresAction: false,
               callPath: 'coral.providers.linear.createIssue',
+              // A list layout only; nothing opens it beside a program.
+              sourceLocation: undefined,
             },
           ],
           next: '',
@@ -577,6 +615,8 @@ const busyTask = {
         ...call,
         name: `${workspace}/invocations/${i}`,
         callPath: `billing.listInvoices.${i}`,
+        // A list layout only; nothing opens it beside a program.
+        sourceLocation: undefined,
         state: 'ended' as const,
         outcome: 'upstream_outcome',
         requiresAction: false,
@@ -689,6 +729,8 @@ function addLargeRun(row: ActivityRow & { kind: 'run' }, operations: number) {
       run: row.name,
       startedAt: row.startedAt,
       callPath: `billing.listInvoices.page${k + 1}`,
+      // A list layout only; nothing opens it beside a program.
+      sourceLocation: undefined,
       state: 'ended' as const,
       outcome: k % 9 === 8 ? 'coral_failure' : 'upstream_outcome',
       requiresAction: false,
@@ -1027,6 +1069,8 @@ export const FinalValueOnExec: Story = {
               ...emission,
               name: `${run}/final`,
               eventKind: 'run.ended',
+              // A Run's end is no call of the program's.
+              sourceLocation: undefined,
               label: 'final value',
               contextImpactBytes: '15',
             },
@@ -1038,7 +1082,8 @@ export const FinalValueOnExec: Story = {
       detail: {
         kind: 'run',
         run: { ...execution, state: 'succeeded', requiresAction: false },
-        source: 'coral.emit({progress: "ready"}); return {invoices: 24};',
+        // The program that made the emission listed above and returned this value.
+        source: program,
         linkedFunctions: [],
         terminal: { kind: 'succeeded', finalValue: '{"invoices":24}' },
       },
@@ -1170,6 +1215,7 @@ export const EmissionAfterFailure: Story = {
           occurredAt: at,
           value: '{"invoices":24,"groupedBy":"owner"}',
         },
+        context: approvalContext,
       },
     },
   },
@@ -1184,6 +1230,8 @@ export const EmissionAfterFailure: Story = {
       '"groupedBy"',
     )
     await expect(dialog).not.toHaveTextContent('Technical details')
+    // Beside it, the Run's program, at the line that emitted it.
+    await expectSourceLine(dialog, 3)
   },
 }
 const searched: DiscoveryContext = {
@@ -1627,7 +1675,8 @@ export const PendingConnectionFooter: Story = {
           state: 'pending',
           expiresAt: minutesAfterStoryNow(15),
         },
-        source: 'return null',
+        // The program whose call waits on this connection.
+        source: "return await coral.providers.linear.listIssues({ assignee: 'me' })",
         linkedFunctions: [],
         terminal: { kind: 'unavailable' },
       },
@@ -1703,7 +1752,7 @@ export const InvocationWithRunEvidence: Story = {
     // The call leads; the Run's source shows in its own pane below, not repeated in Details.
     await expect(drawer.queryByText('Accepted program source', { selector: 'summary' })).toBeNull()
     const source = drawer.getByRole('region', { name: 'Accepted source' })
-    await expect(within(source).getByText('Accepted program source')).toBeVisible()
+    await expect(source.querySelector('[data-line="1"]')).toBeVisible()
     await expect(drawer.getByText('Details', { selector: 'summary' })).toBeVisible()
   },
 }
