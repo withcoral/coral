@@ -251,6 +251,22 @@ test('each rail entry is a tab, and all providers lists every one', async () => 
   expect(checkbox('Select repos.get')).toBeChecked()
 })
 
+// Catches: an operation route from another provider opening its drawer over a
+// tab that leaves its row out.
+test('an operation route keeps a tab that lists it, and otherwise opens its provider', async () => {
+  const { show } = renderPage()
+  await show(null, github.id)
+  await show(github.operations[0]!)
+  expect(rowNames()).toEqual(['issues.list', 'repos.get'])
+
+  await show(weather.operations[0]!)
+  expect(rowNames()).toEqual(['getForecast'])
+
+  await show(null, null)
+  await show(github.operations[0]!)
+  expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
+})
+
 // Catches: the filter dropping selections it hides, or Apply leaving out
 // the selected operations the filter hides.
 test('selection survives filtering', async () => {

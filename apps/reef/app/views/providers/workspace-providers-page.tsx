@@ -424,11 +424,12 @@ function ProvidersTableScreen({
   const selectedOperationName = selectedOperation?.name ?? null
   // The rail is a set of tabs: the table shows one provider, or every one.
   // A provider route picks the tab. An operation route opens the drawer over
-  // the tab the reader is on, so the rows under it stay; arriving on one
-  // opens its provider's tab. Selection is keyed, not row-derived, so it
-  // survives a change of tab and counts as hidden there.
-  const routeTab = selectedOperationName ? undefined : selectedProviderId
+  // the tab the reader is on when that tab lists it, so the rows under it
+  // stay; otherwise it opens its provider's tab. Selection is keyed, not
+  // row-derived, so it survives a change of tab and counts as hidden there.
   const [lastTab, setLastTab] = useState(selectedProviderId)
+  const keepsTab = selectedOperationName && (lastTab === null || lastTab === selectedProviderId)
+  const routeTab = keepsTab ? undefined : selectedProviderId
   if (routeTab !== undefined && routeTab !== lastTab) setLastTab(routeTab)
   const tab = routeTab === undefined ? lastTab : routeTab
   const visibleByProvider = useMemo(() => {
@@ -622,8 +623,9 @@ function ProvidersTableScreen({
     },
     [],
   )
-  // A tab's address names it, so the URL can be shared. The route change is
-  // a selection within the page, which the parent loader does not revalidate.
+  // A tab's address names it, so the URL can be shared. Each tab pushes an
+  // entry, so Back returns to the tab before it. The route change is a
+  // selection within the page, which the parent loader does not revalidate.
   const openTab = (path: string) => navigate(path, { preventScrollReset: true })
   const closeSelectedRoute = () => {
     // The keyboard cursor stays on the operation the drawer showed.
