@@ -154,7 +154,6 @@ export function CatalogRailItem({
  */
 export function CatalogToolbar({
   title,
-  action,
   filter,
   leading,
   children,
@@ -164,8 +163,6 @@ export function CatalogToolbar({
    * `titled`, so its breadcrumb is not a second h1.
    */
   title?: string
-  /** The page's main action beside the title, such as an icon button that adds a row. */
-  action?: ReactNode
   filter: FilterFieldProps & {
     /** A shortcut, such as "$mod+f", that focuses the filter from anywhere on the page. */
     shortcut?: string
@@ -193,7 +190,6 @@ export function CatalogToolbar({
               <Typography.HeadingLarge as="h1" truncate>
                 {title}
               </Typography.HeadingLarge>
-              {action}
             </div>
           )}
           {leading}

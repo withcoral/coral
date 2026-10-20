@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { createRoutesStub } from 'react-router'
 
 import { filterQuery } from '@/utils/filter-query'
-import { Button, Table } from '@/wax/components'
+import { Table } from '@/wax/components'
 
 import { CatalogLayout, CatalogRail, CatalogRailItem, CatalogToolbar } from './catalog'
 
@@ -47,9 +47,6 @@ function Catalog({ title }: { title?: string }) {
       >
         <CatalogToolbar
           title={title}
-          action={
-            title && <Button.IconButton name="Plus" tooltipText="Add member" variant="bare" />
-          }
           filter={{
             label: 'Filter members',
             value: table,
@@ -99,7 +96,7 @@ export const Default: Story = {
   render: () => <Catalog />,
 }
 
-// The toolbar heads the page with its title and main action.
+// The toolbar heads the page with its title.
 export const Titled: Story = {
   args: { rail: null, children: null },
   render: () => <Catalog title="Functions" />,

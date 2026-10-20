@@ -202,6 +202,7 @@ function WorkspaceProvidersContent({
       breadcrumbs={trail([], 'Providers')}
       titled={!empty}
       compact
+      actions={!empty && canChange && <AddProviderLauncher {...entry} />}
       header={
         <>
           {!owner && (
@@ -235,7 +236,6 @@ function WorkspaceProvidersContent({
         </div>
       ) : (
         <ProvidersTableScreen
-          addButton={canChange && <AddProviderLauncher {...entry} compact />}
           canChange={canChange}
           filteredProviders={filteredProviders}
           form={form}
@@ -383,7 +383,6 @@ const tableRowHeight = (row: TableRowItem) => {
 }
 
 function ProvidersTableScreen({
-  addButton,
   canChange,
   filteredProviders,
   form,
@@ -395,8 +394,6 @@ function ProvidersTableScreen({
   routedProvider,
   setRailFilter,
 }: {
-  /** Adds a provider, beside the page's title. */
-  addButton: ReactNode
   canChange: boolean
   filteredProviders: ProviderView[]
   form: FormContext
@@ -788,7 +785,6 @@ function ProvidersTableScreen({
     >
       <CatalogToolbar
         title="Providers"
-        action={addButton}
         filter={{
           id: OPERATION_FILTER_ID,
           label: 'Filter operations',

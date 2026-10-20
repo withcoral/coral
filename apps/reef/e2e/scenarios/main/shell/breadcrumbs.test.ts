@@ -49,13 +49,9 @@ test('Each page has one title, and breadcrumbs lead back from nested pages', asy
       await crumbs.getByRole('link', { name: 'Agents', exact: true }).click()
       await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/agents`)
     })
-    await step('Page actions sit beside the title', async () => {
+    await step('Page actions sit in the top bar', async () => {
       await heading.waitFor()
-      await heading
-        .locator('..')
-        .getByRole('button', { name: 'Create agent', exact: true })
-        .waitFor()
-      expect(await topBar.getByRole('button').count()).toBe(0)
+      await topBar.getByRole('button', { name: 'Create agent', exact: true }).waitFor()
     })
     await step(
       'Each setup step titles the page with its provider and heads its content with its actions',
@@ -100,14 +96,10 @@ test('Each page has one title, and breadcrumbs lead back from nested pages', asy
       await openProviderPolicy(page, providerPath)
       await crumbs.getByRole('link', { name: 'Providers', exact: true }).click()
       await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/providers`)
-      // The provider list's toolbar titles the page and holds Add provider.
-      const providers = page.getByRole('heading', { name: 'Providers', exact: true, level: 1 })
-      await providers
-        .locator('..')
-        .getByRole('button', { name: 'Add provider', exact: true })
-        .waitFor()
+      // The provider list's toolbar titles the page; the top bar holds Add provider.
+      await page.getByRole('heading', { name: 'Providers', exact: true, level: 1 }).waitFor()
       await expect.poll(titles).toEqual(['Providers'])
-      expect(await topBar.getByRole('button').count()).toBe(0)
+      await topBar.getByRole('button', { name: 'Add provider', exact: true }).waitFor()
     })
     await step('The workspace crumb leads to its overview', async () => {
       await page

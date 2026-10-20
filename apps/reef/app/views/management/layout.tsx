@@ -10,6 +10,7 @@ export function ManagementLayout({
   breadcrumbs,
   titled,
   compact,
+  actions,
   bounded,
   children,
 }: {
@@ -18,12 +19,20 @@ export function ManagementLayout({
   titled?: boolean
   /** Tighter page spacing; see `PageLayout`. */
   compact?: boolean
+  /** Page actions at the end of the top bar. */
+  actions?: ReactNode
   /** The page is no taller than the viewport; its scroll table scrolls instead. */
   bounded?: boolean
   children: ReactNode
 }) {
   return (
-    <PageLayout breadcrumbs={breadcrumbs} titled={titled} compact={compact} bounded={bounded}>
+    <PageLayout
+      breadcrumbs={breadcrumbs}
+      titled={titled}
+      compact={compact}
+      actions={actions}
+      bounded={bounded}
+    >
       {children}
     </PageLayout>
   )
