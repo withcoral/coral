@@ -347,6 +347,14 @@ impl OperationInvoker {
                 FenceOutcome::Rejected(rejection) => {
                     return Err(self.finish_failure(&admitted, &progress, rejection).await?);
                 }
+                // The finish finds the row ended and delivers that outcome;
+                // the failure named here is recorded only if the row were
+                // still pending, which a superseded fence has ruled out.
+                FenceOutcome::Superseded => {
+                    return Err(self
+                        .finish_failure(&admitted, &progress, CoralFailure::AuthorityLost)
+                        .await?);
+                }
                 FenceOutcome::RunTerminated => {
                     return Err(InvocationHostError::Fatal(Error::ProgramHostTerminated));
                 }
@@ -638,7 +646,7 @@ impl OperationInvoker {
                 admitted.target.provider_access().id(),
                 evidence,
                 self.now()?,
-            ) => result.map_err(dispatch_credential_error)?,
+            ) => result.map_err(account_error)?,
         };
         let authorization = match ready {
             Dispatch::Upstream(ReadyDispatch::Http(http)) => http.authorize(&secret),
@@ -903,7 +911,7 @@ impl OperationInvoker {
                 admitted.target.provider_access().id(),
                 evidence,
                 self.now()?,
-            ) => result.map(|_| ()).map_err(dispatch_credential_error),
+            ) => result.map(|_| ()).map_err(account_error),
         }
     }
 
@@ -1247,19 +1255,6 @@ fn refused(refusal: Refusal) -> Error {
     }
 }
 
-/// An Account error after the fence judged the material valid: material
-/// that cannot be opened is no usable Account, so the Invocation ends with
-/// `account_required` without fencing again; every other error keeps its
-/// meaning.
-fn dispatch_credential_error(error: coral_provider::Error) -> Error {
-    match error {
-        coral_provider::Error::Credentials(
-            coral_credentials::Error::Cryptography | coral_credentials::Error::InvalidSecret,
-        ) => Error::InvocationRejected(CoralFailure::AccountRequired.into()),
-        other => account_error(other),
-    }
-}
-
 /// Keeps a known failure as the step's outcome: inside the owner's chunk
 /// transaction a rejection is a value the chunk records, not an error that
 /// fails it.
@@ -1358,6 +1353,10 @@ pub(crate) enum FenceOutcome {
     RefreshRequired,
     Permitted,
     Rejected(Rejection),
+    /// An outside writer ended the Invocation row during the fence (a
+    /// decision, a cancel): its durable outcome stands, and the finish
+    /// delivers it.
+    Superseded,
     RunTerminated,
 }
 
@@ -1687,14 +1686,12 @@ impl ChunkWork for FenceBatch {
             if !permitted.contains(&fenced.admitted.id) {
                 continue;
             }
-            // A row that is no longer `pending` was ended by an outside
-            // writer (a decision), whose durable outcome the finish delivers.
             fenced
                 .reply
                 .record(if started.contains(&fenced.admitted.id) {
                     FenceOutcome::Permitted
                 } else {
-                    FenceOutcome::Rejected(CoralFailure::AuthorityLost.into())
+                    FenceOutcome::Superseded
                 });
         }
         Ok(Vec::new())

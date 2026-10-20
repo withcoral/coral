@@ -223,7 +223,8 @@ pub(crate) struct FenceLatch {
     /// Fences that have read their facts and hold them.
     pub(crate) loaded: AtomicUsize,
     arrivals: watch::Sender<bool>,
-    loaded_facts: watch::Sender<bool>,
+    /// How many loaded fences may go on, in the order they loaded.
+    loaded_permits: watch::Sender<usize>,
     failures: watch::Sender<bool>,
 }
 
@@ -250,7 +251,7 @@ impl FenceLatch {
             arrived: AtomicUsize::new(0),
             loaded: AtomicUsize::new(0),
             arrivals: watch::channel(!hold_arrivals).0,
-            loaded_facts: watch::channel(!hold_loaded_facts).0,
+            loaded_permits: watch::channel(if hold_loaded_facts { 0 } else { usize::MAX }).0,
             failures: watch::channel(!hold_failures).0,
         })
     }
@@ -267,7 +268,12 @@ impl FenceLatch {
 
     /// Lets every fence parked on its loaded facts go on, and later ones pass.
     pub(crate) fn release_loaded(&self) {
-        self.loaded_facts.send_replace(true);
+        self.loaded_permits.send_replace(usize::MAX);
+    }
+
+    /// Lets the one fence that loaded its facts earliest and still parks go on.
+    pub(crate) fn release_one_loaded(&self) {
+        self.loaded_permits.send_modify(|permits| *permits += 1);
     }
 
     pub(crate) async fn until_arrived(&self, count: usize) {
@@ -294,8 +300,10 @@ impl InvocationObserver for FenceLatch {
     }
 
     async fn fence_checks_loaded(&self) {
-        self.loaded.fetch_add(1, Ordering::SeqCst);
-        Self::park(&self.loaded_facts).await;
+        let ordinal = self.loaded.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut permits = self.loaded_permits.subscribe();
+        // A dropped sender never happens: the latch outlives the test.
+        let _permitted = permits.wait_for(|permits| *permits >= ordinal).await;
     }
 
     async fn before_failure_commit(&self) -> Result<(), Error> {

@@ -45,14 +45,14 @@
 - Open read-only work with `Database::begin_read_snapshot` and non-holding
   checks. `Database::begin` takes SQLite's write lock at `BEGIN`, so it waits
   behind every other writer.
-- A decision that reads fact rows it does not write (a Workspace, a Provider,
-  a policy rule, an Account) holds them with `RowLock::Shared`
-  (`Transaction::fetch_optional_locked`): Postgres `FOR SHARE`, under which
-  decisions read side by side and a writer's `UPDATE` waits for them;
-  nothing on SQLite, whose write transaction already serializes them behind
-  every writer. Keep the no-op `UPDATE` hold for a row the transaction goes
-  on to write. A row that two such decisions may both create for the first
-  time (an Account placeholder, a connection request) is inserted with
+- The Dispatch Fence, the held rechecks before it, and the parked-wait
+  precheck read the fact rows they never write (a Workspace, a Provider, a
+  policy rule, an Account) with `RowLock::Shared`
+  (`Transaction::fetch_optional_locked`; `coral_db::RowLock` documents what
+  each backend does). Other decisions still take the exclusive no-op `UPDATE`
+  hold on those rows; a row the transaction goes on to write always keeps it.
+  A row that two shared-hold decisions may both create for the first time (an
+  Account placeholder, a connection request) is inserted with
   `ON CONFLICT DO NOTHING` and reread, since no shared hold serializes its
   creators.
 - A Run's Program paths (Emissions, Logs, Invocation admission, held

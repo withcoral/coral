@@ -1210,7 +1210,9 @@ async fn a_revocation_that_commits_before_the_fence_denies_the_batch_and_after_i
 /// Two Runs' fences hold the Workspace, Provider and policy rows they share
 /// at the same time (on Postgres: `FOR SHARE`; on `SQLite` the second fence
 /// waits for the writer lock the first one holds), and a Provider change
-/// waits for every fence in flight before it commits, so both dispatch.
+/// waits for every fence in flight before it commits, so both dispatch: on
+/// Postgres it still waits once the first fence has committed and only the
+/// second holds the rows.
 #[tokio::test]
 async fn fences_of_two_runs_share_their_locks_and_an_authority_writer_waits_for_both() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
@@ -1269,6 +1271,17 @@ async fn fences_of_two_runs_share_their_locks_and_an_authority_writer_waits_for_
             .is_err(),
         "the Provider change waits for the fences holding its row"
     );
+    if postgres {
+        // The first fence commits and releases its share; the second still
+        // holds the rows, so the writer keeps waiting.
+        latch.release_one_loaded();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), &mut writer)
+                .await
+                .is_err(),
+            "the Provider change waits for the second fence too"
+        );
+    }
     latch.release_loaded();
     writer
         .await
@@ -1303,7 +1316,56 @@ async fn fences_of_two_runs_share_their_locks_and_an_authority_writer_waits_for_
 )]
 async fn the_precheck_and_the_fence_reach_the_same_decision_on_the_same_facts() {
     use crate::CoralFailure;
-    use crate::fence::{ApprovalFact, Decision, FenceTarget, InvocationFacts, SharedFacts};
+    use crate::fence::{ApprovalFact, Decision};
+
+    async fn decide_twice(
+        fixture: &TestModules,
+        invoker: &crate::invocation::OperationInvoker,
+        record: &crate::lifecycle::RunRecord,
+        admitted: &crate::invocation::AdmittedInvocation,
+        approval: crate::fence::ApprovalFact,
+    ) -> (crate::fence::Decision, crate::fence::Decision) {
+        use crate::fence::{FenceTarget, InvocationFacts, SharedFacts};
+        let target = FenceTarget {
+            admitted,
+            credential_evidence: None,
+        };
+        let now = fixture.clock.now_unix_nanos().unwrap();
+        let mut snapshot = fixture.database.begin_read_snapshot().await.unwrap();
+        let in_snapshot = SharedFacts::load(
+            &mut snapshot,
+            coral_db::RowLock::None,
+            &invoker.fence_scope(),
+            now,
+            std::slice::from_ref(&target),
+        )
+        .await
+        .unwrap();
+        snapshot.commit().await.unwrap();
+        let mut held = fixture.database.begin().await.unwrap();
+        let under_holds = SharedFacts::load(
+            &mut held,
+            coral_db::RowLock::Shared,
+            &invoker.fence_scope(),
+            now,
+            std::slice::from_ref(&target),
+        )
+        .await
+        .unwrap();
+        held.rollback().await.unwrap();
+        let facts = InvocationFacts {
+            target,
+            committed_failure: None,
+            connection_pending_until_unix_nanos: None,
+            approval,
+        };
+        let run_facts = invoker.run_facts(record);
+        let decided_at = now + 1;
+        (
+            crate::fence::decide(&in_snapshot, &run_facts, &facts, decided_at),
+            crate::fence::decide(&under_holds, &run_facts, &facts, decided_at),
+        )
+    }
 
     let (engine, _release) = BlockingEngine::new();
     let fixture = TestModules::new(Arc::new(engine)).await;
@@ -1327,7 +1389,7 @@ async fn the_precheck_and_the_fence_reach_the_same_decision_on_the_same_facts() 
     let invoker = test_invoker(&fixture, &operation, &record);
     let deadline = record.deadline_at_unix_nanos;
     let context = change(operation.user.clone(), 100, 'a');
-    let cases: [(&str, OperationAccessState, ApprovalFact, Decision); 6] = [
+    let cases: [(&str, OperationAccessState, ApprovalFact, Decision); 5] = [
         (
             "every fact current",
             OperationAccessState::Enabled,
@@ -1364,12 +1426,6 @@ async fn the_precheck_and_the_fence_reach_the_same_decision_on_the_same_facts() 
             ApprovalFact::NotRequested,
             Decision::Deny(CoralFailure::OperationDisabled),
         ),
-        (
-            "the Workspace is archived",
-            OperationAccessState::Enabled,
-            ApprovalFact::NotRequested,
-            Decision::Deny(CoralFailure::AuthorityLost),
-        ),
     ];
     for (case, policy, approval, expected) in cases {
         fixture
@@ -1377,53 +1433,37 @@ async fn the_precheck_and_the_fence_reach_the_same_decision_on_the_same_facts() 
             .set_access_state(&context, operation.policy_target.clone(), policy)
             .await
             .unwrap();
-        if case == "the Workspace is archived" {
-            fixture
-                .workspaces
-                .archive(&context, &operation.workspace_id)
-                .await
-                .unwrap();
-        }
-        let target = FenceTarget {
-            admitted: &admitted,
-            credential_evidence: None,
-        };
-        let now = fixture.clock.now_unix_nanos().unwrap();
-        let mut snapshot = fixture.database.begin_read_snapshot().await.unwrap();
-        let in_snapshot = SharedFacts::load(
-            &mut snapshot,
-            coral_db::RowLock::None,
-            &invoker.fence_scope(),
-            now,
-            std::slice::from_ref(&target),
-        )
-        .await
-        .unwrap();
-        snapshot.commit().await.unwrap();
-        let mut held = fixture.database.begin().await.unwrap();
-        let under_holds = SharedFacts::load(
-            &mut held,
-            coral_db::RowLock::Shared,
-            &invoker.fence_scope(),
-            now,
-            std::slice::from_ref(&target),
-        )
-        .await
-        .unwrap();
-        held.rollback().await.unwrap();
-        let facts = InvocationFacts {
-            target,
-            committed_failure: None,
-            connection_pending_until_unix_nanos: None,
-            approval,
-        };
-        let run_facts = invoker.run_facts(&record);
-        let decided_at = now + 1;
-        let precheck = crate::fence::decide(&in_snapshot, &run_facts, &facts, decided_at);
-        let fence = crate::fence::decide(&under_holds, &run_facts, &facts, decided_at);
+        let (precheck, fence) =
+            decide_twice(&fixture, &invoker, &record, &admitted, approval).await;
         assert_eq!(precheck, fence, "{case}");
         assert_eq!(fence, expected, "{case}");
     }
+    // Archiving the Workspace cannot be undone, so it is the last situation,
+    // outside the table, with every other fact current again.
+    fixture
+        .policies
+        .set_access_state(
+            &context,
+            operation.policy_target.clone(),
+            OperationAccessState::Enabled,
+        )
+        .await
+        .unwrap();
+    fixture
+        .workspaces
+        .archive(&context, &operation.workspace_id)
+        .await
+        .unwrap();
+    let (precheck, fence) = decide_twice(
+        &fixture,
+        &invoker,
+        &record,
+        &admitted,
+        ApprovalFact::NotRequested,
+    )
+    .await;
+    assert_eq!(precheck, fence, "the Workspace is archived");
+    assert_eq!(fence, Decision::Deny(CoralFailure::AuthorityLost));
 }
 
 /// Two Invocations in one batch that retained the same Generation and

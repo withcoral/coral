@@ -110,12 +110,11 @@ pub(crate) enum Decision {
     RunTerminated,
 }
 
-/// The retained Operation a target runs and the Provider access it
-/// retained: the Generation (immutable), the Operation key, and the
-/// credential route and account-setting version the verification compares
-/// with the current Provider. Targets that retained different access share
-/// no verdict.
-type OperationKey = (
+/// What one Operation verdict is keyed by: the retained Generation
+/// (immutable), the Operation key, and the credential route and
+/// account-setting version the verification compares with the current
+/// Provider. Targets that retained different access share no verdict.
+type OperationVerdictKey = (
     coral_catalog::ProviderGenerationId,
     coral_catalog::OperationKey,
     coral_provider::CredentialRoute,
@@ -129,13 +128,13 @@ pub(crate) struct SharedFacts {
     authority: Result<PrincipalWorkspaceEvidence, CoralFailure>,
     /// Per retained Operation: the policy the Invocation runs under, once
     /// the Provider and the Operation are current.
-    operations: BTreeMap<OperationKey, Result<OperationAccessState, CoralFailure>>,
+    operations: BTreeMap<OperationVerdictKey, Result<OperationAccessState, CoralFailure>>,
     /// Per selected Account: what the dispatch decides the Account on, once
     /// it is current.
     accounts: BTreeMap<AccountKey, Result<RetainedAccountFact, CoralFailure>>,
 }
 
-fn operation_key(target: &ResolvedInvocationOperation) -> OperationKey {
+fn verdict_key(target: &ResolvedInvocationOperation) -> OperationVerdictKey {
     let access = target.provider_access();
     (
         target.provider_generation_id().clone(),
@@ -189,14 +188,15 @@ impl SharedFacts {
             Ok(evidence) => Ok(evidence),
             Err(error) => Err(authority_failure(error)?),
         };
-        let mut operations: BTreeMap<OperationKey, &ResolvedInvocationOperation> = BTreeMap::new();
+        let mut operations: BTreeMap<OperationVerdictKey, &ResolvedInvocationOperation> =
+            BTreeMap::new();
         let mut accounts: BTreeMap<
             AccountKey,
             (&ResolvedInvocationOperation, &CredentialEvidence),
         > = BTreeMap::new();
         for target in targets {
             operations
-                .entry(operation_key(&target.admitted.target))
+                .entry(verdict_key(&target.admitted.target))
                 .or_insert(&target.admitted.target);
             if let Some(evidence) = target.credential_evidence {
                 accounts
@@ -250,7 +250,7 @@ impl SharedFacts {
         if authority.require_current_at(now_unix_nanos).is_err() {
             return Err(Refusal::Deny(CoralFailure::AuthorityLost));
         }
-        let policy = match self.operations.get(&operation_key(&target.admitted.target)) {
+        let policy = match self.operations.get(&verdict_key(&target.admitted.target)) {
             Some(Ok(policy)) => *policy,
             Some(Err(failure)) => return Err(Refusal::Deny(*failure)),
             None => return Err(Refusal::Deny(CoralFailure::AuthorityLost)),

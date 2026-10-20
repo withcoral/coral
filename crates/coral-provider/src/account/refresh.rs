@@ -69,7 +69,16 @@ impl AccountModule {
                     .await
             })
             .await
-            .map_err(|_error| Error::CredentialRefreshFailed)??;
+            .map_err(|_error| Error::CredentialRefreshFailed)?;
+            let result = match result {
+                // Material the vault cannot open is no usable Account: the
+                // caller ends as `account_required`, and the User reconnects.
+                Err(Error::Credentials(
+                    coral_credentials::Error::Cryptography
+                    | coral_credentials::Error::InvalidSecret,
+                )) => return Err(Error::AccountRequired),
+                result => result?,
+            };
             match result {
                 CredentialResolution::Ready(secret) => return Ok(secret),
                 CredentialResolution::Refreshing(claim) => {
