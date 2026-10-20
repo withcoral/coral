@@ -689,14 +689,13 @@ export const FollowsInTheSourceSplit: Story = {
     await ownHeader('Send reminders')
     await following(false)
 
-    // Your split size and Follow selection hold while live mode replaces the record.
+    // Your split size holds while live mode replaces the record, and the source follows it.
     const separator = () =>
       drawer().getByRole('separator', { name: 'Resize detail and source panes' })
     separator().focus()
     await userEvent.keyboard('{ArrowUp}')
     const split = separator().getAttribute('aria-valuenow')
     await expect(split).not.toBe('50')
-    await userEvent.click(drawer().getByRole('switch', { name: 'Follow selection' }))
 
     await userEvent.click(toggle())
     await shows('mail.list', 'mail.list', operation(program.name, 1, 'mail.list').name, 2)
@@ -706,7 +705,6 @@ export const FollowsInTheSourceSplit: Story = {
     await shows('coral.emit #3', 'emission #3', `${program.name}/events/3`, 4)
     await press('Add operation')
     await shows('mail.send', 'mail.send', operation(program.name, 4, 'mail.send').name, 2)
-    await expect(drawer().getByRole('switch', { name: 'Follow selection' })).not.toBeChecked()
     await expect(separator()).toHaveAttribute('aria-valuenow', split)
 
     // The toggle in the record's header turns live mode off.
@@ -762,7 +760,6 @@ export const ActionsComeFirst: Story = {
     separator().focus()
     await userEvent.keyboard('{ArrowUp}')
     const split = separator().getAttribute('aria-valuenow')
-    await userEvent.click(drawer().getByRole('switch', { name: 'Follow selection' }))
 
     // Live mode reviews the oldest approval, not the newest log, and reads its window.
     await userEvent.click(toggle())
@@ -790,9 +787,8 @@ export const ActionsComeFirst: Story = {
     await following(true)
     await expect(address().has('request')).toBe(false)
 
-    // The split keeps your size and Follow selection through each step.
+    // The split keeps your size through each step.
     await expect(separator()).toHaveAttribute('aria-valuenow', split)
-    await expect(drawer().getByRole('switch', { name: 'Follow selection' })).not.toBeChecked()
   },
 }
 
