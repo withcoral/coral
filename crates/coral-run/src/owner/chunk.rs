@@ -9,7 +9,7 @@ use coral_db::Transaction;
 use crate::invocation::{FenceBatch, FenceRequest};
 use crate::lifecycle::RunRecord;
 use crate::run_repository::OwnedEvent;
-use crate::{CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, Error};
+use crate::{CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, Error, FanOutLimit};
 
 use super::handle::Reply;
 
@@ -17,10 +17,12 @@ use super::handle::Reply;
 /// commit, so this keeps a commit from holding the Run row for too long.
 pub(crate) const CHUNK_WORK_CAP: usize = 32;
 
-/// Invocations one chunk's Dispatch Fence decides at most: the Fan-out
-/// Limit's number. The fence reads its facts once whatever the batch holds;
-/// the bound keeps its one row statement and its decisions small.
-pub(crate) const FENCE_BATCH_CAP: usize = 32;
+/// Invocations one chunk's Dispatch Fence decides at most: the default
+/// Fan-out Limit. Every request in a batch holds a slot under the limit, so
+/// a batch reaches this cap only under a limit raised above the default;
+/// the fence reads its facts once whatever the batch holds, and the bound
+/// keeps its one row statement and its decisions small.
+pub(crate) const FENCE_BATCH_CAP: usize = FanOutLimit::DEFAULT_INVOCATIONS;
 
 /// A database write that the owner runs inside a chunk's commit transaction,
 /// such as inserting an Invocation or recording its result. After the commit,

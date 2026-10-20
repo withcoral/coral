@@ -375,6 +375,10 @@ struct RuntimeSettings {
     /// chunk bytes cap; 8 MiB by default.
     #[serde(rename = "applied_output_cap_bytes")]
     applied_output_cap: usize,
+    /// The Fan-out Limit: Invocations of one Run that may be `dispatching`
+    /// at once. A ready call above it waits, `pending`, for an earlier one to
+    /// end. At least 1; 32 by default.
+    fan_out_limit: usize,
 }
 
 impl Default for RuntimeSettings {
@@ -384,6 +388,7 @@ impl Default for RuntimeSettings {
             execution_heap_bytes: limits.execution_heap_bytes(),
             compiler_heap_bytes: limits.compiler_heap_bytes(),
             applied_output_cap: coral_run::AppliedOutputCap::DEFAULT_BYTES,
+            fan_out_limit: coral_run::FanOutLimit::DEFAULT_INVOCATIONS,
         }
     }
 }
@@ -397,9 +402,13 @@ impl RuntimeSettings {
             .map_err(|error| {
                 AppError::FailedPrecondition(format!("runtime.applied_output_cap_bytes: {error}"))
             })?;
+        let fan_out_limit = coral_run::FanOutLimit::new(self.fan_out_limit).map_err(|error| {
+            AppError::FailedPrecondition(format!("runtime.fan_out_limit: {error}"))
+        })?;
         Ok(coral_run::RuntimeLimits::new(
             isolate_limits,
             applied_output_cap,
+            fan_out_limit,
         ))
     }
 }
@@ -1108,6 +1117,36 @@ client_secret = 'test-secret'
                 .search_reconcile_interval()
                 .unwrap(),
             std::time::Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn invalid_runtime_settings_fail_closed() {
+        for (raw, expected) in [
+            (
+                "[runtime]\nfan_out_limit = 0",
+                "runtime.fan_out_limit: invalid input: fan-out limit must be at least one Invocation",
+            ),
+            (
+                "[runtime]\napplied_output_cap_bytes = 1",
+                "runtime.applied_output_cap_bytes: invalid input: applied output cap must be at least",
+            ),
+            ("[runtime]\nfan_out = 4", "unknown field `fan_out`"),
+        ] {
+            let error = load(raw).1.runtime_limits().expect_err(raw);
+            assert!(
+                matches!(&error, AppError::FailedPrecondition(message) if message.contains(expected)),
+                "{raw}: {error}"
+            );
+        }
+        assert_eq!(
+            load("[runtime]\nfan_out_limit = 4\n")
+                .1
+                .runtime_limits()
+                .expect("a limit of four")
+                .fan_out_limit()
+                .invocations(),
+            4
         );
     }
 

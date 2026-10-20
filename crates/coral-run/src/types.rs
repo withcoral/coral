@@ -930,22 +930,75 @@ impl Default for AppliedOutputCap {
     }
 }
 
-/// The limits one deployment sets for Program execution: the V8 isolate heaps
-/// and the Run Owner's Applied cap. Resolved once at process bootstrap and
-/// handed to the Run module whole.
+/// The Fan-out Limit: how many Invocations of one Run may be `dispatching`
+/// at once.
+///
+/// The Run Owner decides each dispatch start against its in-memory count. A
+/// ready Invocation above the limit stays `pending`, with no Event and no
+/// required action, and starts its dispatch in readiness order when an
+/// earlier one ends; waits for an account or an approval hold no slot.
+/// Deployment-wide, set at process bootstrap; the default is 32.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FanOutLimit {
+    invocations: usize,
+}
+
+impl FanOutLimit {
+    /// The default limit, 32 Invocations.
+    pub const DEFAULT_INVOCATIONS: usize = 32;
+
+    /// Accepts a limit of at least one Invocation: at zero no dispatch could
+    /// ever start.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] for zero.
+    pub fn new(invocations: usize) -> Result<Self, Error> {
+        if invocations == 0 {
+            return Err(Error::InvalidInput(
+                "fan-out limit must be at least one Invocation".to_string(),
+            ));
+        }
+        Ok(Self { invocations })
+    }
+
+    /// The limit in Invocations.
+    #[must_use]
+    pub const fn invocations(self) -> usize {
+        self.invocations
+    }
+}
+
+impl Default for FanOutLimit {
+    fn default() -> Self {
+        Self {
+            invocations: Self::DEFAULT_INVOCATIONS,
+        }
+    }
+}
+
+/// The limits one deployment sets for Program execution: the V8 isolate
+/// heaps, the Run Owner's Applied cap and its Fan-out Limit. Resolved once at
+/// process bootstrap and handed to the Run module whole.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RuntimeLimits {
     isolate: crate::IsolateLimits,
     applied_output_cap: AppliedOutputCap,
+    fan_out_limit: FanOutLimit,
 }
 
 impl RuntimeLimits {
     /// Composes the limits bootstrap resolved from the `[runtime]` section.
     #[must_use]
-    pub const fn new(isolate: crate::IsolateLimits, applied_output_cap: AppliedOutputCap) -> Self {
+    pub const fn new(
+        isolate: crate::IsolateLimits,
+        applied_output_cap: AppliedOutputCap,
+        fan_out_limit: FanOutLimit,
+    ) -> Self {
         Self {
             isolate,
             applied_output_cap,
+            fan_out_limit,
         }
     }
 
@@ -959,5 +1012,11 @@ impl RuntimeLimits {
     #[must_use]
     pub const fn applied_output_cap(&self) -> AppliedOutputCap {
         self.applied_output_cap
+    }
+
+    /// The Fan-out Limit the Run Owner decides dispatch starts against.
+    #[must_use]
+    pub const fn fan_out_limit(&self) -> FanOutLimit {
+        self.fan_out_limit
     }
 }

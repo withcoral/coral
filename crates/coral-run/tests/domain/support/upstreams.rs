@@ -178,3 +178,60 @@ impl UpstreamSender for StopAwareUpstream {
         Err(crate::invocation::UpstreamSendError::Canceled)
     }
 }
+
+/// Holds every send until the test lets sends go, one at a time in send
+/// order, and reports a held send canceled once the Run's stop is requested,
+/// as the production sender does for a dispatch in flight.
+pub(crate) struct SequencedUpstream {
+    pub(crate) sends: AtomicUsize,
+    /// How many sends may go on, in the order they were sent.
+    permits: watch::Sender<usize>,
+    outcome: HttpOutcome,
+}
+
+impl SequencedUpstream {
+    pub(crate) fn new(outcome: HttpOutcome) -> Arc<Self> {
+        Arc::new(Self {
+            sends: AtomicUsize::new(0),
+            permits: watch::channel(0).0,
+            outcome,
+        })
+    }
+
+    /// Lets the earliest send still held go on.
+    pub(crate) fn release_one(&self) {
+        self.permits.send_modify(|permits| *permits += 1);
+    }
+
+    /// Lets every send, held or later, go on.
+    pub(crate) fn release_all(&self) {
+        self.permits.send_replace(usize::MAX);
+    }
+
+    /// Waits until `count` sends have reached the upstream.
+    pub(crate) async fn until_sent(&self, count: usize) {
+        wait_until_async_within(Duration::from_secs(10), async || {
+            self.sends.load(Ordering::SeqCst) >= count
+        })
+        .await;
+    }
+}
+
+#[async_trait]
+impl UpstreamSender for SequencedUpstream {
+    async fn send(
+        &self,
+        _dispatch: ReadyDispatch,
+        stop: Arc<ExecutionStop>,
+    ) -> Result<UpstreamOutcome, crate::invocation::UpstreamSendError> {
+        let ordinal = self.sends.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut permits = self.permits.subscribe();
+        tokio::select! {
+            // A dropped sender never happens: the upstream outlives the test.
+            _permitted = permits.wait_for(|permits| *permits >= ordinal) => {
+                Ok(UpstreamOutcome::Http(self.outcome.clone()))
+            }
+            () = stop.requested() => Err(crate::invocation::UpstreamSendError::Canceled),
+        }
+    }
+}

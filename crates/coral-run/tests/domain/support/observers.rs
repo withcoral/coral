@@ -96,6 +96,21 @@ impl ObservedFences {
         });
     }
 
+    /// Fence attempts that ended, permitted or not.
+    pub(crate) fn len(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+
+    /// Every attempt as `(permit returned, durable dispatch start)`, in order.
+    pub(crate) fn pairs(&self) -> Vec<(bool, bool)> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|attempt| (attempt.permit_returned, attempt.durable_dispatch_start))
+            .collect()
+    }
+
     pub(crate) fn assert_no_dispatch(&self) {
         let attempts = self.0.lock().unwrap();
         assert!(
@@ -245,6 +260,12 @@ impl FenceLatch {
         Self::new(true, false, true)
     }
 
+    /// Holds nothing: counts the Invocations that reach the fence and the
+    /// fence attempts that ended.
+    pub(crate) fn counting() -> Arc<Self> {
+        Self::new(false, false, false)
+    }
+
     fn new(hold_arrivals: bool, hold_loaded_facts: bool, hold_failures: bool) -> Arc<Self> {
         Arc::new(Self {
             fences: ObservedFences::default(),
@@ -278,6 +299,15 @@ impl FenceLatch {
 
     pub(crate) async fn until_arrived(&self, count: usize) {
         wait_until(|| self.arrived.load(Ordering::SeqCst) >= count).await;
+    }
+
+    /// Like [`Self::until_arrived`] for an arrival that may take `within` of
+    /// waiting, such as one behind a parked wait's fallback poll.
+    pub(crate) async fn until_arrived_within(&self, count: usize, within: Duration) {
+        wait_until_async_within(within, async || {
+            self.arrived.load(Ordering::SeqCst) >= count
+        })
+        .await;
     }
 
     pub(crate) async fn until_loaded(&self, count: usize) {

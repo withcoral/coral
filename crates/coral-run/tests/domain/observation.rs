@@ -1,33 +1,9 @@
 //! Agent observation and human inspection are distinct Run-owned interfaces.
 use super::*;
 
-struct SteppedUpstream {
-    entered: tokio::sync::Semaphore,
-    release: tokio::sync::Semaphore,
-}
-
-#[async_trait]
-impl UpstreamSender for SteppedUpstream {
-    async fn send(
-        &self,
-        _dispatch: ReadyDispatch,
-        _stop: Arc<ExecutionStop>,
-    ) -> Result<UpstreamOutcome, crate::invocation::UpstreamSendError> {
-        self.entered.add_permits(1);
-        self.release.acquire().await.unwrap().forget();
-        Ok(UpstreamOutcome::Http(HttpOutcome::new(
-            200,
-            serde_json::json!({}),
-        )))
-    }
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn internal_invocations_do_not_end_waits_and_initial_wait_batches_authored_output() {
-    let upstream = Arc::new(SteppedUpstream {
-        entered: tokio::sync::Semaphore::new(0),
-        release: tokio::sync::Semaphore::new(0),
-    });
+    let upstream = SequencedUpstream::new(HttpOutcome::new(200, serde_json::json!({})));
     let fixture = TestModules::with_upstream(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
@@ -41,7 +17,7 @@ async fn internal_invocations_do_not_end_waits_and_initial_wait_batches_authored
     let accepted = fixture.runs.start(actor, workspace, submission(
         "for(let i=0;i<3;i++) { await coral.providers.weather.getForecast({}); if(i===1) { await coral.emit('ready'); console.log('ready'); } } return 7;"
     )).await.unwrap();
-    upstream.entered.acquire().await.unwrap().forget();
+    upstream.until_sent(1).await;
     let observation = immediate(Some(accepted.next_cursor().clone()), 100)
         .with_wait(Duration::from_secs(2))
         .unwrap();
@@ -52,13 +28,13 @@ async fn internal_invocations_do_not_end_waits_and_initial_wait_batches_authored
     tokio::time::timeout(Duration::from_millis(20), &mut pending)
         .await
         .expect_err("Invocation start is not caller-visible output");
-    upstream.release.add_permits(1);
-    upstream.entered.acquire().await.unwrap().forget();
+    upstream.release_one();
+    upstream.until_sent(2).await;
     tokio::time::timeout(Duration::from_millis(100), &mut pending)
         .await
         .expect_err("Invocation end and next start must not end the wait");
-    upstream.release.add_permits(1);
-    upstream.entered.acquire().await.unwrap().forget();
+    upstream.release_one();
+    upstream.until_sent(3).await;
     let output = tokio::time::timeout(Duration::from_secs(1), pending)
         .await
         .unwrap()
@@ -90,7 +66,7 @@ async fn internal_invocations_do_not_end_waits_and_initial_wait_batches_authored
     tokio::time::timeout(Duration::from_millis(100), &mut batching)
         .await
         .expect_err("authored output alone does not end initial wait");
-    upstream.release.add_permits(1);
+    upstream.release_one();
     let terminal = tokio::time::timeout(Duration::from_secs(1), batching)
         .await
         .unwrap()
@@ -107,10 +83,7 @@ async fn internal_invocations_do_not_end_waits_and_initial_wait_batches_authored
 /// An agent that omits the cursor gets the earlier output back, but only later output ends its wait.
 #[tokio::test(flavor = "multi_thread")]
 async fn cursorless_wait_replays_earlier_output_and_ends_only_on_later_output() {
-    let upstream = Arc::new(SteppedUpstream {
-        entered: tokio::sync::Semaphore::new(0),
-        release: tokio::sync::Semaphore::new(0),
-    });
+    let upstream = SequencedUpstream::new(HttpOutcome::new(200, serde_json::json!({})));
     let fixture = TestModules::with_upstream(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
@@ -124,7 +97,7 @@ async fn cursorless_wait_replays_earlier_output_and_ends_only_on_later_output() 
     let accepted = fixture.runs.start(actor, workspace, submission(
         "console.log('first'); await coral.providers.weather.getForecast({}); console.log('second'); await coral.providers.weather.getForecast({}); return 7;"
     )).await.unwrap();
-    upstream.entered.acquire().await.unwrap().forget();
+    upstream.until_sent(1).await;
     let logged = |update: &crate::RunUpdate| {
         update
             .events()
@@ -179,14 +152,14 @@ async fn cursorless_wait_replays_earlier_output_and_ends_only_on_later_output() 
     tokio::time::timeout(Duration::from_millis(50), &mut pending)
         .await
         .expect_err("nothing new was authored yet");
-    upstream.release.add_permits(1);
+    upstream.release_one();
     let later = tokio::time::timeout(Duration::from_secs(1), pending)
         .await
         .expect("later output ends the wait long before its deadline")
         .unwrap();
     assert_eq!(later.state(), RunState::Running);
     assert_eq!(logged(&later), ["first", "second"]);
-    upstream.release.add_permits(1);
+    upstream.release_one();
 }
 
 #[tokio::test(flavor = "multi_thread")]

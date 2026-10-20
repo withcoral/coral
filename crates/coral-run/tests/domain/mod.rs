@@ -7,6 +7,7 @@ mod cancellation;
 mod connections;
 mod credentials;
 mod emissions;
+mod fan_out;
 mod fence;
 mod history;
 mod invocations;

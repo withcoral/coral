@@ -1068,12 +1068,14 @@ async fn a_batch_of_ready_invocations_dispatches_in_one_chunk_commit_with_indepe
     assert_eq!(denied.state, "ended");
     assert_eq!(denied.failure_code.as_deref(), Some("operation_disabled"));
     assert_eq!(denied.dispatch_started_at_unix_nanos, None);
-    let attempts = latch.fences.0.lock().unwrap();
+    let attempts = latch.fences.pairs();
     assert_eq!(attempts.len(), 3);
     assert_eq!(
         attempts
             .iter()
-            .filter(|attempt| attempt.permit_returned && attempt.durable_dispatch_start)
+            .filter(|(permit_returned, durable_dispatch_start)| {
+                *permit_returned && *durable_dispatch_start
+            })
             .count(),
         2
     );
@@ -1692,15 +1694,7 @@ async fn a_refresh_wait_parked_by_the_fence_resumes_on_the_next_fence_and_never_
             requests,
             "{case}"
         );
-        let observed: Vec<(bool, bool)> = latch
-            .fences
-            .0
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|attempt| (attempt.permit_returned, attempt.durable_dispatch_start))
-            .collect();
-        assert_eq!(observed, attempts, "{case}");
+        assert_eq!(latch.fences.pairs(), attempts, "{case}");
         let rows = fixture
             .invocation_rows(&operation.workspace_id, run.run_id())
             .await;

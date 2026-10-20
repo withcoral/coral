@@ -51,6 +51,11 @@ pub(crate) enum Message {
     /// One ready Invocation asks for the Dispatch Fence: it joins the batch
     /// the next chunk commit decides, and answers once that chunk is recorded.
     Fence(Box<FenceRequest>),
+    /// The dispatch one fence decided is over without an upstream result
+    /// (denied, superseded, parked on a refresh, failed, the Run ending):
+    /// its slot under the Fan-out Limit is free. An upstream result frees
+    /// the slot itself, as [`Self::InvocationResult`].
+    DispatchEnded,
     /// The Program's execution ended.
     ProgramEnded(ExecutionCompletion),
     /// The chunk in flight landed.
@@ -100,6 +105,7 @@ impl fmt::Debug for Message {
                 .finish(),
             Self::Work(work) => formatter.debug_tuple("Work").field(work).finish(),
             Self::Fence(request) => formatter.debug_tuple("Fence").field(request).finish(),
+            Self::DispatchEnded => formatter.write_str("DispatchEnded"),
             Self::ProgramEnded(completion) => formatter
                 .debug_tuple("ProgramEnded")
                 .field(completion)
@@ -314,6 +320,12 @@ impl OwnerHandle {
             .sender
             .send(Message::Fence(Box::new(request)))
             .map_err(|_retired| Error::OwnerLost)
+    }
+
+    /// Tells the owner that the dispatch one of its fences decided is over,
+    /// so the slot it held under the Fan-out Limit is free.
+    pub(crate) fn dispatch_ended(&self) {
+        self.send(Message::DispatchEnded);
     }
 
     async fn ask(&self, build: impl FnOnce(Reply) -> Message) -> Result<(), Error> {

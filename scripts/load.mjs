@@ -345,6 +345,7 @@ function summarizeFanOut(reports) {
     'neighbor p95 ms / failed (burst)',
     'admit p95 ms',
     'dispatch p95 ms',
+    'max dispatching',
     'decide p95 ms',
     'max lock waits (burst)',
   ]
@@ -362,6 +363,7 @@ function summarizeFanOut(reports) {
       p95Failed(burst.neighbor),
       p95(r.invocations.admit_ms),
       p95(r.invocations.dispatch_ms),
+      r.invocations.max_dispatching_at_once === undefined ? 'n/a' : String(r.invocations.max_dispatching_at_once),
       p95(r.decisions_ms),
       burst.pg ? String(burst.pg.max_lock_waits) : 'n/a',
     ]

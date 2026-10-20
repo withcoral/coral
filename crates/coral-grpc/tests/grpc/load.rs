@@ -68,6 +68,9 @@ const READINESS_BUDGET: Duration = Duration::from_millis(1500);
 /// One `pg_stat_activity` sample row: client backends, active, lock waits, Run-row
 /// waits, ungranted locks, oldest transaction age in seconds, committed transactions.
 type PgActivityRow = (i64, i64, i64, i64, i64, f64, i64);
+/// One Invocation row as the probe reads it: admitted at, dispatch started
+/// at, ended at, state, result kind.
+pub(crate) type InvocationRow = (i64, Option<i64>, Option<i64>, String, Option<String>);
 /// How long `Probes::finish` lets a probe finish its current operation.
 const PROBE_STOP_GRACE: Duration = Duration::from_secs(10);
 
@@ -676,10 +679,7 @@ impl Probe {
         }
     }
 
-    async fn invocations(
-        &mut self,
-        run: &RunId,
-    ) -> Vec<(i64, Option<i64>, Option<i64>, String, Option<String>)> {
+    async fn invocations(&mut self, run: &RunId) -> Vec<InvocationRow> {
         let sql = "select admitted_at_unix_nanos, dispatch_started_at_unix_nanos, ended_at_unix_nanos, state, result_kind \
                    from operation_invocations where run_id = $1";
         match self {

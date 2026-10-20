@@ -355,14 +355,18 @@ async fn mcp_tool(
 /// The `[runtime]` section reaches the process's one Run module, which the
 /// gRPC server and the MCP companion share.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_configured_applied_output_cap_reaches_the_shared_run_module() {
+async fn the_configured_owner_limits_reach_the_shared_run_module() {
     const CAP: usize = 16 << 20;
+    const FAN_OUT: usize = 7;
     assert_ne!(CAP, coral_run::AppliedOutputCap::DEFAULT_BYTES);
+    assert_ne!(FAN_OUT, coral_run::FanOutLimit::DEFAULT_INVOCATIONS);
     let (_temp, server, _workspace, client) = runtime_with_mcp_client(&format!(
-        "{WEB}[runtime]\napplied_output_cap_bytes = {CAP}\n"
+        "{WEB}[runtime]\napplied_output_cap_bytes = {CAP}\nfan_out_limit = {FAN_OUT}\n"
     ))
     .await;
-    assert_eq!(server.grpc.runs().applied_output_cap().bytes(), CAP);
+    let runs = server.grpc.runs();
+    assert_eq!(runs.applied_output_cap().bytes(), CAP);
+    assert_eq!(runs.fan_out_limit().invocations(), FAN_OUT);
     client.cancel().await.expect("close MCP client");
     server.shutdown().await.expect("stop composed server");
 }

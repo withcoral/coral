@@ -243,7 +243,15 @@ impl TestModules {
         workspace_id: &coral_workspace::WorkspaceId,
         run_id: &crate::RunId,
     ) -> Vec<InvocationRow> {
-        type Row = (String, String, String, Option<i64>, Option<String>);
+        type Row = (
+            String,
+            String,
+            String,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        );
         let rows: Vec<Row> = self
             .database
             .fetch_all(
@@ -254,6 +262,8 @@ impl TestModules {
                         Alias::new("state"),
                         Alias::new("dispatch_started_at_unix_nanos"),
                         Alias::new("failure_code"),
+                        Alias::new("result_kind"),
+                        Alias::new("ended_at_unix_nanos"),
                     ])
                     .from(Alias::new("operation_invocations"))
                     .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace_id.to_string()))
@@ -266,13 +276,26 @@ impl TestModules {
             .expect("read the Invocation rows");
         rows.into_iter()
             .map(
-                |(id, call_path, state, dispatch_started_at_unix_nanos, failure_code)| {
+                |(
+                    id,
+                    call_path,
+                    state,
+                    dispatch_started_at_unix_nanos,
+                    failure_code,
+                    result_kind,
+                    ended_at_unix_nanos,
+                )| {
                     InvocationRow {
                         id: crate::InvocationId::parse(&id).expect("Invocation id"),
                         call_path,
                         state,
                         dispatch_started_at_unix_nanos,
                         failure_code,
+                        result_kind: result_kind.map(|kind| {
+                            crate::InvocationResultKind::from_storage_str(&kind)
+                                .expect("a stored result kind")
+                        }),
+                        ended_at_unix_nanos,
                     }
                 },
             )
@@ -938,6 +961,8 @@ pub(crate) struct InvocationRow {
     pub(crate) state: String,
     pub(crate) dispatch_started_at_unix_nanos: Option<i64>,
     pub(crate) failure_code: Option<String>,
+    pub(crate) result_kind: Option<crate::InvocationResultKind>,
+    pub(crate) ended_at_unix_nanos: Option<i64>,
 }
 
 pub(crate) struct OperationFixture {

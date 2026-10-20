@@ -5,8 +5,8 @@
 //! total latency come from the Invocation rows.
 
 use super::{
-    Harness, Phase, counts, distribution, millis, nanos_to_ms, publish_http, setting, setting_u64,
-    settle, submission,
+    Harness, InvocationRow, Phase, counts, distribution, millis, nanos_to_ms, publish_http,
+    setting, setting_u64, settle, submission,
 };
 use coral_run::RunObservation;
 use coral_run::approval::{ApprovalDecision, ApprovalModule, ApprovalState};
@@ -180,6 +180,7 @@ async fn run_fan_out_load() {
         .iter()
         .filter_map(|r| Some(nanos_to_ms(r.2? - r.0)))
         .collect();
+    let max_dispatching_at_once = max_dispatching_at_once(&rows);
     h.report(
         "fanout",
         json!({
@@ -203,10 +204,33 @@ async fn run_fan_out_load() {
                 "admit_ms": distribution(admit),
                 "dispatch_ms": distribution(dispatch),
                 "total_ms": distribution(total),
+                "max_dispatching_at_once": max_dispatching_at_once,
             },
             "decisions_ms": distribution(decisions),
         }),
         &probes,
         &phases,
     );
+}
+
+/// The most Invocation rows that were `dispatching` at one instant, from
+/// their recorded dispatch starts and ends: the Fan-out Limit as persistence
+/// holds it. A row that ends in the commit that starts another is counted
+/// as ended first; a row without an end stays dispatching to the horizon.
+fn max_dispatching_at_once(rows: &[InvocationRow]) -> usize {
+    let mut edges: Vec<(i64, i8)> = Vec::new();
+    for row in rows {
+        if let Some(started) = row.1 {
+            edges.push((started, 1));
+            edges.push((row.2.unwrap_or(i64::MAX), -1));
+        }
+    }
+    edges.sort_unstable();
+    let mut live: i64 = 0;
+    let mut most: i64 = 0;
+    for (_, delta) in edges {
+        live += i64::from(delta);
+        most = most.max(live);
+    }
+    usize::try_from(most).unwrap_or(0)
 }

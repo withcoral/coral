@@ -169,7 +169,7 @@ pub use required_actions::{
 };
 pub use types::{
     AppliedOutputCap, CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, COMBINED_TYPESCRIPT_MAX_BYTES,
-    COMPILATION_TIMEOUT, EMITTED_JAVASCRIPT_MAX_BYTES, FinalValue, InvocationId,
+    COMPILATION_TIMEOUT, EMITTED_JAVASCRIPT_MAX_BYTES, FanOutLimit, FinalValue, InvocationId,
     InvocationResultKind, LINKED_SAVED_FUNCTION_MAX_COUNT, PROGRAM_LOG_MESSAGE_MAX_BYTES,
     PROGRAM_SOURCE_MAX_BYTES, ProgramLogLevel, ProgramSource, ProgramValue, RUN_EVENT_PAGE_MAX,
     RUN_TIMEOUT_MAX_MS, RunCursor, RunEvent, RunEventKind, RunFailure, RunFailureCode, RunId,
@@ -208,6 +208,7 @@ pub struct RunModule {
     execution_policy: ExecutionPolicy,
     value_limits: coral_value::ValueLimits,
     applied_output_cap: AppliedOutputCap,
+    fan_out_limit: FanOutLimit,
     owners: Owners,
     #[cfg(test)]
     invocation_observer: Arc<dyn InvocationObserver>,
@@ -241,6 +242,7 @@ impl RunModule {
             execution_policy: ExecutionPolicy::production(),
             value_limits: coral_value::ValueLimits::default(),
             applied_output_cap: limits.applied_output_cap(),
+            fan_out_limit: limits.fan_out_limit(),
             owners: Owners::default(),
             #[cfg(test)]
             invocation_observer: Arc::new(NoopInvocationObserver),
@@ -272,6 +274,7 @@ impl RunModule {
             execution_policy: ExecutionPolicy::testing(),
             value_limits: coral_value::ValueLimits::default(),
             applied_output_cap: AppliedOutputCap::default(),
+            fan_out_limit: FanOutLimit::default(),
             owners: Owners::default(),
             invocation_observer: observers.invocation,
             execution_observer: observers.execution,
@@ -331,6 +334,19 @@ impl RunModule {
     #[must_use]
     pub const fn applied_output_cap(&self) -> AppliedOutputCap {
         self.applied_output_cap
+    }
+
+    /// Replaces the Fan-out Limit on a built module.
+    #[cfg(test)]
+    pub(crate) const fn with_fan_out_limit(mut self, limit: FanOutLimit) -> Self {
+        self.fan_out_limit = limit;
+        self
+    }
+
+    /// Returns the Fan-out Limit new Run Owners decide dispatch starts against.
+    #[must_use]
+    pub const fn fan_out_limit(&self) -> FanOutLimit {
+        self.fan_out_limit
     }
 
     async fn visibility_scope_in_transaction(

@@ -338,19 +338,26 @@ impl OperationInvoker {
         }
         #[cfg(test)]
         self.observer.before_fence().await?;
-        loop {
-            let outcome = self.fence(&admitted, &mut progress).await?;
+        // The slot this Invocation holds under the Fan-out Limit from the
+        // fence's decision on: dropped when the dispatch it decided is over,
+        // on every path out of here.
+        let slot = loop {
+            let (outcome, slot) = self.fence(&admitted, &mut progress).await?;
             #[cfg(test)]
             self.observe_fence_attempt(&admitted, &outcome).await?;
             match outcome {
-                FenceOutcome::Permitted => break,
+                FenceOutcome::Permitted => break slot,
+                // No dispatch start exists on a denied row: the slot is free
+                // before the failure is recorded.
                 FenceOutcome::Rejected(rejection) => {
+                    drop(slot);
                     return Err(self.finish_failure(&admitted, &progress, rejection).await?);
                 }
                 // The finish finds the row ended and delivers that outcome;
                 // the failure named here is recorded only if the row were
                 // still pending, which a superseded fence has ruled out.
                 FenceOutcome::Superseded => {
+                    drop(slot);
                     return Err(self
                         .finish_failure(&admitted, &progress, CoralFailure::AuthorityLost)
                         .await?);
@@ -359,8 +366,11 @@ impl OperationInvoker {
                     return Err(InvocationHostError::Fatal(Error::ProgramHostTerminated));
                 }
                 FenceOutcome::RefreshRequired => {
-                    // No dispatch start exists. Prepare the same authorization again,
-                    // outside every lock; never reselect an Account or replay JS.
+                    // No dispatch start exists, and the refresh is an account
+                    // wait: the slot is freed before the next fence. Prepare
+                    // the same authorization again, outside every lock; never
+                    // reselect an Account or replay JS.
+                    drop(slot);
                     if let Err(error) = self.prepare_credentials(&admitted, &progress).await {
                         return match error {
                             Error::InvocationRejected(failure) => {
@@ -374,8 +384,9 @@ impl OperationInvoker {
                         .map_err(Error::from)?;
                 }
             }
-        }
-        self.dispatch_and_finish(&admitted, &progress, ready).await
+        };
+        self.dispatch_and_finish(&admitted, &progress, ready, slot)
+            .await
     }
 
     /// Resolves the Call Path's current Operation and policy, outside the Run:
@@ -450,11 +461,15 @@ impl OperationInvoker {
         Ok(())
     }
 
+    /// Runs the dispatch the fence permitted and records its end. The slot
+    /// is held until then: the upstream result carries its release, and
+    /// every other end frees it as this returns.
     async fn dispatch_and_finish(
         &self,
         admitted: &Arc<AdmittedInvocation>,
         progress: &InvocationProgress,
         mut ready: Dispatch,
+        mut slot: DispatchSlot,
     ) -> Result<String, InvocationHostError> {
         // The owner's own terminal state, before anything leaves the process:
         // a stop that reached the owner ends this fenced Invocation as
@@ -477,7 +492,9 @@ impl OperationInvoker {
         let ready = match ready {
             Dispatch::Upstream(ready) => ready,
             Dispatch::Builtin(call) => {
-                return self.perform_builtin(admitted, progress, &call).await;
+                return self
+                    .perform_builtin(admitted, progress, &call, &mut slot)
+                    .await;
             }
         };
         let outcome = match self.upstream.send(ready, self.stop.clone()).await {
@@ -523,7 +540,7 @@ impl OperationInvoker {
             }
         };
         let result_json = self
-            .finish_result(admitted, progress, &outcome.operation_result())
+            .finish_result(admitted, progress, &outcome.operation_result(), &mut slot)
             .await?;
         match crate::error::UpstreamRejection::of(outcome.class()) {
             None => Ok(result_json),
@@ -541,6 +558,7 @@ impl OperationInvoker {
         admitted: &Arc<AdmittedInvocation>,
         progress: &InvocationProgress,
         result: &serde_json::Value,
+        slot: &mut DispatchSlot,
     ) -> Result<String, InvocationHostError> {
         let result_json = serde_json::to_string(result).map_err(Error::ProgramValueJson)?;
         if result_json.len() > self.limits.upstream_bytes()
@@ -550,7 +568,10 @@ impl OperationInvoker {
                 .finish_failure(admitted, progress, CoralFailure::ResultTooLarge)
                 .await?);
         }
-        match self.finish_upstream(admitted, progress, &result_json).await {
+        match self
+            .finish_upstream(admitted, progress, &result_json, slot)
+            .await
+        {
             Ok(()) => Ok(result_json),
             Err(Error::InvocationRejected(rejection))
                 if rejection.failure() == CoralFailure::RunOutputTooLarge =>
@@ -584,6 +605,7 @@ impl OperationInvoker {
         admitted: &Arc<AdmittedInvocation>,
         progress: &InvocationProgress,
         call: &crate::builtin::BuiltinCall,
+        slot: &mut DispatchSlot,
     ) -> Result<String, InvocationHostError> {
         // Every runtime that runs Programs names Reef's origin; without it a
         // built-in result could not link the person anywhere.
@@ -615,7 +637,7 @@ impl OperationInvoker {
             run: self,
         };
         match call.perform(&host).await {
-            Ok(result) => self.finish_result(admitted, progress, &result).await,
+            Ok(result) => self.finish_result(admitted, progress, &result, slot).await,
             Err(Error::InvocationRejected(failure)) => {
                 Err(self.finish_failure(admitted, progress, failure).await?)
             }
@@ -1122,12 +1144,16 @@ impl OperationInvoker {
     }
 
     /// Asks the owner for the Dispatch Fence: the request joins the batch of
-    /// its next chunk commit, and answers once that chunk is recorded.
+    /// a chunk commit and answers once that chunk is recorded, with the slot
+    /// the Invocation holds under the Fan-out Limit. A decision comes only
+    /// from a batch that committed, and every request of a batch holds a
+    /// slot; a request the owner never batched (the Run ending, the owner
+    /// gone) answers with an error and held none.
     async fn fence(
         &self,
         admitted: &Arc<AdmittedInvocation>,
         progress: &mut InvocationProgress,
-    ) -> Result<FenceOutcome, Error> {
+    ) -> Result<(FenceOutcome, DispatchSlot), Error> {
         let (sender, receiver) = oneshot::channel();
         self.owner.fence(FenceRequest {
             invoker: self.clone(),
@@ -1141,7 +1167,7 @@ impl OperationInvoker {
         if matches!(outcome, FenceOutcome::Permitted) {
             progress.dispatch_started = true;
         }
-        Ok(outcome)
+        Ok((outcome, DispatchSlot::new(self.owner.clone())))
     }
 
     pub(crate) fn fence_scope(&self) -> FenceScope<'_> {
@@ -1163,13 +1189,17 @@ impl OperationInvoker {
 
     /// Reports an upstream result: the owner decides it against the Run
     /// Output Budget and answers at Applied; the row and `invocation.ended`
-    /// ride its next chunk.
+    /// ride its next chunk. The result carries the slot's release, so the
+    /// Invocation that has waited longest fences in that same chunk, after
+    /// this row ends.
     async fn finish_upstream(
         &self,
         admitted: &Arc<AdmittedInvocation>,
         progress: &InvocationProgress,
         result_json: &str,
+        slot: &mut DispatchSlot,
     ) -> Result<(), Error> {
+        slot.carry_with_result();
         let work = FinishWork {
             #[cfg(test)]
             observer: self.observer.clone(),
@@ -1243,6 +1273,40 @@ impl OperationInvoker {
 
     fn now(&self) -> Result<i64, Error> {
         self.clock.now_unix_nanos().map_err(Error::Clock)
+    }
+}
+
+/// One slot under the Run's Fan-out Limit, held from the fence's decision
+/// until the dispatch it decided is over. An upstream result carries the
+/// release: the owner frees the slot as it applies the result, so the
+/// Invocation that has waited longest fences in the same chunk the ended
+/// row rides. Every other end (denied, superseded, parked on a refresh, a
+/// failure, the Run ending) frees it on drop, which tells the owner.
+struct DispatchSlot {
+    owner: OwnerHandle,
+    carried_by_result: bool,
+}
+
+impl DispatchSlot {
+    fn new(owner: OwnerHandle) -> Self {
+        Self {
+            owner,
+            carried_by_result: false,
+        }
+    }
+
+    /// The upstream result about to reach the owner frees the slot as it is
+    /// applied; the drop then tells the owner nothing more.
+    fn carry_with_result(&mut self) {
+        self.carried_by_result = true;
+    }
+}
+
+impl Drop for DispatchSlot {
+    fn drop(&mut self) {
+        if !self.carried_by_result {
+            self.owner.dispatch_ended();
+        }
     }
 }
 

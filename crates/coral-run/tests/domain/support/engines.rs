@@ -551,3 +551,103 @@ pub(crate) fn test_saved_function_reference(path: &str) -> Result<SavedFunctionR
         column: 1,
     })
 }
+
+/// What the test tells a [`ScriptedCallsEngine`] to do next.
+pub(crate) enum ScriptedCall {
+    /// Start one call by Call Path, as its own task.
+    Invoke(String),
+    /// End the Program once every started call has settled.
+    Finish,
+}
+
+/// The test's side of a [`ScriptedCallsEngine`].
+pub(crate) struct ScriptedCalls {
+    commands: mpsc::Sender<ScriptedCall>,
+}
+
+impl ScriptedCalls {
+    pub(crate) fn invoke(&self, call_path: &str) {
+        self.commands
+            .send(ScriptedCall::Invoke(call_path.to_string()))
+            .expect("the Program is running");
+    }
+
+    pub(crate) fn finish(&self) {
+        self.commands
+            .send(ScriptedCall::Finish)
+            .expect("the Program is running");
+    }
+}
+
+/// A Program whose calls the test starts one at a time, by Call Path, so the
+/// order in which they reach the Run Owner is the test's own. Each call runs
+/// as its own task, as the V8 host runs the Program's Promises. `finish` ends
+/// the Program with every call's outcome in start order (`"ok"` or the
+/// failure code); a stop ends it as terminated.
+pub(crate) struct ScriptedCallsEngine {
+    commands: Mutex<mpsc::Receiver<ScriptedCall>>,
+}
+
+impl ScriptedCallsEngine {
+    pub(crate) fn new() -> (Self, ScriptedCalls) {
+        let (commands, receiver) = mpsc::channel();
+        (
+            Self {
+                commands: Mutex::new(receiver),
+            },
+            ScriptedCalls { commands },
+        )
+    }
+}
+
+impl ProgramEngine for ScriptedCallsEngine {
+    fn compile(
+        &self,
+        _deadline: std::time::Instant,
+        source: &str,
+    ) -> Result<ProgramPackage, String> {
+        Ok(ProgramPackage::scripted(source))
+    }
+
+    fn execute(
+        &self,
+        _package: ProgramPackage,
+        host: Arc<dyn coral_v8::ProgramHost>,
+        stop: Arc<ExecutionStop>,
+    ) -> ExecutionCompletion {
+        let runtime = tokio::runtime::Handle::current();
+        let commands = self.commands.lock().expect("commands lock");
+        let mut calls = Vec::new();
+        loop {
+            if stop.is_requested() {
+                return ExecutionCompletion::ProgramHostTerminated;
+            }
+            match commands.recv_timeout(Duration::from_millis(5)) {
+                Ok(ScriptedCall::Invoke(call_path)) => {
+                    calls.push(runtime.spawn(host.clone().invoke(call_path, "{}".to_string())));
+                }
+                Ok(ScriptedCall::Finish) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return ExecutionCompletion::ProgramHostTerminated;
+                }
+            }
+        }
+        let mut outcomes = Vec::new();
+        for call in calls {
+            match runtime.block_on(call).expect("the call's task ends") {
+                Ok(_result_json) => outcomes.push(serde_json::json!("ok")),
+                Err(
+                    coral_v8::OperationHostError::Rejected { code, .. }
+                    | coral_v8::OperationHostError::Upstream { code, .. },
+                ) => outcomes.push(serde_json::json!(code)),
+                Err(coral_v8::OperationHostError::Fatal) => {
+                    return ExecutionCompletion::ProgramHostTerminated;
+                }
+            }
+        }
+        let value = ProgramValue::from_encoded_json(serde_json::Value::Array(outcomes).to_string())
+            .expect("an array of outcomes");
+        ExecutionCompletion::Succeeded(FinalValue::Present(value))
+    }
+}

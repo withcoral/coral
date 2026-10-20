@@ -56,6 +56,7 @@ pub(crate) async fn host(
         OwnerLimits {
             run_output_bytes: accepted.value_limits.run_output_bytes(),
             applied_cap_bytes: module.applied_output_cap.bytes(),
+            fan_out_invocations: module.fan_out_limit.invocations(),
             deadline_at_unix_nanos: accepted.deadline_at_unix_nanos,
             suspect_after_nanos: module.execution_policy.suspect_after_nanos(),
             self_interrupt_after_nanos: module.execution_policy.self_interrupt_after_nanos(),
