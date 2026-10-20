@@ -317,7 +317,6 @@ export const TreeOperationSelected: Story = {
       labels.filter((label) => scope.queryByText(label, { exact: true }))
     await expect(shown(row('issues.list'))).toEqual(['Read-only', 'Idempotent'])
     await expect(shown(row('issues.create'))).toEqual(['Open world'])
-    await expect(shown(row('getForecast'))).toEqual([])
     // The drawer renders in a portal outside the canvas.
     const drawer = within(
       await within(canvasElement.ownerDocument.body).findByRole('dialog', {
@@ -330,6 +329,7 @@ export const TreeOperationSelected: Story = {
     await expect(drawer.queryByText(/idempotent/i)).toBeNull()
   },
 }
+// Weather declares no hints, so its row shows no labels.
 export const TreeOperationWithoutDescription: Story = {
   render: () => (
     <WorkspaceProvidersPage
@@ -338,6 +338,16 @@ export const TreeOperationWithoutDescription: Story = {
       selectedOperation="getForecast"
     />
   ),
+  play: async ({ canvasElement }) => {
+    // The open drawer is modal, so the table sits outside the accessibility tree.
+    const row = within(
+      within(canvasElement)
+        .getByRole('checkbox', { name: 'Select getForecast', hidden: true })
+        .closest<HTMLElement>('[role="row"]')!,
+    )
+    for (const label of ['Read-only', 'Destructive', 'Idempotent', 'Open world', 'Not read-only'])
+      await expect(row.queryByText(label, { exact: true })).toBeNull()
+  },
 }
 export const TreeOperationWithSummaryAsDescription: Story = {
   render: () => (

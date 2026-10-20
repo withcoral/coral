@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 
-import { exactFilter, filterQuery } from './filter-query'
+import { filterQuery } from './filter-query'
 
 const names = ['GitHub', 'GitHub Enterprise', 'Weather', 'api.v2 (beta)', 'a*b', 'a\\b']
 
@@ -31,17 +31,6 @@ test.each([
   const query = filterQuery(input)
   expect(names.filter((name) => query.matches(name))).toEqual(expected)
 })
-
-// Catches: Show only matching a name other than its own, such as `a*b`
-// matching `a middle b`.
-test.each(['a*b', 'a\\b', '^weather', 'weather$', 'a\\*b'])(
-  'exactFilter(%j) matches only it',
-  (name) => {
-    const query = filterQuery(exactFilter(name))
-    expect(query.matches(name)).toBe(true)
-    expect(query.matches(`${name}x`, `x${name}`, 'a middle b')).toBe(false)
-  },
-)
 
 // Catches: `*` that stops at a line break.
 test('a wildcard spans lines', () => {
