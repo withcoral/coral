@@ -1306,7 +1306,7 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
 async fn a_lost_worker_run_is_interrupted_not_a_tool_error() {
     let tracer = Tracer::start().await;
     let lost_worker = start_lost_worker(
-        tracer.runs.clone(),
+        tracer.database.options().clone(),
         tracer.local_user.clone(),
         tracer.workspace_a.clone(),
         tracer.upstream.signals.clone(),
@@ -1506,8 +1506,12 @@ fn capture() -> &'static Capture {
 
 /// Arrange a real lost execution without database edits or a scripted Run projection.
 /// A gated upstream prevents natural completion before the worker runtime stops.
+/// Starts a Run on a worker runtime of its own, over its own connection pool,
+/// and kills that runtime once the Run has emitted and reached the gated
+/// upstream: the lost worker takes its connections with it, as a dead
+/// process would, and leaves the server's pool alone.
 async fn start_lost_worker(
-    runs: RunModule,
+    options: coral_db::DatabaseOptions,
     user: AuthenticatedUser,
     workspace: WorkspaceId,
     signals: UpstreamSignals,
@@ -1516,6 +1520,24 @@ async fn start_lost_worker(
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2).enable_all().build().expect("worker runtime");
         let run_id = runtime.block_on(async {
+            let database = Arc::new(
+                coral_db::Database::connect(options)
+                    .await
+                    .expect("the lost worker's own database handle"),
+            );
+            let workspaces = WorkspaceModule::new(database.clone());
+            let policy = DestinationPolicy::default()
+                .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps);
+            let providers =
+                ProviderModule::with_running_catalog(policy, database.clone(), workspaces.clone());
+            let runs = RunModule::new(
+                policy,
+                database,
+                workspaces,
+                providers,
+                coral_run::RuntimeLimits::default(),
+            )
+            .expect("the lost worker's own Program runtime");
             let actor = coral_workspace::AuthenticatedPrincipal::user(user);
             let submitted = coral_run::RunSubmission::new(
                 coral_run::ProgramSource::parse("await coral.emit('before interruption'); await coral.providers.weather.lostWorker({});").expect("pending Program"),
