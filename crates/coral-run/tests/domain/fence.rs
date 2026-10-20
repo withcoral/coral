@@ -1272,9 +1272,11 @@ async fn fences_of_two_runs_share_their_locks_and_an_authority_writer_waits_for_
         "the Provider change waits for the fences holding its row"
     );
     if postgres {
-        // The first fence commits and releases its share; the second still
-        // holds the rows, so the writer keeps waiting.
+        // The first fence commits and releases its share (its dispatch sends
+        // only after that commit); the second still holds the rows, so the
+        // writer keeps waiting.
         latch.release_one_loaded();
+        wait_until(|| upstream.sends.load(Ordering::SeqCst) >= 1).await;
         assert!(
             tokio::time::timeout(Duration::from_millis(300), &mut writer)
                 .await
