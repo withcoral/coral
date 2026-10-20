@@ -362,7 +362,7 @@ const viewports = (root: Element) =>
 
 /**
  * The old record leaves from where you scrolled it, the new one opens at its top, and
- * the divider and source hold still while the source still shows the new location.
+ * the divider holds still while the source, outside the slide, follows the new location.
  */
 export const KeepsTheSourceStill: Story = {
   play: async (context) => {
@@ -374,9 +374,9 @@ export const KeepsTheSourceStill: Story = {
       const separator = drawer.getByRole('separator', { name: 'Resize detail and source panes' })
       const source = drawer.getByRole('region', { name: 'Accepted source' })
       const [code] = viewports(source)
+      // Scroll the source past the next record's line, so following it must move the source.
       code!.scrollTop = 200
       await waitFor(() => expect(code!.scrollTop).toBe(200))
-      await context.userEvent.click(drawer.getByRole('switch', { name: 'Follow selection' }))
       const [detail] = viewports(selected())
       detail!.scrollTop = 300
       await waitFor(() => expect(detail!.scrollTop).toBe(300))
@@ -396,10 +396,17 @@ export const KeepsTheSourceStill: Story = {
       await expect(getComputedStyle(selected()).overflow).toBe('hidden')
       await expect(selected().getBoundingClientRect().bottom).toBeLessThanOrEqual(divider)
       await expect(separator.getBoundingClientRect().top).toBe(divider)
-      await expect(code!.scrollTop).toBe(200)
-      await waitFor(() =>
-        expect(source.querySelector('[data-highlighted]')).toHaveAttribute('data-line', '4'),
-      )
+      // The source keeps its own viewport and scrolls it to the new record's line.
+      await expect(viewports(source)).toEqual([code])
+      await waitFor(() => {
+        const line = code!.querySelector('[data-highlighted]')
+        expect(line).toHaveAttribute('data-line', '4')
+        const shown = code!.getBoundingClientRect()
+        const { top, bottom } = line!.getBoundingClientRect()
+        expect(top).toBeGreaterThanOrEqual(shown.top)
+        expect(bottom).toBeLessThanOrEqual(shown.bottom)
+      })
+      await expect(code!.scrollTop).toBeLessThan(200)
     } finally {
       recorder.stop()
     }
