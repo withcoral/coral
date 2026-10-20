@@ -1,0 +1,15 @@
+[package]
+name = "coral-identifier"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+ring.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

@@ -815,6 +815,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "coral-identifier"
+version = "1.1.0"
+dependencies = [
+ "ring",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "coral-mcp"
 version = "1.1.0"
 dependencies = [
@@ -824,6 +833,7 @@ dependencies = [
  "coral-catalog",
  "coral-db",
  "coral-functions",
+ "coral-identifier",
  "coral-outbound",
  "coral-policy",
  "coral-provider",
@@ -925,6 +935,7 @@ dependencies = [
  "coral-credentials",
  "coral-db",
  "coral-functions",
+ "coral-identifier",
  "coral-outbound",
  "coral-policy",
  "coral-provider",
@@ -991,6 +1002,7 @@ dependencies = [
  "coral-catalog",
  "coral-db",
  "coral-functions",
+ "coral-identifier",
  "coral-outbound",
  "coral-policy",
  "coral-provider",
