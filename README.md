@@ -139,3 +139,5 @@ Do not report security issues in public issues or pull requests. See
 ## License
 
 Coral is licensed under the Apache License 2.0. See [`LICENSE`](./LICENSE).
+
+Throwaway line to test opening a PR through Coral. Do not merge.
