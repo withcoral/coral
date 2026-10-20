@@ -79,10 +79,10 @@
   Keep the fence that rejects state written by Coral 0.x.
 - Keep schemas portable across SQLite and Postgres and fail on schema drift;
   do not use `IF NOT EXISTS` to hide unexpected state.
-- When a migration needs a database feature that a migration cannot create
-  or explain, such as `pg_trgm` or FTS5's trigram tokenizer, check it at boot
-  before the chain runs, as `coral_search::prepare_storage` does. The check
-  names the feature and what the operator can do about it.
+- When a migration needs a database feature whose availability it cannot
+  ensure or diagnose clearly, such as `pg_trgm` or FTS5's trigram tokenizer,
+  check it at boot before the chain runs, as `coral_search::prepare_storage`
+  does. The check names the feature and what the operator can do about it.
 - Run shared repository behavior tests against SQLite and Postgres. Use
   `make postgres-tests` for Rust repository tests. For Reel's Postgres product
   evidence, use the E2E scope and cadence under Validation.
