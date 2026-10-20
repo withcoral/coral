@@ -54,8 +54,7 @@ pub struct SearchIndex {
 }
 
 impl SearchIndex {
-    /// Builds the write side over initialized domain persistence whose search
-    /// storage [`crate::prepare_storage`] has prepared. The reconcile task
+    /// Builds the write side over migrated domain persistence. The reconcile task
     /// runs a pass every `reconcile_interval`, and a pass retries a failed
     /// Generation or Saved Function by the retry module's rule, whose waits
     /// start at that interval.

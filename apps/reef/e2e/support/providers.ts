@@ -248,6 +248,10 @@ export function addedProviders<P extends { callRoot: string }>(providers: readon
   return providers.filter((provider) => provider.callRoot !== BUILTIN_CALL_ROOT)
 }
 
+/** The rail of provider tabs beside the operations table. */
+const providersRail = (page: Page) =>
+  page.getByRole('navigation', { name: 'installed providers', exact: true })
+
 /**
  * Opens the settings page of the provider the URL names, from its entry in
  * the rail. When the URL names no provider or the Built-in Provider, opens the
@@ -265,12 +269,12 @@ export async function openProviderSettings(page: Page) {
   // redirect is about to replace.
   await page.waitForURL((url) => /\/providers(?:\/(?!new(?:\/|$))[^/?#]+)?$/.test(url.pathname))
   const routed = /\/providers\/([^/?#]+)/.exec(new URL(page.url()).pathname)?.[1]
-  // The bare list route selects its first provider implicitly, which can be
-  // the Built-in Provider. Each added provider's gear links to its settings
-  // route, beside the provider in the rail; Coral has no gear. Wait for the
+  // The bare list route is the All providers tab and names no provider. Each
+  // added provider's gear links to its settings route, beside the provider in
+  // the rail; Coral has no gear. Wait for the
   // rail's gears before looking for the routed one, so a rail that has not
   // rendered yet cannot redirect the click.
-  const rail = page.getByRole('navigation', { name: 'installed providers', exact: true })
+  const rail = providersRail(page)
   const gears = rail.getByRole('link', { name: / settings$/ })
   await gears.first().waitFor()
   const routedGear = routed ? rail.locator(`a[href$="/providers/${routed}/settings"]`) : null
@@ -309,10 +313,10 @@ export async function setProviderEnabled(
 }
 
 /**
- * Waits for a provider's group heading in the operations view to show its
- * status: its first blocker, else "Connect your account" when only your own
- * account is missing, else "Ready". With `operations`, it also waits for the
- * heading's count and for one Unavailable row for each operation Coral cannot
+ * Waits for a provider's rail entry to show its status: its first blocker,
+ * else "Connect your account" when only your own account is missing, else
+ * "Ready". With `operations`, it also waits for the provider's group heading
+ * to show its count and one Unavailable row for each operation Coral cannot
  * call. Name the provider by its display name, or by its path when two
  * providers share one.
  */
@@ -322,11 +326,17 @@ export async function waitForProviderStatus(
   status: string,
   operations?: { available: number; total: number },
 ) {
+  const rail = providersRail(page)
+  const id = typeof provider === 'string' ? null : provider.path.split('/').at(-1)
+  const entry =
+    typeof provider === 'string'
+      ? rail.getByRole('link').filter({ has: page.getByText(provider, { exact: true }) })
+      : rail.locator(`a[href$="/providers/${id}"]`)
+  await entry.getByRole('img', { name: status, exact: true }).first().waitFor()
   const group =
     typeof provider === 'string'
       ? page.getByRole('rowgroup', { name: provider, exact: true })
-      : page.locator(`#provider-group-${provider.path.split('/').at(-1)}`)
-  await group.getByRole('img', { name: status, exact: true }).first().waitFor()
+      : page.locator(`#provider-group-${id}`)
   if (!operations) return
   const { available, total } = operations
   await group

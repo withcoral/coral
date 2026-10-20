@@ -45,6 +45,16 @@
 - Open read-only work with `Database::begin_read_snapshot` and non-holding
   checks. `Database::begin` takes SQLite's write lock at `BEGIN`, so it waits
   behind every other writer.
+- The Dispatch Fence, the held rechecks before it, and the parked-wait
+  precheck read the fact rows they never write (a Workspace, a Provider, a
+  policy rule, an Account) with `RowLock::Shared`
+  (`Transaction::fetch_optional_locked`; `coral_db::RowLock` documents what
+  each backend does). Other decisions still take the exclusive no-op `UPDATE`
+  hold on those rows; a row the transaction goes on to write always keeps it.
+  A row that two shared-hold decisions may both create for the first time (an
+  Account placeholder, a connection request) is inserted with
+  `ON CONFLICT DO NOTHING` and reread, since no shared hold serializes its
+  creators.
 - A Run's Program paths (Emissions, Logs, Invocation admission, held
   rechecks, the Dispatch Fence, Invocation completion) write only through its
   Run Owner: an Event is applied in owner memory and a row write is a
@@ -72,22 +82,17 @@
   chain. Write one portable file that both databases run. When SQLite and
   Postgres must perform a step differently, add one file with the same name to
   both `postgres/` and `sqlite/` instead.
-- Change a schema only by adding a migration. Never delete a migration or
-  search stream step that is on `main`, or change its file name or bytes:
-  databases created from an earlier `main` must keep booting.
+- Change a schema only by adding a migration. Never delete a migration that
+  is on `main`, or change its file name or bytes: databases created from an
+  earlier `main` must keep booting.
   `scripts/check-migrations.sh` checks this.
   Keep the fence that rejects state written by Coral 0.x.
 - Keep schemas portable across SQLite and Postgres and fail on schema drift;
   do not use `IF NOT EXISTS` to hide unexpected state.
-- The search-owned backend streams in `crates/coral-search/streams` keep their
-  own ledger, apart from the shared migration chain. Postgres and
-  SQLite retrieve and rank search results with different features: generated
-  `tsvector` columns, `pg_trgm` indexes and statistics tables on Postgres, and
-  an FTS5 table that triggers fill on SQLite. No one backend-agnostic set of
-  objects can serve both. Each stream holds only what its backend's text
-  search needs. It runs at boot after the chain, one step per transaction with
-  its row in `search_migrations`, and fails on objects that already exist.
-  A chain migration cannot use stream objects: a new database has none yet.
+- When a migration needs a database feature whose availability it cannot
+  ensure or diagnose clearly, such as `pg_trgm` or FTS5's trigram tokenizer,
+  check it at boot before the chain runs, as `coral_search::prepare_storage`
+  does. The check names the feature and what the operator can do about it.
 - Run shared repository behavior tests against SQLite and Postgres. Use
   `make postgres-tests` for Rust repository tests. For Reel's Postgres product
   evidence, use the E2E scope and cadence under Validation.
@@ -104,8 +109,7 @@
   Use `Table.useRowCursor` so ↑, ↓ and Enter reach the rows.
 - Match a filter field's text with `filterQuery` (`apps/reef/app/utils/filter-query.ts`),
   not `includes`, so every filter reads `^`, `$` and `*` the same way. To bold
-  the matches, use Wax's `HighlightedMatches`. To match one name exactly, use
-  `exactFilter`.
+  the matches, use Wax's `HighlightedMatches`.
 - Do not show status or meaning with color alone. Pair color with a distinct
   icon shape or text, so color-blind users can read it (WCAG 1.4.1).
 - Browser access to Coral belongs in React Router server loaders, actions, and

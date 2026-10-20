@@ -749,6 +749,7 @@ impl<'a> InvocationCaller<'a> {
                     self.actor,
                     workspace_id,
                     self.now_unix_nanos,
+                    coral_db::RowLock::Shared,
                 )
                 .await
             {
@@ -838,46 +839,21 @@ async fn resolve_reached_operation(
     call_root: &ProviderCallRoot,
     relative_path: &str,
 ) -> Result<Option<ResolvedInvocationOperation>, Error> {
-    let Some(observed_provider) =
-        crate::access::by_call_root_in_transaction(transaction, workspace_id, call_root).await?
-    else {
-        return Ok(None);
-    };
-    if !crate::runtime::hold_active_provider_in_transaction(
+    // Admission reads the Provider shared, like the Dispatch Fence that
+    // rechecks it: concurrent admissions read side by side, and a Provider
+    // change waits for the admissions in flight.
+    let Some(stored) = crate::runtime::active_provider_by_call_root_in_transaction(
         transaction,
         workspace_id,
-        observed_provider.id(),
-    )
-    .await?
-        || !crate::access::hold_exact_in_transaction(
-            transaction,
-            workspace_id,
-            observed_provider.id(),
-        )
-        .await?
-    {
-        return Ok(None);
-    }
-    let Some(provider_access) =
-        crate::access::exact_in_transaction(transaction, workspace_id, observed_provider.id())
-            .await?
-    else {
-        return Ok(None);
-    };
-    if provider_access.call_root() != observed_provider.call_root()
-        || provider_access.id() != observed_provider.id()
-    {
-        return Ok(None);
-    }
-    let Some(generation_id) = crate::runtime::active_generation_in_transaction(
-        transaction,
-        workspace_id,
-        provider_access.id(),
+        call_root,
+        coral_db::RowLock::Shared,
     )
     .await?
     else {
         return Ok(None);
     };
+    let provider_access = stored.provider.access().clone();
+    let generation_id = stored.generation_id;
     let Some(operation) = coral_catalog::operation_by_relative_path_in_transaction(
         transaction,
         &generation_id,
@@ -897,12 +873,17 @@ async fn resolve_reached_operation(
     )))
 }
 
-/// Rechecks and holds exact retained Provider dispatch evidence.
+/// Rechecks exact retained Provider dispatch evidence, holding the Provider
+/// row as `lock` says: shared in the Dispatch Fence, so concurrent fences
+/// read side by side and a Provider change waits for them; none in a read
+/// snapshot that only decides whether a held check is needed.
 ///
-/// Provider active-Generation selection may change after admission; this facet
-/// intentionally verifies the retained Generation package rather than requiring
-/// it to remain active. The Provider itself and exact Provider version
-/// and route must still be current.
+/// Provider active-Generation selection may change after admission; this
+/// facet verifies the retained Operation by its Generation id rather than
+/// requiring that Generation to remain active, and reads only the Operation
+/// row: the Generation's package is immutable, so nothing in it is reloaded.
+/// The Provider itself and the exact Provider version and route must still
+/// be current.
 ///
 /// # Errors
 ///
@@ -912,96 +893,33 @@ pub async fn verify_invocation_operation_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
     retained: &ResolvedInvocationOperation,
+    lock: coral_db::RowLock,
 ) -> Result<InvocationOperationVerification, Error> {
     let provider_access = retained.provider_access();
-    if !repository::hold_active_provider_for_workspace_in_transaction(
+    let Some(stored) = crate::runtime::active_provider_for_workspace_in_transaction(
         transaction,
         workspace_id,
         provider_access.id(),
+        lock,
     )
     .await?
-        || !crate::access::hold_exact_in_transaction(
-            transaction,
-            workspace_id,
-            provider_access.id(),
-        )
-        .await?
-    {
+    else {
         return Ok(InvocationOperationVerification::AuthorityLost);
-    }
-    if crate::runtime::active_provider_in_transaction(
-        transaction,
-        workspace_id,
-        provider_access.id(),
-    )
-    .await?
-    .is_none()
-    {
-        return Ok(InvocationOperationVerification::ProviderUnavailable);
-    }
-    verify_retained_operation(transaction, workspace_id, retained).await
-}
-
-/// Verifies the retained Operation like [`verify_invocation_operation_in_transaction`]
-/// without holding the Provider. Use it only in a read snapshot, to decide
-/// whether a held recheck is needed; only the held verification admits dispatch.
-///
-/// # Errors
-///
-/// Returns a persistence or corrupt-package failure.
-pub async fn verify_invocation_operation_in_snapshot(
-    transaction: &mut coral_db::Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    retained: &ResolvedInvocationOperation,
-) -> Result<InvocationOperationVerification, Error> {
-    // The held form's Provider hold reports an inactive Provider as lost authority.
-    if crate::runtime::active_provider_in_transaction(
-        transaction,
-        workspace_id,
-        retained.provider_access().id(),
-    )
-    .await?
-    .is_none()
-    {
-        return Ok(InvocationOperationVerification::AuthorityLost);
-    }
-    verify_retained_operation(transaction, workspace_id, retained).await
-}
-
-async fn verify_retained_operation(
-    transaction: &mut coral_db::Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    retained: &ResolvedInvocationOperation,
-) -> Result<InvocationOperationVerification, Error> {
-    let provider_access = retained.provider_access();
-    match access::verify_retained_in_transaction(transaction, workspace_id, provider_access).await?
-    {
+    };
+    match access::verify_retained(stored.provider.access(), provider_access)? {
         access::RetainedProviderVerification::Current => {}
-        access::RetainedProviderVerification::Removed => {
-            return Ok(InvocationOperationVerification::AuthorityLost);
-        }
         access::RetainedProviderVerification::RouteChanged => {
             return Ok(InvocationOperationVerification::CredentialRouteChanged);
         }
     }
-    coral_catalog::verify_generation_in_transaction(transaction, retained.provider_generation_id())
-        .await?;
-    if coral_catalog::schema_graph_in_transaction(transaction, retained.provider_generation_id())
-        .await?
-        != *retained.schema_graph()
-    {
-        return Err(Error::CorruptData(
-            "Provider Generation schema graph changed after Invocation admission".to_string(),
-        ));
-    }
-    let operation = coral_catalog::operation_in_transaction(
-        transaction,
-        retained.provider_generation_id(),
-        retained.operation().key(),
-    )
-    .await?;
     Ok(
-        if operation.is_some_and(|operation| &operation == retained.operation()) {
+        if coral_catalog::operation_exists_in_transaction(
+            transaction,
+            retained.provider_generation_id(),
+            retained.operation().key(),
+        )
+        .await?
+        {
             InvocationOperationVerification::Current
         } else {
             InvocationOperationVerification::AuthorityLost

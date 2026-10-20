@@ -24,6 +24,10 @@
 //!   behavior.
 //! - [`DatabaseSystem`] lets a domain repository select a backend-specific query
 //!   or locking strategy without access to a connection pool.
+//! - [`Transaction::fetch_optional_locked`] reads a fact row under a
+//!   [`RowLock`]. On Postgres a shared hold lets concurrent decisions read
+//!   side by side while a writer of that row waits for them; on SQLite it
+//!   adds nothing, since the write transaction already excludes writers.
 //! - [`Transaction::execute_sql`] and [`Transaction::execute_script`] run SQL a
 //!   domain repository wrote for the selected backend, for features the
 //!   portable statements cannot express.
@@ -61,4 +65,4 @@ pub use executor::QueryExecutor;
 pub use migration::{MigrationPlan, migration_plan};
 pub use options::DatabaseOptions;
 pub use query::{col, column};
-pub use transaction::{Transaction, TransactionToken};
+pub use transaction::{RowLock, Transaction, TransactionToken};

@@ -15,8 +15,9 @@ use tokio::time::Instant;
 use coral_workspace::AuthenticatedPrincipal;
 
 use crate::execution::{Backoff, until_answered};
-use crate::invocation::OperationInvoker;
+use crate::invocation::{FenceBatch, OperationInvoker};
 use crate::lifecycle::RunRecord;
+use crate::owner::ChunkWork as _;
 use crate::program_output::ProgramOutputWriter;
 use crate::run_repository::{self, Chunk, OwnedEvent};
 use crate::types::AcceptedRun;
@@ -351,10 +352,20 @@ async fn commit_until_answered(
     output_total: usize,
 ) -> Option<Result<(), CommitRejection>> {
     let mut items = chunk.items;
+    let mut fence = chunk.fence;
     let mut written = Written::default();
     let mut backoff = Backoff::new(&accepted.id, "chunk commit");
     let outcome = loop {
-        match commit_once(module, accepted, &mut items, output_total, &mut written).await {
+        match commit_once(
+            module,
+            accepted,
+            &mut items,
+            &mut fence,
+            output_total,
+            &mut written,
+        )
+        .await
+        {
             Attempt::Landed => break Ok(()),
             Attempt::Rejected(rejection) => break Err(rejection),
             Attempt::Unanswered(error) => {
@@ -382,6 +393,9 @@ async fn commit_until_answered(
         if let ChunkItem::Work(work) = item {
             work.settle(outcome.map_err(CommitRejection::lost));
         }
+    }
+    if let Some(batch) = fence {
+        batch.settle(outcome.map_err(CommitRejection::lost));
     }
     Some(outcome)
 }
@@ -445,8 +459,9 @@ fn resolve(run: &RunRecord, claim_id: &str, written: Written) -> Resolution {
 }
 
 /// One attempt to commit the chunk: holds the Run row, checks that it still
-/// takes this owner's chunks, runs the row work in arrival order, and writes
-/// the Events and the head under the owner's claim with its lease renewed.
+/// takes this owner's chunks, runs the row work in arrival order and then the
+/// chunk's Dispatch Fence, and writes the Events and the head under the
+/// owner's claim with its lease renewed.
 /// Until slice 6 the head is the one read under the hold: cancel, approval
 /// decisions, the deadline and recovery still write outside the owner and
 /// move it. A recommit finds under the hold whether the attempt it repeats
@@ -455,6 +470,7 @@ async fn commit_once(
     module: &RunModule,
     accepted: &AcceptedRun,
     items: &mut [ChunkItem],
+    fence: &mut Option<Box<FenceBatch>>,
     output_total: usize,
     written: &mut Written,
 ) -> Attempt {
@@ -493,6 +509,11 @@ async fn commit_once(
             if let ChunkItem::Work(work) = item {
                 produced.push(work.run(&mut transaction, &run, now).await?);
             }
+        }
+        // The fence decides every ready Invocation of the chunk together,
+        // after the row work, under the same hold; it writes no Event.
+        if let Some(batch) = fence.as_mut() {
+            batch.run(&mut transaction, &run, now).await?;
         }
         let mut produced_by_work = produced.iter();
         let mut events: Vec<&OwnedEvent> = Vec::new();

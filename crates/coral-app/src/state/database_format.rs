@@ -336,6 +336,16 @@ mod tests {
                 "does not recognize",
             ),
             (
+                "migration from a newer Coral",
+                format!(
+                    "INSERT INTO _sqlx_migrations \
+                     (version, description, success, checksum, execution_time) \
+                     SELECT version + 1, 'from a newer Coral', success, checksum, execution_time \
+                     FROM _sqlx_migrations WHERE version = {last}"
+                ),
+                "does not recognize",
+            ),
+            (
                 "failed migration",
                 format!("UPDATE _sqlx_migrations SET success = FALSE WHERE version = {last}"),
                 "marker is malformed",
@@ -399,13 +409,18 @@ mod tests {
         let marker_schema = create_schema(&pool, "marker").await;
         let malformed_schema = create_schema(&pool, "malformed").await;
 
-        let fresh = postgres_config(&url, &fresh_schema);
+        // As in a default deployment, `public` holds the extensions the
+        // chain's search steps use.
+        let fresh = postgres_config(&url, &format!("{fresh_schema},public"));
         validate_database_state(&fresh)
             .await
             .expect("recognize fresh Postgres state");
         let db = Database::connect(fresh.clone())
             .await
             .expect("open fresh Postgres schema");
+        coral_search::prepare_storage(&db)
+            .await
+            .expect("check the search features");
         super::super::migrations::migrate_current(&db)
             .await
             .expect("migrate fresh Postgres schema");

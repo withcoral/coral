@@ -205,6 +205,7 @@ async fn builtin_create_provider_waits_for_approval_by_default() {
         ),
         target.operation().hints(),
         target.operation().http_method(),
+        coral_db::RowLock::Shared,
     )
     .await
     .unwrap();

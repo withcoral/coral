@@ -202,9 +202,6 @@ mod tests {
         let database = TestDatabase::new(coral_db::migration_plan())
             .await
             .expect("migrated database");
-        coral_search::prepare_storage(database.database().as_ref())
-            .await
-            .expect("prepare search storage");
         ReadinessFixture {
             readiness: EngineReadiness::from_database(database.database()),
             database,

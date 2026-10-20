@@ -32,6 +32,13 @@ export const rail = style({
 export const filterField = style({ display: 'flex', flexDirection: 'column', minWidth: 0 })
 // The rail owns its own scroll port; the page ancestor clips overflow.
 export const railScroll = style({ flex: '1 1 auto', minHeight: 0 })
+// A footer control takes the rail's width. A narrow rail already pads its end.
+export const railFooter = style({
+  display: 'grid',
+  flexShrink: 0,
+  paddingBlockEnd: 16,
+  '@media': { '(max-width: 760px)': { paddingBlockEnd: 0 } },
+})
 export const railList = style({
   display: 'flex',
   flexDirection: 'column',

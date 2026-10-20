@@ -1011,3 +1011,223 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         );
     }
 }
+
+/// The fence rows of the `apply` table: fence requests gather in one chunk's
+/// batch and commit when free; a stop answers every batch not yet committed
+/// at once and nothing else; a request past the deadline or after a stop is
+/// answered at once; the terminal write waits for a batch in flight.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of fence message orders, each case a block"
+)]
+async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at_once() {
+    use crate::invocation::{FenceOutcome, FenceRequest};
+    use crate::owner::FENCE_BATCH_CAP;
+
+    type FenceAnswer = tokio::sync::oneshot::Receiver<Result<FenceOutcome, Error>>;
+
+    let (engine, _release) = BlockingEngine::new();
+    let fixture = TestModules::new(Arc::new(engine)).await;
+    let operation = fixture
+        .user_operation("user:apply-fence", "Fence rows")
+        .await;
+    let run = fixture
+        .runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission("return 1;"),
+        )
+        .await
+        .unwrap();
+    wait_until_started(&fixture, &operation.workspace_id, run.run_id()).await;
+    let record = fixture
+        .run_record(&operation.workspace_id, run.run_id())
+        .await;
+    let admitted = admitted_invocation(&fixture, &operation, run.run_id()).await;
+    let invoker = test_invoker(&fixture, &operation, &record);
+    let fence = |state: &mut OwnerState, now: i64| -> (Vec<Effect>, FenceAnswer) {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let request = FenceRequest::for_apply_test(invoker.clone(), admitted.clone(), sender);
+        (
+            apply(state, Message::Fence(Box::new(request)), now),
+            receiver,
+        )
+    };
+    let answered = |receiver: &mut FenceAnswer| receiver.try_recv().ok();
+
+    // Three requests, one batch, one chunk; nothing commits before the drain.
+    {
+        let mut state = started(LIMITS);
+        let mut answers = Vec::new();
+        for now in [3, 4, 5] {
+            let (effects, answer) = fence(&mut state, now);
+            assert!(
+                deliver(effects).is_empty(),
+                "a request commits nothing by itself"
+            );
+            answers.push(answer);
+        }
+        assert_eq!(state.pending_chunks(), 1);
+        assert!(answers.iter_mut().all(|answer| answered(answer).is_none()));
+        let effects = apply(&mut state, Message::Drained, 6);
+        let [Effect::Commit { chunk, .. }] = effects.as_slice() else {
+            panic!("{effects:?}");
+        };
+        assert!(
+            chunk.items.is_empty(),
+            "the fence writes no Event and is no item"
+        );
+        assert_eq!(chunk.works, 1, "one batch counts as one row work");
+        assert_eq!(
+            chunk
+                .fence
+                .as_ref()
+                .map(|batch| batch.invocation_ids().len()),
+            Some(3)
+        );
+    }
+
+    // A batch closes its chunk at the cap, like the row work cap.
+    {
+        let mut state = started(LIMITS);
+        for now in 0..=FENCE_BATCH_CAP {
+            let (effects, _) = fence(&mut state, 10 + i64::try_from(now).unwrap());
+            deliver(effects);
+        }
+        assert_eq!(state.pending_chunks(), 2);
+        let effects = apply(&mut state, Message::Drained, 100);
+        let [Effect::Commit { chunk, .. }] = effects.as_slice() else {
+            panic!("{effects:?}");
+        };
+        assert_eq!(
+            chunk
+                .fence
+                .as_ref()
+                .map(|batch| batch.invocation_ids().len()),
+            Some(FENCE_BATCH_CAP)
+        );
+    }
+
+    // A fence-only chunk is no empty chunk for an Event above the bytes cap:
+    // that Event still commits alone, after the batch.
+    {
+        let mut state = started(LIMITS);
+        let (effects, _) = fence(&mut state, 10);
+        deliver(effects);
+        let (effects, _) = emit(&mut state, CHUNK_BYTES_CAP + 1, 11);
+        deliver(effects);
+        assert_eq!(state.pending_chunks(), 2);
+        let effects = apply(&mut state, Message::Drained, 12);
+        let [Effect::Commit { chunk, .. }] = effects.as_slice() else {
+            panic!("{effects:?}");
+        };
+        assert!(
+            chunk.fence.is_some() && chunk.items.is_empty(),
+            "the batch commits first, without the Event"
+        );
+    }
+
+    // A stop: the batch not yet committed answers terminated at once, the
+    // Program is terminated, and the chunk that held only the batch is gone.
+    {
+        let mut state = started(LIMITS);
+        let (effects, mut first) = fence(&mut state, 20);
+        deliver(effects);
+        let (effects, mut second) = fence(&mut state, 21);
+        deliver(effects);
+        let effects = apply(&mut state, Message::Stop, 22);
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::TerminateProgram)),
+            "{effects:?}"
+        );
+        let rest = deliver(effects);
+        assert!(
+            rest.iter()
+                .all(|effect| matches!(effect, Effect::TerminateProgram)),
+            "{rest:?}"
+        );
+        for answer in [&mut first, &mut second] {
+            assert!(
+                matches!(answered(answer), Some(Err(Error::ProgramHostTerminated))),
+                "a fence request not yet committed learns the stop at once"
+            );
+        }
+        assert_eq!(state.pending_chunks(), 0);
+        assert!(apply(&mut state, Message::Drained, 23).is_empty());
+        // A request after the stop answers at once too.
+        let (effects, mut late) = fence(&mut state, 24);
+        assert!(deliver(effects).is_empty());
+        assert!(matches!(
+            answered(&mut late),
+            Some(Err(Error::ProgramHostTerminated))
+        ));
+    }
+
+    // A stop leaves the chunk's other pending work: an Emission beside the
+    // abandoned batch still commits, without the batch.
+    {
+        let mut state = started(LIMITS);
+        let (effects, _) = emit(&mut state, 10, 20);
+        deliver(effects);
+        let (effects, mut pending) = fence(&mut state, 21);
+        deliver(effects);
+        deliver(apply(&mut state, Message::Stop, 22));
+        assert!(matches!(
+            answered(&mut pending),
+            Some(Err(Error::ProgramHostTerminated))
+        ));
+        assert_eq!(state.pending_chunks(), 1);
+        let effects = apply(&mut state, Message::Drained, 23);
+        let [Effect::Commit { chunk, .. }] = effects.as_slice() else {
+            panic!("{effects:?}");
+        };
+        assert!(chunk.fence.is_none(), "the abandoned batch left the chunk");
+        assert_eq!(chunk.items.len(), 1, "the Emission commits");
+    }
+
+    // Past the deadline in owner memory a request answers at once.
+    {
+        let mut state = started(LIMITS);
+        let (effects, mut late) = fence(&mut state, LIMITS.deadline_at_unix_nanos);
+        assert!(deliver(effects).is_empty());
+        assert!(matches!(
+            answered(&mut late),
+            Some(Err(Error::ProgramHostTerminated))
+        ));
+        assert_eq!(state.pending_chunks(), 0);
+    }
+
+    // The terminal chunk waits for a fence in flight: the Program's end
+    // writes nothing until the batch's commit has answered.
+    {
+        let mut state = started(LIMITS);
+        let (effects, mut answer) = fence(&mut state, 30);
+        deliver(effects);
+        assert!(matches!(
+            apply(&mut state, Message::Drained, 31).as_slice(),
+            [Effect::Commit { .. }]
+        ));
+        let effects = apply(
+            &mut state,
+            Message::ProgramEnded(ExecutionCompletion::Succeeded(FinalValue::Absent)),
+            32,
+        );
+        assert!(
+            matches!(effects.as_slice(), [Effect::TerminateProgram]),
+            "{effects:?}"
+        );
+        assert!(
+            answered(&mut answer).is_none(),
+            "the batch is still in flight"
+        );
+        let effects = apply(&mut state, Message::Committed, 33);
+        assert!(
+            matches!(effects.as_slice(), [Effect::CompleteExecution(_)]),
+            "{effects:?}"
+        );
+    }
+}

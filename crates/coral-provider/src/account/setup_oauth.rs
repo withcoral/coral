@@ -642,6 +642,7 @@ impl AccountModule {
                         .refresh_token
                         .as_ref()
                         .is_some_and(|value| !value.is_empty()),
+                    token.expires_at,
                 )
                 .await?;
                 if flow.kind == FlowKind::BeforeDiscovery {

@@ -187,6 +187,7 @@ impl TestDatabase {
         };
         let database = Arc::new(Database::connect(options.clone()).await?);
         database.migrate(plan).await?;
+        connect_virtual_tables(&database, &options).await?;
         Ok(Self {
             database,
             options,
@@ -221,6 +222,43 @@ impl TestDatabase {
             _sqlite_directory: None,
         })
     }
+}
+
+/// Connects every virtual table on the `SQLite` writer, as a production writer
+/// does on its first write.
+///
+/// Fault-injection tests change the schema from a separate connection after
+/// the writer loaded it. `SQLite` then fails the writer's first statement that
+/// fires a trigger into a virtual table it has not connected: it reports the
+/// statement's own table as missing when that table has a foreign key.
+/// Production changes the schema only while it migrates, before its writer
+/// loads the schema.
+async fn connect_virtual_tables(
+    database: &Database,
+    options: &DatabaseOptions,
+) -> Result<(), TestDatabaseError> {
+    use sqlx::Connection as _;
+    let DatabaseOptions::Sqlite { path } = options else {
+        return Ok(());
+    };
+    let mut connection = sqlx::SqliteConnection::connect_with(
+        &sqlx::sqlite::SqliteConnectOptions::new().filename(path),
+    )
+    .await?;
+    let tables: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE VIRTUAL TABLE%'",
+    )
+    .fetch_all(&mut connection)
+    .await?;
+    connection.close().await?;
+    let mut transaction = database.begin().await?;
+    for table in tables {
+        transaction
+            .execute_script(&format!("SELECT 1 FROM \"{table}\" LIMIT 0"))
+            .await?;
+    }
+    transaction.rollback().await?;
+    Ok(())
 }
 
 /// Installs the extensions Coral's boot checks require once per disposable

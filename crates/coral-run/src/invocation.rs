@@ -4,11 +4,12 @@
 //! The [`OperationInvoker`] is private to one accepted Program Run. It resolves
 //! a Call Path outside the Run, admits it as one owner request (answered at
 //! Applied: the Invocation row and `invocation.started` ride the owner's next
-//! chunk), plans away from persistence, runs its held rechecks and the one
-//! short dispatch fence as row work inside the owner's chunk commits, decrypts
-//! and sends outside every lock, and reports the terminal Invocation through
-//! the owner: an upstream result at Applied, a known failure once it is
-//! recorded. Operational failure is host-fatal rather than catchable. Known
+//! chunk), plans away from persistence, runs its held rechecks as row work
+//! inside the owner's chunk commits and the Dispatch Fence as one batched
+//! check per chunk commit ([`FenceBatch`], decided by [`crate::fence`]),
+//! decrypts and sends outside every lock after the pre-send check, and
+//! reports the terminal Invocation through the owner: an upstream result at
+//! Applied, a known failure once it is recorded. Operational failure is host-fatal rather than catchable. Known
 //! failures persist the same closed [`CoralFailure`] code and safe
 //! [`Rejection`] message projected to the Program, even during child shutdown. Only shutdown and
 //! recovery record lost dispatching work as indeterminate; a stop that
@@ -20,17 +21,19 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use coral_db::Transaction;
-use coral_policy::{OperationAccessState, OperationPolicyTarget};
-use coral_provider::{
-    InvocationCaller, InvocationOperationVerification, ResolvedInvocationOperation,
-};
+use coral_policy::OperationAccessState;
+use coral_provider::{InvocationCaller, ResolvedInvocationOperation};
 use coral_upstream::{McpRejection, McpResources, ReadyDispatch, UpstreamOutcome};
-use coral_workspace::{AuthenticatedPrincipal, Principal, PrincipalWorkspaceEvidence};
+use coral_workspace::{AuthenticatedPrincipal, Principal};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
 use tokio::sync::oneshot;
 
 use crate::engine::Clock;
 use crate::execution::ExecutionStop;
+use crate::fence::{
+    self, ApprovalFact, Checked, Decision, FenceScope, FenceTarget, InvocationFacts, Refusal,
+    RunFacts, SharedFacts,
+};
 use crate::invocation_lifecycle::{FinishOutcome, InvocationState, UnfinishedInvocation};
 use crate::lifecycle::RunRecord;
 use crate::owner::{ChunkWork, OwnerHandle};
@@ -122,7 +125,7 @@ impl UpstreamSender for ProductionUpstream {
 pub(crate) trait InvocationObserver: Send + Sync {
     fn approval_authority_checked(&self) {}
 
-    fn fence_checks_loaded(&self) {}
+    async fn fence_checks_loaded(&self) {}
 
     fn fence_attempt_finished(&self, _permit_returned: bool, _durable_dispatch_start: bool) {}
 
@@ -344,6 +347,14 @@ impl OperationInvoker {
                 FenceOutcome::Rejected(rejection) => {
                     return Err(self.finish_failure(&admitted, &progress, rejection).await?);
                 }
+                // The finish finds the row ended and delivers that outcome;
+                // the failure named here is recorded only if the row were
+                // still pending, which a superseded fence has ruled out.
+                FenceOutcome::Superseded => {
+                    return Err(self
+                        .finish_failure(&admitted, &progress, CoralFailure::AuthorityLost)
+                        .await?);
+                }
                 FenceOutcome::RunTerminated => {
                     return Err(InvocationHostError::Fatal(Error::ProgramHostTerminated));
                 }
@@ -408,9 +419,10 @@ impl OperationInvoker {
         };
         let policy = coral_policy::invocation_decision_in_transaction(
             &mut transaction,
-            &policy_target(&self.workspace_id, &target),
+            &fence::policy_target(&self.workspace_id, &target),
             target.operation().hints(),
             target.operation().http_method(),
+            coral_db::RowLock::Shared,
         )
         .await?
         .access_state();
@@ -444,6 +456,16 @@ impl OperationInvoker {
         progress: &InvocationProgress,
         mut ready: Dispatch,
     ) -> Result<String, InvocationHostError> {
+        // The owner's own terminal state, before anything leaves the process:
+        // a stop that reached the owner ends this fenced Invocation as
+        // `run_terminated` instead of sending.
+        if self.owner.is_stopping() {
+            self.end_before_send(admitted).await?;
+            return Err(InvocationHostError::Fatal(Error::ProgramHostTerminated));
+        }
+        // The material the fence judged current is decrypted here, per
+        // dispatch, outside every lock; a failure to open it ends this
+        // Invocation and never fences again.
         if let Err(error) = self.authorize(admitted, progress, &mut ready).await {
             return match error {
                 Error::InvocationRejected(failure) => {
@@ -451,13 +473,6 @@ impl OperationInvoker {
                 }
                 error => Err(error.into()),
             };
-        }
-        // The owner's own terminal state, before anything leaves the process:
-        // a stop that reached the owner ends this fenced Invocation as
-        // `run_terminated` instead of sending.
-        if self.owner.is_stopping() {
-            self.end_before_send(admitted).await?;
-            return Err(InvocationHostError::Fatal(Error::ProgramHostTerminated));
         }
         let ready = match ready {
             Dispatch::Upstream(ready) => ready,
@@ -608,9 +623,9 @@ impl OperationInvoker {
         }
     }
 
-    /// Decrypts the selected credentials outside every lock, after the fence,
-    /// and authorizes the dispatch with them. A token renewed since the fence
-    /// is the one dispatched.
+    /// Decrypts the selected credentials outside every lock, after the fence
+    /// and the pre-send check, and authorizes the dispatch with them. A token
+    /// renewed since the fence is the one dispatched.
     async fn authorize(
         &self,
         admitted: &AdmittedInvocation,
@@ -698,7 +713,10 @@ impl OperationInvoker {
         }
         loop {
             match self.approval_ready(admitted, progress).await? {
-                GateOutcome::Ready => break,
+                GateOutcome::Ready(approval) => {
+                    progress.approval = approval;
+                    break;
+                }
                 GateOutcome::Waiting => {
                     #[cfg(test)]
                     self.observer.approval_waiting().await?;
@@ -720,11 +738,11 @@ impl OperationInvoker {
 
     /// Waits until a read snapshot shows that a held recheck could change this wait.
     ///
-    /// A held recheck runs inside the owner's chunk commit and locks the
-    /// Workspace, User, Provider, policy and Account rows, so waiting
+    /// A held recheck runs inside the owner's chunk commit and holds the
+    /// Workspace, User, Provider, policy and Account rows shared, so waiting
     /// Invocations must not repeat it while nothing changed. Snapshots take no
     /// locks. A held recheck still runs at least every [`WAIT_HELD_RECHECK`]
-    /// for anything a snapshot cannot see; the dispatch fence rechecks
+    /// for anything a snapshot cannot see; the Dispatch Fence rechecks
     /// authority and approval regardless.
     async fn wait_until_changed(
         &self,
@@ -764,6 +782,10 @@ impl OperationInvoker {
             .flatten()
     }
 
+    /// The parked-wait precheck: the fence's facts from a read snapshot with
+    /// no hold, the wait's own row beside them, and the fence's evaluator.
+    /// Only a decision to keep waiting answers; anything else is for the
+    /// held recheck to decide.
     async fn pending_until_in_snapshot(
         &self,
         admitted: &AdmittedInvocation,
@@ -772,102 +794,71 @@ impl OperationInvoker {
     ) -> Result<Option<i64>, Error> {
         let now = self.now()?;
         let mut tx = self.database.begin_read_snapshot().await?;
-        let Some((policy, authority_until)) = self.snapshot_policy(&mut tx, admitted, now).await?
+        let Some(run) = crate::run_repository::find_exact_in_transaction(
+            &mut tx,
+            &self.workspace_id,
+            &self.run_id,
+        )
+        .await?
         else {
             return Ok(None);
         };
-        let wait_until = match wait {
-            PendingWait::Connection => match progress.connection_request {
-                Some(request) if policy != OperationAccessState::Disabled => {
-                    coral_provider::account::connection_pending_until_in_snapshot(
-                        &mut tx,
-                        &admitted.target,
-                        &self.principal,
-                        request,
-                        now,
-                    )
-                    .await
-                    .ok()
-                    .flatten()
-                }
-                _ => None,
-            },
-            PendingWait::Approval => {
-                if policy == OperationAccessState::ApprovalRequired
-                    && coral_provider::account::verify_in_snapshot(
-                        &mut tx,
-                        &admitted.target,
-                        &self.principal,
-                        progress.credential_evidence.as_ref(),
-                    )
-                    .await
-                    .is_ok()
-                {
-                    crate::approval::pending_until_in_snapshot(&mut tx, admitted, now).await?
-                } else {
-                    None
-                }
+        let committed_failure = crate::approval::committed_failure(&mut tx, admitted).await?;
+        let target = FenceTarget {
+            admitted,
+            credential_evidence: progress.credential_evidence.as_ref(),
+        };
+        let shared = SharedFacts::load(
+            &mut tx,
+            coral_db::RowLock::None,
+            &self.fence_scope(),
+            now,
+            std::slice::from_ref(&target),
+        )
+        .await?;
+        let (connection_pending_until_unix_nanos, approval) = match wait {
+            PendingWait::Connection => {
+                let Some(request) = progress.connection_request else {
+                    return Ok(None);
+                };
+                let Some(until) = coral_provider::account::connection_pending_until_in_snapshot(
+                    &mut tx,
+                    &admitted.target,
+                    &self.principal,
+                    request,
+                    now,
+                )
+                .await?
+                else {
+                    return Ok(None);
+                };
+                (Some(until), ApprovalFact::NotRequested)
             }
+            PendingWait::Approval => (
+                None,
+                crate::approval::fact_in_snapshot(&mut tx, admitted).await?,
+            ),
         };
         tx.commit().await?;
-        Ok(wait_until.map(|until| until.min(authority_until)))
-    }
-
-    /// Reads, in a snapshot, what the held rechecks check before their own
-    /// gate: the Run, a committed rejection, Principal authority, the Operation
-    /// and its policy. While all of them are unchanged, returns the policy and
-    /// the earliest time the Run or the authority expires.
-    async fn snapshot_policy(
-        &self,
-        tx: &mut coral_db::Transaction<'_>,
-        admitted: &AdmittedInvocation,
-        now: i64,
-    ) -> Result<Option<(OperationAccessState, i64)>, Error> {
-        let Some(run) =
-            crate::run_repository::find_exact_in_transaction(tx, &self.workspace_id, &self.run_id)
-                .await?
-        else {
-            return Ok(None);
-        };
-        if !self.run_is_current(&run, now)
-            || crate::approval::committed_rejection(tx, admitted)
-                .await
-                .is_err()
-        {
-            return Ok(None);
-        }
-        let Ok(authority) = self
-            .workspaces
-            .check_dispatch_in_snapshot(tx, &self.actor, &self.workspace_id, now)
-            .await
-        else {
-            return Ok(None);
-        };
-        if !matches!(
-            coral_provider::verify_invocation_operation_in_snapshot(
-                tx,
-                &self.workspace_id,
-                &admitted.target,
-            )
-            .await,
-            Ok(InvocationOperationVerification::Current)
-        ) {
-            return Ok(None);
-        }
-        let until = authority
-            .expires_at_unix_nanos()
-            .map_or(self.deadline_at_unix_nanos, |expiry| {
-                expiry.min(self.deadline_at_unix_nanos)
-            });
-        Ok(coral_policy::invocation_decision_in_snapshot(
-            tx,
-            &policy_target(&self.workspace_id, &admitted.target),
-            admitted.target.operation().hints(),
-            admitted.target.operation().http_method(),
-        )
-        .await
-        .ok()
-        .map(|decision| (decision.access_state(), until)))
+        let now = self.now()?;
+        let decision = fence::decide(
+            &shared,
+            &self.run_facts(&run),
+            &InvocationFacts {
+                target,
+                committed_failure,
+                connection_pending_until_unix_nanos,
+                approval,
+            },
+            now,
+        );
+        Ok(match decision {
+            Decision::Wait { until_unix_nanos } => Some(until_unix_nanos),
+            Decision::Dispatch
+            | Decision::Deny(_)
+            | Decision::RefreshRequired
+            | Decision::RunTerminated => None,
+        })
     }
 
     /// Waits for a committed change, the expiry `until`, the fallback poll, or a
@@ -898,6 +889,9 @@ impl OperationInvoker {
         }
     }
 
+    /// Renews the selected credentials outside every lock, after the fence
+    /// parked the Invocation on a refresh: the material is decrypted, and
+    /// refreshed when expired, by the Account Module; nothing is kept here.
     async fn prepare_credentials(
         &self,
         admitted: &AdmittedInvocation,
@@ -975,11 +969,12 @@ impl OperationInvoker {
         if !self.run_is_current(run, now) {
             return Ok(SelectionOutcome::RunNotCurrent);
         }
-        let (_, policy) = self.current_target_authority(tx, admitted).await?;
-        if policy == OperationAccessState::Disabled {
-            return Err(Error::InvocationRejected(
-                CoralFailure::OperationDisabled.into(),
-            ));
+        let target = FenceTarget {
+            admitted,
+            credential_evidence: None,
+        };
+        if self.held_checked(tx, run, target).await?.is_none() {
+            return Ok(SelectionOutcome::RunNotCurrent);
         }
         let selection = if self.accounts.is_some() {
             coral_provider::account::resolve_connection_in_transaction(
@@ -1061,6 +1056,9 @@ impl OperationInvoker {
         )
     }
 
+    /// The held approval gate: the fence's facts under their shared holds,
+    /// then the Approval Request this Invocation needs under the policy they
+    /// show, created, expired or closed here as the gate finds it.
     async fn approval_ready_checked(
         &self,
         tx: &mut Transaction<'_>,
@@ -1073,243 +1071,93 @@ impl OperationInvoker {
         if !self.run_is_current(run, now) {
             return Ok(GateOutcome::RunNotCurrent);
         }
-        crate::approval::committed_rejection(tx, admitted).await?;
-        let (authority, policy) = self.current_target_authority(tx, admitted).await?;
-        if policy == OperationAccessState::Disabled {
-            return Err(Error::InvocationRejected(
-                CoralFailure::OperationDisabled.into(),
-            ));
+        if let Some(failure) = crate::approval::committed_failure(tx, admitted).await? {
+            return Err(Error::InvocationRejected(failure.into()));
         }
-        coral_provider::account::verify_in_transaction(
-            tx,
-            &admitted.target,
-            &self.principal,
-            progress.credential_evidence.as_ref(),
-        )
-        .await
-        .map_err(account_error)?;
-        #[cfg(test)]
-        self.observer.approval_authority_checked();
-        let now = self.now()?;
-        if !self.run_is_current(run, now) {
+        let target = FenceTarget {
+            admitted,
+            credential_evidence: progress.credential_evidence.as_ref(),
+        };
+        let Some((checked, now)) = self.held_checked(tx, run, target).await? else {
             return Ok(GateOutcome::RunNotCurrent);
-        }
-        authority
-            .require_current_at(now)
-            .map_err(|_expired| Error::InvocationRejected(CoralFailure::AuthorityLost.into()))?;
-        let ready = crate::approval::gate(
+        };
+        let approval = crate::approval::gate(
             tx,
             admitted,
             run,
-            policy == OperationAccessState::ApprovalRequired,
+            checked.policy == OperationAccessState::ApprovalRequired,
             now,
             events,
         )
         .await?;
-        Ok(if ready {
-            GateOutcome::Ready
-        } else {
-            GateOutcome::Waiting
-        })
+        Ok(approval.map_or(GateOutcome::Waiting, GateOutcome::Ready))
     }
 
+    /// The fence's shared facts for one Invocation, read under their shared
+    /// holds inside the owner's chunk commit and checked at a clock sample
+    /// taken after the reads: the policy and that sample, `None` when the Run
+    /// no longer takes Program work, the known failure when a fact refuses.
+    async fn held_checked(
+        &self,
+        tx: &mut Transaction<'_>,
+        run: &RunRecord,
+        target: FenceTarget<'_>,
+    ) -> Result<Option<(Checked, i64)>, Error> {
+        let shared = SharedFacts::load(
+            tx,
+            coral_db::RowLock::Shared,
+            &self.fence_scope(),
+            self.now()?,
+            std::slice::from_ref(&target),
+        )
+        .await?;
+        #[cfg(test)]
+        self.observer.approval_authority_checked();
+        let now = self.now()?;
+        match shared.checked(&self.run_facts(run), target, now) {
+            Ok(checked) => Ok(Some((checked, now))),
+            Err(Refusal::RunTerminated) => Ok(None),
+            Err(refusal) => Err(refused(refusal)),
+        }
+    }
+
+    /// Asks the owner for the Dispatch Fence: the request joins the batch of
+    /// its next chunk commit, and answers once that chunk is recorded.
     async fn fence(
         &self,
         admitted: &Arc<AdmittedInvocation>,
         progress: &mut InvocationProgress,
     ) -> Result<FenceOutcome, Error> {
-        let outcome = self
-            .ask(|reply| {
-                Box::new(FenceWork {
-                    invoker: self.clone(),
-                    admitted: admitted.clone(),
-                    progress: progress.clone(),
-                    reply,
-                })
-            })
-            .await?;
+        let (sender, receiver) = oneshot::channel();
+        self.owner.fence(FenceRequest {
+            invoker: self.clone(),
+            fenced: FencedInvocation {
+                admitted: admitted.clone(),
+                progress: progress.clone(),
+                reply: Replier::new(sender),
+            },
+        })?;
+        let outcome = receiver.await.map_err(|_lost| Error::OwnerLost)??;
         if matches!(outcome, FenceOutcome::Permitted) {
             progress.dispatch_started = true;
         }
         Ok(outcome)
     }
 
-    /// The Dispatch Fence, inside the owner's chunk commit: one short held
-    /// check of Run, authority, Operation, policy, Account and Approval
-    /// evidence, then the durable dispatch start. It verifies the credentials
-    /// are current without keeping their material; the dispatch decrypts
-    /// outside every lock.
-    async fn fence_in(
-        &self,
-        tx: &mut Transaction<'_>,
-        run: &RunRecord,
-        now: i64,
-        admitted: &AdmittedInvocation,
-        progress: &InvocationProgress,
-    ) -> Result<FenceOutcome, Error> {
-        catch_rejection(
-            self.fence_checked(tx, run, now, admitted, progress).await,
-            FenceOutcome::Rejected,
-        )
+    pub(crate) fn fence_scope(&self) -> FenceScope<'_> {
+        FenceScope {
+            workspaces: &self.workspaces,
+            actor: &self.actor,
+            workspace_id: &self.workspace_id,
+        }
     }
 
-    async fn fence_checked(
-        &self,
-        tx: &mut Transaction<'_>,
-        run: &RunRecord,
-        now: i64,
-        admitted: &AdmittedInvocation,
-        progress: &InvocationProgress,
-    ) -> Result<FenceOutcome, Error> {
-        let now = now.max(run.accepted_at_unix_nanos);
-        if !self.run_is_current(run, now) {
-            return Ok(FenceOutcome::RunTerminated);
-        }
-        let (authority, policy) = self.current_target_authority(tx, admitted).await?;
-        if policy == OperationAccessState::Disabled {
-            return Err(Error::InvocationRejected(
-                CoralFailure::OperationDisabled.into(),
-            ));
-        }
-        coral_provider::account::verify_in_transaction(
-            tx,
-            &admitted.target,
-            &self.principal,
-            progress.credential_evidence.as_ref(),
-        )
-        .await
-        .map_err(account_error)?;
-        let approval = if policy == OperationAccessState::ApprovalRequired {
-            Some(crate::approval::dispatch_evidence(tx, admitted).await?)
-        } else {
-            None
-        };
-        if let Some(evidence) = &progress.credential_evidence {
-            let accounts = self.accounts.as_ref().ok_or(Error::InvocationRejected(
-                CoralFailure::AccountRequired.into(),
-            ))?;
-            let current = accounts
-                .dispatch_credentials_in_transaction(
-                    tx,
-                    &self.workspace_id,
-                    admitted.target.provider_access().id(),
-                    evidence,
-                    self.now()?,
-                )
-                .await
-                .map_err(account_error)?;
-            // The material itself stays here: the dispatch decrypts outside
-            // every lock.
-            if current.is_none() {
-                return Ok(FenceOutcome::RefreshRequired);
-            }
-        }
-        #[cfg(test)]
-        self.observer.fence_checks_loaded();
-        // All mutable evidence is held now. Recheck every time-bound fact after
-        // the final awaited read; the remaining write shares the held Run.
-        let dispatch_started_at = self.now()?.max(run.accepted_at_unix_nanos);
-        if !self.run_is_current(run, dispatch_started_at) {
-            return Ok(FenceOutcome::RunTerminated);
-        }
-        authority
-            .require_current_at(dispatch_started_at)
-            .map_err(|_expired| Error::InvocationRejected(CoralFailure::AuthorityLost.into()))?;
-        if let Some(approval) = approval {
-            approval
-                .require_current_at(dispatch_started_at)
-                .map_err(|failure| Error::InvocationRejected(failure.into()))?;
-        }
-        if !invocation_repository::mark_dispatch_started(
-            tx,
-            &self.workspace_id,
-            &admitted.id,
-            dispatch_started_at,
-        )
-        .await?
-        {
-            return Err(Error::InvocationRejected(
-                CoralFailure::AuthorityLost.into(),
-            ));
-        }
-        Ok(FenceOutcome::Permitted)
-    }
-
-    async fn current_target_authority(
-        &self,
-        tx: &mut coral_db::Transaction<'_>,
-        admitted: &AdmittedInvocation,
-    ) -> Result<(PrincipalWorkspaceEvidence, OperationAccessState), Error> {
-        let authority =
-            self.workspace_dispatch_authority(tx)
-                .await?
-                .ok_or(Error::InvocationRejected(
-                    CoralFailure::AuthorityLost.into(),
-                ))?;
-        match coral_provider::verify_invocation_operation_in_transaction(
-            tx,
-            &self.workspace_id,
-            &admitted.target,
-        )
-        .await?
-        {
-            InvocationOperationVerification::Current => {}
-            InvocationOperationVerification::CredentialRouteChanged => {
-                return Err(Error::InvocationRejected(
-                    CoralFailure::CredentialRouteChanged.into(),
-                ));
-            }
-            InvocationOperationVerification::ProviderUnavailable => {
-                return Err(Error::InvocationRejected(
-                    CoralFailure::ProviderUnavailable.into(),
-                ));
-            }
-            InvocationOperationVerification::AuthorityLost => {
-                return Err(Error::InvocationRejected(
-                    CoralFailure::AuthorityLost.into(),
-                ));
-            }
-        }
-        let policy = coral_policy::invocation_decision_in_transaction(
-            tx,
-            &policy_target(&self.workspace_id, &admitted.target),
-            admitted.target.operation().hints(),
-            admitted.target.operation().http_method(),
-        )
-        .await
-        .map_err(|error| match error {
-            coral_policy::Error::OperationNotFound => {
-                Error::InvocationRejected(CoralFailure::AuthorityLost.into())
-            }
-            error => error.into(),
-        })?;
-        Ok((authority, policy.access_state()))
-    }
-
-    async fn workspace_dispatch_authority(
-        &self,
-        transaction: &mut coral_db::Transaction<'_>,
-    ) -> Result<Option<PrincipalWorkspaceEvidence>, Error> {
-        match self
-            .workspaces
-            .check_dispatch_in_transaction(
-                transaction,
-                &self.actor,
-                &self.workspace_id,
-                self.now()?,
-            )
-            .await
-        {
-            Ok(evidence) => Ok(Some(evidence)),
-            Err(
-                coral_workspace::Error::WorkspaceNotFound
-                | coral_workspace::Error::PermissionDenied(_)
-                | coral_workspace::Error::WorkspaceArchived
-                | coral_workspace::Error::AgentNotFound
-                | coral_workspace::Error::AgentDisabled
-                | coral_workspace::Error::AgentRegistrationExpired,
-            ) => Ok(None),
-            Err(error) => Err(error.into()),
+    pub(crate) fn run_facts<'a>(&'a self, run: &'a RunRecord) -> RunFacts<'a> {
+        RunFacts {
+            run,
+            claim_id: self.owner.claim_id(),
+            principal: &self.principal,
+            deadline_at_unix_nanos: self.deadline_at_unix_nanos,
         }
     }
 
@@ -1390,13 +1238,20 @@ impl OperationInvoker {
     }
 
     fn run_is_current(&self, run: &RunRecord, now: i64) -> bool {
-        run.program_work_is_current(self.owner.claim_id(), now)
-            && run.principal == self.principal
-            && run.deadline_at_unix_nanos == self.deadline_at_unix_nanos
+        self.run_facts(run).is_current(now)
     }
 
     fn now(&self) -> Result<i64, Error> {
         self.clock.now_unix_nanos().map_err(Error::Clock)
+    }
+}
+
+/// The error a refusal means for a step inside the owner's chunk: the known
+/// failure the Invocation ends with, or the Run's end.
+fn refused(refusal: Refusal) -> Error {
+    match refusal {
+        Refusal::Deny(failure) => Error::InvocationRejected(failure.into()),
+        Refusal::RunTerminated => Error::ProgramHostTerminated,
     }
 }
 
@@ -1413,8 +1268,10 @@ fn catch_rejection<O>(
     }
 }
 
-fn account_error(error: coral_provider::Error) -> Error {
-    let failure = match error {
+/// The known failure an Account error means, or the error itself when it is
+/// not one.
+pub(crate) fn account_failure(error: coral_provider::Error) -> Result<CoralFailure, Error> {
+    Ok(match error {
         coral_provider::Error::AccountRequired => CoralFailure::AccountRequired,
         coral_provider::Error::OutboundDestinationRejected => {
             CoralFailure::OutboundDestinationRejected
@@ -1427,20 +1284,15 @@ fn account_error(error: coral_provider::Error) -> Error {
         coral_provider::Error::AccountConnectionDeclined => CoralFailure::AccountConnectionDeclined,
         coral_provider::Error::AccountConnectionExpired => CoralFailure::AccountConnectionExpired,
         coral_provider::Error::CredentialRouteChanged => CoralFailure::CredentialRouteChanged,
-        other => return other.into(),
-    };
-    Error::InvocationRejected(failure.into())
+        other => return Err(other.into()),
+    })
 }
 
-fn policy_target(
-    workspace_id: &WorkspaceId,
-    target: &ResolvedInvocationOperation,
-) -> OperationPolicyTarget {
-    OperationPolicyTarget::new(
-        workspace_id.clone(),
-        target.provider_access().id().clone(),
-        target.operation().key().clone(),
-    )
+fn account_error(error: coral_provider::Error) -> Error {
+    match account_failure(error) {
+        Ok(failure) => Error::InvocationRejected(failure.into()),
+        Err(error) => error,
+    }
 }
 
 /// One admitted Invocation's immutable evidence.
@@ -1456,11 +1308,15 @@ pub(crate) struct AdmittedInvocation {
 }
 
 /// What one Invocation's lifecycle has settled so far: its account wait, its
-/// selected credentials, and whether its dispatch start is durable.
+/// selected credentials, the approval the held gate found, and whether its
+/// dispatch start is durable.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct InvocationProgress {
     pub(crate) connection_request: Option<coral_provider::account::ConnectionRequestId>,
     pub(crate) credential_evidence: Option<coral_provider::account::CredentialEvidence>,
+    /// The Approval Request's decision as the gate recorded it, which the
+    /// fence decides on from owner memory: an approval never changes.
+    pub(crate) approval: ApprovalFact,
     pub(crate) dispatch_started: bool,
 }
 
@@ -1487,15 +1343,20 @@ enum SelectionOutcome {
 
 enum GateOutcome {
     Waiting,
-    Ready,
+    Ready(ApprovalFact),
     Rejected(Rejection),
     RunNotCurrent,
 }
 
-enum FenceOutcome {
+#[derive(Debug)]
+pub(crate) enum FenceOutcome {
     RefreshRequired,
     Permitted,
     Rejected(Rejection),
+    /// An outside writer ended the Invocation row during the fence (a
+    /// decision, a cancel): its durable outcome stands, and the finish
+    /// delivers it.
+    Superseded,
     RunTerminated,
 }
 
@@ -1652,46 +1513,208 @@ impl ChunkWork for ApprovalReadyWork {
     }
 }
 
-struct FenceWork {
+/// One Invocation's request for the Dispatch Fence, carrying what the fence
+/// decides it on from owner memory: its retained target, its selected
+/// credentials and the approval the gate found, and the invoker of its Run,
+/// which the batch keeps once.
+pub(crate) struct FenceRequest {
     invoker: OperationInvoker,
+    fenced: FencedInvocation,
+}
+
+/// One Invocation inside a batch.
+struct FencedInvocation {
     admitted: Arc<AdmittedInvocation>,
     progress: InvocationProgress,
     reply: Replier<FenceOutcome>,
 }
 
-impl fmt::Debug for FenceWork {
+impl FencedInvocation {
+    fn target(&self) -> FenceTarget<'_> {
+        FenceTarget {
+            admitted: &self.admitted,
+            credential_evidence: self.progress.credential_evidence.as_ref(),
+        }
+    }
+}
+
+impl fmt::Debug for FenceRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("FenceWork")
-            .field("invocation", &self.admitted.id)
+            .debug_struct("FenceRequest")
+            .field("invocation", &self.fenced.admitted.id)
             .finish_non_exhaustive()
     }
 }
 
+impl FenceRequest {
+    /// A request for the owner's in-memory tests, which never run it.
+    #[cfg(test)]
+    pub(crate) fn for_apply_test(
+        invoker: OperationInvoker,
+        admitted: Arc<AdmittedInvocation>,
+        sender: oneshot::Sender<Result<FenceOutcome, Error>>,
+    ) -> Self {
+        Self {
+            invoker,
+            fenced: FencedInvocation {
+                admitted,
+                progress: InvocationProgress::default(),
+                reply: Replier::new(sender),
+            },
+        }
+    }
+}
+
+/// The Dispatch Fence of one chunk commit: every ready Invocation the owner
+/// collected for it, decided together. The shared facts are read once under
+/// their shared holds, the clock is sampled once after the last read, each
+/// Invocation is decided in memory, and every permitted row is moved from
+/// `pending` to `dispatching` in the same commit, which the owner predicates
+/// on its claim and the head. The fence writes no Event.
+pub(crate) struct FenceBatch {
+    invoker: OperationInvoker,
+    invocations: Vec<FencedInvocation>,
+}
+
+impl fmt::Debug for FenceBatch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FenceBatch")
+            .field("invocations", &self.invocation_ids())
+            .finish()
+    }
+}
+
+impl FenceBatch {
+    pub(crate) fn new(request: FenceRequest) -> Self {
+        Self {
+            invoker: request.invoker,
+            invocations: vec![request.fenced],
+        }
+    }
+
+    /// Adds `request`, whose Run is this batch's.
+    pub(crate) fn push(&mut self, request: FenceRequest) {
+        self.invocations.push(request.fenced);
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.invocations.len()
+    }
+
+    pub(crate) fn invocation_ids(&self) -> Vec<InvocationId> {
+        self.invocations
+            .iter()
+            .map(|fenced| fenced.admitted.id.clone())
+            .collect()
+    }
+}
+
 #[async_trait]
-impl ChunkWork for FenceWork {
+impl ChunkWork for FenceBatch {
     async fn run(
         &mut self,
         transaction: &mut Transaction<'_>,
         run: &RunRecord,
-        now_unix_nanos: i64,
+        _now_unix_nanos: i64,
     ) -> Result<Vec<OwnedEvent>, Error> {
-        let outcome = self
-            .invoker
-            .fence_in(
-                transaction,
-                run,
-                now_unix_nanos,
-                &self.admitted,
-                &self.progress,
-            )
-            .await?;
-        self.reply.record(outcome);
+        let invoker = &self.invoker;
+        let targets: Vec<FenceTarget<'_>> = self
+            .invocations
+            .iter()
+            .map(FencedInvocation::target)
+            .collect();
+        let shared = SharedFacts::load(
+            transaction,
+            coral_db::RowLock::Shared,
+            &invoker.fence_scope(),
+            invoker.now()?,
+            &targets,
+        )
+        .await?;
+        #[cfg(test)]
+        invoker.observer.fence_checks_loaded().await;
+        // Every awaited read is done: one clock sample decides the batch and
+        // dates every dispatch start it records.
+        let now = invoker.now()?.max(run.accepted_at_unix_nanos);
+        let run_facts = invoker.run_facts(run);
+        let decisions: Vec<Decision> = self
+            .invocations
+            .iter()
+            .zip(&targets)
+            .map(|(fenced, target)| {
+                fence::decide(
+                    &shared,
+                    &run_facts,
+                    &InvocationFacts {
+                        target: *target,
+                        committed_failure: None,
+                        connection_pending_until_unix_nanos: None,
+                        approval: fenced.progress.approval,
+                    },
+                    now,
+                )
+            })
+            .collect();
+        drop(targets);
+        let mut permitted = Vec::new();
+        for (fenced, decision) in self.invocations.iter_mut().zip(decisions) {
+            match decision {
+                Decision::Dispatch => permitted.push(fenced.admitted.id.clone()),
+                Decision::Deny(failure) => {
+                    fenced.reply.record(FenceOutcome::Rejected(failure.into()));
+                }
+                Decision::RefreshRequired => fenced.reply.record(FenceOutcome::RefreshRequired),
+                Decision::RunTerminated => fenced.reply.record(FenceOutcome::RunTerminated),
+                // The gate records no pending request; a wait here means the
+                // policy now asks for a decision the Invocation never got.
+                Decision::Wait { .. } => fenced.reply.record(FenceOutcome::Rejected(
+                    CoralFailure::ApprovalRequired.into(),
+                )),
+            }
+        }
+        let started = invocation_repository::mark_dispatch_started_batch(
+            transaction,
+            &run.workspace_id,
+            &run.id,
+            &permitted,
+            now,
+        )
+        .await?;
+        for fenced in &mut self.invocations {
+            if !permitted.contains(&fenced.admitted.id) {
+                continue;
+            }
+            fenced
+                .reply
+                .record(if started.contains(&fenced.admitted.id) {
+                    FenceOutcome::Permitted
+                } else {
+                    FenceOutcome::Superseded
+                });
+        }
         Ok(Vec::new())
     }
 
     fn settle(self: Box<Self>, recorded: Result<(), Error>) {
-        self.reply.settle(recorded);
+        for fenced in self.invocations {
+            fenced
+                .reply
+                .settle(recorded.as_ref().copied().map_err(lost_again));
+        }
+    }
+}
+
+/// The loss every Invocation of a batch learns when the chunk did not land:
+/// the owner settles a chunk's work with a lost claim, the Program host's
+/// end, or corruption.
+fn lost_again(error: &Error) -> Error {
+    match error {
+        Error::OwnerLost => Error::OwnerLost,
+        Error::ProgramHostTerminated => Error::ProgramHostTerminated,
+        Error::CorruptData(reason) => Error::CorruptData(reason.clone()),
+        other => Error::InvocationPersistence(other.to_string()),
     }
 }
 

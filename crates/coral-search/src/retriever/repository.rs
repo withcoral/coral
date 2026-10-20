@@ -457,9 +457,7 @@ async fn rank_sqlite(
 /// phrase's words in order, and twice when it is the whole phrase. One
 /// pattern pair serves Postgres's `~` and `SQLite`'s `REGEXP` alike.
 fn phrase_points(binds: &mut Binds, alias: &str, plan: &QueryPlan) -> String {
-    let Some(phrase) = &plan.phrase else {
-        return "0".to_string();
-    };
+    let phrase = &plan.phrase;
     let operator = match binds.system {
         DatabaseSystem::Postgres => "~",
         DatabaseSystem::Sqlite => "REGEXP",

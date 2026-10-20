@@ -6,6 +6,8 @@
 //! - the Run Output Budget, against the owner's exact total;
 //! - the Applied cap on unrecorded output;
 //! - how Events and row work fill chunks, and when a chunk commits;
+//! - which ready Invocations one chunk's Dispatch Fence decides together,
+//!   and that a stop answers the ones not yet committed at once;
 //! - what a lost commit means;
 //! - the owner's liveness. After one lease without a successful commit the
 //!   owner is suspect and answers Program requests only once recorded.
@@ -16,6 +18,7 @@
 use std::collections::VecDeque;
 
 use crate::engine::{ExecutionCompletion, ProgramPackage};
+use crate::invocation::{FenceBatch, FenceRequest};
 use crate::run_repository::{OwnedEvent, OwnedEventKind};
 use crate::termination::ShutdownAction;
 use crate::{CoralFailure, Error};
@@ -385,6 +388,45 @@ impl OwnerState {
         Vec::new()
     }
 
+    /// A ready Invocation asks for the Dispatch Fence: it joins the batch of
+    /// the open chunk, which commits when free. A Run that no longer takes
+    /// Program requests (stopped, past its deadline in owner memory) answers
+    /// at once, without the database.
+    fn fence(&mut self, request: Box<FenceRequest>, now_unix_nanos: i64) -> Vec<Effect> {
+        if !self.accepts_program_requests(now_unix_nanos) {
+            return vec![Effect::Abandon(
+                Box::new(FenceBatch::new(*request)),
+                Error::ProgramHostTerminated,
+            )];
+        }
+        self.open.push_fence(*request);
+        if self.open.is_full() {
+            self.close_open();
+        }
+        Vec::new()
+    }
+
+    /// A stop reached the owner: every fence request not yet committed is
+    /// answered at once as terminated, so no dispatch starts after it. A
+    /// fence in flight returns on its own; the pre-send check ends what it
+    /// permitted.
+    fn stop(&mut self) -> Vec<Effect> {
+        self.stop_requested = true;
+        let mut effects = Vec::new();
+        for chunk in self
+            .closed
+            .iter_mut()
+            .chain(std::iter::once(&mut self.open))
+        {
+            if let Some(batch) = chunk.take_fence() {
+                effects.push(Effect::Abandon(batch, Error::ProgramHostTerminated));
+            }
+        }
+        self.closed.retain(|chunk| !chunk.is_empty());
+        effects.push(Effect::TerminateProgram);
+        effects
+    }
+
     /// Commit-when-free: the oldest pending chunk, once nothing is in flight.
     fn commit_when_free(&mut self) -> Vec<Effect> {
         if self.in_flight.is_some()
@@ -458,6 +500,9 @@ impl OwnerState {
                 if let ChunkItem::Work(work) = item {
                     effects.push(Effect::Abandon(work, lost()));
                 }
+            }
+            if let Some(batch) = chunk.fence {
+                effects.push(Effect::Abandon(batch, lost()));
             }
             effects.extend(
                 chunk
@@ -640,6 +685,7 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
             state.invocation_result(bytes, work, reply)
         }
         Message::Work(work) => state.work(work),
+        Message::Fence(request) => state.fence(request, now_unix_nanos),
         Message::ProgramEnded(completion) => state.program_ended(completion),
         Message::Committed => state.committed(now_unix_nanos),
         Message::CommitRejected(rejection) => state.rejected(rejection),
@@ -650,10 +696,7 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
             effects.extend(state.commit_when_free());
             effects
         }
-        Message::Stop => {
-            state.stop_requested = true;
-            vec![Effect::TerminateProgram]
-        }
+        Message::Stop => state.stop(),
         Message::IdleTick => state.idle_tick(),
         Message::Drained => state.commit_when_free(),
     }

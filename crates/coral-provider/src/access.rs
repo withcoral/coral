@@ -11,10 +11,7 @@ pub use inspection::{
     AgentAccountUse, AgentProviderInspection, ProviderBlocker, ProviderReadiness,
     inspect_agent_providers_in_transaction, inspect_provider_readiness_in_transaction,
 };
-pub(crate) use repository::{
-    by_call_root_in_transaction, exact_in_transaction, hold_exact_in_transaction,
-    provider_id_in_transaction,
-};
+pub(crate) use repository::{exact_in_transaction, provider_id_in_transaction};
 #[cfg(test)]
 mod tests;
 
@@ -149,7 +146,7 @@ fn safe_segment(value: &str) -> bool {
 }
 
 /// Credential selection configured for one Provider.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum CredentialRoute {
     /// Invocations use no Account.
     None,
@@ -230,26 +227,21 @@ impl ProviderAccess {
 /// Exact retained configuration evidence; callers hold the Provider before checking.
 pub(crate) enum RetainedProviderVerification {
     Current,
-    Removed,
     RouteChanged,
 }
 
-pub(crate) async fn verify_retained_in_transaction(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
+/// Compares the Provider's current access with the access an Invocation
+/// retained at admission.
+pub(crate) fn verify_retained(
+    current: &ProviderAccess,
     retained: &ProviderAccess,
 ) -> Result<RetainedProviderVerification, Error> {
-    let Some(current) =
-        repository::exact_in_transaction(transaction, workspace_id, retained.id()).await?
-    else {
-        return Ok(RetainedProviderVerification::Removed);
-    };
     if current.credential_route() != retained.credential_route()
         || current.version() != retained.version()
     {
         return Ok(RetainedProviderVerification::RouteChanged);
     }
-    if &current != retained {
+    if current != retained {
         return Err(Error::CorruptData(
             "Provider immutable configuration changed".to_string(),
         ));

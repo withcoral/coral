@@ -924,6 +924,66 @@ async fn expired_approval_cannot_be_approved_and_settles_with_a_safe_failure() {
     assert_eq!(event.state, ApprovalState::Expired);
 }
 
+/// A decision judges the request deadline on time sampled after its gate
+/// took its holds, which can wait behind a policy writer: a decision that
+/// begins before the deadline and passes the gate at it settles Expired,
+/// never Approved.
+#[tokio::test]
+async fn a_decision_that_reaches_the_deadline_under_its_holds_expires() {
+    let fixture = TestModules::new(Arc::new(
+        crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
+    ))
+    .await;
+    let operation = fixture
+        .user_operation("user:late-expiry", "Approval expiry under holds")
+        .await;
+    fixture.require_approval(&operation).await;
+    let approvals = fixture.approvals();
+    let run = fixture.runs.start(&operation.principal, &operation.workspace_id, RunSubmission::new(
+        ProgramSource::parse("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }").unwrap(),
+        RunTimeout::from_millis(900_000).unwrap())).await.unwrap();
+    let request = wait_for_approval(
+        &approvals,
+        &operation.principal,
+        &operation.workspace_id,
+        run.run_id(),
+    )
+    .await;
+    let approval_deadline = 1_000_000;
+    crate::approval_repository::set_approval_deadline(
+        &fixture.database,
+        &operation.workspace_id,
+        &request.id,
+        approval_deadline,
+    )
+    .await
+    .unwrap();
+    // The decision's first clock sample is one nanosecond before the deadline;
+    // the sample after the gate's holds is at it.
+    let approvals = approvals.with_clock(Arc::new(TestClock::starting_at(approval_deadline - 1)));
+    let expired = approvals
+        .decide(
+            &operation.principal,
+            &operation.workspace_id,
+            &request.id,
+            ApprovalDecision::Approve,
+            None,
+            &TraceId::parse(&"f".repeat(32)).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(expired.state, ApprovalState::Expired);
+    assert_eq!(expired.approver, None);
+    let terminal = wait_for_terminal(
+        &fixture.runs,
+        &operation.principal,
+        &operation.workspace_id,
+        run.run_id(),
+    )
+    .await;
+    assert_final_code(&terminal, "approval_expired");
+}
+
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -1501,7 +1561,9 @@ async fn approval_event_fault(fixture: &TestModules, enabled: bool) {
 /// Holds the fence and, when set, moves time to `expire_at_checks` once the fence
 /// has loaded its final checks.
 struct ApprovalFenceExpiry {
-    gate: Arc<FenceGate>,
+    /// Holds the Invocation as it is about to wait for the decision.
+    wait: Arc<FenceGate>,
+    fence: Arc<FenceGate>,
     clock: Arc<TestClock>,
     expire_at_checks: Option<i64>,
 }
@@ -1509,23 +1571,28 @@ struct ApprovalFenceExpiry {
 #[async_trait]
 impl InvocationObserver for ApprovalFenceExpiry {
     fn fence_attempt_finished(&self, permit: bool, durable_start: bool) {
-        self.gate.fence_attempt_finished(permit, durable_start);
+        self.fence.fence_attempt_finished(permit, durable_start);
+    }
+
+    async fn approval_waiting(&self) -> Result<(), Error> {
+        self.wait.before_fence().await
     }
 
     async fn before_fence(&self) -> Result<(), Error> {
-        self.gate.before_fence().await
+        self.fence.before_fence().await
     }
 
-    fn fence_checks_loaded(&self) {
+    async fn fence_checks_loaded(&self) {
         if let Some(at) = self.expire_at_checks {
             self.clock.next.store(at, Ordering::SeqCst);
         }
     }
 }
 
-/// An approved Invocation cannot dispatch once its approval expires, whether the
-/// approval expired before the fence or while the fence loaded its final checks.
-/// The approval itself stays approved.
+/// An approved Invocation cannot dispatch once its approval expires, whether
+/// the approval expired before the held gate read it or, with the deadline
+/// the gate recorded in owner memory, while the fence loaded its final
+/// checks. The approval itself stays approved.
 #[tokio::test]
 async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
     const APPROVAL_DEADLINE: i64 = 1_000_000;
@@ -1536,9 +1603,11 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
             upstream.clone(),
         )
         .await;
-        let (gate, release) = FenceGate::blocking();
+        let (wait, release_wait) = FenceGate::blocking();
+        let (fence, release_fence) = FenceGate::blocking();
         fixture.runs.invocation_observer = Arc::new(ApprovalFenceExpiry {
-            gate: gate.clone(),
+            wait: wait.clone(),
+            fence: fence.clone(),
             clock: fixture.clock.clone(),
             expire_at_checks: during_final_checks.then_some(APPROVAL_DEADLINE),
         });
@@ -1555,6 +1624,21 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
             run.run_id(),
         )
         .await;
+        wait_until(|| wait.entered()).await;
+        // Isolate approval expiry from the longer Run and worker-claim deadlines.
+        // While the fence loads its checks, the deadline the gate records is
+        // the one the fence's clock sample passes; before the gate, the
+        // deadline has already passed when the gate reads the approval.
+        if during_final_checks {
+            crate::approval_repository::set_approval_deadline(
+                &fixture.database,
+                &operation.workspace_id,
+                &request.id,
+                APPROVAL_DEADLINE,
+            )
+            .await
+            .unwrap();
+        }
         approvals
             .decide(
                 &operation.principal,
@@ -1566,22 +1650,21 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
             )
             .await
             .unwrap();
-        wait_until(|| gate.entered()).await;
-        // Isolate approval expiry from the longer Run and worker-claim deadlines.
-        let deadline = if during_final_checks {
-            APPROVAL_DEADLINE
-        } else {
-            fixture.clock.next.load(Ordering::SeqCst)
-        };
-        crate::approval_repository::set_approval_deadline(
-            &fixture.database,
-            &operation.workspace_id,
-            &request.id,
-            deadline,
-        )
-        .await
-        .unwrap();
-        release.send(()).unwrap();
+        if !during_final_checks {
+            crate::approval_repository::set_approval_deadline(
+                &fixture.database,
+                &operation.workspace_id,
+                &request.id,
+                fixture.clock.next.load(Ordering::SeqCst),
+            )
+            .await
+            .unwrap();
+        }
+        release_wait.send(()).unwrap();
+        if during_final_checks {
+            wait_until(|| fence.entered()).await;
+        }
+        release_fence.send(()).unwrap();
         let terminal = wait_for_terminal(
             &fixture.runs,
             &operation.principal,
@@ -1589,7 +1672,7 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
             run.run_id(),
         )
         .await;
-        gate.fences.assert_no_dispatch();
+        fence.fences.assert_no_dispatch();
         assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
         assert_final_code(&terminal, "approval_expired");
         assert_eq!(

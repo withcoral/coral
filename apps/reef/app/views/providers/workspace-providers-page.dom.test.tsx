@@ -63,7 +63,12 @@ function renderPage({
   // The route re-renders the page with what the URL now selects.
   const show = async (selected: OperationView | null, owner = providerOf(selected)) => {
     element = page(selected, owner)
-    await act(async () => router.navigate(selected?.path ?? `/workspaces/demo/providers/${owner}`))
+    await act(async () =>
+      router.navigate(
+        selected?.path ??
+          (owner ? `/workspaces/demo/providers/${owner}` : '/workspaces/demo/providers'),
+      ),
+    )
   }
   return { show, router }
 }
@@ -137,12 +142,11 @@ async function settle() {
   })
 }
 
-// Catches: provider tabs coming back, or a provider without operations
-// dropping out of the table and taking its settings with it.
+// Catches: a provider without operations dropping out of the table and
+// taking its settings with it.
 test('lists every provider in one table, and keeps an empty one with its settings', () => {
   const empty = provider('00000000-0000-4000-8000-000000000003', 'Empty API', 'empty')
   renderPage({ providers: [github, empty] })
-  expect(screen.queryByRole('tab')).not.toBeInTheDocument()
   expect(providerGroups()).toEqual(['Empty API', 'GitHub'])
   expect(within(table()).getByRole('rowgroup', { name: 'Empty API' })).toHaveTextContent(
     'No operations yet. Settings remain available.',
@@ -164,6 +168,57 @@ test('nests each operation group inside its provider group', () => {
     .map((row) => row.getAttribute('aria-level'))
     .filter(Boolean)
   expect(levels).toEqual(['1', '2', '2', '1', '2'])
+})
+
+// Catches: a collapsed heading that still lists its rows or lets the cursor
+// into them, a heading checkbox that drops the members it hides, or a filter
+// that opens a collapsed provider or drops its match count.
+test('a collapsed heading hides its rows but still counts and selects them', async () => {
+  const grouped = provider(github.id, 'GitHub', 'github', [
+    ['repos.get', 'repos'],
+    ['issues.list', 'issues'],
+    ['issues.create', 'issues'],
+  ])
+  renderPage({ providers: [grouped, weather] })
+  await user.click(screen.getByRole('button', { name: 'Collapse issues' }))
+  expect(rowNames()).toEqual(['repos.get', 'getForecast'])
+  expect(screen.getByRole('button', { name: 'Expand issues' })).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  )
+  // The cursor stops on the collapsed heading and steps over its rows.
+  await user.keyboard('{ArrowDown}{ArrowDown}')
+  expect(cursorName()).toBe('issues')
+  await user.keyboard('{ArrowDown}')
+  expect(cursorName()).toBe('repos')
+
+  await user.click(checkbox('Select issues operations'))
+  expect(selectionCount()).toBe('2 selected')
+
+  await user.click(screen.getByRole('button', { name: 'Collapse GitHub' }))
+  await filterOperations('issues')
+  expect(rowNames()).toEqual([])
+  const heading = within(table()).getByRole('rowgroup', { name: 'GitHub' })
+  expect(within(heading).getByText('2 of 3 operations')).toBeInTheDocument()
+
+  await filterOperations('')
+  await user.click(screen.getByRole('button', { name: 'Expand GitHub' }))
+  await user.click(screen.getByRole('button', { name: 'Expand issues' }))
+  expect(rowNames()).toEqual(['issues.create', 'issues.list', 'repos.get', 'getForecast'])
+})
+
+// Catches: an operation route into a collapsed provider that leaves its row
+// out, so the reveal finds nothing, or that clears the collapse for good.
+test('opening an operation shows its row inside a collapsed provider', async () => {
+  const { show } = renderPage()
+  await user.click(screen.getByRole('button', { name: 'Collapse GitHub' }))
+  expect(rowNames()).toEqual(['getForecast'])
+
+  await show(github.operations[1]!)
+  expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
+
+  await show(null, null)
+  expect(rowNames()).toEqual(['getForecast'])
 })
 
 // Catches: operation groups sorted by code point, which puts "Beta" before
@@ -219,33 +274,48 @@ test('policy forms submit the workspace-local provider identifier, not an instal
   }
 })
 
-// Catches: the table keeping providers the rail filter took out, that filter
-// dropping the selection under those providers, or a rail entry's Show only
-// button keeping another provider whose name contains its name.
-test('the rail filter narrows the table to the same providers', async () => {
-  const enterprise = provider('00000000-0000-4000-8000-000000000003', 'GitHub Enterprise', 'ghe', [
-    'gists.list',
-  ])
-  renderPage({ providers: [github, enterprise, weather] })
+const rail = () => screen.getByRole('navigation', { name: 'installed providers' })
+const tabLink = (name: string) =>
+  within(rail()).getByRole('link', { name: new RegExp(`${name}( \\d+)?$`) })
+
+// Catches: a tab showing other providers, a change of tab dropping the
+// selection, or the rail filter narrowing the table instead of the rail.
+test('each rail entry is a tab, and all providers lists every one', async () => {
+  const { router } = renderPage()
+  expect(tabLink('All providers')).toHaveAttribute('aria-current', 'page')
+  expect(providerGroups()).toEqual(['GitHub', 'Weather'])
   await user.click(checkbox('Select repos.get'))
-  expect(providerGroups()).toEqual(['GitHub', 'GitHub Enterprise', 'Weather'])
 
-  await user.click(screen.getByRole('button', { name: 'Show only GitHub' }))
-  expect(screen.getByLabelText('Filter providers')).toHaveValue('^GitHub$')
-  expect(providerGroups()).toEqual(['GitHub'])
-
-  await filterProviders('')
-  await user.click(screen.getByRole('button', { name: 'Show only Weather' }))
+  await user.click(tabLink('Weather'))
+  expect(router.state.location.pathname).toBe(weather.path)
+  expect(tabLink('Weather')).toHaveAttribute('aria-current', 'page')
   expect(providerGroups()).toEqual(['Weather'])
   expect(rowNames()).toEqual(['getForecast'])
   expect(selectionCount()).toBe('1 selected')
 
-  await filterProviders('nothing')
-  expect(providerGroups()).toEqual([])
-  expect(screen.getByRole('table', { name: 'Operations' })).toHaveTextContent('No providers match.')
+  await filterProviders('git')
+  expect(within(rail()).queryByRole('link', { name: /Weather$/ })).toBeNull()
+  expect(providerGroups()).toEqual(['Weather'])
 
-  await filterProviders('')
+  await user.click(tabLink('All providers'))
+  expect(providerGroups()).toEqual(['GitHub', 'Weather'])
   expect(checkbox('Select repos.get')).toBeChecked()
+})
+
+// Catches: an operation route from another provider opening its drawer over a
+// tab that leaves its row out.
+test('an operation route keeps a tab that lists it, and otherwise opens its provider', async () => {
+  const { show } = renderPage()
+  await show(null, github.id)
+  await show(github.operations[0]!)
+  expect(rowNames()).toEqual(['issues.list', 'repos.get'])
+
+  await show(weather.operations[0]!)
+  expect(rowNames()).toEqual(['getForecast'])
+
+  await show(null, null)
+  await show(github.operations[0]!)
+  expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
 })
 
 // Catches: the filter dropping selections it hides, or Apply leaving out
@@ -367,7 +437,8 @@ test('selection rolls up to its provider and the header selects every match', as
 // as Coral's do.
 test('closing the drawer leaves the table where the reader left it', async () => {
   const linked = github.operations[1]!
-  const { show } = renderPage({ entry: linked.path, selectedOperation: linked })
+  const { show } = renderPage()
+  await show(linked)
   // The table's own scroll maths is covered beside `Table.useVirtualRows`;
   // this counts only the scrolls the page asks of it.
   const port = screen.getByRole('table', { name: 'Operations', hidden: true })
@@ -376,8 +447,9 @@ test('closing the drawer leaves the table where the reader left it', async () =>
     scrolls.push(options.top!)
   }) as typeof port.scrollTo
 
-  await show(null, providerOf(linked))
+  await show(null, null)
   expect(scrolls).toEqual([])
+  expect(providerGroups()).toEqual(['GitHub', 'Weather'])
 
   // Opening another operation's drawer reveals its row.
   await show(weather.operations[0]!)
@@ -388,7 +460,8 @@ test('closing the drawer leaves the table where the reader left it', async () =>
 // filter did not match, and the summary counting it as hidden.
 test('the drawer operation stays listed when the filter would hide it', async () => {
   const linked = github.operations[1]!
-  renderPage({ entry: linked.path, selectedOperation: linked })
+  const { show } = renderPage()
+  await show(linked)
   await filterOperations('forecast')
   expect(rowNames()).toEqual(['repos.get', 'getForecast'])
 
@@ -611,31 +684,52 @@ test('the find shortcut focuses the operation filter', async () => {
 })
 
 const cursorRow = () => table().querySelector<HTMLElement>('[data-active]')
-const cursorName = () => cursorRow()?.querySelector('a')?.textContent ?? null
+// A heading names its row by its toggle; an operation by its link.
+const cursorName = () => {
+  const row = cursorRow()
+  if (!row) return null
+  if (!row.hasAttribute('aria-level')) return row.querySelector('a')?.textContent ?? null
+  const toggle = row.querySelector('button[aria-expanded]')
+  return toggle?.getAttribute('aria-label')?.replace(/^(Collapse|Expand) /, '') ?? null
+}
 // Catches: the arrow keys skipping operations, stopping in a heading, losing
 // the search box's typing, or acting through a control that reads the key.
 test('arrow keys move a cursor through the listed operations', async () => {
   // A policy change stays in flight; only the keys matter here.
   renderPage({ action: () => new Promise(() => {}) })
   expect(cursorName()).toBeNull()
-  await user.keyboard('{ArrowDown}')
-  expect(cursorName()).toBe('issues.list')
-  await user.keyboard('{ArrowDown}{ArrowDown}')
-  expect(cursorName()).toBe('getForecast')
-  // The last operation holds the cursor.
+  // Each heading is a stop, before the rows under it.
+  const stops: (string | null)[] = []
+  for (let i = 0; i < 7; i++) {
+    await user.keyboard('{ArrowDown}')
+    stops.push(cursorName())
+  }
+  expect(stops).toEqual([
+    'GitHub',
+    'Other',
+    'issues.list',
+    'repos.get',
+    'Weather',
+    'Other',
+    'getForecast',
+  ])
+  // The last row holds the cursor.
   await user.keyboard('{ArrowDown}')
   expect(cursorName()).toBe('getForecast')
 
   // From the search box, ↑ and ↓ move through what the filter leaves.
   await user.click(screen.getByLabelText('Filter operations'))
   await user.keyboard('repos')
+  // A provider with no match keeps its heading, the last stop.
+  await user.keyboard('{ArrowUp}')
+  expect(cursorName()).toBe('Weather')
   await user.keyboard('{ArrowUp}')
   expect(cursorName()).toBe('repos.get')
   expect(screen.getByLabelText('Filter operations')).toHaveValue('repos')
 
   // A policy toggle keeps its own arrow keys.
   await filterOperations('')
-  await user.click(within(rowOf('issues.list')).getByRole('radio', { name: 'Needs approval' }))
+  await user.click(within(rowOf('repos.get')).getByRole('radio', { name: 'Needs approval' }))
   await user.keyboard('{ArrowDown}')
   expect(cursorName()).toBe('repos.get')
 })
@@ -651,7 +745,7 @@ test('keys act on the cursor operation', async () => {
       return { error: null, message: 'ok', operations: [] }
     },
   })
-  await user.keyboard('{ArrowDown}{ArrowDown}')
+  await user.keyboard('{ArrowDown>4/}')
   await user.keyboard(' ')
   expect(checkbox('Select repos.get')).toBeChecked()
   expect(checkbox('Select issues.list')).not.toBeChecked()
@@ -668,16 +762,96 @@ test('keys act on the cursor operation', async () => {
   expect(sent).toHaveLength(1)
 })
 
+// Catches: a cursor left by a closed drawer that a click elsewhere cannot clear.
+test('closing the drawer keeps the cursor until a click elsewhere', async () => {
+  renderPage()
+  await user.keyboard('{ArrowDown>3/}{Enter}')
+  await settle()
+  await user.keyboard('{Escape}')
+  await settle()
+  expect(cursorName()).toBe('issues.list')
+  // A click in the cursor's own row keeps it.
+  await user.click(checkbox('Select issues.list'))
+  expect(cursorName()).toBe('issues.list')
+  await user.click(screen.getByRole('heading', { name: 'Providers' }))
+  expect(cursorName()).toBeNull()
+})
+
+// Catches: an arrow key pressed while the closing drawer still animates out
+// moving the drawer to the next operation and opening it again.
+test('an arrow key right after Escape moves the cursor, not the drawer', async () => {
+  const { router } = renderPage()
+  await user.keyboard('{ArrowDown>3/}{Enter}')
+  await settle()
+  await user.keyboard('{Escape}{ArrowDown}')
+  await settle()
+  expect(router.state.location.pathname).toBe('/workspaces/demo/providers')
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(cursorName()).toBe('repos.get')
+})
+
+// Catches: a drawer closed with the pointer losing the row it showed.
+test('closing the drawer with the pointer keeps its row as the cursor', async () => {
+  const { router } = renderPage()
+  await user.click(within(rowOf('issues.list')).getByRole('link', { name: 'issues.list' }))
+  await settle()
+  // The drawer moves on to the next operation.
+  await user.keyboard('{ArrowDown}')
+  await settle()
+  await user.click(screen.getByRole('button', { name: 'Close' }))
+  await settle()
+  expect(router.state.location.pathname).toBe('/workspaces/demo/providers')
+  expect(cursorName()).toBe('repos.get')
+  expect(cursorRow()).toHaveFocus()
+  await user.keyboard('{ArrowDown}')
+  expect(cursorName()).toBe('Weather')
+})
+
 // Catches: Enter not opening the cursor's operation, or the open drawer
-// trapping ↑ and ↓ instead of moving to the next operation.
+// trapping ↑ and ↓ instead of moving to the next operation, or stopping on a
+// heading it cannot show.
 test('Enter opens the cursor operation and arrows move the open drawer', async () => {
   const { router } = renderPage()
-  await user.keyboard('{ArrowDown}{Enter}')
+  await user.keyboard('{ArrowDown>3/}{Enter}')
   await settle()
   expect(router.state.location.pathname).toBe(github.operations[0]!.path)
   await user.keyboard('{ArrowDown}')
   await settle()
   expect(router.state.location.pathname).toBe(github.operations[1]!.path)
+})
+
+// Catches: a heading the keys cannot collapse or expand, or a key on a
+// heading that acts on an operation instead.
+test('keys collapse and expand the cursor heading', async () => {
+  renderPage()
+  await user.keyboard('{ArrowDown}')
+  expect(cursorName()).toBe('GitHub')
+  await user.keyboard(' ')
+  expect(rowNames()).toEqual(['getForecast'])
+  await user.keyboard('{ArrowRight}')
+  expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
+  // → on an open heading leaves it open.
+  await user.keyboard('{ArrowRight}')
+  expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
+  await user.keyboard('{ArrowLeft}')
+  expect(rowNames()).toEqual(['getForecast'])
+  await user.keyboard('{Enter}')
+  expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
+  expect(cursorName()).toBe('GitHub')
+})
+
+// Catches: the cursor moving while focus stays on the control the reader
+// last clicked, so Enter and Space act on that control instead.
+test('the cursor row takes focus, so Enter and Space reach it', async () => {
+  const { router } = renderPage()
+  await user.click(screen.getByRole('link', { name: /All providers/ }))
+  await user.keyboard('{ArrowDown>3/}')
+  expect(cursorRow()).toHaveFocus()
+  await user.keyboard(' ')
+  expect(checkbox('Select issues.list')).toBeChecked()
+  await user.keyboard('{Enter}')
+  await settle()
+  expect(router.state.location.pathname).toBe(github.operations[0]!.path)
 })
 
 // Catches: Enter on a focused button opening the cursor's drawer instead of
@@ -703,7 +877,7 @@ test('keys act on the cursor operation while the table has focus', async () => {
     },
   })
   table().focus()
-  await user.keyboard('{ArrowDown} ')
+  await user.keyboard('{ArrowDown>3/} ')
   expect(checkbox('Select issues.list')).toBeChecked()
   await user.keyboard('{ArrowLeft}')
   await settle()

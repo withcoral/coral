@@ -43,8 +43,8 @@ pub(crate) struct QueryPlan {
     /// and every word: the `SQLite` `MATCH` phrases.
     pub(super) match_terms: Vec<String>,
     /// The patterns of the longest term, the whole query: the phrase-first
-    /// order key. `None` when that term holds no letter or digit.
-    pub(super) phrase: Option<PhrasePatterns>,
+    /// order key.
+    pub(super) phrase: PhrasePatterns,
     /// Runs of alphanumerics and `_` of at least three characters, typed or
     /// derived.
     pub(crate) words: Vec<String>,
@@ -55,8 +55,9 @@ pub(crate) struct QueryPlan {
 }
 
 impl QueryPlan {
-    /// Builds the plan, or `None` when no term has three characters: the
-    /// ranking is then empty, never a rejection.
+    /// Builds the plan, or `None` when no term has three characters or the
+    /// longest term, the whole query, holds no letter or digit: the ranking
+    /// is then empty, never a rejection.
     pub(crate) fn build(terms: &[String]) -> Option<Self> {
         let terms = with_compact_variants(terms)
             .into_iter()
@@ -67,7 +68,7 @@ impl QueryPlan {
                 .iter()
                 .max_by_key(|term| term.text.chars().count())?
                 .text,
-        );
+        )?;
         let mut given_words = BTreeSet::new();
         let mut variant_words = BTreeSet::new();
         let mut wordless = BTreeSet::new();

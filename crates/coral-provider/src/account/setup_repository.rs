@@ -22,6 +22,7 @@ enum ProviderSetupCredentials {
     Contract,
     CredentialGeneration,
     EncryptedCredentials,
+    TokenExpiresAtUnixNanos,
     GrantedScope,
     AutomaticRefresh,
     ExpiresAtUnixNanos,
@@ -44,6 +45,7 @@ struct ProvisionalRow {
     contract: String,
     credential_generation: String,
     encrypted_credentials: Option<String>,
+    token_expires_at_unix_nanos: Option<i64>,
     granted_scope: String,
     expires_at_unix_nanos: i64,
     oauth_client: Option<String>,
@@ -75,6 +77,7 @@ pub(crate) async fn load(
                     ProviderSetupCredentials::Contract,
                     ProviderSetupCredentials::CredentialGeneration,
                     ProviderSetupCredentials::EncryptedCredentials,
+                    ProviderSetupCredentials::TokenExpiresAtUnixNanos,
                     ProviderSetupCredentials::GrantedScope,
                     ProviderSetupCredentials::AutomaticRefresh,
                     ProviderSetupCredentials::ExpiresAtUnixNanos,
@@ -193,6 +196,10 @@ pub(crate) async fn scrub(
                 Option::<String>::None,
             )
             .value(
+                ProviderSetupCredentials::TokenExpiresAtUnixNanos,
+                Option::<i64>::None,
+            )
+            .value(
                 ProviderSetupCredentials::PrivateFlow,
                 Option::<String>::None,
             )
@@ -219,6 +226,7 @@ impl ProvisionalRow {
             contract: ProviderCredentialContract::from_storage(&self.contract)?,
             credential_generation: self.credential_generation,
             encrypted_credentials: self.encrypted_credentials,
+            token_expires_at_unix_nanos: self.token_expires_at_unix_nanos,
             granted_scope: self.granted_scope,
             expires_at_unix_nanos: self.expires_at_unix_nanos,
             oauth_client: self
@@ -329,12 +337,17 @@ pub(super) async fn seal_authorization(
     ciphertext: &str,
     granted_scope: &str,
     automatic_refresh: bool,
+    token_expires_at_unix_nanos: Option<i64>,
 ) -> Result<(), Error> {
     use ProviderSetupCredentials as Columns;
     tx.execute(
         Query::update()
             .table(Columns::Table)
             .value(Columns::EncryptedCredentials, Some(ciphertext))
+            .value(
+                Columns::TokenExpiresAtUnixNanos,
+                token_expires_at_unix_nanos,
+            )
             .value(Columns::AutomaticRefresh, i64::from(automatic_refresh))
             .value(Columns::GrantedScope, granted_scope)
             .value(

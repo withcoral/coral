@@ -2,8 +2,8 @@ use coral_db::Transaction;
 
 use crate::{
     AuthenticatedPrincipal, AuthorityAction, Error, UserId, Workspace, WorkspaceAction,
-    WorkspaceId, WorkspaceModule, agent_repository, current_user_workspace_authority, repository,
-    require_active_for_run,
+    WorkspaceEvidence, WorkspaceId, WorkspaceModule, agent_repository,
+    current_user_workspace_authority, repository, require_active_for_run,
 };
 
 /// Live Workspace authority for a Principal's authoring, Run, or dispatch.
@@ -263,7 +263,11 @@ impl WorkspaceModule {
         .await
     }
 
-    /// Rechecks and holds live Principal/Registration authority in the dispatch fence.
+    /// Rechecks live Principal/Registration authority for the Dispatch Fence,
+    /// holding the User's Organization authority row and the Workspace row
+    /// as `lock` says: shared in the fence, so concurrent fences read side by
+    /// side and an authority writer waits for them; none in a read snapshot
+    /// that only decides whether a held check is needed.
     ///
     /// # Errors
     ///
@@ -277,37 +281,63 @@ impl WorkspaceModule {
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         now_unix_nanos: i64,
+        lock: coral_db::RowLock,
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
-        held_principal_authority(
-            transaction,
-            actor,
-            workspace_id,
-            WorkspaceAction::Dispatch,
-            now_unix_nanos,
-        )
-        .await
+        if lock == coral_db::RowLock::None {
+            return principal_authority(
+                transaction,
+                actor,
+                workspace_id,
+                WorkspaceAction::Dispatch,
+                now_unix_nanos,
+            )
+            .await;
+        }
+        // Organization changes and dispatch share the User row, before Workspace;
+        // the shared read is the User read itself.
+        let current_user = match actor.authenticated_user() {
+            Some(user) => Some(
+                crate::organization::share_user(transaction, user.user_id())
+                    .await
+                    .map_err(crate::conceal_missing_user)?,
+            ),
+            None => None,
+        };
+        // Agent lifecycle writes and Membership/Workspace changes hold this row.
+        if !repository::share_workspace(transaction, workspace_id).await? {
+            return Err(Error::WorkspaceNotFound);
+        }
+        match current_user {
+            Some(current_user) => {
+                let evidence = crate::user_workspace_authority(
+                    transaction,
+                    &current_user,
+                    workspace_id,
+                    AuthorityAction::Public(WorkspaceAction::Dispatch),
+                )
+                .await?;
+                Ok(user_evidence(current_user.user_id(), &evidence))
+            }
+            None => {
+                agent_authority(
+                    transaction,
+                    actor,
+                    workspace_id,
+                    WorkspaceAction::Dispatch,
+                    now_unix_nanos,
+                )
+                .await
+            }
+        }
     }
+}
 
-    /// Checks dispatch authority like [`Self::check_dispatch_in_transaction`]
-    /// without holding the User or Workspace. Use it only in a read snapshot, to
-    /// decide whether a held recheck is needed.
-    /// # Errors
-    /// Applies the same authority and lifecycle failures as the held check.
-    pub async fn check_dispatch_in_snapshot(
-        &self,
-        transaction: &mut Transaction<'_>,
-        actor: &AuthenticatedPrincipal,
-        workspace_id: &WorkspaceId,
-        now_unix_nanos: i64,
-    ) -> Result<PrincipalWorkspaceEvidence, Error> {
-        principal_authority(
-            transaction,
-            actor,
-            workspace_id,
-            WorkspaceAction::Dispatch,
-            now_unix_nanos,
-        )
-        .await
+fn user_evidence(user_id: &UserId, evidence: &WorkspaceEvidence) -> PrincipalWorkspaceEvidence {
+    PrincipalWorkspaceEvidence {
+        effective_user_role: Some(evidence.effective_role()),
+        membership_user_id: Some(user_id.clone()),
+        workspace: evidence.workspace().clone(),
+        expires_at_unix_nanos: None,
     }
 }
 
@@ -346,13 +376,19 @@ async fn principal_authority(
             AuthorityAction::Public(action),
         )
         .await?;
-        return Ok(PrincipalWorkspaceEvidence {
-            effective_user_role: Some(evidence.effective_role()),
-            membership_user_id: Some(user.user_id().clone()),
-            workspace: evidence.workspace().clone(),
-            expires_at_unix_nanos: None,
-        });
+        return Ok(user_evidence(user.user_id(), &evidence));
     }
+    agent_authority(transaction, actor, workspace_id, action, now).await
+}
+
+/// The live Agent/Registration authority of an Agent actor in the Workspace.
+async fn agent_authority(
+    transaction: &mut Transaction<'_>,
+    actor: &AuthenticatedPrincipal,
+    workspace_id: &WorkspaceId,
+    action: WorkspaceAction,
+    now: i64,
+) -> Result<PrincipalWorkspaceEvidence, Error> {
     let authenticated = actor.agent_registration().ok_or(Error::WorkspaceNotFound)?;
     if authenticated.workspace_id() != workspace_id {
         return Err(Error::WorkspaceNotFound);

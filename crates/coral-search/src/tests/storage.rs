@@ -1,107 +1,14 @@
-//! Search-owned storage at boot: the backend stream, its ledger, and drift.
+//! The search steps of the migration chain: the text index each backend keeps
+//! beside `search_entities`, and the upgrade of a Postgres index built before
+//! names split camelCase.
 
-use coral_db::{Database, DatabaseSystem};
+use coral_db::Database;
 use coral_functions::{SavedFunctionChangeContext, SavedFunctionPath};
-use coral_test_support::TestDatabase;
 use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceId};
 use sea_query::{Alias, Expr, ExprTrait as _, InsertStatement, OnConflict, Order, Query};
 use wiremock::MockServer;
 
 use super::{TestModules, organization_user, trace};
-use crate::{StorageError, prepare_storage};
-
-#[tokio::test]
-async fn a_stream_step_runs_once_across_two_boots() {
-    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
-    let database = fixture.database();
-
-    prepare_storage(&database).await.expect("first boot");
-    prepare_storage(&database)
-        .await
-        .expect("second boot must not run the step again");
-
-    assert_eq!(ledger(&database).await, every_version(&database));
-}
-
-#[tokio::test]
-async fn a_recorded_stream_version_newer_than_the_binary_refuses_boot() {
-    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
-    let database = fixture.database();
-    prepare_storage(&database).await.expect("first boot");
-    let supported = supported_version(&database);
-    let newer = supported + 1;
-    fixture
-        .execute_fixture_sql(&format!(
-            "INSERT INTO search_migrations (stream, version, applied_at_unix_nanos) \
-             VALUES ('{}', {newer}, 0)",
-            stream(&database)
-        ))
-        .await
-        .expect("record a newer stream version");
-
-    let error = prepare_storage(&database)
-        .await
-        .expect_err("a newer search schema must refuse boot");
-
-    assert!(
-        matches!(
-            error,
-            StorageError::UnsupportedStreamVersion { recorded, supported: refused_at, .. }
-                if recorded == newer && refused_at == supported
-        ),
-        "unexpected error: {error}"
-    );
-    let message = error.to_string();
-    assert!(message.contains(&format!("version {newer}")), "{message}");
-    assert!(
-        message.contains(&format!("version {supported}")),
-        "{message}"
-    );
-    let mut expected = every_version(&database);
-    expected.push((stream(&database), newer));
-    assert_eq!(
-        ledger(&database).await,
-        expected,
-        "a refused boot records nothing"
-    );
-}
-
-#[tokio::test]
-async fn an_object_that_exists_before_the_stream_fails_the_step_and_records_nothing() {
-    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
-    let database = fixture.database();
-    let drift = match database.system() {
-        DatabaseSystem::Sqlite => "search_entities_fts",
-        DatabaseSystem::Postgres => "search_terms",
-    };
-    fixture
-        .execute_fixture_sql(&format!("CREATE TABLE {drift} (id TEXT NOT NULL)"))
-        .await
-        .expect("create an object the stream owns");
-
-    let error = prepare_storage(&database)
-        .await
-        .expect_err("an existing stream object must fail the step, not be recorded");
-
-    assert!(
-        matches!(error, StorageError::StreamStep { version: 1, .. }),
-        "unexpected error: {error}"
-    );
-    assert!(
-        error.to_string().contains("already exists"),
-        "the step must fail on the existing object: {error}"
-    );
-    assert_eq!(ledger(&database).await, Vec::new());
-
-    fixture
-        .execute_fixture_sql(&format!("DROP TABLE {drift}"))
-        .await
-        .expect("remove the drifted object");
-    prepare_storage(&database)
-        .await
-        .expect("the failed step left nothing behind, so it now runs in full");
-    assert_eq!(ledger(&database).await, every_version(&database));
-}
 
 #[tokio::test]
 async fn sqlite_triggers_keep_the_text_index_in_step_with_search_entities() {
@@ -287,16 +194,24 @@ const NAMES: &str = r#"{
 }"#;
 
 #[tokio::test]
-async fn postgres_step_two_splits_indexed_names_and_restates_lengths_and_statistics() {
+async fn postgres_camel_case_step_splits_indexed_names_and_restates_lengths_and_statistics() {
     coral_test_support::database_only!(Postgres);
-    let modules = TestModules::before_prepare_storage().await;
+    // Every step but 31 and 32, the two under test. This binary publishes
+    // the Provider, and its repositories need every column a later step
+    // outside Universal Search adds, so the plan skips only the steps the
+    // test applies later. Step 33 drops the stream's ledger, which 31 and 32
+    // do not read.
+    let before_camel_case = coral_test_support::edited_migration_plan(|migrations| {
+        migrations
+            .into_iter()
+            .filter(|migration| !(31..=32).contains(&migration.version))
+            .collect()
+    });
+    let modules = TestModules::with_plan(&before_camel_case).await;
     let database = modules.search.database.clone();
-    crate::storage::prepare_storage_through(&database, 1)
-        .await
-        .expect("boot at stream version 1");
-    // This binary's statistics count also writes the watermark that step 3
-    // adds. The columns exist only while it indexes, so the database then
-    // has the shape a version 1 binary left.
+    // This binary's statistics count also writes the watermark that step 32
+    // adds. The columns exist only while it indexes, so the search tables
+    // then have the shape a binary at step 30 left.
     modules
         .fixture
         .execute_fixture_sql(
@@ -324,9 +239,10 @@ async fn postgres_step_two_splits_indexed_names_and_restates_lengths_and_statist
     assert!(!vector_matches(&database, &doc("listComments"), "comments:A").await);
     let indexed = Statistics::read(&database, &workspace).await;
 
-    prepare_storage(&database)
+    database
+        .migrate(coral_db::migration_plan())
         .await
-        .expect("apply steps 2 and 3");
+        .expect("apply the later steps");
 
     assert!(vector_matches(&database, &doc("listComments"), "comments:A").await);
     let upgraded = Statistics::read(&database, &workspace).await;
@@ -666,40 +582,4 @@ async fn vector_matches(database: &Database, doc: &str, query: &str) -> bool {
         .unwrap()
         .expect("the Operation row");
     matches
-}
-
-/// The newest step of each backend's stream.
-fn supported_version(database: &Database) -> i64 {
-    match database.system() {
-        DatabaseSystem::Sqlite => 1,
-        DatabaseSystem::Postgres => 3,
-    }
-}
-
-/// The ledger rows of a stream applied in full.
-fn every_version(database: &Database) -> Vec<(String, i64)> {
-    (1..=supported_version(database))
-        .map(|version| (stream(database), version))
-        .collect()
-}
-
-fn stream(database: &Database) -> String {
-    match database.system() {
-        DatabaseSystem::Sqlite => "sqlite".to_string(),
-        DatabaseSystem::Postgres => "postgres".to_string(),
-    }
-}
-
-async fn ledger(database: &Database) -> Vec<(String, i64)> {
-    database
-        .fetch_all(
-            Query::select()
-                .columns([Alias::new("stream"), Alias::new("version")])
-                .from(Alias::new("search_migrations"))
-                .order_by(Alias::new("stream"), Order::Asc)
-                .order_by(Alias::new("version"), Order::Asc)
-                .to_owned(),
-        )
-        .await
-        .expect("read the search stream ledger")
 }

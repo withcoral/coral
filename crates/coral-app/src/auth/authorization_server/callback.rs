@@ -297,9 +297,6 @@ mod tests {
     /// Opens the migrated database a callback provisions logins into.
     async fn database() -> (Arc<Database>, TestDatabase) {
         let (database, fixture) = database_with(coral_db::migration_plan()).await;
-        coral_search::prepare_storage(database.as_ref())
-            .await
-            .expect("prepare search storage");
         (database, fixture)
     }
 

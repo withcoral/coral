@@ -118,7 +118,6 @@ impl Fixture {
     async fn with_session_auth(enabled: bool) -> Self {
         let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let database = fixture.database();
-        coral_search::prepare_storage(&database).await.unwrap();
         let issuer = SessionTokenIssuer::new(
             Some("https://auth.example.test"),
             coral_test_support::p256_pkcs8(),

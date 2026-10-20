@@ -6,6 +6,7 @@ use std::fmt;
 use async_trait::async_trait;
 use coral_db::Transaction;
 
+use crate::invocation::{FenceBatch, FenceRequest};
 use crate::lifecycle::RunRecord;
 use crate::run_repository::OwnedEvent;
 use crate::{CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, Error};
@@ -15,6 +16,11 @@ use super::handle::Reply;
 /// Row work items per chunk. Each one queries the database inside the
 /// commit, so this keeps a commit from holding the Run row for too long.
 pub(crate) const CHUNK_WORK_CAP: usize = 32;
+
+/// Invocations one chunk's Dispatch Fence decides at most: the Fan-out
+/// Limit's number. The fence reads its facts once whatever the batch holds;
+/// the bound keeps its one row statement and its decisions small.
+pub(crate) const FENCE_BATCH_CAP: usize = 32;
 
 /// A database write that the owner runs inside a chunk's commit transaction,
 /// such as inserting an Invocation or recording its result. After the commit,
@@ -55,6 +61,10 @@ impl fmt::Debug for ChunkItem {
 #[derive(Debug, Default)]
 pub(crate) struct ChunkBuild {
     pub(crate) items: Vec<ChunkItem>,
+    /// The chunk's Dispatch Fence: every ready Invocation that asked for it
+    /// while this chunk was open, decided together after the row work. It
+    /// writes no Event, so it has no place among the items.
+    pub(crate) fence: Option<Box<FenceBatch>>,
     /// Program requests answered once this chunk is recorded.
     pub(crate) waiters: Vec<Reply>,
     /// Events the owner counted at apply time; row work adds its own inside
@@ -68,14 +78,34 @@ pub(crate) struct ChunkBuild {
 
 impl ChunkBuild {
     pub(crate) fn is_empty(&self) -> bool {
-        self.items.is_empty() && self.waiters.is_empty()
+        self.items.is_empty() && self.fence.is_none() && self.waiters.is_empty()
+    }
+
+    /// Adds `request` to the chunk's fence batch, opening it as one row work
+    /// item when the chunk has none yet.
+    pub(crate) fn push_fence(&mut self, request: FenceRequest) {
+        if let Some(batch) = &mut self.fence {
+            batch.push(request);
+        } else {
+            self.fence = Some(Box::new(FenceBatch::new(request)));
+            self.works += 1;
+        }
+    }
+
+    /// Takes the chunk's fence batch out, leaving the rest of the chunk.
+    pub(crate) fn take_fence(&mut self) -> Option<Box<FenceBatch>> {
+        let batch = self.fence.take();
+        if batch.is_some() {
+            self.works -= 1;
+        }
+        batch
     }
 
     /// Whether an item of `events` Events and `bytes` bytes fits beside what
-    /// the chunk already holds. An empty chunk takes any item: one Event
-    /// larger than the bytes cap commits alone.
+    /// the chunk already holds. A chunk with no item and no fence batch takes
+    /// any item: one Event larger than the bytes cap commits alone.
     pub(crate) fn fits(&self, events: usize, bytes: usize) -> bool {
-        self.items.is_empty()
+        (self.items.is_empty() && self.fence.is_none())
             || (self.events.saturating_add(events) <= CHUNK_EVENTS_CAP
                 && self.bytes.saturating_add(bytes) <= CHUNK_BYTES_CAP)
     }
@@ -85,6 +115,10 @@ impl ChunkBuild {
         self.events >= CHUNK_EVENTS_CAP
             || self.bytes >= CHUNK_BYTES_CAP
             || self.works >= CHUNK_WORK_CAP
+            || self
+                .fence
+                .as_ref()
+                .is_some_and(|batch| batch.len() >= FENCE_BATCH_CAP)
     }
 
     pub(crate) fn push(&mut self, item: ChunkItem, events: usize, bytes: usize) {

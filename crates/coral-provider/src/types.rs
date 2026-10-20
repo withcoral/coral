@@ -551,8 +551,6 @@ pub enum InvocationOperationVerification {
     Current,
     /// The exact Provider still exists but its route version changed.
     CredentialRouteChanged,
-    /// The current Provider no longer permits dispatch.
-    ProviderUnavailable,
     /// Provider, Generation, or Operation authority was lost.
     AuthorityLost,
 }

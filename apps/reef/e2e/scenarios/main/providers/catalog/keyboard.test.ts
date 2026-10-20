@@ -139,5 +139,48 @@ test('The keyboard drives the operations table, its drawer, and its policy', asy
         await page.getByRole('checkbox', { name: 'Select op001', exact: true }).isChecked(),
       ).toBe(false)
     })
+    await step('↓ right after Escape moves the cursor while the drawer closes', async () => {
+      // The cursor row has focus, so Enter opens its operation.
+      await page.keyboard.press('Enter')
+      const drawer = page.getByRole('dialog', { name: 'op002', exact: true })
+      await page.waitForURL((url) => url.pathname.endsWith('/ops/op002'))
+      // The drawer has finished opening: its keyframe animation has ended.
+      await drawer.evaluate((element) =>
+        Promise.all(element.getAnimations().map((animation) => animation.finished)),
+      )
+      // The drawer is still animating out when ↓ arrives.
+      await page.keyboard.press('Escape')
+      await page.keyboard.press('ArrowDown')
+      await page.getByRole('dialog').waitFor({ state: 'detached' })
+      expect(new URL(page.url()).pathname).toBe(`/workspaces/${workspace}/providers`)
+      await expect.poll(() => cursorName(table)).toBe('op003')
+    })
+    await step('Collapsing a provider you scrolled into keeps its heading in view', async () => {
+      await filter.fill('')
+      await table.evaluate((element) => {
+        element.scrollTop = element.scrollHeight
+      })
+      await heading('Keys').getByRole('button', { name: 'Collapse Keys', exact: true }).click()
+      const expand = heading('Keys').getByRole('button', { name: 'Expand Keys', exact: true })
+      expect(await expand.getAttribute('aria-expanded')).toBe('false')
+      expect(await heading('Keys').locator('a[href*="/ops/"]').count()).toBe(0)
+      // The heading still counts every operation it hides.
+      await heading('Keys').getByText('150 operations', { exact: true }).waitFor()
+      // The heading sits below the table's header, inside the table.
+      const inView = () =>
+        table.evaluate((element) => {
+          const head = element.querySelector('[role="row"]')!.getBoundingClientRect()
+          const keys = [...element.querySelectorAll('[role="rowgroup"]')]
+            .find((group) => group.getAttribute('aria-label') === 'Keys')
+            ?.querySelector('[role="row"][aria-level="1"]')
+            ?.getBoundingClientRect()
+          const bounds = element.getBoundingClientRect()
+          return !!keys && keys.top >= head.bottom - 1 && keys.bottom <= bounds.bottom + 1
+        })
+      await expect.poll(inView).toBe(true)
+      await expand.click()
+      await heading('Keys').getByRole('link', { name: 'op000', exact: true }).waitFor()
+      await expect.poll(inView).toBe(true)
+    })
   })
 })

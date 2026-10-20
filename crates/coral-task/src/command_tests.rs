@@ -51,7 +51,6 @@ impl Fixture {
         )]);
         let fixture = TestDatabase::new(&migrator).await.unwrap();
         let database = fixture.database();
-        coral_search::prepare_storage(&database).await.unwrap();
         let workspaces = WorkspaceModule::new(database.clone());
         let user =
             provision_user(database.clone(), "user:commands", OrganizationRole::Member).await;

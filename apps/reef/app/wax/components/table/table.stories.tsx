@@ -13,7 +13,7 @@ import type { TableDensity, TableGroupHeadings } from './constants'
 import { Container } from './container'
 import { Head } from './head'
 import { LoadMore } from './load-more'
-import { Group } from './group'
+import { Group, GroupToggle } from './group'
 import { Heading } from './heading'
 import { Row } from './row'
 import { Status } from './status'
@@ -401,6 +401,45 @@ export const GroupHeadingCells: Story = {
     await expect(inset('24')).toBe(0)
     await expect(inset('Issues operation group')).toBe(2 * provider)
     await expect(inset('12')).toBe(0)
+  },
+}
+
+/** A heading toggle collapses its group to the heading and expands it again. */
+export const CollapsibleGroup: Story = {
+  render: function Render() {
+    const [collapsed, setCollapsed] = useState(false)
+    return (
+      <Container ariaLabel="Records" columns={[{ label: 'Record', width: 'fill' }]}>
+        <Head />
+        <Group
+          label="Linear provider"
+          collapsed={collapsed}
+          heading={
+            <Cell>
+              <GroupToggle
+                collapsed={collapsed}
+                label="Linear provider"
+                onToggle={() => setCollapsed(!collapsed)}
+              />
+              Linear provider
+            </Cell>
+          }
+        >
+          <Row>
+            <Cell>linear.issues.list</Cell>
+          </Row>
+        </Group>
+      </Container>
+    )
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('button', { name: 'Collapse Linear provider' }))
+    await expect(canvas.queryByText('linear.issues.list')).toBeNull()
+    const expand = canvas.getByRole('button', { name: 'Expand Linear provider' })
+    await expect(expand).toHaveAttribute('aria-expanded', 'false')
+    await userEvent.click(expand)
+    await expect(canvas.getByText('linear.issues.list')).toBeVisible()
   },
 }
 

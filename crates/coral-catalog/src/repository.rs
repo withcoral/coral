@@ -1021,6 +1021,29 @@ pub(super) async fn load_catalog_operations(
     rows.into_iter().map(OperationRow::decode).collect()
 }
 
+pub(super) async fn operation_exists(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+    operation_key: &OperationKey,
+) -> Result<bool, Error> {
+    let row: Option<(i32,)> = transaction
+        .fetch_optional(
+            Query::select()
+                .expr(Expr::val(1_i32))
+                .from(MaterializedOperations::Table)
+                .and_where(
+                    Expr::col(MaterializedOperations::ProviderGenerationId)
+                        .eq(generation_id.to_string()),
+                )
+                .and_where(
+                    Expr::col(MaterializedOperations::OperationKey).eq(operation_key.as_str()),
+                )
+                .to_owned(),
+        )
+        .await?;
+    Ok(row.is_some())
+}
+
 pub(super) async fn load_operation(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,

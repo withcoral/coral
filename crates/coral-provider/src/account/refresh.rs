@@ -14,6 +14,7 @@ use crate::{
 use coral_catalog::AuthenticationConfiguration;
 use coral_credentials::{CredentialValues, Secret};
 use coral_db::Transaction;
+use zeroize::Zeroizing;
 
 use uuid::Uuid;
 
@@ -80,6 +81,20 @@ impl AccountModule {
         }
     }
 
+    /// Opens the retained material. Material the vault cannot open is no
+    /// usable Account: the caller ends as `account_required`, and the User
+    /// reconnects. Failures past this read (the exchange, sealing the renewed
+    /// material) keep their own meaning.
+    fn open_retained(&self, row: &LoadedAccount) -> Result<Zeroizing<String>, Error> {
+        self.vault
+            .open_sealed(&row.material_revision, &row.encrypted_credentials)
+            .map_err(|error| match error {
+                coral_credentials::Error::Cryptography
+                | coral_credentials::Error::InvalidSecret => Error::AccountRequired,
+                other => Error::Credentials(other),
+            })
+    }
+
     /// Reads current material for the retained authorization while the caller holds
     /// the final dispatch transaction. No network work occurs here. `None` means
     /// preparation must run again outside the transaction before dispatch.
@@ -94,9 +109,7 @@ impl AccountModule {
         now: i64,
     ) -> Result<Option<CredentialValues>, Error> {
         let row = retained_account(tx, workspace, provider, evidence).await?;
-        let plaintext = self
-            .vault
-            .open_sealed(&row.material_revision, &row.encrypted_credentials)?;
+        let plaintext = self.open_retained(&row)?;
         if !matches!(
             evidence.contract.authentication(),
             AuthenticationConfiguration::OAuthAuthorizationCode { .. }
@@ -115,10 +128,6 @@ impl AccountModule {
         )?)))
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "credential resolution keeps the refresh claim and fenced settlement together"
-    )]
     async fn resolve_credentials(
         &self,
         workspace: &WorkspaceId,
@@ -152,9 +161,7 @@ impl AccountModule {
             tx.commit().await?;
             return Err(Error::AccountRequired);
         }
-        let plaintext = self
-            .vault
-            .open_sealed(&row.material_revision, &row.encrypted_credentials)?;
+        let plaintext = self.open_retained(&row)?;
         let (token_url, scopes, resource) = match evidence.contract.authentication() {
             AuthenticationConfiguration::OAuthAuthorizationCode {
                 token_url,
@@ -250,14 +257,15 @@ impl AccountModule {
                 let material_revision = Uuid::new_v4().to_string();
                 let secret = Secret::new(token.access_token.clone())?;
                 let granted_scope = token.granted_scope();
-                let ciphertext =
-                    CredentialMaterial::OAuth(token).seal(&self.vault, &material_revision)?;
+                let material = CredentialMaterial::OAuth(token);
+                let ciphertext = material.seal(&self.vault, &material_revision)?;
                 repository::replace_refreshed_credentials(
                     &mut tx,
                     row,
                     &material_revision,
                     &ciphertext,
                     &granted_scope,
+                    material.token_expires_at_unix_nanos(),
                 )
                 .await?;
                 refresh_event(
@@ -300,9 +308,7 @@ async fn retained_account(
             shared_account(tx, workspace, provider, evidence.account_id).await?
         }
     };
-    if row.requires_authorization_for(&evidence.contract)
-        || row.authorization_version != evidence.authorization_version
-    {
+    if !row.matches_evidence(evidence) {
         return Err(Error::AccountRequired);
     }
     Ok(row)

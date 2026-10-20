@@ -229,9 +229,14 @@ const treeProps = {
 }
 
 export const TreeAddProviderLauncher: Story = {
-  render: () => <WorkspaceProvidersPage {...treeProps} />,
+  // Another tab is current, and the rail still shows the Add button at its foot.
+  render: () => <WorkspaceProvidersPage {...treeProps} selectedProvider="prov-weather" />,
   play: async ({ canvas }) => {
-    await userEvent.click(canvas.getAllByRole('button', { name: 'Add provider' })[0])
+    const add = within(
+      canvas.getByRole('complementary', { name: 'installed providers' }),
+    ).getByRole('button', { name: 'Add provider' })
+    await expect(add).toBeVisible()
+    await userEvent.click(add)
     const dialog = within(await screen.findByRole('dialog'))
     // The dialog fades in.
     await waitFor(() =>
@@ -252,6 +257,35 @@ export const EmptyWorkspace: Story = {
 }
 export const TreeNothingSelected: Story = {
   render: () => <WorkspaceProvidersPage {...treeProps} />,
+  play: async ({ canvas }) => {
+    // The checkbox's click target reaches the row's edge, its top and bottom,
+    // and into the gap before the next column.
+    const [box] = canvas.getAllByRole('checkbox', { name: 'Select issues.list' })
+    const row = box.closest<HTMLElement>('[role="row"]')!.getBoundingClientRect()
+    const name = canvas.getAllByRole('link', { name: 'issues.list' })[0]!.closest('[role="cell"]')!
+    const gap = name.getBoundingClientRect().left - 2
+    for (const [x, y] of [
+      [row.left + 1, row.top + 1],
+      [row.left + 1, row.bottom - 2],
+      [gap, row.top + row.height / 2],
+    ] as const) {
+      const hit = box.ownerDocument.elementFromPoint(x, y)
+      await expect(hit?.closest('label')).toBe(box.closest('label'))
+    }
+  },
+}
+export const TreeCollapsedProvider: Story = {
+  render: () => <WorkspaceProvidersPage {...treeProps} />,
+  play: async ({ canvas }) => {
+    // Collapsing a provider leaves its heading's content where it was.
+    const heading = canvas.getAllByRole('rowgroup', { name: 'GitHub' })[0]!
+    const label = () => within(heading).getAllByRole('cell')[1]!.getBoundingClientRect()
+    const before = label()
+    await userEvent.click(canvas.getByRole('button', { name: 'Collapse GitHub' }))
+    await expect(canvas.getByRole('button', { name: 'Expand GitHub' })).toBeVisible()
+    await expect(label().top).toBe(before.top)
+    await expect(label().height).toBe(before.height)
+  },
 }
 export const TreeWithBuiltinProvider: Story = {
   render: () => <WorkspaceProvidersPage {...treeProps} providers={[github, coral, weather]} />,
@@ -317,7 +351,6 @@ export const TreeOperationSelected: Story = {
       labels.filter((label) => scope.queryByText(label, { exact: true }))
     await expect(shown(row('issues.list'))).toEqual(['Read-only', 'Idempotent'])
     await expect(shown(row('issues.create'))).toEqual(['Open world'])
-    await expect(shown(row('getForecast'))).toEqual([])
     // The drawer renders in a portal outside the canvas.
     const drawer = within(
       await within(canvasElement.ownerDocument.body).findByRole('dialog', {
@@ -330,6 +363,7 @@ export const TreeOperationSelected: Story = {
     await expect(drawer.queryByText(/idempotent/i)).toBeNull()
   },
 }
+// Weather declares no hints, so its row shows no labels.
 export const TreeOperationWithoutDescription: Story = {
   render: () => (
     <WorkspaceProvidersPage
@@ -338,6 +372,16 @@ export const TreeOperationWithoutDescription: Story = {
       selectedOperation="getForecast"
     />
   ),
+  play: async ({ canvasElement }) => {
+    // The open drawer is modal, so the table sits outside the accessibility tree.
+    const row = within(
+      within(canvasElement)
+        .getByRole('checkbox', { name: 'Select getForecast', hidden: true })
+        .closest<HTMLElement>('[role="row"]')!,
+    )
+    for (const label of ['Read-only', 'Destructive', 'Idempotent', 'Open world', 'Not read-only'])
+      await expect(row.queryByText(label, { exact: true })).toBeNull()
+  },
 }
 export const TreeOperationWithSummaryAsDescription: Story = {
   render: () => (

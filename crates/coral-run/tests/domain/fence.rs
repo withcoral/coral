@@ -679,16 +679,17 @@ async fn an_in_flight_dispatch_cannot_be_marked_dispatched_again() {
 
     // A second fence reaches this conditional write; it must not claim the dispatch again.
     let mut transaction = fixture.database.begin().await.unwrap();
-    let marked_again = crate::invocation_repository::mark_dispatch_started(
+    let marked_again = crate::invocation_repository::mark_dispatch_started_batch(
         &mut transaction,
         &operation.workspace_id,
-        &invocation_id,
+        accepted.run_id(),
+        std::slice::from_ref(&invocation_id),
         i64::MAX,
     )
     .await
     .unwrap();
     transaction.rollback().await.unwrap();
-    assert!(!marked_again);
+    assert!(marked_again.is_empty());
 
     upstream.release.store(true, Ordering::SeqCst);
     let terminal = wait_for_terminal(
@@ -953,4 +954,769 @@ enum FenceRace {
     ProviderRemoval,
     CredentialRoute,
     Policy,
+}
+
+/// The three parallel calls of one Run ask the owner for the fence together;
+/// one Dispatch Fence decides them, each on its own facts, and records the
+/// two permitted dispatch starts in one chunk commit at one clock sample.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one batch, its chunk, and each Invocation's outcome, in one journey"
+)]
+async fn a_batch_of_ready_invocations_dispatches_in_one_chunk_commit_with_independent_outcomes() {
+    let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
+        200,
+        serde_json::json!({}),
+    )));
+    let latch = FenceLatch::holding_arrivals_and_failures();
+    let fixture = TestModules::with_invocation_adapters(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        upstream.clone(),
+        latch.clone(),
+    )
+    .await;
+    let operation = fixture
+        .user_operation("user:batch-fence", "Batched fence")
+        .await;
+    let alerts = fixture
+        .publish_operation_under(&operation, "alerts", "getItems")
+        .await;
+    let run = fixture
+        .runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission(
+                "const results = await Promise.allSettled([\
+                   coral.providers.weather.getForecast(),\
+                   coral.providers.weather.getForecast(),\
+                   coral.providers.alerts.getItems(),\
+                 ]);\
+                 return results.map((r) => r.status === 'fulfilled' ? 'ok' : r.reason.code);",
+            ),
+        )
+        .await
+        .unwrap();
+    latch.until_arrived(3).await;
+    // Every held gate has landed: the head moves once for the fence from here.
+    let head_before = fixture
+        .run_record(&operation.workspace_id, run.run_id())
+        .await
+        .chunk_sequence;
+    fixture
+        .policies
+        .set_access_state(
+            &change(operation.user.clone(), 100, 'b'),
+            alerts,
+            OperationAccessState::Disabled,
+        )
+        .await
+        .unwrap();
+    latch.release_arrivals();
+    // The denied call's own end is held, so the fence's chunk is the one
+    // commit between the two head reads.
+    wait_until(|| upstream.sends.load(Ordering::SeqCst) == 2).await;
+    let fenced = fixture
+        .run_record(&operation.workspace_id, run.run_id())
+        .await
+        .chunk_sequence;
+    assert_eq!(fenced, head_before + 1, "one chunk commit fenced the batch");
+    let rows = fixture
+        .invocation_rows(&operation.workspace_id, run.run_id())
+        .await;
+    let dispatching: Vec<_> = rows
+        .iter()
+        .filter(|row| row.state == "dispatching")
+        .collect();
+    assert_eq!(dispatching.len(), 2, "{rows:?}");
+    let started_at: std::collections::BTreeSet<Option<i64>> = dispatching
+        .iter()
+        .map(|row| row.dispatch_started_at_unix_nanos)
+        .collect();
+    assert!(
+        started_at.len() == 1 && !started_at.contains(&None),
+        "one clock sample dates every dispatch start of the batch: {rows:?}"
+    );
+    let denied = rows
+        .iter()
+        .find(|row| row.call_path.ends_with("getItems"))
+        .expect("the disabled call was admitted");
+    assert_eq!(denied.dispatch_started_at_unix_nanos, None);
+    assert_eq!(denied.state, "pending", "denied, not yet ended: {rows:?}");
+    latch.release_failures();
+    upstream.release.store(true, Ordering::SeqCst);
+    let terminal = wait_for_terminal(
+        &fixture.runs,
+        &operation.principal,
+        &operation.workspace_id,
+        run.run_id(),
+    )
+    .await;
+    assert!(
+        matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded {
+            final_value: FinalValue::Present(value)
+        }) if value.as_json() == &serde_json::json!(["ok", "ok", "operation_disabled"])),
+        "{terminal:?}"
+    );
+    let denied = fixture
+        .invocation_rows(&operation.workspace_id, run.run_id())
+        .await
+        .into_iter()
+        .find(|row| row.id == denied.id)
+        .unwrap();
+    assert_eq!(denied.state, "ended");
+    assert_eq!(denied.failure_code.as_deref(), Some("operation_disabled"));
+    assert_eq!(denied.dispatch_started_at_unix_nanos, None);
+    let attempts = latch.fences.0.lock().unwrap();
+    assert_eq!(attempts.len(), 3);
+    assert_eq!(
+        attempts
+            .iter()
+            .filter(|attempt| attempt.permit_returned && attempt.durable_dispatch_start)
+            .count(),
+        2
+    );
+}
+
+/// A policy change that commits before the fence reads its facts denies the
+/// whole batch, with the exact failure and no dispatch start on any row; one
+/// that commits after the recorded dispatch starts stops none of them.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the revocation before and the revocation after, side by side"
+)]
+async fn a_revocation_that_commits_before_the_fence_denies_the_batch_and_after_it_stops_nothing() {
+    const PROGRAM: &str = "const results = await Promise.allSettled([\
+        coral.providers.weather.getForecast(),\
+        coral.providers.weather.getForecast(),\
+        coral.providers.weather.getForecast(),\
+    ]);\
+    return results.map((r) => r.status === 'fulfilled' ? 'ok' : r.reason.code);";
+
+    // Before: the revocation commits while the batch waits for its fence.
+    {
+        let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
+        let latch = FenceLatch::holding_arrivals();
+        let fixture = TestModules::with_invocation_adapters(
+            Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+            upstream.clone(),
+            latch.clone(),
+        )
+        .await;
+        let operation = fixture
+            .user_operation("user:revoked-batch", "Revoked batch")
+            .await;
+        let run = fixture
+            .runs
+            .start(
+                &operation.principal,
+                &operation.workspace_id,
+                submission(PROGRAM),
+            )
+            .await
+            .unwrap();
+        latch.until_arrived(3).await;
+        fixture
+            .policies
+            .set_access_state(
+                &change(operation.user.clone(), 100, 'b'),
+                operation.policy_target.clone(),
+                OperationAccessState::Disabled,
+            )
+            .await
+            .unwrap();
+        latch.release_arrivals();
+        let terminal = wait_for_terminal(
+            &fixture.runs,
+            &operation.principal,
+            &operation.workspace_id,
+            run.run_id(),
+        )
+        .await;
+        assert!(
+            matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded {
+                final_value: FinalValue::Present(value)
+            }) if value.as_json() == &serde_json::json!(["operation_disabled", "operation_disabled", "operation_disabled"])),
+            "{terminal:?}"
+        );
+        assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
+        latch.fences.assert_no_dispatch();
+        let rows = fixture
+            .invocation_rows(&operation.workspace_id, run.run_id())
+            .await;
+        assert_eq!(rows.len(), 3);
+        for row in &rows {
+            assert_eq!(row.state, "ended", "{row:?}");
+            assert_eq!(row.dispatch_started_at_unix_nanos, None, "{row:?}");
+            assert_eq!(row.failure_code.as_deref(), Some("operation_disabled"));
+        }
+    }
+
+    // After: the revocation commits once every dispatch start is recorded.
+    {
+        let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
+            200,
+            serde_json::json!({}),
+        )));
+        let fixture = TestModules::with_upstream(
+            Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+            upstream.clone(),
+        )
+        .await;
+        let operation = fixture
+            .user_operation("user:late-revocation", "Late revocation")
+            .await;
+        let run = fixture
+            .runs
+            .start(
+                &operation.principal,
+                &operation.workspace_id,
+                submission(PROGRAM),
+            )
+            .await
+            .unwrap();
+        wait_until(|| upstream.sends.load(Ordering::SeqCst) == 3).await;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            fixture.policies.set_access_state(
+                &change(operation.user.clone(), 100, 'b'),
+                operation.policy_target.clone(),
+                OperationAccessState::Disabled,
+            ),
+        )
+        .await
+        .expect("a policy change never waits on dispatched work")
+        .unwrap();
+        upstream.release.store(true, Ordering::SeqCst);
+        let terminal = wait_for_terminal(
+            &fixture.runs,
+            &operation.principal,
+            &operation.workspace_id,
+            run.run_id(),
+        )
+        .await;
+        assert!(
+            matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded {
+                final_value: FinalValue::Present(value)
+            }) if value.as_json() == &serde_json::json!(["ok", "ok", "ok"])),
+            "{terminal:?}"
+        );
+        assert_eq!(upstream.sends.load(Ordering::SeqCst), 3);
+    }
+}
+
+/// Two Runs' fences hold the Workspace, Provider and policy rows they share
+/// at the same time (on Postgres: `FOR SHARE`; on `SQLite` the second fence
+/// waits for the writer lock the first one holds), and a Provider change
+/// waits for every fence in flight before it commits, so both dispatch: on
+/// Postgres it still waits once the first fence has committed and only the
+/// second holds the rows.
+#[tokio::test]
+async fn fences_of_two_runs_share_their_locks_and_an_authority_writer_waits_for_both() {
+    let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
+    let latch = FenceLatch::holding_both();
+    let fixture = TestModules::with_invocation_adapters(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        upstream.clone(),
+        latch.clone(),
+    )
+    .await;
+    let operation = fixture
+        .user_operation("user:shared-fences", "Shared fence locks")
+        .await;
+    let source = "try { await coral.providers.weather.getForecast(); return 'sent'; } catch (e) { return e.code; }";
+    let mut runs = Vec::new();
+    for _ in 0..2 {
+        runs.push(
+            fixture
+                .runs
+                .start(
+                    &operation.principal,
+                    &operation.workspace_id,
+                    submission(source),
+                )
+                .await
+                .unwrap(),
+        );
+    }
+    // Both Runs are admitted and ready; their fences now read side by side.
+    latch.until_arrived(2).await;
+    latch.release_arrivals();
+    let postgres = fixture.database.system() == coral_db::DatabaseSystem::Postgres;
+    if postgres {
+        latch.until_loaded(2).await;
+    } else {
+        latch.until_loaded(1).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            latch.loaded.load(Ordering::SeqCst),
+            1,
+            "SQLite serializes the second fence behind the first one's writer lock"
+        );
+    }
+    let providers = fixture.providers.clone();
+    let context = change(operation.user.clone(), 100, 'c');
+    let workspace_id = operation.workspace_id.clone();
+    let provider_id = operation.provider_id.clone();
+    let mut writer = tokio::spawn(async move {
+        providers
+            .disable_provider(&context, &workspace_id, &provider_id)
+            .await
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), &mut writer)
+            .await
+            .is_err(),
+        "the Provider change waits for the fences holding its row"
+    );
+    if postgres {
+        // The first fence commits and releases its share (its dispatch sends
+        // only after that commit); the second still holds the rows, so the
+        // writer keeps waiting.
+        latch.release_one_loaded();
+        wait_until(|| upstream.sends.load(Ordering::SeqCst) >= 1).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), &mut writer)
+                .await
+                .is_err(),
+            "the Provider change waits for the second fence too"
+        );
+    }
+    latch.release_loaded();
+    writer
+        .await
+        .expect("the writer task runs to its end")
+        .expect("the Provider change commits once the fences have");
+    for run in &runs {
+        let terminal = wait_for_terminal(
+            &fixture.runs,
+            &operation.principal,
+            &operation.workspace_id,
+            run.run_id(),
+        )
+        .await;
+        assert!(
+            matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded {
+                final_value: FinalValue::Present(value)
+            }) if value.as_json() == &serde_json::json!("sent")),
+            "the change committed after both dispatch starts: {terminal:?}"
+        );
+    }
+    assert_eq!(upstream.sends.load(Ordering::SeqCst), 2);
+    assert_eq!(latch.loaded.load(Ordering::SeqCst), 2);
+}
+
+/// The parked-wait precheck (a snapshot, no holds) and the fence (the owner's
+/// commit, shared holds) load the same facts through one loader and decide
+/// them through one evaluator, so they agree in every situation.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of fact situations decided twice each"
+)]
+async fn the_precheck_and_the_fence_reach_the_same_decision_on_the_same_facts() {
+    use crate::CoralFailure;
+    use crate::fence::{ApprovalFact, Decision};
+
+    async fn decide_twice(
+        fixture: &TestModules,
+        invoker: &crate::invocation::OperationInvoker,
+        record: &crate::lifecycle::RunRecord,
+        admitted: &crate::invocation::AdmittedInvocation,
+        approval: crate::fence::ApprovalFact,
+    ) -> (crate::fence::Decision, crate::fence::Decision) {
+        use crate::fence::{FenceTarget, InvocationFacts, SharedFacts};
+        let target = FenceTarget {
+            admitted,
+            credential_evidence: None,
+        };
+        let now = fixture.clock.now_unix_nanos().unwrap();
+        let mut snapshot = fixture.database.begin_read_snapshot().await.unwrap();
+        let in_snapshot = SharedFacts::load(
+            &mut snapshot,
+            coral_db::RowLock::None,
+            &invoker.fence_scope(),
+            now,
+            std::slice::from_ref(&target),
+        )
+        .await
+        .unwrap();
+        snapshot.commit().await.unwrap();
+        let mut held = fixture.database.begin().await.unwrap();
+        let under_holds = SharedFacts::load(
+            &mut held,
+            coral_db::RowLock::Shared,
+            &invoker.fence_scope(),
+            now,
+            std::slice::from_ref(&target),
+        )
+        .await
+        .unwrap();
+        held.rollback().await.unwrap();
+        let facts = InvocationFacts {
+            target,
+            committed_failure: None,
+            connection_pending_until_unix_nanos: None,
+            approval,
+        };
+        let run_facts = invoker.run_facts(record);
+        let decided_at = now + 1;
+        (
+            crate::fence::decide(&in_snapshot, &run_facts, &facts, decided_at),
+            crate::fence::decide(&under_holds, &run_facts, &facts, decided_at),
+        )
+    }
+
+    let (engine, _release) = BlockingEngine::new();
+    let fixture = TestModules::new(Arc::new(engine)).await;
+    let operation = fixture
+        .user_operation("user:same-facts", "One evaluator")
+        .await;
+    let run = fixture
+        .runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission("return 1;"),
+        )
+        .await
+        .unwrap();
+    wait_until_started(&fixture, &operation.workspace_id, run.run_id()).await;
+    let record = fixture
+        .run_record(&operation.workspace_id, run.run_id())
+        .await;
+    let admitted = admitted_invocation(&fixture, &operation, run.run_id()).await;
+    let invoker = test_invoker(&fixture, &operation, &record);
+    let deadline = record.deadline_at_unix_nanos;
+    let context = change(operation.user.clone(), 100, 'a');
+    let cases: [(&str, OperationAccessState, ApprovalFact, Decision); 5] = [
+        (
+            "every fact current",
+            OperationAccessState::Enabled,
+            ApprovalFact::NotRequested,
+            Decision::Dispatch,
+        ),
+        (
+            "a decision is required and none exists",
+            OperationAccessState::ApprovalRequired,
+            ApprovalFact::NotRequested,
+            Decision::Deny(CoralFailure::ApprovalRequired),
+        ),
+        (
+            "a decision is pending",
+            OperationAccessState::ApprovalRequired,
+            ApprovalFact::Pending {
+                deadline_at_unix_nanos: deadline - 1,
+            },
+            Decision::Wait {
+                until_unix_nanos: deadline - 1,
+            },
+        ),
+        (
+            "an approval expired",
+            OperationAccessState::ApprovalRequired,
+            ApprovalFact::Approved {
+                deadline_at_unix_nanos: 1,
+            },
+            Decision::Deny(CoralFailure::ApprovalExpired),
+        ),
+        (
+            "the Operation is disabled",
+            OperationAccessState::Disabled,
+            ApprovalFact::NotRequested,
+            Decision::Deny(CoralFailure::OperationDisabled),
+        ),
+    ];
+    for (case, policy, approval, expected) in cases {
+        fixture
+            .policies
+            .set_access_state(&context, operation.policy_target.clone(), policy)
+            .await
+            .unwrap();
+        let (precheck, fence) =
+            decide_twice(&fixture, &invoker, &record, &admitted, approval).await;
+        assert_eq!(precheck, fence, "{case}");
+        assert_eq!(fence, expected, "{case}");
+    }
+    // Archiving the Workspace cannot be undone, so it is the last situation,
+    // outside the table, with every other fact current again.
+    fixture
+        .policies
+        .set_access_state(
+            &context,
+            operation.policy_target.clone(),
+            OperationAccessState::Enabled,
+        )
+        .await
+        .unwrap();
+    fixture
+        .workspaces
+        .archive(&context, &operation.workspace_id)
+        .await
+        .unwrap();
+    let (precheck, fence) = decide_twice(
+        &fixture,
+        &invoker,
+        &record,
+        &admitted,
+        ApprovalFact::NotRequested,
+    )
+    .await;
+    assert_eq!(precheck, fence, "the Workspace is archived");
+    assert_eq!(fence, Decision::Deny(CoralFailure::AuthorityLost));
+}
+
+/// Two Invocations in one batch that retained the same Generation and
+/// Operation under different Provider access: the one admitted before the
+/// credential route changed is refused as `credential_route_changed` and the
+/// one admitted after it dispatches, whichever the batch reads first.
+#[tokio::test]
+async fn a_batch_verifies_each_retained_provider_access_not_one_per_operation() {
+    use crate::CoralFailure;
+    use crate::fence::{ApprovalFact, Decision, FenceTarget, InvocationFacts, SharedFacts};
+
+    let (engine, _release) = BlockingEngine::new();
+    let fixture = TestModules::new(Arc::new(engine)).await;
+    let operation = fixture
+        .user_operation("user:retained-access", "Retained access")
+        .await;
+    let run = fixture
+        .runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission("return 1;"),
+        )
+        .await
+        .unwrap();
+    wait_until_started(&fixture, &operation.workspace_id, run.run_id()).await;
+    let record = fixture
+        .run_record(&operation.workspace_id, run.run_id())
+        .await;
+    let stale = admitted_invocation(&fixture, &operation, run.run_id()).await;
+    fixture
+        .providers
+        .change_account_setting_fixture(
+            &change(operation.user.clone(), 100, 'f'),
+            &operation.workspace_id,
+            &operation.provider_id,
+            CredentialRoute::Caller,
+        )
+        .await
+        .expect("change the credential route between the admissions");
+    let current = admitted_invocation(&fixture, &operation, run.run_id()).await;
+    assert_ne!(
+        stale.target.provider_access().version(),
+        current.target.provider_access().version(),
+        "the admissions retained different access to one Generation"
+    );
+    assert_eq!(
+        stale.target.provider_generation_id(),
+        current.target.provider_generation_id()
+    );
+    let invoker = test_invoker(&fixture, &operation, &record);
+    let run_facts = invoker.run_facts(&record);
+    let orders = [
+        ("the stale admission first", [&stale, &current]),
+        ("the current admission first", [&current, &stale]),
+    ];
+    for (order, admitted) in orders {
+        let targets = admitted.map(|admitted| FenceTarget {
+            admitted: admitted.as_ref(),
+            credential_evidence: None,
+        });
+        let now = fixture.clock.now_unix_nanos().unwrap();
+        let mut held = fixture.database.begin().await.unwrap();
+        let shared = SharedFacts::load(
+            &mut held,
+            coral_db::RowLock::Shared,
+            &invoker.fence_scope(),
+            now,
+            &targets,
+        )
+        .await
+        .unwrap();
+        held.rollback().await.unwrap();
+        let decided = targets.map(|target| {
+            crate::fence::decide(
+                &shared,
+                &run_facts,
+                &InvocationFacts {
+                    target,
+                    committed_failure: None,
+                    connection_pending_until_unix_nanos: None,
+                    approval: ApprovalFact::NotRequested,
+                },
+                now + 1,
+            )
+        });
+        let expected = admitted.map(|admitted| {
+            if Arc::ptr_eq(admitted, &stale) {
+                Decision::Deny(CoralFailure::CredentialRouteChanged)
+            } else {
+                Decision::Dispatch
+            }
+        });
+        assert_eq!(decided, expected, "{order}");
+    }
+}
+
+/// An Invocation whose token expired after it prepared its credentials is
+/// parked by the fence on a refresh, without the fence reading its
+/// material, and dispatches on its next fence once the refresh renewed it.
+/// Material the dispatch cannot open ends the Invocation as
+/// `account_required` whichever side of the fence the failure shows, and
+/// never fences it again.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of token and material situations through the fence"
+)]
+async fn a_refresh_wait_parked_by_the_fence_resumes_on_the_next_fence_and_never_decrypts_under_the_lock()
+ {
+    #[derive(Debug, Clone, Copy)]
+    enum Material {
+        Valid,
+        Unopenable,
+    }
+    /// The token expires this long after the connection; the Run deadline is
+    /// a minute away.
+    const TOKEN_LIFETIME_SECS: u64 = 1;
+    for (initial_expires_in, material, attempts, exchanges, requests, final_value) in [
+        (
+            TOKEN_LIFETIME_SECS,
+            Material::Valid,
+            vec![(false, false), (true, true)],
+            1,
+            1,
+            serde_json::json!("sent"),
+        ),
+        (
+            TOKEN_LIFETIME_SECS,
+            Material::Unopenable,
+            vec![(false, false)],
+            0,
+            0,
+            serde_json::json!("account_required"),
+        ),
+        (
+            3600,
+            Material::Unopenable,
+            vec![(true, true)],
+            0,
+            0,
+            serde_json::json!("account_required"),
+        ),
+    ] {
+        let case = format!("expires in {initial_expires_in} s, {material:?} material");
+        let endpoint =
+            TokenEndpoint::with_initial_expiry(axum::http::StatusCode::OK, initial_expires_in)
+                .await;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/forecast"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+        let latch = FenceLatch::holding_arrivals();
+        let fixture = TestModules::with_invocation_adapters(
+            Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+            Arc::new(
+                crate::invocation::ProductionUpstream::new(
+                    DestinationPolicy::default()
+                        .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
+                )
+                .unwrap(),
+            ),
+            latch.clone(),
+        )
+        .await;
+        let operation = fixture
+            .user_operation_at("user:fenced-refresh-wait", "Fence refresh", &server.uri())
+            .await;
+        let (_directory, accounts) =
+            oauth_account(&fixture, &operation, &server, &endpoint.url).await;
+        let runs = fixture.runs.clone().with_accounts(accounts);
+        let run = runs
+            .start(
+                &operation.principal,
+                &operation.workspace_id,
+                submission(
+                    "try { await coral.providers.weather.getForecast({}); return 'sent'; } \
+                     catch (error) { return error.code; }",
+                ),
+            )
+            .await
+            .unwrap();
+        // The Invocation prepared its credentials and is about to ask for the
+        // fence: now the token expires, and the material becomes what the case says.
+        latch.until_arrived(1).await;
+        if initial_expires_in == TOKEN_LIFETIME_SECS {
+            let expired_at = i64::try_from(TOKEN_LIFETIME_SECS).unwrap() * 1_000_000_000 + 1_000;
+            fixture.clock.next.store(expired_at, Ordering::SeqCst);
+        }
+        if let Material::Unopenable = material {
+            fixture
+                .inject_fault("UPDATE provider_accounts SET encrypted_credentials = 'Z2FyYmFnZQ=='")
+                .await;
+        }
+        latch.release_arrivals();
+        if exchanges > 0 {
+            tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
+                .await
+                .expect("the parked Invocation refreshes its token outside the fence");
+            endpoint.release.notify_one();
+        }
+        let terminal = wait_for_terminal(
+            &runs,
+            &operation.principal,
+            &operation.workspace_id,
+            run.run_id(),
+        )
+        .await;
+        assert!(
+            matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded {
+                final_value: FinalValue::Present(value)
+            }) if value.as_json() == &final_value),
+            "{case}: {terminal:?}"
+        );
+        assert_eq!(
+            endpoint.exchanges.load(Ordering::SeqCst),
+            exchanges,
+            "{case}"
+        );
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            requests,
+            "{case}"
+        );
+        let observed: Vec<(bool, bool)> = latch
+            .fences
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|attempt| (attempt.permit_returned, attempt.durable_dispatch_start))
+            .collect();
+        assert_eq!(observed, attempts, "{case}");
+        let rows = fixture
+            .invocation_rows(&operation.workspace_id, run.run_id())
+            .await;
+        let [row] = rows.as_slice() else {
+            panic!("{case}: one Invocation, got {rows:?}");
+        };
+        assert_eq!(row.state, "ended", "{case}");
+        assert_eq!(
+            row.dispatch_started_at_unix_nanos.is_some(),
+            attempts.last().is_some_and(|attempt| attempt.1),
+            "{case}: {rows:?}"
+        );
+        assert_eq!(
+            row.failure_code.as_deref(),
+            (final_value == serde_json::json!("account_required")).then_some("account_required"),
+            "{case}"
+        );
+    }
 }

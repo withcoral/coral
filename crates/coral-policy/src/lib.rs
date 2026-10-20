@@ -18,8 +18,9 @@
 //!   without a lock or a policy write, as when Run inspects an approval.
 //! - [`exact_operation_rules_in_transaction`] reads every exact rule of one
 //!   Workspace, so discovery decides all its Operations from one read.
-//! - [`invocation_decision_in_transaction`] locks and rechecks an exact retained
-//!   decision inside Run-owned admission and dispatch-fence transactions.
+//! - [`invocation_decision_in_transaction`] rechecks an exact retained decision
+//!   inside Run-owned admission and Dispatch Fence transactions, holding the
+//!   explicit rule shared when asked to.
 //! - [`OperationPolicyModule::list_lifecycle_events`] exposes safe policy-domain
 //!   Administrative Lifecycle Events.
 //!
@@ -198,7 +199,12 @@ impl OperationPolicyModule {
         let mut decisions = Vec::with_capacity(updates.len());
         for (target, access_state) in updates {
             require_operation_in_transaction(&mut transaction, &target).await?;
-            if repository::access_state_in_transaction(&mut transaction, &target).await?
+            if repository::access_state_in_transaction(
+                &mut transaction,
+                &target,
+                coral_db::RowLock::None,
+            )
+            .await?
                 != Some(access_state)
             {
                 repository::upsert_access_state(
@@ -292,7 +298,9 @@ pub async fn discovery_decision_in_transaction(
     current_hints: OperationHints,
     current_http_method: Option<HttpMethod>,
 ) -> Result<OperationPolicyDecision, Error> {
-    let explicit = repository::access_state_in_transaction(transaction, target).await?;
+    let explicit =
+        repository::access_state_in_transaction(transaction, target, coral_db::RowLock::None)
+            .await?;
     Ok(resolved_decision(
         target,
         current_hints,
@@ -319,12 +327,16 @@ pub async fn exact_operation_rules_in_transaction(
     repository::exact_rules_in_transaction(transaction, workspace_id).await
 }
 
-/// Rechecks and holds one exact Operation policy decision for Invocation work.
+/// Rechecks one exact Operation policy decision for Invocation work, holding
+/// the explicit rule as `lock` says.
 ///
-/// The caller owns the transaction that either admits an Invocation or writes
-/// its dispatch fence and supplies declared hints and the HTTP method from the
-/// exact retained Provider Generation. Holding an explicit rule serializes the decision with
-/// a concurrent policy change on both supported persistence Adapters.
+/// The caller owns the transaction that either admits an Invocation or runs
+/// its Dispatch Fence and supplies declared hints and the HTTP method from the
+/// exact retained Provider Generation. A shared hold on the explicit rule
+/// lets concurrent decisions read side by side while a policy change, which
+/// writes the rule, waits for them, on both supported persistence Adapters;
+/// a read snapshot holds nothing and only decides whether a held check is
+/// needed.
 ///
 /// # Errors
 ///
@@ -334,31 +346,9 @@ pub async fn invocation_decision_in_transaction(
     target: &OperationPolicyTarget,
     retained_hints: OperationHints,
     retained_http_method: Option<HttpMethod>,
+    lock: coral_db::RowLock,
 ) -> Result<OperationPolicyDecision, Error> {
-    let _held = repository::hold_access_state_in_transaction(transaction, target).await?;
-    let explicit = repository::access_state_in_transaction(transaction, target).await?;
-    Ok(resolved_decision(
-        target,
-        retained_hints,
-        retained_http_method,
-        explicit,
-    ))
-}
-
-/// Reads the same decision as [`invocation_decision_in_transaction`] without
-/// holding the rule. Use it only in a read snapshot, to decide whether a held
-/// recheck is needed; the held decision stays authoritative.
-///
-/// # Errors
-///
-/// Returns an absent-target, corrupt-data, or persistence failure.
-pub async fn invocation_decision_in_snapshot(
-    transaction: &mut coral_db::Transaction<'_>,
-    target: &OperationPolicyTarget,
-    retained_hints: OperationHints,
-    retained_http_method: Option<HttpMethod>,
-) -> Result<OperationPolicyDecision, Error> {
-    let explicit = repository::access_state_in_transaction(transaction, target).await?;
+    let explicit = repository::access_state_in_transaction(transaction, target, lock).await?;
     Ok(resolved_decision(
         target,
         retained_hints,

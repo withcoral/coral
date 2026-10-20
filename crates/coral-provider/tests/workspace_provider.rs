@@ -246,7 +246,8 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
         coral_provider::verify_invocation_operation_in_transaction(
             &mut tx,
             workspace.id(),
-            &retained
+            &retained,
+            coral_db::RowLock::Shared,
         )
         .await
         .unwrap(),
@@ -341,7 +342,8 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
         coral_provider::verify_invocation_operation_in_transaction(
             &mut tx,
             workspace.id(),
-            &retained
+            &retained,
+            coral_db::RowLock::Shared,
         )
         .await
         .unwrap(),
@@ -386,7 +388,8 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
         coral_provider::verify_invocation_operation_in_transaction(
             &mut tx,
             workspace.id(),
-            &retained
+            &retained,
+            coral_db::RowLock::Shared,
         )
         .await
         .unwrap(),
@@ -416,6 +419,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
             &mut tx,
             workspace.id(),
             &retained,
+            coral_db::RowLock::Shared,
         )
         .await
         .unwrap();

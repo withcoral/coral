@@ -36,7 +36,6 @@ impl Fixture {
         // Search applies Operation access rules, so the schema includes Policy.
         let db = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let database = db.database();
-        coral_search::prepare_storage(&database).await.unwrap();
         let workspaces = WorkspaceModule::new(database.clone());
         let index = SearchIndex::new(database.clone(), std::time::Duration::from_mins(5));
         let owner = provision_user(database, "user:owner", OrganizationRole::Member).await;

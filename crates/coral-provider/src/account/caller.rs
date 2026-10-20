@@ -102,9 +102,6 @@ impl AccountModule {
     }
 }
 
-pub(super) struct ConnectedAccount {
-    pub(super) version: String,
-}
 pub(super) fn user_principal(user: &UserId) -> Result<Principal, Error> {
     Ok(Principal::from_parts(
         coral_workspace::PrincipalId::parse(user.as_str())?,
@@ -118,10 +115,7 @@ pub(super) async fn select(
     principal: &Principal,
     contract: ProviderCredentialContract,
 ) -> Result<CredentialEvidence, Error> {
-    let caller = match principal.kind() {
-        PrincipalKind::User => super::intent::Caller::User(UserId::parse(principal.id().as_str())?),
-        PrincipalKind::Agent => super::intent::Caller::Agent(principal.id().clone()),
-    };
+    let caller = super::intent::Caller::of_principal(principal)?;
     let row = repository::scoped_account(
         tx,
         target_provider.workspace_id(),

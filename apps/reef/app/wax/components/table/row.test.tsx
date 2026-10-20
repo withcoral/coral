@@ -10,13 +10,13 @@ import { Row } from './row'
 import { useRowCursor } from './row-cursor'
 import { RowLink } from './row-link'
 
-function renderRow(onButton = vi.fn()) {
+function renderRow(onButton = vi.fn(), active = false) {
   const Stub = createRoutesStub([
     {
       path: '/',
       Component: () => (
         <Container columns={[{ label: 'Name' }, { ariaLabel: 'Actions' }]}>
-          <Row to="/detail">
+          <Row to="/detail" active={active}>
             <Cell>Linear</Cell>
             <Cell>
               <button type="button" onClick={onButton}>
@@ -36,6 +36,14 @@ describe('Table Row with a link', () => {
   // A row that only follows its link from the name reads as broken.
   it('follows the link from a click anywhere in the row', async () => {
     renderRow()
+    await userEvent.click(screen.getByRole('cell', { name: 'Linear' }))
+    expect(await screen.findByRole('heading', { name: 'Detail' })).toBeInTheDocument()
+  })
+
+  // Catches: the cursor row's own tabindex read as a control, so a click in it
+  // goes nowhere.
+  it('follows the link from a click in the cursor row', async () => {
+    renderRow(vi.fn(), true)
     await userEvent.click(screen.getByRole('cell', { name: 'Linear' }))
     expect(await screen.findByRole('heading', { name: 'Detail' })).toBeInTheDocument()
   })

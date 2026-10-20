@@ -54,24 +54,6 @@ impl ProviderAccessRow {
     }
 }
 
-pub(crate) async fn by_call_root_in_transaction(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    call_root: &ProviderCallRoot,
-) -> Result<Option<ProviderAccess>, Error> {
-    let row: Option<ProviderAccessRow> = transaction
-        .fetch_optional(
-            Query::select()
-                .columns(provider_access_columns())
-                .from(ProviderRecords::Table)
-                .and_where(Expr::col(ProviderRecords::WorkspaceId).eq(workspace_id.to_string()))
-                .and_where(Expr::col(ProviderRecords::Namespace).eq(call_root.as_str()))
-                .to_owned(),
-        )
-        .await?;
-    row.map(ProviderAccessRow::decode).transpose()
-}
-
 pub(crate) async fn exact_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -88,23 +70,6 @@ pub(crate) async fn exact_in_transaction(
         )
         .await?;
     row.map(ProviderAccessRow::decode).transpose()
-}
-
-pub(crate) async fn hold_exact_in_transaction(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    provider_id: &ProviderId,
-) -> Result<bool, Error> {
-    let statement = Query::update()
-        .table(ProviderRecords::Table)
-        .value(
-            ProviderRecords::AccountSettingVersion,
-            Expr::col(ProviderRecords::AccountSettingVersion),
-        )
-        .and_where(Expr::col(ProviderRecords::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(ProviderRecords::Id).eq(provider_id.to_string()))
-        .to_owned();
-    Ok(transaction.execute(statement).await? == 1)
 }
 
 pub(crate) async fn update_credential_route(

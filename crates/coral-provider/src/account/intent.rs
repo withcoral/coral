@@ -22,6 +22,20 @@ pub(crate) enum Caller {
     Agent(PrincipalId),
 }
 
+impl Caller {
+    /// The caller scope a Principal's own Accounts live in.
+    pub(crate) fn of_principal(
+        principal: &coral_workspace::Principal,
+    ) -> Result<Self, crate::Error> {
+        Ok(match principal.kind() {
+            coral_workspace::PrincipalKind::User => {
+                Self::User(UserId::parse(principal.id().as_str())?)
+            }
+            coral_workspace::PrincipalKind::Agent => Self::Agent(principal.id().clone()),
+        })
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ConnectionIntent {
     Initial,

@@ -1,0 +1,2 @@
+-- Postgres splits camelCase names in its text vector in this step. SQLite's
+-- trigram index already matches any part of a name, so it has nothing to do.

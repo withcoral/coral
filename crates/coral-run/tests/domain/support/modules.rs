@@ -129,9 +129,6 @@ impl TestModules {
             .await
             .expect("create Program Run test database");
         let database = fixture.database();
-        coral_search::prepare_storage(&database)
-            .await
-            .expect("prepare Universal Search storage");
         let workspaces = WorkspaceModule::new(database.clone());
         let providers = ProviderModule::with_running_catalog(
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
@@ -184,6 +181,102 @@ impl TestModules {
     pub(crate) fn approvals(&self) -> crate::approval::ApprovalModule {
         crate::approval::ApprovalModule::new(self.database.clone(), self.workspaces.clone())
             .with_clock(self.clock.clone())
+    }
+
+    /// Publishes a second credential-free Provider in the fixture Operation's
+    /// Workspace at `coral.providers.<namespace>` with one `GET` Operation
+    /// `operation_id`, enabled, and returns its policy target.
+    pub(crate) async fn publish_operation_under(
+        &self,
+        operation: &OperationFixture,
+        namespace: &str,
+        operation_id: &str,
+    ) -> OperationPolicyTarget {
+        let context = change(operation.user.clone(), 41, '5');
+        let document = serde_json::json!({
+            "openapi": "3.1.0", "info": {"title": namespace, "version": "1"},
+            "servers": [{"url": "https://upstream.example"}], "security": [],
+            "paths": {"/items": {"get": {"operationId": operation_id, "responses": {"200": {"description": "Items"}}}}}
+        });
+        let setup = self
+            .providers
+            .prepare_openapi_fixture(
+                &context,
+                &operation.workspace_id,
+                OpenApiDocument::parse(&document.to_string()).expect("OpenAPI input"),
+            )
+            .await
+            .expect("prepare the second Provider");
+        let publication = self
+            .providers
+            .publish_workspace_provider(
+                &context,
+                WorkspaceProviderPublicationRequest::new(
+                    ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).expect("id"),
+                    operation.workspace_id.clone(),
+                    setup.id().clone(),
+                    ProviderNamespace::parse(namespace).expect("namespace"),
+                    CredentialRoute::None,
+                ),
+            )
+            .await
+            .expect("publish the second Provider");
+        let provider = publication
+            .published_provider()
+            .expect("the second Provider published");
+        let target = OperationPolicyTarget::new(
+            operation.workspace_id.clone(),
+            provider.id().clone(),
+            OperationKey::parse(operation_id).expect("Operation Key"),
+        );
+        self.policies
+            .set_access_state(&context, target.clone(), OperationAccessState::Enabled)
+            .await
+            .expect("enable the second Operation");
+        target
+    }
+
+    /// Every Invocation row of a Run, in admission order: the fence's
+    /// durable evidence as persistence holds it.
+    pub(crate) async fn invocation_rows(
+        &self,
+        workspace_id: &coral_workspace::WorkspaceId,
+        run_id: &crate::RunId,
+    ) -> Vec<InvocationRow> {
+        type Row = (String, String, String, Option<i64>, Option<String>);
+        let rows: Vec<Row> = self
+            .database
+            .fetch_all(
+                Query::select()
+                    .columns([
+                        Alias::new("id"),
+                        Alias::new("call_path"),
+                        Alias::new("state"),
+                        Alias::new("dispatch_started_at_unix_nanos"),
+                        Alias::new("failure_code"),
+                    ])
+                    .from(Alias::new("operation_invocations"))
+                    .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace_id.to_string()))
+                    .and_where(Expr::col(Alias::new("run_id")).eq(run_id.to_string()))
+                    .order_by(Alias::new("admitted_at_unix_nanos"), sea_query::Order::Asc)
+                    .order_by(Alias::new("id"), sea_query::Order::Asc)
+                    .to_owned(),
+            )
+            .await
+            .expect("read the Invocation rows");
+        rows.into_iter()
+            .map(
+                |(id, call_path, state, dispatch_started_at_unix_nanos, failure_code)| {
+                    InvocationRow {
+                        id: crate::InvocationId::parse(&id).expect("Invocation id"),
+                        call_path,
+                        state,
+                        dispatch_started_at_unix_nanos,
+                        failure_code,
+                    }
+                },
+            )
+            .collect()
     }
 
     /// Makes the fixture Operation wait for a human approval decision.
@@ -393,6 +486,7 @@ impl TestModules {
             user,
             provider_id,
             policy_target,
+            call_path: format!("coral.providers.{namespace}.getForecast"),
         }
     }
 
@@ -836,12 +930,24 @@ pub(crate) async fn wait_for_connection(
     .expect("Invocation waits on durable connection")
 }
 
+/// One Invocation row's fence evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InvocationRow {
+    pub(crate) id: crate::InvocationId,
+    pub(crate) call_path: String,
+    pub(crate) state: String,
+    pub(crate) dispatch_started_at_unix_nanos: Option<i64>,
+    pub(crate) failure_code: Option<String>,
+}
+
 pub(crate) struct OperationFixture {
     pub(crate) workspace_id: coral_workspace::WorkspaceId,
     pub(crate) principal: AuthenticatedPrincipal,
     pub(crate) user: AuthenticatedUser,
     pub(crate) provider_id: ProviderId,
     pub(crate) policy_target: OperationPolicyTarget,
+    /// The call path of the fixture's `getForecast` Operation.
+    pub(crate) call_path: String,
 }
 
 pub(crate) fn submission(source: &str) -> RunSubmission {
@@ -1033,4 +1139,76 @@ pub(crate) const TEST_REEF: &str = "https://reef.example.test";
 
 pub(crate) fn test_reef() -> crate::HumanInterfaceUrl {
     crate::HumanInterfaceUrl::parse(TEST_REEF).expect("test Reef origin")
+}
+
+/// An admitted Invocation of the fixture Operation for `run_id`, resolved as
+/// the Run's User would, with the shape admission retains.
+pub(crate) async fn admitted_invocation(
+    fixture: &TestModules,
+    operation: &OperationFixture,
+    run_id: &crate::RunId,
+) -> Arc<crate::invocation::AdmittedInvocation> {
+    let now = fixture.clock.now_unix_nanos().expect("clock");
+    let mut transaction = fixture.database.begin().await.expect("begin resolution");
+    let target = coral_provider::resolve_invocation_operation_in_transaction(
+        &mut transaction,
+        &operation.workspace_id,
+        coral_provider::InvocationCaller::new(&fixture.workspaces, &operation.principal, now),
+        &operation.call_path,
+    )
+    .await
+    .expect("resolve the fixture Operation")
+    .expect("the fixture Operation resolves");
+    transaction.rollback().await.expect("end resolution");
+    Arc::new(crate::invocation::AdmittedInvocation {
+        id: crate::InvocationId::generate(),
+        workspace_id: operation.workspace_id.clone(),
+        run_id: run_id.clone(),
+        target,
+        call_path: operation.call_path.clone(),
+        arguments_json: "{}".to_string(),
+        admitted_at_unix_nanos: now,
+    })
+}
+
+/// An Operation invoker bound to `run` as its owner would build it, for
+/// tests that call the fence's pieces directly.
+pub(crate) fn test_invoker(
+    fixture: &TestModules,
+    operation: &OperationFixture,
+    run: &crate::lifecycle::RunRecord,
+) -> crate::invocation::OperationInvoker {
+    let claim_id = run
+        .execution_claim_id
+        .clone()
+        .or_else(|| run.worker_claim_id.clone())
+        .expect("a claimed Run");
+    let accepted = crate::types::AcceptedRun {
+        id: run.id.clone(),
+        workspace_id: run.workspace_id.clone(),
+        principal: run.principal.clone(),
+        accepted_at_unix_nanos: run.accepted_at_unix_nanos,
+        deadline_at_unix_nanos: run.deadline_at_unix_nanos,
+        shutdown_grace_nanos: run.shutdown_grace_nanos,
+        value_limits: run.value_limits,
+        claim_id: claim_id.clone(),
+        worker_claim_expires_at_unix_nanos: run
+            .worker_claim_expires_at_unix_nanos
+            .unwrap_or(run.deadline_at_unix_nanos),
+    };
+    let (owner, _mailbox) = crate::owner::OwnerHandle::new(run.id.clone(), claim_id);
+    crate::invocation::OperationInvoker::new(
+        None,
+        fixture.providers.clone(),
+        None,
+        Some(test_reef()),
+        fixture.database.clone(),
+        fixture.workspaces.clone(),
+        operation.principal.clone(),
+        &accepted,
+        owner,
+        fixture.upstream.clone(),
+        fixture.clock.clone(),
+        Arc::new(NoopInvocationObserver),
+    )
 }

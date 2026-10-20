@@ -3541,11 +3541,11 @@ async fn readiness_inspection_does_not_require_saved_function_persistence() {
     // Drop Functions' schema and the search index: any accidental
     // repository read must fail, even when no Functions exist. Readiness
     // depends only on Operation domains and reads no index.
-    let fixture = TestModules::before_prepare_storage().await;
+    let fixture = TestModules::new().await;
     fixture
         .fixture
         .execute_fixture_sql(
-            "DROP TABLE search_entities; DROP TABLE search_index_states; DROP TABLE search_migrations; DROP TABLE saved_function_records; DROP TABLE saved_function_lifecycle_events;",
+            "DROP TABLE search_entities; DROP TABLE search_index_states; DROP TABLE saved_function_records; DROP TABLE saved_function_lifecycle_events;",
         )
         .await
         .expect("drop Functions and the search index");
@@ -3743,15 +3743,13 @@ struct TestModules {
 
 impl TestModules {
     async fn new() -> Self {
-        let modules = Self::before_prepare_storage().await;
-        crate::prepare_storage(&modules.search.database)
-            .await
-            .expect("prepare Universal Search storage");
-        modules
+        Self::with_plan(coral_db::migration_plan()).await
     }
 
-    async fn before_prepare_storage() -> Self {
-        let fixture = TestDatabase::new(coral_db::migration_plan())
+    /// The modules over a database that `plan` migrated, such as one from
+    /// before a search step.
+    async fn with_plan(plan: &coral_db::MigrationPlan) -> Self {
+        let fixture = TestDatabase::new(plan)
             .await
             .expect("create Universal Search test database");
         let database = fixture.database();

@@ -167,11 +167,7 @@ pub(super) async fn fixture() -> TestDatabase {
             false,
         ));
     }
-    let fixture = TestDatabase::new(&coral_test_support::migration_plan_with(faults))
+    TestDatabase::new(&coral_test_support::migration_plan_with(faults))
         .await
-        .unwrap();
-    coral_search::prepare_storage(&fixture.database())
-        .await
-        .unwrap();
-    fixture
+        .unwrap()
 }
