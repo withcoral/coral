@@ -47,10 +47,11 @@
   behind every other writer.
 - A decision that reads fact rows it does not write (a Workspace, a Provider,
   a policy rule, an Account) holds them with `RowLock::Shared`
-  (`Transaction::fetch_optional_locked`): Postgres `FOR SHARE`, nothing on
-  SQLite, whose write transaction already excludes writers. Decisions then
-  read side by side and a writer's `UPDATE` waits for them. Keep the no-op
-  `UPDATE` hold for a row the transaction goes on to write.
+  (`Transaction::fetch_optional_locked`): Postgres `FOR SHARE`, under which
+  decisions read side by side and a writer's `UPDATE` waits for them;
+  nothing on SQLite, whose write transaction already serializes them behind
+  every writer. Keep the no-op `UPDATE` hold for a row the transaction goes
+  on to write.
 - A Run's Program paths (Emissions, Logs, Invocation admission, held
   rechecks, the Dispatch Fence, Invocation completion) write only through its
   Run Owner: an Event is applied in owner memory and a row write is a

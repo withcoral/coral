@@ -924,6 +924,66 @@ async fn expired_approval_cannot_be_approved_and_settles_with_a_safe_failure() {
     assert_eq!(event.state, ApprovalState::Expired);
 }
 
+/// A decision judges the request deadline on time sampled after its gate
+/// took its holds, which can wait behind a policy writer: a decision that
+/// begins before the deadline and passes the gate at it settles Expired,
+/// never Approved.
+#[tokio::test]
+async fn a_decision_that_reaches_the_deadline_under_its_holds_expires() {
+    let fixture = TestModules::new(Arc::new(
+        crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
+    ))
+    .await;
+    let operation = fixture
+        .user_operation("user:late-expiry", "Approval expiry under holds")
+        .await;
+    fixture.require_approval(&operation).await;
+    let approvals = fixture.approvals();
+    let run = fixture.runs.start(&operation.principal, &operation.workspace_id, RunSubmission::new(
+        ProgramSource::parse("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }").unwrap(),
+        RunTimeout::from_millis(900_000).unwrap())).await.unwrap();
+    let request = wait_for_approval(
+        &approvals,
+        &operation.principal,
+        &operation.workspace_id,
+        run.run_id(),
+    )
+    .await;
+    let approval_deadline = 1_000_000;
+    crate::approval_repository::set_approval_deadline(
+        &fixture.database,
+        &operation.workspace_id,
+        &request.id,
+        approval_deadline,
+    )
+    .await
+    .unwrap();
+    // The decision's first clock sample is one nanosecond before the deadline;
+    // the sample after the gate's holds is at it.
+    let approvals = approvals.with_clock(Arc::new(TestClock::starting_at(approval_deadline - 1)));
+    let expired = approvals
+        .decide(
+            &operation.principal,
+            &operation.workspace_id,
+            &request.id,
+            ApprovalDecision::Approve,
+            None,
+            &TraceId::parse(&"f".repeat(32)).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(expired.state, ApprovalState::Expired);
+    assert_eq!(expired.approver, None);
+    let terminal = wait_for_terminal(
+        &fixture.runs,
+        &operation.principal,
+        &operation.workspace_id,
+        run.run_id(),
+    )
+    .await;
+    assert_final_code(&terminal, "approval_expired");
+}
+
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,

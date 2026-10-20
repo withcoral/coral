@@ -102,10 +102,10 @@ impl ChunkBuild {
     }
 
     /// Whether an item of `events` Events and `bytes` bytes fits beside what
-    /// the chunk already holds. An empty chunk takes any item: one Event
-    /// larger than the bytes cap commits alone.
+    /// the chunk already holds. A chunk with no item and no fence batch takes
+    /// any item: one Event larger than the bytes cap commits alone.
     pub(crate) fn fits(&self, events: usize, bytes: usize) -> bool {
-        self.items.is_empty()
+        (self.items.is_empty() && self.fence.is_none())
             || (self.events.saturating_add(events) <= CHUNK_EVENTS_CAP
                 && self.bytes.saturating_add(bytes) <= CHUNK_BYTES_CAP)
     }

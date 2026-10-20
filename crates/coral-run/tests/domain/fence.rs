@@ -1426,6 +1426,101 @@ async fn the_precheck_and_the_fence_reach_the_same_decision_on_the_same_facts() 
     }
 }
 
+/// Two Invocations in one batch that retained the same Generation and
+/// Operation under different Provider access: the one admitted before the
+/// credential route changed is refused as `credential_route_changed` and the
+/// one admitted after it dispatches, whichever the batch reads first.
+#[tokio::test]
+async fn a_batch_verifies_each_retained_provider_access_not_one_per_operation() {
+    use crate::CoralFailure;
+    use crate::fence::{ApprovalFact, Decision, FenceTarget, InvocationFacts, SharedFacts};
+
+    let (engine, _release) = BlockingEngine::new();
+    let fixture = TestModules::new(Arc::new(engine)).await;
+    let operation = fixture
+        .user_operation("user:retained-access", "Retained access")
+        .await;
+    let run = fixture
+        .runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission("return 1;"),
+        )
+        .await
+        .unwrap();
+    wait_until_started(&fixture, &operation.workspace_id, run.run_id()).await;
+    let record = fixture
+        .run_record(&operation.workspace_id, run.run_id())
+        .await;
+    let stale = admitted_invocation(&fixture, &operation, run.run_id()).await;
+    fixture
+        .providers
+        .change_account_setting_fixture(
+            &change(operation.user.clone(), 100, 'f'),
+            &operation.workspace_id,
+            &operation.provider_id,
+            CredentialRoute::Caller,
+        )
+        .await
+        .expect("change the credential route between the admissions");
+    let current = admitted_invocation(&fixture, &operation, run.run_id()).await;
+    assert_ne!(
+        stale.target.provider_access().version(),
+        current.target.provider_access().version(),
+        "the admissions retained different access to one Generation"
+    );
+    assert_eq!(
+        stale.target.provider_generation_id(),
+        current.target.provider_generation_id()
+    );
+    let invoker = test_invoker(&fixture, &operation, &record);
+    let run_facts = invoker.run_facts(&record);
+    let orders = [
+        ("the stale admission first", [&stale, &current]),
+        ("the current admission first", [&current, &stale]),
+    ];
+    for (order, admitted) in orders {
+        let targets = admitted.map(|admitted| FenceTarget {
+            admitted: admitted.as_ref(),
+            credential_evidence: None,
+        });
+        let now = fixture.clock.now_unix_nanos().unwrap();
+        let mut held = fixture.database.begin().await.unwrap();
+        let shared = SharedFacts::load(
+            &mut held,
+            coral_db::RowLock::Shared,
+            &invoker.fence_scope(),
+            now,
+            &targets,
+        )
+        .await
+        .unwrap();
+        held.rollback().await.unwrap();
+        let decided = targets.map(|target| {
+            crate::fence::decide(
+                &shared,
+                &run_facts,
+                &InvocationFacts {
+                    target,
+                    committed_failure: None,
+                    connection_pending_until_unix_nanos: None,
+                    approval: ApprovalFact::NotRequested,
+                },
+                now + 1,
+            )
+        });
+        let expected = admitted.map(|admitted| {
+            if Arc::ptr_eq(admitted, &stale) {
+                Decision::Deny(CoralFailure::CredentialRouteChanged)
+            } else {
+                Decision::Dispatch
+            }
+        });
+        assert_eq!(decided, expected, "{order}");
+    }
+}
+
 /// An Invocation whose token expired after it prepared its credentials is
 /// parked by the fence on a refresh, without the fence reading its
 /// material, and dispatches on its next fence once the refresh renewed it.

@@ -318,6 +318,9 @@ impl ApprovalModule {
                 PolicyRead::Hold,
             )
             .await?;
+            // The gate's shared hold can wait behind a policy writer: the
+            // deadlines are judged on time sampled after it.
+            let now = self.now()?;
             let state = if run.state != RunState::Running
                 || run.termination.is_some()
                 || now >= run.deadline_at_unix_nanos

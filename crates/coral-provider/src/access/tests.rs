@@ -355,7 +355,7 @@ async fn exact_provider_reads_report_an_unparseable_stored_call_root_as_corrupt(
 #[tokio::test]
 async fn upgrade_stores_the_call_root_of_each_provider_an_owner_added() {
     // Every migration but the one under test: the code arranging the rows
-    // runs against the current schema, less the Call Root column.
+    // runs against the current schema, less the Call Root backfill.
     let before_call_roots = coral_test_support::edited_migration_plan(|migrations| {
         migrations
             .into_iter()

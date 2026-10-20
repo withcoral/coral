@@ -1110,9 +1110,27 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         );
     }
 
+    // A fence-only chunk is no empty chunk for an Event above the bytes cap:
+    // that Event still commits alone, after the batch.
+    {
+        let mut state = started(LIMITS);
+        let (effects, _) = fence(&mut state, 10);
+        deliver(effects);
+        let (effects, _) = emit(&mut state, CHUNK_BYTES_CAP + 1, 11);
+        deliver(effects);
+        assert_eq!(state.pending_chunks(), 2);
+        let effects = apply(&mut state, Message::Drained, 12);
+        let [Effect::Commit { chunk, .. }] = effects.as_slice() else {
+            panic!("{effects:?}");
+        };
+        assert!(
+            chunk.fence.is_some() && chunk.items.is_empty(),
+            "the batch commits first, without the Event"
+        );
+    }
+
     // A stop: the batch not yet committed answers terminated at once, the
-    // Program is terminated, and the chunk that held only the batch is gone;
-    // other pending work still commits.
+    // Program is terminated, and the chunk that held only the batch is gone.
     {
         let mut state = started(LIMITS);
         let (effects, mut first) = fence(&mut state, 20);
@@ -1147,6 +1165,28 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
             answered(&mut late),
             Some(Err(Error::ProgramHostTerminated))
         ));
+    }
+
+    // A stop leaves the chunk's other pending work: an Emission beside the
+    // abandoned batch still commits, without the batch.
+    {
+        let mut state = started(LIMITS);
+        let (effects, _) = emit(&mut state, 10, 20);
+        deliver(effects);
+        let (effects, mut pending) = fence(&mut state, 21);
+        deliver(effects);
+        deliver(apply(&mut state, Message::Stop, 22));
+        assert!(matches!(
+            answered(&mut pending),
+            Some(Err(Error::ProgramHostTerminated))
+        ));
+        assert_eq!(state.pending_chunks(), 1);
+        let effects = apply(&mut state, Message::Drained, 23);
+        let [Effect::Commit { chunk, .. }] = effects.as_slice() else {
+            panic!("{effects:?}");
+        };
+        assert!(chunk.fence.is_none(), "the abandoned batch left the chunk");
+        assert_eq!(chunk.items.len(), 1, "the Emission commits");
     }
 
     // Past the deadline in owner memory a request answers at once.

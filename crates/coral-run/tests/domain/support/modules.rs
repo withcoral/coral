@@ -489,6 +489,7 @@ impl TestModules {
             user,
             provider_id,
             policy_target,
+            call_path: format!("coral.providers.{namespace}.getForecast"),
         }
     }
 
@@ -948,6 +949,8 @@ pub(crate) struct OperationFixture {
     pub(crate) user: AuthenticatedUser,
     pub(crate) provider_id: ProviderId,
     pub(crate) policy_target: OperationPolicyTarget,
+    /// The call path of the fixture's `getForecast` Operation.
+    pub(crate) call_path: String,
 }
 
 pub(crate) fn submission(source: &str) -> RunSubmission {
@@ -1154,7 +1157,7 @@ pub(crate) async fn admitted_invocation(
         &mut transaction,
         &operation.workspace_id,
         coral_provider::InvocationCaller::new(&fixture.workspaces, &operation.principal, now),
-        "coral.providers.weather.getForecast",
+        &operation.call_path,
     )
     .await
     .expect("resolve the fixture Operation")
@@ -1165,7 +1168,7 @@ pub(crate) async fn admitted_invocation(
         workspace_id: operation.workspace_id.clone(),
         run_id: run_id.clone(),
         target,
-        call_path: "coral.providers.weather.getForecast".to_string(),
+        call_path: operation.call_path.clone(),
         arguments_json: "{}".to_string(),
         admitted_at_unix_nanos: now,
     })

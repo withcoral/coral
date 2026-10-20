@@ -146,7 +146,7 @@ fn safe_segment(value: &str) -> bool {
 }
 
 /// Credential selection configured for one Provider.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum CredentialRoute {
     /// Invocations use no Account.
     None,

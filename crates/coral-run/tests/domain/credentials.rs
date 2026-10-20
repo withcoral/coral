@@ -589,7 +589,7 @@ impl PublicClientAccount {
 /// never dispatches. The owner sees the failure, and the User keeps the grant.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_invalid_public_client_is_catchable_and_keeps_the_account_grant() {
-    let account = PublicClientAccount::new().await;
+    let account = Box::pin(PublicClientAccount::new()).await;
     let (run, approved) = account.start_approved().await;
     let (terminal, value) = account.returned(&run).await;
     assert_eq!(
@@ -617,7 +617,7 @@ async fn an_invalid_public_client_is_catchable_and_keeps_the_account_grant() {
 /// authorization and the failure clears.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_repaired_public_client_renews_with_the_retained_grant() {
-    let account = PublicClientAccount::new().await;
+    let account = Box::pin(PublicClientAccount::new()).await;
     account.forecast_with("renewed-access-canary", 18).await;
     let (failed, _) = account.start_approved().await;
     account.returned(&failed).await;
@@ -633,7 +633,7 @@ async fn a_repaired_public_client_renews_with_the_retained_grant() {
 /// is the token that Invocation sends.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_token_renewed_during_the_fence_hold_is_the_one_dispatched() {
-    let mut account = PublicClientAccount::new().await;
+    let mut account = Box::pin(PublicClientAccount::new()).await;
     account.broken.store(false, Ordering::SeqCst);
     account.forecast_with("latest-access-canary", 19).await;
     let (gate, release) = FenceGate::blocking();

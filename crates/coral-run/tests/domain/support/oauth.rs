@@ -9,8 +9,11 @@ use coral_workspace::WorkspaceId;
 /// A gated OAuth token endpoint: the initial exchange answers at once with a
 /// token that expires in `initial_expires_in` seconds (none by default, so
 /// the first dispatch must refresh); a refresh exchange is counted, parks at
-/// `entered` until `release`, and answers `refresh_status` with a renewed
-/// token good for an hour.
+/// `entered` until `release`, and answers `refresh_status`: a renewed token
+/// good for an hour when that is a success, an `invalid_grant` error body
+/// otherwise. The gate takes one refresh at a time: each `entered` wakes one
+/// waiter and each `release` lets one exchange through, so a test drives one
+/// expired token at a time.
 pub(crate) struct TokenEndpoint {
     pub(crate) url: String,
     pub(crate) entered: Arc<tokio::sync::Notify>,

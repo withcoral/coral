@@ -110,10 +110,16 @@ pub(crate) enum Decision {
     RunTerminated,
 }
 
-/// The retained Operation a target runs: its Generation (immutable) and key.
+/// The retained Operation a target runs and the Provider access it
+/// retained: the Generation (immutable), the Operation key, and the
+/// credential route and account-setting version the verification compares
+/// with the current Provider. Targets that retained different access share
+/// no verdict.
 type OperationKey = (
     coral_catalog::ProviderGenerationId,
     coral_catalog::OperationKey,
+    coral_provider::CredentialRoute,
+    i64,
 );
 /// The selected Account and the authorization the Invocation retained.
 type AccountKey = (coral_provider::account::ProviderAccountId, String);
@@ -130,9 +136,12 @@ pub(crate) struct SharedFacts {
 }
 
 fn operation_key(target: &ResolvedInvocationOperation) -> OperationKey {
+    let access = target.provider_access();
     (
         target.provider_generation_id().clone(),
         target.operation().key().clone(),
+        access.credential_route(),
+        access.version(),
     )
 }
 
