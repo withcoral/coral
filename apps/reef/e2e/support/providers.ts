@@ -248,15 +248,15 @@ export function addedProviders<P extends { callRoot: string }>(providers: readon
   return providers.filter((provider) => provider.callRoot !== BUILTIN_CALL_ROOT)
 }
 
+/** The rail of provider tabs beside the operations table. */
+const providersRail = (page: Page) =>
+  page.getByRole('navigation', { name: 'installed providers', exact: true })
+
 /**
  * Opens the settings page of the provider the URL names, from its entry in
  * the rail. When the URL names no provider or the Built-in Provider, opens the
  * only added provider's settings instead.
  */
-/** The rail of provider tabs beside the operations table. */
-const providersRail = (page: Page) =>
-  page.getByRole('navigation', { name: 'installed providers', exact: true })
-
 export async function openProviderSettings(page: Page) {
   // A saved change returns to settings. Load them again for fresh data.
   if (/\/providers\/[^/?#]+\/settings$/.test(new URL(page.url()).pathname)) {

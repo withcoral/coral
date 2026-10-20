@@ -144,8 +144,10 @@ test('The keyboard drives the operations table, its drawer, and its policy', asy
       await page.keyboard.press('Enter')
       const drawer = page.getByRole('dialog', { name: 'op002', exact: true })
       await page.waitForURL((url) => url.pathname.endsWith('/ops/op002'))
-      // The drawer has finished opening.
-      await expect.poll(() => drawer.getAttribute('data-starting-style')).toBeNull()
+      // The drawer has finished opening: its keyframe animation has ended.
+      await drawer.evaluate((element) =>
+        Promise.all(element.getAnimations().map((animation) => animation.finished)),
+      )
       // The drawer is still animating out when ↓ arrives.
       await page.keyboard.press('Escape')
       await page.keyboard.press('ArrowDown')
