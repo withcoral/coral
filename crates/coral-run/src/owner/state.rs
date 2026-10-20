@@ -1,13 +1,16 @@
 //! The Run Owner's loop as a pure function of its state and one message.
 //!
-//! [`apply`] decides everything in memory: the Run Output Budget against the
-//! owner's exact total, the Applied cap, how Events and row work fill chunks,
-//! when a chunk commits, what a lost commit means, and the owner's own
-//! liveness bounds: suspect after one lease without a successful commit
-//! (Program requests answer at Recorded only), self-interrupt after three
-//! (the Program ends, and the Run records Interrupted once the database
-//! answers). It does no I/O; it returns [`Effect`]s for the hosting task to
-//! run.
+//! [`apply`] does no I/O; it returns [`Effect`]s for the hosting task to run.
+//! It decides, in memory:
+//!
+//! - the Run Output Budget, against the owner's exact total;
+//! - the Applied cap on unrecorded output;
+//! - how Events and row work fill chunks, and when a chunk commits;
+//! - what a lost commit means;
+//! - the owner's liveness. After one lease without a successful commit the
+//!   owner is suspect and answers Program requests only once recorded.
+//!   After three it interrupts its Run: the Program ends, and one
+//!   Interrupted chunk is written as soon as the database answers.
 
 use std::collections::VecDeque;
 
