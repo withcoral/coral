@@ -98,7 +98,7 @@ function ExecutionDetail({
     </DescriptionList.List>
   )
   return (
-    <Panel>
+    <Panel label={request?.kind === 'approval' ? `Review ${request.callPath}` : undefined}>
       {!review && !connection && (
         <>
           <DetailHeader

@@ -189,7 +189,8 @@ function lostAuthority(): Handlers {
 function taskDetail(
   options: AgentOption & {
     feedback?: string
-    taskUnavailable?: boolean
+    /** Refuse the Task read, with this code or NotFound. */
+    taskUnavailable?: boolean | Code
     contextImpact?: boolean
     outOfWindow?: boolean
   } = {},
@@ -197,7 +198,11 @@ function taskDetail(
   return {
     activity: {
       inspectTask: (input) => {
-        if (options.taskUnavailable && input.name === task) refuse('task unavailable')
+        if (options.taskUnavailable && input.name === task)
+          refuse(
+            'task unavailable',
+            options.taskUnavailable === true ? Code.NotFound : options.taskUnavailable,
+          )
         if (options.agentRun && input.scope && input.scope.agent !== agent)
           refuse('outside Agent scope')
         return {
@@ -714,14 +719,10 @@ describe('hierarchical activity through the private server interface', () => {
       )
     }
   })
-  it('opens an exact review beside the Run, ignoring an action cursor from an older link', async () => {
+  it('opens an exact review beside the Run with one read of its first page of actions', async () => {
     const { api, calls } = coral(list(), ...reviewReads())
-    const page = await loadActivity(
-      request({ record: run, request: approval, actionsAfter: 'action-cursor' }),
-      api,
-      { scope },
-    )
-    // The Run's actions start at the first page; the old cursor does not skip any.
+    const page = await loadActivity(request({ record: run, request: approval }), api, { scope })
+    // Without a "More actions" cursor, the review reads the Run once, at its first page.
     expect(calls.filter((call) => call.method === 'run').map((call) => call.input)).toEqual([
       expect.objectContaining({ name: run, actionAfter: '' }),
     ])
@@ -1115,6 +1116,44 @@ describe('hierarchical activity through the private server interface', () => {
       const review = page.detail?.kind === 'invocation' ? page.detail.request : null
       expect(review?.kind === 'approval' && review.taskIntent).toBe(taskIntent ?? undefined)
       expect(calls.find((call) => call.method === 'task')?.input).toMatchObject({ name: task })
+    },
+  )
+  // Catches: an optional Task read that fails the whole approval on a passing fault, or that
+  // hides an expired session, a refused request or a cancelled load behind a readable review.
+  it.each([
+    { label: 'unavailable', code: Code.Unavailable, readable: true },
+    { label: 'failing inside Coral', code: Code.Internal, readable: true },
+    { label: 'refused for your session', code: Code.Unauthenticated, readable: false },
+    { label: 'refused as invalid', code: Code.InvalidArgument, readable: false },
+    // An aborted load reaches Reef as Canceled.
+    { label: 'cancelled with the load', code: Code.Canceled, readable: false },
+  ])(
+    'with its Task read $label, keeps the approval review readable: $readable',
+    async ({ code, readable }) => {
+      const { api } = coral(
+        list(),
+        runDetail(),
+        invocationDetail(),
+        approvalDetail(),
+        taskDetail({ taskUnavailable: code }),
+      )
+      const load = loadActivity(
+        request({ record: invocation, request: approval, tree: '1' }),
+        api,
+        { scope },
+      )
+      if (!readable) {
+        await expect(load).rejects.toMatchObject({ code })
+        return
+      }
+      const page = await load
+      expect(page.detail).toMatchObject({
+        kind: 'invocation',
+        requestUnavailable: false,
+        request: { kind: 'approval', name: approval, arguments: expect.any(String) },
+      })
+      const review = page.detail?.kind === 'invocation' ? page.detail.request : null
+      expect(review && 'taskIntent' in review).toBe(false)
     },
   )
   it('keeps exact operation detail selected outside the list and opens only its own approval', async () => {
@@ -1680,6 +1719,127 @@ describe('the pending actions of the selected Run', () => {
     expect(page.detail).toMatchObject({
       kind: 'run',
       run: { actionPage: { total: '202', next: 'cursor-1', incomplete: true } },
+    })
+  })
+})
+
+describe('a request reviewed from a later page of the Run actions', () => {
+  // The selected approval and connection wait on the Run's second page of actions.
+  const laterPages = {
+    '': { actions: range(0, 100).map(approvalAt), next: 'cursor-1' },
+    'cursor-1': {
+      actions: [
+        {
+          request: { request: { case: 'approval' as const, value: approval } },
+          callPath: 'coral.providers.mail.send',
+          providerLabel: 'Mail',
+          deadlineAtUnixNanos: 902_000_000_000n,
+        },
+        {
+          request: { request: { case: 'accountConnection' as const, value: connection } },
+          callPath: '',
+          providerLabel: 'Linear',
+          deadlineAtUnixNanos: 902_000_000_000n,
+        },
+      ],
+      next: '',
+    },
+  } as Record<string, { actions: ReturnType<typeof approvalAt>[]; next: string }>
+  const later = laterPages['cursor-1'].actions.map((item) => item.request.request.value)
+
+  // Catches: a review that drops the page it was opened from, so its Run lists the first page
+  // under it and a connection loses its provider's name.
+  it.each([
+    ['its Run', run],
+    ['its operation', invocation],
+  ])('keeps the page an approval opened from %s', async (_label, record) => {
+    const { api, calls } = coral(
+      list(),
+      taskDetail(),
+      runEntries(),
+      invocationDetail(),
+      approvalDetail(),
+      pagedRun(laterPages, 102n),
+    )
+    const page = await loadActivity(
+      request({ record, request: approval, actionsAfter: 'cursor-1', tree: '1' }),
+      api,
+      { scope },
+    )
+    // The Run and the first page once, then the one page the link names.
+    expect(runReads(calls)).toEqual([
+      { actionAfter: '', pageSize: 1 },
+      { actionAfter: 'cursor-1', pageSize: 1 },
+    ])
+    expect(calls.filter((call) => call.method === 'approval').map((call) => call.input)).toEqual([
+      expect.objectContaining({ name: approval }),
+    ])
+    expect(page.detail).toMatchObject({
+      kind: 'invocation',
+      requestUnavailable: false,
+      request: { kind: 'approval', name: approval, run },
+      context: {
+        run: { actionPage: { total: '102', next: '', after: 'cursor-1' } },
+      },
+    })
+    const context = page.detail?.kind === 'invocation' ? page.detail.context : undefined
+    expect(context?.run.actionPage?.actions.map((item) => item.name)).toEqual(later)
+  })
+
+  it('keeps the page a connection opened from, with its provider', async () => {
+    const { api, calls } = coral(
+      list(),
+      taskDetail(),
+      runEntries(),
+      connectionRequest(),
+      pagedRun(laterPages, 102n),
+    )
+    const page = await loadActivity(
+      request({ record: run, request: connection, actionsAfter: 'cursor-1' }),
+      api,
+      { scope },
+    )
+    expect(runReads(calls)).toEqual([
+      { actionAfter: '', pageSize: 1 },
+      { actionAfter: 'cursor-1', pageSize: 1 },
+    ])
+    expect(calls.filter((call) => call.method === 'connection').map((call) => call.input)).toEqual([
+      expect.objectContaining({ name: connection }),
+    ])
+    expect(page.detail).toMatchObject({
+      kind: 'run',
+      requestUnavailable: false,
+      request: { kind: 'account_connection', name: connection },
+      run: { actionPage: { after: 'cursor-1' } },
+    })
+    const actions = page.detail?.kind === 'run' ? page.detail.run.actionPage!.actions : []
+    expect(actions.find((item) => item.name === connection)).toMatchObject({
+      kind: 'account_connection',
+      providerLabel: 'Linear',
+    })
+    // A later page never swaps in another request for the one the link names.
+    expect(page.initialRequest).toBeUndefined()
+  })
+
+  // Catches: a failed page of context that takes the exact review down with it.
+  it('keeps the review readable on the first page when its later page fails', async () => {
+    const { api } = coral(
+      list(),
+      taskDetail(),
+      runEntries(),
+      invocationDetail(),
+      approvalDetail(),
+      pagedRun(laterPages, 102n, 'cursor-1'),
+    )
+    const page = await loadActivity(
+      request({ record: run, request: approval, actionsAfter: 'cursor-1' }),
+      api,
+      { scope },
+    )
+    expect(page.detail).toMatchObject({
+      kind: 'invocation',
+      request: { kind: 'approval', name: approval },
+      context: { run: { actionPage: { next: 'cursor-1', incomplete: true } } },
     })
   })
 })

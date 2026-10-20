@@ -21,7 +21,7 @@ import { Pill } from '@/wax/components/pill'
 import type { RequestDetail, RunDetail } from '../activity/types'
 import { restoreFirst, useActivityArchived, useActivityConnected } from '../activity/live'
 import { settledApproval } from './approval-state'
-import { PanelFooter, PanelHeader } from '../activity/panel'
+import { PanelFooter, PanelHeader, usePanelLabel } from '../activity/panel'
 import { Arguments } from './arguments'
 import { useShellCsrf } from '@/lib/use-shell-csrf'
 import type { action } from '@/routes/activity-resolve'
@@ -196,8 +196,12 @@ export function ApprovalReview({
     () => withoutInlineDocument(detail.arguments),
     [detail.arguments],
   )
+  // The pinned decision renders at the Panel's end. A Panel named for this review holds it
+  // inside the region; one name, so there is one region to find.
+  const label = `Review ${detail.callPath}`
+  const panelLabel = usePanelLabel()
   return (
-    <section className={styles.review} aria-label={`Review ${detail.callPath}`}>
+    <section className={styles.review} aria-label={panelLabel === label ? undefined : label}>
       <PanelHeader
         icon={plateIcons[tone]}
         tone={tone}

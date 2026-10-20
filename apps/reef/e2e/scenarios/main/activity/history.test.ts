@@ -1,3 +1,4 @@
+import type { Page } from 'playwright'
 import { expect, test } from 'vitest'
 import { authenticatedTarget, loginActor, mcpToken } from '../../../support/actors.ts'
 import { withBrowserSession } from '../../../support/browser-session.ts'
@@ -11,6 +12,21 @@ import {
   setOperationPolicy,
 } from '../../../support/providers.ts'
 import { openApiDocument } from '../../../support/provider-fixtures.ts'
+
+/**
+ * Opens the recorded description's Details, which keep its source collapsed, and waits until
+ * the recorded source that holds `marker` shows.
+ */
+async function openRecordedSource(page: Page, marker: string) {
+  const details = page
+    .getByRole('dialog')
+    .locator('details')
+    .filter({ has: page.locator('pre', { hasText: marker }) })
+    .last()
+  if ((await details.getAttribute('open')) === null)
+    await details.locator('summary').first().click()
+  await details.locator('pre').filter({ hasText: marker }).first().waitFor()
+}
 
 test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen reading position', async (context) => {
   const actor = await loginActor(context, authenticatedTarget().authentication.owner)
@@ -166,7 +182,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           `/workspaces/${first}/activity?${new URLSearchParams({ expand: `workspaces/${first}/tasks/${task}` })}`,
         )
         await page.getByRole('link', { name: 'Inspect one Operation', exact: true }).first().click()
-        await page.locator('pre').filter({ hasText: 'historical-source-249' }).first().waitFor()
+        await openRecordedSource(page, 'historical-source-249')
         expect(await page.content()).not.toContain('replacement-source-249')
         const rejectedRow = page
           .getByRole('row', { includeHidden: true })
@@ -191,7 +207,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
             .waitFor({ state: 'detached' })
           expect(await page.content()).not.toContain('historical-source-249')
           await page.goBack()
-          await page.locator('pre').filter({ hasText: 'historical-source-249' }).first().waitFor()
+          await openRecordedSource(page, 'historical-source-249')
         },
       )
       await step(
@@ -239,7 +255,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
             (await selectedLink.boundingBox())!.y - (await list.boundingBox())!.y
           const before = await relativePosition()
           await selectedLink.click()
-          await page.locator('pre').filter({ hasText: 'replacement-source-249' }).first().waitFor()
+          await openRecordedSource(page, 'replacement-source-249')
           await page.getByRole('dialog', { name: 'Activity details' }).waitFor()
           expect(await list.isVisible()).toBe(true)
           await page.getByRole('button', { name: 'Close details', exact: true }).click()

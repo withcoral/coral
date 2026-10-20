@@ -1902,7 +1902,13 @@ const actionAt = (index: number) => ({
   deadline: '2030-09-22T09:15:00Z',
 })
 const actions = (count: number) => Array.from({ length: count }, (_, index) => actionAt(index))
-function showActions(actionPage: ActionPage) {
+function showActions(
+  actionPage: ActionPage,
+  {
+    request = null,
+    query = 'request=stale',
+  }: { request?: RequestDetail | null; query?: string } = {},
+) {
   const waiting = { ...run, requiresAction: true, actionPage }
   renderRoute(
     <ActionReviewSession>
@@ -1914,7 +1920,7 @@ function showActions(actionPage: ActionPage) {
           detail: {
             kind: 'run',
             run: waiting,
-            request: null,
+            request,
             source: 'return null;',
             linkedFunctions: [],
             terminal: { kind: 'unavailable' },
@@ -1922,7 +1928,7 @@ function showActions(actionPage: ActionPage) {
         }}
       />
     </ActionReviewSession>,
-    { entry: `/activity?record=${encodeURIComponent(run.name)}&request=stale` },
+    { entry: `/activity?record=${encodeURIComponent(run.name)}&${query}` },
   )
   return screen.queryByRole('navigation', { name: 'Actions in this run' })
 }
@@ -1994,6 +2000,67 @@ describe('a Run that waits on more than five actions', () => {
       linkQuery(within(nav).getByRole('link', { name: 'First actions' })).has('actionsAfter'),
     ).toBe(false)
     expect(within(nav).queryByRole('link', { name: 'More actions in this run' })).toBeNull()
+  })
+
+  // A later page that holds a pending approval and a connection, as a "More actions" link opens it.
+  const laterConnection: Extract<RequestDetail, { kind: 'account_connection' }> = {
+    kind: 'account_connection',
+    name: `${workspace}/accountConnections/later`,
+    provider: `${workspace}/providers/linear`,
+    state: 'pending',
+    expiresAt: '2030-09-22T09:15:00Z',
+  }
+  const laterPage: ActionPage = {
+    actions: [
+      {
+        kind: 'approval',
+        name: approvalRequest.name,
+        callPath: approvalRequest.callPath,
+        providerLabel: 'Mail',
+        deadline: '2030-09-22T09:15:00Z',
+      },
+      {
+        kind: 'account_connection',
+        name: laterConnection.name,
+        callPath: '',
+        providerLabel: 'Linear',
+        deadline: '2030-09-22T09:15:00Z',
+      },
+    ],
+    total: '102',
+    next: '',
+    after: 'cursor-1',
+  }
+
+  // Catches: a review link that drops the page it came from, so the review reads the first page.
+  it('opens each review on a later page with that page still named', () => {
+    const nav = showActions(laterPage, { query: 'actionsAfter=cursor-1' })!
+    const links = within(within(nav).getByRole('list')).getAllByRole('link')
+    expect(links.map((link) => linkQuery(link).get('request'))).toEqual(
+      laterPage.actions.map((item) => item.name),
+    )
+    for (const link of links) expect(linkQuery(link).get('actionsAfter')).toBe('cursor-1')
+  })
+
+  // Catches: a review from a later page that lists the Run's actions under it, or a connection
+  // that loses its provider's name.
+  it.each([
+    ['an approval', approvalRequest, `Review ${approvalRequest.callPath}`],
+    ['a connection', laterConnection, 'Connect your Linear account'],
+  ] as const)('reviews %s from a later page as its own request', (_kind, request, name) => {
+    const nav = showActions(laterPage, {
+      request,
+      query: `actionsAfter=cursor-1&request=${encodeURIComponent(request.name)}`,
+    })
+    expect(nav).toBeNull()
+    if (request.kind === 'approval')
+      expect(screen.getByRole('region', { name })).toContainElement(
+        screen.getByRole('button', { name: 'Approve this call' }),
+      )
+    else {
+      expect(screen.getByRole('heading', { name })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Connect Linear' })).toBeInTheDocument()
+    }
   })
 })
 
@@ -2375,6 +2442,36 @@ it.each([
     } else expect(failure).toBeNull()
   },
 )
+
+// Catches: a pinned decision that leaves the named review, so navigating by region skips it.
+it('keeps the pinned Deny and Approve inside the one named review region', () => {
+  const pending = { ...run, state: 'running' as const, endedAt: null, requiresAction: true }
+  renderRoute(
+    <ActionReviewSession>
+      <ActivityDetail
+        page={{
+          ...pendingPage,
+          selected: run.name,
+          selectedRow: pending,
+          detail: { ...runPanel(pending), request: approvalRequest },
+        }}
+      />
+    </ActionReviewSession>,
+    { entry: '/activity' },
+  )
+  const regions = screen.getAllByRole('region', { name: `Review ${approvalRequest.callPath}` })
+  expect(regions).toHaveLength(1)
+  const [review] = regions
+  const approve = within(review).getByRole('button', { name: 'Approve this call' })
+  const deny = within(review).getByRole('button', { name: 'Deny this call' })
+  // Still the drawer's one pinned footer, at the review's end, after the call's outcome.
+  const footer = approve.closest('footer')!
+  expect(footer).toContainElement(deny)
+  expect(footer).toBe(review.lastElementChild)
+  // The buttons submit the review's own form.
+  const form = approve.getAttribute('form')!
+  expect(review.querySelector(`form[id="${form}"]`)).not.toBeNull()
+})
 
 describe('each record states only what helps, once', () => {
   const scaffolding = ['Technical details', 'Context', 'Call', 'Run evidence', 'Retained request']

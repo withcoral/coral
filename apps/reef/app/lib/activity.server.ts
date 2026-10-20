@@ -524,6 +524,14 @@ function unavailable(error: unknown) {
     (error.code === Code.NotFound || error.code === Code.PermissionDenied)
   )
 }
+/** A passing Coral fault. Only optional context may leave it out; sign-in, validation and a
+ * cancelled load still fail the read. */
+function transient(error: unknown) {
+  return (
+    error instanceof ConnectError &&
+    (error.code === Code.Unavailable || error.code === Code.Internal)
+  )
+}
 function invalid(message: string): never {
   throw new Response(message, { status: 400, headers: privateHeaders })
 }
@@ -661,8 +669,9 @@ async function selectedDetail(
           throw new ConnectError('unavailable', Code.NotFound)
         }
         const row = runView(value.run)
-        // Only the Run's own list follows a "More actions" link; a review keeps the first page.
-        const cursor = !query.has('request') && name === run ? query.get('actionsAfter') : null
+        // The Run's list, and a review opened from it, keep the page a "More actions" link named.
+        // A separate read, so a page that fails leaves the Run and its exact review readable.
+        const cursor = name === run ? query.get('actionsAfter') : null
         if (row.actionPage && cursor)
           row.actionPage = await laterRunActions(api, run, row.actionPage, cursor, signal)
         if (selectInitialRequest && !query.has('request') && name === run && !cursor) {
@@ -808,7 +817,8 @@ async function selectedDetail(
             detail.request = review
           }
           // Approval review shows why the Task started. The Run names its Task only when the
-          // caller can see it; an unavailable Task leaves the intent out, not the review.
+          // caller can see it; an unavailable Task, or a passing fault on this optional read,
+          // leaves the intent out, not the review.
           const owner =
             page.detail?.kind === 'invocation' ? page.detail.context?.run.task : undefined
           if (owner) {
@@ -816,7 +826,7 @@ async function selectedDetail(
               const value = await api.activity.inspectTask({ name: owner, pageSize: 1 }, { signal })
               if (value.task?.intent) review.taskIntent = value.task.intent
             } catch (error) {
-              if (!unavailable(error)) throw error
+              if (!unavailable(error) && !transient(error)) throw error
             }
           }
         } else if (

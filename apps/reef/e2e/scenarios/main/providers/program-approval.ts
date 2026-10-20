@@ -1,5 +1,6 @@
 import type { Page } from 'playwright'
 import { expect, type TestContext } from 'vitest'
+import { shownArguments } from '../../../support/arguments.ts'
 import { managementClients } from '../../../support/management.ts'
 import { openApiDocument } from '../../../support/provider-fixtures.ts'
 import {
@@ -82,8 +83,8 @@ export async function approvedProgramProvider(context: TestContext) {
     const { workspace, id, call, runner, paused } = started
     await step('Review the namespace, route and source, with the document collapsed', async () => {
       const review = await openReview(page, paused)
-      const shown = JSON.parse((await review.locator('pre').first().textContent())!)
-      expect(shown).toEqual({
+      // One row per field, each its exact JSON: the whole call, with the document collapsed.
+      expect(await shownArguments(review)).toEqual({
         ...call,
         source: { ...call.source, document: '(OpenAPI document, shown below)' },
       })

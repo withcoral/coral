@@ -11,15 +11,25 @@ import * as styles from './panel.css'
 export const PanelClose = createContext<ReactNode>(null)
 
 const FooterSlot = createContext<HTMLElement | null>(null)
+const PanelLabel = createContext<string | undefined>(undefined)
+
+/** The accessible name of the Panel around this content, if it has one. Content that names
+ * itself the same leaves the name to the Panel, which also holds the pinned footer. */
+export function usePanelLabel() {
+  return useContext(PanelLabel)
+}
 
 /** One Activity detail panel. It ends with the one footer slot that stays pinned to the
- * drawer's bottom: a sticky footer pins only within its parent, so the slot spans the panel. */
-export function Panel({ children }: { children: ReactNode }) {
+ * drawer's bottom: a sticky footer pins only within its parent, so the slot spans the panel.
+ * A `label` names the panel as a region, so its footer controls stay inside that region. */
+export function Panel({ label, children }: { label?: string; children: ReactNode }) {
   const [slot, setSlot] = useState<HTMLElement | null>(null)
   const close = useContext(PanelClose)
   return (
-    <section className={styles.panel}>
-      <FooterSlot value={slot}>{children}</FooterSlot>
+    <section className={styles.panel} aria-label={label}>
+      <FooterSlot value={slot}>
+        <PanelLabel value={label}>{children}</PanelLabel>
+      </FooterSlot>
       <Card.Footer
         ref={setSlot}
         sticky
