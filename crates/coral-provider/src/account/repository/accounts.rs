@@ -50,7 +50,10 @@ pub(in crate::account) async fn scoped_account_locked(
     row.map(AccountRow::decode).transpose()
 }
 
-/// The domain holds the Provider/Workspace write lock before calling this facet.
+/// Two writers that both find no Account may insert at once (two Runs of one
+/// User reaching a missing Account under shared holds): the unique scope
+/// index keeps one row, the other insert does nothing, and the reread returns
+/// the row that exists.
 pub(in crate::account) async fn ensure_account(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
@@ -98,6 +101,7 @@ pub(in crate::account) async fn ensure_account(
                     _ => None,
                 }),
             ])
+            .on_conflict(OnConflict::new().do_nothing().to_owned())
             .to_owned(),
     )
     .await?;

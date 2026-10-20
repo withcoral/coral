@@ -1,4 +1,6 @@
 //! Personal Accounts and the connection requests that waiting Invocations open.
+use std::time::Duration;
+
 use coral_credentials::{CredentialValues, CredentialVault, Secret};
 use coral_workspace::{OrganizationRole, WorkspaceDisplayName, WorkspaceId};
 
@@ -60,6 +62,100 @@ async fn connect(
             CredentialValues::token(Secret::new(secret.into()).unwrap()),
         )
         .await
+}
+
+/// Two waiting Invocations of one User that find no Account at once open
+/// one connection request: their holds are shared, so both reach the insert,
+/// and the second joins the first's pending row instead of failing the chunk
+/// that carries it on the unique pending index.
+#[tokio::test]
+async fn concurrent_creators_of_one_users_connection_request_share_its_row() {
+    const OPERATION: &str = "coral.providers.private.getPrivateForecast";
+    let (db, workspaces, providers) = test_modules().await;
+    let user = organization_user(
+        db.database(),
+        "user:concurrent-connection",
+        OrganizationRole::Member,
+    )
+    .await;
+    let context = change_context(user.clone(), 10, '1');
+    let workspace = workspaces
+        .create(&context, WorkspaceDisplayName::parse("Concurrent").unwrap())
+        .await
+        .unwrap();
+    let scope = workspace.id().clone();
+    publish_provider(
+        &providers,
+        &context,
+        &scope,
+        CREDENTIAL_REQUIRED_OPENAPI,
+        "private",
+        CredentialRoute::Caller,
+    )
+    .await;
+    let principal = coral_workspace::AuthenticatedPrincipal::user(user.clone());
+
+    // The first creator keeps its request uncommitted while the second resolves.
+    let mut first = providers.database.begin().await.unwrap();
+    let target = crate::resolve_owner_operation_in_transaction(&mut first, &scope, OPERATION)
+        .await
+        .unwrap()
+        .expect("callable Operation");
+    let ConnectionResolution::Waiting(created) =
+        resolve_connection_in_transaction(&mut first, &target, principal.principal(), None, 20)
+            .await
+            .unwrap()
+    else {
+        panic!("a User without an Account waits on a connection request")
+    };
+    let mut second = tokio::spawn({
+        let database = providers.database.clone();
+        let scope = scope.clone();
+        let principal = principal.clone();
+        async move {
+            let mut tx = database.begin().await.unwrap();
+            let target = crate::resolve_owner_operation_in_transaction(&mut tx, &scope, OPERATION)
+                .await
+                .unwrap()
+                .expect("callable Operation");
+            let resolution = resolve_connection_in_transaction(
+                &mut tx,
+                &target,
+                principal.principal(),
+                None,
+                21,
+            )
+            .await;
+            tx.commit().await.unwrap();
+            resolution
+        }
+    });
+    // Neither backend lets the second creator finish first: SQLite's write
+    // transaction waits at BEGIN, Postgres at the unique index entry.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), &mut second)
+            .await
+            .is_err(),
+        "the second creator waits for the first"
+    );
+    first.commit().await.unwrap();
+    let ConnectionResolution::Waiting(joined) = second.await.unwrap().unwrap() else {
+        panic!("the second creator waits on a connection request")
+    };
+    assert_eq!(
+        joined, created,
+        "the second creator joins the first's request"
+    );
+    let user_id = coral_workspace::UserId::parse(principal.principal().id().as_str()).unwrap();
+    let mut tx = providers.database.begin_read_snapshot().await.unwrap();
+    assert_eq!(
+        super::repository::pending_connections(&mut tx, &scope, &user_id)
+            .await
+            .unwrap(),
+        vec![created],
+        "one pending request for the User"
+    );
+    tx.commit().await.unwrap();
 }
 
 /// The Accounts page lists one row per caller Provider for the reading User,

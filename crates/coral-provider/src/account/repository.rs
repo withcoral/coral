@@ -22,7 +22,7 @@ use crate::{Error, ProviderId};
 use coral_catalog::ProviderCredentialContract;
 use coral_db::Transaction;
 use coral_workspace::{Principal, PrincipalKind, UserId, WorkspaceId};
-use sea_query::{Expr, ExprTrait as _, Iden, Query};
+use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query};
 
 impl TryFrom<String> for ConnectionState {
     type Error = Error;
@@ -1368,6 +1368,9 @@ pub(super) async fn pending_connection(
     row.map(|(id,)| ConnectionRequestId::parse(&id)).transpose()
 }
 
+/// Inserts the User's pending connection request and reports whether it
+/// did: the unique pending index keeps the request another writer created
+/// meanwhile, and the insert then changes nothing.
 pub(super) async fn insert_connection(
     tx: &mut Transaction<'_>,
     target_provider: &ProviderAccess,
@@ -1375,49 +1378,51 @@ pub(super) async fn insert_connection(
     contract: &ProviderCredentialContract,
     expires: i64,
     account: &LoadedAccount,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let workspace = target_provider.workspace_id();
     let serialized = contract.to_storage()?;
     let contract_key = connection_contract_key(&serialized);
-    tx.execute_change(
-        Query::insert()
-            .into_table(AccountConnectionRequests::Table)
-            .columns([
-                AccountConnectionRequests::Id,
-                AccountConnectionRequests::WorkspaceId,
-                AccountConnectionRequests::ProviderAccountSettingVersion,
-                AccountConnectionRequests::ProviderId,
-                AccountConnectionRequests::UserId,
-                AccountConnectionRequests::AccountId,
-                AccountConnectionRequests::AccountAuthorizationVersion,
-                AccountConnectionRequests::Contract,
-                AccountConnectionRequests::ContractKey,
-                AccountConnectionRequests::State,
-                AccountConnectionRequests::ExpiresAtUnixNanos,
-            ])
-            .values_panic([
-                Expr::val(id.to_string()),
-                Expr::val(workspace.to_string()),
-                Expr::val(target_provider.version()),
-                Expr::val(target_provider.id().to_string()),
-                Expr::val(
-                    account
-                        .user_id
-                        .as_ref()
-                        .ok_or(Error::AccountInput)?
-                        .as_str(),
-                ),
-                Expr::val(account.id.to_string()),
-                Expr::val(&account.authorization_version),
-                Expr::val(serialized),
-                Expr::val(contract_key),
-                Expr::val(ConnectionState::Pending.storage()),
-                Expr::val(expires),
-            ])
-            .to_owned(),
-    )
-    .await?;
-    Ok(())
+    let inserted = tx
+        .execute_change(
+            Query::insert()
+                .into_table(AccountConnectionRequests::Table)
+                .columns([
+                    AccountConnectionRequests::Id,
+                    AccountConnectionRequests::WorkspaceId,
+                    AccountConnectionRequests::ProviderAccountSettingVersion,
+                    AccountConnectionRequests::ProviderId,
+                    AccountConnectionRequests::UserId,
+                    AccountConnectionRequests::AccountId,
+                    AccountConnectionRequests::AccountAuthorizationVersion,
+                    AccountConnectionRequests::Contract,
+                    AccountConnectionRequests::ContractKey,
+                    AccountConnectionRequests::State,
+                    AccountConnectionRequests::ExpiresAtUnixNanos,
+                ])
+                .values_panic([
+                    Expr::val(id.to_string()),
+                    Expr::val(workspace.to_string()),
+                    Expr::val(target_provider.version()),
+                    Expr::val(target_provider.id().to_string()),
+                    Expr::val(
+                        account
+                            .user_id
+                            .as_ref()
+                            .ok_or(Error::AccountInput)?
+                            .as_str(),
+                    ),
+                    Expr::val(account.id.to_string()),
+                    Expr::val(&account.authorization_version),
+                    Expr::val(serialized),
+                    Expr::val(contract_key),
+                    Expr::val(ConnectionState::Pending.storage()),
+                    Expr::val(expires),
+                ])
+                .on_conflict(OnConflict::new().do_nothing().to_owned())
+                .to_owned(),
+        )
+        .await?;
+    Ok(inserted > 0)
 }
 
 fn connection_contract_key(serialized: &str) -> String {

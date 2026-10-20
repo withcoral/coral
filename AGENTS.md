@@ -51,7 +51,10 @@
   decisions read side by side and a writer's `UPDATE` waits for them;
   nothing on SQLite, whose write transaction already serializes them behind
   every writer. Keep the no-op `UPDATE` hold for a row the transaction goes
-  on to write.
+  on to write. A row that two such decisions may both create for the first
+  time (an Account placeholder, a connection request) is inserted with
+  `ON CONFLICT DO NOTHING` and reread, since no shared hold serializes its
+  creators.
 - A Run's Program paths (Emissions, Logs, Invocation admission, held
   rechecks, the Dispatch Fence, Invocation completion) write only through its
   Run Owner: an Event is applied in owner memory and a row write is a

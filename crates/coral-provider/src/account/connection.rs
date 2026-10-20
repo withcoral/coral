@@ -496,8 +496,11 @@ pub enum ConnectionResolution {
 /// Resolves credentials or creates/joins the exact User connection request.
 /// A connected Account whose authorization expired or no longer fits the
 /// contract waits on a request like a missing one; the User's explicit reconnect
-/// satisfies it. The Invocation owner must hold current Run, Workspace, Provider,
-/// and policy authority and atomically attach the returned request before committing.
+/// satisfies it. The Invocation owner must have checked current Run, Workspace,
+/// Provider, and policy authority and atomically attach the returned request
+/// before committing. Its holds are shared, so two Invocations of one User
+/// may both find no request and create one at once: the unique pending index
+/// keeps the first, and the second joins it.
 /// # Errors
 /// Returns coded gate failures without selecting fallback accounts or replaying work.
 pub async fn resolve_connection_in_transaction(
@@ -554,9 +557,19 @@ pub async fn resolve_connection_in_transaction(
             &contract,
         )
         .await?;
-        repository::insert_connection(tx, target_provider, id, &contract, expires, &account)
-            .await?;
-        return Ok(ConnectionResolution::Waiting(id));
+        if repository::insert_connection(tx, target_provider, id, &contract, expires, &account)
+            .await?
+        {
+            return Ok(ConnectionResolution::Waiting(id));
+        }
+        // Another creator committed this User's request between the lookup and
+        // the insert; it is the one to wait on. Gone again already (ended
+        // before this reread), the Invocation fails its gate like a missing
+        // Account, without inventing a request.
+        return match repository::pending_connection(tx, target_provider, &user, &contract).await? {
+            Some(id) => Ok(ConnectionResolution::Waiting(id)),
+            None => Err(Error::AccountRequired),
+        };
     };
     if &row.provider_id != target_provider.id()
         || row.provider_account_setting_version != target_provider.version()
