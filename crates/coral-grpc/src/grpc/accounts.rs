@@ -3,6 +3,7 @@ use super::providers::{error, parent, resource, scope};
 use super::workspaces::{change, invalid, timestamp};
 use super::{GrpcServices, management as wire};
 use coral_provider::account::{self as domain, AccountScope};
+use coral_provider::access::ProviderCallRoot;
 use coral_provider::{ManagementRequestId, ProviderId};
 use coral_workspace::{AuthenticatedUser, PrincipalId, WorkspaceId};
 use tonic::{Request, Response, Status};
@@ -228,7 +229,10 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
                 .map(|value| wire::UserAccountInspection {
                     provider: format!("workspaces/{owner}/providers/{}", value.provider.id()),
                     provider_display_name: value.provider.display_name().to_owned(),
-                    provider_namespace: value.provider.namespace().as_str().into(),
+                    provider_namespace: match value.provider.call_root() {
+                        ProviderCallRoot::Owner(namespace) => namespace.as_str().into(),
+                        ProviderCallRoot::Builtin => String::new(),
+                    },
                     account: Some(account_inspection_view(value.account)),
                     pending_connection: value
                         .pending_connection
