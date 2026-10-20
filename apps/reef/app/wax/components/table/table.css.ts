@@ -259,6 +259,9 @@ export const scrollArea = style({
 export const interactiveRow = style({ cursor: 'pointer' })
 // The block padding a scroll-layout row has, for a cell that reaches into it.
 const rowPaddingBlock = createVar()
+// A scroll-layout row's inline padding and column gap, which a selection cell reaches into.
+const scrollRowPaddingInline = 12
+const scrollRowGap = 8
 
 export const row = style({
   ...rowGroup,
@@ -289,10 +292,10 @@ export const row = style({
     },
     [`${scrollTable} &`]: {
       alignItems: 'center',
-      gap: 8,
+      gap: scrollRowGap,
       vars: { [rowPaddingBlock]: tableVars.scrollRowPaddingBlock.value },
       paddingBlock: rowPaddingBlock,
-      paddingInline: 12,
+      paddingInline: scrollRowPaddingInline,
       borderBottomColor: theme.stroke.secondary,
     },
     // Group headings pin below the head by its height, so it is exact.
@@ -317,8 +320,13 @@ const cursor = {
   backgroundColor: theme.surface.onMainContentSubtle,
   boxShadow: `inset 0 0 0 2px ${theme.stroke.focused}`,
 }
-// The row's own focus ring would repeat the cursor's outline.
-export const activeRow = style({ ...cursor, outline: 'none' })
+// The row's own focus ring would repeat the cursor's outline. Forced colors drop
+// the shadow and the background, but they show a transparent outline.
+export const activeRow = style({
+  ...cursor,
+  outline: '2px solid transparent',
+  outlineOffset: -2,
+})
 // A table that takes focus shows it, unless a cursor row already shows where the keys act.
 export const focusableTable = style({
   selectors: {
@@ -652,13 +660,13 @@ export const selectionCell = style({
   selectors: {
     [`${scrollTable} &`]: {
       marginBlock: `calc(-1 * ${rowPaddingBlock})`,
-      marginInline: '-12px -8px',
+      marginInline: `-${scrollRowPaddingInline}px -${scrollRowGap}px`,
       // Its column aligns it at the start, so it takes the extra width itself.
-      width: 'calc(100% + 20px)',
+      width: `calc(100% + ${scrollRowPaddingInline + scrollRowGap}px)`,
     },
   },
 })
 globalStyle(`${scrollTable} ${selectionCell} > label`, {
   paddingBlock: rowPaddingBlock,
-  paddingInline: '12px 8px',
+  paddingInline: `${scrollRowPaddingInline}px ${scrollRowGap}px`,
 })
