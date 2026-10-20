@@ -11,6 +11,12 @@ export const label = style({
   ...theme.typography.body,
   selectors: { '&:has(:disabled)': { color: theme.content.disabled, cursor: 'not-allowed' } },
 })
+export const fill = style({
+  alignSelf: 'stretch',
+  height: '100%',
+  justifyContent: 'center',
+  width: '100%',
+})
 // Drawn here rather than by the browser, whose unchecked outline is near-black.
 // The outline keeps 3:1 against the page (WCAG 1.4.11); a check or a dash in
 // the filled box marks the state, so it does not rest on colour alone.

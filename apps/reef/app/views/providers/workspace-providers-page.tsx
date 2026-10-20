@@ -200,7 +200,6 @@ function WorkspaceProvidersContent({
       breadcrumbs={trail([], 'Providers')}
       titled={!empty}
       compact
-      actions={!empty && canChange && <AddProviderLauncher {...entry} />}
       header={
         <>
           {!owner && (
@@ -234,6 +233,7 @@ function WorkspaceProvidersContent({
         </div>
       ) : (
         <ProvidersTableScreen
+          addButton={addButton}
           canChange={canChange}
           filteredProviders={filteredProviders}
           form={form}
@@ -331,6 +331,17 @@ function listedOperations(
   return sorted.filter((o) => o === linkedOperation || matching.includes(o))
 }
 
+// A row the keyboard cursor rests on.
+type CursorStop =
+  | { kind: 'heading'; key: string; index: number; depth: 0 | 1; collapsed: boolean }
+  | {
+      kind: 'operation'
+      key: SelectionKey
+      index: number
+      provider: ProviderView
+      operation: OperationView
+    }
+
 type TableRowItem =
   | { kind: 'provider'; key: string; provider: ProviderView }
   | { kind: 'group'; key: string; provider: ProviderView; group: string }
@@ -343,6 +354,10 @@ type TableRowItem =
 type ProviderSection = {
   provider: ProviderView
   index: number
+  /** Its key in the collapsed set; collapsed, the section lists no rows. */
+  key: string
+  collapsed: boolean
+  /** Every match, collapsed or not: the heading counts and selects these. */
   operations: OperationView[]
   status: string | null
   statusIndex: number | null
@@ -351,7 +366,11 @@ type ProviderSection = {
   groups: {
     group: string
     index: number
-    /** Each member with its index in the flat row list, for the virtualizer. */
+    key: string
+    collapsed: boolean
+    /** Every listed member, collapsed or not: the heading counts and selects these. */
+    members: OperationView[]
+    /** Each listed row with its index in the flat row list, for the virtualizer. */
     operations: { index: number; operation: OperationView }[]
   }[]
 }
@@ -381,6 +400,7 @@ const tableRowHeight = (row: TableRowItem) => {
 }
 
 function ProvidersTableScreen({
+  addButton,
   canChange,
   filteredProviders,
   form,
@@ -392,6 +412,8 @@ function ProvidersTableScreen({
   selectedOperation,
   setRailFilter,
 }: {
+  /** The main action, at the foot of the rail so it shows on every tab. */
+  addButton: ReactNode
   canChange: boolean
   filteredProviders: ProviderView[]
   form: FormContext
@@ -418,6 +440,9 @@ function ProvidersTableScreen({
   // "Show selected" lists the selection as it was when clicked, like a policy
   // filter, so a row the reader unchecks or applies a policy to stays in view.
   const [selectedView, setSelectedView] = useState<ReadonlySet<SelectionKey> | null>(null)
+  // The provider and group headings the reader collapsed, by row key. A filter
+  // leaves them collapsed; their headings still count the matches.
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const tableRef = useRef<HTMLDivElement>(null)
   const searchable = useMemo(() => searchableProviders(providers), [providers])
   const selectedProviderId = selectedProvider?.id ?? null
@@ -473,9 +498,14 @@ function ProvidersTableScreen({
     const flat: TableRowItem[] = []
     const tree: ProviderSection[] = []
     for (const { provider, matching, listed } of visibleByProvider) {
+      // The operation the drawer shows opens its provider and group, so its row is there.
+      const linked = provider.id === selectedProviderId ? selectedOperation : null
+      const key = `provider:${provider.id}`
       const section: ProviderSection = {
         provider,
         index: flat.length,
+        key,
+        collapsed: collapsed.has(key) && !(linked && listed.includes(linked)),
         operations: matching,
         status: null,
         statusIndex: null,
@@ -483,7 +513,8 @@ function ProvidersTableScreen({
         groups: [],
       }
       tree.push(section)
-      flat.push({ kind: 'provider', key: `provider:${provider.id}`, provider })
+      flat.push({ kind: 'provider', key, provider })
+      if (section.collapsed) continue
       if (provider.operations.length === 0) {
         section.status = 'No operations yet. Settings remain available.'
         section.statusIndex = flat.length
@@ -518,13 +549,18 @@ function ProvidersTableScreen({
       for (const [group, members] of [...groups.entries()].toSorted(([a], [b]) =>
         caseFolded(a).localeCompare(caseFolded(b)),
       )) {
+        const groupKey = `group:${provider.id}:${group}`
         const groupSection: ProviderSection['groups'][number] = {
           group,
           index: flat.length,
+          key: groupKey,
+          collapsed: collapsed.has(groupKey) && !(linked && members.includes(linked)),
+          members,
           operations: [],
         }
         section.groups.push(groupSection)
-        flat.push({ kind: 'group', key: `group:${provider.id}:${group}`, provider, group })
+        flat.push({ kind: 'group', key: groupKey, provider, group })
+        if (groupSection.collapsed) continue
         for (const operation of members) {
           groupSection.operations.push({ index: flat.length, operation })
           flat.push({
@@ -537,7 +573,15 @@ function ProvidersTableScreen({
       }
     }
     return { rows: flat, sections: tree }
-  }, [policyFilter, selectedView, tableFilter, visibleByProvider])
+  }, [
+    collapsed,
+    policyFilter,
+    selectedOperation,
+    selectedProviderId,
+    selectedView,
+    tableFilter,
+    visibleByProvider,
+  ])
   const operationIndexes = useMemo(() => {
     const indexes = new Map<string, number>()
     rows.forEach((row, index) => {
@@ -552,6 +596,19 @@ function ProvidersTableScreen({
     estimateSize: (index) => tableRowHeight(rows[index]!),
     scrollRef: tableRef,
   })
+  // Collapsing a group the reader scrolled into would leave them further down
+  // the table; its heading comes back to where it pins instead.
+  const toggleCollapsed = useCallback(
+    (key: string, index: number, depth: number) => {
+      setCollapsed((current) => {
+        const next = new Set(current)
+        if (!next.delete(key)) next.add(key)
+        return next
+      })
+      requestAnimationFrame(() => virtual.revealIndex(index, { depth }))
+    },
+    [virtual],
+  )
   // A new tab starts at its top. This runs before the reveal, so an
   // operation route still scrolls to its row.
   useEffect(() => {
@@ -627,83 +684,144 @@ function ProvidersTableScreen({
   // entry, so Back returns to the tab before it. The route change is a
   // selection within the page, which the parent loader does not revalidate.
   const openTab = (path: string) => navigate(path, { preventScrollReset: true })
+  // Set when the keys move the cursor: its row takes focus once it renders, so
+  // Enter and Space reach it wherever focus was.
+  const focusCursor = useRef(false)
   const closeSelectedRoute = () => {
-    // The keyboard cursor stays on the operation the drawer showed.
-    if (drawerKey) setCursor(drawerKey)
+    // The cursor stays on the operation the drawer showed, and its row takes
+    // focus, so the reader sees where they were and the keys go on from it.
+    setCursor(drawerKey)
+    setClosedKey(drawerKey)
+    focusCursor.current = true
     openTab(tabPath(tab))
   }
 
-  // The keyboard cursor: the operation ↑ and ↓ reach. An open drawer holds it.
-  const [cursor, setCursor] = useState<SelectionKey | null>(null)
-  const drawerKey =
+  // The keyboard cursor: the heading or operation ↑ and ↓ reach. An open
+  // drawer holds it.
+  const [cursor, setCursor] = useState<string | null>(null)
+  const routedKey =
     selectedProviderId && selectedOperationName
       ? selectionKey(selectedProviderId, selectedOperationName)
       : null
+  // A drawer the reader closed while its route change is still pending. The
+  // keys treat it as closed, so ↓ right after Escape does not open the next one.
+  const [closedKey, setClosedKey] = useState<string | null>(null)
+  if (closedKey && routedKey !== closedKey) setClosedKey(null)
+  const drawerKey = routedKey === closedKey ? null : routedKey
   const activeKey = drawerKey ?? cursor
-  const operationOrder = useMemo(
-    () =>
-      rows.flatMap((row, index) =>
-        row.kind === 'operation'
-          ? [
-              {
-                index,
-                key: selectionKey(row.provider.id, row.operation.name),
-                provider: row.provider,
-                operation: row.operation,
-              },
-            ]
-          : [],
-      ),
-    [rows],
-  )
-  const activeOperation = operationOrder.find((entry) => entry.key === activeKey)
+  // A press outside the cursor's row and the filter ends the cursor; the keys
+  // start a new one.
+  useEffect(() => {
+    if (!cursor || drawerKey) return
+    const clear = (event: PointerEvent) => {
+      const keep = [
+        tableRef.current?.querySelector('[data-active]'),
+        document.getElementById(OPERATION_FILTER_ID),
+      ]
+      if (event.target instanceof Node && keep.some((at) => at?.contains(event.target as Node)))
+        return
+      setCursor(null)
+    }
+    document.addEventListener('pointerdown', clear)
+    return () => document.removeEventListener('pointerdown', clear)
+  }, [cursor, drawerKey, setCursor])
+  // Each heading and operation the table lists, in order: the stops ↑ and ↓ reach.
+  const cursorOrder = useMemo(() => {
+    const headings = new Map<string, boolean>()
+    for (const section of sections) {
+      headings.set(section.key, section.collapsed)
+      for (const group of section.groups) headings.set(group.key, group.collapsed)
+    }
+    return rows.flatMap((row, index): CursorStop[] => {
+      if (row.kind === 'operation') {
+        const key = selectionKey(row.provider.id, row.operation.name)
+        return [{ kind: 'operation', key, index, provider: row.provider, operation: row.operation }]
+      }
+      if (row.kind === 'status') return []
+      const depth = row.kind === 'provider' ? 0 : 1
+      return [{ kind: 'heading', key: row.key, index, depth, collapsed: !!headings.get(row.key) }]
+    })
+  }, [rows, sections])
+  const activeStop = cursorOrder.find((stop) => stop.key === activeKey)
+  useEffect(() => {
+    if (!focusCursor.current) return
+    const row = tableRef.current?.querySelector<HTMLElement>('[data-active]')
+    if (!row) return
+    focusCursor.current = false
+    row.focus({ preventScroll: true })
+  })
   const moveCursor =
     (step: 1 | -1, inDrawer = false) =>
     (event: KeyboardEvent) => {
       if (!cursorKeyApplies(event, { fromFilter: true, overControls: true, inDrawer })) return
       event.preventDefault()
-      const at = activeOperation ? operationOrder.indexOf(activeOperation) : -1
+      // The open drawer shows operations, so it steps over the headings.
+      const order = drawerKey
+        ? cursorOrder.filter((stop) => stop.kind === 'operation')
+        : cursorOrder
+      const at = activeStop ? order.indexOf(activeStop) : -1
       const next =
         at < 0
           ? step > 0
-            ? operationOrder[0]
-            : operationOrder.at(-1)
-          : operationOrder[Math.min(Math.max(at + step, 0), operationOrder.length - 1)]
-      if (!next || next === activeOperation) return
+            ? order[0]
+            : order.at(-1)
+          : order[Math.min(Math.max(at + step, 0), order.length - 1)]
+      if (!next || next === activeStop) return
       setCursor(next.key)
-      // An operation sits under its provider and group headings.
-      virtual.revealIndex(next.index, { depth: 2 })
-      if (drawerKey) {
+      // A row sits under its provider and group headings.
+      virtual.revealIndex(next.index, { depth: next.kind === 'operation' ? 2 : next.depth })
+      // Typing in the filter goes on; the drawer keeps its own focus.
+      const fromFilter = event.target instanceof Element && event.target.id === OPERATION_FILTER_ID
+      if (!fromFilter && !drawerKey) focusCursor.current = true
+      if (drawerKey && next.kind === 'operation') {
         markRevealed(next.provider.id, next.operation.name)
         navigate(next.operation.path, { replace: true, preventScrollReset: true })
       }
     }
-  // ← and → step the cursor's policy through the toggle's order, stopping at either end.
+  const toggleHeading = (stop: Extract<CursorStop, { kind: 'heading' }>) =>
+    toggleCollapsed(stop.key, stop.index, stop.depth)
+  // On an operation, ← and → step its policy through the toggle's order,
+  // stopping at either end. On a heading, ← collapses it and → expands it.
   const stepPolicy =
     (step: 1 | -1, inDrawer = false) =>
     (event: KeyboardEvent) => {
-      if (!activeOperation || !canChange) return
+      if (!activeStop) return
       if (!cursorKeyApplies(event, { fromFilter: false, overControls: false, inDrawer })) return
+      if (activeStop.kind === 'heading') {
+        if (drawerKey) return
+        event.preventDefault()
+        if (activeStop.collapsed === step > 0) toggleHeading(activeStop)
+        return
+      }
+      if (!canChange) return
       event.preventDefault()
-      const { provider, operation } = activeOperation
+      const { provider, operation } = activeStop
       const mutation = mutations.state(provider.id, operation.name)
       if (mutation.pending) return
       const order = policyOptions.map((option) => option.value)
       const next = order[order.indexOf(mutation.policy ?? operation.policy) + step]
       if (next) mutations.submit(policyFormData(form, provider, operation, next), provider.path)
     }
+  // Enter opens the cursor's operation, or collapses or expands its heading.
   const openCursor = (event: KeyboardEvent) => {
-    if (drawerKey || !activeOperation) return
+    if (drawerKey || !activeStop) return
     if (!cursorKeyApplies(event, { fromFilter: true, overControls: false })) return
     event.preventDefault()
-    markRevealed(activeOperation.provider.id, activeOperation.operation.name)
-    navigate(activeOperation.operation.path, { preventScrollReset: true })
+    if (activeStop.kind === 'heading') return toggleHeading(activeStop)
+    markRevealed(activeStop.provider.id, activeStop.operation.name)
+    navigate(activeStop.operation.path, { preventScrollReset: true })
   }
+  // Space checks the cursor's operation, or collapses or expands its heading.
   const checkCursor = (event: KeyboardEvent) => {
-    if (drawerKey || !activeOperation || !canChange || mutations.bulkPending) return
+    if (drawerKey || !activeStop) return
     if (!cursorKeyApplies(event, { fromFilter: false, overControls: false })) return
+    if (activeStop.kind === 'heading') {
+      event.preventDefault()
+      return toggleHeading(activeStop)
+    }
+    if (!canChange || mutations.bulkPending) return
     event.preventDefault()
-    toggleOperations([activeOperation], !selected.has(activeOperation.key))
+    toggleOperations([activeStop], !selected.has(activeStop.key))
   }
 
   return (
@@ -719,6 +837,7 @@ function ProvidersTableScreen({
           }}
           empty={filteredProviders.length === 0}
           emptyMessage="No providers match."
+          footer={addButton}
         >
           <CatalogRailItem
             to={providersPath}
@@ -800,8 +919,9 @@ function ProvidersTableScreen({
         >
           <Table.Head>
             <Table.Row>
-              <span role="columnheader" aria-label="Select" className={styles.policyCell}>
+              <span role="columnheader" aria-label="Select" className={Table.selectionCell}>
                 <Inputs.Checkbox
+                  fill
                   checked={allVisibleSelected}
                   indeterminate={visibleSelectedCount > 0 && !allVisibleSelected}
                   disabled={!canChange || mutations.bulkPending || visibleOperations.length === 0}
@@ -821,6 +941,7 @@ function ProvidersTableScreen({
             activeKey={activeKey}
             bulkPending={mutations.bulkPending}
             canChange={canChange}
+            onToggleCollapsed={toggleCollapsed}
             drawerOpen={drawerKey !== null}
             filterByPolicy={filterByPolicy}
             markRevealed={markRevealed}
@@ -869,9 +990,7 @@ function ProvidersTableScreen({
         provider={selectedProvider ?? undefined}
         canChange={canChange}
         form={form}
-        onOpenChange={(open) => {
-          if (!open) closeSelectedRoute()
-        }}
+        onClose={closeSelectedRoute}
         // The dialog keeps arrow keys inside it, so it moves the cursor itself.
         onKeyDown={(event) => {
           if (event.key === 'ArrowDown') moveCursor(1, true)(event)
@@ -933,6 +1052,7 @@ const TableSections = memo(function TableSections({
   filterByPolicy,
   form,
   markRevealed,
+  onToggleCollapsed,
   policyFilter,
   providerIcons,
   query,
@@ -943,7 +1063,7 @@ const TableSections = memo(function TableSections({
   virtual,
 }: {
   /** The keyboard cursor's operation, or the drawer's while one is open. */
-  activeKey: SelectionKey | null
+  activeKey: string | null
   bulkPending: boolean
   canChange: boolean
   drawerOpen: boolean
@@ -951,6 +1071,8 @@ const TableSections = memo(function TableSections({
   form: FormContext
   /** Records an operation the reader opened in place, so its route does not scroll the table. */
   markRevealed: (provider: string, operation: string) => void
+  /** Collapses or expands the heading with this key, at this row index and depth. */
+  onToggleCollapsed: (key: string, index: number, depth: number) => void
   policyFilter: PolicyFilter['value'] | null
   providerIcons: (provider: ProviderView) => RecipeIcons | undefined
   /** The operation filter, bolded where it matches a name. */
@@ -969,20 +1091,20 @@ const TableSections = memo(function TableSections({
       key={section.provider.id}
       id={providerGroupDomId(section.provider.id)}
       index={section.index}
+      active={activeKey === section.key}
       label={providerLabel(section.provider)}
+      collapsed={section.collapsed}
       heading={
         <GroupHeading
           canChange={canChange}
           bulkPending={bulkPending}
           className={styles.providerGroupLabel}
+          collapsed={section.collapsed}
+          onToggle={() => onToggleCollapsed(section.key, section.index, 0)}
           count={section.operations.length}
           total={section.provider.totalCount}
           label={
             <>
-              <StatusDot
-                blockers={section.provider.blockers}
-                personalAccountAction={section.provider.personalAccountAction}
-              />
               <Logo
                 name={providerLabel(section.provider)}
                 icons={providerIcons(section.provider)}
@@ -1025,17 +1147,21 @@ const TableSections = memo(function TableSections({
         <Table.Group
           key={group.group}
           index={group.index}
+          active={activeKey === group.key}
           label={group.group}
+          collapsed={group.collapsed}
           heading={
             <GroupHeading
               bulkPending={bulkPending}
               canChange={canChange}
               className={styles.operationGroupLabel}
-              count={group.operations.length}
+              collapsed={group.collapsed}
+              onToggle={() => onToggleCollapsed(group.key, group.index, 1)}
+              count={group.members.length}
               label={
                 <Typography.BodySmallStrong as="span">{group.group}</Typography.BodySmallStrong>
               }
-              members={group.operations.map(({ operation }) => operation)}
+              members={group.members}
               name={group.group}
               provider={section.provider}
               selected={selected}
@@ -1092,6 +1218,8 @@ type ToggleOperations = (
 function GroupHeading({
   bulkPending,
   canChange,
+  collapsed,
+  onToggle,
   count,
   total = count,
   label,
@@ -1105,6 +1233,8 @@ function GroupHeading({
 }: {
   bulkPending: boolean
   canChange: boolean
+  collapsed: boolean
+  onToggle: () => void
   /** The operations the heading counts; the checkbox covers `members`. */
   count: number
   /** Every operation under the heading; while a filter hides some, the heading shows both. */
@@ -1127,8 +1257,9 @@ function GroupHeading({
   const allSelected = members.length > 0 && selectedCount === members.length
   return (
     <>
-      <span role="cell" className={styles.policyCell}>
+      <span role="cell" className={Table.selectionCell}>
         <Inputs.Checkbox
+          fill
           checked={allSelected}
           indeterminate={selectedCount > 0 && !allSelected}
           disabled={!canChange || bulkPending || members.length === 0}
@@ -1138,6 +1269,7 @@ function GroupHeading({
         </Inputs.Checkbox>
       </span>
       <span role="cell" className={cell.className}>
+        <Table.GroupToggle collapsed={collapsed} label={name} onToggle={onToggle} />
         {label}
         <Typography.BodySmall as="span" variant="tertiary">
           {count === total
@@ -1264,7 +1396,8 @@ const OperationRow = memo(function OperationRow({
   // link navigates itself, so the row leaves its clicks alone.
   const open = (event: MouseEvent<HTMLDivElement>) => {
     const control = (event.target as Element).closest(ROW_CONTROLS + ', a')
-    if (control && event.currentTarget.contains(control)) return
+    // The cursor row takes focus, so its own tabindex is not a control in it.
+    if (control && control !== event.currentTarget && event.currentTarget.contains(control)) return
     onOpen(provider.id, operation.name)
     navigate(operation.path, { preventScrollReset: true })
   }
@@ -1278,8 +1411,9 @@ const OperationRow = memo(function OperationRow({
       selected={active && drawerOpen}
       active={active && !drawerOpen}
     >
-      <span role="cell" className={styles.policyCell}>
+      <span role="cell" className={Table.selectionCell}>
         <Inputs.Checkbox
+          fill
           checked={checked}
           disabled={!canChange || disabled}
           onCheckedChange={onCheck}
@@ -1372,8 +1506,10 @@ function cursorKeyApplies(
 ) {
   if (event.defaultPrevented || event.isComposing) return false
   const target = event.target instanceof Element ? event.target : null
-  // The table scrolls, so it takes focus, but it is not a control in a row.
-  if (!target || target === document.body || target.matches('[role="table"]')) return true
+  // The table scrolls, so it takes focus, and the cursor's row takes it from
+  // the keys. Neither is a control in a row.
+  if (!target || target === document.body || target.matches('[role="table"], [role="row"]'))
+    return true
   if (target.id === OPERATION_FILTER_ID) return fromFilter
   if (!overControls && target.closest(ROW_CONTROLS + ', a')) return false
   if (target.closest(KEY_CONTROLS)) return false
@@ -1617,21 +1753,28 @@ function PolicySummary({
 }
 
 function OperationDetailsDrawer({
-  provider,
+  provider: routedProvider,
   canChange,
   form,
-  operation,
-  onOpenChange,
+  operation: routed,
+  onClose,
   onKeyDown,
 }: {
   provider: ProviderView | undefined
   canChange: boolean
   form: FormContext
   operation: OperationView | null
-  onOpenChange: (open: boolean) => void
+  /** Runs as the close starts, so the URL and the keys follow it at once. */
+  onClose: () => void
   onKeyDown: (event: KeyboardEvent) => void
 }) {
-  const drawer = Dialog.useCloseAfterExit(operation?.name ?? null, () => onOpenChange(false))
+  // The drawer lives on the page, so the URL can close it at once. Its exit
+  // then plays with the operation it last showed.
+  const [shown, setShown] = useState({ operation: routed, provider: routedProvider })
+  if (routed && (routed !== shown.operation || routedProvider !== shown.provider)) {
+    setShown({ operation: routed, provider: routedProvider })
+  }
+  const { operation, provider } = shown
   // The drawer stays open from one operation to the next, so only its content
   // changes. The content mounts once per operation, which starts it at the top.
   const popup = useRef<HTMLDivElement>(null)
@@ -1639,7 +1782,12 @@ function OperationDetailsDrawer({
     if (content) popup.current?.scrollTo?.({ top: 0 })
   }, [])
   return (
-    <Dialog.Root {...drawer}>
+    <Dialog.Root
+      open={routed !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+    >
       <Dialog.Portal>
         <Dialog.Backdrop />
         <Dialog.Popup

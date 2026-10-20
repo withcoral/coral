@@ -257,6 +257,9 @@ export const scrollArea = style({
 })
 // A row that opens its detail when clicked.
 export const interactiveRow = style({ cursor: 'pointer' })
+// The block padding a scroll-layout row has, for a cell that reaches into it.
+const rowPaddingBlock = createVar()
+
 export const row = style({
   ...rowGroup,
   transition: 'background-color 0.1s ease',
@@ -287,14 +290,15 @@ export const row = style({
     [`${scrollTable} &`]: {
       alignItems: 'center',
       gap: 8,
-      paddingBlock: tableVars.scrollRowPaddingBlock.value,
+      vars: { [rowPaddingBlock]: tableVars.scrollRowPaddingBlock.value },
+      paddingBlock: rowPaddingBlock,
       paddingInline: 12,
       borderBottomColor: theme.stroke.secondary,
     },
     // Group headings pin below the head by its height, so it is exact.
     [`${scrollTable} ${head} > &`]: {
       backgroundColor: theme.surface.mainContent,
-      paddingBlock: 0,
+      vars: { [rowPaddingBlock]: '0px' },
       height: tableVars.headingHeight.value,
       minHeight: tableVars.headingHeight.value,
       color: theme.content.secondary,
@@ -313,7 +317,8 @@ const cursor = {
   backgroundColor: theme.surface.onMainContentSubtle,
   boxShadow: `inset 0 0 0 2px ${theme.stroke.focused}`,
 }
-export const activeRow = style(cursor)
+// The row's own focus ring would repeat the cursor's outline.
+export const activeRow = style({ ...cursor, outline: 'none' })
 // A table that takes focus shows it, unless a cursor row already shows where the keys act.
 export const focusableTable = style({
   selectors: {
@@ -358,8 +363,11 @@ export const groupHeading = recipe({
     top: `calc(${tableVars.headingHeight.value} + var(${GROUP_DEPTH_PROPERTY}, 0) * ${tableVars.groupHeadingHeight.value})`,
     selectors: {
       [`${group} > &:hover`]: { backgroundColor: theme.surface.mainContent },
+      // A collapsed heading is its group's last row. It keeps its border's
+      // width, so its content does not move, and shows no line above the next.
+      [`${group} > &:last-child`]: { borderBottom: '1px solid transparent' },
       // A nested heading pins below this one by its height, so it is exact.
-      [`${scrollTable} ${group} > &`]: { paddingBlock: 0 },
+      [`${scrollTable} ${group} > &`]: { vars: { [rowPaddingBlock]: '0px' } },
       // A record heading keeps its selection and status marker, and still pins.
       // Compound selectors win on specificity; `selectedRow` and `markedRow` are
       // declared above only so this rule can reference them.
@@ -633,4 +641,24 @@ export const linkRow = style({
   selectors: {
     [`&:has(${rowLink}:focus-visible)`]: cursor,
   },
+})
+
+// A row's selection checkbox. In a scroll-layout table the cell reaches into
+// the row's start and block padding and the gap after it, and its label
+// pads the box back into place. A click near the box then checks it, not the row.
+export const selectionCell = style({
+  alignSelf: 'stretch',
+  display: 'flex',
+  selectors: {
+    [`${scrollTable} &`]: {
+      marginBlock: `calc(-1 * ${rowPaddingBlock})`,
+      marginInline: '-12px -8px',
+      // Its column aligns it at the start, so it takes the extra width itself.
+      width: 'calc(100% + 20px)',
+    },
+  },
+})
+globalStyle(`${scrollTable} ${selectionCell} > label`, {
+  paddingBlock: rowPaddingBlock,
+  paddingInline: '12px 8px',
 })

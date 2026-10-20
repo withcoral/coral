@@ -309,10 +309,10 @@ export async function setProviderEnabled(
 }
 
 /**
- * Waits for a provider's group heading in the operations view to show its
- * status: its first blocker, else "Connect your account" when only your own
- * account is missing, else "Ready". With `operations`, it also waits for the
- * heading's count and for one Unavailable row for each operation Coral cannot
+ * Waits for a provider's rail entry to show its status: its first blocker,
+ * else "Connect your account" when only your own account is missing, else
+ * "Ready". With `operations`, it also waits for the provider's group heading
+ * to show its count and one Unavailable row for each operation Coral cannot
  * call. Name the provider by its display name, or by its path when two
  * providers share one.
  */
@@ -322,11 +322,16 @@ export async function waitForProviderStatus(
   status: string,
   operations?: { available: number; total: number },
 ) {
+  const rail = page.getByRole('navigation', { name: 'installed providers', exact: true })
+  const entry =
+    typeof provider === 'string'
+      ? rail.getByRole('link').filter({ has: page.getByText(provider, { exact: true }) })
+      : rail.locator(`a[href$="/providers/${provider.path.split('/').at(-1)}"]`)
+  await entry.getByRole('img', { name: status, exact: true }).first().waitFor()
   const group =
     typeof provider === 'string'
       ? page.getByRole('rowgroup', { name: provider, exact: true })
       : page.locator(`#provider-group-${provider.path.split('/').at(-1)}`)
-  await group.getByRole('img', { name: status, exact: true }).first().waitFor()
   if (!operations) return
   const { available, total } = operations
   await group

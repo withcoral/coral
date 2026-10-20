@@ -1,3 +1,4 @@
+import classNames from 'classnames'
 import { useEffect, useRef, type ReactNode } from 'react'
 
 import * as styles from './checkbox.css'
@@ -7,6 +8,11 @@ export interface CheckboxProps {
   checked?: boolean
   defaultChecked?: boolean
   disabled?: boolean
+  /**
+   * The label fills its container, so the whole box around the check is the
+   * click target, as in a table's selection column.
+   */
+  fill?: boolean
   indeterminate?: boolean
   name?: string
   onCheckedChange?: (checked: boolean) => void
@@ -20,6 +26,7 @@ export function Checkbox({
   checked,
   defaultChecked,
   disabled,
+  fill = false,
   indeterminate = false,
   name,
   onCheckedChange,
@@ -30,7 +37,7 @@ export function Checkbox({
     if (ref.current) ref.current.indeterminate = indeterminate
   }, [indeterminate])
   return (
-    <label className={styles.label}>
+    <label className={classNames(styles.label, fill && styles.fill)}>
       <input
         type="checkbox"
         ref={ref}

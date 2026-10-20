@@ -10,7 +10,7 @@ export type RowProps = PropsWithChildren<{
   'aria-level'?: number
   /** Indicates the row whose exact detail is open. */
   selected?: boolean
-  /** Marks the row the keyboard cursor rests on. It reads apart from `selected`. */
+  /** Marks the row the keyboard cursor rests on, which then takes focus. It reads apart from `selected`. */
   active?: boolean
   /** Stable identity for reading-position preservation, never an authority grant. */
   recordKey?: string
@@ -52,7 +52,8 @@ function LinkRow({ to, preventScrollReset, onClick, ...props }: RowProps & { to:
     // A portal, such as a dialog opened from the row, is not part of the row.
     if (event.defaultPrevented || !event.currentTarget.contains(target)) return
     const control = target.closest(ROW_CONTROLS)
-    if (control && event.currentTarget.contains(control)) return
+    // An active row takes focus, so its own tabindex is not a control in it.
+    if (control && control !== event.currentTarget && event.currentTarget.contains(control)) return
     // A drag to select text is not a click on the row.
     if (window.getSelection()?.toString()) return
     if (event.metaKey || event.ctrlKey) window.open(href, '_blank', 'noopener')
@@ -97,6 +98,8 @@ function RowElement({
       aria-selected={selected || undefined}
       data-status={status?.tone}
       data-active={active || undefined}
+      // The cursor row takes focus, so the keys reach it wherever focus was.
+      tabIndex={active ? -1 : undefined}
       data-record-key={recordKey}
       data-index={index}
       data-pinned-heading={pinnedHeading}

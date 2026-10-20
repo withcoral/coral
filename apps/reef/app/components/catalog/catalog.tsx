@@ -63,13 +63,17 @@ function FilterInput({
   )
 }
 
-/** The rail: its filter, then one entry per group, or `emptyMessage` when none match. */
+/**
+ * The rail: its filter, then one entry per group, or `emptyMessage` when none
+ * match, then any `footer` below the entries.
+ */
 export function CatalogRail({
   label,
   filter,
   empty,
   emptyMessage,
   children,
+  footer,
 }: {
   /** Names the rail and its list for assistive technology. */
   label: string
@@ -77,6 +81,8 @@ export function CatalogRail({
   empty: boolean
   emptyMessage: string
   children: ReactNode
+  /** Controls below the entries, such as the main action. They stay in view as the entries scroll. */
+  footer?: ReactNode
 }) {
   return (
     <aside className={styles.rail} aria-label={label}>
@@ -93,6 +99,7 @@ export function CatalogRail({
           {empty && <Typography.BodySmall as="p">{emptyMessage}</Typography.BodySmall>}
         </nav>
       </ScrollArea.Container>
+      {footer && <div className={styles.railFooter}>{footer}</div>}
     </aside>
   )
 }
