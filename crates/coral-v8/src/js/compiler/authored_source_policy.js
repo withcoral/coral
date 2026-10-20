@@ -598,7 +598,8 @@ function operationCallRootLength(segments) {
 
 // Each maximal literal `coral.providers` or `coral.workspace` chain, relative
 // to `coral` and cut before its first computed segment, where it starts, and
-// whether it is called. Aliased roots are not followed.
+// whether it is called. A cut chain is not called: its computed segment may
+// name the Operation. Aliased roots are not followed.
 function operationReferenceChains(sourceFile, program) {
   const checker = program.getTypeChecker();
   const chains = [];
@@ -617,7 +618,9 @@ function operationReferenceChains(sourceFile, program) {
           0,
           computed === -1 ? undefined : computed,
         );
-        const called = ts.isCallExpression(node.parent) && node.parent.expression === node;
+        const called = computed === -1
+          && ts.isCallExpression(node.parent)
+          && node.parent.expression === node;
         if (segments.length > 1) {
           chains.push({segments, start: node.getStart(sourceFile), called});
         }

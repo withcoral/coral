@@ -143,6 +143,16 @@ fn saved_function_diagnostics_check_calls_against_declarations() {
             &[],
         ),
         (
+            "an alias to a namespace beside a direct call into it",
+            "export default async function aliased() {\n  const repos = coral.providers.github.repos;\n  await coral.providers.github.repos.get({ owner: \"a\", repo: \"b\" });\n  return repos.unseen();\n}",
+            &[],
+        ),
+        (
+            "a call through a computed segment of a namespace with nothing declared",
+            "export default async function computed(name: string) {\n  return coral.providers.secret.things[name]();\n}",
+            &[],
+        ),
+        (
             "a provider namespace the caller cannot see",
             "export default async function hidden() {\n  return coral.providers.secret.things.list();\n}",
             &[(UNKNOWN_OPERATION, Some(2), Some(10))],

@@ -659,10 +659,12 @@ impl SavedFunctionModule {
             let functions = if function_paths.is_empty() {
                 None
             } else {
-                Some(
-                    self.function_declarations(actor, workspace_id, &function_paths)
-                        .await?,
-                )
+                self.function_declarations(actor, workspace_id, &function_paths)
+                    .await
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "Saved Function declarations are unavailable; they are checked untyped");
+                    })
+                    .ok()
             };
             let operations = match operations {
                 Some(reader) => {

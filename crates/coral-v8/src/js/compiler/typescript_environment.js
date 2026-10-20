@@ -72,13 +72,16 @@ function insertCallable(root, segments, type) {
   node.type = type;
 }
 
-function renderCallableNode(node) {
+// An open namespace is any past its known members, so a path that literal
+// analysis cannot see, such as one reached through an alias, is untyped
+// rather than wrong.
+function renderCallableNode(node, open) {
   const members = [...node.children]
     .map(([segment, child]) =>
-      `readonly ${JSON.stringify(segment)}: ${renderCallableNode(child)};`
-    )
-    .join(" ");
-  const object = `{ ${members} }`;
+      `readonly ${JSON.stringify(segment)}: ${renderCallableNode(child, open)};`
+    );
+  if (open) members.push("readonly [segment: string]: any;");
+  const object = `{ ${members.join(" ")} }`;
   if (node.type === undefined) return object;
   return node.children.size === 0 ? node.type : `(${node.type}) & ${object}`;
 }
@@ -102,14 +105,13 @@ function typedRoot(sources, prefix, entries) {
   return tree;
 }
 
-// The first prefix of each chain past `coral.<root>` that is neither a
-// declared Call Path nor a namespace of one names nothing the caller can
-// call. It becomes any, so one Coral diagnostic replaces every cascading
-// TypeScript one, and the chain as written is returned to report. A resolved
-// sibling must not make a callable namespace look absent. A chain that is not
-// called may be a namespace whose Operations an alias reaches, so it is any
-// and not reported.
-function typeUnknownOperations(tree, operations) {
+// The called chains whose first prefix past `coral.<root>` is neither a
+// declared Call Path nor a namespace of one: they name nothing the caller can
+// call. Their open namespaces make them any, so one Coral diagnostic replaces
+// every cascading TypeScript one. A resolved sibling must not make a callable
+// namespace look absent. A chain that is not called may be a namespace whose
+// Operations an alias reaches, so it is not reported.
+function unknownOperations(operations) {
   const resolved = new Set();
   const namespaces = new Set();
   for (const {pathSegments} of operations.declarations) {
@@ -120,12 +122,12 @@ function typeUnknownOperations(tree, operations) {
   }
   const unknown = [];
   for (const {segments, start, called} of operations.chains) {
+    if (!called) continue;
     for (let length = 2; length <= segments.length; length += 1) {
       const key = segments.slice(0, length).join(".");
       if (resolved.has(key)) break;
       if (namespaces.has(key)) continue;
-      insertCallable(tree, segments.slice(0, length), "any");
-      if (called) unknown.push({start, callPath: `coral.${segments.join(".")}`});
+      unknown.push({start, callPath: `coral.${segments.join(".")}`});
       break;
     }
   }
@@ -141,19 +143,21 @@ function coralSurface(declarations) {
   // `providers` and `workspace`.
   const operations = typedRoot(sources, "coral", declarations?.operations?.declarations);
   const functions = typedRoot(sources, "coral.functions", declarations?.functions);
-  const unknownOperations = operations === undefined
-    ? []
-    : typeUnknownOperations(operations, declarations.operations);
   const operationRoot = (root) =>
     operations === undefined
       ? "any"
-      : renderCallableNode(operations.children.get(root) ?? callableNode());
+      : renderCallableNode(operations.children.get(root) ?? callableNode(), true);
   sources[CORAL_HOST_DECLARATION_FILE_NAME] = coralHostDeclaration(
     operationRoot("providers"),
     operationRoot("workspace"),
-    functions === undefined ? "any" : renderCallableNode(functions),
+    functions === undefined ? "any" : renderCallableNode(functions, false),
   );
-  return {sources, unknownOperations};
+  return {
+    sources,
+    unknownOperations: operations === undefined
+      ? []
+      : unknownOperations(declarations.operations),
+  };
 }
 
 function sortedDiagnostics(diagnostics) {
