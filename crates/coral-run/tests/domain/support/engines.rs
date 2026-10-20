@@ -635,6 +635,9 @@ impl ProgramEngine for ScriptedCallsEngine {
         }
         let mut outcomes = Vec::new();
         for call in calls {
+            if stop.is_requested() {
+                return ExecutionCompletion::ProgramHostTerminated;
+            }
             match runtime.block_on(call).expect("the call's task ends") {
                 Ok(_result_json) => outcomes.push(serde_json::json!("ok")),
                 Err(

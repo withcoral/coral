@@ -19,9 +19,12 @@ pub(crate) const CHUNK_WORK_CAP: usize = 32;
 
 /// Invocations one chunk's Dispatch Fence decides at most: the default
 /// Fan-out Limit. Every request in a batch holds a slot under the limit, so
-/// a batch reaches this cap only under a limit raised above the default;
-/// the fence reads its facts once whatever the batch holds, and the bound
-/// keeps its one row statement and its decisions small.
+/// a batch never holds more than the limit: at the default it reaches this
+/// cap, and closes its chunk, only when every slot's request joined one
+/// chunk; a request past the cap opens another chunk only under a limit
+/// raised above the default. The fence reads its facts once whatever the
+/// batch holds; the bound keeps its one row statement and its decisions
+/// small.
 pub(crate) const FENCE_BATCH_CAP: usize = FanOutLimit::DEFAULT_INVOCATIONS;
 
 /// A database write that the owner runs inside a chunk's commit transaction,

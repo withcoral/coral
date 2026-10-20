@@ -1131,9 +1131,10 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         );
     }
 
-    // A batch closes its chunk at the cap, like the row work cap, under a
-    // Fan-out Limit above it; at the default limit the batch cap is never
-    // reached, since every request in a batch holds a slot.
+    // A batch closes its chunk at the cap, like the row work cap. Under a
+    // Fan-out Limit above the cap the request past it opens a second chunk;
+    // at the default limit it would wait for a slot instead, since every
+    // request in a batch holds one.
     {
         let mut state = started(OwnerLimits {
             fan_out_invocations: FENCE_BATCH_CAP + 1,

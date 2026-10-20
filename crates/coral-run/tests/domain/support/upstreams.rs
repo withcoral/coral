@@ -181,31 +181,52 @@ impl UpstreamSender for StopAwareUpstream {
 
 /// Holds every send until the test lets sends go, one at a time in send
 /// order, and reports a held send canceled once the Run's stop is requested,
-/// as the production sender does for a dispatch in flight.
+/// as the production sender does for a dispatch in flight. A canceled send
+/// leaves the queue, so a release never goes to it.
 pub(crate) struct SequencedUpstream {
     pub(crate) sends: AtomicUsize,
-    /// How many sends may go on, in the order they were sent.
-    permits: watch::Sender<usize>,
+    held: Mutex<HeldSends>,
     outcome: HttpOutcome,
+}
+
+/// The sends waiting to go on, in send order, and releases nobody has taken.
+#[derive(Default)]
+struct HeldSends {
+    waiting: std::collections::VecDeque<oneshot::Sender<()>>,
+    /// Releases granted while no send waited: the next sends take them.
+    banked: usize,
+    all_released: bool,
 }
 
 impl SequencedUpstream {
     pub(crate) fn new(outcome: HttpOutcome) -> Arc<Self> {
         Arc::new(Self {
             sends: AtomicUsize::new(0),
-            permits: watch::channel(0).0,
+            held: Mutex::new(HeldSends::default()),
             outcome,
         })
     }
 
-    /// Lets the earliest send still held go on.
+    /// Lets the earliest send still held go on; with none held, the next
+    /// send goes on at once.
     pub(crate) fn release_one(&self) {
-        self.permits.send_modify(|permits| *permits += 1);
+        let mut held = self.held.lock().expect("held sends");
+        while let Some(send) = held.waiting.pop_front() {
+            // A send canceled by the Run's stop dropped its receiver.
+            if send.send(()).is_ok() {
+                return;
+            }
+        }
+        held.banked += 1;
     }
 
     /// Lets every send, held or later, go on.
     pub(crate) fn release_all(&self) {
-        self.permits.send_replace(usize::MAX);
+        let mut held = self.held.lock().expect("held sends");
+        held.all_released = true;
+        for send in held.waiting.drain(..) {
+            let _canceled = send.send(());
+        }
     }
 
     /// Waits until `count` sends have reached the upstream.
@@ -224,14 +245,28 @@ impl UpstreamSender for SequencedUpstream {
         _dispatch: ReadyDispatch,
         stop: Arc<ExecutionStop>,
     ) -> Result<UpstreamOutcome, crate::invocation::UpstreamSendError> {
-        let ordinal = self.sends.fetch_add(1, Ordering::SeqCst) + 1;
-        let mut permits = self.permits.subscribe();
-        tokio::select! {
-            // A dropped sender never happens: the upstream outlives the test.
-            _permitted = permits.wait_for(|permits| *permits >= ordinal) => {
-                Ok(UpstreamOutcome::Http(self.outcome.clone()))
+        let released = {
+            let mut held = self.held.lock().expect("held sends");
+            self.sends.fetch_add(1, Ordering::SeqCst);
+            if held.all_released {
+                None
+            } else if held.banked > 0 {
+                held.banked -= 1;
+                None
+            } else {
+                let (release, released) = oneshot::channel();
+                held.waiting.push_back(release);
+                Some(released)
             }
-            () = stop.requested() => Err(crate::invocation::UpstreamSendError::Canceled),
+        };
+        if let Some(released) = released {
+            tokio::select! {
+                _released = released => {}
+                () = stop.requested() => {
+                    return Err(crate::invocation::UpstreamSendError::Canceled);
+                }
+            }
         }
+        Ok(UpstreamOutcome::Http(self.outcome.clone()))
     }
 }
