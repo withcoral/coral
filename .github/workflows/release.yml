@@ -115,6 +115,12 @@ jobs:
           rustup show
           rustup target add aarch64-apple-darwin
 
+      - name: Pin the prebuilt V8 archive
+        shell: bash
+        run: |
+          sha256=$(scripts/rusty-v8-sha256.sh)
+          echo "RUSTY_V8_ARCHIVE_SHA256=$sha256" >> "$GITHUB_ENV"
+
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/desktop/.node-version
@@ -178,6 +184,12 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show
 
+      - name: Pin the prebuilt V8 archive
+        shell: bash
+        run: |
+          sha256=$(scripts/rusty-v8-sha256.sh)
+          echo "RUSTY_V8_ARCHIVE_SHA256=$sha256" >> "$GITHUB_ENV"
+
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/desktop/.node-version
@@ -231,6 +243,12 @@ jobs:
 
       - name: Install Rust toolchain
         run: rustup show
+
+      - name: Pin the prebuilt V8 archive
+        shell: bash
+        run: |
+          sha256=$(scripts/rusty-v8-sha256.sh)
+          echo "RUSTY_V8_ARCHIVE_SHA256=$sha256" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:

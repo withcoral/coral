@@ -1,9 +1,9 @@
 name: Set up Rust
 description: >-
-  Installs the toolchain from rust-toolchain.toml and restores the Rust build
-  cache. Pull requests restore the cache but never save it, so untrusted code
-  cannot poison what later runs restore. release.yml builds from a clean state
-  and does not use this action.
+  Installs the toolchain from rust-toolchain.toml, pins the prebuilt V8
+  archive, and restores the Rust build cache. Pull requests restore the cache
+  but never save it, so untrusted code cannot poison what later runs restore.
+  release.yml builds from a clean state and does not use this action.
 
 inputs:
   cache-key:
@@ -17,8 +17,32 @@ runs:
       shell: bash
       run: rustup show
 
+    - name: Pin the prebuilt V8 archive
+      shell: bash
+      run: |
+        sha256=$(scripts/rusty-v8-sha256.sh)
+        echo "RUSTY_V8_ARCHIVE_SHA256=$sha256" >> "$GITHUB_ENV"
+
     - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       with:
         shared-key: ${{ inputs.cache-key }}
         cache-on-failure: true
         save-if: ${{ github.event_name != 'pull_request' }}
+
+    # v8's build script downloads its static library to <profile>/gn_out, and
+    # rust-cache keeps only build/, deps/ and .fingerprint/ under a profile.
+    # Cargo still treats the restored build-script run as fresh, so any v8
+    # rebuild fails with "could not find native static library `rusty_v8`".
+    # Forget v8's build state when the library is missing so it downloads again.
+    - name: Rebuild v8 when its static library is missing
+      shell: bash
+      run: |
+        shopt -s nullglob
+        for profile in target/*/ target/*/*/; do
+          build=("$profile"build/v8-*)
+          libs=("$profile"gn_out/obj/*rusty_v8.{a,lib})
+          if (( ${#build[@]} > 0 && ${#libs[@]} == 0 )); then
+            echo "Removing v8 build state in $profile"
+            rm -rf "${build[@]}" "$profile".fingerprint/v8-* "$profile"deps/libv8-* "$profile"deps/v8-*
+          fi
+        done

@@ -1,0 +1,7 @@
+# SHA-256 of the prebuilt V8 archives, from the asset digests of
+# https://github.com/denoland/rusty_v8/releases/tag/v152.2.0
+# Regenerate with scripts/rusty-v8-sha256.sh --update.
+a4a5484444ad4b5f10dc7bed141236dd9dbeabf2006d14520f19b935d4db4227  v152.2.0/librusty_v8_release_aarch64-apple-darwin.a.gz
+c40196bbf182532e583f65b7daf0196fdbb3354e6fac59b31d0539c20f931f3d  v152.2.0/librusty_v8_release_aarch64-unknown-linux-gnu.a.gz
+0b17ca072bae37dd4ff00e6014d2b413becb031c9342ee11cb8226a5881f62b2  v152.2.0/rusty_v8_release_x86_64-pc-windows-msvc.lib.gz
+b6683e9afcb77fbd8cb2c3acf45d34d52029ab216b332522c95179c12f0fed3c  v152.2.0/librusty_v8_release_x86_64-unknown-linux-gnu.a.gz

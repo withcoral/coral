@@ -200,6 +200,7 @@ async function main(args) {
         join(root, 'scripts/postgres.test.mjs'),
         join(root, 'scripts/check-migrations.test.mjs'),
         join(root, 'scripts/load.test.mjs'),
+        join(root, 'scripts/rusty-v8-sha256.test.mjs'),
       ],
       { cwd: root, stdio: 'inherit' },
     )

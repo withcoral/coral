@@ -26,7 +26,9 @@ ENV CORAL_GIT_SHA=$CORAL_GIT_SHA
 RUN --mount=type=cache,id=reel-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=reel-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=reel-target-${TARGETARCH},target=/workspace/target,sharing=locked \
-    cargo build --locked -p coral \
+    sha256="$(scripts/rusty-v8-sha256.sh)" \
+ && export RUSTY_V8_ARCHIVE_SHA256="$sha256" \
+ && cargo build --locked -p coral \
  && install -D target/debug/coral /opt/reel/coral \
  && cargo test --locked -p coral-outbound --features transport --test container_network --no-run --message-format=json > /tmp/network-build.json \
  && node -e "const fs = require('node:fs'); const built = fs.readFileSync('/tmp/network-build.json', 'utf8').trim().split('\n').map(JSON.parse).find(x => x.reason === 'compiler-artifact' && x.target.name === 'container_network' && x.executable); if (!built) throw Error('Missing network acceptance binary'); fs.copyFileSync(built.executable, '/opt/reel/network-tests'); fs.chmodSync('/opt/reel/network-tests', 0o755)" \

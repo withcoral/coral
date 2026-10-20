@@ -45,3 +45,6 @@ apps/reef/recipes/*/logo*.svg linguist-generated
 # GitHub's OpenAPI document, copied verbatim at a pinned commit for the search
 # smoke test.
 crates/coral-administration/src/tests/search_eval/github.openapi.yaml linguist-generated
+
+# Prebuilt V8 archive pins written by `scripts/rusty-v8-sha256.sh --update`.
+crates/coral-v8/rusty_v8.sha256 linguist-generated

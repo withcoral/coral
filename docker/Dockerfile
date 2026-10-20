@@ -34,7 +34,8 @@ RUN --mount=type=cache,id=coral-cargo-registry,target=/usr/local/cargo/registry,
     --mount=type=cache,id=coral-cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=coral-cargo-target-${TARGETARCH},target=/src/target,sharing=locked \
     test -n "$CORAL_GIT_SHA" \
-    && cargo build --locked --release -p coral --bin coral \
+    && sha256="$(scripts/rusty-v8-sha256.sh)" \
+    && RUSTY_V8_ARCHIVE_SHA256="$sha256" cargo build --locked --release -p coral --bin coral \
     && install -D -m 0755 target/release/coral /coral
 
 FROM scratch AS prebuilt
