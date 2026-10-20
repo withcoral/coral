@@ -52,7 +52,9 @@ pub(super) fn render(declarations: &Declarations, callable: Callable<'_>) -> Str
         || "unknown".to_string(),
         |result| match callable {
             Callable::Operation { .. } => renderer.operation_result(result),
-            Callable::SavedFunction { .. } => renderer.saved_function_result(result),
+            Callable::SavedFunction { .. } => {
+                renderer.saved_function_result(result, &mut HashSet::new())
+            }
         },
     );
     format!("{}({parameters}): {result}", callable.leaf())
@@ -114,7 +116,12 @@ impl Renderer<'_> {
 
     /// The body of `type_`, followed through every alias.
     fn resolved<'t>(&'t self, type_: &'t Type) -> &'t Type {
-        let mut seen = HashSet::new();
+        self.resolved_past(type_, &mut HashSet::new())
+    }
+
+    /// The body of `type_`, followed through every alias not in `seen`. Each
+    /// alias it follows joins `seen`.
+    fn resolved_past<'t>(&'t self, type_: &'t Type, seen: &mut HashSet<String>) -> &'t Type {
         let mut resolved = type_;
         while let Type::Named { name, arguments } = resolved
             && arguments.is_empty()
@@ -159,13 +166,21 @@ impl Renderer<'_> {
 
     /// A Saved Function's result: inside its `Promise`, an object's members
     /// inline one level deep, as in the input, or an array element's. What
-    /// the tree cannot read is the marker.
-    fn saved_function_result(&self, type_: &Type) -> String {
-        match self.resolved(type_) {
+    /// the tree cannot read is the marker, and so is an alias that `seen`
+    /// already followed: its `Promise` would hold itself without end.
+    fn saved_function_result(&self, type_: &Type, seen: &mut HashSet<String>) -> String {
+        if let Type::Named { name, arguments } = type_
+            && arguments.is_empty()
+            && seen.contains(name)
+            && self.alias(name).is_some()
+        {
+            return CUT_MARKER.to_string();
+        }
+        match self.resolved_past(type_, seen) {
             Type::Named { name, arguments } if self.alias(name).is_none() => {
                 match (name.as_str(), arguments.as_slice()) {
                     ("Promise", [value]) => {
-                        return format!("Promise<{}>", self.saved_function_result(value));
+                        return format!("Promise<{}>", self.saved_function_result(value, seen));
                     }
                     ("Array" | "ReadonlyArray", [element]) if self.shows_members(element) => {
                         return format!("{name}<{}>", self.inline(element));
