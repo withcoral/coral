@@ -15,8 +15,8 @@ use sea_query::{
     OnConflict, Query, SimpleExpr,
 };
 
-use super::IndexError;
 use super::retry::RetryRule;
+use super::{INDEXER_REVISION, IndexError};
 use crate::{CallPath, SearchIndexFailure, SearchIndexState};
 
 /// The `search_entities` table and its columns, for sea-query. Each row is
@@ -68,6 +68,8 @@ enum SearchIndexStates {
     Error,
     /// The kind of error a failed Generation attempt recorded.
     ErrorKind,
+    /// The indexer revision that wrote a Generation's state and rows.
+    IndexerRevision,
     /// The columns of a failed attempt's [`RetryRule`], [`RETRY_COLUMNS`].
     FailedAttempts,
     RetryAfterUnixNanos,
@@ -369,7 +371,7 @@ fn generation_rows(
         .to_owned()
 }
 
-/// Upserts the Generation's state row.
+/// Upserts the Generation's state row, under this indexer's revision.
 pub(super) async fn write_generation_state(
     transaction: &mut Transaction<'_>,
     state: GenerationState<'_>,
@@ -397,6 +399,7 @@ pub(super) async fn write_generation_state(
                     SearchIndexStates::AttemptedAtUnixNanos,
                     SearchIndexStates::Error,
                     SearchIndexStates::ErrorKind,
+                    SearchIndexStates::IndexerRevision,
                 ]))
                 .values_panic(
                     [
@@ -410,6 +413,7 @@ pub(super) async fn write_generation_state(
                         state.attempted_at_unix_nanos.into(),
                         error.into(),
                         error_kind.into(),
+                        INDEXER_REVISION.into(),
                     ]
                     .into_iter()
                     .chain(retry_values(retry.as_ref())),
@@ -422,6 +426,7 @@ pub(super) async fn write_generation_state(
                             SearchIndexStates::AttemptedAtUnixNanos,
                             SearchIndexStates::Error,
                             SearchIndexStates::ErrorKind,
+                            SearchIndexStates::IndexerRevision,
                         ]))
                         .to_owned(),
                 )
@@ -535,7 +540,8 @@ const FUNCTION_COLUMNS: [SearchEntities; 15] = [
 ];
 
 /// One Saved Function's row in `search_entities`. The document id is the
-/// function id; the fingerprint is the definition revision.
+/// function id; the fingerprint is [`function_fingerprint`] of the
+/// definition revision.
 pub(super) struct FunctionRow<'a> {
     pub(super) workspace_id: &'a WorkspaceId,
     pub(super) function_id: &'a SavedFunctionId,
@@ -565,10 +571,18 @@ impl FunctionRow<'_> {
             "".into(),
             self.searchable_text.clone().into(),
             false.into(),
-            self.revision.to_string().into(),
+            function_fingerprint(self.revision).into(),
             self.indexed_at_unix_nanos.into(),
         ]
     }
+}
+
+/// The fingerprint of a Saved Function row: the definition revision and the
+/// indexer revision, as `3.1`. A row that an older indexer revision wrote
+/// holds another fingerprint, so a reconcile pass indexes it again. A Coral
+/// without indexer revisions wrote the definition revision alone.
+pub(super) fn function_fingerprint(revision: u64) -> String {
+    format!("{revision}.{INDEXER_REVISION}")
 }
 
 /// One failed Saved Function attempt's row in `search_index_states`.
@@ -816,6 +830,9 @@ pub(super) struct WorkspaceGeneration {
 pub(super) struct RecordedGeneration {
     pub(super) generation: WorkspaceGeneration,
     pub(super) outcome: RecordedOutcome,
+    /// The indexer revision that wrote the row; `None` when a Coral without
+    /// indexer revisions wrote it.
+    pub(super) indexer_revision: Option<i64>,
 }
 
 /// The outcome a Generation's state row records.
@@ -832,6 +849,7 @@ struct RecordedGenerationRow {
     provider_generation_id: String,
     state: String,
     provider_display_name: String,
+    indexer_revision: Option<i64>,
     #[sqlx(flatten)]
     retry: RetryColumns,
 }
@@ -848,6 +866,7 @@ pub(super) async fn recorded_generations(
                     SearchIndexStates::ProviderGenerationId,
                     SearchIndexStates::State,
                     SearchIndexStates::ProviderDisplayName,
+                    SearchIndexStates::IndexerRevision,
                 ]))
                 .from(SearchIndexStates::Table)
                 .and_where(Expr::col(SearchIndexStates::Kind).eq(OPERATION))
@@ -869,6 +888,7 @@ pub(super) async fn recorded_generations(
             Ok(RecordedGeneration {
                 generation: workspace_generation(&row.workspace_id, &row.provider_generation_id)?,
                 outcome,
+                indexer_revision: row.indexer_revision,
             })
         })
         .collect()
@@ -1067,7 +1087,7 @@ pub(super) struct WorkspaceFunction {
 /// One Saved Function's row, as a reconcile pass compares it.
 pub(super) struct RecordedFunction {
     pub(super) function: WorkspaceFunction,
-    /// The definition revision the row indexed, as text.
+    /// The row's fingerprint, as [`function_fingerprint`] writes it.
     pub(super) fingerprint: String,
 }
 

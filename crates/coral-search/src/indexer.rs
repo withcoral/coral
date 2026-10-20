@@ -15,11 +15,22 @@ pub(crate) use repository::generation_outcomes_in_workspace;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub(crate) use repository::{generation_states_in_workspace, operation_rows_in_workspace};
 
+use std::borrow::Cow;
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 
 use crate::SearchIndexFailure;
+use crate::retriever::plan::split_words;
 use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
+
+/// The revision of the indexed text that this indexer writes. Raise it with
+/// each change to the text or columns of an Operation or Saved Function row.
+/// A reconcile pass then indexes again what an older indexer revision wrote.
+///
+/// 1: schema text holds each word once.
+pub(crate) const INDEXER_REVISION: i64 = 1;
 
 /// A failure to write the search index. The caller's transaction rolls back.
 #[derive(Debug, thiserror::Error)]
@@ -190,6 +201,59 @@ pub(crate) async fn refresh_statistics(
 
 fn now_unix_nanos() -> Result<i64, IndexError> {
     crate::unix_now_nanos().ok_or(IndexError::Clock)
+}
+
+/// Schema text with each word once. Words split as the query planner splits
+/// a term, and compare without case. Each word keeps the spelling and the
+/// place of its first occurrence. Spaces join the words.
+///
+/// A shared type that many paths reach repeats its words under each path,
+/// so a large schema's text is mostly repeats. A repeat adds no match: both
+/// backends still find each word and each substring inside a word.
+#[derive(Default)]
+pub(crate) struct DistinctWords<'a> {
+    /// The lowercase form of each word kept.
+    seen: HashSet<Cow<'a, str>>,
+    /// Each line of field text pushed.
+    lines: HashSet<&'a str>,
+    text: String,
+}
+
+impl<'a> DistinctWords<'a> {
+    /// Pushes one declaration field: its path, then each line of its text.
+    /// The text usually opens with the path, and a shared type repeats its
+    /// lines under each path that reaches it. A line pushed before holds no
+    /// new word, so it is not split again.
+    pub(crate) fn push_field(&mut self, path: &'a str, text: &'a str) {
+        self.push(path);
+        for line in text.lines() {
+            if line != path && self.lines.insert(line) {
+                self.push(line);
+            }
+        }
+    }
+
+    pub(crate) fn push(&mut self, piece: &'a str) {
+        for word in split_words(piece) {
+            // An ASCII word without a capital is its own lowercase form, so
+            // most words need no copy.
+            let key = if word.is_ascii() && !word.bytes().any(|byte| byte.is_ascii_uppercase()) {
+                Cow::Borrowed(word)
+            } else {
+                Cow::Owned(word.to_lowercase())
+            };
+            if self.seen.insert(key) {
+                if !self.text.is_empty() {
+                    self.text.push(' ');
+                }
+                self.text.push_str(word);
+            }
+        }
+    }
+
+    pub(crate) fn into_text(self) -> String {
+        self.text
+    }
 }
 
 /// The compact identifier variant of a name: lowercase, every character that

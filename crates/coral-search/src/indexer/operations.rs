@@ -12,7 +12,10 @@ use coral_workspace::WorkspaceId;
 
 use super::repository::{self, AttemptState, GenerationState, OperationRow, RecordedOutcome};
 use super::retry::RetryRule;
-use super::{EntityIndexer, IndexError, compact_identifier_variant, now_unix_nanos};
+use super::{
+    DistinctWords, EntityIndexer, INDEXER_REVISION, IndexError, compact_identifier_variant,
+    now_unix_nanos,
+};
 use crate::CallPath;
 
 /// Indexes the Operations of Provider Generations.
@@ -90,31 +93,42 @@ impl EntityIndexer for OperationIndexer {
         Ok(())
     }
 
-    /// Returns each active Generation with no state row, a `complete` one
-    /// under another Provider display name, or a `failed` one whose retry
-    /// rule is due at `now_unix_nanos`.
+    /// Returns each active Generation with no state row, one whose state row
+    /// an older indexer revision wrote, a `complete` one under another
+    /// Provider display name, or a `failed` one whose retry rule is due at
+    /// `now_unix_nanos`.
+    ///
+    /// A state row of a newer revision is left as it is: during a rolling
+    /// update, two releases would otherwise index each other's Generations
+    /// again on every pass.
     async fn reconcile<'e>(
         &self,
         transaction: &mut Transaction<'_>,
         expected: &'e [ActiveGeneration],
         now_unix_nanos: i64,
     ) -> Result<Vec<&'e ActiveGeneration>, IndexError> {
-        let outcomes = repository::recorded_generations(transaction)
+        let states = repository::recorded_generations(transaction)
             .await?
             .into_iter()
-            .map(|state| (state.generation.generation_id, state.outcome))
+            .map(|state| (state.generation.generation_id.clone(), state))
             .collect::<HashMap<_, _>>();
         Ok(expected
             .iter()
             .filter(|generation| {
-                match outcomes.get(generation.generation_id()) {
-                    None => true,
+                let Some(state) = states.get(generation.generation_id()) else {
+                    return true;
+                };
+                // `None` sorts before every revision.
+                if state.indexer_revision < Some(INDEXER_REVISION) {
+                    return true;
+                }
+                match &state.outcome {
                     // A rename keeps the Generation, so the name is compared on
                     // its own.
-                    Some(RecordedOutcome::Complete { display_name }) => {
+                    RecordedOutcome::Complete { display_name } => {
                         display_name != generation.display_name()
                     }
-                    Some(RecordedOutcome::Failed { retry }) => retry.is_due(now_unix_nanos),
+                    RecordedOutcome::Failed { retry } => retry.is_due(now_unix_nanos),
                 }
             })
             .collect())
@@ -284,17 +298,12 @@ fn operation_row<'a>(
     })
 }
 
-/// The lowest-weight text: the tags; every declaration path with the values
-/// the schema lists, one per line; and the compact identifier variants of the
-/// name-like fields. The deprecation flag is a column, never text.
+/// The lowest-weight text: the words of the tags, of every declaration path
+/// with the values the schema lists, and of the compact identifier variants
+/// of the name-like fields, each once, as [`DistinctWords`] keeps them. The
+/// deprecation flag is a column, never text. Raise [`INDEXER_REVISION`]
+/// when this text changes.
 fn searchable_text(entries: &GenerationEntries, operation: &OperationEntry) -> String {
-    let tags = operation.tags().iter().map(String::as_str);
-    // The catalog's text for a path usually opens with the path itself; the
-    // path is written once.
-    let declarations = operation.declaration_fields().iter().flat_map(|field| {
-        let path = field.path().as_str();
-        std::iter::once(path).chain(field.text().lines().filter(move |line| *line != path))
-    });
     let names = [
         operation.relative_path(),
         operation.title().unwrap_or_default(),
@@ -305,9 +314,15 @@ fn searchable_text(entries: &GenerationEntries, operation: &OperationEntry) -> S
         .into_iter()
         .filter_map(compact_identifier_variant)
         .collect::<Vec<_>>();
-    tags.chain(declarations)
-        .chain(variants.iter().map(String::as_str))
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut words = DistinctWords::default();
+    for tag in operation.tags() {
+        words.push(tag);
+    }
+    for field in operation.declaration_fields() {
+        words.push_field(field.path().as_str(), field.text());
+    }
+    for variant in &variants {
+        words.push(variant);
+    }
+    words.into_text()
 }

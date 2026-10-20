@@ -487,13 +487,17 @@ fn with_compact_variants(terms: &[String]) -> Vec<Term> {
     expanded
 }
 
-/// Runs of alphanumerics and `_`, which the `simple` text-search parser
-/// accepts without operators or quoting.
+/// The words of `term`, as [`split_words`] splits them.
 pub(crate) fn lexeme_words(term: &str) -> Vec<String> {
-    term.split(|character: char| !(character.is_alphanumeric() || character == '_'))
+    split_words(term).map(str::to_string).collect()
+}
+
+/// Runs of alphanumerics and `_`, which the `simple` text-search parser
+/// accepts without operators or quoting. The indexer splits schema text
+/// with the same rule.
+pub(crate) fn split_words(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|character: char| !(character.is_alphanumeric() || character == '_'))
         .filter(|word| !word.is_empty())
-        .map(str::to_string)
-        .collect()
 }
 
 /// `%term%` for substring matches, with `\`, `%`, and `_` escaped so an

@@ -1,0 +1,2 @@
+-- Postgres leaves room on each page of `search_entities` for the `doc_len`
+-- update in this step. SQLite has no fillfactor, so it has nothing to do.

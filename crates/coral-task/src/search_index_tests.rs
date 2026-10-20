@@ -37,7 +37,7 @@ async fn one_reconcile_pass_indexes_a_function_a_notification_missed_and_a_secon
             .into_iter()
             .map(|row| (row.doc_id, row.fingerprint))
             .collect::<Vec<_>>(),
-        [(saved.id().to_string(), "1".to_string())]
+        [(saved.id().to_string(), "1.1".to_string())]
     );
     let stamps = indexed_at(&fixture).await;
     index.reconcile().await;
@@ -82,7 +82,7 @@ async fn a_pass_reindexes_a_function_whose_fingerprint_differs_from_its_revision
             .into_iter()
             .map(|row| (row.description, row.fingerprint))
             .collect::<Vec<_>>(),
-        [("Revision 10".to_string(), "10".to_string())]
+        [("Revision 10".to_string(), "10.1".to_string())]
     );
 }
 
@@ -250,13 +250,9 @@ async fn the_task_commands_save_indexes_the_function_and_a_save_over_keeps_one_r
             title: String::new(),
             description: "Find open issues".to_string(),
             provider_name: String::new(),
-            searchable_text: "input.input\ninput\n{ label: string; }\n\
-                              input.input.label\nlabel\nstring\n\
-                              result\nfind\nnumber\n\
-                              triageopenissues"
-                .to_string(),
+            searchable_text: "input label string result find number triageopenissues".to_string(),
             deprecated: false,
-            fingerprint: "1".to_string(),
+            fingerprint: "1.1".to_string(),
         }]
     );
     let found = fixture
@@ -296,7 +292,7 @@ async fn the_task_commands_save_indexes_the_function_and_a_save_over_keeps_one_r
         [(
             first.id().to_string(),
             "Find open bugs".to_string(),
-            "2".to_string()
+            "2.1".to_string()
         )]
     );
 }

@@ -355,8 +355,8 @@ fn postgres_candidates(binds: &mut Binds, plan: &QueryPlan, scoring: &ScoringPla
 /// the description and the Provider name, `D` 0.25 for the schema text).
 /// So `remove` earns at most one cap from the name and the title and one
 /// from the body, however many forms (`removelabels`, `removes`) or
-/// mentions each holds. A long schema text needs many mentions to come near
-/// the value of one name match.
+/// mentions each holds. Schema text holds each word once, so only many forms
+/// of a word in it come near the value of one name match.
 /// The vector splits camelCase names, so `comments` meets the name word of
 /// `listComments`.
 fn postgres_score(binds: &mut Binds, scoring: &ScoringPlan) -> String {

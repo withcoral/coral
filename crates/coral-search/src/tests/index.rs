@@ -19,6 +19,7 @@ use wiremock::MockServer;
 
 use super::{TestModules, change, organization_user};
 use crate::SearchIndex;
+use crate::indexer::INDEXER_REVISION;
 
 const USER: &str = "user:search-index";
 
@@ -363,6 +364,48 @@ async fn a_pass_reindexes_a_renamed_provider_under_its_new_name() {
     world.assert_exact_statistics().await;
 }
 
+#[tokio::test]
+async fn a_pass_reindexes_a_generation_that_an_older_indexer_revision_wrote() {
+    for (revision, reindexed, writer) in [
+        (None, true, "a Coral without indexer revisions"),
+        (
+            Some(INDEXER_REVISION - 1),
+            true,
+            "an older indexer revision",
+        ),
+        (
+            Some(INDEXER_REVISION + 1),
+            false,
+            "a newer indexer revision during a rolling update",
+        ),
+    ] {
+        let upstream = MockServer::start().await;
+        let world = World::publish_tracer(&upstream).await;
+        world.index.reconcile().await;
+        let indexed = world.operation_rows().await;
+        world.leave_rows_as_written_by(revision).await;
+        let left = world.operation_rows().await;
+
+        world.index.reconcile().await;
+
+        if reindexed {
+            assert_eq!(world.operation_rows().await, indexed, "{writer}");
+            world.assert_exact_statistics().await;
+            // The rewrite records this revision, so the next pass finds
+            // nothing to index.
+            let stamps = world.write_stamps().await;
+            world.index.reconcile().await;
+            assert_eq!(
+                world.write_stamps().await,
+                stamps,
+                "{writer}: a second pass"
+            );
+        } else {
+            assert_eq!(world.operation_rows().await, left, "{writer}");
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_concurrent_passes_converge_on_the_rows_one_pass_leaves() {
     let upstream = MockServer::start().await;
@@ -529,11 +572,8 @@ async fn a_published_generation_indexes_its_operations_and_a_complete_state() {
                           Use a stable location identifier when one is available."
                 .to_string(),
             provider_name: "weather Weather Tracer".to_string(),
-            searchable_text: "forecast\nweather\n\
-                              result.data\n\"object\"\n\
-                              result.data.temperatureC\n\"number\"\n\
-                              result.data[key]\n\
-                              getoneweatherforecast\nweathertracer"
+            searchable_text: "forecast weather result data object temperatureC number key \
+                              getoneweatherforecast weathertracer"
                 .to_string(),
             deprecated: true,
             fingerprint: generation.clone(),
@@ -546,6 +586,54 @@ async fn a_published_generation_indexes_its_operations_and_a_complete_state() {
             &generation,
             "Weather Tracer"
         )]
+    );
+}
+
+/// One Operation whose response reaches the shared `Run` schema by two
+/// paths. The tags and the enum values repeat words in another case.
+const RUNS: &str = r##"{
+  "openapi": "3.1.0",
+  "info": { "title": "Bench Runs", "version": "1.0.0" },
+  "servers": [{ "url": "https://bench.example" }],
+  "security": [],
+  "paths": { "/runs": { "get": { "operationId": "listRuns", "summary": "List runs",
+    "tags": ["Runs", "runs"],
+    "responses": { "200": { "description": "OK", "content": { "application/json": {
+      "schema": { "type": "object", "properties": {
+        "latest": { "$ref": "#/components/schemas/Run" },
+        "previous": { "$ref": "#/components/schemas/Run" }
+      } } } } } } } } },
+  "components": { "schemas": { "Run": { "type": "object", "properties": {
+    "benchmark_run_id": { "type": "string" },
+    "Status": { "type": "string", "enum": ["in-progress", "DONE", "done"] }
+  } } } }
+}"##;
+
+#[tokio::test]
+async fn schema_text_holds_each_word_once_in_its_first_spelling() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    world
+        .modules
+        .publish_openapi(&world.user, &world.workspace, RUNS, "bench", 50)
+        .await;
+
+    world.index.reconcile().await;
+
+    let text = world
+        .operation_rows()
+        .await
+        .into_iter()
+        .find(|row| row.call_path == "coral.providers.bench.listRuns")
+        .expect("the Operation row")
+        .searchable_text;
+    // The words split as the query planner splits them, so `_` stays in a
+    // word and `-` ends one. Each word appears once: the second path to
+    // `Run`, the second tag and `done` add nothing.
+    assert_eq!(
+        text,
+        "Runs result data object latest Status string in progress DONE \
+         benchmark_run_id key previous listruns benchruns"
     );
 }
 
@@ -1732,6 +1820,38 @@ impl World {
             .await
             .expect("read the Operation rows");
         rows.into_iter().map(OperationRow::from).collect()
+    }
+
+    /// Leaves the Workspace's Generations as an indexer of `revision` would
+    /// have written them, `None` for a Coral without indexer revisions: each
+    /// Operation row holds other text, and each state row names `revision`.
+    async fn leave_rows_as_written_by(&self, revision: Option<i64>) {
+        self.modules
+            .search
+            .database
+            .execute(
+                Query::update()
+                    .table(Alias::new("search_entities"))
+                    .value(Alias::new("searchable_text"), "text of an older indexer")
+                    .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
+                    .and_where(Expr::col(Alias::new("kind")).eq("operation"))
+                    .to_owned(),
+            )
+            .await
+            .expect("rewrite the Operation rows");
+        self.modules
+            .search
+            .database
+            .execute(
+                Query::update()
+                    .table(Alias::new("search_index_states"))
+                    .value(Alias::new("indexer_revision"), revision)
+                    .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
+                    .and_where(Expr::col(Alias::new("kind")).eq("operation"))
+                    .to_owned(),
+            )
+            .await
+            .expect("rewrite the Generation state rows");
     }
 
     /// When each of the Workspace's rows last changed and each of its state

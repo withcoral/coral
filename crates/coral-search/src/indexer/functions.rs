@@ -14,7 +14,7 @@ use coral_workspace::WorkspaceId;
 
 use super::repository::{self, FailedFunctionState, FunctionRow, WorkspaceFunction};
 use super::retry::RetryRule;
-use super::{EntityIndexer, IndexError, compact_identifier_variant, now_unix_nanos};
+use super::{DistinctWords, EntityIndexer, IndexError, compact_identifier_variant, now_unix_nanos};
 use crate::CallPath;
 
 /// Indexes Saved Functions.
@@ -52,16 +52,21 @@ impl EntityIndexer for SavedFunctionIndexer {
         match *removal {}
     }
 
-    /// Returns each current function with a `failed` state row whose retry
-    /// rule is due at `now_unix_nanos` or that another revision recorded,
-    /// and each function without such a row that has no row or a row whose
-    /// fingerprint differs from its definition revision. A failure of the
-    /// current revision that is not yet due waits for a later pass whatever
-    /// the function's row holds. Nothing is left to remove: a function's row
-    /// and state row cascade with it.
+    /// Returns each current function to index again:
+    /// - one with a `failed` state row that another definition revision
+    ///   recorded, or whose retry rule is due at `now_unix_nanos`;
+    /// - one without such a row whose row is missing, or whose fingerprint is
+    ///   not [`repository::function_fingerprint`] of its definition revision.
     ///
-    /// The fingerprint is an opaque version marker, compared for equality
-    /// only. As text, revision 10 would sort before revision 9.
+    /// A failure of the current definition revision that is not yet due
+    /// waits for a later pass, whatever the function's row holds. Nothing is
+    /// left to remove: a function's row and state row cascade with it.
+    ///
+    /// The fingerprint holds the definition revision and the indexer
+    /// revision, and is compared for equality only. So, unlike a Generation,
+    /// a row that a newer release wrote is indexed again. During a rolling
+    /// update the two releases rewrite each other's rows until the older one
+    /// stops.
     async fn reconcile<'e>(
         &self,
         transaction: &mut Transaction<'_>,
@@ -90,7 +95,10 @@ impl EntityIndexer for SavedFunctionIndexer {
                         failure.revision != Some(entry.revision())
                             || failure.retry.is_due(now_unix_nanos)
                     }
-                    None => fingerprints.get(&key) != Some(&entry.revision().to_string()),
+                    None => {
+                        fingerprints.get(&key)
+                            != Some(&repository::function_fingerprint(entry.revision()))
+                    }
                 }
             })
             .collect())
@@ -159,24 +167,19 @@ fn function_row(
     })
 }
 
-/// The lowest-weight text: every declaration path with its text, one per
-/// line, and the compact identifier variant of the path. A function whose
-/// declaration fields did not project is searchable by path and description.
+/// The lowest-weight text: the words of every declaration path with its
+/// text and of the compact identifier variant of the path, each once, as
+/// [`DistinctWords`] keeps them. A function whose declaration fields did not
+/// project is searchable by path and description. Raise
+/// [`super::INDEXER_REVISION`] when this text changes.
 fn searchable_text(entry: &SavedFunctionEntry) -> String {
-    // As for Operations, a field's text usually opens with its path; the path
-    // is written once.
-    let declarations = entry
-        .declaration_fields()
-        .unwrap_or_default()
-        .iter()
-        .flat_map(|field| {
-            let path = field.path();
-            std::iter::once(path).chain(field.text().lines().filter(move |line| *line != path))
-        });
     let variant = compact_identifier_variant(entry.path().as_str());
-    declarations
-        .chain(variant.as_deref())
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut words = DistinctWords::default();
+    for field in entry.declaration_fields().unwrap_or_default() {
+        words.push_field(field.path(), field.text());
+    }
+    if let Some(variant) = &variant {
+        words.push(variant);
+    }
+    words.into_text()
 }
