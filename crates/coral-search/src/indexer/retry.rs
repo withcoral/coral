@@ -4,7 +4,9 @@
 //! overran its limit, waits for a newer Coral version. Any other failure
 //! waits at least one reconcile interval, twice as long after each such
 //! failure in a row, and never more than an hour. A newer Coral version
-//! retries either at once. A notified write always tries, whatever the rule.
+//! retries either at once. A notified write always tries, whatever the rule,
+//! so removing a Provider and adding it again, or saving a Saved Function
+//! again, retries it at once.
 //!
 //! Only a newer version retries a failure, never an older one, so two
 //! processes of different versions do not retry each other's failures pass
@@ -70,8 +72,10 @@ impl RetryRule {
         let recorded_by_older = self
             .coral_version
             .as_deref()
-            .and_then(release)
-            .is_none_or(|recorded| release(CORAL_VERSION).is_some_and(|this| recorded < this));
+            .and_then(Release::parse)
+            .is_none_or(|recorded| {
+                Release::parse(CORAL_VERSION).is_some_and(|this| recorded < this)
+            });
         recorded_by_older
             || self
                 .retry_after_unix_nanos
@@ -79,17 +83,65 @@ impl RetryRule {
     }
 }
 
-/// The `major.minor.patch` of a Coral version, without any pre-release or
-/// build suffix. `None` when the version does not read so.
-fn release(version: &str) -> Option<(u64, u64, u64)> {
-    let core = version.split(['-', '+']).next()?;
-    let mut parts = core.split('.').map(str::parse);
-    let release = (
-        parts.next()?.ok()?,
-        parts.next()?.ok()?,
-        parts.next()?.ok()?,
-    );
-    parts.next().is_none().then_some(release)
+/// A Coral version in semantic-version order: a pre-release sorts before
+/// its release, and build metadata does not count.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Release {
+    core: (u64, u64, u64),
+    stage: Stage,
+}
+
+/// Declared in precedence order, so the derived order puts a pre-release
+/// first.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Stage {
+    PreRelease(Vec<Identifier>),
+    Final,
+}
+
+/// One dot-separated pre-release identifier. Declared in precedence order:
+/// a numeric identifier sorts before a text one.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Identifier {
+    Numeric(u64),
+    Text(String),
+}
+
+impl Release {
+    /// `None` when the version does not read as `major.minor.patch` with an
+    /// optional pre-release and build suffix.
+    fn parse(version: &str) -> Option<Self> {
+        let version = version
+            .split_once('+')
+            .map_or(version, |(version, _build)| version);
+        let (core, pre_release) = match version.split_once('-') {
+            Some((core, pre_release)) => (core, Some(pre_release)),
+            None => (version, None),
+        };
+        let mut parts = core.split('.').map(str::parse);
+        let core = (
+            parts.next()?.ok()?,
+            parts.next()?.ok()?,
+            parts.next()?.ok()?,
+        );
+        if parts.next().is_some() {
+            return None;
+        }
+        let stage = match pre_release {
+            None => Stage::Final,
+            Some(pre_release) => Stage::PreRelease(
+                pre_release
+                    .split('.')
+                    .map(|identifier| match identifier.parse() {
+                        Ok(number) => Some(Identifier::Numeric(number)),
+                        Err(_) if identifier.is_empty() => None,
+                        Err(_) => Some(Identifier::Text(identifier.to_owned())),
+                    })
+                    .collect::<Option<_>>()?,
+            ),
+        };
+        Some(Self { core, stage })
+    }
 }
 
 /// How long a pass waits to retry the `attempts`-th failure in a row that
@@ -105,7 +157,8 @@ fn wait(attempts: i64, reconcile_interval: Duration) -> Duration {
 mod tests {
     use std::time::Duration;
 
-    use super::{CORAL_VERSION, RetryRule, release, wait};
+    use super::{CORAL_VERSION, Release, RetryRule, wait};
+    use crate::indexer::IndexError;
 
     #[test]
     fn each_failure_in_a_row_doubles_the_wait_up_to_an_hour() {
@@ -134,7 +187,10 @@ mod tests {
 
     #[test]
     fn a_failure_waits_for_a_newer_version_only() {
-        let (major, minor, patch) = release(CORAL_VERSION).expect("this version reads");
+        let Release {
+            core: (major, minor, patch),
+            ..
+        } = Release::parse(CORAL_VERSION).expect("this version reads");
         let pre_release = format!("{major}.{minor}.{patch}-rc.1");
         let newer_patch = format!("{major}.{minor}.{}", patch + 1);
         let newer_major = format!("{}.0.0", major + 1);
@@ -142,8 +198,8 @@ mod tests {
             (None, true),
             (Some("not a version"), true),
             (Some("0.0.0"), true),
+            (Some(pre_release.as_str()), true),
             (Some(CORAL_VERSION), false),
-            (Some(pre_release.as_str()), false),
             (Some(newer_patch.as_str()), false),
             (Some(newer_major.as_str()), false),
         ] {
@@ -153,6 +209,51 @@ mod tests {
                 coral_version: recorded.map(str::to_owned),
             };
             assert_eq!(rule.is_due(i64::MAX), due, "recorded: {recorded:?}");
+        }
+    }
+
+    #[test]
+    fn versions_follow_semantic_version_precedence() {
+        // The precedence example of the Semantic Versioning 2.0.0 spec, then
+        // a release with build metadata, which does not count.
+        let ordered = [
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.beta",
+            "1.0.0-beta",
+            "1.0.0-beta.2",
+            "1.0.0-beta.11",
+            "1.0.0-rc.1",
+            "1.0.0",
+            "1.0.1",
+            "1.1.0",
+            "2.0.0",
+        ]
+        .map(|version| Release::parse(version).expect(version));
+        assert!(ordered.is_sorted_by(|older, newer| older < newer));
+        assert_eq!(Release::parse("1.0.0+build.5"), Release::parse("1.0.0"));
+        for unreadable in ["1.0", "1.0.0.0", "1.0.0-", "1.0.0-rc..1", "v1.0.0"] {
+            assert_eq!(Release::parse(unreadable), None, "{unreadable}");
+        }
+    }
+
+    #[test]
+    fn only_an_invalid_entry_or_a_write_that_overran_after_its_lock_waits_for_a_newer_version() {
+        let limit = Duration::from_mins(1);
+        for (error, waits_for_version) in [
+            (IndexError::InvalidEntry("bad path".into()), true),
+            (IndexError::Overran(limit), true),
+            (IndexError::WriterBusy(limit), false),
+            (IndexError::TimedOut(limit), false),
+            (IndexError::Clock, false),
+            (IndexError::Corrupt("bad row"), false),
+        ] {
+            let rule = RetryRule::after_failure(None, &error, 0, Duration::from_mins(5));
+            assert_eq!(
+                rule.retry_after_unix_nanos.is_none(),
+                waits_for_version,
+                "{error}"
+            );
         }
     }
 }

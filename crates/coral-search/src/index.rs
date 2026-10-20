@@ -401,12 +401,14 @@ impl SearchIndex {
     /// Writes one entry under its Workspace's lock. A write that overruns
     /// its limit before it holds the lock waited for another writer, so it
     /// fails as [`IndexError::WriterBusy`], which may pass on a later try.
+    /// One that overruns after fails as [`IndexError::Overran`], which
+    /// repeats until something changes.
     async fn write<I: EntityIndexer>(
         &self,
         indexer: &I,
         entry: &I::Entry,
     ) -> Result<(), IndexError> {
-        let mut locked = false;
+        let mut past_lock = false;
         let written = self
             .within_limit(async {
                 let mut transaction = self.database.begin().await?;
@@ -415,7 +417,7 @@ impl SearchIndex {
                         .await
                     {
                         Ok(()) => {
-                            locked = true;
+                            past_lock = true;
                             #[cfg(any(test, feature = "test-fixtures"))]
                             if let Some(stall) = self.stall_after_lock {
                                 tokio::time::sleep(stall).await;
@@ -433,7 +435,8 @@ impl SearchIndex {
             })
             .await;
         match written {
-            Err(IndexError::TimedOut(limit)) if !locked => Err(IndexError::WriterBusy(limit)),
+            Err(IndexError::TimedOut(limit)) if past_lock => Err(IndexError::Overran(limit)),
+            Err(IndexError::TimedOut(limit)) => Err(IndexError::WriterBusy(limit)),
             written => written,
         }
     }

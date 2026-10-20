@@ -27,9 +27,17 @@ pub(crate) enum IndexError {
     /// An entry cannot become a row, for example an invalid Call Path.
     #[error("invalid search entry: {0}")]
     InvalidEntry(String),
-    /// The write did not finish within its limit and was rolled back.
+    /// Work on the index, such as preparing entries, did not finish within
+    /// its limit and was rolled back.
     #[error("the index write did not finish within {} seconds", .0.as_secs())]
     TimedOut(std::time::Duration),
+    /// The write ran past its limit while it held its Workspace's lock, and
+    /// was rolled back.
+    #[error(
+        "the index write ran past its {}-second limit while it held the Workspace's lock",
+        .0.as_secs()
+    )]
+    Overran(std::time::Duration),
     /// The write waited past its limit to begin or to take its Workspace's
     /// lock, behind another writer, and was rolled back.
     #[error(
@@ -60,7 +68,9 @@ impl IndexError {
     pub(crate) const fn failure(&self) -> Option<SearchIndexFailure> {
         match self {
             Self::InvalidEntry(_) => Some(SearchIndexFailure::InvalidEntry),
-            Self::TimedOut(_) | Self::WriterBusy(_) => Some(SearchIndexFailure::TimedOut),
+            Self::TimedOut(_) | Self::Overran(_) | Self::WriterBusy(_) => {
+                Some(SearchIndexFailure::TimedOut)
+            }
             Self::Clock => Some(SearchIndexFailure::Clock),
             Self::Corrupt(_) => Some(SearchIndexFailure::Corrupt),
             Self::Provider(_) => Some(SearchIndexFailure::Provider),
@@ -70,12 +80,12 @@ impl IndexError {
     }
 
     /// Whether the same attempt fails the same way until something changes:
-    /// an entry that cannot become a row, or work that overran its limit
-    /// without waiting for another writer. A preparation reads a snapshot
-    /// and waits for no writer, so its overrun repeats too. Each other error
-    /// may pass.
-    const fn repeats_until_change(&self) -> bool {
-        matches!(self, Self::InvalidEntry(_) | Self::TimedOut(_))
+    /// an entry that cannot become a row, or a write that ran past its limit
+    /// while it held its Workspace's lock. Each other error may pass,
+    /// including a preparation that ran past its limit: it may have waited
+    /// for a database connection.
+    pub(super) const fn repeats_until_change(&self) -> bool {
+        matches!(self, Self::InvalidEntry(_) | Self::Overran(_))
     }
 }
 

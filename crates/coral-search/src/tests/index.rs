@@ -121,7 +121,7 @@ async fn a_timeout_after_the_workspace_lock_waits_for_a_newer_coral_version() {
         let [state] = world.states().await.try_into().expect("one state row");
         assert_eq!(state.state, "failed");
         let error = state.error.expect("a failed state carries its error");
-        assert!(error.contains("did not finish"), "{error}");
+        assert!(error.contains("ran past its"), "{error}");
         assert_eq!(world.retries().await, [Retry::on_new_version(1)]);
 
         world.make_retries_due().await;
@@ -162,7 +162,7 @@ async fn a_timeout_waiting_for_the_writer_is_transient() {
     let index = world
         .index
         .clone()
-        .with_write_limit(std::time::Duration::from_millis(200));
+        .with_write_limit(std::time::Duration::from_secs(1));
     let database = world.modules.search.database.clone();
 
     // SQLite's writer, or Postgres's lock on the Workspace's index writes.
@@ -171,10 +171,10 @@ async fn a_timeout_waiting_for_the_writer_is_transient() {
         .await
         .expect("hold the Workspace's index lock");
     notify(&index, &entries);
-    // Released after the write's limit, within the failure's own limit to
-    // record its state.
+    // Released half a limit after the write gives up, so the failure records
+    // its state within its own limit, with room on both sides.
     tokio::join!(index.settled(), async {
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
         blocker.rollback().await.expect("release the writer");
     });
 
@@ -1073,7 +1073,7 @@ async fn a_write_stalled_past_its_limit_rolls_back_and_frees_later_writes() {
     // Postgres's table lock stalls it after.
     let expected = match database.system() {
         DatabaseSystem::Sqlite => "waited more than",
-        DatabaseSystem::Postgres => "did not finish",
+        DatabaseSystem::Postgres => "ran past its",
     };
     assert!(
         first

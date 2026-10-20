@@ -76,7 +76,7 @@ impl EntityIndexer for SavedFunctionIndexer {
         let failures = repository::failed_functions(transaction)
             .await?
             .into_iter()
-            .map(|failed| (failed.function, (failed.retry, failed.revision)))
+            .map(|failed| (failed.function, failed.failure))
             .collect::<HashMap<_, _>>();
         Ok(expected
             .iter()
@@ -86,8 +86,9 @@ impl EntityIndexer for SavedFunctionIndexer {
                     function_id: entry.id().clone(),
                 };
                 match failures.get(&key) {
-                    Some((retry, revision)) => {
-                        *revision != Some(entry.revision()) || retry.is_due(now_unix_nanos)
+                    Some(failure) => {
+                        failure.revision != Some(entry.revision())
+                            || failure.retry.is_due(now_unix_nanos)
                     }
                     None => fingerprints.get(&key) != Some(&entry.revision().to_string()),
                 }
@@ -111,13 +112,10 @@ pub(crate) async fn record_failed_attempt(
 ) -> Result<(), IndexError> {
     repository::lock_workspace(transaction, entry.workspace_id()).await?;
     // A failure of another revision starts the count again.
-    let prior = repository::failed_function_retry_rule(
-        transaction,
-        entry.workspace_id(),
-        entry.id(),
-        entry.revision(),
-    )
-    .await?;
+    let prior = repository::failed_function(transaction, entry.workspace_id(), entry.id())
+        .await?
+        .filter(|failure| failure.revision == Some(entry.revision()))
+        .map(|failure| failure.retry);
     repository::delete_function_row(transaction, entry.workspace_id(), entry.id()).await?;
     let attempted_at = now_unix_nanos()?;
     repository::write_failed_function_state(

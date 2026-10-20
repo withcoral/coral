@@ -196,7 +196,7 @@ async fn a_function_whose_write_overran_its_limit_waits_for_a_change() {
             panic!("one state row: {failed:?}");
         };
         assert_eq!(state.state, "failed");
-        assert!(state.error.contains("did not finish"), "{}", state.error);
+        assert!(state.error.contains("ran past its"), "{}", state.error);
 
         make_retries_due(&fixture).await;
         fixture.index.reconcile().await;
