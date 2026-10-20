@@ -370,26 +370,29 @@ impl CredentialSettings {
 }
 
 /// Coral's own agent. It is off until `api_key_env` names the variable that
-/// holds the Anthropic API key.
+/// holds the Anthropic API key. `thinking = false` turns the model's thinking off.
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct AgentSettings {
     api_key_env: Option<String>,
     model: Option<String>,
     effort: Option<String>,
+    thinking: Option<bool>,
 }
 
 const AGENT_DEFAULT_MODEL: &str = "claude-haiku-5-5";
 const AGENT_DEFAULT_EFFORT: &str = "medium";
 const AGENT_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+/// The efforts at which the Messages API accepts `thinking: disabled`.
+const AGENT_EFFORTS_WITHOUT_THINKING: [&str; 3] = ["low", "medium", "high"];
 
 impl AgentSettings {
     fn validate(&self) -> Result<(), AppError> {
         if let Some(name) = &self.api_key_env {
             super::env_var_name("agent.api_key_env", name).map_err(AppError::FailedPrecondition)?;
-        } else if self.model.is_some() || self.effort.is_some() {
+        } else if self.model.is_some() || self.effort.is_some() || self.thinking.is_some() {
             return Err(AppError::FailedPrecondition(
-                "agent.model and agent.effort require agent.api_key_env".into(),
+                "agent.model, agent.effort and agent.thinking require agent.api_key_env".into(),
             ));
         }
         if self
@@ -409,7 +412,18 @@ impl AgentSettings {
                 AGENT_EFFORTS.join(", ")
             )));
         }
+        if self.thinking == Some(false) && !AGENT_EFFORTS_WITHOUT_THINKING.contains(&self.effort())
+        {
+            return Err(AppError::FailedPrecondition(format!(
+                "agent.thinking = false requires agent.effort {}",
+                AGENT_EFFORTS_WITHOUT_THINKING.join(", ")
+            )));
+        }
         Ok(())
+    }
+
+    fn effort(&self) -> &str {
+        self.effort.as_deref().unwrap_or(AGENT_DEFAULT_EFFORT)
     }
 
     fn resolve(&self) -> Result<Option<coral_agent::AnthropicSettings>, AppError> {
@@ -423,10 +437,8 @@ impl AgentSettings {
                 .model
                 .clone()
                 .unwrap_or_else(|| AGENT_DEFAULT_MODEL.to_owned()),
-            effort: self
-                .effort
-                .clone()
-                .unwrap_or_else(|| AGENT_DEFAULT_EFFORT.to_owned()),
+            effort: self.effort().to_owned(),
+            thinking: self.thinking.unwrap_or(true),
         }))
     }
 }
@@ -1252,6 +1264,41 @@ client_secret = 'test-secret'
                 matches!(&error, AppError::FailedPrecondition(message) if message.contains(expected)),
                 "{raw}: {error}"
             );
+        }
+    }
+
+    #[test]
+    fn invalid_agent_settings_fail_closed() {
+        for (raw, expected) in [
+            (
+                "[agent]\nthinking = false",
+                "agent.model, agent.effort and agent.thinking require agent.api_key_env",
+            ),
+            (
+                "[agent]\napi_key_env = \"ANTHROPIC_API_KEY\"\nthinking = false\neffort = \"xhigh\"",
+                "agent.thinking = false requires agent.effort low, medium, high",
+            ),
+            (
+                "[agent]\napi_key_env = \"ANTHROPIC_API_KEY\"\nthinking = false\neffort = \"max\"",
+                "agent.thinking = false requires agent.effort low, medium, high",
+            ),
+            (
+                "[agent]\napi_key_env = \"ANTHROPIC_API_KEY\"\nthinking = \"off\"",
+                "agent.thinking",
+            ),
+        ] {
+            let error = load(raw).1.validate().expect_err(raw);
+            assert!(
+                matches!(&error, AppError::FailedPrecondition(message) if message.contains(expected)),
+                "{raw}: {error}"
+            );
+        }
+        for raw in [
+            "[agent]\napi_key_env = \"ANTHROPIC_API_KEY\"\nthinking = false",
+            "[agent]\napi_key_env = \"ANTHROPIC_API_KEY\"\nthinking = false\neffort = \"high\"",
+            "[agent]\napi_key_env = \"ANTHROPIC_API_KEY\"\nthinking = true\neffort = \"max\"",
+        ] {
+            load(raw).1.validate().expect(raw);
         }
     }
 

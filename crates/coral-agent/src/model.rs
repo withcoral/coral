@@ -102,6 +102,9 @@ pub struct AnthropicSettings {
     pub model: String,
     /// `output_config.effort`, such as `medium`.
     pub effort: String,
+    /// Whether the model thinks before it answers. Off sends `thinking: disabled`,
+    /// which models accept only at effort `high` or below.
+    pub thinking: bool,
 }
 
 impl std::fmt::Debug for AnthropicSettings {
@@ -110,6 +113,7 @@ impl std::fmt::Debug for AnthropicSettings {
             .debug_struct("AnthropicSettings")
             .field("model", &self.model)
             .field("effort", &self.effort)
+            .field("thinking", &self.thinking)
             .finish_non_exhaustive()
     }
 }
@@ -158,16 +162,23 @@ impl AnthropicModel {
             .iter()
             .map(|message| json!({"role": message.role.as_str(), "content": message.content}))
             .collect::<Vec<_>>();
-        json!({
-            "model": self.settings.model,
-            "max_tokens": MAX_TOKENS,
-            // Caches the tools, system prompt and thread prefix across steps.
-            "cache_control": {"type": "ephemeral"},
-            "output_config": {"effort": self.settings.effort},
-            "system": request.system,
-            "tools": tools,
-            "messages": messages,
-        })
+        let mut body = serde_json::Map::new();
+        body.insert("model".into(), json!(self.settings.model));
+        body.insert("max_tokens".into(), json!(MAX_TOKENS));
+        // Caches the tools, system prompt and thread prefix across steps.
+        body.insert("cache_control".into(), json!({"type": "ephemeral"}));
+        body.insert(
+            "output_config".into(),
+            json!({"effort": self.settings.effort}),
+        );
+        // Leaving `thinking` out keeps the model's default, adaptive thinking.
+        if !self.settings.thinking {
+            body.insert("thinking".into(), json!({"type": "disabled"}));
+        }
+        body.insert("system".into(), json!(request.system));
+        body.insert("tools".into(), Value::Array(tools));
+        body.insert("messages".into(), Value::Array(messages));
+        Value::Object(body)
     }
 }
 
@@ -241,4 +252,35 @@ fn parse_response(payload: &Value) -> Result<ModelResponse, ModelError> {
         content,
         stop_reason,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thinking_off_disables_it_and_thinking_on_keeps_the_model_default() {
+        for (thinking, expected) in [(true, None), (false, Some(json!({"type": "disabled"})))] {
+            let model = AnthropicModel::new(
+                coral_outbound::DestinationPolicy::default(),
+                AnthropicSettings {
+                    api_key: "test-key".into(),
+                    model: "test-model".into(),
+                    effort: "medium".into(),
+                    thinking,
+                },
+            )
+            .expect("client");
+            let body = model.body(&ModelRequest {
+                system: String::new(),
+                tools: Vec::new(),
+                messages: Vec::new(),
+            });
+            assert_eq!(
+                body.get("thinking").cloned(),
+                expected,
+                "thinking = {thinking}"
+            );
+        }
+    }
 }
