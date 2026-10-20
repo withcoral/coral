@@ -2015,6 +2015,12 @@ describe("Live's oldest action in the followed Run", () => {
     expect(loaded(calls, 'approval')).toBe(3)
     expect(loaded(calls, 'operation')).toBe(3)
   })
+  it.each(['latest', 'task'])('reads it while live mode follows the %s scope', async (live) => {
+    const oldest = approvalWait('a', 1n)
+    const { api } = coral(list(), runEvent(), waitingRun([approvalWait('b', 9n), oldest]))
+    const page = await loadActivity(followed({ live }), api, { scope })
+    expect(page.liveAction).toEqual(target(oldest))
+  })
   it('reads the first action page when the review shows a later one', async () => {
     const oldest = approvalWait('a', 1n)
     const newer = approvalWait('b', 9n)
@@ -2096,6 +2102,7 @@ describe("Live's oldest action in the followed Run", () => {
   })
   it.each([
     { name: 'live mode is off', query: { live: '' }, waits: [approvalWait('a', 1n)] },
+    { name: 'live names no scope', query: { live: 'on' }, waits: [approvalWait('a', 1n)] },
     { name: 'the Run waits on nothing', query: {}, waits: [] },
   ])('reads no children when $name', async ({ query, waits }) => {
     const { api, calls } = coral(list(), runEvent(), waitingRun(waits))

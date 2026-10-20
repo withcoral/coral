@@ -322,6 +322,20 @@ export interface LiveAction {
   request: string
 }
 
+/**
+ * What live mode follows: the selected record's Run, the newest Task or Run in the
+ * list, or the Runs of the selected Task in order.
+ */
+export type LiveScope = 'run' | 'latest' | 'task'
+/** Each scope's `live=` value. `1` is the Run scope, which older links name. */
+const liveValues: Record<LiveScope, string> = { run: '1', latest: 'latest', task: 'task' }
+export const liveValue = (scope: LiveScope) => liveValues[scope]
+/** The scope a `live=` value names, or null when live mode is off. */
+export function liveScopeOf(value: string | null): LiveScope | null {
+  const scope = Object.entries(liveValues).find(([, item]) => item === value)?.[0]
+  return (scope as LiveScope | undefined) ?? null
+}
+
 export interface TaskRow {
   contextImpactBytes?: string
   /** A child execution is still running, so the total covers only finished children. */

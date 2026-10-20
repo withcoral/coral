@@ -6,7 +6,16 @@ import {
   readingWindow,
   type ActivityViewport,
 } from '@/lib/activity-live-types'
-import type { ActivityBranch, ActivityPage, ActivityRow, LiveAction } from './types'
+import {
+  liveScopeOf,
+  liveValue,
+  MAX_EXPANDED_RECORDS,
+  type ActivityBranch,
+  type ActivityPage,
+  type ActivityRow,
+  type LiveAction,
+  type LiveScope,
+} from './types'
 
 export const ActivityNavigationContext = createContext<ReturnType<
   typeof activityNavigation
@@ -19,11 +28,21 @@ export function branchCoordinate(key: string): string | undefined {
 
 /**
  * Query keys that only select a record and its review, never the listed window.
- * `live=1` follows the newest record of the selected record's Run; any other
- * selection turns it off.
+ * `live` names what live mode follows (`liveScopeOf`); any other selection turns it
+ * off. `liveExpanded` names the records live mode expanded itself, which it may
+ * collapse again. Both live in the address, so a reload or Back keeps them, and each
+ * step's link and the expansion limit come from the address alone.
  */
-export const selectionKeys = ['record', 'request', 'actionsAfter', 'live'] as const
+export const selectionKeys = ['record', 'request', 'actionsAfter', 'live', 'liveExpanded'] as const
 const clearSelection = Object.fromEntries(selectionKeys.map((key) => [key, null]))
+
+/** Address changes that read the children of `parent` from `offset`, with no anchor. */
+export const windowAt = (parent: string, offset: number) => ({
+  [`offset.${parent}`]: String(offset),
+  [`preceding.${parent}`]: '0',
+  [`anchor.${parent}`]: null,
+  [`cursor.${parent}`]: null,
+})
 
 /** Reveal the record's authorized history; leaving review clears only its selection. */
 export function revealHref(row: ActivityRow, options: { select?: boolean; request?: string } = {}) {
@@ -144,7 +163,7 @@ export function activityNavigation(
   /** `stopLive` also turns live mode off, for a collapse that hides the Run it follows. */
   const toggleHref = (name: string, stopLive = false) =>
     href({
-      ...(stopLive && { live: null }),
+      ...(stopLive && { live: null, liveExpanded: null }),
       tree: '1',
       expand: page.expanded.includes(name)
         ? page.expanded.filter((item) => item !== name)
@@ -159,33 +178,62 @@ export function activityNavigation(
       expand: page.expanded.filter((item) => item !== name),
     })
   const backHref = href(clearSelection)
-  /** Live mode follows the newest record of the selected record's Run. */
-  const live = query.get('live') === '1'
-  /** Turns live mode on or off for the shown record. On, it expands `expand` too. */
-  const liveHref = (on: boolean, expand: string[] = []) => {
-    const open = context.getAll('expand')
-    return href({
-      live: on ? '1' : null,
-      ...(expand.some((name) => !open.includes(name)) && {
-        tree: '1',
-        expand: [...new Set([...open, ...expand])],
-      }),
-    })
-  }
+  /** What live mode follows, or null while it is off. */
+  const liveScope = liveScopeOf(query.get('live'))
+  const owned = query.getAll('liveExpanded')
   /**
-   * Live mode's selection of `name` in the Run it follows: its newest record, or the
-   * record that reviews `action`. An action the Run's window does not hold opens at
-   * that action. After a decision the review advances the same way, and `on` keeps
-   * live mode as it was.
+   * Live mode in `scope`, with `chain` expanded and `keep` still open. It collapses the
+   * records it expanded itself that neither names, and never one you expanded. Off, it
+   * collapses nothing, and a decision's advance still expands `chain`, as yours.
    */
-  const followHref = (name: string, action?: LiveAction, on = true) => {
+  const liveChanges = (scope: LiveScope | null, chain: string[], keep: string[]) => {
+    const open = context.getAll('expand')
+    const kept = new Set([...chain, ...keep])
+    const stays = (name: string) => !scope || kept.has(name) || !owned.includes(name)
+    const expand = [...new Set([...open.filter(stays), ...chain])]
+    const nextOwned = scope
+      ? expand.filter((name) => kept.has(name) && (owned.includes(name) || !open.includes(name)))
+      : null
+    const changed = expand.length !== open.length || expand.some((name) => !open.includes(name))
+    return {
+      live: scope && liveValue(scope),
+      liveExpanded: nextOwned,
+      ...(changed && { tree: '1', expand }),
+    }
+  }
+  /** Whether `chain` can expand while `keep` stays open, within the expansion limit. */
+  const liveRoom = (chain: string[], keep: string[] = chain) =>
+    (liveChanges('run', chain, keep).expand ?? context.getAll('expand')).length <=
+    MAX_EXPANDED_RECORDS
+  /**
+   * Turns live mode on in `scope`, or off in place with null. On, it expands `chain`
+   * and keeps `keep` open. `changes` also changes the address, such as a window.
+   */
+  const liveHref = (
+    scope: LiveScope | null,
+    chain: string[] = [],
+    keep: string[] = chain,
+    changes: Record<string, string | null> = {},
+  ) => href({ ...changes, ...liveChanges(scope, chain, keep) })
+  /**
+   * Live mode's selection of `name`, which `chain` leads to: its newest record, or the
+   * record that reviews `action`. An action the Run's window does not hold opens at
+   * that action. After a decision the review advances the same way, and `scope`
+   * keeps live mode as it was. Without `chain`, it keeps what live mode expanded.
+   */
+  const followHref = (
+    name: string,
+    action?: LiveAction,
+    scope: LiveScope | null = liveScope,
+    chain?: string[],
+  ) => {
     const held = page.branches[action?.run ?? '']?.rows.some((row) => row.name === name)
     const reveal = action && name !== action.run && !held
     return href({
       ...clearSelection,
       record: name,
       request: action?.request ?? null,
-      live: on ? '1' : null,
+      ...liveChanges(scope, chain ?? [], chain ?? owned),
       ...(reveal && {
         [`anchor.${action.run}`]: name,
         [`offset.${action.run}`]: null,
@@ -195,18 +243,17 @@ export function activityNavigation(
     })
   }
   /**
-   * Live mode's read of the last children of `run`, which has `total` of them. An
-   * offset at the end reads the last window. The selection stays until it loads.
-   * An advance after a decision reads it with live mode as it was, which `on` keeps.
+   * Live mode's read of the children of `parent` from `offset`. An offset at the end
+   * reads the last window. The selection stays until it loads. An advance after a
+   * decision reads it with live mode as it was, which `scope` keeps. Without `chain`,
+   * it keeps what live mode expanded.
    */
-  const followEndHref = (run: string, total: number, on = true) =>
-    href({
-      live: on ? '1' : null,
-      [`offset.${run}`]: String(total),
-      [`preceding.${run}`]: '0',
-      [`anchor.${run}`]: null,
-      [`cursor.${run}`]: null,
-    })
+  const followWindowHref = (
+    parent: string,
+    offset: number,
+    scope: LiveScope | null = liveScope,
+    chain?: string[],
+  ) => href({ ...liveChanges(scope, chain ?? [], chain ?? owned), ...windowAt(parent, offset) })
   return {
     query,
     href,
@@ -215,10 +262,11 @@ export function activityNavigation(
     collapseHref,
     revealHref,
     backHref,
-    live,
+    liveScope,
     liveHref,
+    liveRoom,
     followHref,
-    followEndHref,
+    followWindowHref,
   }
 }
 
@@ -259,6 +307,76 @@ export function liveRun(row: ActivityRow | null): { run: string; chain: string[]
   if (!row || !run) return null
   const task = 'task' in row ? (row.task ?? '') : ''
   return { run, chain: task ? [task, run] : [run] }
+}
+
+/** What live mode follows next in its scope, before the followed Run's own step. */
+export type LiveTarget =
+  /** Follow `run`; `liveStep` picks its record. `chain` must be expanded. */
+  | { kind: 'run'; run: string; chain: string[] }
+  /** Show `record`, a Task with no Run yet. */
+  | { kind: 'select'; record: string; chain: string[] }
+  /** Expand `chain`, so its children load. */
+  | { kind: 'expand'; chain: string[] }
+  /** Read the children of `parent` from `offset`. An offset at the end reads the last window. */
+  | { kind: 'load'; parent: string; offset: number; chain: string[] }
+  /** Read the newest top-level records, which the list does not hold. */
+  | { kind: 'newest' }
+  | { kind: 'wait' }
+
+/**
+ * The target of live mode in `scope`.
+ * - `run`: the selected record's Run.
+ * - `latest`: the newest top-level record in Coral's order. A standalone Run is followed
+ *   itself, a Task through its latest Run, or the Task while it has none.
+ * - `task`: the selected record's Task, through its first Run by submission that has
+ *   not ended, else its last Run.
+ *
+ * A Run that waits on an action you can take holds `latest` until the action ends.
+ * `actionable` is false where you cannot act.
+ */
+export function liveTarget(page: ActivityPage, scope: LiveScope, actionable = true): LiveTarget {
+  const current = liveRun(page.selectedRow)
+  if (scope === 'run') return current ? { kind: 'run', ...current } : { kind: 'wait' }
+  if (scope === 'task') {
+    const row = page.selectedRow
+    const task = row?.kind === 'task' ? row.name : row && 'task' in row ? (row.task ?? '') : ''
+    return task ? taskTarget(page, task, 'next') : { kind: 'wait' }
+  }
+  // The loader names the action only for the selected record's Run.
+  if (actionable && current && page.liveAction?.run === current.run)
+    return { kind: 'run', ...current }
+  if (page.hasBefore) return { kind: 'newest' }
+  const root = page.rows[0]
+  if (root?.kind === 'run') return { kind: 'run', run: root.name, chain: [root.name] }
+  if (root?.kind === 'task') return taskTarget(page, root.name, 'latest')
+  return { kind: 'wait' }
+}
+
+/**
+ * A Run of `task` by submission: its latest, or the next one that has not ended. Runs
+ * never start again once they end, so the next one never lies before the loaded window.
+ * Without a Run, the Task itself.
+ */
+function taskTarget(page: ActivityPage, task: string, which: 'latest' | 'next'): LiveTarget {
+  const chain = [task]
+  if (!page.expanded.includes(task)) return { kind: 'expand', chain }
+  const branch = page.branches[task]
+  if (!branch || branch.unavailable) return { kind: 'wait' }
+  const { items, total } = childWindow(branch)
+  const runs = items
+    .filter((item) => item.row.kind === 'run')
+    .toSorted((a, b) => a.index - b.index)
+    .map(({ row }) => row)
+  const next = which === 'next' && runs.find((row) => row.kind === 'run' && row.state === 'running')
+  if (next) return { kind: 'run', run: next.name, chain: [task, next.name] }
+  // Past the window, the latest Run, or the next one, may wait.
+  const end = Math.max(branch.offset ?? 0, ...items.map(({ index }) => index + 1))
+  if (end < total)
+    return { kind: 'load', parent: task, offset: which === 'latest' ? total : end, chain }
+  const last = runs.at(-1)?.name
+  return last
+    ? { kind: 'run', run: last, chain: [task, last] }
+    : { kind: 'select', record: task, chain }
 }
 
 /** What live mode does next for a Run. */

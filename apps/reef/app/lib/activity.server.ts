@@ -60,7 +60,7 @@ import { savedFunctionHref } from './management-views.server'
 import { listAllOperations, listAllProviders, providerPath } from './providers.server'
 import { operationOwner } from './call-root'
 import { connectionState } from './accounts.server'
-import { MAX_EXPANDED_RECORDS } from '@/views/activity/types'
+import { liveScopeOf, MAX_EXPANDED_RECORDS } from '@/views/activity/types'
 import { discoveryView, functionTarget } from '@/views/activity/discovery/response'
 import {
   ACTIVITY_CHILD_WINDOW,
@@ -974,7 +974,7 @@ async function oldestRunAction(
     detail.request.state !== 'pending'
   const actions = context?.run.actionPage
   if (!context || !actions || actions.total === '0') return undefined
-  if (query.get('live') !== '1' && !settled) return undefined
+  if (!liveScopeOf(query.get('live')) && !settled) return undefined
   const run = context.run.name
   try {
     // Every current request, from the first action page, whichever page the review shows.

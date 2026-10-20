@@ -5,6 +5,7 @@ import {
   activityStops,
   liveRun,
   liveStep,
+  liveTarget,
   recordParents,
   resolveStop,
   stepStop,
@@ -12,7 +13,7 @@ import {
   type ActivityStop,
   type StopPosition,
 } from './navigation'
-import type { ActivityPage, ActivityRow } from './types'
+import type { ActivityPage, ActivityRow, LiveAction } from './types'
 
 const task = 'workspaces/w/tasks/t'
 const run = 'workspaces/w/runs/r'
@@ -540,14 +541,14 @@ describe('live mode', () => {
       reading,
     )
     const held = { run, record: loaded.name, request: 'workspaces/w/approvals/b' }
-    const query = target(off.followHref(held.record, held, false))
+    const query = target(off.followHref(held.record, held, null))
     expect(query.get('record')).toBe(loaded.name)
     expect(query.get('request')).toBe(held.request)
     expect(query.has('live')).toBe(false)
     expect(query.get(`offset.${run}`)).toBe('300')
   })
   it('asks for the end of the Run without moving the selection', () => {
-    const query = target(nav.followEndHref(run, 400))
+    const query = target(nav.followWindowHref(run, 400))
     expect(query.get('record')).toBe(run)
     expect(query.get('live')).toBe('1')
     // An offset at or past the end reads the last window.
@@ -561,17 +562,266 @@ describe('live mode', () => {
     const next = new URL(route.followHref(`${run}/events/3`), 'http://reef')
     expect(next.pathname).toBe(page.listPath)
     expect(next.searchParams.get('record')).toBe(`${run}/events/3`)
-    expect(route.live).toBe(true)
+    expect(route.liveScope).toBe('run')
   })
   it('turns on with the Run and its Task expanded, and turns off in place', () => {
     const off = activityNavigation(page, '/activity', `?tree=1&record=${run}&filter=kept`, reading)
-    const on = target(off.liveHref(true, [task, run]))
+    const on = target(off.liveHref('run', [task, run]))
     expect(on.get('live')).toBe('1')
     expect(on.get('record')).toBe(run)
     expect(on.getAll('expand')).toEqual(expect.arrayContaining([task, run]))
     expect(on.get('filter')).toBe('kept')
-    const stopped = target(nav.liveHref(false))
+    const stopped = target(nav.liveHref(null))
     expect(stopped.has('live')).toBe(false)
     expect(stopped.get('record')).toBe(run)
+  })
+})
+
+describe('live scopes', () => {
+  const alone = runRow('alone', '', { state: 'running' })
+  const work = taskRow('work')
+  const first = runRow('first', work.name)
+  const second = runRow('second', work.name, { state: 'running', endedAt: null })
+  const third = runRow('third', work.name, { state: 'running', endedAt: null })
+  const lookup = toolRow('work', 'lookup')
+  /** `work` listed newest and expanded, with `rows` from `offset` of its `total` children. */
+  const withTask = (
+    rows: ActivityRow[],
+    total = rows.length,
+    offset = 0,
+    more: Partial<ActivityPage> = {},
+  ) =>
+    activityPage({
+      rows: [work, alone],
+      expanded: [work.name],
+      branches: { [work.name]: { ...childPage(rows, total), offset } },
+      ...more,
+    })
+  it.each<[string, ActivityPage, ReturnType<typeof liveTarget>]>([
+    [
+      'follows the newest standalone Run',
+      activityPage({ rows: [alone, taskRow('older')] }),
+      { kind: 'run', run: alone.name, chain: [alone.name] },
+    ],
+    ['waits while the list has no records', activityPage(), { kind: 'wait' }],
+    [
+      'reads the newest records first when the list holds older ones',
+      activityPage({ rows: [alone], hasBefore: true }),
+      { kind: 'newest' },
+    ],
+    [
+      'expands the newest Task',
+      activityPage({ rows: [work, alone] }),
+      { kind: 'expand', chain: [work.name] },
+    ],
+    [
+      "follows the newest Task's latest Run by submission",
+      withTask([first, lookup, second, third].map((row, position) => ({ ...row, position }))),
+      { kind: 'run', run: third.name, chain: [work.name, third.name] },
+    ],
+    [
+      'shows a Task that has no Run yet',
+      withTask([{ ...lookup, position: 0 }]),
+      { kind: 'select', record: work.name, chain: [work.name] },
+    ],
+    // The window holds positions 0–1 of 4: the latest Run may be past it.
+    [
+      "reads the end of the Task's children",
+      withTask(
+        [first, second].map((row, position) => ({ ...row, position })),
+        4,
+      ),
+      { kind: 'load', parent: work.name, offset: 4, chain: [work.name] },
+    ],
+    [
+      'waits on an unavailable Task history',
+      activityPage({
+        rows: [work],
+        expanded: [work.name],
+        branches: { [work.name]: { rows: [], next: '', unavailable: true } },
+      }),
+      { kind: 'wait' },
+    ],
+  ])('latest: %s', (_, current, expected) => {
+    expect(liveTarget(current, 'latest')).toEqual(expected)
+  })
+
+  // You follow `first` of an older Task while `alone` is the newest record.
+  const waiting = invocationRow(first.name, 'waiting', { task: work.name, requiresAction: true })
+  const holding = (liveAction?: LiveAction) =>
+    activityPage({ rows: [alone, work], selected: waiting.name, selectedRow: waiting, liveAction })
+  const action = { run: first.name, record: waiting.name, request: 'workspaces/w/approvals/a' }
+  it.each<[string, ActivityPage, boolean, ReturnType<typeof liveTarget>]>([
+    [
+      'an action you can take holds its Run against newer records',
+      holding(action),
+      true,
+      { kind: 'run', run: first.name, chain: [work.name, first.name] },
+    ],
+    [
+      'without an action the newest record wins',
+      holding(),
+      true,
+      { kind: 'run', run: alone.name, chain: [alone.name] },
+    ],
+    [
+      "another Run's action never holds the followed Run",
+      holding({ ...action, run: alone.name }),
+      true,
+      { kind: 'run', run: alone.name, chain: [alone.name] },
+    ],
+    [
+      'where you cannot act, nothing holds',
+      holding(action),
+      false,
+      { kind: 'run', run: alone.name, chain: [alone.name] },
+    ],
+  ])('latest: %s', (_, current, actionable, expected) => {
+    expect(liveTarget(current, 'latest', actionable)).toEqual(expected)
+  })
+
+  /** You follow `work` from `selectedRow`, with `rows` of its children loaded. */
+  const following = (
+    rows: ActivityRow[],
+    selectedRow: ActivityRow = work,
+    total?: number,
+    offset = 0,
+  ) => ({
+    ...withTask(
+      rows.map((row, index) => ({ ...row, position: offset + index })),
+      total,
+      offset,
+    ),
+    selected: selectedRow.name,
+    selectedRow,
+  })
+  const ended = { ...third, state: 'succeeded' as const, endedAt: first.endedAt }
+  it.each<[string, ActivityPage, ReturnType<typeof liveTarget>]>([
+    [
+      'expands the Task',
+      { ...following([]), expanded: [] },
+      { kind: 'expand', chain: [work.name] },
+    ],
+    [
+      'starts on its first Run that has not ended',
+      following([first, lookup, second, third]),
+      { kind: 'run', run: second.name, chain: [work.name, second.name] },
+    ],
+    [
+      'rests on its last Run once every Run has ended',
+      following([first, lookup, ended]),
+      { kind: 'run', run: ended.name, chain: [work.name, ended.name] },
+    ],
+    [
+      'shows the Task while it has no Run',
+      following([lookup]),
+      { kind: 'select', record: work.name, chain: [work.name] },
+    ],
+    // From a later Run's waiting action, it still takes the Runs in order.
+    [
+      'follows the Task of a selected Run, in order',
+      {
+        ...following([first, second, third], third),
+        liveAction: { run: third.name, record: third.name, request: 'workspaces/w/approvals/b' },
+      },
+      { kind: 'run', run: second.name, chain: [work.name, second.name] },
+    ],
+    // Positions 0–1 of 3 are loaded and every Run there has ended: read on.
+    [
+      'reads on past a window of ended Runs',
+      following([first, lookup], work, 3),
+      { kind: 'load', parent: work.name, offset: 2, chain: [work.name] },
+    ],
+    [
+      'never reads back to Runs that have ended',
+      following([second], work, 3, 2),
+      { kind: 'run', run: second.name, chain: [work.name, second.name] },
+    ],
+    [
+      'waits without a Task',
+      { ...following([]), selected: alone.name, selectedRow: alone },
+      { kind: 'wait' },
+    ],
+  ])('task: %s', (_, current, expected) => {
+    expect(liveTarget(current, 'task')).toEqual(expected)
+  })
+
+  it.each([
+    ['1', 'run'],
+    ['latest', 'latest'],
+    ['task', 'task'],
+    ['on', null],
+  ])('reads live=%s as the %s scope', (value, scope) => {
+    expect(activityNavigation(page, '/activity', `?live=${value}`, reading).liveScope).toBe(scope)
+  })
+  it('turns on from the list without a selection, and keeps the filter', () => {
+    const list = activityNavigation(activityPage(), '/activity', '?filter=kept', reading)
+    const on = target(list.liveHref('latest'))
+    expect(on.get('live')).toBe('latest')
+    expect(on.has('record')).toBe(false)
+    expect(on.get('filter')).toBe('kept')
+  })
+
+  // You expanded `manual`. Live mode expanded the old Task and Run it follows.
+  const manual = 'workspaces/w/tasks/manual'
+  const [oldTask, oldRun] = ['workspaces/w/tasks/old', 'workspaces/w/runs/old']
+  const [newTask, newRun] = ['workspaces/w/tasks/new', 'workspaces/w/runs/new']
+  const owning = (expanded: string[], owned: string[]) =>
+    activityNavigation(
+      activityPage({ expanded }),
+      '/activity',
+      `?tree=1&${expanded.map((name) => `expand=${name}`).join('&')}&${owned.map((name) => `liveExpanded=${name}`).join('&')}&record=${oldRun}&live=latest`,
+      reading,
+    )
+  it('owns only the records it expands', () => {
+    const query = target(owning([manual], []).liveHref('run', [manual, oldRun]))
+    expect(query.getAll('expand')).toEqual([manual, oldRun])
+    expect(query.getAll('liveExpanded')).toEqual([oldRun])
+  })
+  it('keeps what it follows while it expands the next Task, then collapses only its own', () => {
+    const before = owning([manual, oldTask, oldRun], [oldTask, oldRun])
+    const expanding = target(before.liveHref('latest', [newTask], [oldTask, oldRun]))
+    expect(expanding.getAll('expand')).toEqual([manual, oldTask, oldRun, newTask])
+    expect(expanding.getAll('liveExpanded')).toEqual([oldTask, oldRun, newTask])
+    const moved = owning(
+      [manual, oldTask, oldRun, newTask, newRun],
+      [oldTask, oldRun, newTask, newRun],
+    )
+    const selecting = target(
+      moved.followHref(`${newRun}/events/1`, undefined, 'latest', [newTask, newRun]),
+    )
+    expect(selecting.getAll('expand')).toEqual([manual, newTask, newRun])
+    expect(selecting.getAll('liveExpanded')).toEqual([newTask, newRun])
+    expect(selecting.get('record')).toBe(`${newRun}/events/1`)
+  })
+  it('never collapses a record you expanded, even one it follows', () => {
+    const query = target(
+      owning([manual, oldRun], [oldRun]).followHref(newRun, undefined, 'latest', [newRun]),
+    )
+    expect(query.getAll('expand')).toEqual([manual, newRun])
+  })
+  it('leaves what it expanded open when it turns off, and forgets owning it', () => {
+    const current = owning([manual, oldTask, oldRun], [oldTask, oldRun])
+    for (const href of [current.liveHref(null), current.backHref, current.recordHref(manual)]) {
+      expect(target(href).has('live')).toBe(false)
+      expect(target(href).has('liveExpanded')).toBe(false)
+    }
+    expect(target(current.liveHref(null)).getAll('expand')).toEqual([manual, oldTask, oldRun])
+  })
+  it('counts only what stays expanded against the expansion limit', () => {
+    const yours = Array.from({ length: 18 }, (_, index) => `workspaces/w/tasks/yours-${index}`)
+    const full = owning([...yours, oldTask, oldRun], [oldTask, oldRun])
+    // Your 18 records and the new Task and Run fit once its old ones collapse.
+    expect(full.liveRoom([newTask, newRun], [newTask, newRun])).toBe(true)
+    // Its old Task and Run stay open while it expands the next Task.
+    expect(full.liveRoom([newTask], [oldTask, oldRun])).toBe(false)
+    expect(owning(yours, []).liveRoom([oldTask, oldRun, newTask])).toBe(false)
+  })
+  it('reads a window of a Task in the scope it follows', () => {
+    const query = target(owning([oldTask], [oldTask]).followWindowHref(oldTask, 100))
+    expect(query.get('live')).toBe('latest')
+    expect(query.get(`offset.${oldTask}`)).toBe('100')
+    expect(query.get(`preceding.${oldTask}`)).toBe('0')
+    expect(query.getAll('liveExpanded')).toEqual([oldTask])
   })
 })
