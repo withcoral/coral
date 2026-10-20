@@ -1,12 +1,10 @@
-//! Universal Search's own storage at boot.
+//! Universal Search's database features at boot.
 //!
-//! The shared migration chain creates the portable search tables. Each backend
-//! then needs text-search objects of its own: generated vectors, trigram
-//! indexes and statistics tables on Postgres, an FTS5 table and its triggers on
-//! `SQLite`. They live in one search-owned stream per backend with its own
-//! ledger, `search_migrations`. [`prepare_storage`] checks the database features
-//! the stream needs, then applies every step the ledger lacks, one transaction
-//! per step together with its ledger row.
+//! The shared migration chain creates Universal Search's tables and the
+//! text-search objects each backend needs: generated vectors, trigram indexes
+//! and statistics tables on Postgres, an FTS5 table and its triggers on
+//! `SQLite`. Those objects need database features that a migration cannot
+//! create or explain. [`prepare_storage`] checks them before the chain runs.
 
 mod repository;
 #[cfg(test)]
@@ -14,12 +12,10 @@ mod tests;
 
 use coral_db::{Database, DatabaseSystem};
 
-use repository::Stream;
-
 /// A failure to prepare Universal Search's storage at boot.
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
-    /// The database lacks a feature the search stream needs.
+    /// The database lacks a feature the search tables need.
     #[error("{database} does not provide required search feature: {feature} ({cause}); {remedy}")]
     MissingFeature {
         /// The backend and its version.
@@ -31,136 +27,26 @@ pub enum StorageError {
         /// What the operator can do about it.
         remedy: &'static str,
     },
-    /// The ledger records a stream version this binary does not know.
-    #[error(
-        "the {stream} search schema is at version {recorded}, but this Coral supports up to version {supported}; start a Coral release that supports it or use a matching database"
-    )]
-    UnsupportedStreamVersion {
-        /// The backend stream.
-        stream: &'static str,
-        /// The newest version the ledger records.
-        recorded: i64,
-        /// The newest version this binary applies.
-        supported: i64,
-    },
-    /// A stream step failed; nothing of it was kept or recorded.
-    #[error(
-        "the {stream} search schema step {version} failed and was rolled back: {source}; correct the cause and start Coral again to run the step again"
-    )]
-    StreamStep {
-        /// The backend stream.
-        stream: &'static str,
-        /// The step's version.
-        version: i64,
-        /// The backend's error.
-        #[source]
-        source: coral_db::Error,
-    },
-    /// The system clock cannot stamp the ledger.
-    #[error("system clock is before 1970 or past the durable nanosecond range")]
-    Clock,
     /// Database access failed.
     #[error(transparent)]
     Database(#[from] coral_db::Error),
 }
 
-/// Checks the database features Universal Search needs, then brings the
-/// backend's search stream up to this binary's version.
+/// Checks the database features Universal Search needs, and creates
+/// `pg_trgm` when it is missing and this role may.
 ///
-/// Process bootstrap calls this once, right after the shared migration chain,
-/// before any Module serves. Each missing step runs once, in its own
-/// transaction together with its ledger row: under a transaction-scoped
-/// advisory lock on Postgres, in an immediate transaction on `SQLite`.
+/// Process bootstrap calls this once, right before the shared migration
+/// chain, whose search steps use these features.
 ///
 /// # Errors
 ///
 /// Returns [`StorageError::MissingFeature`] naming the feature when `pg_trgm`,
-/// FTS5 or its trigram tokenizer is missing,
-/// [`StorageError::UnsupportedStreamVersion`] when the ledger is newer than
-/// this binary, and [`StorageError::StreamStep`] when a step fails, including
-/// on an object that already exists.
+/// FTS5 or its trigram tokenizer is missing.
 pub async fn prepare_storage(database: &Database) -> Result<(), StorageError> {
     match database.system() {
-        DatabaseSystem::Postgres => check_postgres_features(probe_postgres(database).await?)?,
-        DatabaseSystem::Sqlite => check_sqlite_features(probe_sqlite(database).await?)?,
+        DatabaseSystem::Postgres => check_postgres_features(probe_postgres(database).await?),
+        DatabaseSystem::Sqlite => check_sqlite_features(probe_sqlite(database).await?),
     }
-    apply_stream(database, repository::stream(database.system())).await
-}
-
-async fn apply_stream(database: &Database, stream: &Stream) -> Result<(), StorageError> {
-    let supported = stream.supported_version();
-    for step in stream.steps {
-        let mut transaction = database.begin().await?;
-        repository::lock_stream(&mut transaction).await?;
-        let recorded = repository::recorded_version(&mut transaction, stream.name).await?;
-        if recorded > supported {
-            return Err(StorageError::UnsupportedStreamVersion {
-                stream: stream.name,
-                recorded,
-                supported,
-            });
-        }
-        if recorded >= step.version {
-            transaction.rollback().await?;
-            continue;
-        }
-        repository::apply_step(&mut transaction, step.script)
-            .await
-            .map_err(|source| StorageError::StreamStep {
-                stream: stream.name,
-                version: step.version,
-                source,
-            })?;
-        repository::record_step(
-            &mut transaction,
-            stream.name,
-            step.version,
-            crate::unix_now_nanos().ok_or(StorageError::Clock)?,
-        )
-        .await?;
-        transaction.commit().await?;
-    }
-    Ok(())
-}
-
-/// Applies the backend's stream up to `version` only, as a binary whose
-/// newest step is `version` does at boot.
-#[cfg(test)]
-pub(crate) async fn prepare_storage_through(
-    database: &Database,
-    version: i64,
-) -> Result<(), StorageError> {
-    let stream = repository::stream(database.system());
-    let count = stream
-        .steps
-        .iter()
-        .take_while(|step| step.version <= version)
-        .count();
-    let steps = stream.steps.get(..count).unwrap_or_default();
-    apply_stream(
-        database,
-        &Stream {
-            name: stream.name,
-            steps,
-        },
-    )
-    .await
-}
-
-/// Records one stream version past this binary's newest step.
-#[cfg(any(test, feature = "test-fixtures"))]
-pub(crate) async fn record_unsupported_version(database: &Database) -> Result<(), StorageError> {
-    let stream = repository::stream(database.system());
-    let mut transaction = database.begin().await?;
-    repository::record_step(
-        &mut transaction,
-        stream.name,
-        stream.supported_version() + 1,
-        0,
-    )
-    .await?;
-    transaction.commit().await?;
-    Ok(())
 }
 
 /// Whether the database provides one feature, and if not, why.

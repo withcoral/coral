@@ -1,7 +1,8 @@
--- Postgres text search for Universal Search, stream version 2.
---
--- This step runs once, in one transaction with its row in `search_migrations`,
--- under the stream's advisory lock, as version 1 does.
+-- Postgres text search for Universal Search, as the search stream's version 2.
+-- Step 30 says why this step builds what the stream built. On a database the
+-- stream already took to version 2 or 3, the step rebuilds the same `tsv`
+-- column and recounts the same statistics.
+-- squawk-ignore-file adding-field-with-default, ban-drop-column, require-concurrent-index-creation
 --
 -- The `simple` parser keeps a camelCase name as one lexeme, so no query word
 -- reached `comments` in `listComments`. `tsv` now splits camelCase in the name
@@ -20,6 +21,8 @@
 -- `doc_len` counts lexeme positions, `search_terms` counts the rows that hold
 -- each lexeme, and `search_stats` holds each Workspace's row count and mean
 -- `doc_len`.
+SET LOCAL lock_timeout = '5s';
+
 ALTER TABLE search_entities DROP COLUMN tsv;
 
 ALTER TABLE search_entities

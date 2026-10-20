@@ -72,22 +72,17 @@
   chain. Write one portable file that both databases run. When SQLite and
   Postgres must perform a step differently, add one file with the same name to
   both `postgres/` and `sqlite/` instead.
-- Change a schema only by adding a migration. Never delete a migration or
-  search stream step that is on `main`, or change its file name or bytes:
-  databases created from an earlier `main` must keep booting.
+- Change a schema only by adding a migration. Never delete a migration that
+  is on `main`, or change its file name or bytes: databases created from an
+  earlier `main` must keep booting.
   `scripts/check-migrations.sh` checks this.
   Keep the fence that rejects state written by Coral 0.x.
 - Keep schemas portable across SQLite and Postgres and fail on schema drift;
   do not use `IF NOT EXISTS` to hide unexpected state.
-- The search-owned backend streams in `crates/coral-search/streams` keep their
-  own ledger, apart from the shared migration chain. Postgres and
-  SQLite retrieve and rank search results with different features: generated
-  `tsvector` columns, `pg_trgm` indexes and statistics tables on Postgres, and
-  an FTS5 table that triggers fill on SQLite. No one backend-agnostic set of
-  objects can serve both. Each stream holds only what its backend's text
-  search needs. It runs at boot after the chain, one step per transaction with
-  its row in `search_migrations`, and fails on objects that already exist.
-  A chain migration cannot use stream objects: a new database has none yet.
+- When a migration needs a database feature that a migration cannot create
+  or explain, such as `pg_trgm` or FTS5's trigram tokenizer, check it at boot
+  before the chain runs, as `coral_search::prepare_storage` does. The check
+  names the feature and what the operator can do about it.
 - Run shared repository behavior tests against SQLite and Postgres. Use
   `make postgres-tests` for Rust repository tests. For Reel's Postgres product
   evidence, use the E2E scope and cadence under Validation.

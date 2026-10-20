@@ -90,8 +90,9 @@ where
     initialize_state_root(&layout, config)?;
     layout.ensure()?;
     let database = Database::connect(database_config).await?;
-    super::migrations::migrate_current(&database).await?;
+    // The chain's search steps need the features this checks.
     coral_search::prepare_storage(&database).await?;
+    super::migrations::migrate_current(&database).await?;
 
     Ok(InitializedState {
         credential_key_path: layout.config_dir().join("credentials.key"),

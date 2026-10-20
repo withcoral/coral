@@ -16,7 +16,6 @@ use serde_json::{Value, json};
 async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
     let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
-    coral_search::prepare_storage(&database).await.unwrap();
     let user = local_organization_owner();
     let change = ChangeContext::new(user.clone(), 1, TraceId::current_or_new());
     OrganizationModule::new(database.clone())

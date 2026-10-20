@@ -234,9 +234,6 @@ impl Tracer {
             .await
             .expect("create MCP tracer database");
         let db = database.database();
-        coral_search::prepare_storage(&db)
-            .await
-            .expect("prepare Universal Search storage");
         let local_user = local_organization_owner();
         let workspaces = WorkspaceModule::new(db.clone());
         coral_workspace::OrganizationModule::new(db.clone())

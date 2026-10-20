@@ -306,39 +306,6 @@ async fn fresh_state_accepts_current_sections_and_reports_configuration_errors_u
     );
 }
 
-/// Startup prepares Universal Search's storage after the migration chain, so a
-/// search schema newer than this binary refuses to start.
-#[tokio::test]
-async fn startup_refuses_a_search_schema_newer_than_this_binary() {
-    let temp = TempDir::new().expect("temp dir");
-    fs::write(
-        temp.path().join("config.toml"),
-        "[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n",
-    )
-    .unwrap();
-    let server = ServerBuilder::new()
-        .with_config_dir(temp.path())
-        .start()
-        .await
-        .expect("first start");
-    coral_search::test_fixtures::record_unsupported_stream_version(&server.database())
-        .await
-        .expect("record a newer search schema");
-    server.shutdown().await.expect("shutdown server");
-
-    let Err(error) = ServerBuilder::new()
-        .with_config_dir(temp.path())
-        .start()
-        .await
-    else {
-        panic!("a newer search schema must refuse startup");
-    };
-    let AppError::FailedPrecondition(detail) = &error else {
-        panic!("unexpected error: {error}");
-    };
-    assert!(detail.contains("search schema"), "{detail}");
-}
-
 /// A deployment that keeps the credential key in a secret never gets a key
 /// file: a missing secret is reported by its variable name, and a key file
 /// left beside the setting is refused instead of silently superseded. The

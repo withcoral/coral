@@ -1,8 +1,10 @@
--- SQLite text search for Universal Search, stream version 1.
+-- SQLite text search for Universal Search.
 --
--- This step runs once, in one immediate transaction with its row in
--- `search_migrations`. It does not skip objects that already exist: such an
--- object is unexpected state, so the step fails and the ledger records nothing.
+-- This step takes over version 1 of Universal Search's own migration stream,
+-- which recorded itself in `search_migrations`. On a database that stream
+-- reached, the objects exist already, so the step creates each one only if it
+-- is missing. Only the search steps use `IF NOT EXISTS`, and only for objects
+-- the stream built.
 --
 -- The FTS5 table keeps its own copy of the five text columns, found through
 -- the two unindexed key columns. Triggers copy every insert, update, and
@@ -13,7 +15,7 @@
 -- Write `search_entities` with `INSERT ... ON CONFLICT ... DO UPDATE`, never
 -- `INSERT OR REPLACE`: a replace does not fire the delete trigger, so the old
 -- copy stays in this table beside the new one.
-CREATE VIRTUAL TABLE search_entities_fts USING fts5(
+CREATE VIRTUAL TABLE IF NOT EXISTS search_entities_fts USING fts5(
     workspace_id UNINDEXED,
     doc_id UNINDEXED,
     qualified_name,
@@ -24,7 +26,7 @@ CREATE VIRTUAL TABLE search_entities_fts USING fts5(
     tokenize = 'trigram'
 );
 
-CREATE TRIGGER search_entities_fts_after_insert
+CREATE TRIGGER IF NOT EXISTS search_entities_fts_after_insert
 AFTER INSERT ON search_entities
 BEGIN
     INSERT INTO search_entities_fts (
@@ -37,7 +39,7 @@ BEGIN
     );
 END;
 
-CREATE TRIGGER search_entities_fts_after_update
+CREATE TRIGGER IF NOT EXISTS search_entities_fts_after_update
 AFTER UPDATE ON search_entities
 BEGIN
     DELETE FROM search_entities_fts
@@ -52,7 +54,7 @@ BEGIN
     );
 END;
 
-CREATE TRIGGER search_entities_fts_after_delete
+CREATE TRIGGER IF NOT EXISTS search_entities_fts_after_delete
 AFTER DELETE ON search_entities
 BEGIN
     DELETE FROM search_entities_fts

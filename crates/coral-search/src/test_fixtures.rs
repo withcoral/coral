@@ -1,23 +1,11 @@
-//! Test-only faults in Universal Search's storage, and reads of what the
-//! index holds, for crates that start Coral.
+//! Test-only reads of what Universal Search's index holds, for crates that
+//! start Coral.
 //!
 //! The `test-fixtures` feature enables this module for dev-dependencies;
 //! production builds never do.
 
 use coral_db::Database;
 use coral_workspace::WorkspaceId;
-
-use crate::StorageError;
-
-/// Records a search stream version newer than this binary applies, as a newer
-/// Coral release would leave behind.
-///
-/// # Errors
-///
-/// Returns database failures.
-pub async fn record_unsupported_stream_version(database: &Database) -> Result<(), StorageError> {
-    crate::storage::record_unsupported_version(database).await
-}
 
 /// One Operation row of the index, as a test observes it: membership, never
 /// counts or scores.

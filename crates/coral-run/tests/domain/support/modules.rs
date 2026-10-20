@@ -129,9 +129,6 @@ impl TestModules {
             .await
             .expect("create Program Run test database");
         let database = fixture.database();
-        coral_search::prepare_storage(&database)
-            .await
-            .expect("prepare Universal Search storage");
         let workspaces = WorkspaceModule::new(database.clone());
         let providers = ProviderModule::with_running_catalog(
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),

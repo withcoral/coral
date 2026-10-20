@@ -10,11 +10,7 @@ use coral_workspace::{
 };
 
 async fn fixture() -> TestDatabase {
-    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
-    coral_search::prepare_storage(&fixture.database())
-        .await
-        .unwrap();
-    fixture
+    TestDatabase::new(coral_db::migration_plan()).await.unwrap()
 }
 
 fn change(user: &AuthenticatedUser) -> ChangeContext {

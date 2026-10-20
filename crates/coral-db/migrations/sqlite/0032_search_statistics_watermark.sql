@@ -1,0 +1,2 @@
+-- Postgres adds a watermark to its ranking statistics in this step. SQLite's
+-- FTS5 ranks without those statistics, so it has nothing to do.

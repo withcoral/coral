@@ -1,7 +1,6 @@
--- Postgres text search for Universal Search, stream version 3.
---
--- This step runs once, in one transaction with its row in `search_migrations`,
--- under the stream's advisory lock, as version 1 does.
+-- Postgres text search for Universal Search, as the search stream's version 3.
+-- Like step 30, it creates each object only if the stream did not.
+-- squawk-ignore-file require-concurrent-index-creation
 --
 -- A reconcile pass recounts a Workspace's statistics only when its rows
 -- changed after the last count. Each count stores its watermark beside the
@@ -16,9 +15,11 @@
 --
 -- The index serves the pass's comparison: it holds each Workspace's row count
 -- and newest stamp without a read of the rows.
-ALTER TABLE search_stats
-    ADD COLUMN counted_rows BIGINT,
-    ADD COLUMN counted_max_indexed_at BIGINT;
+SET LOCAL lock_timeout = '5s';
 
-CREATE INDEX search_entities_workspace_indexed_at
+ALTER TABLE search_stats
+    ADD COLUMN IF NOT EXISTS counted_rows BIGINT,
+    ADD COLUMN IF NOT EXISTS counted_max_indexed_at BIGINT;
+
+CREATE INDEX IF NOT EXISTS search_entities_workspace_indexed_at
     ON search_entities (workspace_id, indexed_at_unix_nanos);

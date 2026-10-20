@@ -27,14 +27,12 @@ if git show "$fork_point:Cargo.toml" 2>/dev/null | grep -qE '^version = "0\.'; t
   exit 0
 fi
 
-# One version sequence per ledger: the shared SQLx chain, then each search stream.
-# The chain's database-specific halves sit in subfolders of its directory.
+# One version sequence, the shared SQLx chain. Its database-specific halves sit
+# in subfolders of its directory.
 chain='crates/coral-db/migrations'
 # SQLx reads the chain's directory and each database's half, nothing deeper.
 chain_runs="^$chain/((postgres|sqlite)/)?[^/]+\.sql$"
-ledgers=("$chain" 'crates/coral-search/streams/postgres' 'crates/coral-search/streams/sqlite')
-pathspecs=()
-for ledger in "${ledgers[@]}"; do pathspecs+=(":(glob)$ledger/**/*.sql"); done
+pathspec=":(glob)$chain/**/*.sql"
 
 status=0
 
@@ -51,36 +49,31 @@ if [ -n "$stray" ]; then
   status=1
 fi
 
-changed="$(git diff --no-renames --name-only --diff-filter=MDT "$fork_point" -- "${pathspecs[@]}")"
+changed="$(git diff --no-renames --name-only --diff-filter=MDT "$fork_point" -- "$pathspec")"
 if [ -n "$changed" ]; then
   echo "check-migrations: these migrations are on $base_ref and must not change; add a new migration instead:" >&2
   echo "$changed" | sed 's/^/  /' >&2
   status=1
 fi
 
-for ledger in "${ledgers[@]}"; do
-  pathspec=":(glob)$ledger/**/*.sql"
-  runs="^$ledger/[^/]+\.sql$"
-  [ "$ledger" != "$chain" ] || runs="$chain_runs"
-  on_base="$(git ls-tree -r --name-only "$base_ref" -- "$ledger" | grep -E "$runs" || true)"
-  max="$(echo "$on_base" | sed -nE 's#^.*/0*([0-9]+)_[^/]*$#\1#p' | sort -n | tail -1)"
-  # A ledger with no migrations on main yet accepts any version, 0000 included.
-  max="${max:--1}"
+on_base="$(git ls-tree -r --name-only "$base_ref" -- "$chain" | grep -E "$chain_runs" || true)"
+max="$(echo "$on_base" | sed -nE 's#^.*/0*([0-9]+)_[^/]*$#\1#p' | sort -n | tail -1)"
+# A chain with no migrations on main yet accepts any version, 0000 included.
+max="${max:--1}"
 
-  added="$({
-    git diff --no-renames --name-only --diff-filter=A "$fork_point" -- "$pathspec"
-    git ls-files --others --exclude-standard -- "$pathspec"
-  } | { grep -E "$runs" || true; } | sort -u)"
-  while IFS= read -r file; do
-    [ -n "$file" ] || continue
-    if ! [[ "$(basename "$file")" =~ ^0*([0-9]+)_ ]]; then
-      echo "check-migrations: $file must start with a numeric version, like $(printf '%04d' $((max + 1)))_name.sql" >&2
-      status=1
-    elif [ "${BASH_REMATCH[1]}" -le "$max" ]; then
-      echo "check-migrations: $file must use a version above $max, the highest on $base_ref" >&2
-      status=1
-    fi
-  done <<<"$added"
-done
+added="$({
+  git diff --no-renames --name-only --diff-filter=A "$fork_point" -- "$pathspec"
+  git ls-files --others --exclude-standard -- "$pathspec"
+} | { grep -E "$chain_runs" || true; } | sort -u)"
+while IFS= read -r file; do
+  [ -n "$file" ] || continue
+  if ! [[ "$(basename "$file")" =~ ^0*([0-9]+)_ ]]; then
+    echo "check-migrations: $file must start with a numeric version, like $(printf '%04d' $((max + 1)))_name.sql" >&2
+    status=1
+  elif [ "${BASH_REMATCH[1]}" -le "$max" ]; then
+    echo "check-migrations: $file must use a version above $max, the highest on $base_ref" >&2
+    status=1
+  fi
+done <<<"$added"
 
 exit "$status"

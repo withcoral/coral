@@ -63,10 +63,9 @@ impl From<coral_search::StorageError> for AppError {
     fn from(error: coral_search::StorageError) -> Self {
         match error {
             coral_search::StorageError::Database(error) => error.into(),
-            coral_search::StorageError::MissingFeature { .. }
-            | coral_search::StorageError::UnsupportedStreamVersion { .. }
-            | coral_search::StorageError::Clock => Self::FailedPrecondition(error.to_string()),
-            coral_search::StorageError::StreamStep { .. } => Self::Database(error.to_string()),
+            coral_search::StorageError::MissingFeature { .. } => {
+                Self::FailedPrecondition(error.to_string())
+            }
         }
     }
 }
@@ -113,20 +112,5 @@ mod tests {
         });
         assert!(matches!(missing, AppError::FailedPrecondition(_)));
         assert!(missing.to_string().contains("pg_trgm extension"));
-
-        let newer = AppError::from(coral_search::StorageError::UnsupportedStreamVersion {
-            stream: "postgres",
-            recorded: 2,
-            supported: 1,
-        });
-        assert!(matches!(newer, AppError::FailedPrecondition(_)));
-
-        let step = AppError::from(coral_search::StorageError::StreamStep {
-            stream: "sqlite",
-            version: 1,
-            source: Error::Sqlx(sqlx::Error::PoolClosed),
-        });
-        assert!(matches!(step, AppError::Database(_)));
-        assert!(step.to_string().contains("step 1"));
     }
 }
