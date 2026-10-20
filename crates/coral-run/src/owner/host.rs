@@ -282,8 +282,8 @@ fn spawn_commit(
     });
 }
 
-/// What the commit attempts so far wrote before the database stopped
-/// answering: enough to recognize the chunk on the Run row.
+/// What the commit attempts so far wrote: enough to recognize the chunk on
+/// the Run row when an attempt gets no answer.
 #[derive(Debug, Default, Clone, Copy)]
 struct Written {
     /// The head the last attempt was built on, read under its hold.
