@@ -1374,6 +1374,8 @@ impl PreparedProviderCatalog {
     /// Binds credentials only after structural and authoring availability is final.
     /// Every recipe retains the same contract, even an unavailable first Operation.
     pub(crate) fn bind_http_credential_destinations(mut self) -> Result<Self, Error> {
+        // Most Operations share a server. Every Operation gets a copy of this
+        // list, so collapse it once rather than once per Operation.
         let destinations = self
             .operations
             .iter()
@@ -1384,6 +1386,8 @@ impl PreparedProviderCatalog {
                 }
                 _ => None,
             })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect::<Vec<_>>();
         for operation in &mut self.operations {
             if let ExecutionBinding::Http(binding) = &mut operation.execution_binding {
