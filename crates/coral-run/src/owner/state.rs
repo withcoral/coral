@@ -9,8 +9,9 @@
 //! - what a lost commit means;
 //! - the owner's liveness. After one lease without a successful commit the
 //!   owner is suspect and answers Program requests only once recorded.
-//!   After three it interrupts its Run: the Program ends, and one
-//!   Interrupted chunk is written as soon as the database answers.
+//!   After three it gives its Run up: the Program ends, and one terminal
+//!   chunk is written as soon as the database answers, recording
+//!   `Interrupted`, or `TimedOut` when the Run deadline has passed meanwhile.
 
 use std::collections::VecDeque;
 
