@@ -2444,6 +2444,25 @@ fn host_calls_carry_the_authored_location_of_each_call() {
                 ("invoke", in_saved_function("locations.parallel", 3, 77)),
             ],
         ),
+        // A call before an inline export that needs private source on the same
+        // line keeps its UTF-16 column.
+        (
+            "coral.functions.locations.inline(); coral.functions.locations.anonymous()",
+            vec![
+                linked_source(
+                    &["locations", "inline"],
+                    "const s = '\u{1F600}'; console.log(s); export default () => {}",
+                ),
+                linked_source(
+                    &["locations", "anonymous"],
+                    "coral.emit('\u{1F600}'); export default function () {}",
+                ),
+            ],
+            vec![
+                ("log", in_saved_function("locations.inline", 1, 25)),
+                ("emit", in_saved_function("locations.anonymous", 1, 7)),
+            ],
+        ),
         // A binding called with no authored frame on the stack has no location.
         (
             "await Promise.resolve(\"x\").then(console.log);\nawait Promise.resolve(2).then(coral.emit);",
