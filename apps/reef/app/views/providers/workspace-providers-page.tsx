@@ -1,5 +1,5 @@
 import classNames from 'classnames'
-import type { MouseEvent, ReactNode, Ref, RefObject } from 'react'
+import type { MouseEvent, ReactNode, Ref } from 'react'
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router'
 
@@ -19,7 +19,7 @@ import { InfoTip, Tooltip } from '@/wax/components/tooltip'
 import * as Table from '@/wax/components/table'
 import { CELL_HEIGHT_PX, groupHeadingHeightPx } from '@/wax/components/table'
 import { CatalogLayout, CatalogRail, CatalogRailItem, CatalogToolbar } from '@/components/catalog'
-import { exactFilter, filterQuery, type FilterQuery } from '@/utils/filter-query'
+import { filterQuery, type FilterQuery } from '@/utils/filter-query'
 import { EmptyPage } from '@/components/empty-page'
 import {
   PolicyToggle,
@@ -178,19 +178,17 @@ function WorkspaceProvidersContent({
     recipes,
   }
   const notice = result
-  const firstProvider = sortedProviders[0]?.id ?? null
-  const operationRoute = /\/providers\/([^/]+)\/ops\/([^/?#]+)/.exec(location.pathname)
-  // A provider the URL names, as opposed to the first one standing in for none.
+  const operationRoute = /\/providers\/([^/]+)(?:\/ops\/([^/?#]+))?\/?$/.exec(location.pathname)
+  // The provider the URL names; none means every provider.
   const routedId = selectedProviderRoute ?? operationRoute?.[1] ?? null
-  const selectedId = routedId ?? firstProvider
   const selectedOperationPath =
     selectedOperation ?? (operationRoute?.[2] ? decodeURIComponent(operationRoute[2]) : null)
-  const selected = sortedProviders.find((provider) => provider.id === selectedId)
+  const selected = sortedProviders.find((provider) => provider.id === routedId)
   const operation = selected?.operations.find((o) => o.relativePath === selectedOperationPath)
   const empty = sortedProviders.length === 0
   const addButton = canChange ? <AddProviderLauncher {...entry} /> : null
-  // The field echoes each keystroke at once; the rail and the table, which
-  // rebuilds thousands of rows, follow with the deferred value when React has time.
+  // The field echoes each keystroke at once; the rail follows with the
+  // deferred value when React has time.
   const deferredRailFilter = useDeferredValue(railFilter)
   const filteredProviders = useMemo(() => {
     const query = filterQuery(deferredRailFilter)
@@ -240,11 +238,11 @@ function WorkspaceProvidersContent({
           filteredProviders={filteredProviders}
           form={form}
           providers={sortedProviders}
+          providersPath={providersPath}
           providerIcons={providerIcons}
           railFilter={railFilter}
           selectedProvider={selected ?? null}
           selectedOperation={operation ?? null}
-          routedProvider={routedId}
           setRailFilter={setRailFilter}
         />
       )}
@@ -387,24 +385,25 @@ function ProvidersTableScreen({
   filteredProviders,
   form,
   providers,
+  providersPath,
   providerIcons,
   railFilter,
   selectedProvider,
   selectedOperation,
-  routedProvider,
   setRailFilter,
 }: {
   canChange: boolean
   filteredProviders: ProviderView[]
   form: FormContext
   providers: ProviderView[]
+  /** The address of every provider's tab. */
+  providersPath: string
   /** Recipe logos by namespace, for providers that kept the recipe's id. */
   providerIcons: (provider: ProviderView) => RecipeIcons | undefined
   railFilter: string
+  /** The provider the URL names, if any. */
   selectedProvider: ProviderView | null
   selectedOperation: OperationView | null
-  /** The provider the URL names, which the table reveals on arrival. */
-  routedProvider: string | null
   setRailFilter: (value: string) => void
 }) {
   const navigate = useNavigate()
@@ -421,16 +420,20 @@ function ProvidersTableScreen({
   const [selectedView, setSelectedView] = useState<ReadonlySet<SelectionKey> | null>(null)
   const tableRef = useRef<HTMLDivElement>(null)
   const searchable = useMemo(() => searchableProviders(providers), [providers])
-  // The rail filter narrows the table to the same providers. Selection is
-  // keyed, not row-derived, so operations of a provider filtered out stay
-  // selected and count as hidden.
-  const listedProviders = useMemo(
-    () => new Set(filteredProviders.map((provider) => provider.id)),
-    [filteredProviders],
-  )
+  const selectedProviderId = selectedProvider?.id ?? null
+  const selectedOperationName = selectedOperation?.name ?? null
+  // The rail is a set of tabs: the table shows one provider, or every one.
+  // A provider route picks the tab. An operation route opens the drawer over
+  // the tab the reader is on, so the rows under it stay; arriving on one
+  // opens its provider's tab. Selection is keyed, not row-derived, so it
+  // survives a change of tab and counts as hidden there.
+  const routeTab = selectedOperationName ? undefined : selectedProviderId
+  const [lastTab, setLastTab] = useState(selectedProviderId)
+  if (routeTab !== undefined && routeTab !== lastTab) setLastTab(routeTab)
+  const tab = routeTab === undefined ? lastTab : routeTab
   const visibleByProvider = useMemo(() => {
     const entries = searchable
-      .filter((entry) => listedProviders.has(entry.provider.id))
+      .filter((entry) => tab === null || entry.provider.id === tab)
       .map((entry) => {
         const matching = matchingOperations(entry, tableQuery, policyFilter, selectedView)
         const linked = selectedProvider?.id === entry.provider.id ? selectedOperation : null
@@ -446,12 +449,12 @@ function ProvidersTableScreen({
       provider.operations.some((o) => selectedView.has(selectionKey(provider.id, o.name))),
     )
   }, [
-    listedProviders,
     policyFilter,
     searchable,
     selectedOperation,
     selectedProvider?.id,
     selectedView,
+    tab,
     tableQuery,
   ])
   const visibleOperations = visibleByProvider.flatMap(({ provider, matching }) =>
@@ -534,13 +537,6 @@ function ProvidersTableScreen({
     }
     return { rows: flat, sections: tree }
   }, [policyFilter, selectedView, tableFilter, visibleByProvider])
-  const providerIndexes = useMemo(() => {
-    const indexes = new Map<string, number>()
-    rows.forEach((row, index) => {
-      if (row.kind === 'provider') indexes.set(row.provider.id, index)
-    })
-    return indexes
-  }, [rows])
   const operationIndexes = useMemo(() => {
     const indexes = new Map<string, number>()
     rows.forEach((row, index) => {
@@ -555,32 +551,24 @@ function ProvidersTableScreen({
     estimateSize: (index) => tableRowHeight(rows[index]!),
     scrollRef: tableRef,
   })
-  const selectedProviderId = selectedProvider?.id ?? null
-  const selectedOperationName = selectedOperation?.name ?? null
-  const revealProvider = selectedOperationName ? selectedProviderId : routedProvider
+  // A new tab starts at its top. This runs before the reveal, so an
+  // operation route still scrolls to its row.
+  useEffect(() => {
+    tableRef.current?.scrollTo?.({ top: 0 })
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A change of tab, not anything the effect reads, owns this scroll.
+  }, [tab])
   const revealIndex =
     selectedProviderId && selectedOperationName
       ? operationIndexes.get(selectionKey(selectedProviderId, selectedOperationName))
-      : routedProvider
-        ? providerIndexes.get(routedProvider)
-        : undefined
-  const markRevealed = useRevealScroll(virtual, revealProvider, selectedOperationName, revealIndex)
-  // The table addresses the provider it shows: the URL names the pinned one so
-  // the view can be shared. A drawer keeps its own address until it closes.
-  const addressProvider = useCallback(
-    (provider: ProviderView) => {
-      markRevealed(provider.id)
-      navigate(provider.path, { replace: true, preventScrollReset: true })
-    },
-    [markRevealed, navigate],
+      : undefined
+  const markRevealed = useRevealScroll(
+    virtual,
+    selectedOperationName ? selectedProviderId : null,
+    selectedOperationName,
+    revealIndex,
   )
-  const { activeProvider, onPinnedGroupChange } = usePinnedProviderAddress({
-    addressOccupied: selectedOperationName !== null,
-    addressProvider,
-    providers,
-    selectedProviderId,
-    tableRef,
-  })
+  const tabPath = (id: string | null) =>
+    providers.find((provider) => provider.id === id)?.path ?? providersPath
 
   // A click reads the policies the summary shows, changes in flight included.
   const policyFilterFor = useCallback(
@@ -610,13 +598,15 @@ function ProvidersTableScreen({
     [policyFilterFor],
   )
 
-  // The selected view clears the searches, so it shows the whole selection.
+  // The selected view clears the searches and opens every provider's tab, so
+  // it shows the whole selection.
   const showSelected = useCallback(() => {
     setTableFilterInput('')
     setRailFilter('')
     setPolicyFilter(null)
     setSelectedView(new Set(selected))
-  }, [selected, setRailFilter])
+    if (tab !== null) navigate(providersPath, { preventScrollReset: true })
+  }, [navigate, providersPath, selected, setRailFilter, tab])
 
   const toggleOperations = useCallback(
     (targets: { provider: ProviderView; operation: OperationView }[], checked: boolean) => {
@@ -632,19 +622,13 @@ function ProvidersTableScreen({
     },
     [],
   )
-  // The rail is an index into the table: a click scrolls to the provider and
-  // names it in the address so the URL can be shared. The route change is a
-  // selection within the page, which the parent loader does not revalidate,
-  // and the reveal effect scrolls to the same row the click already reached.
-  const scrollToProvider = (provider: ProviderView) => {
-    const index = providerIndexes.get(provider.id)
-    if (index !== undefined) virtual.scrollToIndex(index)
-    addressProvider(provider)
-  }
+  // A tab's address names it, so the URL can be shared. The route change is
+  // a selection within the page, which the parent loader does not revalidate.
+  const openTab = (path: string) => navigate(path, { preventScrollReset: true })
   const closeSelectedRoute = () => {
     // The keyboard cursor stays on the operation the drawer showed.
     if (drawerKey) setCursor(drawerKey)
-    if (selectedProvider) navigate(selectedProvider.path, { preventScrollReset: true })
+    openTab(tabPath(tab))
   }
 
   // The keyboard cursor: the operation ↑ and ↓ reach. An open drawer holds it.
@@ -734,12 +718,20 @@ function ProvidersTableScreen({
           empty={filteredProviders.length === 0}
           emptyMessage="No providers match."
         >
+          <CatalogRailItem
+            to={providersPath}
+            current={tab === null}
+            onSelect={() => openTab(providersPath)}
+            leading={<Icon name="Layers" size="20" color="secondary" />}
+            name="All providers"
+            count={providers.length}
+          />
           {filteredProviders.map((provider) => (
             <CatalogRailItem
               key={provider.id}
               to={provider.path}
-              current={provider.id === activeProvider}
-              onSelect={() => scrollToProvider(provider)}
+              current={provider.id === tab}
+              onSelect={() => openTab(provider.path)}
               leading={
                 <>
                   <StatusDot
@@ -751,32 +743,20 @@ function ProvidersTableScreen({
               }
               name={providerLabel(provider)}
               trailing={
-                <>
-                  <Tooltip content={`Show only ${providerLabel(provider)}`}>
-                    <Button.Container
-                      variant="bare"
-                      size="22"
-                      ariaLabel={`Show only ${providerLabel(provider)}`}
-                      onClick={() => setRailFilter(exactFilter(providerLabel(provider)))}
-                    >
-                      <Button.Icon name="ListFilter" />
-                    </Button.Container>
-                  </Tooltip>
-                  {/* Coral has no settings: nobody renames, reconfigures, or removes it. */}
-                  {!provider.builtin && (
-                    <Button.Container
-                      as={Link}
-                      id={providerSettingsDomId(provider.id)}
-                      to={`${provider.path}/settings`}
-                      preventScrollReset
-                      variant="bare"
-                      size="22"
-                      ariaLabel={`${providerLabel(provider)} settings`}
-                    >
-                      <Button.Icon name="Settings" />
-                    </Button.Container>
-                  )}
-                </>
+                // Coral has no settings: nobody renames, reconfigures, or removes it.
+                !provider.builtin && (
+                  <Button.Container
+                    as={Link}
+                    id={providerSettingsDomId(provider.id)}
+                    to={`${provider.path}/settings`}
+                    preventScrollReset
+                    variant="bare"
+                    size="22"
+                    ariaLabel={`${providerLabel(provider)} settings`}
+                  >
+                    <Button.Icon name="Settings" />
+                  </Button.Container>
+                )
               }
             />
           ))}
@@ -813,7 +793,6 @@ function ProvidersTableScreen({
           groupHeadings={GROUP_HEADINGS}
           layout="scroll"
           ref={tableRef}
-          onPinnedGroupChange={onPinnedGroupChange}
           className={styles.providersTable}
           columns={[{ width: 44 }, { width: 'minmax(340px, 1fr)' }, { width: 'max-content' }]}
         >
@@ -853,10 +832,6 @@ function ProvidersTableScreen({
             showSelected={showSelected}
             toggleOperations={toggleOperations}
           />
-          {/* The rail can bring even a short last provider up under the head. */}
-          {sections.length > 0 && (
-            <Table.VirtualTail from={sections.at(-1)!.index} virtual={virtual} />
-          )}
         </Table.Container>
         {selected.size > 0 && (
           <ActionBar.Bar>
@@ -916,8 +891,8 @@ function ProvidersTableScreen({
  * target triggers this: filtering, which moves the row, must not re-scroll,
  * and closing a drawer, which narrows the target to its provider
  * or to none, must leave the table where the reader left it. Returns a
- * function for scrolls the table made itself (rail click, reader scroll), so
- * the address they set does not scroll again.
+ * function for operations the reader opened in place, so their address does
+ * not scroll again.
  */
 function useRevealScroll(
   virtual: Table.VirtualRowsHandle,
@@ -946,67 +921,6 @@ function useRevealScroll(
   return useCallback((providerId: string, operationName: string | null = null) => {
     revealed.current = { provider: providerId, operation: operationName }
   }, [])
-}
-
-/**
- * The provider the table shows, from the group heading Wax has pinned. The rail
- * highlights it, and the reader's own scrolling writes it to the address as a
- * replace navigation, settled after scrolling so a fast pass over several
- * providers addresses only where it stops. A reveal scroll on load or after a
- * rail click passes other headings before it settles; addressing one of those
- * would rewrite a shared link or cancel a navigation the reader just started,
- * so only input on the table counts as the reader's scrolling.
- */
-function usePinnedProviderAddress({
-  addressOccupied,
-  addressProvider,
-  providers,
-  selectedProviderId,
-  tableRef,
-}: {
-  /** A drawer holds the address; scrolling does not take it. */
-  addressOccupied: boolean
-  addressProvider: (provider: ProviderView) => void
-  providers: ProviderView[]
-  selectedProviderId: string | null
-  tableRef: RefObject<HTMLDivElement | null>
-}) {
-  const [pinnedProvider, setPinnedProvider] = useState<string | null>(null)
-  const onPinnedGroupChange = useCallback(
-    (id: string | null) => setPinnedProvider(id === null ? null : providerFromGroupDomId(id)),
-    [],
-  )
-  const readerScrolled = useRef(false)
-  useEffect(() => {
-    const table = tableRef.current
-    if (!table) return
-    const mark = () => {
-      readerScrolled.current = true
-    }
-    const events = ['wheel', 'touchmove', 'keydown', 'pointerdown'] as const
-    for (const event of events) table.addEventListener(event, mark, { passive: true })
-    return () => {
-      for (const event of events) table.removeEventListener(event, mark)
-    }
-  }, [tableRef])
-  const pinnedProviderView = pinnedProvider
-    ? providers.find((provider) => provider.id === pinnedProvider)
-    : undefined
-  useEffect(() => {
-    if (
-      !readerScrolled.current ||
-      !pinnedProviderView ||
-      addressOccupied ||
-      pinnedProviderView.id === selectedProviderId
-    )
-      return
-    const timer = setTimeout(() => addressProvider(pinnedProviderView), 200)
-    return () => clearTimeout(timer)
-  }, [addressOccupied, addressProvider, pinnedProviderView, selectedProviderId])
-  return {
-    activeProvider: pinnedProvider ?? selectedProviderId ?? providers[0]?.id ?? '',
-    onPinnedGroupChange,
-  }
 }
 
 const TableSections = memo(function TableSections({
@@ -1160,10 +1074,6 @@ const PROVIDER_GROUP_DOM_ID = 'provider-group-'
 
 function providerGroupDomId(provider: string) {
   return `${PROVIDER_GROUP_DOM_ID}${provider}`
-}
-
-function providerFromGroupDomId(id: string) {
-  return id.slice(PROVIDER_GROUP_DOM_ID.length)
 }
 
 function providerSettingsDomId(provider: string) {

@@ -63,7 +63,12 @@ function renderPage({
   // The route re-renders the page with what the URL now selects.
   const show = async (selected: OperationView | null, owner = providerOf(selected)) => {
     element = page(selected, owner)
-    await act(async () => router.navigate(selected?.path ?? `/workspaces/demo/providers/${owner}`))
+    await act(async () =>
+      router.navigate(
+        selected?.path ??
+          (owner ? `/workspaces/demo/providers/${owner}` : '/workspaces/demo/providers'),
+      ),
+    )
   }
   return { show, router }
 }
@@ -137,12 +142,11 @@ async function settle() {
   })
 }
 
-// Catches: provider tabs coming back, or a provider without operations
-// dropping out of the table and taking its settings with it.
+// Catches: a provider without operations dropping out of the table and
+// taking its settings with it.
 test('lists every provider in one table, and keeps an empty one with its settings', () => {
   const empty = provider('00000000-0000-4000-8000-000000000003', 'Empty API', 'empty')
   renderPage({ providers: [github, empty] })
-  expect(screen.queryByRole('tab')).not.toBeInTheDocument()
   expect(providerGroups()).toEqual(['Empty API', 'GitHub'])
   expect(within(table()).getByRole('rowgroup', { name: 'Empty API' })).toHaveTextContent(
     'No operations yet. Settings remain available.',
@@ -219,32 +223,31 @@ test('policy forms submit the workspace-local provider identifier, not an instal
   }
 })
 
-// Catches: the table keeping providers the rail filter took out, that filter
-// dropping the selection under those providers, or a rail entry's Show only
-// button keeping another provider whose name contains its name.
-test('the rail filter narrows the table to the same providers', async () => {
-  const enterprise = provider('00000000-0000-4000-8000-000000000003', 'GitHub Enterprise', 'ghe', [
-    'gists.list',
-  ])
-  renderPage({ providers: [github, enterprise, weather] })
+const rail = () => screen.getByRole('navigation', { name: 'installed providers' })
+const tabLink = (name: string) =>
+  within(rail()).getByRole('link', { name: new RegExp(`${name}( \\d+)?$`) })
+
+// Catches: a tab showing other providers, a change of tab dropping the
+// selection, or the rail filter narrowing the table instead of the rail.
+test('each rail entry is a tab, and all providers lists every one', async () => {
+  const { router } = renderPage()
+  expect(tabLink('All providers')).toHaveAttribute('aria-current', 'page')
+  expect(providerGroups()).toEqual(['GitHub', 'Weather'])
   await user.click(checkbox('Select repos.get'))
-  expect(providerGroups()).toEqual(['GitHub', 'GitHub Enterprise', 'Weather'])
 
-  await user.click(screen.getByRole('button', { name: 'Show only GitHub' }))
-  expect(screen.getByLabelText('Filter providers')).toHaveValue('^GitHub$')
-  expect(providerGroups()).toEqual(['GitHub'])
-
-  await filterProviders('')
-  await user.click(screen.getByRole('button', { name: 'Show only Weather' }))
+  await user.click(tabLink('Weather'))
+  expect(router.state.location.pathname).toBe(weather.path)
+  expect(tabLink('Weather')).toHaveAttribute('aria-current', 'page')
   expect(providerGroups()).toEqual(['Weather'])
   expect(rowNames()).toEqual(['getForecast'])
   expect(selectionCount()).toBe('1 selected')
 
-  await filterProviders('nothing')
-  expect(providerGroups()).toEqual([])
-  expect(screen.getByRole('table', { name: 'Operations' })).toHaveTextContent('No providers match.')
+  await filterProviders('git')
+  expect(within(rail()).queryByRole('link', { name: /Weather$/ })).toBeNull()
+  expect(providerGroups()).toEqual(['Weather'])
 
-  await filterProviders('')
+  await user.click(tabLink('All providers'))
+  expect(providerGroups()).toEqual(['GitHub', 'Weather'])
   expect(checkbox('Select repos.get')).toBeChecked()
 })
 
@@ -367,7 +370,8 @@ test('selection rolls up to its provider and the header selects every match', as
 // as Coral's do.
 test('closing the drawer leaves the table where the reader left it', async () => {
   const linked = github.operations[1]!
-  const { show } = renderPage({ entry: linked.path, selectedOperation: linked })
+  const { show } = renderPage()
+  await show(linked)
   // The table's own scroll maths is covered beside `Table.useVirtualRows`;
   // this counts only the scrolls the page asks of it.
   const port = screen.getByRole('table', { name: 'Operations', hidden: true })
@@ -376,8 +380,9 @@ test('closing the drawer leaves the table where the reader left it', async () =>
     scrolls.push(options.top!)
   }) as typeof port.scrollTo
 
-  await show(null, providerOf(linked))
+  await show(null, null)
   expect(scrolls).toEqual([])
+  expect(providerGroups()).toEqual(['GitHub', 'Weather'])
 
   // Opening another operation's drawer reveals its row.
   await show(weather.operations[0]!)
@@ -388,7 +393,8 @@ test('closing the drawer leaves the table where the reader left it', async () =>
 // filter did not match, and the summary counting it as hidden.
 test('the drawer operation stays listed when the filter would hide it', async () => {
   const linked = github.operations[1]!
-  renderPage({ entry: linked.path, selectedOperation: linked })
+  const { show } = renderPage()
+  await show(linked)
   await filterOperations('forecast')
   expect(rowNames()).toEqual(['repos.get', 'getForecast'])
 
