@@ -1081,7 +1081,7 @@ function actionsStory(
           index === options.reached ? 'Deadline reached.' : 'Expires in 15 minutes',
         )
       }
-      // Every action is listed, so nothing links to another page of them.
+      // Nothing links to another page of them until every loaded action shows.
       await expect(
         within(nav).queryByRole('link', { name: /actions in this run|First actions/ }),
       ).toBeNull()
@@ -1152,8 +1152,8 @@ export const RunWaitingOnActions = actionsStory(
     ],
   },
 )
-/** Twelve actions, more than one screen on a phone: every one is listed, the list scrolls with
- * the panel, and Tab reaches each review in order. */
+/** Twelve actions on a phone: the first five show, with the count of all twelve. Show more
+ * lists the rest in order, the list scrolls with the panel, and Tab reaches each review. */
 const manyActions = Array.from({ length: 12 }, (_, index) =>
   index % 4 === 3
     ? {
@@ -1184,9 +1184,9 @@ const manyStory = actionsStory(
         run({ requiresAction: true, actionPage: { total: '12', next: '', actions: manyActions } }),
       ),
     ),
-    { evidence: manyCards[11].target, narrow: true },
+    { evidence: manyCards[4].target, narrow: true },
   ),
-  { total: '12', cards: manyCards },
+  { total: '12', cards: manyCards.slice(0, 5) },
   { fits: true },
 )
 export const RunWaitingOnManyActionsNarrow: Story = {
@@ -1195,7 +1195,14 @@ export const RunWaitingOnManyActionsNarrow: Story = {
     await manyStory.play!(context)
     const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
     const nav = within(dialog).getByRole('navigation', { name: 'Actions in this run' })
-    const links = within(nav).getAllByRole('link')
+    await expect(within(nav).getByText('Showing 5 of 12 actions.')).toBeVisible()
+    await context.userEvent.click(within(nav).getByRole('button', { name: 'Show more actions' }))
+    await expect(within(nav).queryByText(/^Showing/)).toBeNull()
+    await expect(within(nav).getByRole('button', { name: 'Show fewer actions' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    const links = within(within(nav).getByRole('list')).getAllByRole('link')
     // Each link opens its own action's exact review, in the Run's order.
     const requests = links.map((link) =>
       new URL(link.getAttribute('href')!, 'http://reef').searchParams.get('request'),
@@ -1209,6 +1216,51 @@ export const RunWaitingOnManyActionsNarrow: Story = {
     }
     // The last card scrolls into view inside the panel.
     await expect(links.at(-1)).toBeVisible()
+  },
+}
+/** More actions than one page of Coral's: the first five show, then the rest of the page, then a
+ * link to the next page. */
+const pagedActions = Array.from({ length: 100 }, (_, index) => ({
+  ...approvalAction,
+  name: `${workspace}/approvals/action-${index}`,
+  callPath: `coral.providers.billing.invoices.send${index}`,
+}))
+const pagedStory = actionsStory(
+  panel(
+    'Program run · waiting on more actions than one page',
+    runPage(
+      runDetail(
+        run({
+          requiresAction: true,
+          actionPage: { total: '150', next: 'cursor-1', actions: pagedActions },
+        }),
+      ),
+    ),
+    { evidence: 'Showing 5 of 150 actions.' },
+  ),
+  {
+    total: '150',
+    cards: pagedActions.slice(0, 5).map((item) => ({
+      target: item.callPath,
+      link: `Review ${item.callPath}`,
+      kind: 'approval',
+    })),
+  },
+)
+export const RunWaitingOnMoreActionsThanOnePage: Story = {
+  ...pagedStory,
+  play: async (context) => {
+    await pagedStory.play!(context)
+    const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
+    const nav = within(dialog).getByRole('navigation', { name: 'Actions in this run' })
+    await context.userEvent.click(within(nav).getByRole('button', { name: 'Show more actions' }))
+    await expect(within(within(nav).getByRole('list')).getAllByRole('listitem')).toHaveLength(100)
+    await expect(within(nav).getByText('Showing 100 of 150 actions.')).toBeVisible()
+    const next = within(nav).getByRole('link', { name: 'More actions in this run' })
+    await expect(next).toBeVisible()
+    const query = new URL(next.getAttribute('href')!, 'http://reef').searchParams
+    await expect(query.get('actionsAfter')).toBe('cursor-1')
+    await expect(query.has('request')).toBe(false)
   },
 }
 /** A later page of actions failed: the list shows what loaded and says how many are missing. */

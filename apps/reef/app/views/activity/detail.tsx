@@ -135,6 +135,9 @@ function ExecutionDetail({
         request={request}
         unavailable={operation?.requestUnavailable ?? detail.requestUnavailable}
         href={(name) => href({ record: detail.run.name, request: name })}
+        pageHref={(cursor) =>
+          href({ record: detail.run.name, request: null, actionsAfter: cursor })
+        }
         returnTo={href({})}
       />
       {operation && <InvocationOutcome detail={operation} />}

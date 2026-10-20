@@ -1606,9 +1606,16 @@ function pagedRun(
 }
 const names = (page: ActivityPage) =>
   page.detail?.kind === 'run' ? page.detail.run.actionPage!.actions.map((item) => item.name) : []
-describe('every pending action of the selected Run', () => {
-  // Three pages: two full pages of 100, approvals and connections mixed, then a short one that
-  // repeats the last action of the page before it, as a page read during a change can.
+/** The action cursor and Event window of each Run read. */
+const runReads = (calls: { method: string; input: unknown }[]) =>
+  calls
+    .filter((call) => call.method === 'run')
+    .map((call) => {
+      const { actionAfter, pageSize } = call.input as { actionAfter: string; pageSize: number }
+      return { actionAfter, pageSize }
+    })
+describe('the pending actions of the selected Run', () => {
+  // Two full pages of 100, approvals and connections mixed, then a short one.
   const pages = {
     '': { actions: range(0, 100).map(approvalAt), next: 'cursor-1' },
     'cursor-1': {
@@ -1617,64 +1624,62 @@ describe('every pending action of the selected Run', () => {
       ),
       next: 'cursor-2',
     },
-    'cursor-2': { actions: [approvalAt(199), approvalAt(200), approvalAt(201)], next: '' },
+    'cursor-2': { actions: [approvalAt(200), approvalAt(201)], next: '' },
   } as Record<string, { actions: ReturnType<typeof approvalAt>[]; next: string }>
-  const expected = range(0, 202).map((index) =>
-    index >= 100 && index < 200 && index % 3 === 0
-      ? `${workspace}/accountConnections/action-${index}`
-      : `${workspace}/approvals/action-${index}`,
-  )
 
-  it('reads every page from the first, in Coral order, once per page and without duplicates', async () => {
+  // Catches: a load that walks every page of a Run's actions.
+  it.each([
+    ['no action', 0],
+    ['one action', 1],
+    ['five actions', 5],
+    ['six actions', 6],
+    ['many actions', 202],
+  ])('reads only the first page for %s', async (_, total) => {
+    const first = total > 100 ? pages[''] : { actions: range(0, total).map(approvalAt), next: '' }
+    const { api, calls } = coral(list(), taskDetail(), pagedRun({ '': first }, BigInt(total)))
+    const page = await loadActivity(request({ record: run }), api, { scope })
+    // One read, at the first page, with the smallest Event window Coral accepts.
+    expect(runReads(calls)).toEqual([{ actionAfter: '', pageSize: 1 }])
+    expect(names(page)).toEqual(first.actions.map((item) => item.request.request.value))
+    expect(page.detail).toMatchObject({
+      kind: 'run',
+      run: { actionPage: { total: String(total), next: first.next } },
+    })
+    const actionPage = page.detail?.kind === 'run' ? page.detail.run.actionPage! : undefined
+    expect(actionPage?.incomplete).toBeFalsy()
+    expect(actionPage?.after).toBeUndefined()
+  })
+
+  // Catches: a "More actions" link that reads every later page, or none.
+  it('reads the one later page that an explicit "More actions" link asks for', async () => {
     const { api, calls } = coral(list(), taskDetail(), pagedRun(pages, 202n))
-    const page = await loadActivity(request({ record: run, actionsAfter: 'stale-cursor' }), api, {
+    const page = await loadActivity(request({ record: run, actionsAfter: 'cursor-1' }), api, {
       scope,
     })
-    // One read per page, starting at the first page whatever the link said.
-    expect(
-      calls
-        .filter((call) => call.method === 'run')
-        .map((call) => (call.input as { actionAfter: string }).actionAfter),
-    ).toEqual(['', 'cursor-1', 'cursor-2'])
-    expect(names(page)).toEqual(expected)
+    expect(runReads(calls)).toEqual([
+      { actionAfter: '', pageSize: 1 },
+      { actionAfter: 'cursor-1', pageSize: 1 },
+    ])
+    expect(names(page)).toEqual(pages['cursor-1'].actions.map((item) => item.request.request.value))
     expect(page.detail).toMatchObject({
       kind: 'run',
-      run: { actionPage: { total: '202', next: '' } },
+      run: { actionPage: { total: '202', next: 'cursor-2', after: 'cursor-1' } },
     })
-    expect(page.detail?.kind === 'run' && page.detail.run.actionPage!.incomplete).toBeFalsy()
+    // A later page does not open its first connection for you.
+    expect(page.initialRequest).toBeUndefined()
   })
 
-  it('reads one page when one page holds every action', async () => {
-    const { api, calls } = coral(
-      list(),
-      taskDetail(),
-      pagedRun({ '': { actions: range(0, 3).map(approvalAt), next: '' } }, 3n),
-    )
-    const page = await loadActivity(request({ record: run }), api, { scope })
-    expect(calls.filter((call) => call.method === 'run')).toHaveLength(1)
-    expect(names(page)).toHaveLength(3)
-  })
-
-  it('keeps the pages it read and says the list is incomplete when a later page fails', async () => {
+  // Catches: a failed later page that empties the list, or claims it is whole.
+  it('keeps the first page and says the list is incomplete when the later page fails', async () => {
     const { api, calls } = coral(list(), taskDetail(), pagedRun(pages, 202n, 'cursor-1'))
-    const page = await loadActivity(request({ record: run }), api, { scope })
-    expect(calls.filter((call) => call.method === 'run')).toHaveLength(2)
-    expect(names(page)).toEqual(expected.slice(0, 100))
-    expect(page.detail).toMatchObject({
-      kind: 'run',
-      run: { actionPage: { total: '202', next: '', incomplete: true } },
+    const page = await loadActivity(request({ record: run, actionsAfter: 'cursor-1' }), api, {
+      scope,
     })
-  })
-
-  it('stops at a cursor it has already followed and says the list is incomplete', async () => {
-    const looping = { ...pages, 'cursor-2': { ...pages['cursor-2'], next: 'cursor-1' } }
-    const { api, calls } = coral(list(), taskDetail(), pagedRun(looping, 300n))
-    const page = await loadActivity(request({ record: run }), api, { scope })
-    expect(calls.filter((call) => call.method === 'run')).toHaveLength(3)
-    expect(names(page)).toEqual(expected)
+    expect(runReads(calls)).toHaveLength(2)
+    expect(names(page)).toEqual(pages[''].actions.map((item) => item.request.request.value))
     expect(page.detail).toMatchObject({
       kind: 'run',
-      run: { actionPage: { incomplete: true } },
+      run: { actionPage: { total: '202', next: 'cursor-1', incomplete: true } },
     })
   })
 })

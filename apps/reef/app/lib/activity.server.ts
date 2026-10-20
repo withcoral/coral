@@ -297,54 +297,33 @@ function runView(value: ActivityRun): ExecutionRow {
   }
 }
 /**
- * Every pending action of a selected Run, from `first` on. Coral returns up to 100 actions a
- * page, so a Run with more takes one more read per 100. Actions keep Coral's order, and an
- * action that a later page repeats appears once. A page that fails, or a cursor already
- * followed, ends the walk: the list keeps what it read and says it is incomplete. A Run cannot
- * hold more pending actions than its total, so the walk stops after the pages that total needs.
+ * The later page of a Run's actions that a "More actions" link asks for, after `cursor`. Coral
+ * returns up to 100 actions a page. A page that fails leaves the first page, marked incomplete.
  */
-async function allRunActions(
+async function laterRunActions(
   api: ActivityApi,
   run: string,
   first: ActionPage,
+  cursor: string,
   signal: AbortSignal | undefined,
 ): Promise<ActionPage> {
-  const actions = [...first.actions]
-  const seen = new Set<string>()
-  let next = first.next
-  let incomplete = false
-  const pages = Math.ceil(Number(first.total) / 100) + 1
-  for (let read = 1; next; read++) {
-    if (seen.has(next) || read > pages) {
-      incomplete = true
-      break
-    }
-    seen.add(next)
-    try {
-      const value = await api.activity.inspectRun(
-        { name: run, pageSize: 1, actionAfter: next },
-        { signal },
-      )
-      const page = value.run?.actionPage
-      if (!page) {
-        incomplete = true
-        break
+  try {
+    const value = await api.activity.inspectRun(
+      { name: run, pageSize: 1, actionAfter: cursor },
+      { signal },
+    )
+    const page = value.run?.actionPage
+    if (page)
+      return {
+        actions: page.actions.flatMap(actionSummaryView),
+        total: page.total.toString(),
+        next: page.nextAction,
+        after: cursor,
       }
-      actions.push(...page.actions.flatMap(actionSummaryView))
-      next = page.nextAction
-    } catch (error) {
-      if (signal?.aborted) throw error
-      incomplete = true
-      break
-    }
+  } catch (error) {
+    if (signal?.aborted) throw error
   }
-  const names = new Set<string>()
-  return {
-    actions: actions.filter((item) => !names.has(item.name) && Boolean(names.add(item.name))),
-    total: first.total,
-    next: '',
-    ...(incomplete && { incomplete }),
-  }
+  return { ...first, incomplete: true }
 }
 function actionSummaryView(value: ActivityActionSummary): ActionSummary[] {
   if (!value.request) return []
@@ -662,7 +641,7 @@ async function selectedDetail(
           {
             name: run,
             pageSize: 1,
-            // The Run's actions start at the first page; an older link's cursor skips none.
+            // The first page of actions. A "More actions" link reads its later page on its own.
             actionAfter: '',
             accountConnection: /^workspaces\/[^/]+\/accountConnections\/[^/]+$/.test(
               selectedRequest,
@@ -682,8 +661,11 @@ async function selectedDetail(
           throw new ConnectError('unavailable', Code.NotFound)
         }
         const row = runView(value.run)
-        if (row.actionPage) row.actionPage = await allRunActions(api, run, row.actionPage, signal)
-        if (selectInitialRequest && !query.has('request') && name === run) {
+        // Only the Run's own list follows a "More actions" link; a review keeps the first page.
+        const cursor = !query.has('request') && name === run ? query.get('actionsAfter') : null
+        if (row.actionPage && cursor)
+          row.actionPage = await laterRunActions(api, run, row.actionPage, cursor, signal)
+        if (selectInitialRequest && !query.has('request') && name === run && !cursor) {
           const first = row.actionPage?.actions[0]
           if (first?.kind === 'account_connection') {
             selectedRequest = first.name

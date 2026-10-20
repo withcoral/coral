@@ -165,7 +165,9 @@ export interface ActionPage {
   actions: ActionSummary[]
   total: string
   next: string
-  /** A selected Run's list stopped before its last page: a page failed or a cursor repeated. */
+  /** The cursor a later page starts after; absent on the first page. */
+  after?: string
+  /** The later page a link asked for failed, so the list holds the first page instead. */
   incomplete?: boolean
 }
 /** One pending request, with a Run that waits on it as context. */

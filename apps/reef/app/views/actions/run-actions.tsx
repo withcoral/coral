@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useFetcher, useRevalidator } from 'react-router'
 import { Button, List, Typography } from '@/wax/components'
 import { CodeChip } from '@/wax/components/code-chip'
@@ -20,8 +20,11 @@ export function connectHref(provider: string, returnTo: string) {
   return `/workspaces/${workspace}/accounts/${id}?${new URLSearchParams({ returnTo })}`
 }
 
+/** Actions the Run's list shows before you ask for more. */
+const FIRST_ACTIONS = 5
+
 /** The review of one exact request. When no current request is selected, the Run lists
- * its current actions, each opening its own review. */
+ * its first five current actions, each opening its own review. */
 export function RunActions({
   context,
   callStartedAt,
@@ -30,6 +33,7 @@ export function RunActions({
   request,
   unavailable,
   href,
+  pageHref,
   returnTo,
 }: {
   /** The Run the actions belong to; an approval review shows it as context. */
@@ -42,9 +46,13 @@ export function RunActions({
   request?: RequestDetail | null
   unavailable?: boolean
   href: (name: string) => string
+  /** The Run's list at the page after `cursor`, or at its first page. */
+  pageHref: (cursor: string | null) => string
   returnTo: string
 }) {
+  const [expanded, setExpanded] = useState(false)
   const actions = page?.actions ?? []
+  const shown = expanded ? actions : actions.slice(0, FIRST_ACTIONS)
   // A settled or unrelated selection still shows what the Run waits on now.
   const current = request ? actions.some((item) => item.name === request.name) : false
   if ((!page || page.total === '0') && !request && !unavailable) return null
@@ -75,7 +83,7 @@ export function RunActions({
           </Typography.BodyStrong>
           {/* This page of actions, in the cards a search result uses. */}
           <List.Container as="ul">
-            {actions.map((item) => {
+            {shown.map((item) => {
               const approval = item.kind === 'approval'
               const target = approval
                 ? item.callPath || 'operation'
@@ -104,6 +112,38 @@ export function RunActions({
               )
             })}
           </List.Container>
+          {(page.after || shown.length < Number(page.total)) && (
+            <Typography.BodySmall variant="secondary">
+              {page.after
+                ? `Showing ${shown.length} later actions of ${page.total}.`
+                : `Showing ${shown.length} of ${page.total} actions.`}
+            </Typography.BodySmall>
+          )}
+          {(actions.length > FIRST_ACTIONS || page.after || page.next) && (
+            <div className={styles.controls}>
+              {actions.length > FIRST_ACTIONS && (
+                <Button.TextButton
+                  variant="secondary"
+                  size="32"
+                  aria-expanded={expanded}
+                  onClick={() => setExpanded(!expanded)}
+                >
+                  {expanded ? 'Show fewer actions' : 'Show more actions'}
+                </Button.TextButton>
+              )}
+              {page.after && (
+                <Button.InternalLink variant="bare" to={pageHref(null)} preventScrollReset>
+                  First actions
+                </Button.InternalLink>
+              )}
+              {/* The next page follows the last action on this one, so it waits until all show. */}
+              {shown.length === actions.length && page.next && (
+                <Button.InternalLink variant="bare" to={pageHref(page.next)} preventScrollReset>
+                  More actions in this run
+                </Button.InternalLink>
+              )}
+            </div>
+          )}
           {page.incomplete && <MissingActions loaded={actions.length} total={page.total} />}
         </nav>
       )}

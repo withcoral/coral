@@ -13,6 +13,7 @@ import { discoveryView } from './discovery/response'
 import { ActivityConnectedContext } from './live'
 import { ContextImpact } from './context-impact'
 import type {
+  ActionPage,
   ActivityPage,
   ActivityRow,
   DiscoveryContext,
@@ -1838,8 +1839,10 @@ it('lists what the Run waits on as cards, each opening its exact review', () => 
     )
     expect(item.querySelector('time')).toHaveAttribute('dateTime', action.deadline)
   }
-  // The loader reads every page, so the list is whole: nothing links to another page.
+  // Two actions fit, so the list is whole: nothing shows more or links to another page.
   expect(within(nav).queryByRole('link', { name: /actions in this run|First actions/ })).toBeNull()
+  expect(within(nav).queryByRole('button', { name: 'Show more actions' })).toBeNull()
+  expect(within(nav).queryByText(/^Showing/)).toBeNull()
   expect(within(nav).queryByRole('status')).toBeNull()
 })
 
@@ -1883,11 +1886,115 @@ it('says how many actions loaded when a page of them failed, and offers to try a
   )
   const nav = within(runActions()).getByRole('navigation', { name: 'Actions in this run' })
   expect(within(nav).getByText('150 actions need you.')).toBeInTheDocument()
-  expect(within(within(nav).getByRole('list')).getAllByRole('listitem')).toHaveLength(100)
+  expect(within(within(nav).getByRole('list')).getAllByRole('listitem')).toHaveLength(5)
   expect(within(nav).getByRole('status')).toHaveTextContent(
     '100 of 150 actions loaded. The rest did not load.',
   )
   expect(within(nav).getByRole('button', { name: 'Try again' })).toBeInTheDocument()
+})
+
+// Helpers for a Run that waits on more than five actions.
+const actionAt = (index: number) => ({
+  kind: 'approval' as const,
+  name: `${workspace}/approvals/action-${index}`,
+  callPath: `coral.providers.mail.send${index}`,
+  providerLabel: 'Mail',
+  deadline: '2030-09-22T09:15:00Z',
+})
+const actions = (count: number) => Array.from({ length: count }, (_, index) => actionAt(index))
+function showActions(actionPage: ActionPage) {
+  const waiting = { ...run, requiresAction: true, actionPage }
+  renderRoute(
+    <ActionReviewSession>
+      <ActivityDetail
+        page={{
+          ...pendingPage,
+          selected: waiting.name,
+          selectedRow: waiting,
+          detail: {
+            kind: 'run',
+            run: waiting,
+            request: null,
+            source: 'return null;',
+            linkedFunctions: [],
+            terminal: { kind: 'unavailable' },
+          },
+        }}
+      />
+    </ActionReviewSession>,
+    { entry: `/activity?record=${encodeURIComponent(run.name)}&request=stale` },
+  )
+  return screen.queryByRole('navigation', { name: 'Actions in this run' })
+}
+const listedActions = (nav: HTMLElement) =>
+  within(within(nav).getByRole('list'))
+    .getAllByRole('listitem')
+    .map((item) => item.querySelector('code')!.textContent)
+const linkQuery = (link: HTMLElement) =>
+  new URL(link.getAttribute('href')!, 'http://reef').searchParams
+
+describe('a Run that waits on more than five actions', () => {
+  // Catches: a list that shows every action at once, loses Coral's order, or claims to be whole.
+  it.each([
+    { loaded: 0, total: '0', shown: null, more: false },
+    { loaded: 1, total: '1', shown: null, more: false },
+    { loaded: 5, total: '5', shown: null, more: false },
+    { loaded: 6, total: '6', shown: 'Showing 5 of 6 actions.', more: true },
+    { loaded: 100, total: '150', shown: 'Showing 5 of 150 actions.', more: true },
+    // Coral counted an action Reef cannot open: the count stays exact and nothing offers it.
+    { loaded: 5, total: '6', shown: 'Showing 5 of 6 actions.', more: false },
+  ])(
+    'shows the first five of $loaded loaded actions of $total',
+    ({ loaded, total, shown, more }) => {
+      const nav = showActions({ actions: actions(loaded), total, next: '' })
+      if (total === '0') return expect(nav).toBeNull()
+      expect(
+        within(nav!).getByText(`${total} ${total === '1' ? 'action needs' : 'actions need'} you.`),
+      ).toBeInTheDocument()
+      expect(listedActions(nav!)).toEqual(actions(Math.min(loaded, 5)).map((item) => item.callPath))
+      if (shown) expect(within(nav!).getByText(shown)).toBeInTheDocument()
+      else expect(within(nav!).queryByText(/^Showing/)).toBeNull()
+      expect(Boolean(within(nav!).queryByRole('button', { name: 'Show more actions' }))).toBe(more)
+    },
+  )
+
+  // Catches: remaining actions that no control reaches, or a reveal that reads Coral again.
+  it('shows the rest of the page on request, then links to the next page', async () => {
+    const nav = showActions({ actions: actions(100), total: '150', next: 'cursor-1' })!
+    // The next page waits until the whole first page is on screen.
+    expect(within(nav).queryByRole('link', { name: 'More actions in this run' })).toBeNull()
+    const more = within(nav).getByRole('button', { name: 'Show more actions' })
+    expect(more).toHaveAttribute('aria-expanded', 'false')
+    await userEvent.click(more)
+    expect(listedActions(nav)).toEqual(actions(100).map((item) => item.callPath))
+    expect(within(nav).getByRole('button', { name: 'Show fewer actions' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    expect(within(nav).getByText('Showing 100 of 150 actions.')).toBeInTheDocument()
+    const next = linkQuery(within(nav).getByRole('link', { name: 'More actions in this run' }))
+    expect(next.get('actionsAfter')).toBe('cursor-1')
+    expect(next.get('record')).toBe(run.name)
+    // The next page lists the Run's actions; it does not reopen a selected review.
+    expect(next.has('request')).toBe(false)
+    expect(within(nav).queryByRole('link', { name: 'First actions' })).toBeNull()
+  })
+
+  // Catches: a later page that reads as the start of the list, or has no way back.
+  it('names a later page as later, and links back to the first actions', () => {
+    const nav = showActions({
+      actions: actions(3),
+      total: '150',
+      next: '',
+      after: 'cursor-1',
+    })!
+    expect(listedActions(nav)).toEqual(actions(3).map((item) => item.callPath))
+    expect(within(nav).getByText('Showing 3 later actions of 150.')).toBeInTheDocument()
+    expect(
+      linkQuery(within(nav).getByRole('link', { name: 'First actions' })).has('actionsAfter'),
+    ).toBe(false)
+    expect(within(nav).queryByRole('link', { name: 'More actions in this run' })).toBeNull()
+  })
 })
 
 describe('an account connection the Run waits on', () => {
