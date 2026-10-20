@@ -20,7 +20,7 @@ use super::{ToolFailure, success};
     {"if":{"properties":{"state":{"not":{"const":"running"}}},"required":["state"]},"then":{"properties":{"required_actions":{"type":"array","maxItems":0}}}}
 ]))]
 pub(crate) struct RunUpdateResult<'a> {
-    #[schemars(schema_with = "crate::arguments::uuid_schema")]
+    #[schemars(schema_with = "crate::arguments::identifier_schema")]
     run_id: String,
     state: State,
     required_actions: Vec<Action>,

@@ -49,7 +49,7 @@ impl ToolArguments for StartTaskArguments {
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct SearchArguments {
-    #[schemars(schema_with = "uuid_schema", description = TASK_ID_DESCRIPTION)]
+    #[schemars(schema_with = "identifier_schema", description = TASK_ID_DESCRIPTION)]
     pub(crate) task_id: String,
     #[schemars(
         length(min = 1, max = TASK_INTENT_MAX_CHARS),
@@ -88,7 +88,7 @@ impl ToolArguments for SearchArguments {
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct DescribeArguments {
-    #[schemars(schema_with = "uuid_schema", description = TASK_ID_DESCRIPTION)]
+    #[schemars(schema_with = "identifier_schema", description = TASK_ID_DESCRIPTION)]
     pub(crate) task_id: String,
     #[schemars(
         length(min = 1, max = TASK_INTENT_MAX_CHARS),
@@ -115,7 +115,7 @@ impl ToolArguments for DescribeArguments {
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct SaveFunctionArguments {
-    #[schemars(schema_with = "uuid_schema", description = TASK_ID_DESCRIPTION)]
+    #[schemars(schema_with = "identifier_schema", description = TASK_ID_DESCRIPTION)]
     pub(crate) task_id: String,
     #[schemars(
         length(min = 1, max = TASK_INTENT_MAX_CHARS),
@@ -147,7 +147,7 @@ impl ToolArguments for SaveFunctionArguments {
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct DeleteFunctionArguments {
-    #[schemars(schema_with = "uuid_schema", description = TASK_ID_DESCRIPTION)]
+    #[schemars(schema_with = "identifier_schema", description = TASK_ID_DESCRIPTION)]
     pub(crate) task_id: String,
     #[schemars(
         length(min = 1, max = TASK_INTENT_MAX_CHARS),
@@ -169,7 +169,7 @@ impl ToolArguments for DeleteFunctionArguments {
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct ExecArguments {
-    #[schemars(schema_with = "uuid_schema", description = TASK_ID_DESCRIPTION)]
+    #[schemars(schema_with = "identifier_schema", description = TASK_ID_DESCRIPTION)]
     pub(crate) task_id: String,
     #[schemars(
         length(min = 1, max = TASK_INTENT_MAX_CHARS),
@@ -201,7 +201,7 @@ impl ToolArguments for ExecArguments {
 #[schemars(deny_unknown_fields)]
 pub(crate) struct WaitArguments {
     #[schemars(
-        schema_with = "uuid_schema",
+        schema_with = "identifier_schema",
         description = RUN_ID_DESCRIPTION
     )]
     pub(crate) run_id: String,
@@ -227,7 +227,7 @@ impl ToolArguments for WaitArguments {
 #[schemars(deny_unknown_fields)]
 pub(crate) struct CancelArguments {
     #[schemars(
-        schema_with = "uuid_schema",
+        schema_with = "identifier_schema",
         description = RUN_ID_DESCRIPTION
     )]
     pub(crate) run_id: String,
@@ -254,7 +254,7 @@ pub(crate) enum TaskOutcomeArgument {
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct EndTaskArguments {
-    #[schemars(schema_with = "uuid_schema", description = TASK_ID_DESCRIPTION)]
+    #[schemars(schema_with = "identifier_schema", description = TASK_ID_DESCRIPTION)]
     pub(crate) task_id: String,
     #[schemars(description = "Terminal Task outcome.")]
     pub(crate) outcome: TaskOutcomeArgument,
@@ -348,6 +348,15 @@ pub(crate) fn uuid_schema(generator: &mut SchemaGenerator) -> Schema {
     schema.insert("format".into(), json!("uuid"));
     schema.insert("minLength".into(), json!(36));
     schema.insert("maxLength".into(), json!(36));
+    schema
+}
+
+/// A Task or Run identifier: four or five lowercase words joined by hyphens,
+/// or the UUID of one issued before Coral used words.
+pub(crate) fn identifier_schema(generator: &mut SchemaGenerator) -> Schema {
+    let mut schema = String::json_schema(generator);
+    schema.insert("pattern".into(), json!(coral_identifier::SCHEMA_PATTERN));
+    schema.insert("maxLength".into(), json!(coral_identifier::MAX_LENGTH));
     schema
 }
 

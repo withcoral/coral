@@ -15,6 +15,7 @@ chrono.workspace = true
 axum = { workspace = true, features = ["http1", "tokio"] }
 coral-run.workspace = true
 coral-functions.workspace = true
+coral-identifier.workspace = true
 coral-search.workspace = true
 coral-task.workspace = true
 coral-workspace.workspace = true

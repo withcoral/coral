@@ -26,6 +26,7 @@ pub(super) fn run_error(error: coral_run::Error) -> Status {
         | coral_run::Error::ProgramRuntimeUnavailable(_)
         | coral_run::Error::ProgramWorkerStopped
         | coral_run::Error::Clock(_)
+        | coral_run::Error::IdentifierIssuance(_)
         | coral_run::Error::ProgramValueTooLarge
         | coral_run::Error::InvalidProgramValue
         | coral_run::Error::ProgramValueJson(_)

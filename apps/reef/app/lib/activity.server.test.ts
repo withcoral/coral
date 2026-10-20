@@ -1397,6 +1397,42 @@ describe('hierarchical activity through the private server interface', () => {
     expect(other).toMatchObject({ detail: null, selectedRow: null, unavailable: true })
     expect(JSON.stringify(other)).not.toContain('private@example.com')
   })
+  // A Run identifier is four or five words, or the UUID of a Run from before
+  // Coral named Runs with words. The stable link accepts both shapes.
+  it.each([
+    'height-word-database-library',
+    'small-title-work-image-power',
+    '00000000-0000-4000-8000-000000000099',
+  ])('asks Coral about the Run named %s', async (id) => {
+    const { api, calls } = coral(list(), runDetail())
+    await loadRunActivity(request({ record: task, tree: '1' }), api, {
+      workspace: workspace.split('/')[1],
+      run: id,
+    })
+    const asked = calls.some((call) =>
+      JSON.stringify(call.input, (_key, value: unknown) =>
+        typeof value === 'bigint' ? value.toString() : value,
+      ).includes(id),
+    )
+    expect(asked).toBe(true)
+  })
+  it.each([
+    'height-word-database',
+    'height-word-database-library-power-title',
+    'Height-word-database-library',
+    'height-word-database-librar1',
+    '00000000-0000-4000-8000-00000000009',
+    '../runs/height-word-database-library',
+  ])('rejects the Run name %s before asking Coral', async (id) => {
+    const { api, calls } = coral(list(), runDetail())
+    expect(() =>
+      loadRunActivity(request({ record: task, tree: '1' }), api, {
+        workspace: workspace.split('/')[1],
+        run: id,
+      }),
+    ).toThrow(expect.objectContaining({ status: 404 }))
+    expect(calls).toEqual([])
+  })
   it('reveals an authorized Agent Run from its stable link in Agent history, not personal history', async () => {
     const { api } = coral(
       list({ agentRun: true, neighbors: true }),

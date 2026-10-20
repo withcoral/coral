@@ -1145,13 +1145,19 @@ export async function loadActivity(
   return page
 }
 
+// A Run identifier: four or five lowercase words joined by hyphens, or the
+// canonical UUID of a Run from before Coral named Runs with words. The same
+// pattern as `SCHEMA_PATTERN` in `crates/coral-identifier`.
+const RUN_IDENTIFIER =
+  /^([a-z]+(-[a-z]+){3,4}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/
+
 export function loadRunActivity(
   request: Request,
   api: ActivityApi,
   params: { workspace: string; run: string },
 ) {
   const workspace = workspaceName(params.workspace)
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(params.run))
+  if (!RUN_IDENTIFIER.test(params.run))
     throw new Response('Not found', { status: 404, headers: privateHeaders })
   return loadActivity(request, api, {
     scope: { workspace },
