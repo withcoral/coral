@@ -135,3 +135,77 @@ async fn a_run_is_not_found_through_another_workspace_the_caller_can_access() {
         ApprovalState::Pending
     );
 }
+
+/// A Run identifier is four words, so another Principal can guess or learn it.
+/// A Workspace Owner in the Run's own Workspace who addresses another User's
+/// Run gets exactly the answer an identifier no Run has gets, on every read and
+/// command, and the Run is unchanged: the identifier grants no authority.
+#[tokio::test]
+async fn a_known_run_identifier_answers_like_an_absent_one_for_another_principal() {
+    let held = HeldApproval::new("user:run-author").await;
+    let (runs, operation, run) = (&held.fixture.runs, &held.operation, &held.run);
+    let workspace = &operation.workspace_id;
+    let guesser = AuthenticatedPrincipal::user(
+        held.fixture
+            .workspace_user(
+                workspace,
+                &operation.user,
+                "user:guesser",
+                WorkspaceRole::Owner,
+            )
+            .await,
+    );
+    let absent = crate::RunId::parse("height-word-database-library").unwrap();
+    for (case, id) in [("another User's Run", run), ("an absent Run", &absent)] {
+        let not_found = |read: &str, result: Result<(), Error>| {
+            assert!(
+                matches!(result, Err(Error::RunNotFound)),
+                "{case}, {read}: {result:?}"
+            );
+        };
+        not_found(
+            "observe",
+            runs.observe(&guesser, workspace, id, &immediate(None, 100))
+                .await
+                .map(drop),
+        );
+        not_found(
+            "inspect_run",
+            runs.inspect_run(&guesser, workspace, id, &crate::RunInspection::default())
+                .await
+                .map(drop),
+        );
+        not_found(
+            "inspect_event",
+            runs.inspect_event(&guesser, workspace, id, 1)
+                .await
+                .map(drop),
+        );
+        not_found(
+            "activity_entries",
+            runs.activity_entries(&guesser, workspace, id, &RunEntryWindow::Start, 10, None)
+                .await
+                .map(drop),
+        );
+        not_found(
+            "cancel",
+            runs.cancel(&guesser, workspace, id, &immediate(None, 100))
+                .await
+                .map(drop),
+        );
+        assert!(
+            runs.action_prompts(&guesser, workspace, id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "{case}: no prompt is offered"
+        );
+    }
+    assert_eq!(
+        runs.observe(&operation.principal, workspace, run, &immediate(None, 100))
+            .await
+            .unwrap(),
+        held.waiting,
+        "the Run is unchanged"
+    );
+}

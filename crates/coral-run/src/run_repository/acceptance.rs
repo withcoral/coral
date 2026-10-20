@@ -3,7 +3,7 @@
 use coral_db::Transaction;
 use coral_functions::SavedFunctionSelection;
 use coral_workspace::WorkspaceId;
-use sea_query::{Expr, ExprTrait as _, Iden, Query};
+use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query};
 use sqlx::FromRow;
 
 use super::events::{NewEvent, insert_events};
@@ -14,6 +14,9 @@ use crate::{
     COMPILATION_TIMEOUT, EMITTED_JAVASCRIPT_MAX_BYTES, Error, PROGRAM_SOURCE_MAX_BYTES,
     ProgramSource, RunId, RunState, SOURCE_MAP_MAX_BYTES,
 };
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Iden)]
 enum ProgramRunPackages {
@@ -59,13 +62,16 @@ impl PackageRow {
     }
 }
 
+/// Inserts the Run row and its package. `false` means a Run with this
+/// identifier already exists and nothing was written: the caller draws a new
+/// identifier.
 pub(crate) async fn insert_acceptance(
     transaction: &mut Transaction<'_>,
     run: &AcceptedRun,
     source: &ProgramSource,
     package: &ProgramPackage,
     linked: &[SavedFunctionSelection],
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let program_source_max_bytes = stored_usize(PROGRAM_SOURCE_MAX_BYTES)?;
     let emitted_javascript_max_bytes = stored_usize(EMITTED_JAVASCRIPT_MAX_BYTES)?;
     let source_map_max_bytes = stored_usize(SOURCE_MAP_MAX_BYTES)?;
@@ -74,46 +80,9 @@ pub(crate) async fn insert_acceptance(
         i64::try_from(COMPILATION_TIMEOUT.as_millis()).map_err(|_error| {
             Error::CorruptData("compilation timeout exceeds durable range".to_string())
         })?;
-    let statement = Query::insert()
-        .into_table(ProgramRunRecords::Table)
-        .columns([
-            ProgramRunRecords::Id,
-            ProgramRunRecords::WorkspaceId,
-            ProgramRunRecords::PrincipalId,
-            ProgramRunRecords::PrincipalKind,
-            ProgramRunRecords::State,
-            ProgramRunRecords::AcceptedAtUnixNanos,
-            ProgramRunRecords::DeadlineAtUnixNanos,
-            ProgramRunRecords::ShutdownGraceNanos,
-            ProgramRunRecords::WorkerClaimId,
-            ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
-            ProgramRunRecords::ValueLimitsJson,
-            ProgramRunRecords::NextEventSequence,
-            ProgramRunRecords::AccumulatedOutputBytes,
-            ProgramRunRecords::ChunkSequence,
-        ])
-        .values_panic([
-            Expr::val(run.id.to_string()),
-            Expr::val(run.workspace_id.to_string()),
-            Expr::val(run.principal.id().as_str()),
-            Expr::val(run.principal.kind().as_storage_str()),
-            Expr::val(RunState::Running.as_storage_str()),
-            Expr::val(run.accepted_at_unix_nanos),
-            Expr::val(run.deadline_at_unix_nanos),
-            Expr::val(run.shutdown_grace_nanos),
-            // The Run Owner's worker claim: written with acceptance, so no
-            // running Run is ever unclaimed, and renewed by every chunk.
-            Expr::val(run.claim_id.as_str()),
-            Expr::val(run.worker_claim_expires_at_unix_nanos),
-            Expr::val(serde_json::to_string(&run.value_limits).map_err(Error::ProgramValueJson)?),
-            // The previous release's Event counter: this release advances it per
-            // chunk for that release's writers and never reads it.
-            Expr::val(2_i64),
-            Expr::val(0_i64),
-            Expr::val(0_i64),
-        ])
-        .to_owned();
-    transaction.execute(statement).await?;
+    if !insert_record(transaction, run).await? {
+        return Ok(false);
+    }
 
     let statement = Query::insert()
         .into_table(ProgramRunPackages::Table)
@@ -167,7 +136,62 @@ pub(crate) async fn insert_acceptance(
             occurred_at_unix_nanos: run.accepted_at_unix_nanos,
         }],
     )
-    .await
+    .await?;
+    Ok(true)
+}
+
+/// Inserts the Run row. `false` means a Run with this identifier already
+/// exists and nothing was written. The conflict target is the primary key, so
+/// a Postgres transaction stays usable after it.
+async fn insert_record(
+    transaction: &mut Transaction<'_>,
+    run: &AcceptedRun,
+) -> Result<bool, Error> {
+    let statement = Query::insert()
+        .into_table(ProgramRunRecords::Table)
+        .columns([
+            ProgramRunRecords::Id,
+            ProgramRunRecords::WorkspaceId,
+            ProgramRunRecords::PrincipalId,
+            ProgramRunRecords::PrincipalKind,
+            ProgramRunRecords::State,
+            ProgramRunRecords::AcceptedAtUnixNanos,
+            ProgramRunRecords::DeadlineAtUnixNanos,
+            ProgramRunRecords::ShutdownGraceNanos,
+            ProgramRunRecords::WorkerClaimId,
+            ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
+            ProgramRunRecords::ValueLimitsJson,
+            ProgramRunRecords::NextEventSequence,
+            ProgramRunRecords::AccumulatedOutputBytes,
+            ProgramRunRecords::ChunkSequence,
+        ])
+        .values_panic([
+            Expr::val(run.id.to_string()),
+            Expr::val(run.workspace_id.to_string()),
+            Expr::val(run.principal.id().as_str()),
+            Expr::val(run.principal.kind().as_storage_str()),
+            Expr::val(RunState::Running.as_storage_str()),
+            Expr::val(run.accepted_at_unix_nanos),
+            Expr::val(run.deadline_at_unix_nanos),
+            Expr::val(run.shutdown_grace_nanos),
+            // The Run Owner's worker claim: written with acceptance, so no
+            // running Run is ever unclaimed, and renewed by every chunk.
+            Expr::val(run.claim_id.as_str()),
+            Expr::val(run.worker_claim_expires_at_unix_nanos),
+            Expr::val(serde_json::to_string(&run.value_limits).map_err(Error::ProgramValueJson)?),
+            // The previous release's Event counter: this release advances it per
+            // chunk for that release's writers and never reads it.
+            Expr::val(2_i64),
+            Expr::val(0_i64),
+            Expr::val(0_i64),
+        ])
+        .on_conflict(
+            OnConflict::column(ProgramRunRecords::Id)
+                .do_nothing()
+                .to_owned(),
+        )
+        .to_owned();
+    Ok(transaction.execute(statement).await? == 1)
 }
 
 pub(crate) async fn load_package_in_transaction(

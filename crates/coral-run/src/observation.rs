@@ -143,7 +143,7 @@ async fn read_update(
         run.id.clone(),
         run.state,
         events,
-        RunCursor::new(run.id, next_sequence, required_actions::revision(&actions)),
+        RunCursor::new(&run.id, next_sequence, required_actions::revision(&actions)),
         has_more,
         run.terminal_outcome,
         run.value_limits,
@@ -155,7 +155,7 @@ async fn read_update(
 pub(crate) fn validate_cursor(run_id: &RunId, observation: &RunObservation) -> Result<(), Error> {
     if observation
         .cursor()
-        .is_some_and(|cursor| cursor.run_id() != run_id)
+        .is_some_and(|cursor| !cursor.belongs_to(run_id))
     {
         return Err(Error::InvalidInput("Run cursor is invalid".to_string()));
     }

@@ -28,6 +28,9 @@ pub enum Error {
     /// The host cannot obtain durable time evidence.
     #[error("Task clock is unavailable")]
     Clock,
+    /// Coral could not issue an unused Task identifier.
+    #[error("Task identifier could not be issued: {0}")]
+    IdentifierIssuance(String),
     /// The Workspace is absent or inaccessible to this Principal.
     #[error("Workspace was not found")]
     WorkspaceNotFound,
