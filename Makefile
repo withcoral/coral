@@ -1,6 +1,6 @@
 .PHONY: install docker-build reef-docker-build docker-test rust-checks
 .PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-tests load-test
-.PHONY: license-check lint-proto reef-image-checks
+.PHONY: license-check lint-migrations lint-proto reef-image-checks
 
 # Images build and test with Docker or Podman.
 CONTAINER_ENGINE ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
@@ -59,7 +59,7 @@ docker-test: docker-build reef-docker-build
 	CONTAINER_ENGINE="$(CONTAINER_ENGINE)" CORAL_IMAGE="$(DOCKER_IMAGE)" \
 	  CORAL_WEB_IMAGE="$(CORAL_WEB_DOCKER_IMAGE)" docker/image-test.sh
 
-rust-checks:
+rust-checks: lint-migrations
 	scripts/check-migrations.sh
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -129,6 +129,18 @@ load-test:
 license-check:
 	cargo deny --version >/dev/null 2>&1 || cargo install --locked cargo-deny
 	cargo deny check licenses
+
+# ----------------------------------------------------------------------------
+# Postgres migration linting
+# ----------------------------------------------------------------------------
+# Lints the Postgres-only migrations with Squawk. Settings live in
+# .squawk.toml. Installs `squawk-cli` from npm, which ships a prebuilt binary.
+#
+#   make lint-migrations
+
+lint-migrations:
+	squawk --version >/dev/null 2>&1 || npm install --global squawk-cli
+	squawk crates/coral-db/migrations/postgres/*.sql
 
 # ----------------------------------------------------------------------------
 # Protobuf API linting

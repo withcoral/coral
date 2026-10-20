@@ -1,0 +1,18 @@
+# Squawk settings for `make lint-migrations`.
+
+# The Postgres version CI and scripts/postgres.ts run.
+pg_version = "17.0"
+
+# SQLx runs each migration in its own transaction.
+assume_in_transaction = true
+
+excluded_rules = [
+  # A CHECK constraint widens by dropping it and adding the wider one
+  # NOT VALID in the same ALTER TABLE.
+  "ban-drop-constraint",
+  # Asks a `-- no-transaction` migration for IF NOT EXISTS, which AGENTS.md
+  # bans: it hides unexpected schema state.
+  "prefer-robust-stmts",
+  # Migrations run at boot. A timeout turns a slow boot into a failed one.
+  "require-statement-timeout",
+]

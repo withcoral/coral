@@ -87,6 +87,11 @@ jobs:
       - uses: taiki-e/install-action@5f57d6cb7cd20b14a8a27f522884c4bc8a187458 # v2.75.19
         with:
           tool: nextest
+      # make rust-checks installs Squawk from npm.
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: apps/reef/.node-version
+          package-manager-cache: false
       - run: make rust-checks
 
   postgres:
