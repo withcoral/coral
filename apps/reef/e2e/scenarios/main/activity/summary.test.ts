@@ -116,13 +116,14 @@ test('The Overview summary counts not allowed calls, reads blocked and answered 
       expect(new URL(page.url()).pathname).toBe(overview)
     })
 
-    await step('Choosing 24 hours puts it in the URL and shows its totals', async () => {
+    // Every call falls inside both periods; the loader's tests own which period Coral reads.
+    await step('Choosing 24 hours puts it in the URL and finishes loading', async () => {
       const period = summary.getByRole('radiogroup', { name: 'Period', exact: true })
       await period.getByRole('radio', { name: '24 hours', exact: true }).click()
       await page.waitForURL((url) => url.searchParams.get('days') === '1')
       await period.getByRole('radio', { name: '24 hours', exact: true, checked: true }).waitFor()
-      await expect.poll(() => summary.getAttribute('aria-busy')).toBe('false')
-      await summary.getByText('33% answered', { exact: true }).waitFor()
+      await summary.getByRole('status').waitFor({ state: 'detached' })
+      expect(await summary.getAttribute('aria-busy')).toBe('false')
     })
   })
 })
