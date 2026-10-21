@@ -4,7 +4,7 @@
 
 use std::future::Future;
 use std::sync::{Arc, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use coral_catalog::ProviderGenerationId;
 use coral_db::{Database, Transaction};
@@ -23,8 +23,13 @@ mod reconcile;
 
 /// How long one index write may run before it is rolled back and logged as
 /// failed. The limit frees the mutex: a write stalled on a database lock would
-/// otherwise hold back every later write in the process.
-const WRITE_LIMIT: Duration = Duration::from_mins(1);
+/// otherwise hold back every later write in the process. An entry's write
+/// starts its limit once it holds its Workspace's lock.
+const WRITE_LIMIT: Duration = Duration::from_mins(2);
+
+/// How long an entry's write may wait to begin and to take its Workspace's
+/// lock, behind another writer, before it is rolled back and logged as failed.
+const WRITER_WAIT_LIMIT: Duration = Duration::from_mins(1);
 
 /// Universal Search's write side.
 ///
@@ -41,6 +46,7 @@ pub struct SearchIndex {
     database: Arc<Database>,
     writes: Arc<Mutex<()>>,
     write_limit: Duration,
+    writer_wait_limit: Duration,
     reconcile_interval: Duration,
     /// The last notified write; the next one waits for it.
     last_write: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
@@ -64,6 +70,7 @@ impl SearchIndex {
             database,
             writes: Arc::new(Mutex::new(())),
             write_limit: WRITE_LIMIT,
+            writer_wait_limit: WRITER_WAIT_LIMIT,
             reconcile_interval,
             last_write: Arc::new(std::sync::Mutex::new(None)),
             in_flight: Arc::new(watch::Sender::new(0)),
@@ -298,13 +305,15 @@ impl SearchIndex {
         ));
     }
 
-    /// Replaces the default one-minute limit on each index write. A test can
-    /// shorten it rather than wait out the real one; a search-quality eval can
-    /// lengthen it to index a Provider too large for the default.
+    /// Replaces both default limits of each index write, the two-minute
+    /// write and the one-minute wait for the writer, with `limit`. A test can
+    /// shorten them rather than wait out the real ones; a search-quality eval
+    /// can lengthen them to index a Provider too large for the default.
     #[cfg(any(test, feature = "test-fixtures"))]
     #[must_use]
     pub const fn with_write_limit(mut self, limit: Duration) -> Self {
         self.write_limit = limit;
+        self.writer_wait_limit = limit;
         self
     }
 
@@ -397,47 +406,53 @@ impl SearchIndex {
             .map_err(|_elapsed| IndexError::TimedOut(self.write_limit))?
     }
 
-    /// Writes one entry under its Workspace's lock. A write that overruns
-    /// its limit before it holds the lock waited for another writer, so it
-    /// fails as [`IndexError::WriterBusy`], which may pass on a later try.
-    /// A write that overruns after it takes the lock fails as
-    /// [`IndexError::Overran`], which repeats until something changes.
+    /// Writes one entry under its Workspace's lock. The wait to begin and to
+    /// take the lock has a limit of its own, so a write that waited long for
+    /// another writer still has its whole write limit. A write that overruns
+    /// its wait fails as [`IndexError::WriterBusy`], which may pass on a
+    /// later try. A write that overruns after it takes the lock fails as
+    /// [`IndexError::Overran`], which repeats until something changes. A
+    /// write that took the lock logs how long it waited and wrote.
     async fn write<I: EntityIndexer>(
         &self,
         indexer: &I,
         entry: &I::Entry,
     ) -> Result<(), IndexError> {
-        let mut past_lock = false;
-        let written = self
-            .within_limit(async {
-                let mut transaction = self.database.begin().await?;
-                let outcome =
-                    match indexer::lock_workspace(&mut transaction, indexer.workspace_id(entry))
-                        .await
-                    {
-                        Ok(()) => {
-                            past_lock = true;
-                            #[cfg(any(test, feature = "test-fixtures"))]
-                            if let Some(stall) = self.stall_after_lock {
-                                tokio::time::sleep(stall).await;
-                            }
-                            indexer.index(&mut transaction, entry).await
-                        }
-                        Err(error) => Err(error),
-                    };
-                if let Err(error) = outcome {
-                    rollback(transaction).await;
-                    return Err(error);
-                }
-                transaction.commit().await?;
-                Ok(())
-            })
-            .await;
-        match written {
-            Err(IndexError::TimedOut(limit)) if past_lock => Err(IndexError::Overran(limit)),
-            Err(IndexError::TimedOut(limit)) => Err(IndexError::WriterBusy(limit)),
-            written => written,
-        }
+        let workspace_id = indexer.workspace_id(entry);
+        let started = Instant::now();
+        let mut transaction = tokio::time::timeout(self.writer_wait_limit, async {
+            let mut transaction = self.database.begin().await?;
+            if let Err(error) = indexer::lock_workspace(&mut transaction, workspace_id).await {
+                rollback(transaction).await;
+                return Err(error);
+            }
+            Ok(transaction)
+        })
+        .await
+        .map_err(|_elapsed| IndexError::WriterBusy(self.writer_wait_limit))??;
+        let locked = Instant::now();
+        let written = tokio::time::timeout(self.write_limit, async move {
+            #[cfg(any(test, feature = "test-fixtures"))]
+            if let Some(stall) = self.stall_after_lock {
+                tokio::time::sleep(stall).await;
+            }
+            if let Err(error) = indexer.index(&mut transaction, entry).await {
+                rollback(transaction).await;
+                return Err(error);
+            }
+            transaction.commit().await?;
+            Ok(())
+        })
+        .await
+        .unwrap_or_else(|_elapsed| Err(IndexError::Overran(self.write_limit)));
+        tracing::info!(
+            workspace_id = %workspace_id,
+            writer_wait_ms = millis(locked - started),
+            write_ms = millis(locked.elapsed()),
+            succeeded = written.is_ok(),
+            "ended a search index write"
+        );
+        written
     }
 
     async fn erase<I: EntityIndexer>(
@@ -516,6 +531,11 @@ async fn rollback(transaction: Transaction<'_>) {
     if let Err(error) = transaction.rollback().await {
         tracing::error!(error = %error, "failed to roll back a search index write");
     }
+}
+
+/// A duration in whole milliseconds, for a log field.
+fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Counts one spawned write as in flight until dropped, so a write that
