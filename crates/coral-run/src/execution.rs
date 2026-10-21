@@ -14,6 +14,13 @@ const SUSPECT_AFTER_LEASES: u32 = 1;
 /// Interrupted as soon as the database answers.
 const SELF_INTERRUPT_AFTER_LEASES: u32 = 3;
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+/// How long an Approval Request waits for a decision at most; the Run
+/// deadline bounds it further.
+const APPROVAL_WAIT: Duration = Duration::from_mins(15);
+/// The lease of a test that advances its clock to an Approval Request's
+/// deadline: long enough that the jump is not a lost lease.
+#[cfg(test)]
+const TEST_APPROVAL_LEASE: Duration = Duration::from_secs(60);
 /// The backoff between attempts when the database gives no answer: a reread
 /// after an uncertain commit, a recommit, or the Interrupted record. Attempts
 /// end on an answer, never on the clock.
@@ -113,6 +120,9 @@ pub(crate) trait ExecutionObserver: Send + Sync {
     /// The owner's task dequeued one message; a test may panic here.
     fn owner_message_dequeued(&self) {}
 
+    /// The owner armed `timer` to fire after `after_nanos` on the host clock.
+    fn timer_armed(&self, _timer: &crate::owner::Timer, _after_nanos: i64) {}
+
     fn execution_attempt_finished(&self) {}
 }
 
@@ -127,6 +137,7 @@ impl ExecutionObserver for NoopExecutionObserver {}
 pub(crate) struct ExecutionPolicy {
     claim_lease: Duration,
     shutdown_grace: Duration,
+    approval_wait: Duration,
 }
 
 impl ExecutionPolicy {
@@ -134,6 +145,7 @@ impl ExecutionPolicy {
         Self {
             claim_lease: CLAIM_LEASE,
             shutdown_grace: SHUTDOWN_GRACE,
+            approval_wait: APPROVAL_WAIT,
         }
     }
 
@@ -142,6 +154,20 @@ impl ExecutionPolicy {
         Self {
             claim_lease: Duration::from_secs(1),
             shutdown_grace: Duration::from_millis(100),
+            approval_wait: APPROVAL_WAIT,
+        }
+    }
+
+    /// Expires Approval Requests after `approval_wait`, so a test sees the
+    /// owner's timer fire without waiting out the Run, under a lease long
+    /// enough for the test clock to advance to that deadline without
+    /// turning the test into a lost-lease one.
+    #[cfg(test)]
+    pub(crate) const fn testing_with_approval_wait(approval_wait: Duration) -> Self {
+        Self {
+            approval_wait,
+            claim_lease: TEST_APPROVAL_LEASE,
+            ..Self::testing()
         }
     }
 
@@ -178,8 +204,13 @@ impl ExecutionPolicy {
 
     /// How long an idle Run Owner goes without a commit before it renews its
     /// lease with an empty chunk: half a lease.
-    pub(crate) fn idle_tick(self) -> Duration {
-        self.claim_lease / 2
+    pub(crate) fn idle_tick_nanos(self) -> i64 {
+        duration_nanos(self.claim_lease / 2)
+    }
+
+    /// How long an Approval Request waits for a decision at most.
+    pub(crate) fn approval_wait_nanos(self) -> i64 {
+        duration_nanos(self.approval_wait)
     }
 
     /// How long after its last successful commit a Run Owner is suspect.

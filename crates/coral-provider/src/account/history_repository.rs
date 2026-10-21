@@ -2,33 +2,6 @@
 use coral_workspace::PrincipalKind;
 use sea_query::{ColumnRef, Expr, ExprTrait as _, SimpleExpr};
 
-/// Earliest private connection deadline, including retained requests with no waiters.
-/// Caller supplies independently resolved human history authority in the same snapshot.
-/// # Errors
-/// Returns persistence errors without changing request state or retention.
-pub async fn next_connection_deadline(
-    tx: &mut coral_db::Transaction<'_>,
-    authority: &coral_workspace::HistoryAuthority,
-    now: i64,
-) -> Result<Option<i64>, crate::Error> {
-    use super::repository::AccountConnectionRequests as C;
-    use sea_query::{IntoColumnRef as _, Query};
-    let mut query = Query::select()
-        .expr(Expr::col(C::ExpiresAtUnixNanos).min())
-        .from(C::Table)
-        .and_where(Expr::col(C::State).eq("pending"))
-        .and_where(Expr::col(C::ExpiresAtUnixNanos).gt(now))
-        .to_owned();
-    coral_workspace::history_repository::restrict_user_rows(
-        &mut query,
-        authority,
-        (C::Table, C::WorkspaceId).into_column_ref(),
-        (C::Table, C::UserId).into_column_ref(),
-    );
-    let result: Option<(Option<i64>,)> = tx.fetch_optional(query).await?;
-    Ok(result.and_then(|row| row.0))
-}
-
 /// Latest connection or human decline while an exact Invocation waited on a shared request.
 /// Automatic expiry/configuration invalidation can be materialized by inspection;
 /// those failed outcomes qualify through the Invocation's actual transition instead.
@@ -67,13 +40,13 @@ pub fn connection_completion(
     )
 }
 
-/// Deadline of one exact pending connection, for independently authorized Run summaries.
+/// Deadline of one exact pending connection, as recorded, for independently
+/// authorized Run summaries.
 #[must_use]
 pub fn pending_connection_deadline(
     workspace: ColumnRef,
     principal: ColumnRef,
     request: ColumnRef,
-    now: i64,
 ) -> SimpleExpr {
     Expr::SubQuery(
         None,
@@ -82,7 +55,6 @@ pub fn pending_connection_deadline(
                 Expr::col(workspace),
                 Expr::col(principal),
                 Expr::col(request),
-                now,
             ),
         )),
     )
@@ -99,7 +71,6 @@ pub fn has_pending_connection(
     principal: ColumnRef,
     kind: ColumnRef,
     request: ColumnRef,
-    now: i64,
 ) -> SimpleExpr {
     Expr::col(kind)
         .eq(PrincipalKind::User.as_storage_str())
@@ -108,7 +79,6 @@ pub fn has_pending_connection(
                 Expr::col(workspace),
                 Expr::col(principal),
                 Expr::col(request),
-                now,
             ),
         ))
 }

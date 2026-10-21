@@ -1279,14 +1279,12 @@ pub(super) async fn pending_connection_deadline(
     workspace: &WorkspaceId,
     user: &UserId,
     request: ConnectionRequestId,
-    now: i64,
 ) -> Result<Option<i64>, Error> {
     let row: Option<(i64,)> = tx
         .fetch_optional(pending_connection_statement(
             Expr::val(workspace.to_string()),
             Expr::val(user.as_str()),
             Expr::val(request.to_string()),
-            now,
         ))
         .await?;
     Ok(row.map(|(deadline,)| deadline))
@@ -1297,13 +1295,11 @@ pub(super) async fn pending_connection_provider(
     workspace: &WorkspaceId,
     user: &UserId,
     request: ConnectionRequestId,
-    now: i64,
 ) -> Result<Option<ProviderId>, Error> {
     let mut query = pending_connection_statement(
         Expr::val(workspace.to_string()),
         Expr::val(user.as_str()),
         Expr::val(request.to_string()),
-        now,
     );
     query.clear_selects();
     let row: Option<(String,)> = tx
@@ -1317,11 +1313,13 @@ pub(super) async fn pending_connection_provider(
         .transpose()
 }
 
+/// One request's deadline while it is recorded `pending`: a request past
+/// its deadline stays pending until a holder records its expiry, so readers
+/// show the recorded state beside the deadline.
 pub(super) fn pending_connection_statement(
     workspace: sea_query::SimpleExpr,
     user: sea_query::SimpleExpr,
     request: sea_query::SimpleExpr,
-    now: i64,
 ) -> sea_query::SelectStatement {
     Query::select()
         .column(AccountConnectionRequests::ExpiresAtUnixNanos)
@@ -1332,7 +1330,6 @@ pub(super) fn pending_connection_statement(
         .and_where(
             Expr::col(AccountConnectionRequests::State).eq(ConnectionState::Pending.storage()),
         )
-        .and_where(Expr::col(AccountConnectionRequests::ExpiresAtUnixNanos).gt(now))
         .to_owned()
 }
 

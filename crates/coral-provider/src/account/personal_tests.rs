@@ -32,7 +32,7 @@ async fn open_connection_request(
     .unwrap()
     .expect("callable Operation");
     let principal = coral_workspace::AuthenticatedPrincipal::user(user.clone());
-    let ConnectionResolution::Waiting(id) =
+    let ConnectionResolution::Waiting { request: id, .. } =
         resolve_connection_in_transaction(&mut tx, &target, principal.principal(), None, now)
             .await
             .unwrap()
@@ -103,10 +103,11 @@ async fn concurrent_creators_of_one_users_connection_request_share_its_row() {
         .await
         .unwrap()
         .expect("callable Operation");
-    let ConnectionResolution::Waiting(created) =
-        resolve_connection_in_transaction(&mut first, &target, principal.principal(), None, 20)
-            .await
-            .unwrap()
+    let ConnectionResolution::Waiting {
+        request: created, ..
+    } = resolve_connection_in_transaction(&mut first, &target, principal.principal(), None, 20)
+        .await
+        .unwrap()
     else {
         panic!("a User without an Account waits on a connection request")
     };
@@ -141,7 +142,10 @@ async fn concurrent_creators_of_one_users_connection_request_share_its_row() {
         "the second creator waits for the first"
     );
     first.commit().await.unwrap();
-    let ConnectionResolution::Waiting(joined) = second.await.unwrap().unwrap() else {
+    let ConnectionResolution::Waiting {
+        request: joined, ..
+    } = second.await.unwrap().unwrap()
+    else {
         panic!("the second creator waits on a connection request")
     };
     assert_eq!(

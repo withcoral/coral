@@ -115,8 +115,9 @@ impl RunModule {
         }
     }
 
-    /// Recovery's pass over one Run, as the sweep and the deadline task of a
-    /// retired owner run it.
+    /// Recovery's pass over one Run, as the sweep runs it: the one writer of
+    /// a nonterminal Run outside its owner, for a Run whose owner retired
+    /// (slice 9's expired-lease sweep runs it on its own).
     pub(crate) async fn recover_run(
         &self,
         workspace_id: &WorkspaceId,

@@ -99,10 +99,13 @@
 //! answers waiting requests `OwnerLost`. A Run cannot complete while any child
 //! Invocation is nonterminal.
 //! While a Run is nonterminal its owner is the only writer of its row and its
-//! Events, recovery's explicit pass excepted: approval decisions, cancellation
-//! and the deadline reach the owner as requests (see [`owner`]), and such a
-//! request for a nonterminal Run with no owner in this process is answered
-//! `OwnedElsewhere`.
+//! Events, recovery's explicit pass excepted: approval decisions and
+//! cancellation reach the owner as requests, and the Run, Approval Request
+//! and connection-request deadlines are its own timers, applied in mailbox
+//! order with them (see [`owner`]); a request for a nonterminal Run with no
+//! owner in this process is answered `OwnedElsewhere`. Readers show the
+//! recorded state beside a deadline and never derive an expiry or a timeout
+//! from the clock.
 //! Cancellation and deadline intent stop new Program work, request uncatchable V8
 //! termination, and preserve complete child outcomes that beat bounded cleanup.
 //! Recovery revokes a stale started claim before settling its children and Run.
@@ -407,8 +410,12 @@ impl RunModule {
 }
 
 fn duration_until(deadline_at_unix_nanos: i64, now_unix_nanos: i64) -> Duration {
-    let remaining = deadline_at_unix_nanos.saturating_sub(now_unix_nanos);
-    Duration::from_nanos(u64::try_from(remaining).unwrap_or(0))
+    nanos_duration(deadline_at_unix_nanos.saturating_sub(now_unix_nanos))
+}
+
+/// `nanos` as a duration; a negative count is no wait.
+fn nanos_duration(nanos: i64) -> Duration {
+    Duration::from_nanos(u64::try_from(nanos).unwrap_or(0))
 }
 
 #[cfg(test)]

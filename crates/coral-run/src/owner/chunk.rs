@@ -12,7 +12,7 @@ use crate::lifecycle::{RequestedTermination, RunRecord};
 use crate::run_repository::OwnedEvent;
 use crate::{CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, Error};
 
-use super::handle::{DecisionAnswer, Reply, RequestKey, RequestReply};
+use super::handle::{DecisionAnswer, Reply, RequestKey, RequestReply, Timer};
 
 /// Row work items per chunk. Each one queries the database inside the
 /// commit, so this keeps a commit transaction short.
@@ -46,17 +46,25 @@ pub(crate) trait ChunkWork: Send + fmt::Debug {
         None
     }
 
+    /// The deadline this work recorded, once [`Self::run`] returned `Ok`:
+    /// the owner arms its timer once the chunk has landed. `None` for work
+    /// that records none.
+    fn take_recorded_deadline(&mut self) -> Option<(Timer, i64)> {
+        None
+    }
+
     /// Delivers the outcome once the chunk is recorded, or the failure that
     /// lost it before it ran or before it committed.
     fn settle(self: Box<Self>, recorded: Result<(), Error>);
 }
 
 /// One outside request a chunk records: the entity it decides, who waits
-/// for the answer, and what the chunk's work wrote for it once reported.
+/// for the answer (nobody for the owner's own timer), and what the chunk's
+/// work wrote for it once reported.
 #[derive(Debug)]
 pub(crate) struct PendingRequest {
     pub(crate) key: RequestKey,
-    pub(crate) reply: RequestReply,
+    pub(crate) reply: Option<RequestReply>,
     pub(crate) answer: Option<DecisionAnswer>,
 }
 

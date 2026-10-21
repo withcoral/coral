@@ -199,36 +199,33 @@ async fn a_definite_database_rejection_stops_the_owner_without_a_retry() {
     );
 }
 
-/// The deadline task is recovery's trigger once the owner is gone: an owner
-/// whose settle of the interruption it recorded fails retires and leaves
-/// its Run `running`, and the deadline still ends the Run, with no explicit
-/// recovery pass.
+/// An owner whose settle of the interruption it recorded fails retires and
+/// leaves its Run `running` with the termination recorded: no timer of its
+/// own fires after it retired, and recovery's explicit pass settles what it
+/// recorded (the expired-lease sweep of slice 9 runs that pass on its own).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_run_whose_owner_retired_on_a_failed_settle_is_ended_by_its_deadline() {
+async fn a_run_whose_owner_retired_on_a_failed_settle_is_left_to_recovery() {
     let (engine, gates) = BurstEngine::new(vec!["\"one\"".to_string()]);
     let probe = CommitProbe::new();
     let fixture = quiet_fixture(engine.clone(), probe.clone()).await;
     let (workspace_id, principal) = fixture
         .user_scope("user:deadline-after-retire", "Survive the database")
         .await;
-    // The deadline task sleeps this long on the host clock; the owner must
-    // have retired, and the fault be gone, well before it fires.
-    let run_timeout = Duration::from_secs(3);
-    let scheduled = std::time::Instant::now();
-    let accepted = fixture
-        .runs
-        .start(
-            &principal,
-            &workspace_id,
-            crate::RunSubmission::new(
-                crate::ProgramSource::parse("deadline").unwrap(),
-                crate::RunTimeout::from_millis(run_timeout.as_millis().try_into().unwrap())
-                    .unwrap(),
-            ),
-        )
-        .await
-        .expect("accept the Program");
-    let run_id = accepted.run_id().clone();
+    let (workspace_id, principal, run_id) = {
+        let accepted = fixture
+            .runs
+            .start(
+                &principal,
+                &workspace_id,
+                crate::RunSubmission::new(
+                    crate::ProgramSource::parse("deadline").unwrap(),
+                    crate::RunTimeout::from_millis(3_000).unwrap(),
+                ),
+            )
+            .await
+            .expect("accept the Program");
+        (workspace_id, principal, accepted.run_id().clone())
+    };
     wait_until_started(&fixture, &workspace_id, &run_id).await;
     let before = fixture.run_record(&workspace_id, &run_id).await;
     let claim_id = before.execution_claim_id.clone().expect("started Run");
@@ -259,24 +256,18 @@ async fn a_run_whose_owner_retired_on_a_failed_settle_is_ended_by_its_deadline()
         Some(crate::lifecycle::RunTerminationKind::Interrupted)
     );
 
+    // Past the Run deadline the Run is still as the owner left it: its
+    // timers retired with it, and nothing outside an owner writes on the
+    // clock.
     fixture.inject_fault("DROP INDEX reject_run_events").await;
     fixture
         .clock
         .next
         .store(before.deadline_at_unix_nanos + 1, Ordering::SeqCst);
-    assert!(
-        scheduled.elapsed() < run_timeout / 2,
-        "the fault must be gone before the deadline task fires; this host took {:?}",
-        scheduled.elapsed()
-    );
-    wait_until_async_within(run_timeout + Duration::from_secs(3), async || {
-        fixture
-            .run_record(&workspace_id, &run_id)
-            .await
-            .state
-            .is_terminal()
-    })
-    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(fixture.run_record(&workspace_id, &run_id).await, left);
+
+    fixture.runs.recover().await.expect("recovery's pass");
     let terminal = wait_for_terminal(&fixture.runs, &principal, &workspace_id, &run_id).await;
     assert_eq!(
         terminal.state(),

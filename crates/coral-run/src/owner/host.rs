@@ -1,6 +1,9 @@
 //! The task that hosts one Run Owner: it drains the mailbox, calls
 //! [`apply`], and runs the effects, holding the chunk commit, the Program
-//! execution, the terminal write and the settle of a recorded termination.
+//! execution, the terminal write, the settle of a recorded termination and
+//! the timers the owner arms, each a sleep on this process's clock that
+//! fires its [`Message::Timer`] into the mailbox (the idle tick, re-armed by
+//! every commit, is one sleep reset in place and fires into the loop).
 //!
 //! Every write the owner starts ends on an answer, never on the clock. A
 //! chunk commit the database does not answer is resolved by rereading the Run
@@ -15,6 +18,7 @@
 //! the head the owner tracks in memory is the fence, and the owner runs its
 //! writes one at a time.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use tokio::time::Instant;
@@ -28,10 +32,10 @@ use crate::owner::ChunkWork as _;
 use crate::program_output::ProgramOutputWriter;
 use crate::run_repository::{self, Chunk, OwnedEvent};
 use crate::types::AcceptedRun;
-use crate::{Error, RunModule, engine};
+use crate::{Error, RunModule, engine, nanos_duration};
 
 use super::chunk::{ChunkBuild, ChunkItem};
-use super::handle::{CommitRejection, Mailbox, Message, OwnerHandle, OwnerRegistration};
+use super::handle::{CommitRejection, Mailbox, Message, OwnerHandle, OwnerRegistration, Timer};
 use super::state::{Effect, OwnerLimits, OwnerState, apply};
 
 /// The wait between two settle attempts while a dispatch is still in flight
@@ -49,11 +53,6 @@ pub(crate) async fn host(
 ) {
     #[cfg(test)]
     let _attempt = ExecutionAttemptObservation(module.execution_observer.clone());
-    #[cfg(test)]
-    module
-        .execution_observer
-        .owner_starting(&accepted.id, &accepted.claim_id)
-        .await;
     let mut state = OwnerState::new(
         OwnerLimits {
             run_output_bytes: accepted.value_limits.run_output_bytes(),
@@ -61,18 +60,19 @@ pub(crate) async fn host(
             fan_out_invocations: module.fan_out_limit.invocations(),
             deadline_at_unix_nanos: accepted.deadline_at_unix_nanos,
             shutdown_grace_nanos: accepted.shutdown_grace_nanos,
+            idle_tick_nanos: module.execution_policy.idle_tick_nanos(),
             suspect_after_nanos: module.execution_policy.suspect_after_nanos(),
             self_interrupt_after_nanos: module.execution_policy.self_interrupt_after_nanos(),
         },
         accepted.accepted_at_unix_nanos,
     );
-    let idle_tick = module.execution_policy.idle_tick();
-    let idle = tokio::time::sleep(idle_tick);
+    let mut timers = Timers::default();
+    let idle = tokio::time::sleep_until(unarmed());
     tokio::pin!(idle);
     // The shutdown grace of a recorded termination, on this process's clock:
     // set by the first settle attempt, read by every later one.
     let mut settle_deadline: Option<Instant> = None;
-    let mut effects = apply(&mut state, Message::Launch, accepted.accepted_at_unix_nanos);
+    let mut effects = apply(&mut state, Message::Launch, launched_at(&module, &accepted));
     loop {
         let mut retired = false;
         for effect in effects.drain(..) {
@@ -81,10 +81,18 @@ pub(crate) async fn host(
                 Effect::Commit {
                     chunk,
                     output_total,
-                } => {
-                    idle.as_mut().reset(Instant::now() + idle_tick);
-                    spawn_commit(&module, &accepted, &handle, chunk, output_total);
+                } => spawn_commit(&module, &accepted, &handle, chunk, output_total),
+                Effect::ArmTimer { timer, after_nanos } => {
+                    #[cfg(test)]
+                    module.execution_observer.timer_armed(&timer, after_nanos);
+                    if timer == Timer::IdleTick {
+                        idle.as_mut()
+                            .reset(Instant::now() + nanos_duration(after_nanos));
+                    } else {
+                        timers.arm(&handle, timer, after_nanos);
+                    }
                 }
+                Effect::WakeParked => handle.wake_parked(),
                 Effect::Suspect {
                     last_commit_age_nanos,
                 } => tracing::warn!(
@@ -95,15 +103,7 @@ pub(crate) async fn host(
                 ),
                 Effect::Interrupt {
                     last_commit_age_nanos,
-                } => {
-                    tracing::warn!(
-                        run_id = %accepted.id,
-                        last_commit_age_ms = last_commit_age_nanos / 1_000_000,
-                        "Run Owner interrupts its Run: no commit succeeded within three leases"
-                    );
-                    handle.stop().request();
-                    spawn_interruption(&module, &accepted, &handle);
-                }
+                } => interrupt(&module, &accepted, &handle, last_commit_age_nanos),
                 Effect::Settle { shutdown, again } => {
                     let deadline =
                         *settle_deadline.get_or_insert_with(|| grace_deadline(&module, &shutdown));
@@ -115,13 +115,17 @@ pub(crate) async fn host(
         if retired {
             break;
         }
+        // The handle outlives the loop, so the mailbox never closes first.
         let message = tokio::select! {
             Some(message) = mailbox.recv() => message,
             () = &mut idle => {
-                idle.as_mut().reset(Instant::now() + idle_tick);
-                Message::IdleTick
+                idle.as_mut().reset(unarmed());
+                Message::Timer(Timer::IdleTick)
             }
         };
+        if let Message::Timer(timer) = &message {
+            timers.fired(timer);
+        }
         #[cfg(test)]
         module.execution_observer.owner_message_dequeued();
         // A clock that fails is an operational failure like a failed commit:
@@ -148,12 +152,78 @@ pub(crate) async fn host(
         }
         effects.extend(apply(&mut state, Message::Drained, now));
     }
+    drop(timers);
     drop(registration);
 }
 
-/// Runs every effect but the commit, the settle, the interruption and the
-/// retirement, which the loop owns. A write retried past the owner's
-/// retirement answers a mailbox nobody reads.
+/// The owner gives its Run up: the Program and its dispatches stop, and the
+/// Interrupted chunk is written until the database answers.
+fn interrupt(
+    module: &RunModule,
+    accepted: &AcceptedRun,
+    handle: &OwnerHandle,
+    last_commit_age_nanos: i64,
+) {
+    tracing::warn!(
+        run_id = %accepted.id,
+        last_commit_age_ms = last_commit_age_nanos / 1_000_000,
+        "Run Owner interrupts its Run: no commit succeeded within three leases"
+    );
+    handle.stop().request();
+    spawn_interruption(module, accepted, handle);
+}
+
+/// An instant the idle tick's sleep never reaches on its own: it is reset
+/// to the next tick by the owner's `ArmTimer`.
+fn unarmed() -> Instant {
+    Instant::now() + Duration::from_hours(24 * 365 * 30)
+}
+
+/// The clock sample the launch is applied at, like every message, so the
+/// Run deadline is armed for the rest of the Run from now, not from
+/// acceptance; a clock that fails reads as acceptance.
+fn launched_at(module: &RunModule, accepted: &AcceptedRun) -> i64 {
+    module.now().map_or(accepted.accepted_at_unix_nanos, |now| {
+        now.max(accepted.accepted_at_unix_nanos)
+    })
+}
+
+/// The timers the owner armed, one sleep each on this process's clock,
+/// except the idle tick, which the loop keeps in place. Arming a timer
+/// again replaces its sleep; a timer that fired is forgotten; retiring the
+/// owner drops them all.
+#[derive(Default)]
+struct Timers(HashMap<Timer, tokio::task::JoinHandle<()>>);
+
+impl Timers {
+    fn arm(&mut self, handle: &OwnerHandle, timer: Timer, after_nanos: i64) {
+        let fire = handle.clone();
+        let fired = timer.clone();
+        let sleep = tokio::spawn(async move {
+            tokio::time::sleep(nanos_duration(after_nanos)).await;
+            fire.send(Message::Timer(fired));
+        });
+        if let Some(replaced) = self.0.insert(timer, sleep) {
+            replaced.abort();
+        }
+    }
+
+    fn fired(&mut self, timer: &Timer) {
+        self.0.remove(timer);
+    }
+}
+
+impl Drop for Timers {
+    fn drop(&mut self) {
+        for sleep in self.0.values() {
+            sleep.abort();
+        }
+    }
+}
+
+/// Runs every effect but the commit, the settle, the interruption, the
+/// timers and the retirement, which the loop owns. A write retried past the
+/// owner's retirement answers a mailbox nobody reads.
 fn run_effect(
     module: &RunModule,
     accepted: &AcceptedRun,
@@ -176,6 +246,11 @@ fn run_effect(
             let actor = actor.clone();
             let handle = handle.clone();
             tokio::spawn(async move {
+                #[cfg(test)]
+                module
+                    .execution_observer
+                    .owner_starting(&accepted.id, &accepted.claim_id)
+                    .await;
                 let started = until_answered(
                     &accepted.id,
                     "execution start",
@@ -196,6 +271,7 @@ fn run_effect(
                 module.workspaces.clone(),
                 actor.clone(),
                 accepted,
+                module.execution_policy.approval_wait_nanos(),
                 handle.clone(),
                 module.upstream.clone(),
                 module.clock.clone(),
@@ -223,16 +299,6 @@ fn run_effect(
             });
         }
         Effect::TerminateProgram => handle.stop().request(),
-        Effect::GraceTimer { grace_nanos } => {
-            let handle = handle.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_nanos(
-                    u64::try_from(grace_nanos).unwrap_or(0),
-                ))
-                .await;
-                handle.send(Message::GraceExpired);
-            });
-        }
         Effect::Abandon(work, error) => work.settle(Err(error)),
         Effect::CompleteExecution { completion, intent } => {
             let module = module.clone();
@@ -253,10 +319,12 @@ fn run_effect(
         | Effect::Settle { .. }
         | Effect::Suspect { .. }
         | Effect::Interrupt { .. }
+        | Effect::ArmTimer { .. }
+        | Effect::WakeParked
         | Effect::Retire => {
             debug_assert!(
                 false,
-                "the host loop runs commits, liveness transitions and retirement itself"
+                "the host loop runs commits, liveness transitions, timers and retirement itself"
             );
         }
     }
@@ -464,10 +532,16 @@ async fn commit_until_answered(
     }
     if outcome.is_ok() {
         for item in &mut items {
-            if let ChunkItem::Work(work) = item
-                && let Some((key, answer)) = work.take_recorded_request()
-            {
-                handle.send(Message::RequestRecorded { key, answer });
+            if let ChunkItem::Work(work) = item {
+                if let Some((timer, at_unix_nanos)) = work.take_recorded_deadline() {
+                    handle.send(Message::DeadlineRecorded {
+                        timer,
+                        at_unix_nanos,
+                    });
+                }
+                if let Some((key, answer)) = work.take_recorded_request() {
+                    handle.send(Message::RequestRecorded { key, answer });
+                }
             }
         }
     }

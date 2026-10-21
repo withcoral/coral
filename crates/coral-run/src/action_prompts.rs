@@ -108,7 +108,6 @@ impl RunModule {
                         workspace_id,
                         actor.principal(),
                         id,
-                        now,
                     )
                     .await?
                     .map(|provider| format!("/workspaces/{workspace_id}/accounts/{provider}"))

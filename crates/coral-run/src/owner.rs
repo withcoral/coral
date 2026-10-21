@@ -6,11 +6,14 @@
 //! one [`handle::Message`] to [`state::Effect`]s, with no I/O: it decides the
 //! Run Output Budget against the exact in-memory total, the Applied cap, how
 //! Events and row work fill chunks, the outside requests (a decision on an
-//! Approval Request, a cancellation, the deadline), and what a lost commit
-//! means. The hosting task in [`host`] drains the mailbox in arrival order,
-//! calls `apply`, and runs the effects: it holds the chunk commit, the
-//! Program execution, the terminal write and the settle of a recorded
-//! termination, one write at a time.
+//! Approval Request, a cancellation), the timers it arms (the Run deadline,
+//! each Approval Request's and connection request's deadline, the idle tick,
+//! the shutdown grace), and what a lost commit means. The hosting task in
+//! [`host`] drains the mailbox in arrival order, calls `apply`, and runs the
+//! effects: it holds the chunk commit, the Program execution, the terminal
+//! write, the settle of a recorded termination and the timers, one write at
+//! a time. A timer fires back into the mailbox, so a passed deadline is
+//! applied in order with the cancel or the decision that races it.
 //!
 //! Row work that must join a chunk (an Invocation's admission, its held
 //! rechecks, the Dispatch Fence, its completion, a decision) implements
@@ -41,7 +44,7 @@ pub(crate) use chunk::{CHUNK_WORK_CAP, ChunkBuildView, FENCE_BATCH_CAP};
 #[cfg(test)]
 pub(crate) use handle::{CommitRejection, Message, Reply};
 pub(crate) use handle::{
-    DecisionAnswer, DecisionRequest, OwnerHandle, Owners, RequestKey, StartedExecution,
+    DecisionAnswer, DecisionRequest, OwnerHandle, Owners, RequestKey, StartedExecution, Timer,
 };
 pub(crate) use host::host;
 #[cfg(test)]

@@ -1,6 +1,6 @@
 //! One Run's execution under its Run Owner: the owner's first chunk (the
-//! execution-start mark under the claim acceptance wrote), the deadline task,
-//! and the terminal write once the Program has ended.
+//! execution-start mark under the claim acceptance wrote) and the terminal
+//! write once the Program has ended.
 //!
 //! The owner's own writes outside its chunk commits (the start mark and the
 //! terminal write here, the Interrupted record and the settle beside them)
@@ -18,20 +18,17 @@ use crate::termination::ShutdownAction;
 use crate::types::AcceptedRun;
 use crate::{
     Error, FinalValue, RunFailure, RunFailureCode, RunModule, RunState, RunTerminalOutcome,
-    duration_until, invocation_repository, run_repository,
+    invocation_repository, run_repository,
 };
 
 impl RunModule {
-    /// Creates the Run Owner for a durably accepted Run and the task that
-    /// records its deadline. The owner is registered before its task starts,
-    /// so a stop that arrives first still finds it.
+    /// Creates the Run Owner for a durably accepted Run. The owner is
+    /// registered before its task starts, so a stop that arrives first still
+    /// finds it; the Run deadline is the owner's own timer.
     pub(crate) fn schedule_execution(&self, run: AcceptedRun, actor: AuthenticatedPrincipal) {
         let (handle, mailbox) = OwnerHandle::new(run.id.clone(), run.claim_id.clone());
         let registration = self.owners.register(handle.clone());
         let supervised = run.clone();
-        let deadline_at_unix_nanos = run.deadline_at_unix_nanos;
-        let accepted_at_unix_nanos = run.accepted_at_unix_nanos;
-        let (workspace_id, run_id) = (run.workspace_id.clone(), run.id.clone());
         let owner_task = tokio::spawn(owner::host(
             self.clone(),
             run,
@@ -46,29 +43,6 @@ impl RunModule {
                 supervisor
                     .recover_from_owner_failure(&supervised, &ended)
                     .await;
-            }
-        });
-        // The deadline reaches the owner through its mailbox: the owner
-        // applies the timeout as it applies a cancellation. Once the owner
-        // retired, recovery's explicit pass ends a Run it left running past
-        // its deadline (an owner that retired on a failed write); a Run the
-        // owner ended is nothing to recover.
-        let deadline_module = self.clone();
-        let deadline_owner = handle;
-        let _deadline_task = tokio::spawn(async move {
-            let now = deadline_module
-                .now()
-                .unwrap_or(accepted_at_unix_nanos)
-                .max(accepted_at_unix_nanos);
-            tokio::time::sleep(duration_until(deadline_at_unix_nanos, now)).await;
-            deadline_owner.deadline();
-            deadline_owner.wait_stopped().await;
-            if let Err(error) = deadline_module.recover_run(&workspace_id, &run_id).await {
-                tracing::warn!(
-                    run_id = %run_id,
-                    ?error,
-                    "recovery after the Run deadline failed; the next recovery pass retries"
-                );
             }
         });
     }

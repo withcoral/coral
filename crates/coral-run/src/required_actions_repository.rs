@@ -48,7 +48,7 @@ fn candidates(now: i64) -> SelectStatement {
             JoinType::LeftJoin,
             Alias::new("invocation_approvals"),
             Alias::new("a"),
-            crate::approval_repository::pending_invocation(now),
+            crate::approval_repository::pending_invocation(),
         )
         .expr_as(col("r", "workspace_id"), Alias::new("workspace"))
         .expr_as(col("r", "id"), Alias::new("run"))
@@ -88,7 +88,6 @@ fn candidates(now: i64) -> SelectStatement {
                     column("i", "workspace_id"),
                     column("r", "principal_id"),
                     column("i", "account_connection_request_id"),
-                    now,
                 ),
             )
             .finally(Expr::val(Option::<i64>::None)),
@@ -138,26 +137,27 @@ fn authorized_candidates(
     candidates
 }
 
-/// Earliest current action expiry, including requests outside loaded pages.
-/// Scheduling evidence only: reads do not settle requests or renew retention.
-pub(crate) async fn next_deadline(
+/// Earliest expiry of the invoking authority behind a current action,
+/// including requests outside loaded pages: the one time-dependent
+/// visibility of the queue, since a Run's or a request's deadline changes
+/// nothing a reader shows until the Run Owner records it. Scheduling
+/// evidence only: reads do not settle requests or renew retention.
+pub(crate) async fn next_authority_deadline(
     tx: &mut Transaction<'_>,
     authority: &coral_workspace::HistoryAuthority,
     now: i64,
 ) -> Result<Option<i64>, Error> {
     let candidates = authorized_candidates(authority, now);
-    let (run, request, actor): (Option<i64>, Option<i64>, Option<i64>) = tx
+    let (actor,): (Option<i64>,) = tx
         .fetch_optional(
             Query::select()
-                .expr(Expr::col(Alias::new("run_deadline")).min())
-                .expr(Expr::col(Alias::new("request_deadline")).min())
                 .expr(Expr::col(Alias::new("authority_deadline")).min())
                 .from_subquery(requests(&candidates), Alias::new("requests"))
                 .to_owned(),
         )
         .await?
         .ok_or(Error::RunNotFound)?;
-    Ok(run.into_iter().chain(request).chain(actor).min())
+    Ok(actor)
 }
 
 /// Counts identities through the same current-request relation as exact Run summaries.

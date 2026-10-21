@@ -531,6 +531,62 @@ async fn an_ended_request_records_one_terminal_event_and_replays_unchanged() {
     }
 }
 
+/// The owner arms a timer at each connection request's deadline when an
+/// Invocation parks on it, beside the Run deadline's; when it fires, the
+/// parked Invocation rechecks its wait and the held recheck records what
+/// the request became. Nothing outside the owner sleeps until the deadline.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owner_arms_a_timer_at_a_connection_requests_deadline() {
+    let server = MockServer::start().await;
+    let probe = Arc::new(TimerProbe::default());
+    let fixture = TestModules::with_execution_adapters(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        Arc::new(RejectingUpstream),
+        Arc::new(NoopInvocationObserver),
+        probe.clone(),
+    )
+    .await;
+    let operation = fixture
+        .user_operation_at("user:connection-timer", "Connection timer", &server.uri())
+        .await;
+    let (_directory, accounts) = configure_user_caller(&fixture, &operation, &server.uri()).await;
+    let runs = fixture.runs.clone().with_accounts(accounts.clone());
+    let accepted = runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission(
+                "try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }",
+            ),
+        )
+        .await
+        .unwrap();
+    let request = wait_for_connection(&accounts, &operation).await;
+    let timer = crate::owner::Timer::Connection(request.id);
+    wait_until(|| probe.armed(&timer).is_some()).await;
+    let after_nanos = probe.armed(&timer).unwrap();
+    let now = fixture.clock.next.load(Ordering::SeqCst);
+    assert!(
+        (request.expires_at_unix_nanos - now - after_nanos).abs() < 1_000_000,
+        "the timer fires at the request's deadline: {after_nanos} vs {}",
+        request.expires_at_unix_nanos - now
+    );
+    assert!(
+        probe.armed(&crate::owner::Timer::RunDeadline).is_some(),
+        "the Run deadline is the owner's timer too"
+    );
+    let terminal = runs
+        .cancel(
+            &operation.principal,
+            &operation.workspace_id,
+            accepted.run_id(),
+            &immediate(None, 100),
+        )
+        .await
+        .unwrap();
+    assert_eq!(terminal.state(), RunState::Canceled);
+}
+
 /// A declined or expired request binds no later connection: the User still
 /// connects, but the request stays ended.
 #[tokio::test(flavor = "multi_thread")]

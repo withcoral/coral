@@ -291,17 +291,23 @@ pub(crate) async fn populate_summaries(
     Ok(())
 }
 
-pub(crate) fn run_accepts_actions(run: &RunRecord, now: i64) -> bool {
-    !run.state.is_terminal() && run.termination.is_none() && now < run.deadline_at_unix_nanos
+/// Whether the Run still takes human actions, as recorded: running, with no
+/// termination intent. A Run past its deadline keeps its actions until its
+/// owner records the timeout; readers never derive it from the clock.
+pub(crate) fn run_accepts_actions(run: &RunRecord) -> bool {
+    !run.state.is_terminal() && run.termination.is_none()
 }
 
+/// The Run's current actions as recorded, each with its deadline. `now`
+/// dates only the invoking authority, whose expiry is the one time-dependent
+/// visibility here.
 pub(crate) async fn snapshot(
     tx: &mut Transaction<'_>,
     run: &RunRecord,
     observer: &Principal,
     now: i64,
 ) -> Result<Vec<RequiredAction>, Error> {
-    if !run_accepts_actions(run, now)
+    if !run_accepts_actions(run)
         || !crate::history_repository::invoking_authority_current(tx, run, now).await?
     {
         return Ok(Vec::new());
@@ -312,7 +318,7 @@ pub(crate) async fn snapshot(
         PrincipalKind::Agent => RequiredActor::WorkspaceOwner,
     };
     let mut actions = Vec::new();
-    for (id, deadline) in approval::pending_for_run(tx, run, now).await? {
+    for (id, deadline) in approval::pending_for_run(tx, run).await? {
         actions.push(RequiredAction {
             request: RequiredActionRequest::InvocationApproval(id),
             required_actor,
@@ -328,7 +334,6 @@ pub(crate) async fn snapshot(
                     &run.workspace_id,
                     observer,
                     id,
-                    now,
                 )
                 .await?
             {

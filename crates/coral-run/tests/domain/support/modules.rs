@@ -1299,6 +1299,7 @@ pub(crate) fn test_invoker(
         fixture.workspaces.clone(),
         operation.principal.clone(),
         &accepted,
+        fixture.runs.execution_policy.approval_wait_nanos(),
         owner,
         fixture.upstream.clone(),
         fixture.clock.clone(),

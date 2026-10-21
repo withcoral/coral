@@ -475,6 +475,90 @@ async fn queued_deadline_expires_without_starting_javascript() {
     wait_until(|| claim_gate.finished.load(Ordering::SeqCst) == 1).await;
 }
 
+/// A cancel and the Run deadline: the first the owner applies decides the
+/// terminal kind, and the record shows exactly one. The cancel first: the
+/// Run ends Canceled with `cancellation.requested`, and the deadline's
+/// timer, which fires on the host clock later, changes nothing. The
+/// deadline's timer first: the Run ends `TimedOut`, the cancel joins no chunk
+/// and writes no Event, and the requester is answered from the record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_and_the_run_deadline_record_the_first_applied_kind() {
+    for deadline_first in [false, true] {
+        let (engine, _release) = BlockingEngine::new();
+        let fixture = TestModules::new(Arc::new(engine.clone())).await;
+        let (workspace_id, principal) = fixture
+            .user_scope("user:cancel-vs-deadline", "Cancel against the deadline")
+            .await;
+        let accepted = fixture
+            .runs
+            .start(
+                &principal,
+                &workspace_id,
+                RunSubmission::new(
+                    ProgramSource::parse("blocked").expect("Program source"),
+                    RunTimeout::from_millis(300).expect("Run timeout"),
+                ),
+            )
+            .await
+            .expect("accept the Program");
+        let run_id = accepted.run_id().clone();
+        wait_until(|| engine.started.load(Ordering::SeqCst)).await;
+        let claim_id = fixture
+            .run_record(&workspace_id, &run_id)
+            .await
+            .execution_claim_id
+            .expect("started Run");
+        let owner = fixture
+            .runs
+            .owners
+            .find(&run_id, &claim_id)
+            .expect("the owner is live");
+        if deadline_first {
+            // The deadline's timer stops the Program; the clock stays
+            // before the deadline, so only the timer's order decides.
+            wait_until(|| owner.is_stopping()).await;
+        }
+        let terminal = fixture
+            .runs
+            .cancel(&principal, &workspace_id, &run_id, &immediate(None, 100))
+            .await
+            .expect("cancel");
+        let terminal = if terminal.state().is_terminal() {
+            terminal
+        } else {
+            wait_for_terminal(&fixture.runs, &principal, &workspace_id, &run_id).await
+        };
+        let expected = if deadline_first {
+            RunState::TimedOut
+        } else {
+            RunState::Canceled
+        };
+        assert_eq!(
+            terminal.state(),
+            expected,
+            "deadline first: {deadline_first}"
+        );
+        let events = retained_events(&fixture.runs, &principal, &workspace_id, &run_id).await;
+        let ended: Vec<_> = events
+            .iter()
+            .filter(|event| matches!(event.kind(), RunEventKind::Ended { .. }))
+            .collect();
+        assert!(
+            matches!(ended.as_slice(), [ended] if ended.kind() == &RunEventKind::Ended { state: expected }),
+            "exactly one terminal kind: {events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event.kind(), RunEventKind::CancellationRequested { .. }))
+                .count(),
+            usize::from(!deadline_first),
+            "a cancel applied after the timeout writes no Event: {events:?}"
+        );
+        assert_eq!(engine.executions.load(Ordering::SeqCst), 1);
+    }
+}
+
 /// What ends the Run while its Invocation is in flight.
 #[derive(Debug, Clone, Copy)]
 enum Termination {

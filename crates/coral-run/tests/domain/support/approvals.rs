@@ -180,6 +180,16 @@ impl HeldApproval {
         setup.hold(owner).await
     }
 
+    /// Holds a Run whose Approval Request expires `approval_wait` after its
+    /// creation, by the owner's timer.
+    pub(crate) async fn expiring(user_id: &str, approval_wait: Duration) -> Self {
+        let mut setup = ApprovalGatedOperation::new(user_id).await;
+        setup.fixture.runs.execution_policy =
+            crate::execution::ExecutionPolicy::testing_with_approval_wait(approval_wait);
+        let owner = setup.operation.principal.clone();
+        setup.hold(owner).await
+    }
+
     /// Waits up to `wait` for anything newer than the held snapshot.
     pub(crate) fn observe_changes(
         &self,

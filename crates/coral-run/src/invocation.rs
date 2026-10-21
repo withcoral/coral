@@ -28,6 +28,7 @@ use coral_workspace::{AuthenticatedPrincipal, Principal};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
 use tokio::sync::oneshot;
 
+use crate::approval::ApprovalId;
 use crate::engine::Clock;
 use crate::execution::ExecutionStop;
 use crate::fence::{
@@ -36,7 +37,7 @@ use crate::fence::{
 };
 use crate::invocation_lifecycle::{FinishOutcome, InvocationState, UnfinishedInvocation};
 use crate::lifecycle::RunRecord;
-use crate::owner::{ChunkWork, OwnerHandle};
+use crate::owner::{ChunkWork, OwnerHandle, Timer};
 use crate::run_repository::{OwnedEvent, OwnedEventKind};
 use crate::types::AcceptedRun;
 use crate::{
@@ -195,6 +196,9 @@ pub(crate) struct OperationInvoker {
     principal: Principal,
     accepted_at_unix_nanos: i64,
     deadline_at_unix_nanos: i64,
+    /// How long an Approval Request this Run creates waits for a decision
+    /// at most, bounded by the Run deadline.
+    approval_wait_nanos: i64,
     limits: coral_value::ValueLimits,
     owner: OwnerHandle,
     stop: Arc<ExecutionStop>,
@@ -229,6 +233,19 @@ async fn next_change(
     }
 }
 
+/// The owner's next wake-up for a parked connection wait; a wait with none
+/// is never woken this way.
+async fn next_wake(wakes: Option<&mut tokio::sync::watch::Receiver<()>>) {
+    match wakes {
+        // A closed channel (the owner gone) is a wake like any other: the
+        // recheck finds the owner lost.
+        Some(wakes) => {
+            let _closed = wakes.changed().await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
 impl OperationInvoker {
     #[expect(
         clippy::too_many_arguments,
@@ -243,6 +260,7 @@ impl OperationInvoker {
         workspaces: WorkspaceModule,
         actor: AuthenticatedPrincipal,
         accepted: &AcceptedRun,
+        approval_wait_nanos: i64,
         owner: OwnerHandle,
         upstream: Arc<dyn UpstreamSender>,
         clock: Arc<dyn Clock>,
@@ -261,6 +279,7 @@ impl OperationInvoker {
             principal: accepted.principal.clone(),
             accepted_at_unix_nanos: accepted.accepted_at_unix_nanos,
             deadline_at_unix_nanos: accepted.deadline_at_unix_nanos,
+            approval_wait_nanos,
             limits: accepted.value_limits,
             stop: owner.stop(),
             owner,
@@ -712,16 +731,22 @@ impl OperationInvoker {
         // Subscribe before the first check so a commit during it still wakes this wait.
         // A wake-up is only a hint: the held recheck reads everything again.
         let mut changes = self.database.subscribe_changes().ok();
+        // The owner wakes the waits parked on a connection request when the
+        // request's timer fires; a hint like a commit.
+        let mut wakes = self.owner.parked_wakes();
         loop {
             match self.select_credentials(admitted, progress.clone()).await? {
                 SelectionOutcome::Ready(selected) => {
                     *progress = selected;
                     break;
                 }
-                SelectionOutcome::Waiting(selected) => {
+                SelectionOutcome::Waiting {
+                    progress: selected, ..
+                } => {
                     *progress = selected;
                     self.wait_until_changed(
                         &mut changes,
+                        Some(&mut wakes),
                         admitted,
                         progress,
                         PendingWait::Connection,
@@ -740,12 +765,13 @@ impl OperationInvoker {
                     progress.approval = approval;
                     break;
                 }
-                GateOutcome::Waiting => {
+                GateOutcome::Waiting { .. } => {
                     #[cfg(test)]
                     self.observer.approval_waiting().await?;
                     // No transaction or credential material is held while a human decides.
                     self.wait_until_changed(
                         &mut changes,
+                        None,
                         admitted,
                         progress,
                         PendingWait::Approval,
@@ -770,6 +796,7 @@ impl OperationInvoker {
     async fn wait_until_changed(
         &self,
         changes: &mut Option<coral_db::ChangeSubscription>,
+        mut wakes: Option<&mut tokio::sync::watch::Receiver<()>>,
         admitted: &AdmittedInvocation,
         progress: &InvocationProgress,
         wait: PendingWait,
@@ -779,7 +806,8 @@ impl OperationInvoker {
         // A snapshot that disagrees with it still waits before the next held recheck.
         let mut until = self.pending_until(admitted, progress, wait).await;
         loop {
-            self.wait_for_recheck(changes, until).await?;
+            self.wait_for_recheck(changes, wakes.as_deref_mut(), until)
+                .await?;
             if held_at.elapsed() >= WAIT_HELD_RECHECK {
                 return Ok(());
             }
@@ -884,11 +912,14 @@ impl OperationInvoker {
         })
     }
 
-    /// Waits for a committed change, the expiry `until`, the fallback poll, or a
-    /// stop request, at most once per [`WAIT_MIN_RECHECK_GAP`].
+    /// Waits for a committed change, the owner's wake-up (a connection
+    /// request's timer; the approval wait has none), the expiry `until`,
+    /// the fallback poll, or a stop request, at most once per
+    /// [`WAIT_MIN_RECHECK_GAP`].
     async fn wait_for_recheck(
         &self,
         changes: &mut Option<coral_db::ChangeSubscription>,
+        wakes: Option<&mut tokio::sync::watch::Receiver<()>>,
         until: Option<i64>,
     ) -> Result<(), Error> {
         #[cfg(test)]
@@ -903,6 +934,7 @@ impl OperationInvoker {
         tokio::select! {
             () = self.stop.requested() => return Err(Error::ProgramHostTerminated),
             result = next_change(changes) => if result.is_err() { *changes = None },
+            () = next_wake(wakes) => {}
             () = tokio::time::sleep_until(wake) => {}
         }
         // Commits elsewhere wake every waiter. Coalesce bursts into bounded rechecks.
@@ -960,6 +992,7 @@ impl OperationInvoker {
                 admitted: admitted.clone(),
                 progress,
                 reply,
+                deadline: None,
             })
         })
         .await
@@ -1017,7 +1050,10 @@ impl OperationInvoker {
         // though this Invocation ends with a catchable gate failure.
         let selection = selection.map_err(account_error)?;
         match selection {
-            ConnectionResolution::Waiting(request) => {
+            ConnectionResolution::Waiting {
+                request,
+                expires_at_unix_nanos,
+            } => {
                 if progress.connection_request.is_none() {
                     invocation_repository::attach_connection(
                         tx,
@@ -1029,7 +1065,10 @@ impl OperationInvoker {
                     .await?;
                 }
                 progress.connection_request = Some(request);
-                Ok(SelectionOutcome::Waiting(progress))
+                Ok(SelectionOutcome::Waiting {
+                    progress,
+                    expires_at_unix_nanos,
+                })
             }
             ConnectionResolution::Ready(evidence) => {
                 if let Some(evidence) = &evidence {
@@ -1058,6 +1097,7 @@ impl OperationInvoker {
                 admitted: admitted.clone(),
                 progress: progress.clone(),
                 reply,
+                deadline: None,
             })
         })
         .await
@@ -1104,16 +1144,26 @@ impl OperationInvoker {
         let Some((checked, now)) = self.held_checked(tx, run, target).await? else {
             return Ok(GateOutcome::RunNotCurrent);
         };
-        let approval = crate::approval::gate(
+        let gate = crate::approval::gate(
             tx,
             admitted,
             run,
             checked.policy == OperationAccessState::ApprovalRequired,
+            self.approval_wait_nanos,
             now,
             events,
         )
         .await?;
-        Ok(approval.map_or(GateOutcome::Waiting, GateOutcome::Ready))
+        Ok(match gate {
+            crate::approval::Gate::Ready(approval) => GateOutcome::Ready(approval),
+            crate::approval::Gate::Pending {
+                id,
+                deadline_at_unix_nanos,
+            } => GateOutcome::Waiting {
+                approval: id,
+                deadline_at_unix_nanos,
+            },
+        })
     }
 
     /// The fence's shared facts for one Invocation, read under their shared
@@ -1415,14 +1465,24 @@ impl InvocationCompletion {
 }
 
 enum SelectionOutcome {
-    Waiting(InvocationProgress),
+    /// The Invocation is parked on a connection request, which expires at
+    /// `expires_at_unix_nanos`: the owner's timer for it.
+    Waiting {
+        progress: InvocationProgress,
+        expires_at_unix_nanos: i64,
+    },
     Ready(InvocationProgress),
     Rejected(Rejection),
     RunNotCurrent,
 }
 
 enum GateOutcome {
-    Waiting,
+    /// A decision is pending on `approval`, which expires at
+    /// `deadline_at_unix_nanos`: the owner's timer for it.
+    Waiting {
+        approval: ApprovalId,
+        deadline_at_unix_nanos: i64,
+    },
     Ready(ApprovalFact),
     Rejected(Rejection),
     RunNotCurrent,
@@ -1510,6 +1570,9 @@ struct SelectCredentialsWork {
     admitted: Arc<AdmittedInvocation>,
     progress: InvocationProgress,
     reply: Replier<SelectionOutcome>,
+    /// The connection request's deadline, when this parked the Invocation
+    /// on one.
+    deadline: Option<(Timer, i64)>,
 }
 
 impl fmt::Debug for SelectCredentialsWork {
@@ -1539,8 +1602,20 @@ impl ChunkWork for SelectCredentialsWork {
                 self.progress.clone(),
             )
             .await?;
+        if let SelectionOutcome::Waiting {
+            progress,
+            expires_at_unix_nanos,
+        } = &outcome
+            && let Some(request) = progress.connection_request
+        {
+            self.deadline = Some((Timer::Connection(request), *expires_at_unix_nanos));
+        }
         self.reply.record(outcome);
         Ok(Vec::new())
+    }
+
+    fn take_recorded_deadline(&mut self) -> Option<(Timer, i64)> {
+        self.deadline.take()
     }
 
     fn settle(self: Box<Self>, recorded: Result<(), Error>) {
@@ -1553,6 +1628,8 @@ struct ApprovalReadyWork {
     admitted: Arc<AdmittedInvocation>,
     progress: InvocationProgress,
     reply: Replier<GateOutcome>,
+    /// The Approval Request's deadline, when a decision is still pending.
+    deadline: Option<(Timer, i64)>,
 }
 
 impl fmt::Debug for ApprovalReadyWork {
@@ -1584,8 +1661,19 @@ impl ChunkWork for ApprovalReadyWork {
                 &mut events,
             )
             .await?;
+        if let GateOutcome::Waiting {
+            approval,
+            deadline_at_unix_nanos,
+        } = &outcome
+        {
+            self.deadline = Some((Timer::Approval(approval.clone()), *deadline_at_unix_nanos));
+        }
         self.reply.record(outcome);
         Ok(events)
+    }
+
+    fn take_recorded_deadline(&mut self) -> Option<(Timer, i64)> {
+        self.deadline.take()
     }
 
     fn settle(self: Box<Self>, recorded: Result<(), Error>) {

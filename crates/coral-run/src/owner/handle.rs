@@ -5,8 +5,9 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use coral_provider::account::ConnectionRequestId;
 use coral_workspace::{Principal, TraceId};
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
 
 use crate::approval::{ApprovalDecision, ApprovalId, ApprovalState};
 use crate::engine::{ExecutionCompletion, ProgramPackage};
@@ -38,6 +39,30 @@ pub(crate) enum DecisionAnswer {
     FromRecord,
 }
 
+/// A timer the owner arms (an [`Effect::ArmTimer`] the host runs as a sleep
+/// on its own clock). It fires back into the mailbox as [`Message::Timer`],
+/// applied in arrival order with every other message, so the clock decides
+/// nothing outside `apply`: a passed deadline is one ordered decision
+/// against the cancel or the decision that races it.
+///
+/// [`Effect::ArmTimer`]: super::state::Effect::ArmTimer
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum Timer {
+    /// The Run deadline: the Run times out.
+    RunDeadline,
+    /// One Approval Request's deadline: the request expires and its
+    /// Invocation ends.
+    Approval(ApprovalId),
+    /// One connection request's deadline: the Invocations parked on it stop
+    /// waiting for it.
+    Connection(ConnectionRequestId),
+    /// Half a lease: an owner that committed nothing meanwhile renews its
+    /// lease with an empty chunk. Armed again on every fire.
+    IdleTick,
+    /// The shutdown grace since the Program was stopped is out.
+    Grace,
+}
+
 /// What the owner's first chunk started: the package to execute, and the
 /// Run Ledger head after the execution-start mark, which the owner tracks
 /// from here on.
@@ -61,6 +86,10 @@ pub(crate) enum RequestKey {
 #[derive(Debug, Clone)]
 pub(crate) struct DecisionRequest {
     pub(crate) approval: ApprovalId,
+    /// The request's deadline as the requester read it: a decision applied
+    /// past it on the owner's clock is judged as the request's timer would
+    /// have been first.
+    pub(crate) deadline_at_unix_nanos: i64,
     pub(crate) decision: ApprovalDecision,
     pub(crate) actor: Principal,
     pub(crate) comment: Option<String>,
@@ -125,12 +154,14 @@ pub(crate) enum Message {
         requester: Principal,
         reply: RequestReply,
     },
-    /// The Run deadline passed: the Run times out.
-    Deadline,
-    /// The shutdown grace since the owner stopped its Program passed
-    /// without the Program reporting its end: the owner ends the Run
-    /// without it.
-    GraceExpired,
+    /// A timer the owner armed fired: the Run deadline, an Approval
+    /// Request's or a connection request's deadline, the idle tick, or the
+    /// shutdown grace.
+    Timer(Timer),
+    /// A chunk that landed recorded a deadline the owner keeps: an Approval
+    /// Request it created, a connection request it parked an Invocation on.
+    /// Reaches the owner before that chunk's `Committed`.
+    DeadlineRecorded { timer: Timer, at_unix_nanos: i64 },
     /// The Program's execution ended.
     ProgramEnded(ExecutionCompletion),
     /// The chunk in flight landed.
@@ -156,8 +187,6 @@ pub(crate) enum Message {
     Interrupted(Result<(), CommitRejection>),
     /// An outside writer recorded a termination and wants execution to stop.
     Stop,
-    /// Half a lease passed since the last commit.
-    IdleTick,
     /// The mailbox is empty: commit when free.
     Drained,
 }
@@ -199,8 +228,15 @@ impl fmt::Debug for Message {
                 .debug_struct("Cancel")
                 .field("requester", requester)
                 .finish(),
-            Self::Deadline => formatter.write_str("Deadline"),
-            Self::GraceExpired => formatter.write_str("GraceExpired"),
+            Self::Timer(timer) => formatter.debug_tuple("Timer").field(timer).finish(),
+            Self::DeadlineRecorded {
+                timer,
+                at_unix_nanos,
+            } => formatter
+                .debug_struct("DeadlineRecorded")
+                .field("timer", timer)
+                .field("at_unix_nanos", at_unix_nanos)
+                .finish(),
             Self::ProgramEnded(completion) => formatter
                 .debug_tuple("ProgramEnded")
                 .field(completion)
@@ -227,7 +263,6 @@ impl fmt::Debug for Message {
                 formatter.debug_tuple("Interrupted").field(result).finish()
             }
             Self::Stop => formatter.write_str("Stop"),
-            Self::IdleTick => formatter.write_str("IdleTick"),
             Self::Drained => formatter.write_str("Drained"),
         }
     }
@@ -301,11 +336,14 @@ struct Shared {
     stop: Arc<ExecutionStop>,
     stopped: AtomicBool,
     stopped_notification: Notify,
+    /// A content-free wake-up for the Invocations parked on a connection
+    /// request, sent when a connection request's timer fires.
+    parked_wakes: watch::Sender<()>,
 }
 
 /// A handle on one live Run Owner: the Program host and the Invocation tasks
 /// send it Program requests, outside requesters their decisions and
-/// cancellations, the deadline task the deadline; recovery asks it to stop.
+/// cancellations; recovery asks it to stop.
 #[derive(Clone)]
 pub(crate) struct OwnerHandle {
     shared: Arc<Shared>,
@@ -322,6 +360,7 @@ impl OwnerHandle {
                 stop: Arc::new(ExecutionStop::new()),
                 stopped: AtomicBool::new(false),
                 stopped_notification: Notify::new(),
+                parked_wakes: watch::channel(()).0,
             }),
         };
         (handle, mailbox)
@@ -469,9 +508,15 @@ impl OwnerHandle {
             .map(drop)
     }
 
-    /// Tells the owner that the Run deadline passed.
-    pub(crate) fn deadline(&self) {
-        self.send(Message::Deadline);
+    /// Wakes every Invocation parked on a connection request: a wake-up is a
+    /// hint, and each one rechecks its own wait.
+    pub(crate) fn wake_parked(&self) {
+        self.shared.parked_wakes.send_replace(());
+    }
+
+    /// The wake-ups of [`Self::wake_parked`], from now on.
+    pub(crate) fn parked_wakes(&self) -> watch::Receiver<()> {
+        self.shared.parked_wakes.subscribe()
     }
 
     /// Sends one request and waits for its answer; a retired owner, or one

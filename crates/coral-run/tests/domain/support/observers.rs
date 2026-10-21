@@ -25,6 +25,36 @@ impl ExecutionObserver for ClaimGate {
     }
 }
 
+/// Records every timer the Run Owner armed, with how long after its arming
+/// it fires.
+#[derive(Default)]
+pub(crate) struct TimerProbe {
+    armed: Mutex<Vec<(crate::owner::Timer, i64)>>,
+}
+
+impl TimerProbe {
+    /// How long after its last arming `timer` fires, once armed.
+    pub(crate) fn armed(&self, timer: &crate::owner::Timer) -> Option<i64> {
+        self.armed
+            .lock()
+            .expect("armed lock")
+            .iter()
+            .rev()
+            .find(|(armed, _)| armed == timer)
+            .map(|(_, after_nanos)| *after_nanos)
+    }
+}
+
+#[async_trait]
+impl ExecutionObserver for TimerProbe {
+    fn timer_armed(&self, timer: &crate::owner::Timer, after_nanos: i64) {
+        self.armed
+            .lock()
+            .expect("armed lock")
+            .push((timer.clone(), after_nanos));
+    }
+}
+
 /// Holds the first caller that reaches it until released; every later caller
 /// passes. The gates below embed it at the hook they hold.
 pub(crate) struct BlockingGate {
@@ -389,17 +419,6 @@ impl ApprovalWaitProbe {
         })
         .await
         .expect("the Invocation parks in its wait")
-        .expect("probe is alive");
-    }
-
-    /// Returns once `count` held rechecks have run in total, or fails after `within`.
-    pub(crate) async fn until_held(&self, count: usize, within: Duration) {
-        tokio::time::timeout(within, async {
-            let mut held = self.held.subscribe();
-            held.wait_for(|held| *held >= count).await.map(|_| ())
-        })
-        .await
-        .expect("the wait runs a held recheck in time")
         .expect("probe is alive");
     }
 }
