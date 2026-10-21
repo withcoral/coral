@@ -148,6 +148,53 @@ pub(super) fn actor_label(
         coral_workspace::PrincipalKind::Agent => agent_label.unwrap_or(UNAVAILABLE_AGENT).into(),
     }
 }
+pub(super) fn summary(value: coral_run::ActivitySummary) -> wire::SummarizeActivityResponse {
+    let calls = value.calls;
+    wire::SummarizeActivityResponse {
+        calls: Some(wire::ActivityCallOutcomes {
+            answered: calls.answered,
+            blocked: calls.blocked,
+            not_allowed: calls.not_allowed,
+            needs_setup: calls.needs_setup,
+            failed: calls.failed,
+            canceled: calls.canceled,
+        }),
+        stopped: value
+            .stopped
+            .into_iter()
+            .map(|op| wire::ActivityStoppedOperation {
+                call_path: op.call_path,
+                blocked: op.blocked,
+                not_allowed: op.not_allowed,
+                needs_setup: op.needs_setup,
+            })
+            .collect(),
+        operations: value
+            .operations
+            .into_iter()
+            .map(|op| wire::ActivityOperationCalls {
+                call_path: op.call_path,
+                calls: op.calls,
+            })
+            .collect(),
+        approvals: Some(wire::ActivityApprovalDecisions {
+            approved: value.approvals.approved,
+            declined: value.approvals.declined,
+            median_wait_nanos: value.approvals.median_wait_nanos,
+        }),
+        context_impact_bytes: value.context_impact_bytes,
+        context_impact_partial: value.context_impact_partial,
+        actors: value
+            .actors
+            .iter()
+            .map(|actor| wire::ActivityContextShare {
+                key: actor.principal.id().to_string(),
+                label: actor_label(&actor.principal, actor.agent_label.as_deref()),
+                bytes: actor.bytes,
+            })
+            .collect(),
+    }
+}
 pub(super) fn action_summary(
     workspace: &WorkspaceId,
     action: &coral_run::ActionSummary,
@@ -189,6 +236,30 @@ pub(super) fn invocation(value: &coral_run::InvocationSummary) -> wire::Activity
         duration_nanos: value.duration,
         requires_action: value.requires_action,
         task: String::new(),
+        source_location: value
+            .source_location
+            .as_ref()
+            .map(|location| source_location(&value.workspace, location)),
+    }
+}
+/// Names a snapshot exactly as `InspectRunResponse.linked_functions` does.
+fn saved_function_name(workspace: &WorkspaceId, saved_function_id: &str) -> String {
+    format!("workspaces/{workspace}/savedFunctions/{saved_function_id}")
+}
+pub(super) fn source_location(
+    workspace: &WorkspaceId,
+    value: &coral_run::SourceLocation,
+) -> wire::ActivitySourceLocation {
+    use wire::activity_source_location::Document;
+    wire::ActivitySourceLocation {
+        document: Some(match &value.document {
+            coral_run::SourceDocument::Program => Document::Program(wire::ActivityEmpty {}),
+            coral_run::SourceDocument::SavedFunction { saved_function_id } => {
+                Document::SavedFunction(saved_function_name(workspace, saved_function_id))
+            }
+        }),
+        line: value.line,
+        column: value.column,
     }
 }
 fn program_error(value: &coral_run::ProgramError) -> wire::ActivityProgramError {
@@ -286,6 +357,9 @@ pub(super) fn event(
         sequence: value.sequence(),
         occurred_at_unix_nanos: value.occurred_at_unix_nanos(),
         payload,
+        source_location: value
+            .source_location()
+            .map(|location| source_location(workspace, location)),
     }
 }
 fn failure_code(code: coral_run::RunFailureCode) -> i32 {
@@ -359,10 +433,7 @@ pub(super) async fn inspect_run(
             .linked_functions
             .into_iter()
             .map(|s| wire::ActivitySourceSnapshot {
-                saved_function: format!(
-                    "workspaces/{workspace}/savedFunctions/{}",
-                    s.saved_function_id
-                ),
+                saved_function: saved_function_name(&workspace, &s.saved_function_id),
                 path: s.path,
                 source: s.source,
             })

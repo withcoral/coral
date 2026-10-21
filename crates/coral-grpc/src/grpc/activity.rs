@@ -306,6 +306,24 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
         }))
     }
 
+    async fn summarize_activity(
+        &self,
+        request: Request<wire::SummarizeActivityRequest>,
+    ) -> Result<Response<wire::SummarizeActivityResponse>, Status> {
+        let actor = self
+            .principal(&request, None, PrivateAudience::Reef)
+            .await?;
+        let input = request.into_inner();
+        let workspace = workspace_filter(&input.workspace)?
+            .ok_or_else(|| Status::invalid_argument("Workspace is required"))?;
+        let summary = self
+            .runs
+            .activity_summary(&actor, &workspace, input.days)
+            .await
+            .map_err(execution::run_error)?;
+        Ok(Response::new(execution::summary(summary)))
+    }
+
     async fn browse_required_actions(
         &self,
         request: Request<wire::BrowseRequiredActionsRequest>,

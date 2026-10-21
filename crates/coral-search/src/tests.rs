@@ -1011,6 +1011,10 @@ async fn synthetic_ranking_corpus_covers_phrase_weights_coverage_ties_and_eviden
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one phrase corpus and one table cover the phrase rule of each field"
+)]
 async fn phrase_points_match_whole_words_and_favor_a_whole_field() {
     let fixture = TestModules::new().await;
     let user = organization_user(fixture.search.database.clone(), "user:phrase-points").await;
@@ -1040,7 +1044,9 @@ async fn phrase_points_match_whole_words_and_favor_a_whole_field() {
         "/merges":{"get":{"operationId":"merges/list","summary":"MERGE PULL REQUESTS","responses":{"200":{"description":"ok"}}}},
         "/merges/tool":{"get":{"operationId":"merges/tool","summary":"MERGE PULLREQUEST NOW","responses":{"200":{"description":"ok"}}}},
         "/hooks/then":{"post":{"operationId":"hooks/then","summary":"Chain a hook","responses":{"200":{"description":"ok"}}}},
-        "/hooks/then/review":{"post":{"operationId":"hooks/thenReview","summary":"Chain a hook review","responses":{"200":{"description":"ok"}}}}
+        "/hooks/then/review":{"post":{"operationId":"hooks/thenReview","summary":"Chain a hook review","responses":{"200":{"description":"ok"}}}},
+        "/widgets":{"get":{"operationId":"widgets/lookup","summary":"Look up a widget","parameters":[{"name":"zorble_quint","in":"query","schema":{"type":"string"}}],"responses":{"200":{"description":"ok"}}}},
+        "/gadgets":{"get":{"operationId":"gadgets/list","summary":"Quint values for each zorble","responses":{"200":{"description":"ok"}}}}
       }
     }"#
     .replace("LONG", long.trim_end());
@@ -1092,6 +1098,12 @@ async fn phrase_points_match_whole_words_and_favor_a_whole_field() {
             "pulls.merge",
             "a capital is a camelCase edge only after a lowercase letter or a digit, \
              so neither `REQUESTS` nor `PULLREQUEST` holds the phrase",
+        ),
+        (
+            "zorble quint",
+            "gadgets.list",
+            "schema text adds no phrase points, so a parameter that holds the phrase \
+             ranks below a title that holds its words in another order",
         ),
     ] {
         let page = fixture

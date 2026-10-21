@@ -276,6 +276,7 @@ impl OperationInvoker {
         &self,
         call_path: &str,
         arguments: serde_json::Value,
+        source_location: Option<crate::SourceLocation>,
     ) -> Result<String, InvocationHostError> {
         let arguments_json = serde_json::to_string(&arguments).map_err(Error::ProgramValueJson)?;
         self.limits
@@ -294,6 +295,7 @@ impl OperationInvoker {
             target,
             call_path: call_path.to_string(),
             arguments_json,
+            source_location,
             admitted_at_unix_nanos: self.now()?.max(self.accepted_at_unix_nanos),
         });
         self.owner
@@ -362,9 +364,7 @@ impl OperationInvoker {
                         .finish_failure(&admitted, &progress, CoralFailure::AuthorityLost)
                         .await?);
                 }
-                FenceOutcome::RunTerminated => {
-                    return Err(InvocationHostError::Fatal(Error::ProgramHostTerminated));
-                }
+                FenceOutcome::RunTerminated => return Err(Error::ProgramHostTerminated.into()),
                 FenceOutcome::RefreshRequired => {
                     // No dispatch start exists, and the refresh is an account
                     // wait: the slot is freed before the next fence. Prepare
@@ -1382,6 +1382,7 @@ pub(crate) struct AdmittedInvocation {
     pub(crate) target: ResolvedInvocationOperation,
     pub(crate) call_path: String,
     pub(crate) arguments_json: String,
+    pub(crate) source_location: Option<crate::SourceLocation>,
     pub(crate) admitted_at_unix_nanos: i64,
 }
 

@@ -1,7 +1,7 @@
 //! Run-bound Program Emission and Program Log requests to the Run Owner.
 
 use crate::owner::OwnerHandle;
-use crate::{Error, PROGRAM_LOG_MESSAGE_MAX_BYTES, ProgramLogLevel, ProgramValue};
+use crate::{Error, PROGRAM_LOG_MESSAGE_MAX_BYTES, ProgramLogLevel, ProgramValue, SourceLocation};
 
 /// Validates Program output and asks the Run Owner to apply it. The owner
 /// decides the Run Output Budget against its exact total and answers at
@@ -16,7 +16,11 @@ impl ProgramOutputWriter {
         Self { owner, limits }
     }
 
-    pub(crate) async fn emit(&self, encoded_json: &str) -> Result<(), ProgramOutputWriteError> {
+    pub(crate) async fn emit(
+        &self,
+        encoded_json: &str,
+        location: Option<SourceLocation>,
+    ) -> Result<(), ProgramOutputWriteError> {
         let value = match ProgramValue::with_limits(encoded_json.to_string(), self.limits) {
             Ok(value) => value,
             Err(Error::ProgramValueTooLarge) => {
@@ -27,19 +31,20 @@ impl ProgramOutputWriter {
             }
             Err(error) => return Err(ProgramOutputWriteError::Fatal(error)),
         };
-        self.owner.emit(value).await.map_err(output_error)
+        self.owner.emit(value, location).await.map_err(output_error)
     }
 
     pub(crate) async fn log(
         &self,
         level: ProgramLogLevel,
         message: &str,
+        location: Option<SourceLocation>,
     ) -> Result<(), ProgramOutputWriteError> {
         if message.len() > PROGRAM_LOG_MESSAGE_MAX_BYTES {
             return Err(ProgramOutputWriteError::LimitExceeded);
         }
         self.owner
-            .log(level, message.to_string())
+            .log(level, message.to_string(), location)
             .await
             .map_err(output_error)
     }

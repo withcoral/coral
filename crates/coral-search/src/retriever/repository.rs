@@ -299,8 +299,7 @@ async fn rank_postgres(
     let sql = format!(
         "WITH candidates AS MATERIALIZED ( \
              SELECT d.doc_id, d.call_path, d.provider_id, d.operation_key, d.saved_function_id, \
-                    d.qualified_name, d.title, d.description, d.provider_name, d.searchable_text, \
-                    d.tsv, d.doc_len \
+                    d.qualified_name, d.title, d.description, d.provider_name, d.tsv, d.doc_len \
              FROM search_entities AS d \
              WHERE {conditions} AND ({matches}) \
          ) \
@@ -452,10 +451,12 @@ async fn rank_sqlite(
     transaction.fetch_all_sql(&sql, binds.values).await
 }
 
-/// The phrase points over the alias's five text fields, the first order key
-/// on both backends. Each field adds its weight once when it holds the
-/// phrase's words in order, and twice when it is the whole phrase. One
-/// pattern pair serves Postgres's `~` and `SQLite`'s `REGEXP` alike.
+/// The phrase points over the alias's name, title, description and Provider
+/// name, the first order key on both backends. Each field adds its weight
+/// once when it holds the phrase's words in order, and twice when it is the
+/// whole phrase. Schema text adds none: it holds each word once, at its first
+/// occurrence, so two words in order there are chance. One pattern pair
+/// serves Postgres's `~` and `SQLite`'s `REGEXP` alike.
 fn phrase_points(binds: &mut Binds, alias: &str, plan: &QueryPlan) -> String {
     let phrase = &plan.phrase;
     let operator = match binds.system {
@@ -469,7 +470,6 @@ fn phrase_points(binds: &mut Binds, alias: &str, plan: &QueryPlan) -> String {
         ("title", 6),
         ("description", 2),
         ("provider_name", 2),
-        ("searchable_text", 1),
     ]
     .iter()
     .map(|(column, weight)| {

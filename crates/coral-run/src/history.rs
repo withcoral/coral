@@ -75,6 +75,8 @@ pub struct InvocationSummary {
     pub duration: i64,
     /// Current human work exists.
     pub requires_action: bool,
+    /// Where authored source made the call, when recorded.
+    pub source_location: Option<crate::SourceLocation>,
 }
 impl RunModule {
     /// Joins an upper owner's authorized snapshot for one source-free Run summary.

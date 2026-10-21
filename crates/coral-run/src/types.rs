@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 
@@ -439,12 +440,41 @@ impl InvocationResultKind {
     }
 }
 
+/// The accepted source of one Run that holds a [`SourceLocation`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceDocument {
+    /// The Run's exact submitted Program source.
+    Program,
+    /// The Run's retained snapshot of one linked Saved Function.
+    SavedFunction {
+        /// Saved Function identity of the snapshot, unique within the Run.
+        saved_function_id: String,
+    },
+}
+
+/// Where the Run's accepted source made one Operation call, Emission, or Log.
+///
+/// Coral records the innermost authored frame when the call happens. Line and
+/// column start at 1; the column counts UTF-16 code units, as V8 and
+/// TypeScript do. Records made without one, including every record written
+/// before Coral captured locations, have no location.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceLocation {
+    /// Accepted source that holds the call.
+    pub document: SourceDocument,
+    /// One-based line.
+    pub line: u32,
+    /// One-based column in UTF-16 code units.
+    pub column: u32,
+}
+
 /// One immutable Program Run Event.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunEvent {
     sequence: u64,
     kind: RunEventKind,
     occurred_at_unix_nanos: i64,
+    source_location: Option<SourceLocation>,
 }
 
 impl RunEvent {
@@ -457,6 +487,7 @@ impl RunEvent {
             sequence,
             kind,
             occurred_at_unix_nanos,
+            source_location: None,
         }
     }
 
@@ -476,6 +507,18 @@ impl RunEvent {
     #[must_use]
     pub const fn occurred_at_unix_nanos(&self) -> i64 {
         self.occurred_at_unix_nanos
+    }
+
+    pub(crate) fn with_source_location(mut self, location: Option<SourceLocation>) -> Self {
+        self.source_location = location;
+        self
+    }
+
+    /// Returns where authored source made an Emission or Log, when recorded.
+    /// Always `None` for other Event kinds.
+    #[must_use]
+    pub const fn source_location(&self) -> Option<&SourceLocation> {
+        self.source_location.as_ref()
     }
 }
 
@@ -880,6 +923,9 @@ pub(crate) struct AcceptedRun {
     pub(crate) claim_id: String,
     /// The first lease, which the owner renews with every chunk it commits.
     pub(crate) worker_claim_expires_at_unix_nanos: i64,
+    /// Linked Saved Function path to the identity of the snapshot that
+    /// acceptance retained for it.
+    pub(crate) linked_snapshots: HashMap<String, String>,
 }
 
 /// The cap on Program output the Run Owner has applied but not yet recorded.

@@ -88,7 +88,7 @@ pub(super) async fn invoking_authority_current(
         .await?;
     Ok(row.is_some_and(|row| row.0))
 }
-fn running() -> SimpleExpr {
+pub(crate) fn running() -> SimpleExpr {
     col("r", "state").eq(crate::RunState::Running.as_storage_str())
 }
 pub(super) fn active_run(now: i64) -> SimpleExpr {
@@ -100,7 +100,7 @@ pub(super) fn active_run(now: i64) -> SimpleExpr {
 fn duration(table: &str, start: &str, end: &str, now: i64) -> SimpleExpr {
     Expr::expr(Func::coalesce([col(table, end), Expr::val(now)])).sub(col(table, start))
 }
-fn measured_context() -> SimpleExpr {
+pub(crate) fn measured_context() -> SimpleExpr {
     Expr::case(
         running().or(incomplete_context(col("r", "workspace_id"), col("r", "id"))),
         Expr::val(Option::<i64>::None),
@@ -300,6 +300,8 @@ struct InvocationRow {
     dispatched_at: Option<i64>,
     duration: i64,
     requires_action: bool,
+    #[sqlx(flatten)]
+    source_location: crate::source_location_repository::StoredSourceLocation,
 }
 pub(crate) async fn exact_invocation(
     tx: &mut Transaction<'_>,
@@ -331,6 +333,8 @@ pub(crate) async fn exact_invocation(
                 "result_kind",
                 "result_bytes",
             ]
+            .into_iter()
+            .chain(crate::source_location_repository::COLUMNS)
             .map(|name| (Alias::new("i"), Alias::new(name))),
         )
         .expr_as(col("i", "admitted_at_unix_nanos"), Alias::new("started_at"))
@@ -382,5 +386,6 @@ pub(crate) async fn exact_invocation(
         dispatched_at: row.dispatched_at,
         duration: row.duration,
         requires_action: row.requires_action,
+        source_location: row.source_location.decode()?,
     })
 }

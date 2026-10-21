@@ -135,28 +135,74 @@ pub trait ProgramHost: Send + Sync {
 
     /// Invokes one Operation by complete Call Path and native-JSON arguments.
     ///
+    /// `location` is the authored call site captured before the call returns
+    /// to JavaScript, or `None` when no authored frame made the call.
+    ///
     /// # Errors
     ///
     /// Returns a catchable rejection only after any required terminal evidence
     /// is durable. A fatal host failure terminates Program execution without
     /// settling the Operation Promise.
-    fn invoke(self: Arc<Self>, call_path: String, arguments_json: String) -> OperationFuture;
+    fn invoke(
+        self: Arc<Self>,
+        call_path: String,
+        arguments_json: String,
+        location: Option<AuthoredLocation>,
+    ) -> OperationFuture;
 
-    /// Durably appends one native-JSON Program Emission.
+    /// Durably appends one native-JSON Program Emission made at `location`.
     ///
     /// # Errors
     ///
     /// Invalid and oversized values remain catchable by the Program. A fatal
     /// host failure terminates execution without resolving the Emission Promise.
-    fn emit(&self, value_json: &str) -> Result<(), ProgramOutputHostError>;
+    fn emit(
+        &self,
+        value_json: &str,
+        location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError>;
 
-    /// Durably appends one bounded Program Log before returning `undefined`.
+    /// Durably appends one bounded Program Log made at `location` before
+    /// returning `undefined`.
     ///
     /// # Errors
     ///
     /// A limit failure throws a catchable `RangeError`; a fatal host failure
     /// terminates Program execution.
-    fn log(&self, level: ConsoleLevel, message: &str) -> Result<(), ProgramOutputHostError>;
+    fn log(
+        &self,
+        level: ConsoleLevel,
+        message: &str,
+        location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError>;
+}
+
+/// The authored source that holds one [`AuthoredLocation`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthoredSource {
+    /// The submitted Program body.
+    Program,
+    /// One Saved Function linked into the package, by its path relative to
+    /// `coral.functions`.
+    SavedFunction {
+        /// Dotted path, such as `debug.fetch`.
+        path: String,
+    },
+}
+
+/// The innermost authored frame that called a Program host binding.
+///
+/// Line and column are one-based positions in the exact authored source that
+/// the package was compiled from. The column is where V8 places the call: the
+/// called member name of a property call such as `console.log(...)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthoredLocation {
+    /// Program or linked Saved Function source.
+    pub source: AuthoredSource,
+    /// One-based authored line.
+    pub line: u32,
+    /// One-based authored column in UTF-16 code units.
+    pub column: u32,
 }
 
 /// Failure returned by the private Program Operation host.

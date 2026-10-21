@@ -1220,3 +1220,229 @@ async fn invocation_wire_rejects_an_http_error_status_with_its_evidence_and_keep
     assert_eq!(failure.code, "operation_disabled");
     assert!(!failure.message.is_empty());
 }
+
+/// Asserts one exact location in the wire form a Reef reader receives.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "rows compare the optional location each record carries"
+)]
+fn located(
+    document: wire::activity_source_location::Document,
+    line: u32,
+    column: u32,
+) -> Option<wire::ActivitySourceLocation> {
+    Some(wire::ActivitySourceLocation {
+        document: Some(document),
+        line,
+        column,
+    })
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one real Run read back through every activity projection that carries a location"
+)]
+async fn activity_records_carry_their_authored_location_on_every_projection() {
+    // Capture and storage rules belong to coral-v8 and coral-run. This asserts
+    // the wire contract: document naming and presence on each projection.
+    use wire::activity_source_location::Document;
+    let f = Fixture::new().await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+    let provider = publish_http(&f, &server.uri()).await;
+    policy(&f, &provider, coral_policy::OperationAccessState::Enabled).await;
+    f.saved_functions
+        .save(
+            &coral_functions::SavedFunctionChangeContext::new(
+                AuthenticatedPrincipal::user(f.member.clone()),
+                1_700_000_000_000_000_007,
+                coral_workspace::TraceId::current_or_new(),
+            ),
+            f.workspace.id(),
+            coral_functions::SavedFunctionSave::new(
+                coral_functions::SavedFunctionPath::parse("report.forecast").unwrap(),
+                coral_functions::SavedFunctionDescription::parse("Forecast one city").unwrap(),
+                coral_functions::SavedFunctionSource::parse(
+                    "export default async function forecast(city: string) {\n    console.info(city);\n    return coral.providers.evidence.read({ body: { city } });\n}",
+                )
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    let run = start(
+        &f,
+        "console.warn(\"w\");\nawait coral.emit({ step: 1 });\nawait coral.functions.report.forecast(\"Oslo\");\nawait coral.providers.evidence.read({ body: {} });",
+    )
+    .await;
+    let detail = terminal(&f, &run).await;
+    let [snapshot] = detail.linked_functions.as_slice() else {
+        panic!("one linked snapshot")
+    };
+    let program = |line, column| located(Document::Program(wire::ActivityEmpty {}), line, column);
+    let in_snapshot = |line, column| {
+        located(
+            Document::SavedFunction(snapshot.saved_function.clone()),
+            line,
+            column,
+        )
+    };
+    let outputs = vec![program(1, 9), program(2, 13), in_snapshot(2, 13)];
+
+    // InspectRun: authored output Events carry a location; others never do.
+    let mut output_sequences = Vec::new();
+    let mut event_locations = Vec::new();
+    for event in &detail.events {
+        match &event.payload {
+            Some(
+                wire::activity_run_event::Payload::ProgramEmitted(_)
+                | wire::activity_run_event::Payload::ProgramLogged(_),
+            ) => {
+                output_sequences.push(event.sequence);
+                event_locations.push(event.source_location.clone());
+            }
+            _ => assert_eq!(event.source_location, None, "{event:?}"),
+        }
+    }
+    assert_eq!(event_locations, outputs);
+
+    // InspectRunEvent returns the same location as the page.
+    let mut client = f.activity();
+    let token = f.token(&f.member, "reef");
+    for (sequence, expected) in output_sequences.iter().zip(&outputs) {
+        let exact = client
+            .inspect_run_event(request(
+                wire::InspectRunEventRequest {
+                    run: format!("workspaces/{}/runs/{run}", f.workspace.id()),
+                    sequence: *sequence,
+                },
+                &token,
+                "reef",
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(&exact.event.unwrap().source_location, expected);
+    }
+
+    // BrowseRunEntries rows and InspectInvocation carry it too.
+    let rows = client
+        .browse_run_entries(request(
+            wire::BrowseRunEntriesRequest {
+                name: format!("workspaces/{}/runs/{run}", f.workspace.id()),
+                page_size: 100,
+                ..Default::default()
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let mut row_locations = Vec::new();
+    for entry in rows.entries {
+        match entry.record {
+            Some(wire::activity_run_entry::Record::Invocation(row)) => {
+                let exact = client
+                    .inspect_invocation(request(
+                        wire::InspectInvocationRequest {
+                            name: row.name.clone(),
+                        },
+                        &token,
+                        "reef",
+                    ))
+                    .await
+                    .unwrap()
+                    .into_inner();
+                assert_eq!(
+                    exact.invocation.unwrap().source_location,
+                    row.source_location
+                );
+                row_locations.push(row.source_location);
+            }
+            Some(wire::activity_run_entry::Record::Event(summary)) => {
+                if summary.kind.starts_with("program.") {
+                    row_locations.push(summary.source_location);
+                } else {
+                    assert_eq!(summary.source_location, None, "{summary:?}");
+                }
+            }
+            None => panic!("unknown entry"),
+        }
+    }
+    let mut expected_rows = outputs;
+    expected_rows.extend([in_snapshot(3, 37), program(4, 32)]);
+    assert_eq!(row_locations, expected_rows);
+}
+
+/// A summary needs one Workspace, reports a rejected window as an invalid argument, and
+/// names its rows for Reef. `coral-run` owns which windows it accepts.
+#[tokio::test]
+async fn activity_summary_wire_rejects_malformed_windows_and_labels_its_rows() {
+    let f = Fixture::new().await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"temperature": 21})))
+        .mount(&server)
+        .await;
+    let provider = publish_http(&f, &server.uri()).await;
+    policy(&f, &provider, coral_policy::OperationAccessState::Enabled).await;
+    let run = start(
+        &f,
+        "await coral.providers.evidence.read({body: {}}); return 'done';",
+    )
+    .await;
+    terminal(&f, &run).await;
+    let mut client = f.activity();
+    let token = f.token(&f.member, "reef");
+    let workspace = format!("workspaces/{}", f.workspace.id());
+    for (name, days) in [(String::new(), 7), (workspace.clone(), 0)] {
+        let denied = client
+            .summarize_activity(request(
+                wire::SummarizeActivityRequest {
+                    workspace: name.clone(),
+                    days,
+                },
+                &token,
+                "reef",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            denied.code(),
+            tonic::Code::InvalidArgument,
+            "{name:?} {days}"
+        );
+    }
+    let summary = client
+        .summarize_activity(request(
+            wire::SummarizeActivityRequest {
+                workspace: workspace.clone(),
+                days: 7,
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let [operation] = summary.operations.as_slice() else {
+        panic!("one Operation: {:?}", summary.operations)
+    };
+    assert_eq!(operation.call_path, "coral.providers.evidence.read");
+    let [actor] = summary.actors.as_slice() else {
+        panic!("one actor: {:?}", summary.actors)
+    };
+    assert_eq!(actor.label, "You");
+    assert_eq!(
+        actor.key,
+        AuthenticatedPrincipal::user(f.member.clone())
+            .principal()
+            .id()
+            .to_string()
+    );
+}

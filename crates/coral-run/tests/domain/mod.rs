@@ -12,6 +12,7 @@ mod fence;
 mod history;
 mod invocations;
 mod ledger;
+mod locations;
 mod mcp;
 mod memory;
 mod observation;
@@ -22,6 +23,7 @@ mod refresh;
 mod required_actions;
 mod resilience;
 mod scoping;
+mod summary;
 mod support;
 mod updates;
 

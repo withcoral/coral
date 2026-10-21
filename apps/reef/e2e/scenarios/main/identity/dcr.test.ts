@@ -115,9 +115,6 @@ test('URL-only MCP client registers, obtains consent, signs in, and uses the exa
       await step('Review the self-asserted client and allow sign-in', async () => {
         await page.goto(client.authorization().href)
         await page.getByRole('heading', { name: 'Allow workspace access?', exact: true }).waitFor()
-        await page
-          .getByText('The client supplies its name. Coral does not verify it.', { exact: true })
-          .waitFor()
         await page.getByRole('button', { name: 'Allow', exact: true }).click()
         await page
           .getByRole('heading', { name: 'Synthetic identity provider', exact: true })

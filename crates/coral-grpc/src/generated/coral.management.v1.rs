@@ -5532,6 +5532,9 @@ pub struct ActivityInvocation {
     /// workspaces/{workspace}/agents/{agent} if an Agent made the call; empty for a User.
     #[prost(string, tag = "16")]
     pub agent: ::prost::alloc::string::String,
+    /// Where the Run's accepted source made the call. Absent if not recorded.
+    #[prost(message, optional, tag = "18")]
+    pub source_location: ::core::option::Option<ActivitySourceLocation>,
 }
 /// Selects one Run. List filters do not apply.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -5558,7 +5561,8 @@ pub struct InspectRunRequest {
 /// Source of a Saved Function as it was when the Run was accepted.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActivitySourceSnapshot {
-    /// Saved Function name at the time. It may have changed or been deleted since.
+    /// workspaces/{workspace}/savedFunctions/{saved_function} at the time. Unique among
+    /// the Run's snapshots. The Saved Function may have changed or been deleted since.
     #[prost(string, tag = "1")]
     pub saved_function: ::prost::alloc::string::String,
     /// Path the Program called it by.
@@ -5568,10 +5572,45 @@ pub struct ActivitySourceSnapshot {
     #[prost(string, tag = "3")]
     pub source: ::prost::alloc::string::String,
 }
+/// Where the Run's accepted source made one record: an Operation call, an
+/// emitted value or a log message. Absent when Coral did not record one,
+/// including for every record made before Coral recorded them.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivitySourceLocation {
+    /// Line number, starting at 1. Lines end at every ECMAScript line terminator:
+    /// CRLF, CR, LF, U+2028 and U+2029, also inside strings and comments.
+    #[prost(uint32, tag = "3")]
+    pub line: u32,
+    /// Column number, starting at 1, in UTF-16 code units. For a call such as
+    /// console.log(...), the start of the called name. A binding passed to a
+    /// builtin, as in items.forEach(console.log), records the builtin's call.
+    #[prost(uint32, tag = "4")]
+    pub column: u32,
+    /// The accepted source that holds the call. Absent for a kind unknown to this
+    /// client: treat the location as unavailable.
+    #[prost(oneof = "activity_source_location::Document", tags = "1, 2")]
+    pub document: ::core::option::Option<activity_source_location::Document>,
+}
+/// Nested message and enum types in `ActivitySourceLocation`.
+pub mod activity_source_location {
+    /// The accepted source that holds the call. Absent for a kind unknown to this
+    /// client: treat the location as unavailable.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Document {
+        /// The Run's submitted Program source.
+        #[prost(message, tag = "1")]
+        Program(super::ActivityEmpty),
+        /// workspaces/{workspace}/savedFunctions/{saved_function}: the saved_function of
+        /// exactly one of the Run's linked_functions snapshots.
+        #[prost(string, tag = "2")]
+        SavedFunction(::prost::alloc::string::String),
+    }
+}
 /// One stack frame in code the author wrote.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActivityErrorFrame {
-    /// Program or Saved Function name.
+    /// "Program" or "Saved Function coral.functions.{path}". Unlike
+    /// ActivitySourceLocation, it names a Saved Function by path, not by snapshot.
     #[prost(string, tag = "1")]
     pub source: ::prost::alloc::string::String,
     /// Line number, starting at 1.
@@ -5691,6 +5730,10 @@ pub struct ActivityRunEvent {
     /// When it happened. Set even when the kind is unknown to this client.
     #[prost(int64, tag = "2")]
     pub occurred_at_unix_nanos: i64,
+    /// Where the Run's accepted source emitted or logged. Absent for other
+    /// kinds, or if not recorded.
+    #[prost(message, optional, tag = "10")]
+    pub source_location: ::core::option::Option<ActivitySourceLocation>,
     /// What happened. Absent for a kind unknown to this client.
     #[prost(oneof = "activity_run_event::Payload", tags = "3, 4, 5, 6, 7, 8, 9")]
     pub payload: ::core::option::Option<activity_run_event::Payload>,
@@ -5917,6 +5960,120 @@ pub struct CountRequiredActionsResponse {
     /// Pending requests. A connection request shared by several Runs counts once.
     #[prost(int64, tag = "1")]
     pub action_count: i64,
+}
+/// Selects the Workspace and the window to summarize.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SummarizeActivityRequest {
+    /// Required workspaces/{workspace}.
+    #[prost(string, tag = "1")]
+    pub workspace: ::prost::alloc::string::String,
+    /// Days back from now that the window covers, 1 to 30.
+    #[prost(uint32, tag = "2")]
+    pub days: u32,
+}
+/// One window's totals. A failed read is an error, never zero totals. Each total is
+/// windowed by the end time of its own fact: a call's end, a Run's end, or a decision.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SummarizeActivityResponse {
+    /// Operation calls that ended in the window, by outcome.
+    #[prost(message, optional, tag = "1")]
+    pub calls: ::core::option::Option<ActivityCallOutcomes>,
+    /// Operations with calls stopped in the window, one entry per Call Path, most stopped first.
+    #[prost(message, repeated, tag = "2")]
+    pub stopped: ::prost::alloc::vec::Vec<ActivityStoppedOperation>,
+    /// Operations with calls that ended in the window, one entry per Call Path.
+    #[prost(message, repeated, tag = "3")]
+    pub operations: ::prost::alloc::vec::Vec<ActivityOperationCalls>,
+    /// Approval requests decided in the window.
+    #[prost(message, optional, tag = "4")]
+    pub approvals: ::core::option::Option<ActivityApprovalDecisions>,
+    /// Net context bytes of Runs that ended in the window. Negative means saved.
+    /// Absent when no Run in the window has a measured total.
+    #[prost(int64, optional, tag = "5")]
+    pub context_impact_bytes: ::core::option::Option<i64>,
+    /// True while a Run in scope is running, or when a Run that ended in the window
+    /// has no measurement. context_impact_bytes then leaves that work out.
+    #[prost(bool, tag = "6")]
+    pub context_impact_partial: bool,
+    /// Net context bytes per invoking actor, most saved first. They add up to
+    /// context_impact_bytes.
+    #[prost(message, repeated, tag = "7")]
+    pub actors: ::prost::alloc::vec::Vec<ActivityContextShare>,
+}
+/// Ended Operation calls, by who acts next. The six counts add up to every ended call.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivityCallOutcomes {
+    /// The upstream returned a complete response. It may still be an error response.
+    #[prost(int64, tag = "1")]
+    pub answered: i64,
+    /// A rule stopped the call: a disabled Operation, a required approval, lost access,
+    /// or a rejected destination.
+    #[prost(int64, tag = "2")]
+    pub blocked: i64,
+    /// A person declined the approval or the Account connection, or let it expire.
+    #[prost(int64, tag = "3")]
+    pub not_allowed: i64,
+    /// A Provider, Account or credential needs repair.
+    #[prost(int64, tag = "4")]
+    pub needs_setup: i64,
+    /// The Program's call or the upstream failed, or the result is unknown.
+    #[prost(int64, tag = "5")]
+    pub failed: i64,
+    /// The Run ended before the call did.
+    #[prost(int64, tag = "6")]
+    pub canceled: i64,
+}
+/// One Operation's stopped calls, split by who must act.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivityStoppedOperation {
+    /// Retained Program Call Path.
+    #[prost(string, tag = "1")]
+    pub call_path: ::prost::alloc::string::String,
+    /// Calls a rule stopped.
+    #[prost(int64, tag = "2")]
+    pub blocked: i64,
+    /// Calls a person did not allow.
+    #[prost(int64, tag = "3")]
+    pub not_allowed: i64,
+    /// Calls that need setup.
+    #[prost(int64, tag = "4")]
+    pub needs_setup: i64,
+}
+/// One Operation's ended calls.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivityOperationCalls {
+    /// Retained Program Call Path.
+    #[prost(string, tag = "1")]
+    pub call_path: ::prost::alloc::string::String,
+    /// Calls that ended in the window.
+    #[prost(int64, tag = "2")]
+    pub calls: i64,
+}
+/// Approval decisions in a window.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivityApprovalDecisions {
+    /// Requests a person approved.
+    #[prost(int64, tag = "1")]
+    pub approved: i64,
+    /// Requests a person declined.
+    #[prost(int64, tag = "2")]
+    pub declined: i64,
+    /// Median nanoseconds from the request to the decision. Absent when nobody decided.
+    #[prost(int64, optional, tag = "3")]
+    pub median_wait_nanos: ::core::option::Option<i64>,
+}
+/// Net context bytes for one actor.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivityContextShare {
+    /// Stable actor ID.
+    #[prost(string, tag = "1")]
+    pub key: ::prost::alloc::string::String,
+    /// "You", the Agent's name, or an unavailable label.
+    #[prost(string, tag = "2")]
+    pub label: ::prost::alloc::string::String,
+    /// Net bytes. Negative means saved.
+    #[prost(int64, tag = "3")]
+    pub bytes: i64,
 }
 /// Selects a page of pending requests that wait on the caller.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -6230,6 +6387,10 @@ pub struct ActivityEventSummary {
     /// When it happened.
     #[prost(int64, tag = "3")]
     pub occurred_at_unix_nanos: i64,
+    /// Where the Run's accepted source emitted or logged. Absent for other
+    /// kinds, or if not recorded.
+    #[prost(message, optional, tag = "5")]
+    pub source_location: ::core::option::Option<ActivitySourceLocation>,
 }
 /// One child row of a Run, in order.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -6966,6 +7127,39 @@ pub mod activity_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Sums the caller's recent work in one Workspace: call outcomes, stopped and
+        /// busiest Operations, approval decisions, and context impact. Counts the caller's
+        /// own work and, in a Workspace the caller owns, its Agents' work, like the
+        /// pending-request queue. Other Users' work is never counted.
+        pub async fn summarize_activity(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SummarizeActivityRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SummarizeActivityResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.ActivityService/SummarizeActivity",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.ActivityService",
+                        "SummarizeActivity",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         /// Approves or declines one request. The first decision wins; the response gives
         /// the resulting state, which may not be the caller's decision.
         pub async fn decide_approval(
@@ -7187,6 +7381,17 @@ pub(crate) mod activity_service_server {
             request: tonic::Request<super::CountRequiredActionsRequest>,
         ) -> std::result::Result<
             tonic::Response<super::CountRequiredActionsResponse>,
+            tonic::Status,
+        >;
+        /// Sums the caller's recent work in one Workspace: call outcomes, stopped and
+        /// busiest Operations, approval decisions, and context impact. Counts the caller's
+        /// own work and, in a Workspace the caller owns, its Agents' work, like the
+        /// pending-request queue. Other Users' work is never counted.
+        async fn summarize_activity(
+            &self,
+            request: tonic::Request<super::SummarizeActivityRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SummarizeActivityResponse>,
             tonic::Status,
         >;
         /// Approves or declines one request. The first decision wins; the response gives
@@ -7760,6 +7965,52 @@ pub(crate) mod activity_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = CountRequiredActionsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.ActivityService/SummarizeActivity" => {
+                    #[allow(non_camel_case_types)]
+                    struct SummarizeActivitySvc<T: ActivityService>(pub Arc<T>);
+                    impl<
+                        T: ActivityService,
+                    > tonic::server::UnaryService<super::SummarizeActivityRequest>
+                    for SummarizeActivitySvc<T> {
+                        type Response = super::SummarizeActivityResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::SummarizeActivityRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ActivityService>::summarize_activity(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = SummarizeActivitySvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

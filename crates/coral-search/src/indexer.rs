@@ -105,6 +105,10 @@ impl IndexError {
 pub(crate) trait EntityIndexer: Send + Sync {
     /// What a notification hands over, prepared by the owner.
     type Entry: Send + Sync;
+    /// The rows an entry becomes, without the stamp the write gives them.
+    type Rows<'e>: Send + Sync
+    where
+        Self: 'e;
     /// What a removal names; `Infallible` when a database cascade removes.
     type Removal: Send + Sync;
     /// What the reconcile task compares the index against.
@@ -114,14 +118,22 @@ pub(crate) trait EntityIndexer: Send + Sync {
     /// [`lock_workspace`], before it writes the entry.
     fn workspace_id<'e>(&self, entry: &'e Self::Entry) -> &'e WorkspaceId;
 
-    /// Writes the entry's rows and state, all or nothing within the
-    /// transaction. Writing the same entry again leaves the same rows. The
-    /// caller holds the entry's Workspace lock, so the write's statistics
-    /// count sees every write of that Workspace before it.
+    /// Builds the entry's rows. The caller builds them before it begins the
+    /// write: on `SQLite` the write holds the one writer of the process, so
+    /// the text work must run before it.
+    fn rows<'e>(&self, entry: &'e Self::Entry) -> Result<Self::Rows<'e>, IndexError>;
+
+    /// Writes `rows`, the entry's rows, and the entry's state, all or nothing
+    /// within the transaction, and stamps each row with the time it writes
+    /// them. Writing the same entry again leaves the same rows. The caller
+    /// holds the entry's Workspace lock, so the stamp is later than each
+    /// stamp before it while the clock moves forward, and the write's
+    /// statistics count sees every write of that Workspace before it.
     async fn index(
         &self,
         transaction: &mut Transaction<'_>,
         entry: &Self::Entry,
+        rows: &Self::Rows<'_>,
     ) -> Result<(), IndexError>;
 
     /// Removes the rows and state the removal names.

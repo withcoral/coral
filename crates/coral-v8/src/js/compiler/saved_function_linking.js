@@ -1,83 +1,65 @@
-function modifiersWithoutExport(modifiers) {
-  return modifiers?.filter(
-    (modifier) =>
-      modifier.kind !== ts.SyntaxKind.ExportKeyword &&
-      modifier.kind !== ts.SyntaxKind.DefaultKeyword,
-  );
+// Every UTF-16 code unit except a line terminator becomes a space, so removed
+// export syntax leaves the code after it at its authored line and column.
+function blankedText(text) {
+  return text.replace(/[^\n\r\u2028\u2029]/g, ' ');
 }
 
-function scannedTokens(sourceFile, start = 0, end = sourceFile.text.length) {
-  const scanner = ts.createScanner(
-    sourceFile.languageVersion,
-    true,
-    ts.LanguageVariant.Standard,
-    sourceFile.text,
-  );
-  scanner.setTextPos(start);
-  const tokens = [];
-  while (scanner.scan() !== ts.SyntaxKind.EndOfFileToken) {
-    const position = scanner.getTokenPos();
-    if (position >= end) break;
-    tokens.push({
-      kind: scanner.getToken(),
-      text: scanner.getTokenText(),
-      position,
-    });
-  }
-  return tokens;
+// Identifier names as the parser reads them, so an escaped spelling such as
+// `\u005f_x` and the plain `__x` count as one name.
+function identifierNames(sourceFile) {
+  const names = new Set();
+  const visit = (node) => {
+    if (ts.isIdentifier(node)) names.add(node.text);
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return names;
 }
 
-function equivalentPrintedToken(left, right) {
-  if (left.kind !== right.kind) return false;
-  return left.kind !== ts.SyntaxKind.Identifier || left.text === right.text;
-}
-
-// Saved Function linking changes only each retained statement's export prefix.
-// Align the unchanged token suffix so printer whitespace and blank-line removal
-// cannot move runtime frames away from the original authored token positions.
-function printedStatementMappings(block, sourceFile, authored) {
-  const printedFile = ts.createSourceFile(
-    'printed_saved_function.ts',
-    block,
-    sourceFile.languageVersion,
-    true,
-    ts.ScriptKind.TS,
-  );
-  const printedTokens = scannedTokens(printedFile);
-  const authoredTokens = scannedTokens(
-    sourceFile,
-    authored.getStart(sourceFile),
-    authored.getEnd(),
-  );
-  let printedIndex = printedTokens.length - 1;
-  let authoredIndex = authoredTokens.length - 1;
-  if (authoredIndex >= 0) {
-    while (
-      printedIndex >= 0 &&
-      printedTokens[printedIndex].kind === ts.SyntaxKind.SemicolonToken &&
-      !equivalentPrintedToken(printedTokens[printedIndex], authoredTokens[authoredIndex])
-    ) {
-      printedIndex -= 1;
+// Copies the authored source with each edit's span blanked and its private
+// line, if any, on generated lines of its own before the span. Every other
+// generated line holds one authored line, or the rest of one, at its authored
+// columns, so one column-zero mapping per line is exact and TypeScript's own
+// map supplies the column. Private lines and the return stay unmapped.
+function editedSavedFunctionBody(sourceFile, edits, defaultName) {
+  const source = sourceFile.text;
+  let text = '';
+  let cursor = 0;
+  const insertions = [];
+  for (const edit of edits) {
+    text += source.slice(cursor, edit.start);
+    if (edit.line !== undefined) {
+      const position = sourceFile.getLineAndCharacterOfPosition(edit.start);
+      insertions.push(position);
+      const column = position.character;
+      text += `${column > 0 ? '\n' : ''}${edit.line}\n${' '.repeat(column)}`;
     }
+    text += blankedText(source.slice(edit.start, edit.end));
+    cursor = edit.end;
   }
+  // The line break ends any trailing comment, and the semicolon ends any
+  // unterminated last statement.
+  text += `${source.slice(cursor)}\n;return () => ${defaultName};`;
 
+  const lineStarts = ts.computeLineStarts(source);
   const mappings = [];
-  while (printedIndex >= 0 && authoredIndex >= 0) {
-    const printed = printedTokens[printedIndex];
-    const original = authoredTokens[authoredIndex];
-    if (!equivalentPrintedToken(printed, original)) break;
-    const generated = printedFile.getLineAndCharacterOfPosition(printed.position);
-    const authoredPosition = sourceFile.getLineAndCharacterOfPosition(original.position);
-    mappings.push({
-      generatedLine: generated.line,
-      generatedColumn: generated.character,
-      line: authoredPosition.line,
-      column: authoredPosition.character,
-    });
-    printedIndex -= 1;
-    authoredIndex -= 1;
+  let generatedLine = 0;
+  let next = 0;
+  // A final line terminator leaves an empty last line that holds no code.
+  for (let line = 0; line < lineStarts.length && lineStarts[line] < source.length; line += 1) {
+    const mapAuthoredLine = () => {
+      mappings.push({ generatedLine, generatedColumn: 0, line, column: 0 });
+    };
+    if (insertions[next]?.line !== line || insertions[next].character > 0) {
+      mapAuthoredLine();
+    }
+    for (; insertions[next]?.line === line; next += 1) {
+      generatedLine += insertions[next].character > 0 ? 2 : 1;
+      mapAuthoredLine();
+    }
+    generatedLine += 1;
   }
-  return mappings.toReversed();
+  return { text, mappings };
 }
 
 function savedFunctionRuntimeBody(source, target) {
@@ -100,90 +82,73 @@ function savedFunctionRuntimeBody(source, target) {
     throw new Error(capabilityError);
   }
 
-  const statements = [];
-  function retainStatement(emitted, authored) {
-    statements.push({ emitted, authored });
+  const usedNames = identifierNames(sourceFile);
+  function privateName() {
+    for (let suffix = 1; ; suffix += 1) {
+      const name = `__coralSavedFunctionDefaultExport_${suffix}`;
+      if (!usedNames.has(name)) {
+        usedNames.add(name);
+        return name;
+      }
+    }
   }
-  let defaultExpression;
+  // Authored spans to blank, in source order. An edit's `line` is private
+  // source placed on its own line before the span.
+  const edits = [];
+  const shebang = /^#![^\n\r\u2028\u2029]*/.exec(source);
+  if (shebang) edits.push({ start: 0, end: shebang[0].length });
+  // A removed export declaration still ends the statement before it.
+  const removeStatement = (statement) => {
+    edits.push({ start: statement.getStart(sourceFile), end: statement.end, line: ';' });
+  };
+  let defaultName;
 
   for (const statement of sourceFile.statements) {
-    const isDefault =
-      statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) ===
-      true;
-    const isExported =
-      statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ===
-      true;
+    const exportModifiers =
+      statement.modifiers?.filter(
+        (modifier) =>
+          modifier.kind === ts.SyntaxKind.ExportKeyword ||
+          modifier.kind === ts.SyntaxKind.DefaultKeyword,
+      ) ?? [];
+    const isDefault = exportModifiers.some(
+      (modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword,
+    );
+    const isExported = exportModifiers.some(
+      (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+    );
 
     if (ts.isFunctionDeclaration(statement) && isDefault && isExported) {
       if (!statement.body) {
         throw new Error('Saved Function default export must have a runtime implementation');
       }
+      for (const modifier of exportModifiers) {
+        edits.push({ start: modifier.getStart(sourceFile), end: modifier.end });
+      }
       if (statement.name) {
-        retainStatement(
-          ts.factory.updateFunctionDeclaration(
-            statement,
-            modifiersWithoutExport(statement.modifiers),
-            statement.asteriskToken,
-            statement.name,
-            statement.typeParameters,
-            statement.parameters,
-            statement.type,
-            statement.body,
-          ),
-          statement,
-        );
-        defaultExpression = ts.factory.createIdentifier(statement.name.text);
+        defaultName = statement.name.text;
       } else {
-        const defaultIdentifier = ts.factory.createUniqueName('__coralSavedFunctionDefaultExport');
-        retainStatement(
-          ts.factory.createVariableStatement(
-            undefined,
-            ts.factory.createVariableDeclarationList(
-              [
-                ts.factory.createVariableDeclaration(
-                  defaultIdentifier,
-                  undefined,
-                  undefined,
-                  ts.factory.createFunctionExpression(
-                    modifiersWithoutExport(statement.modifiers),
-                    statement.asteriskToken,
-                    undefined,
-                    statement.typeParameters,
-                    statement.parameters,
-                    statement.type,
-                    statement.body,
-                  ),
-                ),
-              ],
-              ts.NodeFlags.Const,
-            ),
-          ),
-          statement,
-        );
-        defaultExpression = defaultIdentifier;
+        // Name the declaration after `function` or its `*`, where a line
+        // break cannot change the parse.
+        defaultName = privateName();
+        const nameStart = (
+          statement.asteriskToken ??
+          statement
+            .getChildren(sourceFile)
+            .find((child) => child.kind === ts.SyntaxKind.FunctionKeyword)
+        ).end;
+        edits.push({ start: nameStart, end: nameStart, line: defaultName });
       }
       continue;
     }
     if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
-      const defaultIdentifier = ts.factory.createUniqueName('__coralSavedFunctionDefaultExport');
-      retainStatement(
-        ts.factory.createVariableStatement(
-          undefined,
-          ts.factory.createVariableDeclarationList(
-            [
-              ts.factory.createVariableDeclaration(
-                defaultIdentifier,
-                undefined,
-                undefined,
-                statement.expression,
-              ),
-            ],
-            ts.NodeFlags.Const,
-          ),
-        ),
-        statement,
-      );
-      defaultExpression = defaultIdentifier;
+      // `export default` and `const name =` both take an AssignmentExpression,
+      // so automatic semicolon insertion ends the statement at the same token.
+      defaultName = privateName();
+      edits.push({
+        start: statement.getStart(sourceFile),
+        end: statement.expression.getStart(sourceFile),
+        line: `const ${defaultName} =`,
+      });
       continue;
     }
     if (
@@ -193,6 +158,7 @@ function savedFunctionRuntimeBody(source, target) {
       ts.isNamedExports(statement.exportClause) &&
       statement.exportClause.elements.length === 0
     ) {
+      removeStatement(statement);
       continue;
     }
     if (
@@ -206,49 +172,18 @@ function savedFunctionRuntimeBody(source, target) {
       !statement.exportClause.elements[0].isTypeOnly
     ) {
       const element = statement.exportClause.elements[0];
-      defaultExpression = ts.factory.createIdentifier((element.propertyName || element.name).text);
+      defaultName = (element.propertyName || element.name).text;
+      removeStatement(statement);
       continue;
     }
     if (isDefault || isExported || ts.isExportDeclaration(statement)) {
       throw new Error('Saved Function source has an unsupported export shape');
     }
-    retainStatement(statement, statement);
   }
-  if (defaultExpression === undefined) {
+  if (defaultName === undefined) {
     throw new Error('Saved Function source has no runtime default export');
   }
-
-  const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
-  const blocks = [];
-  const mappings = [];
-  let generatedLineOffset = 0;
-  for (const { emitted, authored } of statements) {
-    const block = printer.printNode(ts.EmitHint.Unspecified, emitted, sourceFile);
-    for (const mapping of printedStatementMappings(block, sourceFile, authored)) {
-      mappings.push({
-        ...mapping,
-        generatedLine: mapping.generatedLine + generatedLineOffset,
-      });
-    }
-    blocks.push(block);
-    generatedLineOffset += block.split('\n').length;
-  }
-  const privateReturn = printer.printNode(
-    ts.EmitHint.Unspecified,
-    ts.factory.createReturnStatement(
-      ts.factory.createArrowFunction(
-        undefined,
-        undefined,
-        [],
-        undefined,
-        ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
-        defaultExpression,
-      ),
-    ),
-    sourceFile,
-  );
-  blocks.push(privateReturn);
-  return { text: blocks.join('\n'), mappings };
+  return editedSavedFunctionBody(sourceFile, edits, defaultName);
 }
 
 function linkedProgramSource(body, savedFunctions, target) {
@@ -288,8 +223,10 @@ function linkedProgramSource(body, savedFunctions, target) {
   const authoredMappings = [];
   let generatedLine = 0;
   function append(text) {
+    // A CR ending the previous part and this LF form one CRLF terminator.
+    const joinsCrLf = sourceParts.at(-1)?.endsWith('\r') && text.startsWith('\n');
     sourceParts.push(text);
-    generatedLine += text.split('\n').length - 1;
+    generatedLine += sourceLineCount(text) - 1 - (joinsCrLf ? 1 : 0);
   }
 
   append(`(async () => {

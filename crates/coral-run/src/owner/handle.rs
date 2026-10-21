@@ -13,7 +13,7 @@ use crate::engine::{ExecutionCompletion, ProgramPackage};
 use crate::execution::ExecutionStop;
 use crate::invocation::FenceRequest;
 use crate::termination::ShutdownAction;
-use crate::{Error, ProgramLogLevel, ProgramValue, RunId};
+use crate::{Error, ProgramLogLevel, ProgramValue, RunId, SourceLocation};
 
 use super::chunk::ChunkWork;
 
@@ -78,11 +78,13 @@ pub(crate) enum Message {
     Started(Result<Option<StartedExecution>, Error>),
     Emit {
         value: ProgramValue,
+        location: Option<SourceLocation>,
         reply: Reply,
     },
     Log {
         level: ProgramLogLevel,
         message: String,
+        location: Option<SourceLocation>,
         reply: Reply,
     },
     /// Admit one Invocation: its row and `invocation.started` ride the next chunk.
@@ -119,10 +121,7 @@ pub(crate) enum Message {
     /// `cancellation.requested` ride the next chunk, and the Program is
     /// terminated at once. A repeat receives the recorded answer. Answered
     /// once recorded.
-    Cancel {
-        requester: Principal,
-        reply: Reply,
-    },
+    Cancel { requester: Principal, reply: Reply },
     /// The Run deadline passed: the Run times out.
     Deadline,
     /// The shutdown grace since the owner stopped its Program passed
@@ -381,14 +380,29 @@ impl OwnerHandle {
         let _retired = self.shared.sender.send(message);
     }
 
-    pub(crate) async fn emit(&self, value: ProgramValue) -> Result<(), Error> {
-        self.ask(|reply| Message::Emit { value, reply }).await
+    pub(crate) async fn emit(
+        &self,
+        value: ProgramValue,
+        location: Option<SourceLocation>,
+    ) -> Result<(), Error> {
+        self.ask(|reply| Message::Emit {
+            value,
+            location,
+            reply,
+        })
+        .await
     }
 
-    pub(crate) async fn log(&self, level: ProgramLogLevel, message: String) -> Result<(), Error> {
+    pub(crate) async fn log(
+        &self,
+        level: ProgramLogLevel,
+        message: String,
+        location: Option<SourceLocation>,
+    ) -> Result<(), Error> {
         self.ask(|reply| Message::Log {
             level,
             message,
+            location,
             reply,
         })
         .await

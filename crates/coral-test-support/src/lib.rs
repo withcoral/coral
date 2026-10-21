@@ -155,11 +155,12 @@ impl TestDatabase {
     ///
     /// Fault-injection tests use this to install or remove a trigger after the
     /// fixture is arranged. Tests must not use it to arrange or read domain state.
+    /// Returns the rows the statements changed, so a rewrite can prove it matched.
     ///
     /// # Errors
     ///
     /// Returns an error when the connection or any statement fails.
-    pub async fn execute_fixture_sql(&self, sql: &str) -> Result<(), TestDatabaseError> {
+    pub async fn execute_fixture_sql(&self, sql: &str) -> Result<u64, TestDatabaseError> {
         use sqlx::Connection as _;
         let sql = sqlx::AssertSqlSafe(sql.to_owned());
         match &self.options {
@@ -168,16 +169,17 @@ impl TestDatabase {
                     &sqlx::sqlite::SqliteConnectOptions::new().filename(path),
                 )
                 .await?;
-                sqlx::raw_sql(sql).execute(&mut connection).await?;
+                let rows = sqlx::raw_sql(sql).execute(&mut connection).await?;
                 connection.close().await?;
+                Ok(rows.rows_affected())
             }
             DatabaseOptions::Postgres { url } => {
                 let mut connection = sqlx::PgConnection::connect(url).await?;
-                sqlx::raw_sql(sql).execute(&mut connection).await?;
+                let rows = sqlx::raw_sql(sql).execute(&mut connection).await?;
                 connection.close().await?;
+                Ok(rows.rows_affected())
             }
         }
-        Ok(())
     }
 
     async fn sqlite(plan: &MigrationPlan) -> Result<Self, TestDatabaseError> {

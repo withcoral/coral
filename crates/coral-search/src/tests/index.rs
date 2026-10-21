@@ -187,6 +187,77 @@ async fn a_timeout_waiting_for_the_writer_is_transient() {
 }
 
 #[tokio::test]
+async fn another_write_can_take_the_writer_while_a_write_builds_its_rows() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let entries = world.stored_entries(&world.tracer).await;
+    // The pause stands in for a slow row build.
+    let index = world
+        .index
+        .clone()
+        .with_stall_before_write(std::time::Duration::from_secs(2));
+    let database = world.modules.search.database.clone();
+
+    notify(&index, &entries);
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // SQLite's writer, or Postgres's lock on the Workspace's index writes.
+    let probe = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+        let mut probe = database.begin().await.expect("begin the probe");
+        crate::indexer::lock_workspace(&mut probe, &world.workspace)
+            .await
+            .expect("take the Workspace's index lock");
+        probe
+    })
+    .await
+    .expect("the writer is free while the rows build");
+    probe.rollback().await.expect("release the writer");
+    index.settled().await;
+
+    assert_eq!(
+        world.states().await,
+        [StateRow::complete(
+            &world.tracer,
+            &entries.generation_id().to_string(),
+            "Weather Tracer"
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_write_that_waited_for_the_writer_still_has_its_whole_limit() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let entries = world.stored_entries(&world.tracer).await;
+    // The wait and the write each take 60% of the limit: together they run
+    // past it, each alone stays within it.
+    let index = world
+        .index
+        .clone()
+        .with_write_limit(std::time::Duration::from_secs(2))
+        .with_stall_after_lock(std::time::Duration::from_millis(1_200));
+    let database = world.modules.search.database.clone();
+
+    let mut blocker = database.begin().await.expect("hold the writer");
+    crate::indexer::lock_workspace(&mut blocker, &world.workspace)
+        .await
+        .expect("hold the Workspace's index lock");
+    notify(&index, &entries);
+    tokio::join!(index.settled(), async {
+        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+        blocker.rollback().await.expect("release the writer");
+    });
+
+    assert_eq!(
+        world.states().await,
+        [StateRow::complete(
+            &world.tracer,
+            &entries.generation_id().to_string(),
+            "Weather Tracer"
+        )]
+    );
+}
+
+#[tokio::test]
 async fn a_failed_removal_leaves_the_superseded_generation_and_still_indexes_the_active_one() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
@@ -800,7 +871,28 @@ async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
         let error = state.error.expect("a failed state carries its error");
         assert!(error.contains(INJECTED_FAULT), "{error}");
 
-        let [event] = logs.events().try_into().expect("one log event");
+        let [times, event] = logs
+            .events()
+            .try_into()
+            .expect("the write's times, then its error");
+        assert_eq!(times.level, tracing::Level::INFO);
+        assert_eq!(
+            times.fields.get("workspace_id"),
+            Some(&world.workspace.to_string())
+        );
+        assert_eq!(
+            times.fields.get("succeeded").map(String::as_str),
+            Some("false")
+        );
+        for field in ["writer_wait_ms", "write_ms"] {
+            assert!(
+                times
+                    .fields
+                    .get(field)
+                    .is_some_and(|ms| ms.parse::<u64>().is_ok()),
+                "{field}"
+            );
+        }
         assert_eq!(event.level, tracing::Level::ERROR);
         assert_eq!(event.target, "coral_search::index");
         for (field, value) in [
@@ -1155,7 +1247,7 @@ async fn a_write_stalled_past_its_limit_rolls_back_and_frees_later_writes() {
     let first = logs
         .events()
         .into_iter()
-        .next()
+        .find(|event| event.level == tracing::Level::ERROR)
         .expect("the stalled write is logged");
     // SQLite's writer stalls the write before the Workspace's lock;
     // Postgres's table lock stalls it after.
