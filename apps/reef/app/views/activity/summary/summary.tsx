@@ -20,11 +20,20 @@ import {
 import { ContextImpact, describeContextImpact } from '../context-impact'
 import * as styles from './summary.css'
 
-const outcomes: Record<CallOutcome, { label: string; icon: IconName; spoken: string }> = {
+/** `spoken` follows a count; `spokenOne` replaces it after a count of one. */
+const outcomes: Record<
+  CallOutcome,
+  { label: string; icon: IconName; spoken: string; spokenOne?: string }
+> = {
   answered: { label: 'Answered', icon: 'CircleCheck', spoken: 'answered' },
   blocked: { label: 'Blocked by a rule', icon: 'ShieldBan', spoken: 'blocked' },
   notAllowed: { label: 'Not allowed', icon: 'UserRoundX', spoken: 'not allowed' },
-  needsSetup: { label: 'Needs setup', icon: 'Wrench', spoken: 'need setup' },
+  needsSetup: {
+    label: 'Needs setup',
+    icon: 'Wrench',
+    spoken: 'need setup',
+    spokenOne: 'needs setup',
+  },
   failed: { label: 'Failed', icon: 'CircleX', spoken: 'failed' },
   canceled: { label: 'Canceled', icon: 'CircleSlash', spoken: 'canceled' },
 }
@@ -50,6 +59,10 @@ const number = (value: number) => value.toLocaleString('en-US')
 const plural = (value: number, noun: string) => `${number(value)} ${noun}${value === 1 ? '' : 's'}`
 const percent = (part: number, whole: number) =>
   whole === 0 ? '0%' : `${Math.round((part / whole) * 100)}%`
+const counted = (outcome: CallOutcome, value: number) => {
+  const { spoken, spokenOne = spoken } = outcomes[outcome]
+  return `${number(value)} ${value === 1 ? spokenOne : spoken}`
+}
 const periodName = (days: SummaryDays) => (days === 1 ? '24 hours' : `${days} days`)
 const dayOptions = SUMMARY_DAYS.map((days) => ({ value: String(days), label: periodName(days) }))
 
@@ -95,7 +108,7 @@ export function StoppedTile({ calls }: { calls: CallOutcomes }) {
         total > 0
           ? stopReasons
               .filter((reason) => calls[reason] > 0)
-              .map((reason) => `${number(calls[reason])} ${outcomes[reason].spoken}`)
+              .map((reason) => counted(reason, calls[reason]))
               .join(' · ')
           : 'None'
       }
@@ -243,9 +256,7 @@ function StopSplit({ counts }: { counts: Record<StopReason, number> }) {
           <span key={reason} className={styles.labeled}>
             <Icon name={outcomes[reason].icon} size="14" color="tertiary" />
             <span aria-hidden>{number(counts[reason])}</span>
-            <span className={visuallyHidden}>
-              {`${number(counts[reason])} ${outcomes[reason].spoken}`}
-            </span>
+            <span className={visuallyHidden}>{counted(reason, counts[reason])}</span>
           </span>
         ))}
     </span>
@@ -417,6 +428,11 @@ export function ActivitySummary({
         <Typography.BodySmallStrong as="h2" variant="primary">
           {owner ? 'Activity by you and your agents' : 'Your activity'}
         </Typography.BodySmallStrong>
+        {pending && (
+          <Typography.BodySmall as="span" variant="tertiary" role="status">
+            Loading…
+          </Typography.BodySmall>
+        )}
         {onDaysChange ? (
           <SegmentedControl
             label="Period"

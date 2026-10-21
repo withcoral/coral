@@ -134,7 +134,7 @@ export const StillRunning: Story = {
   // Catches: a partial context total read as the whole window's.
   play: async ({ canvas }) => {
     await expect(canvas.getByText('Saved · Incomplete')).toBeVisible()
-    await expect(canvas.getByLabelText(/so far$/)).toBeVisible()
+    await expect(canvas.getByText(/so far$/)).toBeInTheDocument()
     const callers = canvas.getByRole('region', { name: 'Context by caller' })
     await expect(
       within(callers).getByText('Incomplete. Running and unmeasured runs are not counted.'),
@@ -146,12 +146,18 @@ export const NothingMeasuredYet: Story = {
   args: { summary: { ...quiet, contextImpactPartial: true } },
   // Catches: work that is still running shown as if no run happened.
   play: async ({ canvas }) => {
-    await expect(canvas.getByLabelText('Context impact incomplete')).toBeVisible()
+    await expect(canvas.getByText('Context impact incomplete')).toBeInTheDocument()
   },
 }
 
 // The numbers fade while the chosen period's numbers load.
-export const Pending: Story = { args: { days: 30, onDaysChange: () => {}, pending: true } }
+export const Pending: Story = {
+  args: { days: 30, onDaysChange: () => {}, pending: true },
+  // Catches: old numbers that only fade, with no status that says they are loading.
+  play: async ({ canvas }) => {
+    await expect(canvas.getByRole('status')).toHaveTextContent('Loading…')
+  },
+}
 
 export const ContextAdded: Story = { args: { summary: { ...busy, contextImpactBytes: '30500' } } }
 
@@ -161,7 +167,7 @@ export const Quiet: Story = {
   play: async ({ canvas }) => {
     await expect(canvas.getByText('No calls')).toBeVisible()
     await expect(canvas.getByText('No stopped calls.')).toBeVisible()
-    await expect(canvas.getByLabelText('No context impact')).toBeVisible()
+    await expect(canvas.getByText('No context impact')).toBeInTheDocument()
     await expect(canvas.getByText('No measured runs.')).toBeVisible()
   },
 }
@@ -190,7 +196,7 @@ export const OneDay: Story = {
   args: {
     days: 1,
     summary: {
-      calls: { answered: 38, blocked: 0, notAllowed: 1, needsSetup: 0, failed: 0, canceled: 0 },
+      calls: { answered: 38, blocked: 0, notAllowed: 1, needsSetup: 1, failed: 0, canceled: 0 },
       stopped: [
         {
           callPath: 'coral.providers.gmail.sendMessage',
@@ -199,10 +205,14 @@ export const OneDay: Story = {
           needsSetup: 0,
         },
       ],
-      operations: [{ callPath: 'coral.providers.gmail.listMessages', calls: 39 }],
+      operations: [{ callPath: 'coral.providers.gmail.listMessages', calls: 40 }],
       approvals: { approved: 3, declined: 1, medianWaitSeconds: 38 },
       contextImpactBytes: '-204800',
     },
+  },
+  // Catches: a count of one read with the plural verb, as in "1 need setup".
+  play: async ({ canvas }) => {
+    await expect(canvas.getByText('1 not allowed · 1 needs setup')).toBeVisible()
   },
 }
 

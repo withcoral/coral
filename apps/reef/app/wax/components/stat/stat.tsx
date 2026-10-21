@@ -3,6 +3,7 @@ import { useId, type ReactNode } from 'react'
 import { Icon, type IconName } from '../icon'
 import { NumberPopIn } from '../number-pop-in'
 import { Typography } from '../typography'
+import { visuallyHidden } from '../visually-hidden.css'
 import * as styles from './stat.css'
 
 export interface StatProps {
@@ -39,8 +40,11 @@ export function Stat({
           {label}
         </Typography.BodySmall>
       </span>
-      <Value as="span" className={styles.value} variant={variant} aria-label={valueLabel}>
-        <NumberPopIn value={value} />
+      <Value as="span" className={styles.value} variant={variant}>
+        <span aria-hidden={valueLabel ? true : undefined}>
+          <NumberPopIn value={value} />
+        </span>
+        {valueLabel && <span className={visuallyHidden}>{valueLabel}</span>}
       </Value>
       {detail && (
         <Typography.BodySmall as="span" variant="tertiary">

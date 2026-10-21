@@ -27,30 +27,40 @@ async function renderPage() {
 const visibility = (state: DocumentVisibilityState) =>
   vi.spyOn(document, 'visibilityState', 'get').mockReturnValue(state)
 
-// Catches: numbers that stay as the page first loaded them, or reads from a tab nobody sees.
+const focus = () => window.dispatchEvent(new Event('focus'))
+const visibilityChange = () => document.dispatchEvent(new Event('visibilitychange'))
+
+// Catches: numbers that stay as the page first loaded them, or a reload restarted by the
+// event that comes with it.
 it.each([
+  ['the tab becomes visible', visibilityChange],
+  ['the window gets focus', focus],
+  ['the interval passes', () => vi.advanceTimersByTime(30_000)],
   [
-    'the tab becomes visible',
-    () => document.dispatchEvent(new Event('visibilitychange')),
-    'Read 2',
+    'focus and a visibility change arrive together, once',
+    () => {
+      visibilityChange()
+      focus()
+    },
   ],
-  ['the window gets focus', () => window.dispatchEvent(new Event('focus')), 'Read 2'],
-  ['the interval passes', () => vi.advanceTimersByTime(30_000), 'Read 2'],
-  ['less than the interval passes', () => vi.advanceTimersByTime(29_000), 'Read 1'],
-])('reads again when %s', async (_, event, expected) => {
+])('reads again when %s', async (_, event) => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
   await renderPage()
+  visibility('visible')
   await act(async () => event())
-  expect(await screen.findByText(expected)).toBeTruthy()
+  expect(await screen.findByText('Read 2')).toBeTruthy()
 })
 
-it('reads nothing while the tab is hidden', async () => {
+// Catches: reads before the interval, or from a tab nobody sees.
+it.each([
+  ['less than the interval passes', 'visible', () => vi.advanceTimersByTime(29_000)],
+  ['the tab turns hidden', 'hidden', visibilityChange],
+  ['a hidden tab gets focus', 'hidden', focus],
+  ['the interval passes in a hidden tab', 'hidden', () => vi.advanceTimersByTime(90_000)],
+] as const)('reads nothing when %s', async (_, state, event) => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
   await renderPage()
-  visibility('hidden')
-  await act(async () => {
-    window.dispatchEvent(new Event('focus'))
-    vi.advanceTimersByTime(90_000)
-  })
+  visibility(state)
+  await act(async () => event())
   expect(screen.getByText('Read 1')).toBeTruthy()
 })
