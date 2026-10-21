@@ -8,10 +8,9 @@
 
 use async_trait::async_trait;
 use coral_catalog::{
-    ArgumentProblem, BuiltinArguments, BuiltinCredentialRoute, BuiltinOperation, ExecutionBinding,
-    MaterializedOperation, OperationKey, ProviderFacts, ProviderGenerationId,
+    ArgumentProblem, BuiltinArguments, BuiltinOperation, ExecutionBinding, MaterializedOperation,
+    OperationKey, ProviderFacts, ProviderGenerationId,
 };
-use coral_provider::access::CredentialRoute;
 use coral_provider::account::AccountModule;
 use coral_provider::{
     ManagementRequestId, ProviderModule, PublishedProvider, ResolvedInvocationOperation,
@@ -152,11 +151,7 @@ fn provider_facts(published: &PublishedProvider) -> ProviderFacts {
     let provider = &published.provider;
     ProviderFacts {
         display_name: provider.display_name().to_owned(),
-        credential_route: match provider.access().credential_route() {
-            CredentialRoute::None => BuiltinCredentialRoute::None,
-            CredentialRoute::Fixed => BuiltinCredentialRoute::Fixed,
-            CredentialRoute::Caller => BuiltinCredentialRoute::Caller,
-        },
+        credential_route: provider.access().credential_route().into(),
         authentication: published.authentication,
         operations: published.available_operations,
         account_required: published.account_required,

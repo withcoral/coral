@@ -2,9 +2,10 @@
 //! lost after the Dispatch Fence.
 
 use coral_catalog::{
-    BuiltinCredentialRoute, ConfigurationChoices, CreateProviderArguments, CreateProviderResult,
-    ProviderConfiguration, ProviderSourceArgument,
+    ConfigurationChoices, CreateProviderArguments, CreateProviderResult, ProviderConfiguration,
+    ProviderSourceArgument,
 };
+use coral_db::Transaction;
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::account::AccountModule;
 use coral_provider::{
@@ -12,8 +13,6 @@ use coral_provider::{
     PublishedProvider, SetupPublishability, WorkspaceProviderPublicationRequest,
 };
 use coral_workspace::WorkspaceId;
-
-use coral_db::Transaction;
 
 use super::{BuiltinHost, authority_error, provider_facts};
 use crate::error::InputProblem;
@@ -41,13 +40,10 @@ impl CreateProvider {
     /// The call for arguments the contract accepted. An MCP server is
     /// discovered with the same non-secret headers it is configured with.
     pub(super) fn new(arguments: CreateProviderArguments) -> Result<Self, Rejection> {
-        // The contract already checked the namespace syntax.
-        let namespace = ProviderNamespace::parse(&arguments.namespace).map_err(|_error| {
-            Rejection::invalid_input(
-                "namespace",
-                "use a JavaScript identifier of at most 128 bytes, such as `weather`",
-            )
-        })?;
+        // The contract checks the namespace with the same rule, so this does
+        // not fail.
+        let namespace = ProviderNamespace::parse(&arguments.namespace)
+            .map_err(|_error| Rejection::from(CoralFailure::InvalidInput))?;
         let source = match arguments.source {
             ProviderSourceArgument::OpenApiDocument(document) => {
                 ProviderSetupSource::OpenApiDocument(document)
@@ -65,11 +61,7 @@ impl CreateProvider {
         Ok(Self {
             namespace,
             source,
-            route: match arguments.credential_route {
-                BuiltinCredentialRoute::None => CredentialRoute::None,
-                BuiltinCredentialRoute::Fixed => CredentialRoute::Fixed,
-                BuiltinCredentialRoute::Caller => CredentialRoute::Caller,
-            },
+            route: arguments.credential_route.into(),
             choices: arguments.choices,
         })
     }
@@ -460,7 +452,12 @@ fn configuration_rejection(
     let problems: Vec<_> = confirmed
         .errors
         .iter()
-        .map(|error| InputProblem::new(program_field(&error.field), error.message.clone()))
+        .map(|error| {
+            InputProblem::new(
+                CreateProviderArguments::argument_for(&error.field),
+                error.message.clone(),
+            )
+        })
         .chain(confirmed.diagnostic.iter().map(|diagnostic| {
             InputProblem::new(
                 "source",
@@ -469,31 +466,4 @@ fn configuration_rejection(
         }))
         .collect();
     (!problems.is_empty()).then(|| Rejection::invalid_inputs(problems))
-}
-
-/// The `createProvider` argument for a stored configuration field address.
-fn program_field(field: &str) -> String {
-    // A server declaration is a JSON pointer that keys `servers`.
-    if field.starts_with("#/") {
-        return format!("servers.{field}");
-    }
-    for (stored, argument) in [
-        ("display_name", "displayName"),
-        ("request_headers", "requestHeaders"),
-        ("credential_fields", "credentialFields"),
-        ("authentication.fields", "credentialFields"),
-        ("application", "authentication.client"),
-        ("server", "servers"),
-    ] {
-        if field == stored {
-            return argument.to_owned();
-        }
-        if let Some(rest) = field
-            .strip_prefix(stored)
-            .and_then(|rest| rest.strip_prefix('.'))
-        {
-            return format!("{argument}.{rest}");
-        }
-    }
-    field.to_owned()
 }

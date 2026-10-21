@@ -143,6 +143,26 @@ pub enum CredentialRoute {
     Fixed,
 }
 
+impl From<coral_catalog::BuiltinCredentialRoute> for CredentialRoute {
+    fn from(route: coral_catalog::BuiltinCredentialRoute) -> Self {
+        match route {
+            coral_catalog::BuiltinCredentialRoute::None => Self::None,
+            coral_catalog::BuiltinCredentialRoute::Fixed => Self::Fixed,
+            coral_catalog::BuiltinCredentialRoute::Caller => Self::Caller,
+        }
+    }
+}
+
+impl From<CredentialRoute> for coral_catalog::BuiltinCredentialRoute {
+    fn from(route: CredentialRoute) -> Self {
+        match route {
+            CredentialRoute::None => Self::None,
+            CredentialRoute::Fixed => Self::Fixed,
+            CredentialRoute::Caller => Self::Caller,
+        }
+    }
+}
+
 /// Workspace configuration that exposes one Provider under one Call Root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderAccess {

@@ -306,6 +306,38 @@ impl CreateProviderArguments {
     }
 }
 
+impl CreateProviderArguments {
+    /// The argument a Program corrects for a configuration field that Coral
+    /// reports when it reads or confirms the configuration, such as
+    /// `requestHeaders.Host` for `request_headers.Host`.
+    #[must_use]
+    pub fn argument_for(configuration_field: &str) -> String {
+        // A server declaration is a JSON pointer that keys `servers`.
+        if configuration_field.starts_with("#/") {
+            return format!("servers.{configuration_field}");
+        }
+        for (stored, argument) in [
+            ("display_name", "displayName"),
+            ("request_headers", "requestHeaders"),
+            ("credential_fields", "credentialFields"),
+            ("authentication.fields", "credentialFields"),
+            ("application", "authentication.client"),
+            ("server", "servers"),
+        ] {
+            if configuration_field == stored {
+                return argument.to_owned();
+            }
+            if let Some(rest) = configuration_field
+                .strip_prefix(stored)
+                .and_then(|rest| rest.strip_prefix('.'))
+            {
+                return format!("{argument}.{rest}");
+            }
+        }
+        configuration_field.to_owned()
+    }
+}
+
 /// What `createProvider` returns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(tag = "status", rename_all = "snake_case")]

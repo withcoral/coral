@@ -157,8 +157,8 @@ impl BuiltinCatalog {
                 None,
             ),
             hints,
-            input: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-            output: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            input: empty_object_schema(),
+            output: empty_object_schema(),
         }));
         Self::from_definitions(definitions)
     }
@@ -331,9 +331,19 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
+/// An object with no fields.
+fn empty_object_schema() -> Value {
+    json!({ "type": "object", "properties": {}, "additionalProperties": false })
+}
+
 /// The schema a Program is typed from, derived from `T` as Coral reads it
 /// (`Contract::Deserialize`) or writes it (`Contract::Serialize`). It states
 /// no defaults or titles: a description says what an omitted argument means.
+///
+/// schemars turns rustdoc into a `description`, and no transform can tell it
+/// from text written for Programs. So a type or field whose rustdoc is not for
+/// Programs sets `#[schemars(description = "")]`, and Program text goes in
+/// `#[schemars(description = "...")]`, as in coral-mcp.
 fn derived_schema<T: JsonSchema>(contract: Contract) -> Value {
     SchemaSettings::draft2020_12()
         .with(|settings| {

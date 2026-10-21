@@ -380,9 +380,45 @@ fn credential_headers_are_rejected_by_their_exact_name() {
         ("X-Client-Secret", true),
         ("Idempotency-Key", false),
     ] {
-        let parsed = CreateProviderArguments::parse(&valid_with(
+        let problems = CreateProviderArguments::parse(&valid_with(
             json!({ "requestHeaders": { header: "value" } }),
-        ));
-        assert_eq!(parsed.is_err(), rejected, "{header}");
+        ))
+        .err()
+        .unwrap_or_default();
+        let found = problems
+            .iter()
+            .map(|problem| (problem.field(), problem.reason()))
+            .collect::<Vec<_>>();
+        let field = format!("requestHeaders.{header}");
+        let expected = if rejected {
+            vec![(field.as_str(), HEADER_REASON)]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(found, expected, "{header}");
+    }
+}
+
+// Catches: a configuration problem Coral finds in the source naming a field
+// the Program never wrote, so it cannot tell what to correct.
+#[test]
+fn a_configuration_field_names_the_argument_to_correct() {
+    for (configuration_field, argument) in [
+        ("#/servers", "servers.#/servers"),
+        ("display_name", "displayName"),
+        ("request_headers.Host", "requestHeaders.Host"),
+        ("credential_fields.token", "credentialFields.token"),
+        ("authentication.fields.token", "credentialFields.token"),
+        ("application", "authentication.client"),
+        ("server", "servers"),
+        ("authentication", "authentication"),
+        // Only a whole segment is renamed.
+        ("servers_extra", "servers_extra"),
+    ] {
+        assert_eq!(
+            CreateProviderArguments::argument_for(configuration_field),
+            argument,
+            "{configuration_field}"
+        );
     }
 }

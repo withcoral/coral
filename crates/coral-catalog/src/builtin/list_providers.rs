@@ -4,11 +4,11 @@
 use schemars::JsonSchema;
 use schemars::generate::Contract;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::{
-    ArgumentProblem, BuiltinOperation, Definition, ProviderFacts, derived_schema, operation_result,
-    words_schema,
+    ArgumentProblem, BuiltinOperation, Definition, ProviderFacts, derived_schema,
+    empty_object_schema, operation_result, words_schema,
 };
 use crate::{OperationHints, OperationPresentation};
 
@@ -32,7 +32,7 @@ pub(super) fn definition() -> Definition {
         ),
         // Read-only: the default Operation Access State is enabled.
         hints: OperationHints::new(Some(true), None, Some(true), None),
-        input: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+        input: empty_object_schema(),
         output: derived_schema::<ListProvidersResult>(Contract::Serialize),
     }
 }
@@ -124,5 +124,5 @@ impl JsonSchema for ListedProviderState {
 /// The only arguments `listProviders` takes, for its conformance test.
 #[cfg(test)]
 pub(super) fn valid_arguments() -> Vec<Value> {
-    vec![json!({})]
+    vec![serde_json::json!({})]
 }
