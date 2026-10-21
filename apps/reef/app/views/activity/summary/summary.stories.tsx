@@ -204,6 +204,12 @@ export const OneDay: Story = {
           notAllowed: 1,
           needsSetup: 0,
         },
+        {
+          callPath: 'coral.providers.salesforce.getAccount',
+          blocked: 0,
+          notAllowed: 0,
+          needsSetup: 1,
+        },
       ],
       operations: [{ callPath: 'coral.providers.gmail.listMessages', calls: 40 }],
       approvals: { approved: 3, declined: 1, medianWaitSeconds: 38 },

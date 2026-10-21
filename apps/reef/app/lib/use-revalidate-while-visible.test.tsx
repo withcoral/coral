@@ -1,6 +1,6 @@
 /** @vitest-environment happy-dom */
 import { act, cleanup, render, screen } from '@testing-library/react'
-import { createRoutesStub, useLoaderData } from 'react-router'
+import { createRoutesStub, useLoaderData, useRevalidator } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 import { useRevalidateWhileVisible } from './use-revalidate-while-visible'
 
@@ -12,12 +12,25 @@ afterEach(() => {
 
 function Page() {
   useRevalidateWhileVisible(30_000)
-  return <p>{`Read ${useLoaderData<number>()}`}</p>
+  const { revalidate } = useRevalidator()
+  return (
+    <>
+      <p>{`Read ${useLoaderData<number>()}`}</p>
+      {/* A reload the router starts on its own, as after an action. */}
+      <button onClick={() => void revalidate()}>Reload</button>
+    </>
+  )
 }
 
-async function renderPage() {
+/** Renders the page. Each read waits for `gate` when one is given. */
+async function renderPage(gate?: Promise<void>) {
   let reads = 0
-  const Stub = createRoutesStub([{ path: '/', Component: Page, loader: () => ++reads }])
+  const loader = async () => {
+    const read = ++reads
+    if (read > 1) await gate
+    return read
+  }
+  const Stub = createRoutesStub([{ path: '/', Component: Page, loader }])
   render(<Stub />)
   await screen.findByText('Read 1')
   // The page listens once its effects run.
@@ -63,4 +76,17 @@ it.each([
   visibility(state)
   await act(async () => event())
   expect(screen.getByText('Read 1')).toBeTruthy()
+})
+
+// Catches: a refresh that restarts a reload the router already runs.
+it('waits for a reload the router started', async () => {
+  let open!: () => void
+  await renderPage(new Promise<void>((resolve) => (open = resolve)))
+  visibility('visible')
+  await act(async () => screen.getByRole('button', { name: 'Reload' }).click())
+  await act(async () => focus())
+  await act(async () => open())
+  expect(await screen.findByText('Read 2')).toBeTruthy()
+  await act(async () => {})
+  expect(screen.queryByText('Read 3')).toBeNull()
 })
