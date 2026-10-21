@@ -9,7 +9,9 @@
   Conventional Commits, `type(scope): summary`, and keep the title current as
   the branch changes. Only `feat`, `fix`, `perf`, and breaking (`type!:`)
   titles open a release PR and reach the changelog, so give a user-visible
-  change one of those.
+  change one of those. The scope appears in the release notes, so name what a
+  user sees, not an internal codename: `ui` for Reef and Wax, never `reef`.
+  `.github/workflows/pr.yml` lists the rejected scopes.
 - Tracker conventions, triage labels, and domain-document rules are under
   `docs/agents/`.
 
