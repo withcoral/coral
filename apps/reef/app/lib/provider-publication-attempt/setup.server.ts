@@ -182,8 +182,8 @@ export function setupView(s: ProviderSetup): SetupView {
 }
 
 /**
- * What an agent asked the Setup to publish. A route this Reef does not know
- * leaves the account question to the person, and the Setup is still the agent's.
+ * What a Program asked the Setup to publish. A route this Reef does not know
+ * leaves the account question to the person, and the Setup is still the Program's.
  */
 function setupRequest(s: ProviderSetup): Pick<SetupView, 'request'> {
   return s.request

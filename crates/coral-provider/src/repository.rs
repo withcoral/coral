@@ -824,12 +824,13 @@ pub(super) async fn setup(
     row.map(SetupRow::decode).transpose()
 }
 
-/// The Setups that Programs asked `actor` to finish in `owner`, in one of
-/// `states` and not consumed, oldest first.
+/// The Setups that Programs asked `actor` to finish in `owner`, created after
+/// `created_after`, in one of `states` and not consumed, oldest first.
 pub(super) async fn requested_setups(
     executor: impl QueryExecutor,
     owner: &WorkspaceId,
     actor: &UserId,
+    created_after: i64,
     states: &[ProviderSetupState],
 ) -> Result<Vec<LoadedSetup>, Error> {
     let rows: Vec<SetupRow> = executor
@@ -840,6 +841,7 @@ pub(super) async fn requested_setups(
                 .and_where(exact_setup_owner(owner))
                 .and_where(Expr::col(ProviderSetups::ActorUserId).eq(actor.as_str()))
                 .and_where(Expr::col(ProviderSetups::RequestedNamespace).is_not_null())
+                .and_where(Expr::col(ProviderSetups::CreatedAtUnixNanos).gt(created_after))
                 .and_where(
                     Expr::col(ProviderSetups::State)
                         .is_in(states.iter().map(ProviderSetupState::as_storage_str)),

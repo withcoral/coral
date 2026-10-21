@@ -230,6 +230,11 @@ const redirectDone: Partial<SetupView> = {
   credentialMethod: 'oauth',
   authorization: { ...deviceDone.authorization!, userCode: undefined },
 }
+// A Setup that a Program's createProvider call prepared.
+const programSetup: Partial<SetupView> = {
+  ...redirectDone,
+  request: { namespace: 'weather', route: 'caller' },
+}
 
 it.each([
   // The device sign-in lands while this page revalidates in the first tab.
@@ -239,6 +244,8 @@ it.each([
   ['a redirect sign-in', 'caller', true, redirectDone, redirectDone, true],
   // Add provider is unavailable, so the sign-in cannot send it either.
   ['a sign-in with an invalid namespace', 'caller', true, redirectDone, redirectDone, false, true],
+  // The person confirms a Program's provider with Add provider.
+  ["a sign-in for a Program's Setup", 'caller', true, programSetup, programSetup, false],
 ] as const)(
   'adds the provider without asking again after %s',
   async (_case, account, returnFromConnect, before, after, adds, disabled: boolean = false) => {

@@ -12,14 +12,16 @@ use crate::Error;
 /// Lists every Provider in the Workspace, with what each offers the invoking
 /// User, and the Setups its `createProvider` calls left for a person to finish.
 pub(super) async fn perform(host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
-    let providers = host
-        .providers
-        .published_providers(host.context.actor(), host.workspace_id)
-        .await
-        .map_err(authority_error)?;
+    // Setups first: one published between the two reads is then in both
+    // lists, never in neither, which a Program would read as ended.
     let setups = host
         .providers
         .open_requested_setups(host.context.actor(), host.workspace_id, host.run.now()?)
+        .await
+        .map_err(authority_error)?;
+    let providers = host
+        .providers
+        .published_providers(host.context.actor(), host.workspace_id)
         .await
         .map_err(authority_error)?;
     Ok(ListProvidersResult {
@@ -55,9 +57,8 @@ fn listed_setup(host: &BuiltinHost<'_>, setup: &ProviderSetup) -> Option<ListedS
     let request = setup.request()?;
     let state = match setup.state() {
         ProviderSetupState::AwaitingConfiguration => ListedSetupState::AwaitingConfiguration,
-        ProviderSetupState::AwaitingAuthorization | ProviderSetupState::AwaitingDiscovery => {
-            ListedSetupState::AwaitingSignIn
-        }
+        ProviderSetupState::AwaitingAuthorization => ListedSetupState::AwaitingSignIn,
+        ProviderSetupState::AwaitingDiscovery => ListedSetupState::AwaitingDiscovery,
         ProviderSetupState::Ready => ListedSetupState::Ready,
         ProviderSetupState::Consumed(_)
         | ProviderSetupState::Expired

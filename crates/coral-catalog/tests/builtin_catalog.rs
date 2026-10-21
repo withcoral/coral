@@ -74,7 +74,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 "export default function (input: Record<string, never>)",
                 r#"{ "providers": Array<Provider>; "setups": Array<ProviderSetup> }"#,
                 // What a person does next on a Setup a Program asked for.
-                r#""state": "awaiting_configuration" | "awaiting_sign_in" | "ready""#,
+                r#""state": "awaiting_configuration" | "awaiting_sign_in" | "awaiting_discovery" | "ready""#,
                 // The Built-in Provider has no namespace.
                 r#""namespace": null | string"#,
                 r#""state": "active" | "disabled""#,

@@ -28,7 +28,7 @@ type WorkspaceChoices = {
   account: AccountChoice | null
   /**
    * The person clicked Connect on the account question and left to sign in to
-   * the service; this page is their return. Only `accountStep` reads it.
+   * the service; this page is their return. Only `accountStep` decides on it.
    */
   returnFromConnect?: boolean
   /** Exact Setup grant explicitly reviewed for shared or self use. */
@@ -280,7 +280,7 @@ export function reviseAttempt(
 
 /**
  * Consumption preserves committed requests; configuration edits discard request identity.
- * An agent's link names only the Setup, so the namespace it asked for comes from the
+ * A Program's link names only the Setup, so the namespace it asked for comes from the
  * Setup until the person chooses one.
  */
 export function reconcileAttempt(attempt: CreationAttempt, setup: SetupView | null): CreationAttempt
@@ -440,9 +440,9 @@ export type AccountPlan =
  * just made can be kept as that account.
  *
  * A sign-in in hand is kept by default, whichever route the attempt names. A
- * route not chosen yet is the one the agent asked for. An agent's own-account
+ * route not chosen yet is the one the Program asked for. A Program's own-account
  * Setup opens on Connect: a confidential application takes its secret only at
- * that sign-in, so connecting later could not add the provider. An agent's
+ * that sign-in, so connecting later could not add the provider. A Program's
  * Setup never adds itself: the person confirms the finished provider with
  * Add provider.
  */

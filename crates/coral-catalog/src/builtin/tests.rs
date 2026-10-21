@@ -229,6 +229,10 @@ fn each_result_meets_its_output_schema() {
                     BuiltinCredentialRoute::None,
                     ListedSetupState::AwaitingConfiguration,
                 ),
+                (
+                    BuiltinCredentialRoute::Caller,
+                    ListedSetupState::AwaitingDiscovery,
+                ),
             ]
             .into_iter()
             .map(|(credential_route, state)| ListedSetup {

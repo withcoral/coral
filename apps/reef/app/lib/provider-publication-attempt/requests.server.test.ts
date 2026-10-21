@@ -128,13 +128,14 @@ describe('atomic publication', () => {
   })
 })
 
-// Catches: an agent's link that names only its Setup losing the namespace and
-// route the agent asked for, or a route this Reef does not know making the
-// agent's Setup look like one a person started.
-describe("loading an agent's link", () => {
+// Catches: a Program's link that names only its Setup losing the namespace and
+// route the Program asked for, or a route this Reef does not know making the
+// Program's Setup look like one a person started.
+describe("loading a Program's link", () => {
   const parent = 'workspaces/11111111-1111-4111-8111-111111111111'
   const id = '29a180e5-397c-4844-92de-8bbea6066235'
   it.each([
+    [CredentialRoute_Kind.NONE, { namespace: 'weather', route: 'none' }],
     [CredentialRoute_Kind.CALLER, { namespace: 'weather', route: 'caller' }],
     [CredentialRoute_Kind.FIXED, { namespace: 'weather', route: 'fixed' }],
     [99 as CredentialRoute_Kind, { namespace: 'weather', route: null }],

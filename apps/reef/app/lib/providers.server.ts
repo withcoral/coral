@@ -303,14 +303,7 @@ export async function providerView(
 
 /** Whose account a provider's calls use, from its credential route. */
 export function accountChoice(route: CredentialRoute | undefined): AccountChoice {
-  switch (route?.kind) {
-    case CredentialRoute_Kind.FIXED:
-      return 'fixed'
-    case CredentialRoute_Kind.CALLER:
-      return 'caller'
-    default:
-      return 'none'
-  }
+  return routeChoice(route) ?? 'none'
 }
 
 /**

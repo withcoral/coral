@@ -201,7 +201,7 @@ impl ProviderModule {
 
     /// The Setups that Programs prepared as `actor` and a person can still
     /// finish, oldest first. A Setup past its deadline is left out, though it
-    /// expires only when it is next read.
+    /// expires only when it is next read, so the query reads none of them.
     ///
     /// # Errors
     ///
@@ -214,17 +214,17 @@ impl ProviderModule {
         now: i64,
     ) -> Result<Vec<ProviderSetup>, Error> {
         self.require_owner_inspection(actor, owner).await?;
+        // Each Setup's deadline is a fixed time after it was created.
+        let created_after =
+            now.saturating_sub(crate::setup_credentials::SETUP_CREDENTIAL_LIFETIME_NANOS);
         let setups = crate::repository::requested_setups(
             self.database.as_ref(),
             owner,
             actor.user_id(),
+            created_after,
             &ProviderSetupState::OPEN,
         )
         .await?;
-        Ok(setups
-            .into_iter()
-            .map(|loaded| loaded.setup)
-            .filter(|setup| !setup.is_past_deadline(now))
-            .collect())
+        Ok(setups.into_iter().map(|loaded| loaded.setup).collect())
     }
 }

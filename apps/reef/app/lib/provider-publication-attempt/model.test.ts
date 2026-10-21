@@ -143,7 +143,7 @@ describe('attemptProgress', () => {
     ],
   ])("opens the agent's link for %s at the operations", (_, route, over, stage, next) => {
     // The link Coral returns when a createProvider call needs sign-in names
-    // only the Setup, which holds the namespace and route the agent asked for.
+    // only the Setup, which holds the namespace and route the Program asked for.
     const requested = {
       ...setup,
       ...over,
@@ -158,7 +158,7 @@ describe('attemptProgress', () => {
     expect(attemptProgress(acceptOperations(attempt), requested).stage).toBe(next)
   })
 
-  it("keeps a namespace the person chose over the agent's", () => {
+  it("keeps a namespace the person chose over the Program's", () => {
     const requested = { ...setup, request: { namespace: 'weather', route: 'fixed' as const } }
     const attempt = parseAttempt(
       'workspace',
@@ -337,14 +337,14 @@ describe('accepting the listed operations', () => {
   })
 })
 
-/** A Setup an agent's createProvider call prepared, asking for `route`. */
-const agent = (route: 'fixed' | 'caller') => ({ request: { namespace: 'weather', route } })
+/** A Setup a Program's createProvider call prepared, asking for `route`. */
+const requested = (route: 'fixed' | 'caller') => ({ request: { namespace: 'weather', route } })
 
 describe('accountStep', () => {
   const grant = '33333333-3333-4333-8333-333333333333'
   const setup = { ...mcpSetup, state: 'ready' as const }
   const held = { authorized: true, provisionalGrantId: grant }
-  // Catches: an agent's Setup added with no "Add provider" click once a
+  // Catches: a Program's Setup added with no "Add provider" click once a
   // sign-in lands, a person's own sign-in no longer adding it, or the account
   // question opening on an outcome nobody chose.
   it.each([
@@ -362,33 +362,33 @@ describe('accountStep', () => {
       true,
     ],
     ['shared, back from Connect', 'account=fixed&returnFromConnect=1', held, 'shared-keep', true],
-    ["the agent's shared account", '', agent('fixed'), 'shared-connect', false],
+    ["the Program's shared account", '', requested('fixed'), 'shared-connect', false],
     [
-      "the agent's shared account in hand",
+      "the Program's shared account in hand",
       '',
-      { ...agent('fixed'), ...held },
+      { ...requested('fixed'), ...held },
       'shared-keep',
       false,
     ],
-    ["the agent's own accounts", '', agent('caller'), 'own-connect', false],
+    ["the Program's own accounts", '', requested('caller'), 'own-connect', false],
     [
-      "the agent's own accounts, back from Connect",
+      "the Program's own accounts, back from Connect",
       'account=caller&returnFromConnect=1',
-      { ...agent('caller'), ...held },
+      { ...requested('caller'), ...held },
       'own-keep',
       false,
     ],
     [
-      'an agent route this Reef does not know, back from Connect',
+      "a Program's route this Reef does not know, back from Connect",
       'account=caller&returnFromConnect=1',
       { request: { namespace: 'weather', route: null }, ...held },
       'own-keep',
       false,
     ],
     [
-      "the agent's shared account, back from Connect",
+      "the Program's shared account, back from Connect",
       'account=fixed&returnFromConnect=1',
-      { ...agent('fixed'), ...held },
+      { ...requested('fixed'), ...held },
       'shared-keep',
       false,
     ],

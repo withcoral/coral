@@ -151,8 +151,10 @@ pub struct ListedSetup {
     #[schemars(
         description = "What the person does next: awaiting_configuration to confirm how Coral \
                        reads the source, awaiting_sign_in to sign in so that Coral can read its \
-                       Operations, or ready to add the Provider, signing in first when its \
-                       route needs an account."
+                       Operations, awaiting_discovery to try again on the page when Coral could \
+                       not read the Operations after the sign-in (the person does not sign in \
+                       again), or ready to add the Provider, signing in first when its route \
+                       needs an account."
     )]
     pub state: ListedSetupState,
     /// The Coral UI page where a person finishes it.
@@ -171,6 +173,9 @@ pub enum ListedSetupState {
     AwaitingConfiguration,
     /// The person signs in so that Coral can read the source's Operations.
     AwaitingSignIn,
+    /// The person signed in, but Coral has not read the source's Operations.
+    /// The person tries again, without a new sign-in.
+    AwaitingDiscovery,
     /// Coral read the source. The person adds the Provider, after signing in
     /// when its route needs an Account.
     Ready,
@@ -186,7 +191,12 @@ impl JsonSchema for ListedSetupState {
     }
 
     fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        words_schema(&["awaiting_configuration", "awaiting_sign_in", "ready"])
+        words_schema(&[
+            "awaiting_configuration",
+            "awaiting_sign_in",
+            "awaiting_discovery",
+            "ready",
+        ])
     }
 }
 
