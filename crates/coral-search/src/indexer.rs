@@ -105,6 +105,10 @@ impl IndexError {
 pub(crate) trait EntityIndexer: Send + Sync {
     /// What a notification hands over, prepared by the owner.
     type Entry: Send + Sync;
+    /// What an entry becomes before its write begins.
+    type Rows<'e>: Send + Sync
+    where
+        Self: 'e;
     /// What a removal names; `Infallible` when a database cascade removes.
     type Removal: Send + Sync;
     /// What the reconcile task compares the index against.
@@ -114,7 +118,12 @@ pub(crate) trait EntityIndexer: Send + Sync {
     /// [`lock_workspace`], before it writes the entry.
     fn workspace_id<'e>(&self, entry: &'e Self::Entry) -> &'e WorkspaceId;
 
-    /// Writes the entry's rows and state, all or nothing within the
+    /// Builds the entry's rows. The caller builds them before it begins the
+    /// write, so the work holds no lock: a large Provider's text takes far
+    /// longer to build than to write.
+    fn rows<'e>(&self, entry: &'e Self::Entry) -> Result<Self::Rows<'e>, IndexError>;
+
+    /// Writes the entry's `rows` and state, all or nothing within the
     /// transaction. Writing the same entry again leaves the same rows. The
     /// caller holds the entry's Workspace lock, so the write's statistics
     /// count sees every write of that Workspace before it.
@@ -122,6 +131,7 @@ pub(crate) trait EntityIndexer: Send + Sync {
         &self,
         transaction: &mut Transaction<'_>,
         entry: &Self::Entry,
+        rows: &Self::Rows<'_>,
     ) -> Result<(), IndexError>;
 
     /// Removes the rows and state the removal names.

@@ -156,6 +156,29 @@ async fn a_timeout_after_the_workspace_lock_waits_for_a_newer_coral_version() {
 }
 
 #[tokio::test]
+async fn building_the_rows_does_not_count_against_the_write_limit() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let entries = world.stored_entries(&world.tracer).await;
+    let slow_build = world
+        .index
+        .clone()
+        .with_write_limit(std::time::Duration::from_millis(100))
+        .with_stall_before_write(std::time::Duration::from_millis(300));
+
+    notify(&slow_build, &entries);
+    slow_build.settled().await;
+    assert_eq!(
+        world.states().await,
+        [StateRow::complete(
+            &world.tracer,
+            &entries.generation_id().to_string(),
+            "Weather Tracer"
+        )]
+    );
+}
+
+#[tokio::test]
 async fn a_timeout_waiting_for_the_writer_is_transient() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
