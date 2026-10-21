@@ -243,6 +243,18 @@ describe('architecture', () => {
     expect(violations).toEqual([])
   })
 
+  it('gives every reload-document form local submission feedback', () => {
+    const violations = filesUnder(viewsDir, isVisualTsx).flatMap((file) => {
+      const source = fs.readFileSync(file, 'utf8')
+      if (!/<Form\b[^>]*\breloadDocument\b/s.test(source)) return []
+      return importsFrom(source).includes('@/components/document-submit-button')
+        ? []
+        : [`${path.relative(appDir, file)}: use DocumentSubmitButton with reloadDocument`]
+    })
+
+    expect(violations).toEqual([])
+  })
+
   it('keeps low-level UI libraries behind Wax', () => {
     const violations = filesUnder(appDir, (name) => /\.tsx?$/.test(name))
       .filter((file) => !file.startsWith(path.join(appDir, 'wax') + path.sep))

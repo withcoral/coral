@@ -1,11 +1,12 @@
 import { Form } from 'react-router'
 import { isOAuthMethod } from '@/lib/provider-publication-attempt/model'
-import { Button, Inputs } from '@/wax/components'
+import { Inputs } from '@/wax/components'
 import { Fields } from '@/views/management/forms'
 import { OAuthApplicationBlock } from './oauth-application'
 import { SignInProgress, SignInStatus, signInLabel } from './setup-steps'
 import { CredentialFields } from '@/views/management/credential-fields'
 import type { FormContext, SetupView } from './types'
+import { DocumentSubmitButton } from '@/components/document-submit-button'
 import * as styles from './providers.css'
 
 /** Authorization stays provisional until the owner explicitly selects it for publication. */
@@ -53,9 +54,12 @@ export function UpdateAuthorization({
             </CredentialFields>
           )}
           {!formId && (
-            <Button.TextButton type="submit" disabled={pending}>
-              {oauth ? signInLabel(setup, pending) : 'Authorize replacement'}
-            </Button.TextButton>
+            <DocumentSubmitButton
+              busyStatus={oauth ? 'Opening sign-in…' : 'Authorizing…'}
+              disabled={pending}
+            >
+              {oauth ? signInLabel(setup, false) : 'Authorize replacement'}
+            </DocumentSubmitButton>
           )}
         </Form>
       )}

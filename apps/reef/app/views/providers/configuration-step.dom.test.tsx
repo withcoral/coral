@@ -186,6 +186,23 @@ it('drops the requirement when the person types their own server URL', async () 
   expect(step.submitted()).toBe(true)
 })
 
+// Catches: a large document leaving Next unchanged while Coral confirms its
+// configuration and prepares the operation list.
+it('shows progress as soon as Next submits the configuration', async () => {
+  await renderStep(null)
+  const submitter = next()
+  const form = document.getElementById(submitter.getAttribute('form')!)!
+
+  await act(async () =>
+    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter })),
+  )
+
+  expect(next()).toHaveAttribute('aria-busy', 'true')
+  expect(next()).toHaveAttribute('aria-disabled', 'true')
+  expect(next()).not.toBeDisabled()
+  expect(document.querySelector('[role="status"]')).toHaveTextContent('Confirming…')
+})
+
 // Catches: a disabled Next that cannot say why, or that submits anyway. The
 // tooltip and focus name the field; no extra error appears under it.
 it('moves focus to the missing answer when Next is pressed, and submits nothing', async () => {

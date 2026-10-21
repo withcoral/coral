@@ -1,5 +1,5 @@
 import { Form } from 'react-router'
-import { Banner, Button, Inputs, Typography } from '@/wax/components'
+import { Banner, Inputs, Typography } from '@/wax/components'
 import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
 import { Fields } from '@/views/management/forms'
@@ -8,6 +8,7 @@ import { useArrivalToast } from '@/lib/use-arrival-toast'
 import { UpdateSource } from './update-source'
 import type { UpdatePageProps } from './types'
 import { StepPage } from './step-frame'
+import { DocumentSubmitButton } from '@/components/document-submit-button'
 import * as styles from './providers.css'
 
 /**
@@ -82,7 +83,9 @@ export function UpdatePage({
                     Replacement client secret
                   </Typography.BodySmallStrong>
                   <Inputs.CredentialInput id="replacement-client-secret" name="clientSecret" />
-                  <Button.TextButton type="submit">Replace secret</Button.TextButton>
+                  <DocumentSubmitButton busyStatus="Replacing…">
+                    Replace secret
+                  </DocumentSubmitButton>
                 </Form>
               </Disclosure>
             )}

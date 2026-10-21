@@ -4,6 +4,7 @@ import { signInFormTarget } from '@/lib/device-sign-in'
 
 import { Banner, Button, Inputs, Typography } from '@/wax/components'
 import { EmptyPage } from '@/components/empty-page'
+import { DocumentSubmitButton } from '@/components/document-submit-button'
 import * as Dialog from '@/wax/components/dialog'
 import { Fields } from '@/views/management/forms'
 import { DeviceCodeDialog } from '@/views/accounts/device-code'
@@ -135,9 +136,9 @@ export function ContinueSignIn({
           triggerLabel="Continue sign-in"
         />
       ) : (
-        <Button.TextButton type="submit" disabled={pending}>
+        <DocumentSubmitButton busyStatus="Opening sign-in…" disabled={pending}>
           Continue sign-in
-        </Button.TextButton>
+        </DocumentSubmitButton>
       )}
     </Form>
   )
@@ -283,13 +284,13 @@ export function DiscoveryPrompt({
                     >
                       Cancel
                     </Button.TextButton>
-                    <Button.TextButton type="submit" form={formId} disabled={pending}>
-                      {bearer
-                        ? pending
-                          ? 'Reading…'
-                          : 'List operations'
-                        : signInLabel(setup, pending)}
-                    </Button.TextButton>
+                    <DocumentSubmitButton
+                      form={formId}
+                      busyStatus={bearer ? 'Reading…' : 'Opening sign-in…'}
+                      disabled={pending}
+                    >
+                      {bearer ? 'List operations' : signInLabel(setup, false)}
+                    </DocumentSubmitButton>
                   </Dialog.Actions>
                 </Dialog.Popup>
               </Dialog.Portal>
@@ -428,9 +429,9 @@ export function DiscoveryStep({
           </Form>
           <div className={styles.stepActions}>
             {back}
-            <Button.TextButton type="submit" form={formId} size="36" disabled={pending}>
-              {pending ? 'Reading…' : 'List operations'}
-            </Button.TextButton>
+            <DocumentSubmitButton form={formId} size="36" busyStatus="Reading…" disabled={pending}>
+              List operations
+            </DocumentSubmitButton>
           </div>
         </>
       ) : canStart ? (
@@ -460,9 +461,14 @@ export function DiscoveryStep({
           {expiry}
           <div className={styles.stepActions}>
             {back}
-            <Button.TextButton type="submit" form={formId} size="36" disabled={pending}>
-              {signInLabel(setup, pending)}
-            </Button.TextButton>
+            <DocumentSubmitButton
+              form={formId}
+              size="36"
+              busyStatus="Opening sign-in…"
+              disabled={pending}
+            >
+              {signInLabel(setup, false)}
+            </DocumentSubmitButton>
           </div>
         </>
       ) : (

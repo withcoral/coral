@@ -8,6 +8,7 @@ import { ManagementLayout, trail } from '@/views/management/layout'
 import type { AuthorizationView } from './types'
 import { DeviceCodeDialog } from './device-code'
 import { oauthFailureMessage } from './oauth-failure'
+import { DocumentSubmitButton } from '@/components/document-submit-button'
 import * as styles from './accounts.css'
 
 export function AuthorizationPage({
@@ -69,7 +70,9 @@ export function AuthorizationPage({
                 triggerLabel="Continue to sign in"
               />
             ) : (
-              <Button.TextButton type="submit">Continue to sign in</Button.TextButton>
+              <DocumentSubmitButton busyStatus="Opening sign-in…">
+                Continue to sign in
+              </DocumentSubmitButton>
             )}
           </Form>
         ) : (
@@ -81,7 +84,7 @@ export function AuthorizationPage({
             <Typography.BodySmall as="p">
               Enter the credentials from {v.providerName}.
             </Typography.BodySmall>
-            <Button.TextButton type="submit">Connect account</Button.TextButton>
+            <DocumentSubmitButton busyStatus="Connecting…">Connect account</DocumentSubmitButton>
           </form>
         ))}
       {v.state === 'exchanging' && (

@@ -11,6 +11,7 @@ import * as Dialog from '@/wax/components/dialog'
 import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
 import { Fields } from '@/views/management/forms'
+import { DocumentSubmitButton } from '@/components/document-submit-button'
 import { ConfigurationStep } from './configuration-step'
 import { OperationsSection, OperationsSummary } from './operations-section'
 import { RefreshLayout } from './update-source'
@@ -236,15 +237,13 @@ export function EditConfigurationPage({
             >
               Cancel
             </Button.TextButton>
-            <Button.TextButton type="submit" form={signInFormId} disabled={pending}>
-              {oauth
-                ? pending
-                  ? 'Starting…'
-                  : 'Sign in and share the account'
-                : pending
-                  ? 'Saving…'
-                  : 'Save and share the account'}
-            </Button.TextButton>
+            <DocumentSubmitButton
+              form={signInFormId}
+              busyStatus={oauth ? 'Opening sign-in…' : 'Saving…'}
+              disabled={pending}
+            >
+              {oauth ? 'Sign in and share the account' : 'Save and share the account'}
+            </DocumentSubmitButton>
           </Dialog.Actions>
         </Dialog.Popup>
       </Dialog.Portal>

@@ -332,18 +332,27 @@ export const Loading: Story = {
       {(['primary', 'secondary', 'bare', 'destructive'] as const).map((variant) => (
         <div key={variant} style={{ alignItems: 'center', display: 'flex', gap: 12 }}>
           {(['22', '32', '36'] as const).map((size) => (
-            <Button.Container disabled key={size} size={size} variant={variant}>
-              <Button.SpinningButtonIcon name="Loader" />
-              <Button.Text>Loading…</Button.Text>
-            </Button.Container>
+            <Button.TextButton
+              ariaLabel={`Save ${variant} ${size}`}
+              busyStatus="Saving…"
+              key={size}
+              size={size}
+              variant={variant}
+            >
+              Save
+            </Button.TextButton>
           ))}
-          <Button.Container ariaLabel="Loading" disabled variant={variant}>
-            <Button.SpinningButtonIcon name="Loader" />
-          </Button.Container>
         </div>
       ))}
     </div>
   ),
+  play: async ({ canvas }) => {
+    const button = canvas.getByRole('button', { name: 'Save primary 32' })
+    await expect(button).toHaveAttribute('aria-busy', 'true')
+    await expect(button).toHaveAttribute('aria-disabled', 'true')
+    await expect(button).not.toBeDisabled()
+    await expect(canvas.getAllByRole('status')[0]).toHaveTextContent('Saving…')
+  },
 }
 
 export const Text: Story = {

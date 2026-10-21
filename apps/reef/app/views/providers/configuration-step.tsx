@@ -45,6 +45,7 @@ import { ServerField } from './server-field'
 import { serverProblem, type ServerGroup } from './server-choices'
 import { StepFrame } from './step-frame'
 import { ConfigurationChanges } from './configuration-changes'
+import { DocumentSubmitButton } from '@/components/document-submit-button'
 import * as styles from './providers.css'
 
 /** Names that differ only in case or surrounding space read as the same provider. */
@@ -345,9 +346,10 @@ export function ConfigurationStep({
     serverProblems.length > 0 ||
     review.servers.some((group) => errors[group.declaration])
   const nextButton = (
-    <Button.TextButton
+    <DocumentSubmitButton
       type="submit"
       form={formId}
+      busyStatus={confirmLabel === 'Save' ? 'Saving…' : 'Confirming…'}
       disabled={pending || unchanged || blocked !== undefined}
       focusableWhenDisabled
       onClick={() => {
@@ -355,8 +357,8 @@ export function ConfigurationStep({
         document.getElementById(blocked.field)?.focus()
       }}
     >
-      {confirmLabel === 'Save' ? (pending ? 'Saving…' : 'Save') : pending ? 'Confirming…' : 'Next'}
-    </Button.TextButton>
+      {confirmLabel}
+    </DocumentSubmitButton>
   )
   const confirm =
     blocked && !pending ? <Tooltip content={blocked.message}>{nextButton}</Tooltip> : nextButton
