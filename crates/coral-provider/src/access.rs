@@ -41,7 +41,6 @@ pub struct ProviderNamespace {
 const OWNER_ROOT_PREFIX: &str = "coral.providers.";
 /// The Call Root of every Workspace's Built-in Provider.
 const BUILTIN_ROOT: &str = "coral.workspace";
-const MAX_SEGMENT_BYTES: usize = 128;
 
 impl ProviderNamespace {
     /// Validates one Provider Namespace.
@@ -50,7 +49,7 @@ impl ProviderNamespace {
     ///
     /// Returns [`Error::InvalidInput`] for an invalid or unsafe namespace.
     pub fn parse(value: &str) -> Result<Self, Error> {
-        if !safe_segment(value) {
+        if !coral_catalog::provider_namespace_is_valid(value) {
             return Err(Error::InvalidInput(
                 "Provider Namespace must be a non-reserved safe ASCII JavaScript identifier of at most 128 bytes"
                     .to_string(),
@@ -131,18 +130,6 @@ impl ProviderCallRoot {
             && relative.split('.').all(|segment| !segment.is_empty());
         valid.then_some(relative)
     }
-}
-
-fn safe_segment(value: &str) -> bool {
-    let mut bytes = value.bytes();
-    let first = bytes.next();
-    let valid_first =
-        first.is_some_and(|byte| byte.is_ascii_alphabetic() || matches!(byte, b'_' | b'$'));
-    let valid_rest = bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$'));
-    valid_first
-        && valid_rest
-        && value.len() <= MAX_SEGMENT_BYTES
-        && !coral_catalog::call_path_segment_is_reserved(value)
 }
 
 /// Credential selection configured for one Provider.

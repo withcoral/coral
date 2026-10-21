@@ -5,14 +5,14 @@
 
 use std::collections::BTreeMap;
 
-use coral_catalog::{
+use serde::Deserialize;
+
+use crate::builtin::ArgumentProblem;
+use crate::{
     AuthenticationConfiguration, CredentialField, CredentialSource, HeaderBinding,
     OAuthClientAuthenticationMethod, OAuthClientBootstrap, OAuthClientPolicy, OAuthPkcePolicy,
     OAuthScopeFormat, ServerSelection,
 };
-use serde::Deserialize;
-
-use crate::error::InputProblem;
 
 /// What every OAuth endpoint must be, so it cannot carry a credential.
 const ENDPOINT_REASON: &str = "use an absolute `http` or `https` URL without credentials, a \
@@ -86,6 +86,7 @@ pub(super) enum AuthenticationInput {
         scopes: Vec<String>,
         #[serde(default)]
         scope_format: ScopeFormatInput,
+        #[serde(default, deserialize_with = "crate::builtin::present")]
         client: Option<DeviceClientInput>,
     },
     OauthAuthorizationCode {
@@ -94,15 +95,16 @@ pub(super) enum AuthenticationInput {
         scopes: Vec<String>,
         #[serde(default)]
         scope_format: ScopeFormatInput,
+        #[serde(default, deserialize_with = "crate::builtin::present")]
         client: Option<ClientInput>,
     },
 }
 
 impl TryFrom<AuthenticationInput> for AuthenticationConfiguration {
-    type Error = InputProblem;
+    type Error = ArgumentProblem;
 
     /// Converts the input, or names the first argument to correct.
-    fn try_from(input: AuthenticationInput) -> Result<Self, InputProblem> {
+    fn try_from(input: AuthenticationInput) -> Result<Self, ArgumentProblem> {
         Ok(match input {
             AuthenticationInput::None {} => Self::None,
             AuthenticationInput::Bearer {} => Self::Bearer,
@@ -123,7 +125,7 @@ impl TryFrom<AuthenticationInput> for AuthenticationConfiguration {
                         let field = format!("authentication.parameters.{name}");
                         Ok((name, credential_source(field, source)?))
                     })
-                    .collect::<Result<_, InputProblem>>()?,
+                    .collect::<Result<_, ArgumentProblem>>()?,
             },
             // Device authorization has no redirect for PKCE to protect.
             AuthenticationInput::OauthDeviceCode {
@@ -168,11 +170,11 @@ impl TryFrom<AuthenticationInput> for AuthenticationConfiguration {
 /// The OAuth endpoint at `authentication.{field}`, rejected before the
 /// arguments are stored when it could carry a credential, such as
 /// `user:secret@` or a `client_secret` parameter.
-fn endpoint(field: &str, url: String) -> Result<String, InputProblem> {
-    if coral_catalog::oauth_endpoint_is_valid(&url) {
+fn endpoint(field: &str, url: String) -> Result<String, ArgumentProblem> {
+    if crate::oauth_endpoint_is_valid(&url) {
         Ok(url)
     } else {
-        Err(InputProblem::new(
+        Err(ArgumentProblem::new(
             format!("authentication.{field}"),
             ENDPOINT_REASON,
         ))
@@ -212,13 +214,13 @@ pub(super) enum SourceInput {
 fn credential_source(
     field: impl Into<String>,
     input: SourceInput,
-) -> Result<CredentialSource, InputProblem> {
+) -> Result<CredentialSource, ArgumentProblem> {
     match input {
         SourceInput::Field { field } => Ok(CredentialSource::Field { field }),
         SourceInput::Literal { value } if value.is_empty() => {
             Ok(CredentialSource::Literal { value })
         }
-        SourceInput::Literal { .. } => Err(InputProblem::new(
+        SourceInput::Literal { .. } => Err(ArgumentProblem::new(
             field,
             "a literal credential value must be empty; use a `field` source so a person \
              enters the value when they sign in",
@@ -252,6 +254,7 @@ pub(super) struct ClientInput {
     client_id: String,
     #[serde(default)]
     authentication: ClientAuthenticationInput,
+    #[serde(default, deserialize_with = "crate::builtin::present")]
     pkce: Option<PkceInput>,
     #[serde(default)]
     authorization_parameters: BTreeMap<String, String>,
@@ -264,13 +267,13 @@ impl ClientInput {
     fn policy(
         self,
         fixed_pkce: Option<OAuthPkcePolicy>,
-    ) -> Result<OAuthClientPolicy, InputProblem> {
+    ) -> Result<OAuthClientPolicy, ArgumentProblem> {
         if let Some(name) = self
             .authorization_parameters
             .keys()
-            .find(|name| coral_catalog::oauth_parameter_is_reserved(name))
+            .find(|name| crate::oauth_parameter_is_reserved(name))
         {
-            return Err(InputProblem::new(
+            return Err(ArgumentProblem::new(
                 format!("authentication.client.authorization_parameters.{name}"),
                 "Coral sets this OAuth parameter, or a person enters it when they sign in; \
                  remove it",
@@ -306,6 +309,7 @@ pub(super) struct DeviceClientInput {
     client_id: String,
     #[serde(default)]
     authentication: ClientAuthenticationInput,
+    #[serde(default, deserialize_with = "crate::builtin::present")]
     pkce: Option<PkceInput>,
 }
 

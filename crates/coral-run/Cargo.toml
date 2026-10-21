@@ -23,15 +23,12 @@ coral-v8.workspace = true
 coral-value.workspace = true
 coral-workspace.workspace = true
 sea-query.workspace = true
-serde.workspace = true
 serde_json.workspace = true
-serde_path_to_error.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
@@ -44,4 +41,5 @@ coral-administration.workspace = true
 tempfile.workspace = true
 coral-search.workspace = true
 coral-test-support.workspace = true
+url.workspace = true
 wiremock.workspace = true
