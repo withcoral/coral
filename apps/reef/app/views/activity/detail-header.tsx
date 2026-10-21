@@ -33,7 +33,6 @@ export function DetailHeader({
   status,
   label = status.replaceAll('_', ' '),
   kind,
-  provider,
   sticky,
   heading,
   showStatus = true,
@@ -46,7 +45,6 @@ export function DetailHeader({
   label?: string
   /** The record kind, named under the title. */
   kind?: string
-  provider?: string
   sticky?: boolean
   heading?: 'h2' | 'h3'
   /** False when the title already says what the record is, so a badge would only repeat it. */
@@ -65,9 +63,6 @@ export function DetailHeader({
       details={
         <>
           {kind && <Typography.BodySmall variant="tertiary">{kind}</Typography.BodySmall>}
-          {provider && (
-            <Typography.BodySmall variant="tertiary">Provider: {provider}</Typography.BodySmall>
-          )}
           {meta}
         </>
       }

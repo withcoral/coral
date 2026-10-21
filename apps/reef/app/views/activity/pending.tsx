@@ -44,7 +44,7 @@ export function PendingActions({ page }: { page: ActivityPage }) {
             const { action, run } = pendingAction
             const question = pendingQuestion(pendingAction)
             // The page names the Workspace. Show who only when an Agent started the Run.
-            const context = run.agent ? [run.actorLabel || 'Agent unavailable'] : []
+            const context = run.agent ? [run.actorLabel || 'Unknown agent'] : []
             return (
               <SettingRow.Row
                 key={action.name}

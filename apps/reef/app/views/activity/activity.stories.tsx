@@ -1648,11 +1648,11 @@ export const InvocationWithRunEvidence: Story = {
     )
     await expect(drawer.getByRole('heading', { level: 2, name: 'mail.send' })).toBeVisible()
     await expectAlignedHeaders(await openDrawer(canvasElement, 'Activity details'))
-    // The call's upstream response and the Run's failure each show in their own card.
+    // The call's provider response and the Run's failure each show in their own card.
     const failure = drawer.getByRole('region', { name: 'Error' })
     await expect(failure).toHaveTextContent('The program failed after this call returned.')
     await expect(failure).toHaveTextContent('program_execution_failed')
-    await expect(drawer.getByRole('region', { name: 'Upstream response' })).toBeVisible()
+    await expect(drawer.getByRole('region', { name: 'Provider response' })).toBeVisible()
     await expect(drawer.getByText('program run: failed')).toBeVisible()
     // The accepted source waits in a closed Details.
     await expect(

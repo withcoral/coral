@@ -130,6 +130,26 @@ function panel(
     },
   }
 }
+/**
+ * The panel's header reads `label` as its badge, or no badge when null, and none of Coral's
+ * outcome names (`coral_failure`, `run_terminated`, `indeterminate`) leak into it.
+ */
+function headerSays(story: Story, label: string | null): Story {
+  return {
+    ...story,
+    play: async (context) => {
+      await (story.play ?? meta.play)(context)
+      const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
+      const header = dialog.querySelector('header')!
+      await expect(header).not.toHaveTextContent(/coral failure|run terminated|indeterminate|_/)
+      if (label) await expect(within(header).getByText(label)).toBeVisible()
+      else
+        for (const badge of ['retained', 'diagnostic'])
+          await expect(header).not.toHaveTextContent(badge)
+      await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+    },
+  }
+}
 const runPage = (detail: RunDetail, overrides?: Partial<ActivityPage>) =>
   panelPage(
     {
@@ -620,7 +640,7 @@ function execStory(
       if (expected.notice) await expect(opened.getByText(expected.notice)).toBeVisible()
       if (expected.unknown) {
         // The warning icon and the badge say it; no sentence repeats it.
-        await expect(within(header).getByText('unknown / incomplete')).toBeVisible()
+        await expect(within(header).getByText('result unknown')).toBeVisible()
         await expect(header.querySelector('svg')).toBeVisible()
         await expect(dialog).not.toHaveTextContent('Completion is unknown')
         await expect(dialog).not.toHaveTextContent('External effects may be uncertain')
@@ -779,7 +799,7 @@ const toolEvidence = {
       toolPage(execCall('unknown', { completedAt: null }), { kind: 'unknown' }),
       { evidence: 'Send invoice reminders' },
     ),
-    { times: ['Started'], outcome: 'unknown / incomplete', unknown: true },
+    { times: ['Started'], outcome: 'result unknown', unknown: true },
   ),
 } satisfies Record<InteractionEvidence['kind'], Story>
 export const ExecAccepted = toolEvidence.run
@@ -907,7 +927,7 @@ export const SaveFunctionCompletionUnknown = functionStory(
   panel('Save function · completion unknown', toolPage(saveCall('unknown'), { kind: 'unknown' }), {
     evidence: 'Save the reminder batch',
   }),
-  { times: ['Started'], outcome: 'unknown / incomplete' },
+  { times: ['Started'], outcome: 'result unknown' },
 )
 export const SaveFunctionEvidenceUnavailable = functionStory(
   panel(
@@ -963,7 +983,7 @@ export const DeleteFunctionCompletionUnknown = functionStory(
     toolPage(deleteCall('unknown'), { kind: 'unknown' }),
     { evidence: 'Remove the old reminder batch' },
   ),
-  { times: ['Started'], outcome: 'unknown / incomplete' },
+  { times: ['Started'], outcome: 'result unknown' },
 )
 export const DeleteFunctionEvidenceUnavailable = functionStory(
   panel(
@@ -1501,7 +1521,13 @@ const failed = (
       ),
       { evidence: failureMessages[code] },
     ),
-    { error: [code, failureMessages[code]] },
+    // A plain heading, then the exact message; Coral's code only as a diagnostic line.
+    {
+      error:
+        code === 'unknown'
+          ? ['The run failed', failureMessages[code]]
+          : [`Code: ${code}`, failureMessages[code]],
+    },
   )
 const failures = {
   program_rejected: failed('program_rejected', {
@@ -1635,6 +1661,25 @@ export const InvocationPendingQueued = panel(
   ),
   { evidence: 'coral.providers.mail.send' },
 )
+/**
+ * An operation that got a complete response names it in plain words: "failed" only when an HTTP
+ * status outside 2xx proves it, otherwise "completed". Never Coral's internal outcome name, and
+ * never the provider's resource name: the call path names the provider.
+ */
+function answeredStory(story: Story, label: 'completed' | 'failed'): Story {
+  return {
+    ...story,
+    play: async (context) => {
+      await meta.play(context)
+      const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
+      const header = dialog.querySelector('header')!
+      await expect(within(header).getByText(label)).toBeVisible()
+      await expect(dialog).not.toHaveTextContent(/upstream|succeeded|Provider:|providers\//)
+      await expect(within(dialog).getByRole('region', { name: 'Provider response' })).toBeVisible()
+      await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+    },
+  }
+}
 const invocationStates = {
   pending: InvocationPendingOnApproval,
   dispatching: panel(
@@ -1650,14 +1695,17 @@ const invocationStates = {
     ),
     { evidence: 'coral.providers.mail.send' },
   ),
-  ended: panel(
-    'Operation call · ended, upstream outcome',
-    invocationPage(
-      invocationDetail(endedInvocation('upstream_outcome'), {
-        result: invocationResults.upstream_outcome,
-      }),
+  ended: answeredStory(
+    panel(
+      'Operation call · ended, response received',
+      invocationPage(
+        invocationDetail(endedInvocation('upstream_outcome'), {
+          result: invocationResults.upstream_outcome,
+        }),
+      ),
+      { evidence: 'msg_01J8' },
     ),
-    { evidence: 'msg_01J8' },
+    'completed',
   ),
   unknown: panel(
     'Operation call · state unknown',
@@ -1677,56 +1725,82 @@ const ended = (outcome: InvocationOutcome, name: string, evidence?: string) =>
   )
 const invocationOutcomes = {
   upstream_outcome: invocationStates.ended,
-  coral_failure: lean(
-    ended(
-      'coral_failure',
-      'Operation call · ended, Coral failure',
-      invocationResults.coral_failure.message,
+  coral_failure: headerSays(
+    lean(
+      ended(
+        'coral_failure',
+        'Operation call · ended, Coral failure',
+        invocationResults.coral_failure.message,
+      ),
+      { error: [invocationResults.coral_failure.message] },
     ),
-    { error: [invocationResults.coral_failure.message] },
+    'failed',
   ),
-  run_terminated: lean(
-    ended('run_terminated', 'Operation call · ended, run terminated it before dispatch'),
+  run_terminated: headerSays(
+    lean(ended('run_terminated', 'Operation call · ended, run terminated it before dispatch')),
+    'run ended',
   ),
-  indeterminate: lean(ended('indeterminate', 'Operation call · ended, result indeterminate')),
-  unknown: lean(ended('unknown', 'Operation call · ended, outcome unknown')),
+  indeterminate: headerSays(
+    lean(ended('indeterminate', 'Operation call · ended, result indeterminate')),
+    'result unknown',
+  ),
+  unknown: headerSays(
+    lean(ended('unknown', 'Operation call · ended, outcome unknown')),
+    'result unknown',
+  ),
 } satisfies Record<InvocationOutcome, Story>
 export const InvocationUpstreamOutcome = invocationOutcomes.upstream_outcome
 export const InvocationCoralFailure = invocationOutcomes.coral_failure
 export const InvocationRunTerminated = invocationOutcomes.run_terminated
 export const InvocationIndeterminate = invocationOutcomes.indeterminate
 export const InvocationOutcomeUnknown = invocationOutcomes.unknown
-export const InvocationUpstreamHttpError = panel(
-  'Operation call · upstream HTTP 404',
-  invocationPage(
-    invocationDetail(endedInvocation('upstream_outcome'), {
-      result: {
-        kind: 'upstream_outcome',
-        value: '{"data":{"message":"Recipient not found"},"metadata":{"status":404}}',
-      },
-    }),
-  ),
-  { evidence: 'Recipient not found' },
+const httpNotFound = invocationPage(
+  invocationDetail(endedInvocation('upstream_outcome'), {
+    result: {
+      kind: 'upstream_outcome',
+      value: '{"status":404,"data":{"message":"Recipient not found"},"metadata":{"kind":"http"}}',
+    },
+  }),
 )
-export const InvocationUpstreamMcpError = panel(
-  'Operation call · upstream MCP result with isError',
-  invocationPage(
-    invocationDetail(
-      endedInvocation('upstream_outcome', {
-        provider: `${workspace}/providers/linear`,
-        callPath: 'coral.providers.linear.createIssue',
-        operation: 'createIssue',
-      }),
-      {
-        arguments: '{"title":"Follow up on INV-4171","teamId":"FIN"}',
-        result: {
-          kind: 'upstream_outcome',
-          value: '{"content":[{"type":"text","text":"Team FIN is archived."}],"isError":true}',
+/** An HTTP status outside 2xx is the provider's own error, so the call reads as failed. */
+export const InvocationUpstreamHttpError = answeredStory(
+  panel('Operation call · provider answered HTTP 404', httpNotFound, {
+    evidence: 'Recipient not found',
+  }),
+  'failed',
+)
+export const InvocationUpstreamHttpErrorNarrow = answeredStory(
+  panel('Operation call · provider answered HTTP 404, narrow screen', httpNotFound, {
+    evidence: 'Recipient not found',
+    narrow: true,
+  }),
+  'failed',
+)
+/** An MCP `isError` errs only for a tool call, which the response does not record, so the call
+ * reads only as completed; the result shows exactly as retained. */
+export const InvocationUpstreamMcpError = answeredStory(
+  panel(
+    'Operation call · MCP result with isError',
+    invocationPage(
+      invocationDetail(
+        endedInvocation('upstream_outcome', {
+          provider: `${workspace}/providers/linear`,
+          callPath: 'coral.providers.linear.createIssue',
+          operation: 'createIssue',
+        }),
+        {
+          arguments: '{"title":"Follow up on INV-4171","teamId":"FIN"}',
+          result: {
+            kind: 'upstream_outcome',
+            value:
+              '{"data":{"content":[{"type":"text","text":"Team FIN is archived."}],"isError":true},"metadata":{"kind":"mcp"}}',
+          },
         },
-      },
+      ),
     ),
+    { evidence: 'Team FIN is archived.' },
   ),
-  { evidence: 'Team FIN is archived.' },
+  'completed',
 )
 export const InvocationConnectionDeclined = panel(
   'Operation call · failed after its account connection was declined',
@@ -2017,6 +2091,39 @@ export const ApprovalProviderUnavailable = panel(
   approvalPage(approval({ providerLabel: undefined })),
   { evidence: 'coral.providers.mail.send' },
 )
+/** Coral sent no names for the agent, its workspace or the provider. The review still says
+ * an agent asked, and leaves the rest out: no placeholder, no ID. */
+export const ApprovalWithoutNames: Story = {
+  ...panel(
+    'Approval · agent, workspace and provider names missing, narrow screen',
+    (() => {
+      const page = approvalPage(approval({ providerLabel: undefined }))
+      const detail = page.detail as InvocationDetail
+      const context = detail.context!
+      return {
+        ...page,
+        detail: {
+          ...detail,
+          context: {
+            ...context,
+            run: { ...context.run, actorLabel: undefined, workspaceLabel: undefined },
+          },
+        },
+      }
+    })(),
+    { evidence: 'coral.providers.mail.send', narrow: true },
+  ),
+  play: async (context) => {
+    await meta.play(context)
+    const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
+    const requested = within(dialog).getByText('Requested by', { selector: 'dt' })
+    await expect(requested.nextElementSibling!.textContent).toBe('Unknown agent')
+    await expect(dialog).not.toHaveTextContent(/unavailable|Provider:|agents\//)
+    for (const name of ['Deny this call', 'Approve this call'])
+      await expect(within(dialog).getByRole('button', { name })).toBeVisible()
+    await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+  },
+}
 export const ApprovalReviewerUnavailable = panel(
   'Approval · approved by a reviewer you cannot see, no comment',
   approvalPage(approval({ ...settle('approved'), approverLabel: undefined, comment: null })),
@@ -2335,13 +2442,25 @@ export const LoggedLongNarrow = panel(
   { narrow: true, evidence: 'owner-30' },
 )
 LoggedLongNarrow.play = payloadCard(LoggedLongNarrow, 'Log message', 'console.warn #8').play
+/** How an operation call's end reads in its run event title. */
+const endedWords = {
+  upstream_outcome: 'completed',
+  coral_failure: 'failed',
+  run_terminated: 'run ended',
+  indeterminate: 'result unknown',
+  unknown: 'result unknown',
+} satisfies Record<InvocationOutcome, string>
 const invocationEnded = (outcome: InvocationOutcome) =>
-  panel(
-    `invocation.ended · ${outcome.replaceAll('_', ' ')}`,
-    eventPage(
-      event(5, { kind: 'invocation.ended', invocation: invocation().name, outcome }),
-      'run event',
+  headerSays(
+    panel(
+      `invocation.ended · ${outcome.replaceAll('_', ' ')}`,
+      eventPage(
+        event(5, { kind: 'invocation.ended', invocation: invocation().name, outcome }),
+        'run event',
+      ),
+      { evidence: `Operation call ended: ${endedWords[outcome]}` },
     ),
+    null,
   )
 const endedCalls = {
   upstream_outcome: invocationEnded('upstream_outcome'),
@@ -2391,8 +2510,9 @@ export const RunEndedTimedOut = endings.timed_out
 export const RunEndedInterrupted = endings.interrupted
 export const RunEndedUnknown = endings.unknown
 const events = {
-  'run.started': lean(
-    panel('run.started', eventPage(event(1, { kind: 'run.started' }), 'execution accepted')),
+  'run.started': headerSays(
+    lean(panel('run.started', eventPage(event(1, { kind: 'run.started' }), 'execution accepted'))),
+    null,
   ),
   'invocation.started': lean(
     panel(

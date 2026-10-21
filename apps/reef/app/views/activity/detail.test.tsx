@@ -242,7 +242,9 @@ it.each([true, false])(
       },
     })
     expect(within(container).getByRole('heading', { level: 2 })).toHaveTextContent(call.callPath)
-    expect(within(container).getByText(`Provider: ${call.provider}`)).toBeTruthy()
+    // The provider's resource name is an ID, not a name you read: the call path names it.
+    expect(container.textContent).not.toContain('Provider:')
+    expect(container.textContent).not.toContain(call.provider)
     const label = within(container).getByText('recipient', { selector: 'dt' })
     expect(label.nextElementSibling).toHaveTextContent('"exact"')
     // The call's own timing reads the same with or without its Run.
@@ -257,7 +259,8 @@ it.each([true, false])(
     expectInstant(fact('Dispatch'), call.dispatchedAt!, '22 Sep 2026, 09:00:06 UTC')
     // The header badge states the call's outcome; no State row repeats it.
     expect(within(container).queryByText('State', { selector: 'dt' })).toBeNull()
-    expect(within(container.querySelector('header')!).getByText('upstream outcome')).toBeTruthy()
+    expect(within(container.querySelector('header')!).getByText('completed')).toBeTruthy()
+    expect(container.textContent).not.toContain('upstream')
     expect(container.textContent).not.toContain('Technical details')
     expect(container.textContent).not.toContain(call.name)
     if (withRun) {
@@ -270,6 +273,144 @@ it.each([true, false])(
     } else expect(container.textContent).not.toContain('Send invoice reminders')
   },
 )
+
+// Catches: an operation badge that shows Coral's internal outcome name, or that calls a response
+// a success or failure that its retained evidence does not prove. Coral classes a 2xx against
+// the statuses the Operation declares, which Reef never receives, so nothing here proves success.
+it.each([
+  [
+    'an HTTP status outside 2xx',
+    '{"status":404,"data":{"message":"Not found"},"metadata":{"kind":"http"}}',
+    'failed',
+  ],
+  [
+    'an HTTP 2xx, which may still be undeclared',
+    '{"status":200,"data":{"ok":false},"metadata":{"kind":"http"}}',
+    'completed',
+  ],
+  [
+    'an MCP isError, which errs only for a tool call',
+    '{"data":{"content":[],"isError":true},"metadata":{"kind":"mcp"}}',
+    'completed',
+  ],
+  ['a status without the HTTP envelope', '{"status":500,"data":{}}', 'completed'],
+  ['an unclassified payload', '{"error":"looks bad","success":true}', 'completed'],
+  ['malformed JSON', '{"status":', 'completed'],
+] as const)('names a call answered with %s by what its response proves', (_, value, label) => {
+  const container = show({
+    ...invocationPanel({}),
+    result: { kind: 'upstream_outcome', value },
+  })
+  const header = container.querySelector('header')!
+  expect(within(header).getByText(label)).toBeTruthy()
+  expect(header.textContent).not.toMatch(/succeeded|upstream/)
+  // The response itself shows exactly as retained.
+  expect(within(container).getByRole('region', { name: 'Provider response' })).toBeTruthy()
+})
+
+// Catches: an operation badge that shows Coral's outcome names instead of words you read. The
+// card under the header keeps the exact distinction.
+it.each([
+  [
+    'coral_failure',
+    { kind: 'coral_failure', code: 'operation_disabled', message: 'Disabled.' },
+    'failed',
+    'Coral failure: operation_disabled',
+  ],
+  [
+    'run_terminated',
+    { kind: 'run_terminated' },
+    'run ended',
+    'The run terminated this call before dispatch.',
+  ],
+  [
+    'indeterminate',
+    { kind: 'indeterminate' },
+    'result unknown',
+    'External effects may be uncertain.',
+  ],
+  ['unknown', { kind: 'unknown' }, 'result unknown', ''],
+] as const)('names a call that ended with %s in plain words', (outcome, result, label, card) => {
+  const container = show({ ...invocationPanel({ outcome }), result })
+  const header = container.querySelector('header')!
+  expect(within(header).getByText(label)).toBeTruthy()
+  expect(header.textContent).not.toMatch(/coral failure|run terminated|indeterminate|_/)
+  if (card) expect(container.textContent).toContain(card)
+})
+
+// Catches: a log or emission header with a badge that says nothing about it.
+it.each([
+  [
+    'log',
+    { kind: 'program.logged', level: 'info', message: 'sent 2' },
+    'console.info #4program log',
+  ],
+  ['emission', { kind: 'program.emitted', value: '{"sent":2}' }, 'coral.emit #4program output'],
+] as const)('heads a %s with its own name and kind, and no badge', (_, value, text) => {
+  const container = show(event({ ...at, ...value } as RunEvent))
+  expect(container.querySelector('header')!.textContent).toBe(text)
+})
+
+// Catches: a Run failure headed by Coral's code, or a heading that drops the exact code, message
+// or frames.
+it.each([
+  ['program_rejected', 'The program threw an error'],
+  ['invalid_program_value', 'The program returned a value Coral cannot store'],
+  ['resource_limit_exceeded', 'A value or the output was too large'],
+  ['memory_limit_exceeded', 'The program ran out of memory'],
+  ['program_execution_failed', 'The program failed'],
+  ['run_authority_lost', 'The run lost the access it needed'],
+] as const)(
+  'heads a Run that failed with %s in plain words, its code a diagnostic',
+  (code, heading) => {
+    const container = show({
+      ...runPanel({ state: 'failed', endedAt: '2026-09-22T09:05:00Z' }),
+      terminal: {
+        kind: 'failed',
+        code,
+        message: 'exact-run-message',
+        error: {
+          name: 'TypeError',
+          message: 'exact-error',
+          frames: [{ source: 'program.ts', line: 3, column: 7 }],
+          operationCode: 'upstream_rejected',
+          operationTraceId: 'exact-trace',
+          operationStatus: 0,
+          operationBody: '',
+          operationBodyTruncated: false,
+          cause: null,
+          errors: [],
+          truncated: false,
+          causeOmitted: false,
+          omittedErrors: 0,
+          circular: false,
+        },
+      },
+    } as RunDetail)
+    const card = within(container).getByRole('region', { name: 'Error' })
+    const strong =
+      card.querySelector('strong, b, [class*="Strong"]') ??
+      card.firstElementChild!.firstElementChild!
+    expect(strong.textContent).toBe(heading)
+    for (const exact of [
+      'exact-run-message',
+      `Code: ${code}`,
+      'program.ts:3:7',
+      'upstream_rejected',
+      'exact-trace',
+    ])
+      expect(card.textContent).toContain(exact)
+  },
+)
+
+it('heads a Run that failed for a reason this Reef does not know, without a code line', () => {
+  const container = show({
+    ...runPanel({ state: 'failed', endedAt: '2026-09-22T09:05:00Z' }),
+    terminal: { kind: 'failed', code: 'unknown', message: 'exact-run-message', error: null },
+  } as RunDetail)
+  const card = within(container).getByRole('region', { name: 'Error' })
+  expect(card.textContent).toBe('The run failedexact-run-message')
+})
 
 it('keeps the supplied Run evidence and source beside a selected call, apart from its outcome', () => {
   const failed = { ...run, state: 'failed' as const, endedAt: '2026-09-22T09:01:00Z' }
@@ -328,7 +469,7 @@ it('keeps the supplied Run evidence and source beside a selected call, apart fro
   const disclosure = (title: string) =>
     within(container).getByText(title, { selector: 'summary' }).closest('details')!
   // The call's outcome and the Run's terminal evidence are visible, each in its own card.
-  const upstream = container.querySelector('[aria-label="Upstream response"]')!
+  const upstream = within(container).getByRole('region', { name: 'Provider response' })
   expect(upstream).toHaveTextContent('call-outcome')
   expect(upstream).not.toHaveTextContent('exact-run-failure')
   expect(within(container).getByText('program run: failed')).toBeTruthy()
@@ -615,7 +756,12 @@ it.each<[string, Detail, string, string]>([
     'program run',
   ],
   ['a Run by its own intent', runPanel({}), run.intent!, 'program run'],
-  ['a Run without an intent', runPanel({ intent: '' }), 'No intent recorded', 'program run'],
+  [
+    'a Run without an intent, by its kind alone',
+    runPanel({ intent: '' }),
+    'Program run',
+    'program run',
+  ],
   [
     'an operation call by its call path',
     invocationPanel({}),
@@ -726,6 +872,39 @@ it.each<[string, Detail, string, string]>([
     'run event',
   ],
   [
+    'an operation call that got a response, in plain words',
+    event({
+      ...at,
+      kind: 'invocation.ended',
+      invocation: `${workspace}/invocations/one`,
+      outcome: 'upstream_outcome',
+    }),
+    'Operation call ended: completed',
+    'run event',
+  ],
+  [
+    'an operation call the Run ended, in plain words',
+    event({
+      ...at,
+      kind: 'invocation.ended',
+      invocation: `${workspace}/invocations/one`,
+      outcome: 'run_terminated',
+    }),
+    'Operation call ended: run ended',
+    'run event',
+  ],
+  [
+    'an operation call with no complete result, in plain words',
+    event({
+      ...at,
+      kind: 'invocation.ended',
+      invocation: `${workspace}/invocations/one`,
+      outcome: 'indeterminate',
+    }),
+    'Operation call ended: result unknown',
+    'run event',
+  ],
+  [
     'an operation call end by its outcome',
     event({
       ...at,
@@ -733,7 +912,7 @@ it.each<[string, Detail, string, string]>([
       invocation: `${workspace}/invocations/one`,
       outcome: 'coral_failure',
     }),
-    'Operation call ended: coral failure',
+    'Operation call ended: failed',
     'run event',
   ],
   ['an unknown event', event({ ...at, kind: 'unknown' }), 'Unknown run event', 'run event'],
@@ -1351,8 +1530,7 @@ it.each<{
   expect(terms(lists[0])).toEqual(['Started', ...(completed ? ['Completed'] : [])])
   expectInstant(factIn(lists[0], 'Started'), interaction.startedAt, '22 Sep 2026, 09:00:00 UTC')
   // The header badge states the submission outcome, once; no row repeats it.
-  const badge =
-    row.overrides.outcome === 'unknown' ? 'unknown / incomplete' : row.overrides.outcome!
+  const badge = row.overrides.outcome === 'unknown' ? 'result unknown' : row.overrides.outcome!
   expect(within(header).getByText(badge)).toBeTruthy()
   expect(within(container).getAllByText(badge)).toHaveLength(1)
   expect(container.textContent).not.toContain('Submission outcome')
@@ -1375,7 +1553,8 @@ it.each<{
   }
   if (row.notice) expect(container.textContent).toContain(row.notice)
   if (row.overrides.outcome === 'unknown') {
-    expect(within(header).getByText('unknown / incomplete')).toBeTruthy()
+    expect(within(header).getByText('result unknown')).toBeTruthy()
+    expect(header).not.toHaveTextContent('incomplete')
     expect(header.querySelector('svg')).not.toBeNull()
     expect(container.textContent).not.toContain('Completion is unknown')
     expect(container.textContent).not.toContain('External effects may be uncertain')
@@ -1489,8 +1668,7 @@ it.each(functionCases)('shows $case with its intent, target, then times', (row) 
     ...(completed ? ['Completed'] : []),
   ])
   expectInstant(factIn(lists[0], 'Started'), interaction.startedAt, '22 Sep 2026, 09:00:00 UTC')
-  const badge =
-    row.overrides.outcome === 'unknown' ? 'unknown / incomplete' : row.overrides.outcome!
+  const badge = row.overrides.outcome === 'unknown' ? 'result unknown' : row.overrides.outcome!
   expect(within(header).getByText(badge)).toBeTruthy()
   expect(within(container).getAllByText(badge)).toHaveLength(1)
   for (const heading of ['Context', 'Call', 'Result'])
@@ -1777,9 +1955,9 @@ it('keeps no record path for another run event, but its header badge', () => {
   })
   expect(container.textContent).not.toContain('Technical details')
   expect(container.textContent).not.toContain(name)
-  // Other record kinds retain their header status icon and badge.
+  // A run event keeps its icon, but no badge: "retained" says nothing about it.
   expect(container.querySelector('header svg')).not.toBeNull()
-  expect(within(container.querySelector('header')!).getByText('retained')).toBeTruthy()
+  expect(container.querySelector('header')!.textContent).toBe('Program run startedrun event')
 })
 
 const runActions = () => screen.getByRole('region', { name: 'Run actions' })

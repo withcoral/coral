@@ -395,6 +395,47 @@ describe('approval review layout', () => {
     expect(list.querySelector('time')).toHaveAttribute('dateTime', '2026-09-22T09:00:05Z')
   })
 
+  // Catches: placeholders such as "Agent unavailable" or "Provider: unavailable" for labels Coral
+  // did not send, or a review that loses who asked for the call.
+  it.each([
+    ['an agent without a name', { actorLabel: undefined }, 'Unknown agent · Finance'],
+    ['a workspace without a name', { workspaceLabel: undefined }, 'Collections agent'],
+    [
+      'your own run without names',
+      { actorLabel: undefined, agent: '', workspaceLabel: undefined },
+      'You',
+    ],
+  ])('names who asked with %s, and no placeholder', (_, labels, requested) => {
+    renderRoute(
+      <ActionReviewSession request={approval}>
+        <ApprovalReview
+          detail={{ ...approval, providerLabel: undefined }}
+          context={{ ...approvalContext, run: { ...approvalContext.run, ...labels } }}
+        />
+      </ActionReviewSession>,
+      { entry: '/activity', csrf: 'test-csrf' },
+    )
+    const review = screen.getByRole('region', { name: `Review ${approval.callPath}` })
+    expect(rows(contextList()).at(-1)).toEqual(['Requested by', requested])
+    expect(review.textContent).not.toMatch(/unavailable|Provider:/)
+    expect(review).not.toHaveTextContent(approvalContext.run.agent)
+  })
+
+  // Catches: a decided review that drops the decision because the reviewer's name is missing.
+  it('keeps a decision whose reviewer has no name', () => {
+    renderStatic({
+      ...approval,
+      state: 'approved',
+      actionable: false,
+      approver: 'users/gone',
+      approverLabel: undefined,
+      decidedAt: '2026-09-22T09:01:00Z',
+      comment: null,
+    })
+    const decision = screen.getByText('Reviewed by', { selector: 'dt' }).closest('dl')!
+    expect(rows(decision as HTMLElement)[0]).toEqual(['Reviewed by', 'Previous reviewer'])
+  })
+
   it('omits context it does not have instead of inventing it', () => {
     renderStatic({ ...approval, taskIntent: undefined })
     expect(rows(contextList())).toEqual([

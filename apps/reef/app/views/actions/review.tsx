@@ -20,6 +20,7 @@ import type { RequestDetail, RunDetail } from '../activity/types'
 import { restoreFirst, useActivityArchived, useActivityConnected } from '../activity/live'
 import { settledApproval } from './approval-state'
 import { PanelFooter, PanelHeader, usePanelLabel } from '../activity/panel'
+import { requestedBy } from '../activity/labels'
 import { Arguments } from './arguments'
 import { useShellCsrf } from '@/lib/use-shell-csrf'
 import type { action } from '@/routes/activity-resolve'
@@ -184,9 +185,11 @@ export function ApprovalReview({
         details={
           <>
             <Typography.BodySmall variant="tertiary">approval request</Typography.BodySmall>
-            <Typography.BodySmall variant="tertiary">
-              Provider: {detail.providerLabel || 'unavailable'}
-            </Typography.BodySmall>
+            {detail.providerLabel && (
+              <Typography.BodySmall variant="tertiary">
+                Provider: {detail.providerLabel}
+              </Typography.BodySmall>
+            )}
             {deciding && <Deadline at={detail.deadline} variant="tertiary" />}
           </>
         }
@@ -205,10 +208,7 @@ export function ApprovalReview({
           <DescriptionList.Row label="Task intent">{detail.taskIntent}</DescriptionList.Row>
         )}
         {runIntent && <DescriptionList.Row label="Run intent">{runIntent}</DescriptionList.Row>}
-        <DescriptionList.Row label="Requested by">
-          {run.actorLabel || (run.agent ? 'Agent unavailable' : 'You')} ·{' '}
-          {run.workspaceLabel || 'Workspace unavailable'}
-        </DescriptionList.Row>
+        <DescriptionList.Row label="Requested by">{requestedBy(run)}</DescriptionList.Row>
         {callStartedAt && (
           <DescriptionList.Row label="Call started">
             <Instant value={callStartedAt} />

@@ -74,7 +74,7 @@ it.each<[string, ActivityRow, string]>([
     { ...run, state: 'running', requiresAction: true },
     'running',
   ],
-  ['unknown attempt', { ...tool, outcome: 'unknown' }, 'unknown / incomplete'],
+  ['unknown attempt', { ...tool, outcome: 'unknown' }, 'result unknown'],
   [
     'accepted but unavailable execution',
     { ...tool, tool: 'exec', acceptedRun: run.name },
@@ -85,12 +85,13 @@ it.each<[string, ActivityRow, string]>([
     { ...operation, state: 'pending', outcome: 'unknown', requiresAction: true },
     'pending',
   ],
-  ['native upstream outcome, not inferred success', operation, 'upstream outcome'],
-  ['uncertain dispatch', { ...operation, outcome: 'indeterminate' }, 'indeterminate'],
+  ['a response received, not inferred success', operation, 'completed'],
+  ['uncertain dispatch', { ...operation, outcome: 'indeterminate' }, 'result unknown'],
+  ['a Coral failure', { ...operation, outcome: 'coral_failure' }, 'failed'],
   [
     'Run termination, not an upstream error',
     { ...operation, outcome: 'run_terminated' },
-    'run terminated',
+    'run ended',
   ],
 ])('marks %s with its exact accessible state', (_name, row, label) => {
   const markup = render(row)
@@ -98,6 +99,25 @@ it.each<[string, ActivityRow, string]>([
   expect(markup).toContain(`title="${label}"`)
   expect(markup).not.toContain('>STATE<')
 })
+
+// Catches: a log or emission row marked "diagnostic" or "retained", which says nothing about it.
+it.each(['program.logged', 'program.emitted', 'run.started'])(
+  'marks no state on a %s output row',
+  (eventKind) => {
+    const markup = render({
+      kind: 'output',
+      name: `${operation.run}/events/1`,
+      workspace: operation.workspace,
+      run: operation.run,
+      label: 'output #1',
+      startedAt: operation.startedAt,
+      eventKind,
+      agent: '',
+    })
+    expect(markup).not.toContain('aria-description=')
+    expect(markup).not.toMatch(/retained|diagnostic/)
+  },
+)
 
 it('marks only the operation as needing action, never its containing Run', () => {
   expect(render({ ...run, state: 'running', requiresAction: true })).not.toContain('needs action')

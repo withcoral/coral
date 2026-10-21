@@ -195,7 +195,8 @@ export function invocationDetail(
 export const invocationResults = {
   upstream_outcome: {
     kind: 'upstream_outcome',
-    value: '{"data":{"id":"msg_01J8","status":"queued"},"metadata":{"status":202}}',
+    // Coral's HTTP envelope: the status, the provider's data, then Coral's metadata.
+    value: '{"status":202,"data":{"id":"msg_01J8","status":"queued"},"metadata":{"kind":"http"}}',
   },
   coral_failure: {
     kind: 'coral_failure',

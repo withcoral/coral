@@ -49,6 +49,7 @@ import { ACTIVITY_CHILD_WINDOW, activityRowIdentity } from '@/lib/activity-live-
 import { activityDays, utcDay } from '@/lib/activity-list'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import * as styles from './task-activity.css'
+import { invocationOutcomeLabels, resultUnknown } from './labels'
 
 export function rowLabel(row: ActivityRow): string {
   switch (row.kind) {
@@ -97,7 +98,7 @@ const runTones = {
   interrupted: 'warning',
   unknown: 'warning',
 } satisfies Record<RunState, RowStatus['tone']>
-function rowStatus(row: ActivityRow): RowStatus {
+function rowStatus(row: ActivityRow): RowStatus | undefined {
   switch (row.kind) {
     case 'task':
       return {
@@ -106,7 +107,7 @@ function rowStatus(row: ActivityRow): RowStatus {
         label: row.outcome,
       }
     case 'tool':
-      if (row.outcome === 'unknown') return { tone: 'warning', label: 'unknown / incomplete' }
+      if (row.outcome === 'unknown') return { tone: 'warning', label: resultUnknown }
       if (row.acceptedRun) return { tone: 'neutral', label: 'accepted · run unavailable' }
       return {
         tone:
@@ -128,8 +129,8 @@ function rowStatus(row: ActivityRow): RowStatus {
           tone: row.requiresAction || row.state === 'unknown' ? 'warning' : 'neutral',
           label: row.state,
         }
-      // An upstream outcome stays neutral whether the Program received it or was rejected with it
-      // as an Operation Error.
+      // A complete response stays neutral whether the Program received it or was rejected with it
+      // as an Operation Error: the row holds no response to tell, so it says only that one came.
       return {
         tone:
           row.outcome === 'coral_failure'
@@ -137,13 +138,11 @@ function rowStatus(row: ActivityRow): RowStatus {
             : row.outcome === 'indeterminate' || row.outcome === 'unknown'
               ? 'warning'
               : 'neutral',
-        label: row.outcome.replaceAll('_', ' '),
+        label: invocationOutcomeLabels[row.outcome],
       }
     case 'output':
-      return {
-        tone: 'neutral',
-        label: row.eventKind === 'program.logged' ? 'diagnostic' : 'retained',
-      }
+      // Its icon and label name it; a state would say nothing more.
+      return undefined
   }
 }
 function rowDuration(row: ActivityRow) {

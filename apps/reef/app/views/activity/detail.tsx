@@ -11,11 +11,13 @@ import type {
   ActivityPage,
   RunDetail,
   InvocationDetail,
+  InvocationResult,
   InteractionEvidence,
   InteractionRow,
   ProgramError,
   RunEvent,
   RunTerminal,
+  RunFailureCode,
 } from './types'
 import { CancelRun } from '../actions/review'
 import { RunActions } from '../actions/run-actions'
@@ -25,6 +27,7 @@ import { DetailHeader, StateBadge } from './detail-header'
 import { ContextImpact } from './context-impact'
 import { Instant } from './instant'
 import { ValueCard } from './value-card'
+import { invocationOutcomeLabels, requestedBy, resultUnknown } from './labels'
 import { Panel } from './panel'
 import { useActivityConnected } from './live'
 import { useActivityNavigation } from './navigation'
@@ -74,10 +77,7 @@ function ExecutionDetail({
           {detail.submission?.intent || run.intent}
         </DescriptionList.Row>
       )}
-      <DescriptionList.Row label="Requested by">
-        {run.actorLabel || (run.agent ? 'Agent unavailable' : 'You')} ·{' '}
-        {run.workspaceLabel || 'Workspace unavailable'}
-      </DescriptionList.Row>
+      <DescriptionList.Row label="Requested by">{requestedBy(run)}</DescriptionList.Row>
       {/* A connection request records no start of its own; these times are the Run's. */}
       <DescriptionList.Row label="Run duration">
         <Elapsed
@@ -102,7 +102,7 @@ function ExecutionDetail({
       {!review && !connection && (
         <>
           <DetailHeader
-            title={detail.submission?.intent || detail.run.intent || 'No intent recorded'}
+            title={detail.submission?.intent || detail.run.intent || 'Program run'}
             status={detail.run.state}
             kind="program run"
           />
@@ -208,10 +208,20 @@ function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: In
       <DetailHeader
         title={detail.invocation.callPath || detail.invocation.operation}
         status={
-          detail.invocation.state === 'ended' ? detail.invocation.outcome : detail.invocation.state
+          detail.invocation.state !== 'ended'
+            ? detail.invocation.state
+            : detail.invocation.outcome === 'upstream_outcome'
+              ? answeredStatus(detail.result)
+              : detail.invocation.outcome
+        }
+        label={
+          detail.invocation.state !== 'ended'
+            ? undefined
+            : detail.invocation.outcome === 'upstream_outcome'
+              ? answeredStatus(detail.result)
+              : invocationOutcomeLabels[detail.invocation.outcome]
         }
         kind="operation"
-        provider={detail.invocation.provider}
       />
       {/* What the call belongs to and how it waited, then its times together, last. */}
       <DescriptionList.List>
@@ -349,12 +359,9 @@ function RecordDetail({ page }: { page: ActivityPage }) {
       ? detail.task.outcome
       : detail.kind === 'tool'
         ? detail.interaction.outcome
-        : detail.event.kind === 'program.logged'
-          ? 'diagnostic'
-          : 'retained'
-  const label = detail.kind === 'tool' && status === 'unknown' ? 'unknown / incomplete' : undefined
-  // A log or an emission states its time here; its title names it and a card holds its content.
-  const payload = detail.kind === 'output' && hasPayload(detail.event) ? detail.event : null
+        : // An output's title and kind name it; a status would say nothing more.
+          null
+  const label = detail.kind === 'tool' && status === 'unknown' ? resultUnknown : undefined
   // A run event states its own time when no row does.
   const started = row?.startedAt ?? (detail.kind === 'output' ? detail.event.occurredAt : undefined)
   // A search is titled by its intent; it leads with what it asked and its times, then results.
@@ -404,7 +411,13 @@ function RecordDetail({ page }: { page: ActivityPage }) {
   )
   return (
     <Panel>
-      <DetailHeader title={title} status={status} label={label} kind={kind} showStatus={!payload} />
+      <DetailHeader
+        title={title}
+        status={status ?? 'output'}
+        label={label}
+        kind={kind}
+        showStatus={status !== null}
+      />
       {/* A Task and a tool call state their own facts in their lists below. */}
       {started && detail.kind === 'output' && (
         <DescriptionList.List>
@@ -572,19 +585,43 @@ function eventHeading(event: RunEvent): { title: string; kind: string } {
       return { title: 'Operation call started', kind: 'run event' }
     case 'invocation.ended':
       return {
-        title: `Operation call ended: ${event.outcome.replaceAll('_', ' ')}`,
+        // The event holds no response to tell, so a complete one reads only as completed.
+        title: `Operation call ended: ${invocationOutcomeLabels[event.outcome]}`,
         kind: 'run event',
       }
     default:
       return { title: 'Unknown run event', kind: 'run event' }
   }
 }
+/**
+ * How a call that got a complete response reads. The response proves a failure only through
+ * HTTP: Coral counts any status outside 2xx as the provider's error. Nothing in it proves
+ * success: Coral classes a 2xx against the statuses the Operation declares, which Reef does not
+ * receive, and an MCP `isError` counts only for a tool call, which the response does not record.
+ * So the rest reads as completed: a response came back. A property in the provider's own data
+ * never decides it.
+ */
+function answeredStatus(result: InvocationResult): 'failed' | 'completed' {
+  if (result.kind !== 'upstream_outcome') return 'completed'
+  let response: unknown
+  try {
+    response = JSON.parse(result.value)
+  } catch {
+    return 'completed'
+  }
+  const http = response as { status?: unknown; metadata?: { kind?: unknown } } | null
+  const status = http?.metadata?.kind === 'http' ? http.status : undefined
+  return Number.isInteger(status) && ((status as number) < 200 || (status as number) > 299)
+    ? 'failed'
+    : 'completed'
+}
+
 function InvocationOutcome({ detail }: { detail: InvocationDetail }) {
   if (detail.invocation.state !== 'ended') return null
   switch (detail.result.kind) {
     case 'upstream_outcome':
       // What the provider answered, which says nothing of whether the goal succeeded.
-      return <ValueCard value={detail.result.value} format="json" label="Upstream response" />
+      return <ValueCard value={detail.result.value} format="json" label="Provider response" />
     case 'coral_failure':
       return (
         <ErrorCard
@@ -690,10 +727,13 @@ function CallEvidence({
 function ErrorCard({
   message,
   reason,
+  code,
   children,
 }: {
   message: string
   reason?: string
+  /** Coral's exact code for the failure, a diagnostic under the plain heading. */
+  code?: string
   children?: React.ReactNode
 }) {
   return (
@@ -702,6 +742,11 @@ function ErrorCard({
         {reason && <Typography.BodySmallStrong>{reason}</Typography.BodySmallStrong>}
         <Native value={message} />
         {children}
+        {code && (
+          <Typography.BodySmall variant="tertiary">
+            Code: <Typography.CodeSmallInline>{code}</Typography.CodeSmallInline>
+          </Typography.BodySmall>
+        )}
       </List.Item>
     </List.Container>
   )
@@ -709,9 +754,6 @@ function ErrorCard({
 /** The ID in `workspaces/{workspace}/savedFunctions/{id}`, else the name as stored. */
 const savedFunctionId = (name: string) =>
   /^workspaces\/[^/]+\/savedFunctions\/([^/]+)$/.exec(name)?.[1] ?? name
-type PayloadEvent = Extract<RunEvent, { kind: 'program.logged' | 'program.emitted' }>
-const hasPayload = (event: RunEvent): event is PayloadEvent =>
-  event.kind === 'program.logged' || event.kind === 'program.emitted'
 function EventEvidence({
   event,
   recordHref,
@@ -756,7 +798,12 @@ function TerminalEvidence({ terminal }: { terminal: RunTerminal }) {
       )
     case 'failed':
       return (
-        <ErrorCard message={terminal.message} reason={terminal.code}>
+        <ErrorCard
+          message={terminal.message}
+          reason={runFailureHeadings[terminal.code]}
+          // An unknown code is this Reef's own word, not Coral's, so it is no diagnostic.
+          code={terminal.code === 'unknown' ? undefined : terminal.code}
+        >
           {terminal.error && <ErrorDetail error={terminal.error} />}
         </ErrorCard>
       )
@@ -764,6 +811,16 @@ function TerminalEvidence({ terminal }: { terminal: RunTerminal }) {
       return null
   }
 }
+/** A Run failure in plain words, from the reason Coral set; the exact code shows under it. */
+const runFailureHeadings = {
+  program_rejected: 'The program threw an error',
+  invalid_program_value: 'The program returned a value Coral cannot store',
+  resource_limit_exceeded: 'A value or the output was too large',
+  memory_limit_exceeded: 'The program ran out of memory',
+  program_execution_failed: 'The program failed',
+  run_authority_lost: 'The run lost the access it needed',
+  unknown: 'The run failed',
+} satisfies Record<RunFailureCode, string>
 function ErrorDetail({ error }: { error: ProgramError }) {
   return (
     <div className={styles.stack}>
