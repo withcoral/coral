@@ -713,6 +713,7 @@ dependencies = [
  "flate2",
  "jsonschema",
  "mime",
+ "schemars",
  "sea-query",
  "serde",
  "serde_json",

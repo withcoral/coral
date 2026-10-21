@@ -7,12 +7,16 @@
 //!
 //! Each Operation's module owns its whole contract: the schemas a Program is
 //! typed from, the arguments Coral reads against the input schema, and the
-//! result it writes against the output schema. A test holds each parser and
-//! result to its schema.
+//! result it writes against the output schema. Each schema is derived from
+//! the types Coral reads or writes, and a test holds each parser and result to
+//! its schema where serde and the derivation could still differ.
 
 use std::fmt;
 use std::sync::Arc;
 
+use schemars::generate::{Contract, SchemaSettings};
+use schemars::transform::{RecursiveTransform, RestrictFormats};
+use schemars::{JsonSchema, Schema};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Value, json};
@@ -327,6 +331,25 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
+/// The schema a Program is typed from, derived from `T` as Coral reads it
+/// (`Contract::Deserialize`) or writes it (`Contract::Serialize`). It states
+/// no defaults or titles: a description says what an omitted argument means.
+fn derived_schema<T: JsonSchema>(contract: Contract) -> Value {
+    SchemaSettings::draft2020_12()
+        .with(|settings| {
+            settings.meta_schema = None;
+            settings.contract = contract;
+        })
+        .with_transform(RecursiveTransform(|schema: &mut Schema| {
+            schema.remove("default");
+            schema.remove("title");
+        }))
+        .with_transform(RestrictFormats::default())
+        .into_generator()
+        .into_root_schema_for::<T>()
+        .to_value()
+}
+
 /// The Operation Result a Built-in Operation returns, with Coral as the
 /// Upstream Service.
 fn operation_result(data: &impl Serialize) -> Value {
@@ -343,6 +366,20 @@ pub enum BuiltinCredentialRoute {
     Fixed,
     /// Each caller's own Account.
     Caller,
+}
+
+impl JsonSchema for BuiltinCredentialRoute {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "CredentialRoute".into()
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> Schema {
+        words_schema(&Self::names())
+    }
 }
 
 impl BuiltinCredentialRoute {
@@ -388,9 +425,14 @@ const fn authentication_name(kind: AuthenticationKind) -> &'static str {
     }
 }
 
-/// Each method's name, for a schema's `enum`.
-fn authentication_names() -> [&'static str; 7] {
-    AUTHENTICATION_KINDS.map(authentication_name)
+/// A string that is one of `words`.
+fn words_schema(words: &[&str]) -> Schema {
+    schemars::json_schema!({ "type": "string", "enum": words })
+}
+
+/// Each method, by the name a Program reads.
+fn authentication_schema(_generator: &mut schemars::SchemaGenerator) -> Schema {
+    words_schema(&AUTHENTICATION_KINDS.map(authentication_name))
 }
 
 #[expect(
@@ -406,19 +448,31 @@ fn serialize_authentication<S: Serializer>(
 
 /// What `createProvider` and `listProviders` report about a Provider: how to
 /// call it and whether the Program needs a person first.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[schemars(deny_unknown_fields, description = "")]
 pub struct ProviderFacts {
     /// The Provider display name.
+    #[schemars(description = "The Provider display name.")]
     pub display_name: String,
     /// Whose Account Invocations use.
+    #[schemars(description = "Whose account Invocations use.")]
     pub credential_route: BuiltinCredentialRoute,
     /// How Coral sends the Provider's credentials.
     #[serde(serialize_with = "serialize_authentication")]
+    #[schemars(
+        schema_with = "authentication_schema",
+        description = "How Coral sends the Provider's credentials."
+    )]
     pub authentication: AuthenticationKind,
     /// How many of its Operations the caller can discover and call.
+    #[schemars(description = "How many of the Provider's Operations you can discover and call.")]
     pub operations: usize,
     /// Whether the caller must connect an Account before calling it.
+    #[schemars(
+        description = "True when you must connect your own Account before your calls can use the \
+                       Provider. Your first call then asks you to connect it."
+    )]
     pub account_required: bool,
 }
 

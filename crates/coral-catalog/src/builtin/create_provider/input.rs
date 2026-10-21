@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::builtin::ArgumentProblem;
@@ -14,19 +15,31 @@ use crate::{
     OAuthScopeFormat, ServerSelection,
 };
 
+/// What a credential part or header names.
+const FIELD_DESCRIPTION: &str = "A field from credentialFields.";
+/// How an OAuth application authenticates, for either method.
+const CLIENT_AUTHENTICATION_DESCRIPTION: &str = "How the application authenticates at the token \
+     endpoint. Omit it, or give none, for a public application.";
+
 /// What every OAuth endpoint must be, so it cannot carry a credential.
 const ENDPOINT_REASON: &str = "use an absolute `http` or `https` URL without credentials, a \
      fragment or an OAuth parameter that Coral sets, such as `client_secret`";
 
 /// One server choice per server declaration.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "ServerSelection", description = "")]
 pub(super) enum ServerInput {
     Declared {
+        #[schemars(description = "A server URL template the source declares.")]
         url: String,
         variables: BTreeMap<String, String>,
     },
     Custom {
+        #[schemars(
+            description = "An absolute HTTP or HTTPS base URL, without credentials, a query, or a \
+                           fragment."
+        )]
         url: String,
     },
 }
@@ -41,12 +54,16 @@ impl From<ServerInput> for ServerSelection {
 }
 
 /// How a person is asked for one value when they sign in.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(rename = "CredentialField", description = "")]
 pub(super) struct CredentialFieldInput {
+    #[schemars(description = "The name of the box the person fills in.")]
     label: String,
     #[serde(default)]
+    #[schemars(description = "Help text.")]
     description: String,
+    #[schemars(description = "Masks the value while it is typed.")]
     sensitive: bool,
 }
 
@@ -62,8 +79,15 @@ impl From<CredentialFieldInput> for CredentialField {
 
 /// The authentication method and its non-secret settings. MCP issuer and
 /// resource come from discovery, as in Reef, so a Program never sets them.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(
+    rename = "Authentication",
+    description = "The authentication method and its non-secret settings. Omit it to use the \
+                   method the source declares. Never include a secret or a literal value: a \
+                   header, query parameter or Basic part names a field from credentialFields. \
+                   The one literal is empty, for a Basic or query part the service leaves blank."
+)]
 pub(super) enum AuthenticationInput {
     // Empty struct variants, not unit ones: serde ignores `deny_unknown_fields`
     // on a unit variant of an internally tagged enum, so `{ method: "bearer",
@@ -71,6 +95,7 @@ pub(super) enum AuthenticationInput {
     None {},
     Bearer {},
     HeaderCredentials {
+        #[schemars(description = "Header name to the field it sends.")]
         headers: BTreeMap<String, HeaderInput>,
     },
     BasicAuth {
@@ -78,6 +103,7 @@ pub(super) enum AuthenticationInput {
         password: SourceInput,
     },
     QueryCredentials {
+        #[schemars(description = "Query parameter name to the field it sends.")]
         parameters: BTreeMap<String, SourceInput>,
     },
     OauthDeviceCode {
@@ -87,6 +113,7 @@ pub(super) enum AuthenticationInput {
         #[serde(default)]
         scope_format: ScopeFormatInput,
         #[serde(default, deserialize_with = "crate::builtin::present")]
+        #[schemars(with = "DeviceClientInput")]
         client: Option<DeviceClientInput>,
     },
     OauthAuthorizationCode {
@@ -96,6 +123,7 @@ pub(super) enum AuthenticationInput {
         #[serde(default)]
         scope_format: ScopeFormatInput,
         #[serde(default, deserialize_with = "crate::builtin::present")]
+        #[schemars(with = "ClientInput")]
         client: Option<ClientInput>,
     },
 }
@@ -183,12 +211,17 @@ fn endpoint(field: &str, url: String) -> Result<String, ArgumentProblem> {
 
 /// What one credential header sends: a Credential Field after an optional
 /// prefix. A header never sends a literal value.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "HeaderField", description = "")]
 pub(super) enum HeaderInput {
     Field {
+        #[schemars(description = FIELD_DESCRIPTION)]
         field: String,
         #[serde(default)]
+        #[schemars(
+            description = "Non-secret text sent before the value, such as Bot . Never a credential."
+        )]
         prefix: String,
     },
 }
@@ -202,11 +235,19 @@ impl From<HeaderInput> for HeaderBinding {
 
 /// Where one credential part comes from: a Credential Field, or an empty
 /// literal for a part the service leaves blank, such as a Basic password.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "CredentialPart", description = "")]
 pub(super) enum SourceInput {
-    Field { field: String },
-    Literal { value: String },
+    Field {
+        #[schemars(description = FIELD_DESCRIPTION)]
+        field: String,
+    },
+    #[schemars(description = "A part the service leaves blank, such as a Basic password.")]
+    Literal {
+        #[schemars(extend("const" = ""))]
+        value: String,
+    },
 }
 
 /// The credential part at `field`. A person enters every value when they
@@ -228,8 +269,12 @@ fn credential_source(
     }
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[schemars(
+    rename = "ScopeFormat",
+    description = "How scopes are joined in the request. Omit it for space."
+)]
 pub(super) enum ScopeFormatInput {
     #[default]
     Space,
@@ -248,15 +293,27 @@ impl From<ScopeFormatInput> for OAuthScopeFormat {
 /// An OAuth application registered with the service. A confidential
 /// application's secret never comes from the Program: the person enters it
 /// when they sign in.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(
+    rename = "OAuthClient",
+    description = "An OAuth application registered with the service. Omit it to let Coral \
+                   register one, when the service allows it. A confidential application never \
+                   takes its secret here: the person enters it when they sign in."
+)]
 pub(super) struct ClientInput {
     client_id: String,
     #[serde(default)]
+    #[schemars(description = CLIENT_AUTHENTICATION_DESCRIPTION)]
     authentication: ClientAuthenticationInput,
     #[serde(default, deserialize_with = "crate::builtin::present")]
+    #[schemars(
+        with = "PkceInput",
+        description = "Authorization-code protection. Omit it for s256."
+    )]
     pkce: Option<PkceInput>,
     #[serde(default)]
+    #[schemars(description = "Non-secret authorization options, such as access_type.")]
     authorization_parameters: BTreeMap<String, String>,
 }
 
@@ -303,13 +360,21 @@ impl ClientInput {
 
 /// A device-code application. Device authorization takes no authorization
 /// parameters, so the Program cannot give any.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(
+    rename = "DeviceOAuthClient",
+    description = "An OAuth application registered with the service. A confidential application \
+                   never takes its secret here: the person enters it when they sign in. Device \
+                   authorization takes no authorization parameters."
+)]
 pub(super) struct DeviceClientInput {
     client_id: String,
     #[serde(default)]
+    #[schemars(description = CLIENT_AUTHENTICATION_DESCRIPTION)]
     authentication: ClientAuthenticationInput,
     #[serde(default, deserialize_with = "crate::builtin::present")]
+    #[schemars(with = "PkceInput", description = "Device code never uses it.")]
     pkce: Option<PkceInput>,
 }
 
@@ -324,8 +389,9 @@ impl From<DeviceClientInput> for ClientInput {
     }
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[schemars(inline)]
 pub(super) enum ClientAuthenticationInput {
     #[default]
     None,
@@ -333,8 +399,9 @@ pub(super) enum ClientAuthenticationInput {
     ClientSecretPost,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[schemars(inline)]
 pub(super) enum PkceInput {
     S256,
     Disabled,

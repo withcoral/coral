@@ -1,12 +1,14 @@
 //! `coral.workspace.listProviders`: the schemas a Program is typed from, and
 //! the result Coral writes against the output schema. It takes no arguments.
 
+use schemars::JsonSchema;
+use schemars::generate::Contract;
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::{
-    ArgumentProblem, BuiltinCredentialRoute, BuiltinOperation, Definition, ProviderFacts,
-    authentication_names, operation_result,
+    ArgumentProblem, BuiltinOperation, Definition, ProviderFacts, derived_schema, operation_result,
+    words_schema,
 };
 use crate::{OperationHints, OperationPresentation};
 
@@ -31,56 +33,7 @@ pub(super) fn definition() -> Definition {
         // Read-only: the default Operation Access State is enabled.
         hints: OperationHints::new(Some(true), None, Some(true), None),
         input: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-        output: json!({
-            "type": "object",
-            "required": ["providers"],
-            "properties": {
-                "providers": {
-                    "type": "array",
-                    "description": "Every Provider in this Workspace, in the order they were created. Coral's own comes first.",
-                    "items": { "$ref": "#/$defs/Provider" }
-                }
-            },
-            "additionalProperties": false,
-            "$defs": {
-                "Provider": {
-                    "type": "object",
-                    "required": [
-                        "namespace", "displayName", "state", "credentialRoute",
-                        "authentication", "operations", "accountRequired"
-                    ],
-                    "properties": {
-                        "namespace": {
-                            "type": ["string", "null"],
-                            "description": "The Provider Namespace. Its Operations are called under coral.providers.<namespace>. Null for Coral's own Provider, whose Operations are called under coral.workspace."
-                        },
-                        "displayName": { "type": "string", "description": "The Provider display name." },
-                        "state": {
-                            "enum": ["active", "disabled"],
-                            "description": "Whether the Provider accepts calls. A disabled Provider still holds its namespace."
-                        },
-                        "credentialRoute": {
-                            "enum": BuiltinCredentialRoute::names(),
-                            "description": "Whose account Invocations use."
-                        },
-                        "authentication": {
-                            "enum": authentication_names(),
-                            "description": "How Coral sends the Provider's credentials."
-                        },
-                        "operations": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "description": "How many of the Provider's Operations you can discover and call."
-                        },
-                        "accountRequired": {
-                            "type": "boolean",
-                            "description": "True when you must connect your own Account before your calls can use the Provider."
-                        }
-                    },
-                    "additionalProperties": false
-                }
-            }
-        }),
+        output: derived_schema::<ListProvidersResult>(Contract::Serialize),
     }
 }
 
@@ -101,9 +54,14 @@ pub(super) fn parse(arguments: &Value) -> Result<(), Vec<ArgumentProblem>> {
 
 /// What `listProviders` returns: every Provider in the Workspace, in the
 /// order they were created.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields, description = "")]
 pub struct ListProvidersResult {
     /// Each Provider, with what it offers the caller.
+    #[schemars(
+        description = "Every Provider in this Workspace, in the order they were created. Coral's \
+                       own comes first."
+    )]
     pub providers: Vec<ListedProvider>,
 }
 
@@ -116,12 +74,22 @@ impl ListProvidersResult {
 }
 
 /// One `listProviders` entry.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[schemars(rename = "Provider", deny_unknown_fields, description = "")]
 pub struct ListedProvider {
     /// The Provider Namespace; `None` for the Built-in Provider, whose
     /// Operations are under `coral.workspace`.
+    #[schemars(
+        description = "The Provider Namespace. Its Operations are called under \
+                       coral.providers.<namespace>. Null for Coral's own Provider, whose \
+                       Operations are called under coral.workspace."
+    )]
     pub namespace: Option<String>,
     /// Whether the Provider accepts calls.
+    #[schemars(
+        description = "Whether the Provider accepts calls. A disabled Provider still holds its \
+                       namespace."
+    )]
     pub state: ListedProviderState,
     /// What the caller needs to call it.
     #[serde(flatten)]
@@ -137,6 +105,20 @@ pub enum ListedProviderState {
     Active,
     /// It holds its namespace but accepts no calls.
     Disabled,
+}
+
+impl JsonSchema for ListedProviderState {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ProviderState".into()
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        words_schema(&["active", "disabled"])
+    }
 }
 
 /// The only arguments `listProviders` takes, for its conformance test.
