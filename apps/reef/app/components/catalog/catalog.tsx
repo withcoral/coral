@@ -221,7 +221,9 @@ export function CatalogToolbar({
         {children}
         {action ? (
           // One unit, so a wrapping row never leaves the action on a line alone.
-          <div className={styles.toolbarFilterAndAction}>
+          <div
+            className={classNames(styles.toolbarFilterAndAction, fill && styles.toolbarFilterFill)}
+          >
             {filterField}
             <div className={styles.toolbarAction}>{action}</div>
           </div>

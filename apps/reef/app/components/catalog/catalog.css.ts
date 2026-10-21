@@ -1,6 +1,7 @@
 import { createContainer, globalStyle, style } from '@vanilla-extract/css'
 
 import { theme } from '@/wax/theme/theme.css'
+import { visuallyHiddenRules } from '@/wax/components/visually-hidden.css'
 
 export const layout = style({
   display: 'grid',
@@ -178,17 +179,7 @@ export const toolbarAction = style({ display: 'flex', flexShrink: 0 })
 // action's name when a narrow toolbar hides it.
 export const toolbarActionLabel = style({
   '@container': {
-    [COMPACT_TOOLBAR]: {
-      border: 0,
-      clipPath: 'inset(50%)',
-      height: 1,
-      margin: -1,
-      overflow: 'hidden',
-      padding: 0,
-      position: 'absolute',
-      whiteSpace: 'nowrap',
-      width: 1,
-    },
+    [COMPACT_TOOLBAR]: visuallyHiddenRules,
   },
 })
 export const toolbarTitle = style({ alignItems: 'center', display: 'flex', gap: 8, minWidth: 0 })
