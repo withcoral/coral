@@ -1,14 +1,17 @@
 use super::super::provider_client::OidcAuthorizationRequest;
 use super::super::state_store::{
-    OAuthAuthorizationApprovalRecord, OAuthAuthorizationSessionRecord,
+    OAuthAuthorizationApprovalRecord, OAuthAuthorizationSessionRecord, OAuthSignInBinding,
 };
 use super::client_metadata::OAuthClientRegistration;
 use super::response::{TrustedRedirect, direct_error, redirect};
-use super::{AuthorizationServerHttpState, canonical_authorization_resource, query};
+use super::{
+    AuthorizationServerHttpState, canonical_authorization_resource, query, sign_in_cookie,
+};
 use axum::extract::{RawQuery, Request, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, header};
 use axum::response::Response;
 use coral_outbound::{BrowserRedirect, EndpointUrl};
+use ring::rand::SystemRandom;
 
 mod confirmation;
 
@@ -100,7 +103,7 @@ pub(super) async fn oauth_authorize_get(
     let Ok(ticket) = confirmation::new_ticket() else {
         return trusted.error("server_error", "authorization failed");
     };
-    let secure_cookie = secure_approval_cookie(&state);
+    let secure_cookie = state.secure_cookies();
     let Ok(browser_binding) = confirmation::browser_binding_for_page(&headers, secure_cookie)
     else {
         return trusted.error("server_error", "authorization failed");
@@ -133,7 +136,7 @@ pub(super) async fn oauth_authorize_post(
     let Ok((ticket, browser_binding, decision)) = confirmation::parse_submission(
         request,
         state.settings.authorization_server().issuer(),
-        secure_approval_cookie(&state),
+        state.secure_cookies(),
     )
     .await
     else {
@@ -163,7 +166,8 @@ pub(super) async fn oauth_authorize_post(
 /// skips to directly. The session is stored before the redirect is returned,
 /// so the callback can never arrive ahead of the state it needs, and the store
 /// hands it out once, so the callback that consumes it is the only one that
-/// can.
+/// can. The redirect also hands this browser the sign-in cookie that the
+/// stored session is bound to, so only this browser's callback can take it.
 async fn provider_sign_in(
     state: &AuthorizationServerHttpState,
     approval: OAuthAuthorizationApprovalRecord,
@@ -192,23 +196,24 @@ async fn provider_sign_in(
         oidc_code_verifier,
         oidc_nonce,
     };
+    let Ok(binding) = OAuthSignInBinding::generate(&SystemRandom::new()) else {
+        return trusted.error("server_error", "authorization failed");
+    };
+    let Some(cookie) = sign_in_cookie::set_header(&oidc_state, &binding, state.secure_cookies())
+    else {
+        return trusted.error("server_error", "authorization failed");
+    };
     if state
         .session_store
-        .store_authorization_session(&oidc_state, session)
+        .store_authorization_session(&oidc_state, &binding, session)
         .await
         .is_err()
     {
         return trusted.error("server_error", "authorization failed");
     }
-    redirect(url.as_str())
-}
-
-fn secure_approval_cookie(state: &AuthorizationServerHttpState) -> bool {
-    state
-        .settings
-        .authorization_server()
-        .issuer()
-        .starts_with("https://")
+    let mut response = redirect(url.as_str());
+    response.headers_mut().append(header::SET_COOKIE, cookie);
+    response
 }
 
 #[derive(Default)]
@@ -348,7 +353,7 @@ mod tests {
     use super::*;
     use crate::auth::state_store::{
         ApprovalStore, InMemoryStateStore, OAuthAuthorizationApprovalBrowserBinding,
-        OAuthAuthorizationApprovalTicket, SessionStore,
+        OAuthAuthorizationApprovalTicket, OAuthSignInBinding, SessionStore,
     };
     use crate::auth::test_config::{AUTH_ISSUER, PROVIDER_SECRET};
 
@@ -419,6 +424,35 @@ mod tests {
         let mut state = http_state(issuer, extra, store, &[RESOURCE]);
         state.client_metadata_resolver = resolver;
         state
+    }
+
+    /// The sign-in binding a browser holds after following `response`.
+    fn returned_binding(
+        response: &Response,
+        oidc_state: &str,
+        secure_cookies: bool,
+    ) -> OAuthSignInBinding {
+        let mut cookies = HeaderMap::new();
+        for set_cookie in response.headers().get_all(header::SET_COOKIE) {
+            let pair = set_cookie.to_str().expect("ASCII").split(';').next();
+            cookies.append(
+                header::COOKIE,
+                HeaderValue::from_str(pair.expect("name and value")).expect("cookie"),
+            );
+        }
+        sign_in_cookie::binding(&cookies, oidc_state, secure_cookies).expect("sign-in cookie")
+    }
+
+    fn sets_approval_cookie(response: &Response) -> bool {
+        response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .any(|cookie| {
+                cookie
+                    .as_bytes()
+                    .starts_with(b"__Host-coral_oauth_approval=")
+            })
     }
 
     fn trusting(client_id: &str) -> String {
@@ -1451,6 +1485,7 @@ mod tests {
         mount_discovery(&provider, 200).await;
         let store = Arc::new(InMemoryStateStore::new());
         let auth_state = state(&provider.uri(), store.clone());
+        let secure_cookies = auth_state.secure_cookies();
         let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
         assert!(
             provider
@@ -1467,8 +1502,24 @@ mod tests {
             .into_owned()
             .collect::<BTreeMap<_, _>>();
         let oidc_state = query.get("state").expect("OIDC state");
+        let set_cookie = response.headers()[header::SET_COOKIE]
+            .to_str()
+            .expect("ASCII");
+        for attribute in [
+            "Path=/",
+            "Max-Age=300",
+            "HttpOnly",
+            "Secure",
+            "SameSite=Lax",
+        ] {
+            assert!(
+                set_cookie.contains(attribute),
+                "{attribute} in {set_cookie}"
+            );
+        }
+        let binding = returned_binding(&response, oidc_state, secure_cookies);
         let session = store
-            .take_authorization_session(oidc_state)
+            .take_authorization_session(oidc_state, &binding)
             .await
             .expect("store")
             .expect("stored before redirect");
@@ -1485,7 +1536,7 @@ mod tests {
         }
         assert!(
             store
-                .take_authorization_session(oidc_state)
+                .take_authorization_session(oidc_state, &binding)
                 .await
                 .expect("store")
                 .is_none()
@@ -1521,7 +1572,7 @@ mod tests {
                 .expect("upstream sign-in")
                 .starts_with(&provider.uri())
         );
-        assert!(response.headers().get(header::SET_COOKIE).is_none());
+        assert!(!sets_approval_cookie(&response));
 
         for client in [
             CLIENT_ID,
@@ -1645,11 +1696,12 @@ mod tests {
             store.clone(),
             resolver,
         );
+        let secure_cookies = auth_state.secure_cookies();
         let response = request(auth_state, &pairs()).await;
         assert_eq!(response.status(), StatusCode::FOUND);
         assert_security(&response);
         assert!(
-            response.headers().get(header::SET_COOKIE).is_none(),
+            !sets_approval_cookie(&response),
             "a skipped approval page must not set an approval cookie"
         );
         let provider_url = location(&response).expect("provider redirect");
@@ -1664,8 +1716,9 @@ mod tests {
             .into_owned()
             .collect::<BTreeMap<_, _>>();
         let oidc_state = query.get("state").expect("OIDC state");
+        let binding = returned_binding(&response, oidc_state, secure_cookies);
         let session = store
-            .take_authorization_session(oidc_state)
+            .take_authorization_session(oidc_state, &binding)
             .await
             .expect("store")
             .expect("stored before redirect");
@@ -1676,7 +1729,7 @@ mod tests {
         assert_eq!(session.resource, RESOURCE);
         assert!(
             store
-                .take_authorization_session(oidc_state)
+                .take_authorization_session(oidc_state, &binding)
                 .await
                 .expect("store")
                 .is_none()

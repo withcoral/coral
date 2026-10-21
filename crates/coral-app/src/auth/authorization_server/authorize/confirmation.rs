@@ -17,6 +17,7 @@ use zeroize::Zeroizing;
 use super::super::super::state_store::{
     OAuthAuthorizationApprovalBrowserBinding, OAuthAuthorizationApprovalTicket,
 };
+use super::super::cookies;
 use super::super::response::approval_page_security_headers;
 
 const MAX_FORM_BYTES: usize = 256;
@@ -236,49 +237,21 @@ fn approval_cookie_header(
 
 /// Recovers the binding this browser was given, from the request's cookies.
 ///
-/// The scan works in bytes rather than through `HeaderValue::to_str` because
-/// that rejects every octet outside visible ASCII, and a browser sends a cookie
-/// value however a script set it. Reading the header as text would therefore
-/// let one unrelated cookie on this host decide the answer, and it would fail
-/// in the worst direction: the page handler treats `None` as "no binding yet"
-/// and mints a fresh one, while the submission handler treats it as a rejected
-/// request, so the user loops through the page with no decision ever taking.
-/// Only the value stored under the expected name has to be ASCII, and base64
-/// decoding is already what establishes that.
-///
-/// Returning `None` for a repeated name is what keeps a shadowing cookie from
-/// choosing which binding is read, so every occurrence must be seen, not just
-/// the first.
+/// A cookie this server cannot read leaves the binding unreadable in the worst
+/// direction: the page handler treats `None` as "no binding yet" and mints a
+/// fresh one, while the submission handler treats it as a rejected request, so
+/// the user loops through the page with no decision ever taking.
+/// [`cookies::single_value`] reads past cookies it cannot interpret and refuses
+/// a repeated name, which is why it is the only reader used here.
 fn browser_binding_from_headers(
     headers: &HeaderMap,
     secure: bool,
 ) -> Option<OAuthAuthorizationApprovalBrowserBinding> {
-    let expected_name = approval_cookie_name(secure).as_bytes();
-    let mut encoded = None;
-    for header_value in headers.get_all(header::COOKIE) {
-        for pair in header_value.as_bytes().split(|byte| *byte == b';') {
-            let Some((name, value)) = split_at_byte(pair.trim_ascii(), b'=') else {
-                continue;
-            };
-            if name != expected_name {
-                continue;
-            }
-            if encoded.is_some() {
-                return None;
-            }
-            encoded = Some(Zeroizing::new(value.to_vec()));
-        }
-    }
-    let encoded = encoded.filter(|value| value.len() == BROWSER_BINDING_LENGTH)?;
+    let encoded = cookies::single_value(headers, approval_cookie_name(secure))
+        .filter(|value| value.len() == BROWSER_BINDING_LENGTH)?;
     let mut bytes = Zeroizing::new([0_u8; 32]);
     let decoded = URL_SAFE_NO_PAD.decode_slice(&**encoded, &mut *bytes).ok()?;
     (decoded == bytes.len()).then(|| OAuthAuthorizationApprovalBrowserBinding::from_bytes(*bytes))
-}
-
-/// Splits `value` at the first occurrence of `byte`, dropping the separator.
-fn split_at_byte(value: &[u8], byte: u8) -> Option<(&[u8], &[u8])> {
-    let mut parts = value.splitn(2, |candidate| *candidate == byte);
-    Some((parts.next()?, parts.next()?))
 }
 
 fn has_exact_origin(headers: &HeaderMap, expected_origin: &str) -> bool {

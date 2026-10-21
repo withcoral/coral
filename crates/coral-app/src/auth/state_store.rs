@@ -88,6 +88,45 @@ impl Drop for OAuthAuthorizationApprovalBrowserBinding {
     }
 }
 
+/// Secret held by the one browser that started an upstream sign-in.
+///
+/// The OIDC `state` alone names a handshake, but it travels through the
+/// provider and so reaches any browser its sign-in link is sent to. Keying the
+/// handshake by this binding as well means only the browser holding the cookie
+/// the sign-in started with can finish it.
+pub(crate) struct OAuthSignInBinding([u8; 32]);
+
+impl OAuthSignInBinding {
+    /// Draws a fresh binding from `random`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StateStoreError::Randomness`] when `random` cannot fill the
+    /// binding.
+    pub(crate) fn generate(random: &dyn SecureRandom) -> Result<Self, StateStoreError> {
+        let mut binding = Self([0; 32]);
+        random
+            .fill(&mut binding.0)
+            .map_err(|_error| StateStoreError::Randomness)?;
+        Ok(binding)
+    }
+
+    /// Rebuilds a binding from the bytes the browser's cookie carried.
+    pub(crate) fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl Drop for OAuthSignInBinding {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct OAuthAuthorizationApprovalRecord {
     pub(crate) client_id: String,
@@ -128,7 +167,7 @@ pub(crate) enum StateStoreError {
     ClientApprovalsExceeded { max_entries: usize },
     #[error("OAuth state expiry exceeds the process clock range")]
     ExpiryOverflow,
-    #[error("OAuth approval ticket generation failed")]
+    #[error("OAuth state secret generation failed")]
     Randomness,
 }
 
@@ -160,17 +199,23 @@ pub(crate) trait ApprovalStore: Send + Sync {
 }
 
 /// Storage for handshakes in flight at the identity provider.
+///
+/// A handshake is keyed by its OIDC `state` and the browser binding together,
+/// so a take with the right `state` but another browser's binding finds
+/// nothing and leaves the handshake for the browser that started it.
 #[async_trait::async_trait]
 pub(crate) trait SessionStore: Send + Sync {
     async fn store_authorization_session(
         &self,
         oidc_state: &str,
+        browser_binding: &OAuthSignInBinding,
         session: OAuthAuthorizationSessionRecord,
     ) -> Result<(), StateStoreError>;
 
     async fn take_authorization_session(
         &self,
         oidc_state: &str,
+        browser_binding: &OAuthSignInBinding,
     ) -> Result<Option<OAuthAuthorizationSessionRecord>, StateStoreError>;
 }
 
@@ -290,9 +335,10 @@ impl SessionStore for InMemoryStateStore {
     async fn store_authorization_session(
         &self,
         oidc_state: &str,
+        browser_binding: &OAuthSignInBinding,
         session: OAuthAuthorizationSessionRecord,
     ) -> Result<(), StateStoreError> {
-        let key = secret_hash(oidc_state)?;
+        let key = session_key(oidc_state, browser_binding)?;
         let mut inner = self.inner.lock().await;
         let now = Instant::now();
         let expires_at = self.expires_at(now)?;
@@ -315,8 +361,9 @@ impl SessionStore for InMemoryStateStore {
     async fn take_authorization_session(
         &self,
         oidc_state: &str,
+        browser_binding: &OAuthSignInBinding,
     ) -> Result<Option<OAuthAuthorizationSessionRecord>, StateStoreError> {
-        let key = secret_hash(oidc_state)?;
+        let key = session_key(oidc_state, browser_binding)?;
         let mut inner = self.inner.lock().await;
         let now = Instant::now();
         let entry = inner.sessions.remove(&key);
@@ -437,6 +484,20 @@ fn hash_bytes(secret: &[u8]) -> SecretHash {
     Sha256::digest(secret).into()
 }
 
+fn session_key(
+    oidc_state: &str,
+    browser_binding: &OAuthSignInBinding,
+) -> Result<SecretHash, StateStoreError> {
+    if oidc_state.is_empty() {
+        return Err(StateStoreError::EmptySecret);
+    }
+    let mut hash = Sha256::new();
+    hash.update(b"coral-oauth-browser-bound-sign-in-v1\0");
+    hash.update(browser_binding.as_bytes());
+    hash.update(oidc_state.as_bytes());
+    Ok(hash.finalize().into())
+}
+
 fn approval_key(
     ticket: &OAuthAuthorizationApprovalTicket,
     browser_binding: &OAuthAuthorizationApprovalBrowserBinding,
@@ -478,6 +539,10 @@ mod tests {
 
     fn browser_binding() -> OAuthAuthorizationApprovalBrowserBinding {
         OAuthAuthorizationApprovalBrowserBinding::from_bytes([0x42; 32])
+    }
+
+    fn sign_in_binding() -> OAuthSignInBinding {
+        OAuthSignInBinding::from_bytes([0x24; 32])
     }
 
     fn session(id: &str) -> OAuthAuthorizationSessionRecord {
@@ -738,7 +803,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .store_authorization_session("session", session("session"))
+            .store_authorization_session("session", &sign_in_binding(), session("session"))
             .await
             .unwrap();
         store
@@ -779,24 +844,37 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn authorization_sessions_are_atomically_single_use() {
+    async fn authorization_sessions_are_browser_bound_and_atomically_single_use() {
         let store = Arc::new(InMemoryStateStore::new());
         store
-            .store_authorization_session("secret-state", session("state"))
+            .store_authorization_session("secret-state", &sign_in_binding(), session("state"))
             .await
             .unwrap();
+        let other_browser = OAuthSignInBinding::from_bytes([0x25; 32]);
+        assert!(
+            store
+                .take_authorization_session("secret-state", &other_browser)
+                .await
+                .unwrap()
+                .is_none(),
+            "another browser's binding must not take the session"
+        );
 
         let winner = only_winner(
             take_burst(|| {
                 let store = Arc::clone(&store);
-                async move { store.take_authorization_session("secret-state").await }
+                async move {
+                    store
+                        .take_authorization_session("secret-state", &sign_in_binding())
+                        .await
+                }
             })
             .await,
         );
         assert_eq!(winner.client_state.as_deref(), Some("state"));
         assert!(
             store
-                .take_authorization_session("secret-state")
+                .take_authorization_session("secret-state", &sign_in_binding())
                 .await
                 .unwrap()
                 .is_none()
@@ -910,12 +988,12 @@ mod tests {
         let expired =
             InMemoryStateStore::with_options(Duration::ZERO, 1, MAX_OAUTH_APPROVALS_PER_CLIENT);
         expired
-            .store_authorization_session("old", session("old"))
+            .store_authorization_session("old", &sign_in_binding(), session("old"))
             .await
             .unwrap();
         assert!(
             expired
-                .take_authorization_session("old")
+                .take_authorization_session("old", &sign_in_binding())
                 .await
                 .unwrap()
                 .is_none()
@@ -928,7 +1006,7 @@ mod tests {
         let bounded =
             InMemoryStateStore::with_options(OAUTH_STATE_TTL, 1, MAX_OAUTH_APPROVALS_PER_CLIENT);
         bounded
-            .store_authorization_session("one", session("one"))
+            .store_authorization_session("one", &sign_in_binding(), session("one"))
             .await
             .unwrap();
         bounded
@@ -936,7 +1014,7 @@ mod tests {
             .await
             .unwrap();
         bounded
-            .store_authorization_session("one", session("replacement"))
+            .store_authorization_session("one", &sign_in_binding(), session("replacement"))
             .await
             .expect("same session key may be replaced at capacity");
         bounded
@@ -945,7 +1023,7 @@ mod tests {
             .expect("same code key may be replaced at capacity");
         assert_eq!(
             bounded
-                .store_authorization_session("three", session("three"))
+                .store_authorization_session("three", &sign_in_binding(), session("three"))
                 .await,
             Err(StateStoreError::CapacityExceeded { max_entries: 1 })
         );
@@ -955,7 +1033,7 @@ mod tests {
         );
         assert_eq!(
             bounded
-                .store_authorization_session("", session("empty"))
+                .store_authorization_session("", &sign_in_binding(), session("empty"))
                 .await,
             Err(StateStoreError::EmptySecret)
         );
@@ -969,7 +1047,7 @@ mod tests {
             let store = Arc::clone(&store);
             tokio::spawn(async move {
                 store
-                    .store_authorization_session("delayed", session("delayed"))
+                    .store_authorization_session("delayed", &sign_in_binding(), session("delayed"))
                     .await
             })
         };
@@ -979,7 +1057,7 @@ mod tests {
         delayed_store.await.unwrap().unwrap();
         assert!(
             store
-                .take_authorization_session("delayed")
+                .take_authorization_session("delayed", &sign_in_binding())
                 .await
                 .unwrap()
                 .is_some()

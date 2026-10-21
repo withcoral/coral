@@ -307,6 +307,12 @@ URL at the identity provider. Coral derives that URL; it is not a separate
 `redirect_uri` setting. OIDC identity always uses the verified issuer and `sub`,
 not a configurable Principal claim. Discovery metadata is cached for five minutes.
 
+The browser that starts a sign-in receives a five-minute `coral_oauth_signin_*`
+cookie, with the `__Host-` prefix on HTTPS. Only that browser can finish the
+sign-in. If the provider's sign-in link is opened in another browser, the callback
+fails with `invalid_request` and leaves the sign-in for the browser that started it.
+A proxy in front of Coral must pass this cookie through to the callback.
+
 The remaining authorization-server, signing-key, and MCP listener settings are
 still required. Google domain admission validates the signed `hd` claim; an
 email suffix or login-screen hint is not sufficient. With Okta, configure its

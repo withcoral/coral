@@ -27,10 +27,12 @@ use tokio::task::JoinHandle;
 mod authorize;
 mod callback;
 mod client_metadata;
+mod cookies;
 mod provider_callback;
 mod query;
 mod registration;
 mod response;
+mod sign_in_cookie;
 mod token;
 
 use self::client_metadata::{ClientMetadataResolver, HttpClientMetadataResolver};
@@ -457,6 +459,15 @@ impl AuthorizationServerHttpState {
                 .workspace_resource_family
                 .as_ref()
                 .is_some_and(|family| family.parse_resource(resource).is_some())
+    }
+
+    /// Whether the browser cookies this server sets carry `Secure` and the
+    /// `__Host-` prefix, which only an HTTPS issuer can use.
+    pub(super) fn secure_cookies(&self) -> bool {
+        self.settings
+            .authorization_server()
+            .issuer()
+            .starts_with("https://")
     }
 }
 

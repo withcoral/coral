@@ -1,4 +1,5 @@
 use axum::extract::{RawQuery, State};
+use axum::http::{HeaderMap, header};
 use axum::response::Response;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -7,14 +8,14 @@ use zeroize::Zeroizing;
 
 use super::super::id_token::ValidatedOidcIdentity;
 use super::super::state_store::{OAuthAuthorizationCodeRecord, OAuthAuthorizationSessionRecord};
-use super::AuthorizationServerHttpState;
-use super::query;
 use super::response::{TrustedRedirect, direct_error};
+use super::{AuthorizationServerHttpState, query, sign_in_cookie};
 use coral_auth::{LoginProvisioning, UserDirectory, VerifiedOidcLogin};
 
 pub(super) async fn oidc_callback(
     State(state): State<AuthorizationServerHttpState>,
     RawQuery(raw_query): RawQuery,
+    headers: HeaderMap,
 ) -> Response {
     let Ok(query) = parse_query(raw_query.as_deref().unwrap_or_default()) else {
         return direct_error("invalid_request", "OIDC callback request is malformed");
@@ -22,20 +23,43 @@ pub(super) async fn oidc_callback(
     let Some(oidc_state) = query.state.as_deref().filter(|state| !state.is_empty()) else {
         return direct_error("invalid_request", "OIDC callback state is required");
     };
-    let Ok(Some(session)) = state
-        .session_store
-        .take_authorization_session(oidc_state)
-        .await
-    else {
-        return direct_error(
-            "invalid_request",
-            "OIDC callback state is invalid or expired",
-        );
+    // A browser that did not start this sign-in has no cookie for it. Stop
+    // before the take, so the handshake stays for the browser that did.
+    let secure_cookies = state.secure_cookies();
+    let Some(binding) = sign_in_cookie::binding(&headers, oidc_state, secure_cookies) else {
+        return invalid_state();
     };
+    let mut response = match state
+        .session_store
+        .take_authorization_session(oidc_state, &binding)
+        .await
+    {
+        Ok(Some(session)) => complete(&state, &query, session).await,
+        _ => invalid_state(),
+    };
+    if let Some(clear) = sign_in_cookie::clear_header(oidc_state, secure_cookies) {
+        response.headers_mut().append(header::SET_COOKIE, clear);
+    }
+    response
+}
+
+fn invalid_state() -> Response {
+    direct_error(
+        "invalid_request",
+        "OIDC callback state is invalid or expired",
+    )
+}
+
+/// Finishes the sign-in `session` describes with the provider's answer in `query`.
+async fn complete(
+    state: &AuthorizationServerHttpState,
+    query: &CallbackQuery,
+    session: OAuthAuthorizationSessionRecord,
+) -> Response {
     let Some(trusted) = trusted_redirect(&session) else {
         return direct_error("server_error", "authorization failed");
     };
-    let provider_code = match classify_result(&query) {
+    let provider_code = match classify_result(query) {
         Ok(CallbackResult::Code(code)) => code,
         Ok(CallbackResult::AccessDenied) => {
             return trusted.error("access_denied", "authorization was denied");
@@ -251,7 +275,8 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use axum::http::{StatusCode, header};
+    use axum::body::to_bytes;
+    use axum::http::{HeaderValue, StatusCode, header};
 
     use serde_json::{Value, json};
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -265,7 +290,9 @@ mod tests {
     use crate::auth::id_token::tests::{
         claims as id_token_claims, rsa_key, set_claim, token as id_token,
     };
-    use crate::auth::state_store::{CodeStore, InMemoryStateStore, SessionStore, StateStoreError};
+    use crate::auth::state_store::{
+        CodeStore, InMemoryStateStore, OAuthSignInBinding, SessionStore, StateStoreError,
+    };
     use crate::auth::test_config::PROVIDER_SECRET;
     use coral_db::Database;
     use coral_test_support::TestDatabase;
@@ -352,8 +379,36 @@ mod tests {
         serializer.finish()
     }
 
+    /// The binding of the browser that started every seeded sign-in.
+    fn binding() -> OAuthSignInBinding {
+        OAuthSignInBinding::from_bytes([0x24; 32])
+    }
+
+    /// The `Cookie` a browser sends back after the sign-in named by
+    /// `oidc_state` handed it the cookie for `binding`.
+    fn browser_cookie(
+        state: &AuthorizationServerHttpState,
+        oidc_state: &str,
+        binding: &OAuthSignInBinding,
+    ) -> HeaderValue {
+        let set_cookie = sign_in_cookie::set_header(oidc_state, binding, state.secure_cookies())
+            .expect("sign-in cookie");
+        let pair = set_cookie.to_str().expect("ASCII").split(';').next();
+        HeaderValue::from_str(pair.expect("name and value")).expect("cookie")
+    }
+
+    /// Runs the callback from the browser that started each sign-in `raw` names.
     async fn callback_raw(state: AuthorizationServerHttpState, raw: String) -> Response {
-        oidc_callback(State(state), RawQuery(Some(raw))).await
+        let mut headers = HeaderMap::new();
+        for (name, oidc_state) in form_urlencoded::parse(raw.as_bytes()) {
+            if name == "state" {
+                headers.append(
+                    header::COOKIE,
+                    browser_cookie(&state, &oidc_state, &binding()),
+                );
+            }
+        }
+        oidc_callback(State(state), RawQuery(Some(raw)), headers).await
     }
 
     async fn callback(state: AuthorizationServerHttpState, pairs: &[(&str, &str)]) -> Response {
@@ -362,13 +417,25 @@ mod tests {
 
     async fn seed(store: &dyn SessionStore, key: &str) {
         store
-            .store_authorization_session(key, session())
+            .store_authorization_session(key, &binding(), session())
             .await
             .expect("store");
     }
 
     async fn take(store: &dyn SessionStore, key: &str) -> Option<OAuthAuthorizationSessionRecord> {
-        store.take_authorization_session(key).await.expect("store")
+        store
+            .take_authorization_session(key, &binding())
+            .await
+            .expect("store")
+    }
+
+    fn error_code(body: &[u8]) -> String {
+        serde_json::from_slice::<Value>(body)
+            .expect("JSON error")
+            .get("error")
+            .and_then(Value::as_str)
+            .expect("error code")
+            .to_owned()
     }
 
     fn assert_security(response: &Response) {
@@ -449,6 +516,64 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert!(!response.headers().contains_key(header::LOCATION));
+    }
+
+    /// A provider link forwarded to another browser carries the sign-in's
+    /// `state` but not its cookie. The callback stops before it takes the
+    /// handshake or contacts the provider, so the browser that started the
+    /// sign-in can still finish it.
+    #[tokio::test]
+    async fn callback_needs_the_cookie_of_the_browser_that_started_sign_in() {
+        let provider = MockServer::start().await;
+        let store = Arc::new(InMemoryStateStore::new());
+        seed(store.as_ref(), OIDC_STATE).await;
+        let auth_state = state(&provider.uri(), store.clone());
+        let other_browser = || {
+            browser_cookie(
+                &auth_state,
+                OIDC_STATE,
+                &OAuthSignInBinding::from_bytes([0x99; 32]),
+            )
+        };
+        let mut shadowed = HeaderMap::new();
+        shadowed.append(
+            header::COOKIE,
+            browser_cookie(&auth_state, OIDC_STATE, &binding()),
+        );
+        shadowed.append(header::COOKIE, other_browser());
+        for (case, headers) in [
+            ("no cookie", HeaderMap::new()),
+            (
+                "another browser's cookie",
+                HeaderMap::from_iter([(header::COOKIE, other_browser())]),
+            ),
+            ("a repeated cookie", shadowed),
+        ] {
+            let response = oidc_callback(
+                State(auth_state.clone()),
+                RawQuery(Some(query(&[
+                    ("state", OIDC_STATE),
+                    ("code", PROVIDER_CODE),
+                ]))),
+                headers,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{case}");
+            assert!(!response.headers().contains_key(header::LOCATION), "{case}");
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            assert_eq!(error_code(&body), "invalid_request", "{case}");
+        }
+        assert!(
+            provider
+                .received_requests()
+                .await
+                .expect("requests")
+                .is_empty(),
+            "no provider exchange may start without the starting browser's cookie"
+        );
+        assert!(take(store.as_ref(), OIDC_STATE).await.is_some());
     }
 
     #[tokio::test]
@@ -580,6 +705,13 @@ mod tests {
         };
         assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
         assert_security(&success);
+        let cleared = success.headers()[header::SET_COOKIE]
+            .to_str()
+            .expect("ASCII");
+        assert!(
+            cleared.starts_with("__Host-coral_oauth_signin_") && cleared.contains("Max-Age=0"),
+            "a finished sign-in removes its cookie: {cleared}"
+        );
         let values = redirect_query(&success);
         assert!(values.contains(&("tenant".into(), "one".into())));
         assert_eq!(values.iter().filter(|(key, _)| key == "state").count(), 1);
