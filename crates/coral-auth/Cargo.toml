@@ -17,6 +17,7 @@ base64.workspace = true
 jsonwebtoken.workspace = true
 serde.workspace = true
 sea-query.workspace = true
+sha2.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

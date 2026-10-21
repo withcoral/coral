@@ -7,9 +7,10 @@ use ring::rand::{SecureRandom as _, SystemRandom};
 use zeroize::Zeroizing;
 
 use super::super::id_token::ValidatedOidcIdentity;
-use super::super::state_store::{OAuthAuthorizationCodeRecord, OAuthAuthorizationSessionRecord};
+use super::super::state_store::OAuthAuthorizationSessionRecord;
 use super::response::{TrustedRedirect, direct_error};
 use super::{AuthorizationServerHttpState, query, sign_in_cookie};
+use coral_auth::authorization_codes::{AuthorizationGrant, CodeIssue};
 use coral_auth::{LoginProvisioning, UserDirectory, VerifiedOidcLogin};
 
 pub(super) async fn oidc_callback(
@@ -34,7 +35,7 @@ pub(super) async fn oidc_callback(
         .take_authorization_session(oidc_state, &binding)
         .await
     {
-        Ok(Some(session)) => complete(&state, &query, session).await,
+        Ok(Some(session)) => complete(&state, &query, oidc_state, session).await,
         _ => invalid_state(),
     };
     if let Some(clear) = sign_in_cookie::clear_header(oidc_state, secure_cookies) {
@@ -54,6 +55,7 @@ fn invalid_state() -> Response {
 async fn complete(
     state: &AuthorizationServerHttpState,
     query: &CallbackQuery,
+    oidc_state: &str,
     session: OAuthAuthorizationSessionRecord,
 ) -> Response {
     let Some(trusted) = trusted_redirect(&session) else {
@@ -102,22 +104,34 @@ async fn complete(
         tracing::warn!("OIDC callback could not generate an authorization code");
         return trusted.error("server_error", "authorization failed");
     };
-    let authorization = OAuthAuthorizationCodeRecord {
+    let grant = AuthorizationGrant {
         user_id,
         client_id: session.client_id,
         redirect_uri: session.redirect_uri,
         code_challenge: session.code_challenge,
         resource: session.resource,
     };
-    if let Err(error) = state
-        .code_store
-        .store_authorization_code(&authorization_code, authorization)
+    let Some(codes) = state.codes.as_ref() else {
+        tracing::warn!("OIDC callback has no database to store the authorization code in");
+        return trusted.error("server_error", "authorization failed");
+    };
+    let Ok(now_unix_nanos) = now_unix_nanos_i64() else {
+        tracing::warn!("OIDC callback could not read the system clock");
+        return trusted.error("server_error", "authorization failed");
+    };
+    match codes
+        .issue(&authorization_code, oidc_state, &grant, now_unix_nanos)
         .await
     {
-        tracing::warn!(%error, "OIDC callback could not store the authorization code");
-        return trusted.error("server_error", "authorization failed");
+        Ok(CodeIssue::Issued) => trusted.success(&authorization_code),
+        Ok(CodeIssue::SignInAlreadyUsed) => {
+            trusted.error("invalid_request", "authorization was already completed")
+        }
+        Err(error) => {
+            tracing::warn!(%error, "OIDC callback could not store the authorization code");
+            trusted.error("server_error", "authorization failed")
+        }
     }
-    trusted.success(&authorization_code)
 }
 
 /// Guidance for the operator whose directory already binds this subject.
@@ -290,10 +304,9 @@ mod tests {
     use crate::auth::id_token::tests::{
         claims as id_token_claims, rsa_key, set_claim, token as id_token,
     };
-    use crate::auth::state_store::{
-        CodeStore, InMemoryStateStore, OAuthSignInBinding, SessionStore, StateStoreError,
-    };
+    use crate::auth::state_store::{InMemoryStateStore, OAuthSignInBinding, SessionStore};
     use crate::auth::test_config::PROVIDER_SECRET;
+    use coral_auth::authorization_codes::{AuthorizationCodes, CodeRedemption};
     use coral_db::Database;
     use coral_test_support::TestDatabase;
 
@@ -317,7 +330,8 @@ mod tests {
         database: Arc<Database>,
     ) -> AuthorizationServerHttpState {
         let mut state = state(issuer, store);
-        state.user_directory = Some(UserDirectory::new(database));
+        state.user_directory = Some(UserDirectory::new(database.clone()));
+        state.codes = Some(AuthorizationCodes::new(database));
         state
     }
 
@@ -339,24 +353,34 @@ mod tests {
 
     /// Redeems the code a successful callback returned and reports the identity
     /// the authorization record binds it to.
-    async fn stored_user_id(store: &dyn CodeStore, response: &Response) -> String {
+    async fn stored_user_id(database: &Arc<Database>, response: &Response) -> String {
         let code = redirect_query(response)
             .into_iter()
             .find(|(key, _value)| key == "code")
             .expect("authorization code")
             .1;
-        store
-            .take_authorization_code_for_request(
-                &code,
-                &session().client_id,
-                REDIRECT_URI,
-                &session().code_challenge,
-                RESOURCE,
-            )
+        redeem(database, &code)
             .await
-            .expect("store")
             .expect("authorization")
             .user_id
+    }
+
+    /// Redeems `code` with the bindings of the seeded sign-in.
+    async fn redeem(database: &Arc<Database>, code: &str) -> Option<AuthorizationGrant> {
+        let session = session();
+        AuthorizationCodes::new(database.clone())
+            .redeem(
+                code,
+                CodeRedemption {
+                    client_id: &session.client_id,
+                    redirect_uri: REDIRECT_URI,
+                    code_challenge: &session.code_challenge,
+                    resource: RESOURCE,
+                },
+                now_unix_nanos_i64().expect("clock"),
+            )
+            .await
+            .expect("code storage")
     }
 
     fn session() -> OAuthAuthorizationSessionRecord {
@@ -637,6 +661,7 @@ mod tests {
             &[RESOURCE],
         );
         app.user_directory = Some(UserDirectory::new(db.clone()));
+        app.codes = Some(AuthorizationCodes::new(db.clone()));
         for (organization, accepted) in [("org_other", false), ("org_allowed", true)] {
             server.reset().await;
             mount_provider(&server, 200, 200, NONCE).await;
@@ -664,7 +689,7 @@ mod tests {
             )
             .await;
             if accepted {
-                let user_id = stored_user_id(store.as_ref(), &response).await;
+                let user_id = stored_user_id(&db, &response).await;
                 let authority = coral_workspace::OrganizationModule::new(db.clone())
                     .resolve_user_authority(
                         &coral_workspace::UserId::parse(&user_id).expect("User ID"),
@@ -723,17 +748,7 @@ mod tests {
             .1
             .clone();
         assert_eq!(code.len(), 43);
-        let authorization = store
-            .take_authorization_code_for_request(
-                &code,
-                &session().client_id,
-                REDIRECT_URI,
-                &session().code_challenge,
-                RESOURCE,
-            )
-            .await
-            .expect("store")
-            .expect("authorization");
+        let authorization = redeem(&db, &code).await.expect("authorization");
         assert_ne!(
             authorization.user_id, UPSTREAM_SUBJECT,
             "the stored code must name Coral's opaque User id, never the upstream subject"
@@ -788,8 +803,7 @@ mod tests {
             .await
             .expect("seed the directory");
         seed(store.as_ref(), OIDC_STATE).await;
-        let mut app = state_with(&server.uri(), store, db);
-        app.code_store = Arc::new(RejectCodeStore);
+        let app = state_with(&server.uri(), store, db);
 
         let logs = CapturedLogs::default();
         let response = {
@@ -826,12 +840,13 @@ mod tests {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, NONCE).await;
         let (unmigrated, _temp) = unmigrated_database().await;
+        let (codes, _codes_temp) = database().await;
         for user_directory in [None, Some(UserDirectory::new(unmigrated))] {
             let store = Arc::new(InMemoryStateStore::new());
             seed(store.as_ref(), OIDC_STATE).await;
             let mut app = state(&server.uri(), store);
             app.user_directory = user_directory;
-            app.code_store = Arc::new(RejectCodeStore);
+            app.codes = Some(AuthorizationCodes::new(codes.clone()));
 
             let response = callback(app, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await;
 
@@ -880,31 +895,6 @@ mod tests {
         }
     }
 
-    /// Code store that fails the test if an unprovisioned login reaches storage.
-    struct RejectCodeStore;
-
-    #[async_trait::async_trait]
-    impl CodeStore for RejectCodeStore {
-        async fn store_authorization_code(
-            &self,
-            _code: &str,
-            _authorization: OAuthAuthorizationCodeRecord,
-        ) -> Result<(), StateStoreError> {
-            unreachable!("a login that was not provisioned must not store an authorization code")
-        }
-
-        async fn take_authorization_code_for_request(
-            &self,
-            _code: &str,
-            _client_id: &str,
-            _redirect_uri: &str,
-            _challenge: &str,
-            _resource: &str,
-        ) -> Result<Option<OAuthAuthorizationCodeRecord>, StateStoreError> {
-            unreachable!("the OIDC callback issues authorization codes, it never redeems them")
-        }
-    }
-
     async fn assert_provider_failure(token_status: u16, jwks_status: u16, nonce: &str) {
         let server = MockServer::start().await;
         mount_provider(&server, token_status, jwks_status, nonce).await;
@@ -939,40 +929,16 @@ mod tests {
         assert_provider_failure(200, 200, "wrong-nonce").await;
     }
 
-    /// Code store whose writes always fail, standing in for a full store.
-    struct FailCodeStore;
-
-    #[async_trait::async_trait]
-    impl CodeStore for FailCodeStore {
-        async fn store_authorization_code(
-            &self,
-            _code: &str,
-            _authorization: OAuthAuthorizationCodeRecord,
-        ) -> Result<(), StateStoreError> {
-            Err(StateStoreError::CapacityExceeded { max_entries: 0 })
-        }
-
-        async fn take_authorization_code_for_request(
-            &self,
-            _code: &str,
-            _client_id: &str,
-            _redirect_uri: &str,
-            _challenge: &str,
-            _resource: &str,
-        ) -> Result<Option<OAuthAuthorizationCodeRecord>, StateStoreError> {
-            unreachable!("the OIDC callback issues authorization codes, it never redeems them")
-        }
-    }
-
     #[tokio::test]
-    async fn code_store_capacity_failure_exposes_no_client_code() {
+    async fn code_storage_failure_exposes_no_client_code() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, NONCE).await;
         let store = Arc::new(InMemoryStateStore::new());
         let (db, _temp) = database().await;
+        let (unwritable, _unwritable_temp) = unmigrated_database().await;
         seed(store.as_ref(), OIDC_STATE).await;
         let mut state = state_with(&server.uri(), store, db);
-        state.code_store = Arc::new(FailCodeStore);
+        state.codes = Some(AuthorizationCodes::new(unwritable));
         let response = callback(state, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await;
         let values = redirect_query(&response);
         assert!(values.contains(&("error".into(), "server_error".into())));

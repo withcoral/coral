@@ -10,7 +10,7 @@ use super::OIDC_CALLBACK_PATH;
 use super::config::{AuthSettings, ResolvedAuthSettings, signing_key_env_error};
 use super::error::AuthServerError;
 use super::provider_client::OidcProviderClient;
-use super::state_store::{ApprovalStore, CodeStore, InMemoryStateStore, SessionStore};
+use super::state_store::{ApprovalStore, InMemoryStateStore, SessionStore};
 use crate::oauth_resource::{CanonicalOauthUrl, OauthUrlError};
 use crate::workspace_mcp_urls::WorkspaceMcpUrls;
 use axum::Router;
@@ -18,6 +18,7 @@ use axum::extract::State;
 use axum::http::header;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
+use coral_auth::authorization_codes::AuthorizationCodes;
 use coral_auth::oauth_clients::OAuthClients;
 use coral_auth::{SessionTokenIssuer, UserDirectory};
 use tokio::net::TcpListener;
@@ -243,6 +244,7 @@ impl CoralAuthorizationServer {
             self.outbound_policy,
         )?;
         if let Some(database) = self.client_database {
+            state.codes = Some(AuthorizationCodes::new(database.clone()));
             let clients = OAuthClients::new(database, state.client_metadata_resolver.clone());
             state.client_metadata_resolver = Arc::new(clients.clone());
             state.clients = Some(clients);
@@ -378,7 +380,11 @@ struct AuthorizationServerHttpState {
     session_tokens: SessionTokenIssuer,
     approval_store: Arc<dyn ApprovalStore>,
     session_store: Arc<dyn SessionStore>,
-    code_store: Arc<dyn CodeStore>,
+    /// Authorization codes awaiting redemption, shared by every process.
+    ///
+    /// `None` until application bootstrap attaches a database; the callback
+    /// and the token endpoint then fail closed rather than issue or redeem.
+    codes: Option<AuthorizationCodes>,
     provider_client: OidcProviderClient,
     authorization_resources: Arc<BTreeSet<String>>,
     workspace_resource_family: Option<Arc<WorkspaceMcpUrls>>,
@@ -434,8 +440,8 @@ impl AuthorizationServerHttpState {
             settings,
             session_tokens,
             approval_store: state_store.clone(),
-            session_store: state_store.clone(),
-            code_store: state_store,
+            session_store: state_store,
+            codes: None,
             provider_client: OidcProviderClient::new(outbound_policy)
                 .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
             authorization_resources,

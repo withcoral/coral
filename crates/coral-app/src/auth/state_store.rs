@@ -148,15 +148,6 @@ pub(crate) struct OAuthAuthorizationSessionRecord {
     pub(crate) oidc_nonce: String,
 }
 
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct OAuthAuthorizationCodeRecord {
-    pub(crate) user_id: String,
-    pub(crate) client_id: String,
-    pub(crate) redirect_uri: String,
-    pub(crate) code_challenge: String,
-    pub(crate) resource: String,
-}
-
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub(crate) enum StateStoreError {
     #[error("OAuth state secrets must not be empty")]
@@ -217,25 +208,6 @@ pub(crate) trait SessionStore: Send + Sync {
         oidc_state: &str,
         browser_binding: &OAuthSignInBinding,
     ) -> Result<Option<OAuthAuthorizationSessionRecord>, StateStoreError>;
-}
-
-/// Storage for authorization codes awaiting redemption.
-#[async_trait::async_trait]
-pub(crate) trait CodeStore: Send + Sync {
-    async fn store_authorization_code(
-        &self,
-        code: &str,
-        authorization: OAuthAuthorizationCodeRecord,
-    ) -> Result<(), StateStoreError>;
-
-    async fn take_authorization_code_for_request(
-        &self,
-        code: &str,
-        client_id: &str,
-        redirect_uri: &str,
-        code_challenge: &str,
-        resource: &str,
-    ) -> Result<Option<OAuthAuthorizationCodeRecord>, StateStoreError>;
 }
 
 pub(crate) struct InMemoryStateStore {
@@ -373,68 +345,10 @@ impl SessionStore for InMemoryStateStore {
     }
 }
 
-#[async_trait::async_trait]
-impl CodeStore for InMemoryStateStore {
-    async fn store_authorization_code(
-        &self,
-        code: &str,
-        authorization: OAuthAuthorizationCodeRecord,
-    ) -> Result<(), StateStoreError> {
-        let key = secret_hash(code)?;
-        let mut inner = self.inner.lock().await;
-        let now = Instant::now();
-        let expires_at = self.expires_at(now)?;
-        inner.purge_expired(now);
-        ensure_capacity(
-            inner.codes.len(),
-            self.max_entries_per_kind,
-            inner.codes.contains_key(&key),
-        )?;
-        inner.codes.insert(
-            key,
-            Expiring {
-                value: authorization,
-                expires_at,
-            },
-        );
-        Ok(())
-    }
-
-    async fn take_authorization_code_for_request(
-        &self,
-        code: &str,
-        client_id: &str,
-        redirect_uri: &str,
-        code_challenge: &str,
-        resource: &str,
-    ) -> Result<Option<OAuthAuthorizationCodeRecord>, StateStoreError> {
-        let key = secret_hash(code)?;
-        let mut inner = self.inner.lock().await;
-        let now = Instant::now();
-        let Some(entry) = inner.codes.get(&key) else {
-            return Ok(None);
-        };
-        if entry.expires_at <= now {
-            inner.codes.remove(&key);
-            return Ok(None);
-        }
-        let authorization = &entry.value;
-        if authorization.client_id != client_id
-            || authorization.redirect_uri != redirect_uri
-            || authorization.code_challenge != code_challenge
-            || authorization.resource != resource
-        {
-            return Ok(None);
-        }
-        Ok(inner.codes.remove(&key).map(|entry| entry.value))
-    }
-}
-
 #[derive(Default)]
 struct StateMaps {
     approvals: HashMap<SecretHash, Expiring<OAuthAuthorizationApprovalRecord>>,
     sessions: HashMap<SecretHash, Expiring<OAuthAuthorizationSessionRecord>>,
-    codes: HashMap<SecretHash, Expiring<OAuthAuthorizationCodeRecord>>,
 }
 
 impl StateMaps {
@@ -453,7 +367,6 @@ impl StateMaps {
     fn purge_expired(&mut self, now: Instant) {
         self.approvals.retain(|_, entry| entry.expires_at > now);
         self.sessions.retain(|_, entry| entry.expires_at > now);
-        self.codes.retain(|_, entry| entry.expires_at > now);
     }
 }
 
@@ -471,17 +384,6 @@ fn ensure_capacity(
 struct Expiring<T> {
     value: T,
     expires_at: Instant,
-}
-
-fn secret_hash(secret: &str) -> Result<SecretHash, StateStoreError> {
-    if secret.is_empty() {
-        return Err(StateStoreError::EmptySecret);
-    }
-    Ok(hash_bytes(secret.as_bytes()))
-}
-
-fn hash_bytes(secret: &[u8]) -> SecretHash {
-    Sha256::digest(secret).into()
 }
 
 fn session_key(
@@ -554,16 +456,6 @@ mod tests {
             resource: "https://mcp.example.test/mcp".to_string(),
             oidc_code_verifier: Zeroizing::new("verifier".to_string()),
             oidc_nonce: "nonce".to_string(),
-        }
-    }
-
-    fn code(id: &str) -> OAuthAuthorizationCodeRecord {
-        OAuthAuthorizationCodeRecord {
-            user_id: id.to_string(),
-            client_id: "client".to_string(),
-            redirect_uri: "http://127.0.0.1/callback".to_string(),
-            code_challenge: "challenge".to_string(),
-            resource: "https://mcp.example.test/mcp".to_string(),
         }
     }
 
@@ -806,10 +698,6 @@ mod tests {
             .store_authorization_session("session", &sign_in_binding(), session("session"))
             .await
             .unwrap();
-        store
-            .store_authorization_code("code", code("code"))
-            .await
-            .unwrap();
         assert_eq!(
             store
                 .store_authorization_approval(&other_ticket, &browser_binding(), approval("other"),)
@@ -881,108 +769,6 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn authorization_codes_are_atomically_single_use() {
-        let store = Arc::new(InMemoryStateStore::new());
-        store
-            .store_authorization_code("secret-code", code("user"))
-            .await
-            .unwrap();
-
-        let winner = only_winner(
-            take_burst(|| {
-                let store = Arc::clone(&store);
-                async move {
-                    store
-                        .take_authorization_code_for_request(
-                            "secret-code",
-                            "client",
-                            "http://127.0.0.1/callback",
-                            "challenge",
-                            "https://mcp.example.test/mcp",
-                        )
-                        .await
-                }
-            })
-            .await,
-        );
-        assert_eq!(winner.user_id, "user");
-    }
-
-    #[tokio::test]
-    async fn authorization_codes_are_consumed_only_after_all_bindings_match() {
-        let store = InMemoryStateStore::new();
-        store
-            .store_authorization_code("code", code("user"))
-            .await
-            .unwrap();
-        for (client_id, redirect_uri, challenge, resource) in [
-            (
-                "other",
-                "http://127.0.0.1/callback",
-                "challenge",
-                "https://mcp.example.test/mcp",
-            ),
-            (
-                "client",
-                "http://127.0.0.1/other",
-                "challenge",
-                "https://mcp.example.test/mcp",
-            ),
-            (
-                "client",
-                "http://127.0.0.1/callback",
-                "other",
-                "https://mcp.example.test/mcp",
-            ),
-            (
-                "client",
-                "http://127.0.0.1/callback",
-                "challenge",
-                "https://other.example.test/mcp",
-            ),
-        ] {
-            assert!(
-                store
-                    .take_authorization_code_for_request(
-                        "code",
-                        client_id,
-                        redirect_uri,
-                        challenge,
-                        resource,
-                    )
-                    .await
-                    .unwrap()
-                    .is_none()
-            );
-        }
-        let redeemed = store
-            .take_authorization_code_for_request(
-                "code",
-                "client",
-                "http://127.0.0.1/callback",
-                "challenge",
-                "https://mcp.example.test/mcp",
-            )
-            .await
-            .unwrap()
-            .expect("matching code");
-        assert!(redeemed == code("user"));
-        assert!(
-            store
-                .take_authorization_code_for_request(
-                    "code",
-                    "client",
-                    "http://127.0.0.1/callback",
-                    "challenge",
-                    "https://mcp.example.test/mcp",
-                )
-                .await
-                .unwrap()
-                .is_none()
-        );
-    }
-
     #[tokio::test]
     async fn expiration_is_lazy_and_capacity_is_bounded_per_record_type() {
         let expired =
@@ -998,10 +784,6 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        expired
-            .store_authorization_code("new", code("new"))
-            .await
-            .unwrap();
 
         let bounded =
             InMemoryStateStore::with_options(OAUTH_STATE_TTL, 1, MAX_OAUTH_APPROVALS_PER_CLIENT);
@@ -1010,25 +792,13 @@ mod tests {
             .await
             .unwrap();
         bounded
-            .store_authorization_code("two", code("two"))
-            .await
-            .unwrap();
-        bounded
             .store_authorization_session("one", &sign_in_binding(), session("replacement"))
             .await
             .expect("same session key may be replaced at capacity");
-        bounded
-            .store_authorization_code("two", code("replacement"))
-            .await
-            .expect("same code key may be replaced at capacity");
         assert_eq!(
             bounded
                 .store_authorization_session("three", &sign_in_binding(), session("three"))
                 .await,
-            Err(StateStoreError::CapacityExceeded { max_entries: 1 })
-        );
-        assert_eq!(
-            bounded.store_authorization_code("four", code("four")).await,
             Err(StateStoreError::CapacityExceeded { max_entries: 1 })
         );
         assert_eq!(
@@ -1064,7 +834,7 @@ mod tests {
         );
 
         store
-            .store_authorization_code("expiring", code("expiring"))
+            .store_authorization_session("expiring", &sign_in_binding(), session("expiring"))
             .await
             .unwrap();
         let lock = store.inner.lock().await;
@@ -1072,13 +842,7 @@ mod tests {
             let store = Arc::clone(&store);
             tokio::spawn(async move {
                 store
-                    .take_authorization_code_for_request(
-                        "expiring",
-                        "client",
-                        "http://127.0.0.1/callback",
-                        "challenge",
-                        "https://mcp.example.test/mcp",
-                    )
+                    .take_authorization_session("expiring", &sign_in_binding())
                     .await
             })
         };

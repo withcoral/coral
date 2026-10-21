@@ -34,6 +34,7 @@
 
 mod audience;
 mod authentication;
+pub mod authorization_codes;
 pub mod oauth_clients;
 pub use audience::PrivateAudience;
 mod repository;
