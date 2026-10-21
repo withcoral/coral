@@ -1,13 +1,16 @@
 //! Each Built-in Operation's parser and results, held to the schemas a Program
 //! is typed from.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
 
 use super::{
     AUTHENTICATION_KINDS, BuiltinArguments, BuiltinCredentialRoute, BuiltinOperation,
-    CreateProviderResult, ListProvidersResult, ListedProvider, ListedProviderState, ProviderFacts,
-    definition,
+    ConfigurationOutput, CreateProviderResult, GetProviderResult, ListProvidersResult,
+    ListedProvider, ListedProviderState, ProviderFacts, ProviderSourceOutput, definition,
 };
+use crate::{CredentialField, ServerSelection};
 
 /// Arguments that use every part of `operation`'s input schema, from its own
 /// module.
@@ -15,6 +18,7 @@ fn valid_arguments(operation: BuiltinOperation) -> Vec<Value> {
     match operation {
         BuiltinOperation::CreateProvider => super::create_provider::tests::valid_arguments(),
         BuiltinOperation::ListProviders => super::list_providers::valid_arguments(),
+        BuiltinOperation::GetProvider => super::get_provider::tests::valid_arguments(),
     }
 }
 
@@ -180,6 +184,61 @@ fn facts() -> impl Iterator<Item = ProviderFacts> {
         )
 }
 
+/// A Provider Configuration per configured method, which together use
+/// every source, route, state and server choice.
+fn configured_providers() -> impl Iterator<Item = GetProviderResult> {
+    let sources = [
+        ProviderSourceOutput::OpenapiDocument,
+        ProviderSourceOutput::OpenapiUrl {
+            url: "https://weather.example/openapi.json".to_owned(),
+        },
+        ProviderSourceOutput::McpUrl {
+            url: "https://weather.example/mcp".to_owned(),
+        },
+    ];
+    super::get_provider::tests::configured_methods()
+        .into_iter()
+        .zip(sources.into_iter().cycle())
+        .zip(BuiltinCredentialRoute::ALL.into_iter().cycle())
+        .enumerate()
+        .map(|(index, ((authentication, source), credential_route))| {
+            let server = if index.is_multiple_of(2) {
+                ServerSelection::Declared {
+                    url: "https://{region}.weather.example".to_owned(),
+                    variables: BTreeMap::from([("region".to_owned(), "eu".to_owned())]),
+                }
+            } else {
+                ServerSelection::Custom {
+                    url: "https://weather.example".to_owned(),
+                }
+            };
+            GetProviderResult {
+                namespace: format!("provider{index}"),
+                state: if index.is_multiple_of(2) {
+                    ListedProviderState::Active
+                } else {
+                    ListedProviderState::Disabled
+                },
+                source,
+                credential_route,
+                configuration: ConfigurationOutput::new(
+                    format!("Provider {index}"),
+                    BTreeMap::from([("#/servers".to_owned(), server)]),
+                    authentication,
+                    BTreeMap::from([("x-trace".to_owned(), "on".to_owned())]),
+                    BTreeMap::from([(
+                        "token".to_owned(),
+                        CredentialField {
+                            label: "Token".to_owned(),
+                            description: String::new(),
+                            sensitive: true,
+                        },
+                    )]),
+                ),
+            }
+        })
+}
+
 // Catches: a result that tells a typed Program something its declaration does not.
 #[test]
 fn each_result_meets_its_output_schema() {
@@ -229,6 +288,10 @@ fn each_result_meets_its_output_schema() {
         }
         .into_operation_result(),
     ));
+    results.extend(
+        configured_providers()
+            .map(|saved| (BuiltinOperation::GetProvider, saved.into_operation_result())),
+    );
     for (operation, result) in results {
         assert_eq!(
             result.get("metadata"),

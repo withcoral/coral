@@ -1,6 +1,13 @@
 //! Current Workspace authority and exact Provider inspection.
-use crate::{Error, Provider, ProviderCallRoot, ProviderId, ProviderModule, repository};
-use coral_catalog::{OperationKey, OperationSummary};
+use std::collections::BTreeMap;
+
+use crate::{
+    Error, Provider, ProviderCallRoot, ProviderId, ProviderModule, ProviderNamespace, repository,
+};
+use coral_catalog::{
+    AuthenticationConfiguration, CredentialField, OperationKey, OperationSummary,
+    ProviderConfiguration, ServerSelection,
+};
 use coral_workspace::AuthenticatedUser;
 use coral_workspace::WorkspaceAction;
 use coral_workspace::WorkspaceEvidence;
@@ -15,7 +22,81 @@ pub struct ProviderSource {
     pub kind: crate::ProviderSetupInputKind,
 }
 
+/// One Provider and its Provider Configuration, as an Owner reads it. It holds no
+/// secret: an OAuth application's secret and every credential value are
+/// stored apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderWithConfiguration {
+    /// The Provider, with its state, display name and Credential Route.
+    pub provider: Provider,
+    /// Where it was last published from.
+    pub source: ProviderSource,
+    /// A server per server declaration.
+    pub servers: BTreeMap<String, ServerSelection>,
+    /// The authentication method, with the OAuth application in use.
+    pub authentication: AuthenticationConfiguration,
+    /// Non-secret headers sent with every request.
+    pub request_headers: BTreeMap<String, String>,
+    /// The values a person enters when they sign in.
+    pub credential_fields: BTreeMap<String, CredentialField>,
+}
+
 impl ProviderModule {
+    /// Reads the Provider Configuration of the Provider at `namespace`, in any
+    /// state, under current Owner authority.
+    ///
+    /// # Errors
+    /// Returns current Owner authority, [`Error::ProviderNotFound`] when no
+    /// Provider in the Workspace holds `namespace`, or persistence or
+    /// corrupt-evidence failures.
+    pub async fn inspect_provider_configuration(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace: &WorkspaceId,
+        namespace: &ProviderNamespace,
+    ) -> Result<ProviderWithConfiguration, Error> {
+        let mut tx = self.database.begin_read_snapshot().await?;
+        self.check_owner_inspection_in_transaction(&mut tx, actor, workspace)
+            .await?;
+        let active = repository::provider_by_call_root_in_transaction(
+            &mut tx,
+            workspace,
+            &ProviderCallRoot::Owner(namespace.clone()),
+            coral_db::RowLock::None,
+        )
+        .await?
+        .ok_or(Error::ProviderNotFound)?;
+        let configuration =
+            crate::configuration::current_configuration_in_transaction(&mut tx, &active).await?;
+        // Publication requires a confirmed method, so every Generation retains one.
+        let Some(ProviderConfiguration {
+            authentication: Some(authentication),
+            servers,
+            request_headers,
+            credential_fields,
+            ..
+        }) = configuration
+        else {
+            return Err(Error::CorruptData(
+                "a published Provider has no confirmed configuration".into(),
+            ));
+        };
+        let kind =
+            coral_catalog::setup_input_kind_in_transaction(&mut tx, &active.generation_id).await?;
+        tx.rollback().await?;
+        Ok(ProviderWithConfiguration {
+            provider: active.provider,
+            source: ProviderSource {
+                url: active.source_url,
+                kind,
+            },
+            servers,
+            authentication,
+            request_headers,
+            credential_fields,
+        })
+    }
+
     /// Inspects the saved source for one exact Provider under current Owner authority.
     ///
     /// # Errors

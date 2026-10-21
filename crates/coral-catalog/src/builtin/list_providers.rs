@@ -96,7 +96,7 @@ pub struct ListedProvider {
     pub facts: ProviderFacts,
 }
 
-/// Whether a listed Provider accepts calls. A disabled one still holds its
+/// Whether a Provider accepts calls. A disabled one still holds its
 /// namespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{
-    ArgumentProblem, BuiltinCredentialRoute, BuiltinOperation, Definition, ProviderFacts,
-    derived_schema, operation_result, present,
+    ArgumentProblem, BuiltinCredentialRoute, BuiltinOperation, Definition, NAMESPACE_REASON,
+    ProviderFacts, derived_schema, operation_result, present,
 };
 use crate::{
     AuthenticationConfiguration, CredentialField, OpenApiDocument, OperationHints,
@@ -237,10 +237,7 @@ impl CreateProviderArguments {
         // Each check below stands alone, so the Program learns every problem at once.
         let mut problems = Vec::new();
         if !crate::provider_namespace_is_valid(&arguments.namespace) {
-            problems.push(ArgumentProblem::new(
-                "namespace",
-                "use a JavaScript identifier of at most 128 bytes, such as `weather`",
-            ));
+            problems.push(ArgumentProblem::new("namespace", NAMESPACE_REASON));
         }
         let authentication = arguments
             .authentication

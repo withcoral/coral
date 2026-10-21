@@ -407,3 +407,134 @@ async fn provider_and_catalog_inspection_require_current_workspace_access() {
         Err(Error::Workspace(_))
     ));
 }
+
+// Catches: a read that shows an older name than the Provider's, that misses a
+// disabled Provider, that crosses Workspaces, that reaches the Built-in
+// Provider by a namespace, or that shows a member what only an Owner
+// configures.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one read and the table of every lookup that finds nothing"
+)]
+async fn an_owner_reads_a_providers_configuration_by_namespace() {
+    use coral_workspace::WorkspaceRole;
+    let (db, workspaces, providers) = test_modules().await;
+    let owner =
+        organization_user(db.database(), "user:saved-owner", OrganizationRole::Member).await;
+    let member =
+        organization_user(db.database(), "user:saved-member", OrganizationRole::Member).await;
+    let context = change_context(owner.clone(), 10, 'a');
+    let workspace = workspaces
+        .create(&context, WorkspaceDisplayName::parse("Saved").unwrap())
+        .await
+        .unwrap();
+    let database = db.database();
+    let mut transaction = database.begin().await.unwrap();
+    providers
+        .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    let other = workspaces
+        .create(&context, WorkspaceDisplayName::parse("Other").unwrap())
+        .await
+        .unwrap();
+    workspaces
+        .set_membership(&context, workspace.id(), &member, WorkspaceRole::Member)
+        .await
+        .unwrap();
+    let published = crate::tests::publish_provider(
+        &providers,
+        &context,
+        workspace.id(),
+        crate::tests::CREDENTIAL_FREE_OPENAPI,
+        "weather",
+        CredentialRoute::None,
+    )
+    .await;
+    // A rename publishes no Generation.
+    let renamed = providers
+        .update_provider(
+            &with_etag(change_context(owner.clone(), 11, 'b'), &published.etag()),
+            workspace.id(),
+            published.id(),
+            crate::ProviderDisplayName::parse("Forecasts").unwrap(),
+        )
+        .await
+        .unwrap();
+    let disabled = providers
+        .disable_provider(
+            &with_etag(change_context(owner.clone(), 12, 'c'), &renamed.etag()),
+            workspace.id(),
+            published.id(),
+        )
+        .await
+        .unwrap();
+    let weather = ProviderNamespace::parse("weather").unwrap();
+
+    let inspected = providers
+        .inspect_provider_configuration(&owner, workspace.id(), &weather)
+        .await
+        .unwrap();
+    assert_eq!(inspected.provider, disabled);
+    assert_eq!(inspected.provider.display_name(), "Forecasts");
+    assert_eq!(
+        inspected.source,
+        crate::ProviderSource {
+            url: None,
+            kind: coral_catalog::ProviderSetupInputKind::OpenApi,
+        }
+    );
+    assert_eq!(
+        inspected.servers,
+        std::collections::BTreeMap::from([(
+            "#/servers".to_owned(),
+            coral_catalog::ServerSelection::Declared {
+                url: "https://weather.example".to_owned(),
+                variables: std::collections::BTreeMap::new(),
+            },
+        )])
+    );
+    assert_eq!(
+        inspected.authentication,
+        coral_catalog::AuthenticationConfiguration::None
+    );
+    assert!(inspected.request_headers.is_empty());
+    assert!(inspected.credential_fields.is_empty());
+
+    let not_found: fn(&Error) -> bool = |error| matches!(error, Error::ProviderNotFound);
+    let not_an_owner: fn(&Error) -> bool = |error| {
+        matches!(
+            error,
+            Error::Workspace(coral_workspace::Error::PermissionDenied(_))
+        )
+    };
+    let forecasts = ProviderNamespace::parse("forecasts").unwrap();
+    // The Built-in Provider's Operations are under coral.workspace.
+    let builtin = ProviderNamespace::parse("workspace").unwrap();
+    for (actor, workspace, namespace, expected, denial) in [
+        (
+            &owner,
+            workspace.id(),
+            &forecasts,
+            not_found,
+            "no Provider holds the namespace",
+        ),
+        (
+            &owner,
+            workspace.id(),
+            &builtin,
+            not_found,
+            "the Built-in Provider",
+        ),
+        (&owner, other.id(), &weather, not_found, "another Workspace"),
+        (&member, workspace.id(), &weather, not_an_owner, "a member"),
+    ] {
+        let error = providers
+            .inspect_provider_configuration(actor, workspace, namespace)
+            .await
+            .expect_err(denial);
+        assert!(expected(&error), "{denial}: {error:?}");
+    }
+}

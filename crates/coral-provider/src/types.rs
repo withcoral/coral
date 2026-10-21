@@ -279,6 +279,15 @@ pub enum ProviderState {
     Disabled,
 }
 
+impl From<ProviderState> for coral_catalog::ListedProviderState {
+    fn from(state: ProviderState) -> Self {
+        match state {
+            ProviderState::Active => Self::Active,
+            ProviderState::Disabled => Self::Disabled,
+        }
+    }
+}
+
 /// Published Workspace-owned Provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Provider {

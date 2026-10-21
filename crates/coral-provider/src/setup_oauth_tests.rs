@@ -479,6 +479,38 @@ async fn challenge_produces_a_resumable_setup_that_consent_and_discovery_make_re
         .unwrap();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let provider = publication.published_provider().unwrap().clone();
+    // The Provider Configuration keeps what discovery found and the application
+    // Coral registered, so an Owner reads both.
+    let saved = harness
+        .providers
+        .inspect_provider_configuration(
+            &owner,
+            workspace.id(),
+            &crate::ProviderNamespace::parse("oauth").unwrap(),
+        )
+        .await
+        .unwrap();
+    let AuthenticationConfiguration::OAuthAuthorizationCode {
+        resource,
+        issuer,
+        client: policy,
+        ..
+    } = &saved.authentication
+    else {
+        panic!("OAuth configuration, got {:?}", saved.authentication);
+    };
+    assert_eq!(
+        (
+            resource.as_deref(),
+            issuer.as_deref(),
+            policy.as_ref().map(|policy| policy.bootstrap),
+        ),
+        (
+            Some(upstream.resource().as_str()),
+            Some(upstream.server.uri().as_str()),
+            Some(OAuthClientBootstrap::DynamicClientRegistration),
+        )
+    );
     let secret = credential_for(
         &harness,
         workspace.id(),
@@ -4387,6 +4419,113 @@ async fn configure_publication_application(
         .unwrap();
     assert!(confirmed.errors.is_empty());
     confirmed.revision
+}
+
+// Catches: a confidential application's secret, or a credential a person
+// entered, read back with the Provider Configuration, or the application in
+// use missing from it.
+#[tokio::test]
+async fn a_provider_configuration_holds_no_secret_or_credential_value() {
+    const SECRET: &str = "saved-application-canary";
+    const CREDENTIAL: &str = "header-credential-canary";
+    let api = OAuthApi::start().await;
+    let harness = harness(None).await;
+    let actor = organization_user(
+        harness.database.clone(),
+        "user:saved-application",
+        OrganizationRole::Member,
+    )
+    .await;
+    let context = change_context(actor.clone(), 10, '1');
+    let workspace = harness
+        .workspaces
+        .create(
+            &context,
+            coral_workspace::WorkspaceDisplayName::parse("Saved").unwrap(),
+        )
+        .await
+        .unwrap();
+    let owner = workspace.id().clone();
+    let setup = harness
+        .providers
+        .prepare_setup(
+            &context,
+            &owner,
+            ProviderSetupSource::OpenApiDocument(api.document("Saved")),
+            None,
+        )
+        .await
+        .unwrap();
+    configure_publication_application(&harness, &context, &owner, setup.id(), Some(SECRET)).await;
+    let publication = harness
+        .providers
+        .publish_workspace_provider(
+            &context,
+            publication_request(
+                workspace.id(),
+                setup.id(),
+                "saved",
+                CredentialRoute::Caller,
+                "e0000000-0000-4000-8000-0000000000a1",
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
+    let document = json!({
+        "openapi": "3.1.0", "info": { "title": "Private", "version": "1" },
+        "servers": [{ "url": "https://private.example" }],
+        "security": [{ "apiKeyAuth": [] }],
+        "components": { "securitySchemes": {
+            "apiKeyAuth": { "type": "apiKey", "in": "header", "name": "X-API-Key" },
+        } },
+        "paths": { "/forecast": { "get": { "operationId": "getForecast", "responses": { "200": { "description": "OK" } } } } },
+    });
+    harness
+        .providers
+        .publish_shared_fixture(
+            &change_context(actor.clone(), 20, '2'),
+            &owner,
+            crate::OpenApiDocument::parse(&document.to_string()).unwrap(),
+            "private",
+            &harness.accounts,
+            coral_credentials::CredentialValues::new(std::collections::BTreeMap::from([(
+                "api_key_auth".to_owned(),
+                Secret::new(CREDENTIAL.to_owned()).unwrap(),
+            )]))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let inspect = |namespace: &str| {
+        let namespace = crate::ProviderNamespace::parse(namespace).unwrap();
+        let providers = &harness.providers;
+        let actor = &actor;
+        let owner = &owner;
+        async move {
+            providers
+                .inspect_provider_configuration(actor, owner, &namespace)
+                .await
+                .unwrap()
+        }
+    };
+    let saved = inspect("saved").await;
+    let client = saved
+        .authentication
+        .oauth_client()
+        .expect("the application in use");
+    assert_eq!(
+        (client.client_id.as_str(), client.authentication),
+        (
+            "manual-client",
+            coral_catalog::OAuthClientAuthenticationMethod::ClientSecretPost
+        )
+    );
+    let shown = format!("{saved:?}{:?}", inspect("private").await);
+    for canary in [SECRET, CREDENTIAL] {
+        assert!(!shown.contains(canary), "{canary} leaked: {shown}");
+    }
 }
 
 #[tokio::test]

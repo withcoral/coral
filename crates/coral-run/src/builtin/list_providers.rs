@@ -1,8 +1,8 @@
 //! Performs `coral.workspace.listProviders`.
 
-use coral_catalog::{ListProvidersResult, ListedProvider, ListedProviderState};
+use coral_catalog::{ListProvidersResult, ListedProvider};
+use coral_provider::PublishedProvider;
 use coral_provider::access::ProviderCallRoot;
-use coral_provider::{ProviderState, PublishedProvider};
 
 use super::{BuiltinHost, authority_error, provider_facts};
 use crate::Error;
@@ -29,10 +29,7 @@ fn listed_provider(published: &PublishedProvider) -> ListedProvider {
             ProviderCallRoot::Owner(namespace) => Some(namespace.as_str().to_owned()),
             ProviderCallRoot::Builtin => None,
         },
-        state: match provider.state() {
-            ProviderState::Active => ListedProviderState::Active,
-            ProviderState::Disabled => ListedProviderState::Disabled,
-        },
+        state: provider.state().into(),
         facts: provider_facts(published),
     }
 }

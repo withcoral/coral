@@ -80,6 +80,19 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 "metadata: { kind: \"builtin\" }",
             ][..],
         ),
+        (
+            BuiltinOperation::GetProvider,
+            // Read-only, so the default Operation Access State is enabled.
+            OperationHints::new(Some(true), None, Some(true), None),
+            &[
+                r#"export default function (input: { "namespace": string })"#,
+                r#""source": PublishedProviderSource"#,
+                r#""authentication": ConfiguredAuthentication"#,
+                r#""requestHeaders": ({} & Record<string, string>)"#,
+                r#""state": "active" | "disabled""#,
+                "metadata: { kind: \"builtin\" }",
+            ][..],
+        ),
     ] {
         let key = operation_key.key();
         let operation = operations
@@ -113,7 +126,10 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         .map(|target| target.key().as_str())
         .collect::<Vec<_>>();
     target_keys.sort_unstable();
-    assert_eq!(target_keys, ["createProvider", "listProviders"]);
+    assert_eq!(
+        target_keys,
+        ["createProvider", "getProvider", "listProviders"]
+    );
 
     let graph = coral_catalog::schema_graph_in_transaction(&mut transaction, &first)
         .await

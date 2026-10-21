@@ -24,7 +24,7 @@ mod credential_lifecycle_tests;
 mod error;
 mod lifecycle;
 mod management;
-pub use management::ProviderSource;
+pub use management::{ProviderSource, ProviderWithConfiguration};
 #[cfg(test)]
 mod management_tests;
 mod publication;

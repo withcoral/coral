@@ -142,6 +142,7 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
             InvocationResultKind::CoralFailure,
             Some(
                 F::OperationNotFound
+                | F::ProviderNotFound
                 | F::InvalidInput
                 | F::InputTooLarge
                 | F::UpstreamIncomplete
@@ -300,6 +301,7 @@ mod tests {
             (failure(F::ProviderPublicationFailed), O::NeedsSetup),
             (failure(F::OperationUnavailable), O::NeedsSetup),
             (failure(F::OperationNotFound), O::Failed),
+            (failure(F::ProviderNotFound), O::Failed),
             (failure(F::InvalidInput), O::Failed),
             (failure(F::InputTooLarge), O::Failed),
             (failure(F::UpstreamIncomplete), O::Failed),
