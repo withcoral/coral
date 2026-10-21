@@ -26,7 +26,7 @@ export function OAuthApplicationBlock({
   application?: ConfigurationReviewView['application']
   callbackUrl: string
   /** Extra help below the client ID field, such as where to register the application. */
-  clientConfigHintMarkdown?: string | null
+  clientConfigHintMarkdown?: string
   configuring?: boolean
   clientSecretInput?: ReactNode
 }) {
@@ -127,9 +127,7 @@ export function OAuthApplicationBlock({
                 : `From your application's registration with ${registrar}.`}
             </Typography.BodySmall>
             {clientConfigHintMarkdown && (
-              <Typography.BodySmall as="div" variant="tertiary">
-                <Markdown>{clientConfigHintMarkdown}</Markdown>
-              </Typography.BodySmall>
+              <Markdown color="tertiary">{clientConfigHintMarkdown}</Markdown>
             )}
           </div>
           {mode === 'explicit' && (

@@ -6,9 +6,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SetupView } from '@/views/providers/types'
 
 import { byService } from './choice'
+import { CLIENT_CONFIG_HINT_GENERATORS } from './client-config-hints'
 import {
-  recipeClientConfigHintMarkdown,
-  recipeConfiguration,
+  recipeConfiguration as configurationFor,
   recipeDocumentationUrl,
 } from './configuration.server'
 import { defaultAnswers, filledRecipe, refilled, withRecipe } from './fill-inputs'
@@ -21,7 +21,7 @@ import {
   recipeDocument,
 } from './library.server'
 import { parseRecipe } from './parse-recipe'
-import { recipeJsonSchema } from './recipe-format'
+import { recipeJsonSchema, type Recipe } from './recipe-format'
 
 const reefRoot = path.resolve(import.meta.dirname, '../../..')
 const recipeLibraries = ['recipes']
@@ -566,6 +566,12 @@ function mcpRecipe(...client: string[]) {
   return result.recipe
 }
 
+const hintContext = { callbackUrl: 'https://coral.example.com/provider-setup/oauth/callback' }
+
+function recipeConfiguration(recipe: Recipe, setup: SetupView) {
+  return configurationFor(recipe, setup, hintContext)
+}
+
 function mcpSetup(automaticClientAvailable: boolean) {
   return setupWith({ authenticationMethods: ['oauth'], automaticClientAvailable }, 'mcp')
 }
@@ -1009,6 +1015,18 @@ describe('recipeConfiguration', () => {
       expect(warn).not.toHaveBeenCalled()
     })
 
+    it.for([
+      { name: 'no hint without a generator', generator: [], hint: undefined },
+      {
+        name: 'the hint its generator writes',
+        generator: ['      client_config_hint_generator: slack_app_create_link'],
+        hint: CLIENT_CONFIG_HINT_GENERATORS.slack_app_create_link(hintContext),
+      },
+    ])('adds $name', ({ generator, hint }) => {
+      const configuration = recipeConfiguration(mcpRecipe(...generator), mcpSetup(false))
+      expect(configuration?.clientConfigHintMarkdown).toBe(hint)
+    })
+
     it('asks for your own application when Coral cannot register one', () => {
       const recipe = mcpRecipe('      authorization_parameters: {prompt: consent}')
       expect(recipeConfiguration(recipe, mcpSetup(false))?.application).toMatchObject({
@@ -1231,71 +1249,5 @@ describe('recipeConfiguration', () => {
       expect(recipeDocumentationUrl(tokenRecipe(), 'oauth')).toBeNull()
       expect(recipeDocumentationUrl(tokenRecipe(), null)).toBeNull()
     })
-  })
-})
-
-/** An MCP recipe whose sign-in options name a generator or not. */
-function hintRecipe(...lines: string[]) {
-  const result = parseRecipe(
-    [
-      'schema_version: 1',
-      'id: example',
-      'display_name: Example',
-      'source: {mcp: {url: https://mcp.example.com/mcp}}',
-      'authentication:',
-      ...lines,
-      '',
-    ].join('\n'),
-  )
-  if (!result.ok) throw new Error(result.problems.join('\n'))
-  return result.recipe
-}
-
-const hintOption = (name: string, generator = '') => [
-  `    ${name}:`,
-  '      method: oauth_discovery',
-  '      label: Sign in',
-  '      flow: authorization_code',
-  ...(generator ? [`      client_config_hint_generator: ${generator}`] : []),
-]
-
-describe('recipeClientConfigHintMarkdown', () => {
-  const context = { callbackUrl: 'https://coral.example.com/provider-setup/oauth/callback' }
-
-  it.each([
-    {
-      name: 'the only option',
-      lines: ['  options:', ...hintOption('one', 'slack_app_create_link')],
-      hint: true,
-    },
-    {
-      name: 'the default option',
-      lines: [
-        '  default: hinted',
-        '  options:',
-        ...hintOption('plain'),
-        ...hintOption('hinted', 'slack_app_create_link'),
-      ],
-      hint: true,
-    },
-    {
-      name: 'not an option the recipe does not fill in',
-      lines: [
-        '  default: plain',
-        '  options:',
-        ...hintOption('plain'),
-        ...hintOption('hinted', 'slack_app_create_link'),
-      ],
-      hint: false,
-    },
-    {
-      name: 'nothing without a generator',
-      lines: ['  options:', ...hintOption('one')],
-      hint: false,
-    },
-  ])('uses $name', ({ lines, hint }) => {
-    expect(recipeClientConfigHintMarkdown(hintRecipe(...lines), context)).toEqual(
-      hint ? expect.stringMatching(/^\[Create a Slack app\]\(https:\/\/api\.slack\.com\//) : null,
-    )
   })
 })

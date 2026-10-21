@@ -57,7 +57,6 @@ function StepperAttemptPage({
   recipes = [],
   recipeConfiguration = null,
   recipeDocumentationUrl = null,
-  recipeClientConfigHintMarkdown = null,
   form,
   result,
   pending = false,
@@ -107,7 +106,6 @@ function StepperAttemptPage({
       takenDisplayNames={takenDisplayNames}
       suggestedName={answers.displayName ?? local.suggestedName}
       recipe={recipeConfiguration}
-      clientConfigHintMarkdown={recipeClientConfigHintMarkdown}
       retry={<Button.InternalLink to={basePath}>Choose a source</Button.InternalLink>}
     />
   ) : stage === 'discovery' || stage === 'operations' ? (

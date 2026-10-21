@@ -682,7 +682,14 @@ export const ConfigurationOAuthClientHint: Story = {
   render: () => (
     <StepperPage
       {...stepperWorkspace}
-      recipeClientConfigHintMarkdown="[Create a Slack app](https://api.slack.com/apps?new_app=1&manifest_yaml=display_information%3A%0A), then copy its client ID and client secret here."
+      recipeConfiguration={{
+        id: 'slack',
+        inputs: [],
+        suggestedMethods: ['oauth'],
+        values: {},
+        clientConfigHintMarkdown:
+          '[Create a Slack app](https://api.slack.com/apps?new_app=1&manifest_yaml=display_information%3A%0A), then copy its client ID and client secret here.',
+      }}
       setup={{
         ...configurationSetup,
         configuration: {

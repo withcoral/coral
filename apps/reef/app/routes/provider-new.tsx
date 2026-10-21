@@ -13,7 +13,6 @@ import { adHocSource, RECIPE_PARAM, SOURCE_PARAM, URL_PARAM } from '@/lib/provid
 import { RECIPE_CHOICES, recipeById, recipeChoiceById } from '@/lib/provider-recipes/library.server'
 import { listAllProviders } from '@/lib/providers.server'
 import {
-  recipeClientConfigHintMarkdown,
   recipeConfiguration,
   recipeDocumentationUrl,
 } from '@/lib/provider-recipes/configuration.server'
@@ -80,13 +79,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         recipes: setup ? [] : RECIPE_CHOICES,
         recipe,
         // The chosen recipe fills in a first configuration, checked against what Coral read.
-        recipeConfiguration: setup && chosen ? recipeConfiguration(chosen, setup) : null,
+        recipeConfiguration:
+          setup && chosen ? recipeConfiguration(chosen, setup, { callbackUrl }) : null,
         // Where to find the credentials the account step asks for.
         recipeDocumentationUrl:
           setup && chosen ? recipeDocumentationUrl(chosen, setup.credentialMethod) : null,
-        // Where to create the OAuth application the configuration step asks for.
-        recipeClientConfigHintMarkdown:
-          setup && chosen ? recipeClientConfigHintMarkdown(chosen, { callbackUrl }) : null,
         takenNamespaces,
         takenDisplayNames,
         // The shell reads a top-level Workspace to keep the sidebar in place.

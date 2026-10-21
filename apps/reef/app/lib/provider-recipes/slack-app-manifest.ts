@@ -69,7 +69,7 @@ const SLACK_APP_MANIFEST = {
 }
 
 /** The app creation link, with `callbackUrl` as the app's only redirect URL. */
-export function slackAppUrl(callbackUrl: string): string {
+export function slackAppCreateLink(callbackUrl: string): string {
   const manifest = {
     ...SLACK_APP_MANIFEST,
     oauth_config: { ...SLACK_APP_MANIFEST.oauth_config, redirect_urls: [callbackUrl] },
