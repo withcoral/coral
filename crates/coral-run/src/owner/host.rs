@@ -295,7 +295,7 @@ fn spawn_settle(
             &accepted.id,
             "settle",
             || !handle.is_retired(),
-            || module.settle_attempt(&shutdown, Instant::now() >= deadline),
+            || module.settle_termination(&shutdown, Instant::now() >= deadline),
         )
         .await;
         handle.send(Message::SettleAttempted(attempted));
@@ -542,15 +542,11 @@ fn refusal(run: &RunRecord, claim_id: &str, head: u64) -> Option<CommitRejection
     None
 }
 
-/// One attempt to commit the chunk: reads the Run row without holding it,
-/// checks that it still takes this owner's chunks on the head the owner
-/// tracks, runs the row work in arrival order and then the chunk's Dispatch
-/// Fence, and writes the Events, the termination intent and the head under
-/// the owner's claim with its lease renewed. A recommit finds on the row
-/// whether the attempt it repeats landed after all, and then writes
-/// nothing. A head update that matches no row is classified from the row
-/// read again: an ended Run, another claim, a released worker claim, or
-/// corruption.
+/// One attempt to commit the chunk, in one transaction that holds no Run
+/// row: the row work, then the fence, then the head update predicated on
+/// the owner's claim and the head it tracks. A recommit first checks whether
+/// the attempt it repeats landed; a head update that matches no row is
+/// classified from the row read again.
 async fn commit_once(
     module: &RunModule,
     accepted: &AcceptedRun,
@@ -623,7 +619,7 @@ async fn commit_once(
         }
         written.lease_until_unix_nanos = Some(lease_until);
         debug_assert!(
-            termination.is_none_or(|intent| !intent.release_worker_claim),
+            termination.is_none_or(|intent| !intent.releases_worker_claim()),
             "a Run Owner never releases its own worker claim in a chunk"
         );
         run_repository::commit_chunk(

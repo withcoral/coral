@@ -90,14 +90,12 @@ impl RunRecord {
     }
 }
 
-/// A termination intent as a writer records it: the termination, the
-/// Principal who asked for a cancellation, and whether the intent releases
-/// the worker claim (an interruption does: the Run has no live owner).
+/// A termination intent as a writer records it: the termination and the
+/// Principal who asked for a cancellation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RequestedTermination {
     pub(crate) termination: RunTermination,
     pub(crate) requester: Option<Principal>,
-    pub(crate) release_worker_claim: bool,
 }
 
 impl RequestedTermination {
@@ -122,8 +120,13 @@ impl RequestedTermination {
                 deadline_at_unix_nanos,
             },
             requester,
-            release_worker_claim: kind == RunTerminationKind::Interrupted,
         })
+    }
+
+    /// Whether recording this intent releases the worker claim: an
+    /// interruption does, the Run having no live owner.
+    pub(crate) fn releases_worker_claim(&self) -> bool {
+        self.termination.kind == RunTerminationKind::Interrupted
     }
 }
 

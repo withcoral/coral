@@ -10,17 +10,14 @@
 //! clock sample, from the decision the held gate recorded: an approval never
 //! changes once made.
 //!
-//! A decision is a Run Request: authorized and concealed here, then asked of
-//! the Run's owner, which records it in its next chunk, keyed by the Approval
-//! Request it decides. The first decision wins; a repeat receives the
-//! recorded answer. The decision chunk reads no policy and takes no policy
-//! lock: it records Approved or Declined and ends a declined Invocation, and
-//! the Dispatch Fence remains the authority on whether the approval still
-//! lets the Invocation dispatch. The first terminal transition and its safe
-//! lifecycle event commit together; a lost response can be recovered by
-//! reading or deciding again. Invocation owns live gate ordering and Promise
-//! settlement. Approval owns only request validity, decisions and evidence,
-//! not required-action projections or UI.
+//! A decision is authorized and concealed here, then recorded by the Run's
+//! owner in its next chunk; the first decision wins, and a repeat receives the
+//! recorded answer. The decision reads no policy: the Dispatch Fence judges
+//! the approval when the Invocation dispatches. The first terminal transition
+//! and its safe lifecycle event commit together; a lost response can be
+//! recovered by reading or deciding again. Invocation owns live gate ordering
+//! and Promise settlement. Approval owns only request validity, decisions and
+//! evidence, not required-action projections or UI.
 
 use crate::lifecycle::RunRecord;
 use std::sync::Arc;

@@ -54,7 +54,7 @@ pub(super) fn request_values(request: &RequestedTermination) -> Vec<(ProgramRunR
             ),
         ]);
     }
-    if request.release_worker_claim {
+    if request.releases_worker_claim() {
         values.extend(released_worker_claim());
     }
     values

@@ -99,16 +99,9 @@
 //! answers waiting requests `OwnerLost`. A Run cannot complete while any child
 //! Invocation is nonterminal.
 //! While a Run is nonterminal its owner is the only writer of its row and its
-//! Events: an approval decision and a cancellation are Run Requests the owner
-//! records in its next chunk, keyed by the entity they decide (the first wins,
-//! a repeat receives the recorded answer, one that changes nothing joins no
-//! chunk), the deadline reaches the owner the same way, and the owner ends
-//! every nonterminal Invocation and the Run itself once the dispatches in
-//! flight have recorded their results or the shutdown grace is out. No chunk
-//! commit holds the Run row: its predicate on the claim and the head the owner
-//! tracks is the fence, and a head the owner did not move is corruption. A
-//! request for a nonterminal Run with no owner in this process is answered
-//! `OwnedElsewhere`; a terminal Run answers from its record.
+//! Events: approval decisions, cancellation and the deadline reach it as
+//! requests (see [`owner`]), and a nonterminal Run with no owner in this
+//! process answers `OwnedElsewhere`.
 //! Cancellation and deadline intent stop new Program work, request uncatchable V8
 //! termination, and preserve complete child outcomes that beat bounded cleanup.
 //! Recovery revokes a stale started claim before settling its children and Run.

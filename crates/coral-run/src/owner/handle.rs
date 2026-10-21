@@ -448,14 +448,11 @@ impl OwnerHandle {
     }
 
     /// Asks the owner to decide one Approval Request; answers once the
-    /// decision, or the one that won before it, is recorded: with the
-    /// decision as its chunk wrote it, or with nothing when the record
-    /// answers (an earlier decision, a closed request).
+    /// decision, or the one that won before it, is recorded.
     ///
     /// # Errors
     ///
-    /// [`Error::OwnerLost`] when the owner stopped before it recorded the
-    /// request: the outcome is unknown, read the request again.
+    /// [`Error::OwnerLost`] when the owner stopped first: read the record.
     pub(crate) async fn decide(&self, request: DecisionRequest) -> Result<DecisionAnswer, Error> {
         self.ask(|reply| Message::Decide { request, reply }).await
     }
@@ -465,8 +462,7 @@ impl OwnerHandle {
     ///
     /// # Errors
     ///
-    /// [`Error::OwnerLost`] when the owner stopped before it recorded the
-    /// request: the outcome is unknown, read the Run again.
+    /// [`Error::OwnerLost`] when the owner stopped first: read the record.
     pub(crate) async fn cancel(&self, requester: Principal) -> Result<(), Error> {
         self.ask(|reply| Message::Cancel { requester, reply })
             .await

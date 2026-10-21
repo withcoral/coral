@@ -1,14 +1,7 @@
-//! Run termination: a cancellation as a Run Request to the Run Owner, the
-//! settle of a recorded termination (the terminal chunk that ends every
-//! nonterminal Invocation and the Run), the Interrupted record, and
-//! recovery's explicit pass.
-//!
-//! While a Run is nonterminal its Run Owner is the only writer of its row:
-//! a cancellation is applied in owner memory and recorded by the owner's
-//! next chunk, and the owner itself settles the termination once no
-//! dispatch is in flight or the shutdown grace is out. A nonterminal Run
-//! with no owner in this process is owned elsewhere; a terminal Run answers
-//! every request from its record.
+//! Run termination: a cancellation as a request to the Run Owner, the settle
+//! of a recorded termination (the terminal chunk that ends every nonterminal
+//! Invocation and the Run), the Interrupted record, and recovery's explicit
+//! pass.
 
 use std::future::Future;
 use std::time::Duration;
@@ -208,21 +201,6 @@ impl RunModule {
         self.settle_or_force(remaining, &shutdown, drain).await
     }
 
-    /// One settle attempt of a recorded termination, for the Run Owner that
-    /// found it recorded: ends the Run once no dispatch is in flight, or
-    /// once the shutdown grace is out (`grace_expired`, judged by the host
-    /// on its own clock). `Ok(false)` means a dispatch is still in flight
-    /// within the grace; the owner records its result when it arrives and
-    /// tries again.
-    pub(crate) async fn settle_attempt(
-        &self,
-        shutdown: &ShutdownAction,
-        grace_expired: bool,
-    ) -> Result<bool, Error> {
-        self.settle_termination(&shutdown.workspace_id, &shutdown.run_id, grace_expired)
-            .await
-    }
-
     async fn settle_or_force(
         &self,
         remaining: Duration,
@@ -231,10 +209,7 @@ impl RunModule {
     ) -> Result<(), Error> {
         match timeout(remaining, drain).await {
             Ok(result) => result,
-            Err(_elapsed) => self
-                .settle_termination(&shutdown.workspace_id, &shutdown.run_id, true)
-                .await
-                .map(drop),
+            Err(_elapsed) => self.settle_termination(shutdown, true).await.map(drop),
         }
     }
 
@@ -243,10 +218,7 @@ impl RunModule {
     /// upstream result. An undispatched one can no longer write, so
     /// termination ends it without waiting.
     async fn settle_loop(&self, shutdown: &ShutdownAction) -> Result<(), Error> {
-        while !self
-            .settle_termination(&shutdown.workspace_id, &shutdown.run_id, false)
-            .await?
-        {
+        while !self.settle_termination(shutdown, false).await? {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         Ok(())
@@ -271,20 +243,21 @@ impl RunModule {
         }
     }
 
-    /// Ends a Run whose termination is recorded: every nonterminal
+    /// One settle attempt of a recorded termination: every nonterminal
     /// Invocation and `run.ended` in one terminal chunk, once no dispatch is
-    /// in flight or `grace_expired`. `Ok(true)` once the Run is terminal (by
-    /// this write, or by another's); `Ok(false)` while a dispatch is still
-    /// in flight within the grace. The Run row is read without a hold: the
-    /// owner runs its writes one at a time, and recovery's settle runs after
-    /// the owner here retired; a head another writer moved meanwhile, or an
-    /// Invocation it ended first, makes the next attempt read the row again.
-    async fn settle_termination(
+    /// in flight or `grace_expired` (judged by the caller on its own clock).
+    /// `Ok(true)` once the Run is terminal, by this write or another's;
+    /// `Ok(false)` while a dispatch is still in flight within the grace. The
+    /// Run row is read without a hold: the owner runs its writes one at a
+    /// time, and recovery's settle runs after the owner here retired; a head
+    /// another writer moved meanwhile, or an Invocation it ended first, makes
+    /// the next attempt read the row again.
+    pub(crate) async fn settle_termination(
         &self,
-        workspace_id: &WorkspaceId,
-        run_id: &RunId,
+        shutdown: &ShutdownAction,
         grace_expired: bool,
     ) -> Result<bool, Error> {
+        let (workspace_id, run_id) = (&shutdown.workspace_id, &shutdown.run_id);
         let mut transaction = self.database.begin().await?;
         let Some(run) =
             run_repository::find_exact_in_transaction(&mut transaction, workspace_id, run_id)
