@@ -135,6 +135,7 @@ export function ConfigurationStep({
   takenDisplayNames = [],
   suggestedName,
   recipe = null,
+  clientConfigHintMarkdown = null,
   title = 'Setup',
   actions,
   confirmLabel = 'Next',
@@ -159,6 +160,8 @@ export function ConfigurationStep({
   suggestedName?: string
   /** What the chosen recipe fills in; it applies only before the first confirmation. */
   recipe?: RecipeConfigurationView | null
+  /** Extra help below the client ID field, from the recipe. */
+  clientConfigHintMarkdown?: string | null
   title?: string
   /** Actions before the confirm button, such as Cancel. */
   actions?: ReactNode
@@ -604,6 +607,7 @@ export function ConfigurationStep({
                   review.application
                 }
                 callbackUrl={callbackUrl}
+                clientConfigHintMarkdown={clientConfigHintMarkdown}
                 configuring
                 clientSecretInput={
                   <>

@@ -13,6 +13,7 @@ import type {
   RecipeServerView,
   SetupView,
 } from '@/views/providers/types'
+import { CLIENT_CONFIG_HINT_GENERATORS, type ClientConfigHintContext } from './client-config-hints'
 import { inputReference } from './input-reference'
 import type { Recipe, RecipeAuthenticationOption } from './recipe-format'
 
@@ -108,6 +109,16 @@ export function recipeDocumentationUrl(recipe: Recipe, method: CredentialMethod 
   const matching = Object.entries(options).filter(([, option]) => recipeMethod(option) === method)
   const [, option] = matching.find(([name]) => name === preferred) ?? matching[0] ?? []
   return option?.documentation_url ?? null
+}
+
+/**
+ * The Markdown hint below the client ID field, from the generator the option
+ * the recipe fills in names; null when it names none.
+ */
+export function recipeClientConfigHintMarkdown(recipe: Recipe, context: ClientConfigHintContext) {
+  const option = chosenOption(recipe, [])
+  if (option?.method !== 'oauth_discovery' || !option.client_config_hint_generator) return null
+  return CLIENT_CONFIG_HINT_GENERATORS[option.client_config_hint_generator](context)
 }
 
 /** One option pre-fills itself; of several, only the recipe's default does. */

@@ -1,6 +1,7 @@
 import { useId, useState, type ReactNode } from 'react'
 import { automaticApplicationAllowed } from '@/lib/provider-publication-attempt/model'
 import { Button, Inputs, Radio, Typography } from '@/wax/components'
+import { Markdown } from '@/wax/components/markdown'
 import type { ConfigurationReviewView, SetupView } from './types'
 import * as styles from './providers.css'
 
@@ -16,6 +17,7 @@ export function OAuthApplicationBlock({
   device = setup.credentialMethod === 'device',
   application: configured = setup.configuration?.application,
   callbackUrl,
+  clientConfigHintMarkdown,
   configuring = false,
   clientSecretInput,
 }: {
@@ -23,6 +25,8 @@ export function OAuthApplicationBlock({
   device?: boolean
   application?: ConfigurationReviewView['application']
   callbackUrl: string
+  /** Extra help below the client ID field, such as where to register the application. */
+  clientConfigHintMarkdown?: string | null
   configuring?: boolean
   clientSecretInput?: ReactNode
 }) {
@@ -122,6 +126,11 @@ export function OAuthApplicationBlock({
                 ? 'Leave empty to use automatic client setup.'
                 : `From your application's registration with ${registrar}.`}
             </Typography.BodySmall>
+            {clientConfigHintMarkdown && (
+              <Typography.BodySmall as="div" variant="tertiary">
+                <Markdown>{clientConfigHintMarkdown}</Markdown>
+              </Typography.BodySmall>
+            )}
           </div>
           {mode === 'explicit' && (
             <>

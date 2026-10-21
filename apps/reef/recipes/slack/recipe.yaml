@@ -14,8 +14,9 @@ authentication:
       method: oauth_discovery
       label: Sign in
       documentation_url: https://docs.slack.dev/ai/slack-mcp-server/
-      description: Create an internal or Marketplace Slack app. Enable MCP and register the callback URL.
+      description: Create a Slack app with the link. Copy its client ID and client secret here.
       flow: authorization_code
+      client_config_hint_generator: slack_app_create_link
       client:
         authentication: client_secret_post
 icons:

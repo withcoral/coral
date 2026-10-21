@@ -389,6 +389,8 @@ export interface StepperPageProps {
   recipeConfiguration?: RecipeConfigurationView | null
   /** Where the chosen recipe says to find the credentials to enter. */
   recipeDocumentationUrl?: string | null
+  /** The chosen recipe's help below the client ID field, as Markdown. */
+  recipeClientConfigHintMarkdown?: string | null
   /** The stepper's own URL, without query. */
   basePath: string
   cancelPath: string

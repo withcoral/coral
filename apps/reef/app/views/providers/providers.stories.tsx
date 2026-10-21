@@ -677,6 +677,38 @@ export const ConfigurationOAuth: Story = {
     await expectLabelToFit('Disable PKCE for this service')
   },
 }
+// A recipe's hint, such as Slack's app creation link, sits below the client ID.
+export const ConfigurationOAuthClientHint: Story = {
+  render: () => (
+    <StepperPage
+      {...stepperWorkspace}
+      recipeClientConfigHintMarkdown="[Create a Slack app](https://api.slack.com/apps?new_app=1&manifest_yaml=display_information%3A%0A), then copy its client ID and client secret here."
+      setup={{
+        ...configurationSetup,
+        configuration: {
+          ...configurationSetup.configuration!,
+          authenticationStatus: 'supported',
+          documentDisplayName: 'Slack',
+          values: {
+            ...configurationSetup.configuration!.values,
+            authentication: 'oauth',
+            authorizationUrl: 'https://slack.com/oauth/v2_user/authorize',
+            tokenUrl: 'https://slack.com/api/oauth.v2.user.access',
+            scopes: ['chat:write'],
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const link = within(canvasElement).getByRole('link', { name: 'Create a Slack app' })
+    await expect(link).toHaveAttribute('target', '_blank')
+    await expect(link).toHaveAttribute(
+      'href',
+      'https://api.slack.com/apps?new_app=1&manifest_yaml=display_information%3A%0A',
+    )
+  },
+}
 export const ConfigurationOAuthFieldErrors: Story = {
   render: () => (
     <StepperPage
