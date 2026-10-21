@@ -16,8 +16,8 @@ interface Snapshot {
 
 /**
  * Slides the selected record's whole detail, header included, when the reader moves
- * between records of one Run at known positions, such as its Operation Invocations,
- * Program Logs and Program Emissions: a later one enters from below while the old one leaves upward, and an
+ * between records of one Run at known positions, its Operation Invocations and
+ * Program Run Events: a later one enters from below while the old one leaves upward, and an
  * earlier one the reverse. Every other change, such as the Run itself, an unknown
  * position or reduced motion, replaces it at once.
  *

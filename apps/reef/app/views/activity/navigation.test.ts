@@ -6,6 +6,7 @@ import {
   liveRun,
   liveStep,
   liveTarget,
+  orderedRecordPosition,
   recordParents,
   resolveStop,
   stepStop,
@@ -13,7 +14,7 @@ import {
   type ActivityStop,
   type StopPosition,
 } from './navigation'
-import type { ActivityPage, ActivityRow } from './types'
+import type { ActivityPage, ActivityRow, RunEvent } from './types'
 
 const task = 'workspaces/w/tasks/t'
 const run = 'workspaces/w/runs/r'
@@ -330,6 +331,47 @@ describe('keyboard traversal', () => {
       tree.rows,
     )
     expect(restsOn(replaced, positionOf(submission))).toBe(b.name)
+  })
+})
+
+describe('detail slide order', () => {
+  const owner = runRow('ordered', taskRow('t').name, { position: 0 })
+  const other = runRow('other', '')
+  const event = (id: string, eventKind: RunEvent['kind'], position?: number) =>
+    ({ ...output(owner.name, `events/${id}`, 0), eventKind, position }) as ActivityRow
+  const started = event('0', 'run.started', 0)
+  const call = invocationRow(owner.name, 'call', { position: 1 })
+  const logged = event('2', 'program.logged', 2)
+  const cancelling = event('3', 'run.cancellation_requested', 3)
+  // Coral holds it, but it arrived without a position.
+  const unordered = event('4', 'program.logged')
+  // The Run's next record, past the loaded window.
+  const unloaded = event('5', 'run.ended', 5)
+  const loaded = childPage([started, call, logged, cancelling, unordered], 6)
+  const ordered = activityPage({ branches: { [owner.name]: loaded } })
+  const unavailable = activityPage({
+    branches: { [owner.name]: { ...loaded, unavailable: true } },
+  })
+
+  it.each<[string, ActivityPage, ActivityRow | null, number | undefined]>([
+    ['the start of the Run', ordered, started, 0],
+    ['an Operation Invocation', ordered, call, 1],
+    ['a Program Log', ordered, logged, 2],
+    ['a cancellation request', ordered, cancelling, 3],
+    ['not the Run itself or its final value, which its Task orders', ordered, owner, undefined],
+    ['not a record without a position', ordered, unordered, undefined],
+    ["not a record its Run's loaded window does not hold", ordered, unloaded, undefined],
+    ['not a record of a Run with no loaded records', activityPage(), call, undefined],
+    ['not a record of a Run whose history is unavailable', unavailable, call, undefined],
+    [
+      'not a record of another Run, at the same name',
+      ordered,
+      { ...call, run: other.name },
+      undefined,
+    ],
+    ['nothing without a selection', ordered, null, undefined],
+  ])('positions %s', (_name, current, row, expected) => {
+    expect(orderedRecordPosition(current, row)).toBe(expected)
   })
 })
 

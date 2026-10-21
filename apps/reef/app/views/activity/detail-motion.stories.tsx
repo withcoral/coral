@@ -14,7 +14,7 @@ import {
   recordAnimations,
 } from '../../../.storybook/browser'
 
-// The selected record's slide between operations of one Run, in Chromium: its
+// The selected record's slide between records of one Run, in Chromium: its
 // direction, what it leaves alone, and when it replaces the record at once.
 
 type Operation = Extract<ActivityRow, { kind: 'invocation' }>
@@ -52,7 +52,7 @@ const emitted: Extract<ActivityRow, { kind: 'output' }> = {
   eventKind: 'program.emitted',
   position: 6,
 }
-// The record of an operation ending: neither an operation, a log nor an emission.
+// Lifecycle records: an Operation call ending, and a request to cancel the Run.
 const ended: Extract<ActivityRow, { kind: 'output' }> = {
   ...logged,
   name: `${reminders.name}/events/7`,
@@ -60,7 +60,14 @@ const ended: Extract<ActivityRow, { kind: 'output' }> = {
   eventKind: 'invocation.ended',
   position: 7,
 }
-// The Run's ninth record: Coral holds it, but the loaded window ends before it.
+const cancelling: Extract<ActivityRow, { kind: 'output' }> = {
+  ...logged,
+  name: `${reminders.name}/events/8`,
+  label: 'cancel #8',
+  eventKind: 'run.cancellation_requested',
+  position: 8,
+}
+// The Run's tenth record: Coral holds it, but the loaded window ends before it.
 const unloaded = operation(reminders.name, 'unloaded', 'mail.unloaded')
 const audited = operation(audit.name, 'audited', 'audit.check', 0)
 
@@ -85,8 +92,15 @@ const events: Record<string, RunEvent> = {
     invocation: notify.name,
     outcome: 'upstream_outcome',
   },
+  [cancelling.name]: {
+    kind: 'run.cancellation_requested',
+    sequence: '8',
+    occurredAt: reminders.startedAt,
+    actor: 'you',
+    actorKind: 'user',
+  },
 }
-const branchRows = [list, send, check, logged, archive, notify, emitted, ended]
+const branchRows = [list, send, check, logged, archive, notify, emitted, ended, cancelling]
 const records: ActivityRow[] = [reminders, audit, ...branchRows, unloaded, audited]
 
 function runDetail(run: Extract<ActivityRow, { kind: 'run' }>): RunDetail {
@@ -109,7 +123,7 @@ function pageFor(url: URL): ActivityPage {
     rows: [reminders, audit],
     expanded: [reminders.name, audit.name],
     branches: {
-      [reminders.name]: { rows: branchRows, offset: 0, total: '9', next: '', unavailable: false },
+      [reminders.name]: { rows: branchRows, offset: 0, total: '10', next: '', unavailable: false },
       [audit.name]: { rows: [audited], offset: 0, total: '1', next: '', unavailable: false },
     },
     selected: selectedRow?.name ?? null,
@@ -448,8 +462,41 @@ export const SlidesThroughLogsAndEmissions: Story = {
 }
 
 /**
- * Every change but one between operations, logs and emissions of one Run, each at a
- * known position, replaces the record at once.
+ * Lifecycle records, such as an Operation call ending or a request to cancel the Run,
+ * slide in the Run's order like every other record inside it.
+ */
+export const SlidesThroughLifecycleEvents: Story = {
+  play: async (context) => {
+    if (!(await inTestBrowser())) return
+    const { rail, recorder, shows, select } = await surface(context)
+    const callEnded = 'Operation call ended: upstream outcome'
+    const cancelRequested = 'Cancellation requested'
+    try {
+      await shows('mail.send')
+      await select('emission #6')
+      await shows('coral.emit #6')
+      rail().focus()
+      await press('{ArrowDown}')
+      await expect(await shows(callEnded)).toEqual(down('coral.emit #6', callEnded))
+      await press('{ArrowDown}')
+      await expect(await shows(cancelRequested)).toEqual(down(callEnded, cancelRequested))
+      await press('{ArrowUp}')
+      await expect(await shows(callEnded)).toEqual(up(cancelRequested, callEnded))
+      await press('{ArrowUp}')
+      await expect(await shows('coral.emit #6')).toEqual(up(callEnded, 'coral.emit #6'))
+      await select('cancel #8')
+      await expect(await shows(cancelRequested)).toEqual(down('coral.emit #6', cancelRequested))
+      await select('mail.send')
+      await expect(await shows('mail.send')).toEqual(up(cancelRequested, 'mail.send'))
+    } finally {
+      recorder.stop()
+    }
+  },
+}
+
+/**
+ * Every change but one between records of one Run, each at a known position, replaces
+ * the record at once.
  */
 export const ReplacesAtOnce: Story = {
   parameters: { initialEntry: `/workspaces/finance/activity?${expand}&record=${reminders.name}` },
@@ -458,13 +505,9 @@ export const ReplacesAtOnce: Story = {
     const { recorder, shows, select, press: button } = await surface(context)
     try {
       await shows('Send reminders')
-      // From the Run itself, and to and from another kind of record.
+      // From the Run itself, which its Task orders, not its Run.
       await select('mail.send')
       await expect(await shows('mail.send')).toEqual(instant)
-      await select('ended #7')
-      await expect(await shows('Operation call ended: upstream outcome')).toEqual(instant)
-      await select('mail.archive')
-      await expect(await shows('mail.archive')).toEqual(instant)
       // An operation of another Run.
       await select('audit.check')
       await expect(await shows('audit.check')).toEqual(instant)

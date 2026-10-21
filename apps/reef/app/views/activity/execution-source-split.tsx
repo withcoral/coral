@@ -59,9 +59,8 @@ export function ExecutionSourceSplit({
   /** The selected record, whose stored location applies when the Run itself is not selected. */
   selectedRow: ActivityRow | null
   /**
-   * The selected Operation Invocation, Program Log or Program Emission's position among
-   * the Run's records, when known. Between two known positions, the detail slides in
-   * that order.
+   * The selected Operation Invocation or Program Run Event's position among the Run's records,
+   * when known. Between two known positions, the detail slides in that order.
    */
   position?: number
   /** The drawer's close control. The selected record's own sticky header holds it. */
