@@ -1370,12 +1370,13 @@ async fn approval_does_not_bypass_a_later_restrictive_policy_at_the_fence() {
     );
 }
 
+/// A definite fault in a decision's write fails the owner's chunk, as any
+/// row work's does: the approver learns `OwnerLost`, nothing of the decision
+/// is written (no decided lifecycle event, no `invocation.ended` of its
+/// own), and the Run ends Interrupted with the request Closed by the
+/// terminal write.
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one persistence fault proves atomic rollback for approval, decline, and expiry through the public seam"
-)]
-async fn approval_event_failure_rolls_back_decision_and_invocation_settlement() {
+async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decision() {
     let fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
@@ -1387,41 +1388,8 @@ async fn approval_event_failure_rolls_back_decision_and_invocation_settlement() 
     let approvals = fixture.approvals();
     let source =
         "try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }";
-    let first = fixture
-        .runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission(source),
-        )
-        .await
-        .unwrap();
-    let request = wait_for_approval(
-        &approvals,
-        &operation.principal,
-        &operation.workspace_id,
-        first.run_id(),
-    )
-    .await;
     let trace = TraceId::parse(&"f".repeat(32)).unwrap();
-    approvals
-        .decide(
-            &operation.principal,
-            &operation.workspace_id,
-            &request.id,
-            ApprovalDecision::Decline,
-            None,
-            &trace,
-        )
-        .await
-        .unwrap();
-    wait_for_terminal(
-        &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
-        first.run_id(),
-    )
-    .await;
+    decline_one_run(&fixture, &operation, &approvals, source, &trace).await;
     approval_event_fault(&fixture, true).await;
     let run = fixture
         .runs
@@ -1442,124 +1410,113 @@ async fn approval_event_failure_rolls_back_decision_and_invocation_settlement() 
         run.run_id(),
     )
     .await;
-    // Isolate approval expiry from the capped Run deadline and worker-claim expiry.
-    crate::approval_repository::set_approval_deadline(
-        &fixture.database,
+
+    let lost = approvals
+        .decide(
+            &operation.principal,
+            &operation.workspace_id,
+            &pending.id,
+            ApprovalDecision::Approve,
+            None,
+            &trace,
+        )
+        .await;
+    assert!(matches!(lost, Err(Error::OwnerLost)), "{lost:?}");
+    let terminal = wait_for_terminal(
+        &fixture.runs,
+        &operation.principal,
         &operation.workspace_id,
-        &pending.id,
-        1_000_000,
+        run.run_id(),
     )
-    .await
-    .unwrap();
-    let pending = approvals
+    .await;
+    assert_eq!(terminal.state(), RunState::Interrupted);
+    let closed = approvals
         .get(&operation.principal, &operation.workspace_id, &pending.id)
         .await
         .unwrap();
-    for decision in [ApprovalDecision::Approve, ApprovalDecision::Decline] {
-        assert!(matches!(
-            approvals
-                .decide(
-                    &operation.principal,
-                    &operation.workspace_id,
-                    &pending.id,
-                    decision,
-                    None,
-                    &trace
-                )
-                .await,
-            Err(Error::Database(_))
-        ));
-        assert_eq!(
-            approvals
-                .get(&operation.principal, &operation.workspace_id, &pending.id)
-                .await
-                .unwrap(),
-            pending
-        );
-    }
-    let expired_clock = approvals
-        .clone()
-        .with_clock(Arc::new(TestClock::starting_at(
-            pending.deadline_at_unix_nanos,
-        )));
-    assert!(matches!(
-        expired_clock
-            .decide(
-                &operation.principal,
-                &operation.workspace_id,
-                &pending.id,
-                ApprovalDecision::Approve,
-                None,
-                &trace
-            )
-            .await,
-        Err(Error::Database(_))
-    ));
-    assert_eq!(
-        approvals
-            .get(&operation.principal, &operation.workspace_id, &pending.id)
-            .await
-            .unwrap(),
-        pending
-    );
+    assert_eq!(closed.state, ApprovalState::Closed);
+    assert_eq!(closed.approver, None, "no decision was recorded");
     assert!(
         approvals
             .list_lifecycle_events(&operation.principal, &operation.workspace_id, &pending.id)
             .await
             .unwrap()
-            .is_empty()
+            .iter()
+            .all(|event| event.state == ApprovalState::Closed),
+        "the terminal write closed the request; the decision wrote nothing"
     );
-    let update = fixture
-        .runs
-        .observe(
-            &operation.principal,
-            &operation.workspace_id,
-            run.run_id(),
-            &immediate(None, 100),
-        )
-        .await
-        .unwrap();
     assert!(
-        !retained_events(
+        retained_events(
             &fixture.runs,
             &operation.principal,
             &operation.workspace_id,
-            update.run_id()
+            run.run_id()
         )
         .await
         .iter()
-        .any(|event| matches!(event.kind(), RunEventKind::InvocationEnded { .. }))
+        .all(|event| !matches!(
+            event.kind(),
+            RunEventKind::InvocationEnded { result_kind, .. }
+                if *result_kind != crate::InvocationResultKind::RunTerminated
+        )),
+        "the Invocation ended with the Run, not with the decision"
     );
     approval_event_fault(&fixture, false).await;
+}
+
+/// Runs `source` to its Approval Request, declines it and waits for the
+/// Run's end: one decided lifecycle event in the Workspace.
+async fn decline_one_run(
+    fixture: &TestModules,
+    operation: &OperationFixture,
+    approvals: &ApprovalModule,
+    source: &str,
+    trace: &TraceId,
+) {
+    let run = fixture
+        .runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission(source),
+        )
+        .await
+        .unwrap();
+    let request = wait_for_approval(
+        approvals,
+        &operation.principal,
+        &operation.workspace_id,
+        run.run_id(),
+    )
+    .await;
     approvals
         .decide(
             &operation.principal,
             &operation.workspace_id,
-            &pending.id,
+            &request.id,
             ApprovalDecision::Decline,
             None,
-            &trace,
+            trace,
         )
         .await
         .unwrap();
-    assert_final_code(
-        &wait_for_terminal(
-            &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
-            run.run_id(),
-        )
-        .await,
-        "approval_declined",
-    );
+    wait_for_terminal(
+        &fixture.runs,
+        &operation.principal,
+        &operation.workspace_id,
+        run.run_id(),
+    )
+    .await;
 }
 
+/// Rejects a second decided (not Closed) lifecycle event in a Workspace:
+/// the decision's own write fails, the terminal write's Closed does not.
 async fn approval_event_fault(fixture: &TestModules, enabled: bool) {
     fixture
         .inject_fault(if enabled {
-            "CREATE UNIQUE INDEX reject_second_approval_event ON approval_lifecycle_events(workspace_id)"
+            "CREATE UNIQUE INDEX reject_second_decided_approval_event ON approval_lifecycle_events(workspace_id) WHERE state <> 'closed'"
         } else {
-            "DROP INDEX reject_second_approval_event"
+            "DROP INDEX reject_second_decided_approval_event"
         })
         .await;
 }
@@ -2466,8 +2423,12 @@ async fn a_decision_for_a_run_owned_elsewhere_is_refused_without_a_write() {
         .run_record(&operation.workspace_id, run.run_id())
         .await;
     // Another process: the same database, none of this process's owners.
-    let elsewhere = ApprovalModule::new(fixture.database.clone(), fixture.workspaces.clone())
-        .with_clock(fixture.clock.clone());
+    let elsewhere = ApprovalModule::new(
+        fixture.database.clone(),
+        fixture.workspaces.clone(),
+        crate::owner::Owners::default(),
+    )
+    .with_clock(fixture.clock.clone());
     let trace = TraceId::parse(&"e".repeat(32)).unwrap();
     let refused = elsewhere
         .decide(

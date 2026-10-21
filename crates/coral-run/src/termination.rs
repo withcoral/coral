@@ -188,18 +188,22 @@ impl RunModule {
     /// the Run is settled elsewhere; this waits for it, and ends the Run
     /// itself once the grace is out.
     pub(crate) async fn complete_shutdown(&self, shutdown: ShutdownAction) -> Result<(), Error> {
+        // A live owner here ends its Run itself, within its own shutdown
+        // grace, and recovery writes only once it retired: never beside it.
+        let owned_here = self.owners.find(&shutdown.run_id, &shutdown.claim_id);
+        if let Some(owner) = &owned_here {
+            owner.request_stop();
+            owner.wait_stopped().await;
+        }
         let now = self.now()?.max(shutdown.accepted_at_unix_nanos);
         let remaining = duration_until(shutdown.deadline_at_unix_nanos, now);
         let drain = async {
-            if let Some(owner) = self.owners.find(&shutdown.run_id, &shutdown.claim_id) {
-                owner.request_stop();
-                owner.wait_stopped().await;
+            if owned_here.is_some() {
+                self.settle_loop(&shutdown).await
             } else {
-                return self
-                    .wait_for_terminal_state(&shutdown.workspace_id, &shutdown.run_id)
-                    .await;
+                self.wait_for_terminal_state(&shutdown.workspace_id, &shutdown.run_id)
+                    .await
             }
-            self.settle_loop(&shutdown).await
         };
         self.settle_or_force(remaining, &shutdown, drain).await
     }
@@ -273,8 +277,8 @@ impl RunModule {
     /// this write, or by another's); `Ok(false)` while a dispatch is still
     /// in flight within the grace. The Run row is read without a hold: the
     /// owner runs its writes one at a time, and recovery's settle runs after
-    /// the owner retired; a head another writer moved meanwhile makes the
-    /// next attempt read the row again.
+    /// the owner here retired; a head another writer moved meanwhile, or an
+    /// Invocation it ended first, makes the next attempt read the row again.
     async fn settle_termination(
         &self,
         workspace_id: &WorkspaceId,

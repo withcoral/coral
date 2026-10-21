@@ -142,8 +142,7 @@ struct InFlight {
     bytes: usize,
     waiters: Vec<Reply>,
     /// The outside requests the chunk records, each with what its work
-    /// reported before the chunk's `Committed`; one the work could not
-    /// record leaves then.
+    /// reported before the chunk's `Committed`.
     requests: Vec<PendingRequest>,
     /// The chunk carries the termination intent.
     terminates: bool,
@@ -894,25 +893,6 @@ impl OwnerState {
         }
     }
 
-    /// An outside request the chunk in flight could not record: its
-    /// requester receives the failure, and its repeat, once the chunk is
-    /// answered, starts over. One requester per request: the repeat waits
-    /// parked until then.
-    fn request_not_recorded(&mut self, key: &RequestKey, error: Error) -> Vec<Effect> {
-        let Some(flight) = &mut self.in_flight else {
-            return Vec::new();
-        };
-        let Some(failed) = flight
-            .requests
-            .iter()
-            .position(|request| request.key == *key)
-        else {
-            return Vec::new();
-        };
-        let request = flight.requests.remove(failed);
-        vec![Effect::Answer(request.requester, Err(error))]
-    }
-
     /// Commit-when-free: the oldest pending chunk, once nothing is in flight.
     fn commit_when_free(&mut self) -> Vec<Effect> {
         if self.in_flight.is_some()
@@ -1230,7 +1210,6 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         | Message::ProgramEnded(_)
         | Message::Committed
         | Message::RequestRecorded { .. }
-        | Message::RequestNotRecorded { .. }
         | Message::CommitRejected(_)
         | Message::Completed(_)
         | Message::SettleAttempted(_)
@@ -1304,7 +1283,6 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
             state.request_recorded(&key, answer);
             Vec::new()
         }
-        Message::RequestNotRecorded { key, error } => state.request_not_recorded(&key, error),
         Message::CommitRejected(rejection) => state.rejected(rejection, now_unix_nanos),
         Message::Stop => state.stop(),
         Message::IdleTick => state.idle_tick(),

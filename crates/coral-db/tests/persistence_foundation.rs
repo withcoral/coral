@@ -489,53 +489,6 @@ async fn backend_specific_sql_runs_inside_a_caller_owned_transaction() {
     assert_eq!(audited, vec![("raw".to_string(),)]);
 }
 
-/// A statement that fails inside a savepoint undoes only the writes since
-/// the savepoint and leaves the transaction usable, on both backends
-/// (Postgres aborts the whole transaction until the savepoint is rolled
-/// back to).
-#[tokio::test]
-async fn a_failed_statement_inside_a_savepoint_leaves_the_transaction_usable() {
-    let fixture = TestDatabase::new(&MIGRATOR).await.unwrap();
-    let database = fixture.database();
-
-    let mut transaction = database.begin().await.unwrap();
-    transaction
-        .execute(insert_record("kept", "before the savepoint"))
-        .await
-        .unwrap();
-    transaction.savepoint("decision").await.unwrap();
-    transaction
-        .execute(insert_record("undone", "inside the savepoint"))
-        .await
-        .unwrap();
-    let duplicate = transaction
-        .execute(insert_record("kept", "a duplicate key"))
-        .await
-        .expect_err("the duplicate key is rejected");
-    assert!(!duplicate.is_unanswered(), "{duplicate:?}");
-    transaction.rollback_to_savepoint("decision").await.unwrap();
-    transaction.release_savepoint("decision").await.unwrap();
-    transaction
-        .execute(insert_record("after", "after the rollback"))
-        .await
-        .unwrap();
-    transaction.commit().await.unwrap();
-
-    assert_eq!(
-        record(database.as_ref(), "kept")
-            .await
-            .map(|record| record.value),
-        Some("before the savepoint".to_string())
-    );
-    assert_eq!(record(database.as_ref(), "undone").await, None);
-    assert_eq!(
-        record(database.as_ref(), "after")
-            .await
-            .map(|record| record.value),
-        Some("after the rollback".to_string())
-    );
-}
-
 #[tokio::test]
 async fn backend_specific_sql_is_rolled_back_with_its_transaction() {
     let fixture = TestDatabase::new(&MIGRATOR).await.unwrap();

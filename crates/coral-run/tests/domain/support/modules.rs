@@ -186,9 +186,12 @@ impl TestModules {
     /// An Approval Module that records through `runs`' Run Owners: the
     /// module that started the Run holds its owner.
     pub(crate) fn approvals_for(&self, runs: &RunModule) -> crate::approval::ApprovalModule {
-        crate::approval::ApprovalModule::new(self.database.clone(), self.workspaces.clone())
-            .with_clock(self.clock.clone())
-            .with_owners(runs.owners.clone())
+        crate::approval::ApprovalModule::new(
+            self.database.clone(),
+            self.workspaces.clone(),
+            runs.owners.clone(),
+        )
+        .with_clock(self.clock.clone())
     }
 
     /// Publishes a second credential-free Provider in the fixture Operation's

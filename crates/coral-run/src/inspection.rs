@@ -110,9 +110,12 @@ impl RunModule {
     /// must go through.
     #[must_use]
     pub fn approvals(&self) -> crate::approval::ApprovalModule {
-        crate::approval::ApprovalModule::new(self.database.clone(), self.workspaces.clone())
-            .with_clock(self.clock.clone())
-            .with_owners(self.owners.clone())
+        crate::approval::ApprovalModule::new(
+            self.database.clone(),
+            self.workspaces.clone(),
+            self.owners.clone(),
+        )
+        .with_clock(self.clock.clone())
     }
 
     /// Resolves one exact human approval through its owning module.

@@ -1,5 +1,5 @@
 use super::*;
-use crate::approval::{ApprovalDecision, ApprovalModule};
+use crate::approval::ApprovalDecision;
 
 const WAIT_FOR_ACCOUNT: &str = "await coral.providers.weather.getForecast({});";
 
@@ -1183,7 +1183,7 @@ async fn required_actions_disclose_owner_work_to_agents_without_granting_approva
         queued.action.request,
         crate::RequiredActionRequest::InvocationApproval(id.clone())
     );
-    let approvals = ApprovalModule::new(fixture.database.clone(), fixture.workspaces.clone());
+    let approvals = fixture.approvals();
     assert!(matches!(
         approvals.get(&agent, &operation.workspace_id, id).await,
         Err(Error::ApprovalNotFound)

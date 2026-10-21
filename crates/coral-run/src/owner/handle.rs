@@ -140,14 +140,6 @@ pub(crate) enum Message {
         key: RequestKey,
         answer: DecisionAnswer,
     },
-    /// An outside request the chunk in flight carried was not recorded by
-    /// it: its own write failed and was undone, and the chunk went on
-    /// without it. Reaches the owner before that chunk's `Committed`; the
-    /// requester receives the failure.
-    RequestNotRecorded {
-        key: RequestKey,
-        error: Error,
-    },
     /// The chunk in flight did not land, definitively: an answer the database
     /// did not give is resolved by the hosting task before it reaches here.
     CommitRejected(CommitRejection),
@@ -216,11 +208,6 @@ impl fmt::Debug for Message {
                 .debug_struct("RequestRecorded")
                 .field("key", key)
                 .field("answer", answer)
-                .finish(),
-            Self::RequestNotRecorded { key, error } => formatter
-                .debug_struct("RequestNotRecorded")
-                .field("key", key)
-                .field("error", error)
                 .finish(),
             Self::CommitRejected(rejection) => formatter
                 .debug_tuple("CommitRejected")

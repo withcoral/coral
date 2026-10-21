@@ -40,11 +40,9 @@ pub(crate) trait ChunkWork: Send + fmt::Debug {
         now_unix_nanos: i64,
     ) -> Result<Vec<OwnedEvent>, Error>;
 
-    /// The outside request this work records and how it fared, once
-    /// [`Self::run`] returned `Ok`: what it recorded, or `Err` when the
-    /// request's own write failed and was undone, and the chunk went on
-    /// without it. `None` for the Program's own work.
-    fn take_request_outcome(&mut self) -> Option<(RequestKey, Result<DecisionAnswer, Error>)> {
+    /// The outside request this work records and what it recorded for it,
+    /// once [`Self::run`] returned `Ok`. `None` for the Program's own work.
+    fn take_recorded_request(&mut self) -> Option<(RequestKey, DecisionAnswer)> {
         None
     }
 

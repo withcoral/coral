@@ -147,6 +147,12 @@ pub(crate) async fn finish_approval_failure(
 /// Approval Requests closed. Returns their `invocation.ended` Events for the
 /// caller's terminal chunk, so the Invocation rows, the Approval rows, the
 /// Events and `run.ended` commit together.
+///
+/// # Errors
+///
+/// [`Error::HeadMismatch`] when another terminal writer ended one of the
+/// Invocations meanwhile: the caller reads the Run again, as it would after
+/// its own head update mismatched.
 pub(crate) async fn end_nonterminal_invocations(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
@@ -174,9 +180,11 @@ pub(crate) async fn end_nonterminal_invocations(
             ended_at_unix_nanos,
         )
         .await?
-        .ok_or_else(|| {
-            Error::InvocationPersistence("Operation Invocation termination lost its race".into())
-        })?;
+        // Another terminal writer ended this Invocation between the read and
+        // the write, and its terminal chunk moved the head with it: this
+        // writer's own head update would mismatch, so it stops here and reads
+        // the Run again.
+        .ok_or(Error::HeadMismatch)?;
         events.push(event);
     }
     Ok(events)

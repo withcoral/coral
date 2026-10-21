@@ -186,20 +186,25 @@ pub struct ApprovalModule {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
     clock: Arc<dyn Clock>,
-    /// The live Run Owners of this process, which record the decisions. A
-    /// module built without them finds no owner: every nonterminal Run is
-    /// owned elsewhere to it.
+    /// The Run Owners this module decides through: the owning Run Module's.
+    /// To a registry with none of a Run's owner (another process's), every
+    /// nonterminal Run is owned elsewhere.
     owners: Owners,
 }
 impl ApprovalModule {
-    /// Builds the Approval module against the Run domain's migrated database.
+    /// Builds the Approval module against the Run domain's migrated database,
+    /// deciding through `owners`.
     #[must_use]
-    pub fn new(database: Arc<Database>, workspaces: WorkspaceModule) -> Self {
+    pub(crate) fn new(
+        database: Arc<Database>,
+        workspaces: WorkspaceModule,
+        owners: Owners,
+    ) -> Self {
         Self {
             database,
             workspaces,
             clock: Arc::new(SystemClock),
-            owners: Owners::default(),
+            owners,
         }
     }
 
@@ -207,13 +212,6 @@ impl ApprovalModule {
     #[must_use]
     pub(crate) fn with_clock(self, clock: Arc<dyn Clock>) -> Self {
         Self { clock, ..self }
-    }
-
-    /// Records decisions through the Run Owners in `owners`: the owning Run
-    /// Module's.
-    #[must_use]
-    pub(crate) fn with_owners(self, owners: Owners) -> Self {
-        Self { owners, ..self }
     }
 
     /// Lists exact approvals for an authorized Run, including terminal decisions.
@@ -731,16 +729,16 @@ pub(super) async fn close_for_invocation(
 
 /// One decision as the Run Owner records it in a chunk: the Approval
 /// Request's transition and its lifecycle event, and the end of a declined
-/// or expired Invocation, inside a savepoint of the chunk's transaction. A
-/// request no longer pending records nothing: the first decision won. The
-/// decision's own failure is the requester's answer, undone by the
-/// savepoint, and the chunk goes on without it.
+/// or expired Invocation. A request no longer pending records nothing: the
+/// first decision won, and the record answers. A write that fails with a
+/// definite answer fails the chunk, as any row work's does: the read before
+/// it decides every outcome the request can have.
 pub(crate) struct DecideWork {
     request: DecisionRequest,
     /// Record the decision; `false` closes the request instead, the Run no
     /// longer accepting actions when the owner applied it.
     decide: bool,
-    outcome: Option<Result<DecisionAnswer, Error>>,
+    answer: Option<DecisionAnswer>,
 }
 
 impl DecideWork {
@@ -748,7 +746,7 @@ impl DecideWork {
         Self {
             request,
             decide,
-            outcome: None,
+            answer: None,
         }
     }
 
@@ -822,29 +820,16 @@ impl ChunkWork for DecideWork {
         run: &RunRecord,
         now_unix_nanos: i64,
     ) -> Result<Vec<OwnedEvent>, Error> {
-        const SAVEPOINT: &str = "approval_decision";
         let now = now_unix_nanos.max(run.accepted_at_unix_nanos);
-        tx.savepoint(SAVEPOINT).await?;
-        match self.record(tx, run, now).await {
-            Ok((events, outcome)) => {
-                tx.release_savepoint(SAVEPOINT).await?;
-                self.outcome = Some(Ok(outcome));
-                Ok(events)
-            }
-            Err(error) if error.is_operational() => Err(error),
-            Err(error) => {
-                tx.rollback_to_savepoint(SAVEPOINT).await?;
-                tx.release_savepoint(SAVEPOINT).await?;
-                self.outcome = Some(Err(error));
-                Ok(Vec::new())
-            }
-        }
+        let (events, answer) = self.record(tx, run, now).await?;
+        self.answer = Some(answer);
+        Ok(events)
     }
 
-    fn take_request_outcome(&mut self) -> Option<(RequestKey, Result<DecisionAnswer, Error>)> {
-        self.outcome
+    fn take_recorded_request(&mut self) -> Option<(RequestKey, DecisionAnswer)> {
+        self.answer
             .take()
-            .map(|outcome| (RequestKey::Approval(self.request.approval.clone()), outcome))
+            .map(|answer| (RequestKey::Approval(self.request.approval.clone()), answer))
     }
 
     #[cfg(test)]

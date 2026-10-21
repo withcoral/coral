@@ -354,8 +354,8 @@ impl PublicClientAccount {
         let approvals = crate::approval::ApprovalModule::new(
             fixture.database.clone(),
             fixture.workspaces.clone(),
-        )
-        .with_owners(runs.owners.clone());
+            runs.owners.clone(),
+        );
         Self {
             server,
             fixture,

@@ -1655,38 +1655,6 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         assert_eq!(state.head(), 2);
     }
 
-    // A decision the chunk could not record answers its requester with its
-    // own failure, and a repeat parked meanwhile starts over in a new chunk.
-    {
-        let mut state = started(LIMITS);
-        let approval = approval_id();
-        let (effects, mut first) = decide(&mut state, &approval, 3);
-        assert!(deliver(effects).is_empty());
-        committed_chunk(apply(&mut state, Message::Drained, 4));
-        let (effects, mut second) = decide(&mut state, &approval, 5);
-        assert!(deliver(effects).is_empty());
-        let effects = deliver(apply(
-            &mut state,
-            Message::RequestNotRecorded {
-                key: crate::owner::RequestKey::Approval(approval.clone()),
-                error: Error::InvocationPersistence("decision fault".into()),
-            },
-            6,
-        ));
-        assert!(effects.is_empty());
-        assert!(matches!(
-            decided(&mut first),
-            Some(Err(Error::InvocationPersistence(_)))
-        ));
-        let chunk = committed_chunk(apply(&mut state, Message::Committed, 7));
-        assert_eq!(
-            chunk.decisions,
-            [true],
-            "the repeat is a new decision, not the recorded answer"
-        );
-        assert!(decided(&mut second).is_none());
-    }
-
     // A cancel while a fence is in flight: applied at once (the Program is
     // terminated, the batch in flight is left to return on its own), the
     // intent and `cancellation.requested` ride the next chunk, and the

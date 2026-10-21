@@ -393,11 +393,10 @@ impl From<Error> for CommitFailure {
 /// Commits `chunk` until the database answers: the attempt, a reread after
 /// an attempt without an answer (bounded backoff between them), a recommit
 /// of the chunk exactly as built when the reread shows it did not land. Row
-/// work learns the chunk's fate once, when it is known, and an outside
-/// request the chunk could not record is reported before the chunk's own
-/// answer. `None` once the owner retired while the chunk was still
-/// unanswered: the work is dropped unsettled, which its waiters read as a
-/// lost owner.
+/// work learns the chunk's fate once, when it is known, and what it recorded
+/// for an outside request is reported before the chunk's own answer. `None`
+/// once the owner retired while the chunk was still unanswered: the work is
+/// dropped unsettled, which its waiters read as a lost owner.
 async fn commit_until_answered(
     module: &RunModule,
     accepted: &AcceptedRun,
@@ -451,12 +450,9 @@ async fn commit_until_answered(
     if outcome.is_ok() {
         for item in &mut items {
             if let ChunkItem::Work(work) = item
-                && let Some((key, recorded)) = work.take_request_outcome()
+                && let Some((key, answer)) = work.take_recorded_request()
             {
-                handle.send(match recorded {
-                    Ok(answer) => Message::RequestRecorded { key, answer },
-                    Err(error) => Message::RequestNotRecorded { key, error },
-                });
+                handle.send(Message::RequestRecorded { key, answer });
             }
         }
     }
