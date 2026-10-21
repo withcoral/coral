@@ -81,18 +81,12 @@ export async function approvedProgramProvider(context: TestContext) {
       started = await pauseForApproval(page, target, accessToken, 'Approved provider')
     })
     const { workspace, id, call, runner, paused } = started
-    await step('Review the namespace, route and source, with the document collapsed', async () => {
+    await step('Review the namespace, route and source, document and all, as sent', async () => {
       const review = await openReview(page, paused)
-      // One row per field, each its exact JSON: the whole call, with the document collapsed.
-      expect(await shownArguments(review)).toEqual({
-        ...call,
-        source: { ...call.source, document: '(OpenAPI document, shown below)' },
-      })
-      const inline = review.locator('details', {
-        has: page.locator('summary', { hasText: 'OpenAPI document' }),
-      })
-      expect(await inline.getAttribute('open')).toBeNull()
-      expect(await inline.textContent()).toContain(call.source.document)
+      // One row per field, each its exact JSON: the whole call as the Program sent it, with the
+      // document inside it and no second copy apart.
+      expect(await shownArguments(review)).toEqual(call)
+      expect(await review.locator('summary', { hasText: 'OpenAPI document' }).count()).toBe(0)
     })
     let link = ''
     await step('Approve the call, and the Program gets a link where you sign in', async () => {

@@ -5,7 +5,6 @@ import {
   useContext,
   useEffect,
   useId,
-  useMemo,
   useState,
   type ReactNode,
 } from 'react'
@@ -13,7 +12,6 @@ import { useBeforeUnload, useBlocker, useFetcher } from 'react-router'
 import { Banner, Button, Inputs, Typography } from '@/wax/components'
 import * as Dialog from '@/wax/components/dialog'
 import { Disclosure } from '@/wax/components/disclosure'
-import { CodeBlock } from '@/wax/components/code-block'
 import { Deadline } from '@/wax/components/deadline'
 import * as DescriptionList from '@/wax/components/description-list'
 import type { IconName, IconPlateTone } from '@/wax/components/icon'
@@ -127,25 +125,6 @@ export function ActionReviewSession({
   )
 }
 
-/** An inline OpenAPI document can run to thousands of lines, so the arguments
- * name it and the document itself starts collapsed below them. */
-function withoutInlineDocument(json: string): { args: string; document?: string } {
-  try {
-    const value = JSON.parse(json)
-    const document = value?.source?.document
-    if (typeof document !== 'string') return { args: json }
-    return {
-      args: JSON.stringify({
-        ...value,
-        source: { ...value.source, document: '(OpenAPI document, shown below)' },
-      }),
-      document,
-    }
-  } catch {
-    return { args: json }
-  }
-}
-
 /** Whether leaving the review would lose an unsent comment, so the session asks first. */
 export function useUnsentComment() {
   return useContext(DraftContext)?.dirty ?? false
@@ -190,12 +169,7 @@ export function ApprovalReview({
   const deciding = available && !settled
   const tone = deciding ? 'amber' : (tones[state] ?? 'gray')
   const run = context.run
-  const execIntent = context.submission?.intent || run.intent
-  // A comment draft re-renders on every keystroke; the document only changes with the call.
-  const { args, document } = useMemo(
-    () => withoutInlineDocument(detail.arguments),
-    [detail.arguments],
-  )
+  const runIntent = context.submission?.intent || run.intent
   // The pinned decision renders at the Panel's end. A Panel named for this review holds it
   // inside the region; one name, so there is one region to find.
   const label = `Review ${detail.callPath}`
@@ -230,7 +204,7 @@ export function ApprovalReview({
         {detail.taskIntent && (
           <DescriptionList.Row label="Task intent">{detail.taskIntent}</DescriptionList.Row>
         )}
-        {execIntent && <DescriptionList.Row label="Exec intent">{execIntent}</DescriptionList.Row>}
+        {runIntent && <DescriptionList.Row label="Run intent">{runIntent}</DescriptionList.Row>}
         <DescriptionList.Row label="Requested by">
           {run.actorLabel || (run.agent ? 'Agent unavailable' : 'You')} ·{' '}
           {run.workspaceLabel || 'Workspace unavailable'}
@@ -241,12 +215,7 @@ export function ApprovalReview({
           </DescriptionList.Row>
         )}
       </DescriptionList.List>
-      <Arguments source={args} />
-      {document !== undefined && (
-        <Disclosure title="OpenAPI document">
-          <CodeBlock value={document} />
-        </Disclosure>
-      )}
+      <Arguments source={detail.arguments} />
       {!deciding && (detail.approver || detail.decidedAt || detail.comment !== null) && (
         <DescriptionList.List>
           {detail.approver && (

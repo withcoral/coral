@@ -4,13 +4,21 @@ import { Typography } from '@/wax/components/typography'
 
 import * as styles from './description-list.css'
 
-/** Read-only label and value pairs. An optional title heads the list. */
-export function List({ title, children }: { title?: string; children: ReactNode }) {
+/** Read-only label and value pairs. An optional title heads the list, at the heading level
+ * the caller names: one under the heading the list sits in. */
+export function List({
+  title,
+  heading,
+  children,
+}: { children: ReactNode } & (
+  | { title: string; heading: 'h2' | 'h3' | 'h4' }
+  | { title?: undefined; heading?: undefined }
+)) {
   const id = useId()
   return (
     <section className={styles.section} aria-labelledby={title ? id : undefined}>
       {title && (
-        <Typography.BodySmallStrong as="h4" id={id} className={styles.title}>
+        <Typography.BodySmallStrong as={heading} id={id} className={styles.title}>
           {title}
         </Typography.BodySmallStrong>
       )}

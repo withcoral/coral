@@ -965,7 +965,7 @@ export function Activity({
               >
                 {/* Each detail panel heads the rail with the record it names. */}
                 {ownHeader ? (
-                  <Dialog.Title hidden>
+                  <Dialog.Title visuallyHidden>
                     {reviewingAction ? 'Review action' : 'Activity details'}
                   </Dialog.Title>
                 ) : (

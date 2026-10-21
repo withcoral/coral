@@ -653,13 +653,23 @@ it.each<[string, Detail, string, string]>([
     'exec submission',
   ],
   [
-    'a saved function without an intent by its target',
+    // A save states no target: its reference is an ID that no page opens.
+    'a saved function without an intent by its tool, not its ID',
     tool(
       { tool: 'save_function', intent: '' },
       { kind: 'function', reference: `${workspace}/savedFunctions/reminders` },
     ),
-    `${workspace}/savedFunctions/reminders`,
+    'Save function',
     'save function',
+  ],
+  [
+    'a deleted function without an intent by its tool, not its ID',
+    tool(
+      { tool: 'delete_function', intent: '' },
+      { kind: 'function', reference: `${workspace}/savedFunctions/reminders` },
+    ),
+    'Delete function',
+    'delete function',
   ],
   [
     'a deleted function by its intent',
@@ -854,8 +864,10 @@ const terms = (list: Element) =>
 it('leads a search with what it asked, then its intent and timing, and only its results', () => {
   const container = searchPanel(stored.complete)
   const [asked, call] = container.querySelectorAll('dl')
-  // What the agent asked for comes first, under one Search heading, and only once.
-  expect(asked.closest('section')!.querySelector('h4')).toHaveTextContent('Search')
+  // What the agent asked for comes first, under one Search heading, and only once. The heading
+  // sits one level under the panel's, so the outline skips no level.
+  expect(within(container).getByRole('heading', { level: 2 })).toBeTruthy()
+  expect(asked.closest('section')!.querySelector('h3')).toHaveTextContent('Search')
   expect(terms(asked)).toEqual(['Query', 'Provider', 'Page'])
   expect(factIn(asked, 'Query')).toHaveTextContent('“github pulls”')
   expect(factIn(asked, 'Provider')).toHaveTextContent('all providers')
@@ -2091,11 +2103,24 @@ describe('an account connection the Run waits on', () => {
 
   function renderConnection(
     request: typeof connection,
-    { connected = true, decline }: { connected?: boolean; decline?: (form: FormData) => void } = {},
+    {
+      connected = true,
+      decline,
+      ended,
+    }: {
+      connected?: boolean
+      decline?: (form: FormData) => void
+      /** How the Run ended after the request settled. */
+      ended?: Extract<RunDetail['terminal'], { kind: 'succeeded' | 'failed' }>
+    } = {},
   ) {
     const settled = request.state !== 'pending'
     const selected = settled
-      ? { ...waiting, actionPage: { total: '0', next: '', actions: [] } }
+      ? {
+          ...waiting,
+          actionPage: { total: '0', next: '', actions: [] },
+          ...(ended && { state: ended.kind, endedAt: '2026-09-22T09:05:00Z' }),
+        }
       : waiting
     return renderRoute(
       <ActivityConnectedContext value={connected}>
@@ -2111,7 +2136,7 @@ describe('an account connection the Run waits on', () => {
                 request,
                 source: 'return null;',
                 linkedFunctions: [],
-                terminal: { kind: 'unavailable' },
+                terminal: ended ?? { kind: 'unavailable' },
               },
             }}
           />
@@ -2179,8 +2204,8 @@ describe('an account connection the Run waits on', () => {
       // The Run follows as context, below the header, its times labelled as the Run's.
       const list = document.querySelector('dl')!
       expect(header.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-      expect(terms(list)).toEqual(['Exec intent', 'Requested by', 'Run duration', 'Run started'])
-      expect(factIn(list, 'Exec intent')).toHaveTextContent(run.intent!)
+      expect(terms(list)).toEqual(['Run intent', 'Requested by', 'Run duration', 'Run started'])
+      expect(factIn(list, 'Run intent')).toHaveTextContent(run.intent!)
       expect(factIn(list, 'Requested by')).toHaveTextContent('Collections agent · Finance')
       expectInstant(factIn(list, 'Run started'), run.startedAt, '22 Sep 2026, 09:00:00 UTC')
       // No Run cancel and no extra sentence about several calls.
@@ -2223,6 +2248,30 @@ describe('an account connection the Run waits on', () => {
       within(runActions()).getByRole('link', { name: 'Connect your Linear account' }),
     ).toBeInTheDocument()
   })
+
+  // Catches: a settled connection showing its Run's final value or failure, where they read as
+  // the request's own outcome.
+  it.each([
+    [
+      'succeeded',
+      { kind: 'succeeded', finalValue: '{"exact-run-final-value":1}' },
+      /exact-run-final-value/,
+    ],
+    [
+      'failed',
+      { kind: 'failed', code: 'program_rejected', message: 'exact-run-failure', error: null },
+      /exact-run-failure|program_rejected/,
+    ],
+  ] as const)(
+    'keeps a connection on a Run that %s to the Run state, without its outcome',
+    (state, ended, outcome) => {
+      renderConnection({ ...connection, state: 'connected' }, { ended })
+      expect(document.body).toHaveTextContent(`program run: ${state}`)
+      expect(screen.queryByRole('region', { name: 'Final value' })).toBeNull()
+      expect(screen.queryByRole('region', { name: 'Error' })).toBeNull()
+      expect(document.body.textContent).not.toMatch(outcome)
+    },
+  )
 
   it('shows a connection reached from one call as retained context, with nothing to act on', () => {
     const call: InvocationRow = {
@@ -2372,9 +2421,9 @@ const show = (detail: Detail, selected: string | null = null) => {
   container.innerHTML = markup({ ...pendingPage, selected, selectedRow: null, detail })
   return container
 }
-// Catches: an approval review that adds its Run's state under its own decision, or drops the
-// Run's actual failure.
-it.each([
+// Catches: an approval review that adds its Run's state, failure or final value under its own
+// decision, where they read as this call's.
+const approvalStates = [
   ['pending', { state: 'pending', actionable: true }, 'Approval required'],
   [
     'approved',
@@ -2402,27 +2451,38 @@ it.each([
   ],
   ['expired', { state: 'expired', actionable: false }, 'Expired'],
   ['closed', { state: 'closed', actionable: false }, 'Closed'],
-] as const)(
-  'shows a %s approval with its own status and no Run badge',
-  (state, overrides, label) => {
+] as const
+const runOutcomes = [
+  {
+    kind: 'failed',
+    code: 'program_execution_failed',
+    message: 'exact-run-failure',
+    error: null,
+  },
+  { kind: 'succeeded', finalValue: '{"exact-run-final-value":1}' },
+] as const
+it.each(
+  approvalStates.flatMap(([state, overrides, label]) =>
+    runOutcomes.map((terminal) => [state, terminal.kind, overrides, label, terminal] as const),
+  ),
+)(
+  'shows a %s approval on a Run that %s with its own status and none of the Run outcome',
+  (state, _, overrides, label, terminal) => {
     const pending = state === 'pending'
-    const failed = !pending
     const container = show(
       {
         ...runPanel(
           pending
             ? { ...run, state: 'running', endedAt: null, requiresAction: true }
-            : { ...run, state: 'failed', endedAt: '2026-09-22T09:05:00Z', requiresAction: false },
+            : {
+                ...run,
+                state: terminal.kind,
+                endedAt: '2026-09-22T09:05:00Z',
+                requiresAction: false,
+              },
         ),
         request: { ...approvalRequest, ...overrides },
-        terminal: failed
-          ? {
-              kind: 'failed',
-              code: 'program_execution_failed',
-              message: 'exact-run-failure',
-              error: null,
-            }
-          : { kind: 'unavailable' },
+        terminal: pending ? { kind: 'unavailable' } : terminal,
       } as RunDetail,
       run.name,
     )
@@ -2434,12 +2494,10 @@ it.each([
       expect(terms(decision)).toEqual(['Reviewed by', 'Decided', 'Comment'])
       expect(factIn(decision, 'Comment')).toHaveTextContent(overrides.comment)
     }
-    // The Run's actual failure stays, in its error card.
-    const failure = container.querySelector('[aria-label="Error"]')
-    if (failed) {
-      expect(failure).toHaveTextContent('program_execution_failed')
-      expect(failure).toHaveTextContent('exact-run-failure')
-    } else expect(failure).toBeNull()
+    // The Run's outcome belongs to the Run's own panel.
+    expect(within(container).queryByRole('region', { name: 'Error' })).toBeNull()
+    expect(within(container).queryByRole('region', { name: 'Final value' })).toBeNull()
+    expect(container.textContent).not.toMatch(/exact-run-failure|exact-run-final-value/)
   },
 )
 

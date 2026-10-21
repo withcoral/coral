@@ -8,6 +8,7 @@ import { ActionReviewSession } from '../actions/review'
 import { stored } from './discovery/fixtures'
 import { discoveryView, functionTarget } from './discovery/response'
 import { operationOwner } from '@/lib/call-root'
+import { freezeStoryClock, minutesAfterStoryNow } from './story-clock'
 import type {
   ActivityPage,
   ActivityRow,
@@ -48,9 +49,12 @@ async function expectAlignedHeaders(dialog: HTMLElement) {
   }
 }
 
-/** Reading the evidence never scrolls the decision out of the drawer. */
+/** Reading the evidence never scrolls the decision out of the drawer. The pinned header and
+ * footer sit flush on the drawer's edges, whichever stylesheet loads first. */
 async function expectPinnedFooter(dialog: HTMLElement, names: string[]) {
   const controls = names.map((name) => within(dialog).getByRole('button', { name }))
+  const header = dialog.querySelector('header')!
+  const footer = controls[0]!.closest('footer')!
   await waitFor(() => expect(dialog.scrollHeight).toBeGreaterThan(dialog.clientHeight * 2))
   const shown = () => {
     const edge = dialog.getBoundingClientRect()
@@ -59,9 +63,20 @@ async function expectPinnedFooter(dialog: HTMLElement, names: string[]) {
       return box.top >= edge.top && box.bottom <= edge.bottom
     })
   }
+  // A sticky edge sticks once the content runs past it: the header after any scroll, the
+  // footer until the end. Stuck, each covers the drawer's padding, flush with its edge.
+  const flush = (fraction: number) => {
+    const edge = dialog.getBoundingClientRect()
+    const top = edge.top + dialog.clientTop
+    const bottom = top + dialog.clientHeight
+    const headerFlush = Math.abs(header.getBoundingClientRect().top - top) <= 1
+    const footerFlush = Math.abs(footer.getBoundingClientRect().bottom - bottom) <= 1
+    return (fraction === 0 || headerFlush) && (fraction === 1 || footerFlush)
+  }
   for (const fraction of [0, 0.5, 1]) {
     dialog.scrollTop = (dialog.scrollHeight - dialog.clientHeight) * fraction
     await waitFor(() => expect(shown()).toBe(true))
+    await waitFor(() => expect(flush(fraction)).toBe(true))
   }
   // Long content wraps or scrolls inside its block, never the drawer sideways.
   await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
@@ -1451,6 +1466,7 @@ export const OutsideWorkspace: Story = {
   },
 }
 export const PendingApproval: Story = {
+  beforeEach: freezeStoryClock,
   args: {
     page: {
       ...page,
@@ -1473,7 +1489,7 @@ export const PendingApproval: Story = {
           }),
           state: 'pending',
           // A pending approval is still open, so its deadline is ahead of whoever views it.
-          deadline: new Date(Date.now() + 15 * 60_000).toISOString(),
+          deadline: minutesAfterStoryNow(15),
           approver: '',
           decidedAt: null,
           comment: null,
@@ -1494,7 +1510,7 @@ export const PendingApproval: Story = {
       within(list)
         .getAllByRole('term')
         .map((term) => term.textContent),
-    ).toEqual(['Task intent', 'Exec intent', 'Requested by', 'Call started'])
+    ).toEqual(['Task intent', 'Run intent', 'Requested by', 'Call started'])
     // The comment and the decision stay.
     await userEvent.click(within(dialog).getByText('Add a comment', { selector: 'summary' }))
     await expect(within(dialog).getByLabelText('Comment (optional)')).toBeVisible()
@@ -1531,6 +1547,7 @@ export const ResolvedApproval: Story = {
 const connection = `${workspace}/accountConnections/linear`
 /** A Run that waits on your shared account connection, not on one call's approval. */
 export const PendingConnectionFooter: Story = {
+  beforeEach: freezeStoryClock,
   globals: shortScreen,
   parameters: { chromatic: { viewports: [390] } },
   args: {
@@ -1551,7 +1568,7 @@ export const PendingConnectionFooter: Story = {
                 name: connection,
                 callPath: '',
                 providerLabel: 'Linear',
-                deadline: new Date(Date.now() + 15 * 60_000).toISOString(),
+                deadline: minutesAfterStoryNow(15),
               },
             ],
           },
@@ -1562,7 +1579,7 @@ export const PendingConnectionFooter: Story = {
           name: connection,
           provider: `${workspace}/providers/linear`,
           state: 'pending',
-          expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+          expiresAt: minutesAfterStoryNow(15),
         },
         source: 'return null',
         linkedFunctions: [],

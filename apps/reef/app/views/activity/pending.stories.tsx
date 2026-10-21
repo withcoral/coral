@@ -5,11 +5,12 @@ import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
 import { Activity } from './activity'
 import { ActionReviewSession } from '../actions/review'
+import { freezeStoryClock, minutesAfterStoryNow } from './story-clock'
 import type { ActivityPage, ActivityRow, RequestDetail } from './types'
 
 const workspace = 'workspaces/finance'
-/** 15 minutes after the story loads, so each deadline reads "Expires in 15 minutes". */
-const soon = new Date(Date.now() + 15 * 60_000).toISOString()
+/** 15 minutes after the stories' fixed clock, so each deadline reads "Expires in 15 minutes". */
+const soon = minutesAfterStoryNow(15)
 const run: Extract<ActivityRow, { kind: 'run' }> = {
   kind: 'run',
   name: `${workspace}/runs/reminders`,
@@ -272,6 +273,7 @@ const meta = {
   title: 'Activity/Pending actions',
   component: Activity,
   args: { page },
+  beforeEach: freezeStoryClock,
   parameters: { layout: 'fullscreen', chromatic: { viewports: [390, 1440] } },
   render: (args) => <StoryActivity page={args.page} />,
   decorators: [

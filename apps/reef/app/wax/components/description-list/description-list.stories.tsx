@@ -7,7 +7,7 @@ import * as DescriptionList from './index'
 const meta = {
   title: 'Components/DescriptionList',
   render: () => (
-    <DescriptionList.List title="Context">
+    <DescriptionList.List title="Context" heading="h3">
       <DescriptionList.Row label="Task intent">Send overdue invoice reminders</DescriptionList.Row>
       <DescriptionList.Row label="Requested by">Collections agent · Finance</DescriptionList.Row>
       <DescriptionList.Row label="Recipients">

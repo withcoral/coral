@@ -42,6 +42,7 @@ import {
   type LogLevel,
   type TaskOutcome,
 } from './side-panel-fixtures'
+import { freezeStoryClock } from './story-clock'
 import type {
   ActivityPage,
   DiscoveryContext,
@@ -64,6 +65,7 @@ import type {
 const meta = {
   title: 'Activity/Side Panels',
   component: Activity,
+  beforeEach: freezeStoryClock,
   parameters: { layout: 'fullscreen', chromatic: { viewports: [1440] } },
   render: (args) => (
     <ActionReviewSession
@@ -841,6 +843,25 @@ export const SaveFunctionNarrow = functionStory(
   ),
   { times: ['Started', 'Completed'], outcome: 'succeeded', fits: true },
 )
+/** A save that retained no intent is titled by its tool. Its function ID opens no page, so it
+ * shows nowhere, not even as the title. */
+const unnamedSave = functionStory(
+  panel(
+    'Save function · saved, no intent retained',
+    toolPage(saveCall('succeeded'), { kind: 'function', reference: savedReference }),
+    { evidence: 'Save function' },
+  ),
+  { times: ['Started', 'Completed'], outcome: 'succeeded' },
+)
+export const SaveFunctionWithoutIntent: Story = {
+  ...unnamedSave,
+  args: {
+    page: toolPage(interaction('save_function', 'succeeded', { intent: '' }), {
+      kind: 'function',
+      reference: savedReference,
+    }),
+  },
+}
 export const SaveFunctionRejected = functionStory(
   panel(
     'Save function · rejected',
@@ -1583,6 +1604,30 @@ export const InvocationPendingOnConnection = panel(
   ),
   { evidence: 'coral.providers.linear.listIssues' },
 )
+/** An operation in a running Run ends with View in history and Cancel run. On a narrow screen
+ * they keep a gap between them, and wrap rather than overflow. */
+export const InvocationInRunningRunNarrow: Story = {
+  ...panel(
+    'Operation call · in a running Run, narrow screen',
+    invocationPage(invocationDetail(invocation(), { context: runDetail(run()) })),
+    { evidence: 'coral.providers.mail.send', narrow: true },
+  ),
+  play: async (context) => {
+    await meta.play(context)
+    const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
+    const history = within(dialog).getByRole('link', { name: 'View in history' })
+    const cancel = within(dialog).getByRole('button', { name: 'Cancel run' })
+    await expect(history).toBeVisible()
+    await expect(cancel).toBeVisible()
+    const a = history.getBoundingClientRect()
+    const b = cancel.getBoundingClientRect()
+    // Apart on the same line, or on lines of their own: never touching.
+    const sameLine = a.bottom > b.top && b.bottom > a.top
+    if (sameLine) await expect(b.left - a.right).toBeGreaterThanOrEqual(8)
+    else await expect(b.top - a.bottom).toBeGreaterThanOrEqual(8)
+    await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+  },
+}
 export const InvocationPendingQueued = panel(
   'Operation call · pending, not waiting on you',
   invocationPage(
@@ -1772,6 +1817,158 @@ export const ApprovalPending = approvalStory(
   }),
   'Approval required',
 )
+/**
+ * Synthetic retained arguments for createProvider, written by hand to keep what a Program's
+ * `JSON.stringify` cannot emit: an integer above 2^53 and a duplicate key. The review shows them
+ * as sent, in one JSON block, and the inline document apart, collapsed, as readable text.
+ */
+const inlineDocument = [
+  'openapi: 3.1.0',
+  'info: { title: Weather (synthetic), version: "1" }',
+  'paths:',
+  ...Array.from(
+    { length: 60 },
+    (_, i) =>
+      `  /forecast/${i}:\n    get: { operationId: getForecast${i}, summary: Get forecast ${i} }`,
+  ),
+].join('\n')
+const exactCreateProviderArguments =
+  '{"namespace":"weather",' +
+  `"source":{"kind":"openapi_document","document":${JSON.stringify(inlineDocument)}},` +
+  '"credentialRoute":"fixed","maxForecasts":9007199254740993,' +
+  '"label":"first as sent","label":"second as sent"}'
+/** Edge case: createProvider JSON that rows would change, a large integer and a duplicate key,
+ * shows whole, exactly as sent, in one block. The ordinary arguments renderer does this for any
+ * such JSON; nothing here is special to OpenAPI: no copy apart, no placeholder. */
+export const ApprovalInlineOpenApiDocument: Story = {
+  ...panel(
+    'Approval · createProvider with an inline OpenAPI document, exact-JSON fallback',
+    approvalPage(
+      approval({
+        callPath: 'coral.workspace.createProvider',
+        provider: `${workspace}/providers/coral`,
+        providerLabel: 'Coral workspace',
+        arguments: exactCreateProviderArguments,
+      }),
+    ),
+    { evidence: ['9007199254740993', '"first as sent"', '"second as sent"'] },
+  ),
+  play: async (context) => {
+    await meta.play(context)
+    const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
+    const review = within(dialog).getByRole('region', {
+      name: 'Review coral.workspace.createProvider',
+    })
+    await expect(review).not.toHaveTextContent('shown below')
+    await expect(within(review).queryByText('OpenAPI document', { selector: 'summary' })).toBeNull()
+    // Rows would change this JSON, so it shows whole, as sent, document included.
+    const sent = within(review)
+      .getByText(/^Arguments/, { selector: 'summary' })
+      .closest('details')!
+    await expect(sent).toHaveAttribute('open')
+    await expect(sent.querySelectorAll('pre')).toHaveLength(1)
+    await expect(sent).toHaveTextContent('getForecast59')
+    await expect(within(review).queryByRole('button', { name: /^Show / })).toBeNull()
+    // Nothing crosses the drawer's edge, and the decision stays in reach.
+    await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+    await expect(within(review).getByRole('button', { name: 'Approve this call' })).toBeVisible()
+  },
+}
+/** A typical createProvider call: plain JSON that round-trips exactly. */
+const openApiDocumentText = JSON.stringify({
+  openapi: '3.1.0',
+  info: { title: 'Weather', version: '1' },
+  servers: [{ url: 'https://weather.example.com' }],
+  paths: {
+    '/forecast': { get: { operationId: 'getForecast', summary: 'Get the forecast' } },
+  },
+})
+const createProviderCall = {
+  namespace: 'weather',
+  source: { kind: 'openapi_document', document: openApiDocumentText },
+  credentialRoute: 'fixed',
+  authentication: {
+    method: 'oauth_authorization_code',
+    authorization_url: 'https://weather.example.com/authorize',
+    token_url: 'https://weather.example.com/token',
+    scopes: ['read'],
+    client: { client_id: 'weather-client', authentication: 'client_secret_post' },
+  },
+}
+/** A typical createProvider call through the ordinary arguments: one row per field, and the
+ * inline document whole inside `source`, as sent. The Arguments disclosure is the one way to
+ * fold it; nothing is special to OpenAPI. */
+export const ApprovalCreateProviderOpenApi: Story = {
+  ...panel(
+    'Approval · createProvider with an inline OpenAPI document',
+    approvalPage(
+      approval({
+        callPath: 'coral.workspace.createProvider',
+        provider: `${workspace}/providers/coral`,
+        providerLabel: 'Coral workspace',
+        arguments: JSON.stringify(createProviderCall),
+      }),
+    ),
+    { evidence: 'coral.workspace.createProvider' },
+  ),
+  play: async (context) => {
+    await meta.play(context)
+    const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
+    const review = within(dialog).getByRole('region', {
+      name: 'Review coral.workspace.createProvider',
+    })
+    const sent = within(review)
+      .getByText('Arguments (4)', { selector: 'summary' })
+      .closest('details')!
+    await expect(sent).toHaveAttribute('open')
+    const value = (field: string) =>
+      within(sent as HTMLElement).getByText(field, { selector: 'dt' }).nextElementSibling!
+    await expect(
+      within(sent as HTMLElement)
+        .getAllByRole('term')
+        .map((term) => term.textContent),
+    ).toEqual(['namespace', 'source', 'credentialRoute', 'authentication'])
+    await expect(value('namespace').textContent).toBe('"weather"')
+    await expect(value('credentialRoute').textContent).toBe('"fixed"')
+    // The whole document, as its exact JSON string, inside source.
+    await expect(value('source')).toBeVisible()
+    await expect(value('source').textContent).toContain('"openapi_document"')
+    await expect(value('source').textContent).toContain(JSON.stringify(openApiDocumentText))
+    await expect(value('authentication').textContent).toContain('"weather-client"')
+    // Nothing apart from the arguments, and nothing that shortens them.
+    await expect(within(review).queryByText('OpenAPI document', { selector: 'summary' })).toBeNull()
+    await expect(review).not.toHaveTextContent('shown below')
+    await expect(within(review).queryByRole('button', { name: /^Show / })).toBeNull()
+    await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+    for (const name of ['Deny this call', 'Approve this call'])
+      await expect(within(review).getByRole('button', { name })).toBeVisible()
+  },
+}
+/** An approved call whose Run later failed on another call: the review shows the call's own
+ * result and decision, and leaves the Run's failure to the Run's panel. A visual state; the
+ * absence is detail.test.tsx's to prove. */
+export const ApprovalApprovedRunFailedElsewhere = panel(
+  'Approval · approved, its Run failed later on another call',
+  (() => {
+    const page = approvalPage(approval(settle('approved')))
+    const detail = page.detail as InvocationDetail
+    return {
+      ...page,
+      detail: {
+        ...detail,
+        context: runDetail(endedRun('failed'), {
+          terminal: {
+            kind: 'failed',
+            code: 'program_rejected',
+            message: 'coral.providers.billing.listInvoices failed after this send.',
+            error: null,
+          },
+        }),
+      },
+    }
+  })(),
+  { evidence: ['Checked the exact invoice recipient.', 'msg_01J8'] },
+)
 const approvals = {
   pending: ApprovalPending,
   approved: approvalStory(
@@ -1948,7 +2145,7 @@ function connectionStory(
         within(list)
           .getAllByRole('term')
           .map((term) => term.textContent),
-      ).toEqual(['Exec intent', 'Requested by', 'Run duration', 'Run started'])
+      ).toEqual(['Run intent', 'Requested by', 'Run duration', 'Run started'])
       if (state === 'pending') {
         await expect(header.getByText('Expires in 15 minutes')).toBeVisible()
         await expect(opened.getByText('Connect your Linear account to continue.')).toBeVisible()

@@ -83,26 +83,48 @@ async function click(name: string) {
 }
 
 describe('exact approval review', () => {
-  // Catches: an inline OpenAPI document burying the createProvider arguments.
-  it('collapses an inline OpenAPI document below the arguments', () => {
-    const detail = {
-      ...approval,
-      callPath: 'coral.workspace.createProvider',
-      arguments: JSON.stringify({
-        namespace: 'weather',
-        source: { kind: 'openapi_document', document: 'openapi: 3.1.0' },
-        credentialRoute: 'none',
-      }),
-    }
+  // Catches: arguments re-serialized to set an inline document aside, which rounds a large
+  // integer, drops a duplicate key, and shows a placeholder as if the call had sent it. The
+  // text as sent is the one source: no second copy of the document.
+  it.each([
+    [
+      'a JSON object',
+      '{"namespace":"weather","source":{"kind":"openapi_document","document":"openapi: 3.1.0"},"credentialRoute":"none"}',
+      [
+        ['namespace', '"weather"'],
+        ['source', '"document": "openapi: 3.1.0"'],
+        ['credentialRoute', '"none"'],
+      ],
+    ],
+    [
+      'an integer beyond double precision and a duplicate key',
+      '{"namespace":"weather","source":{"kind":"openapi_document","document":"openapi: 3.1.0"},"limit":9007199254740993,"note":"first","note":"second"}',
+      [],
+    ],
+  ])('shows %s with an inline OpenAPI document as the call sent it', (_, sent, fields) => {
+    const detail = { ...approval, callPath: 'coral.workspace.createProvider', arguments: sent }
     renderRoute(
       <ActionReviewSession request={detail}>
         <ApprovalReview detail={detail} context={approvalContext} />
       </ActionReviewSession>,
       { entry: '/activity', csrf: 'test-csrf' },
     )
-    const inline = screen.getByText('OpenAPI document').closest('details')
-    expect(inline).not.toHaveAttribute('open')
-    expect(inline).toHaveTextContent('openapi: 3.1.0')
+    const shown = screen.getByText(/^Arguments/, { selector: 'summary' }).closest('details')!
+    expect(shown).not.toHaveTextContent('shown below')
+    if (fields.length) {
+      for (const [key, value] of fields)
+        expect(
+          within(shown).getByText(key, { selector: 'dt' }).nextElementSibling,
+        ).toHaveTextContent(value)
+    } else {
+      // JSON that rows would change stays one block, exactly as sent.
+      expect(shown.querySelector('dl')).toBeNull()
+      const block = shown.querySelector('pre')!.textContent!
+      expect(block).toContain('9007199254740993')
+      expect(block).toContain('"first"')
+      expect(block).toContain('"second"')
+    }
+    expect(screen.queryByText('OpenAPI document', { selector: 'summary' })).toBeNull()
   })
 
   it.each([
@@ -329,7 +351,7 @@ describe('approval review layout', () => {
     expect(screen.queryByRole('heading', { name: 'Context' })).not.toBeInTheDocument()
     expect(rows(contextList())).toEqual([
       ['Task intent', 'Chase overdue invoices'],
-      ['Exec intent', 'Send invoice reminders'],
+      ['Run intent', 'Send invoice reminders'],
       ['Requested by', 'Collections agent · Finance'],
     ])
     expect(disclosure('Arguments (1)')).toHaveAttribute('open')
@@ -376,7 +398,7 @@ describe('approval review layout', () => {
   it('omits context it does not have instead of inventing it', () => {
     renderStatic({ ...approval, taskIntent: undefined })
     expect(rows(contextList())).toEqual([
-      ['Exec intent', 'Send invoice reminders'],
+      ['Run intent', 'Send invoice reminders'],
       ['Requested by', 'Collections agent · Finance'],
     ])
   })

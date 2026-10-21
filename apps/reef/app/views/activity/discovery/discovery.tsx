@@ -80,7 +80,8 @@ export function SearchParameters({
   context: Extract<DiscoveryContext, { kind: 'search' }>
 }) {
   return (
-    <DescriptionList.List title="Search">
+    // Under the panel's h2 heading.
+    <DescriptionList.List title="Search" heading="h3">
       <DescriptionList.Row label="Query">
         {context.query === null ? (
           'None. The agent listed without a query.'

@@ -22,6 +22,7 @@ import type {
   RunFailureCode,
   RunState,
 } from './types'
+import { minutesAfterStoryNow } from './story-clock'
 
 export const workspace = 'workspaces/finance'
 export const at = '2026-09-18T14:02:00.000Z'
@@ -29,10 +30,10 @@ export const later = '2026-09-18T14:06:02.000Z'
 /** Far enough ahead that a pending deadline stays open in every snapshot. */
 export const deadline = '2030-09-18T14:17:00.000Z'
 /**
- * A pending action's deadline 15 minutes after the story loads, so a list of actions reads
- * "Expires in 15 minutes" in every snapshot rather than a count of years in minutes.
+ * A pending action's deadline 15 minutes after the stories' fixed clock, so a list of actions
+ * reads "Expires in 15 minutes" in every run and snapshot rather than a count of years in minutes.
  */
-export const soon = new Date(Date.now() + 15 * 60_000).toISOString()
+export const soon = minutesAfterStoryNow(15)
 export const taskName = `${workspace}/tasks/invoices`
 export const runName = `${workspace}/runs/8f3c`
 export const invocationName = `${workspace}/invocations/mail`

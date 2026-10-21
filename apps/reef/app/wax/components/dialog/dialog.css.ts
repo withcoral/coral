@@ -1,6 +1,7 @@
 import { createVar, keyframes, style, styleVariants } from '@/wax/css'
 
 import { utils } from '@/styles/utils'
+import { stickyBottom, stickyTop } from '@/wax/components/card/card.css'
 import { animation, staticUtilities, theme, zIndex } from '@/wax/theme/theme.css'
 
 export const backdrop = style({
@@ -159,24 +160,18 @@ export const actions = style({
   marginBlockStart: '12px',
 })
 
-// Content that pins to the popup's top edge, flush like the dialog header.
-export const pinned = style({ top: `calc(-1 * ${padding})` })
+// Content that pins to the popup's top edge, flush like the dialog header. A card's sticky
+// header reads the inset, so the popup's padding wins without depending on stylesheet order.
+export const pinned = style({
+  top: `calc(-1 * ${padding})`,
+  vars: { [stickyTop]: `calc(-1 * ${padding})` },
+})
 
 // Content that pins to the popup's bottom edge, flush like `pinned` at the top.
-export const pinnedBottom = style({ bottom: `calc(-1 * ${padding})` })
+export const pinnedBottom = style({
+  bottom: `calc(-1 * ${padding})`,
+  vars: { [stickyBottom]: `calc(-1 * ${padding})` },
+})
 
 // The close control placed in the flow of a header the content owns.
 export const closeInline = style({ position: 'static', flexShrink: 0 })
-
-// A title that names the dialog for assistive technology only.
-export const titleHidden = style({
-  border: 0,
-  clip: 'rect(0 0 0 0)',
-  height: 1,
-  margin: -1,
-  overflow: 'hidden',
-  padding: 0,
-  position: 'absolute',
-  whiteSpace: 'nowrap',
-  width: 1,
-})

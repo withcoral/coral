@@ -70,7 +70,7 @@ function ExecutionDetail({
   const runContext = connection && (
     <DescriptionList.List>
       {(detail.submission?.intent || run.intent) && (
-        <DescriptionList.Row label="Exec intent">
+        <DescriptionList.Row label="Run intent">
           {detail.submission?.intent || run.intent}
         </DescriptionList.Row>
       )}
@@ -148,7 +148,9 @@ function ExecutionDetail({
           <StateBadge entity="program run" state={detail.run.state} />
         </div>
       )}
-      <TerminalEvidence terminal={detail.terminal} />
+      {/* The Run's final value or failure is not a selected request's outcome: the Run's own
+          panel holds it. */}
+      {!review && !connection && <TerminalEvidence terminal={detail.terminal} />}
       {/* A selected request decides itself; the Run's cancel stays on the Run's own panel. */}
       {!review && !connection && running && (
         <div className={styles.endActions}>
@@ -186,7 +188,7 @@ function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: In
   const connected = useActivityConnected()
   const context = detail.context
   const call = detail.invocation
-  const execIntent = context?.submission?.intent || context?.run.intent
+  const runIntent = context?.submission?.intent || context?.run.intent
   const running = context?.run.state === 'running'
   // A connection request belongs to the call's Run, which is where you connect or decline.
   const connectionHref = (name: string) => href({ record: call.run, request: name })
@@ -213,7 +215,7 @@ function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: In
       />
       {/* What the call belongs to and how it waited, then its times together, last. */}
       <DescriptionList.List>
-        {execIntent && <DescriptionList.Row label="Run intent">{execIntent}</DescriptionList.Row>}
+        {runIntent && <DescriptionList.Row label="Run intent">{runIntent}</DescriptionList.Row>}
         <DescriptionList.Row label="Dispatch">
           {detail.invocation.dispatchedAt ? (
             <Instant value={detail.invocation.dispatchedAt} />
@@ -532,21 +534,23 @@ const toolKinds: Record<string, string> = {
   delete_function: 'delete function',
 }
 /** The most specific retained name for a tool call: a search's intent, then its query; what a
- * describe call described; otherwise its intent, then its target. The bare tool only when
+ * describe call described; otherwise its intent, then the Run it started. The tool only when
  * nothing else is retained. */
 function toolHeading(interaction: InteractionRow, evidence: InteractionEvidence) {
   const context = evidence.kind === 'discovery' ? evidence.context : null
-  const reference =
-    evidence.kind === 'run' || evidence.kind === 'function' ? evidence.reference : ''
   const name =
     context?.kind === 'search'
       ? interaction.intent || context.query
       : context?.kind === 'describe'
         ? context.callPath || interaction.intent
-        : interaction.intent || reference
+        : interaction.intent || (evidence.kind === 'run' ? evidence.reference : '')
+  const kind = toolKinds[interaction.tool] ?? 'tool interaction'
+  // A save or a delete retains only a function ID that no page opens, so its tool titles it.
+  const functionTool =
+    interaction.tool === 'save_function' || interaction.tool === 'delete_function'
   return {
-    title: name || interaction.tool,
-    kind: toolKinds[interaction.tool] ?? 'tool interaction',
+    title: name || (functionTool ? kind[0]!.toUpperCase() + kind.slice(1) : interaction.tool),
+    kind,
   }
 }
 /** A retained event's identity. A log message or an emitted value is the program's own
