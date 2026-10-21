@@ -485,15 +485,6 @@ export const AgentActivity: Story = {
     />
   ),
   parameters: { initialEntry: agent.path },
-  // The app shell bounds the split page; the story needs the same height so
-  // Activity scrolls its records instead of growing with them.
-  decorators: [
-    (Story) => (
-      <div style={{ height: '100vh' }}>
-        <Story />
-      </div>
-    ),
-  ],
   play: async ({ canvas }) => {
     await expect(canvas.getByRole('link', { name: 'Settings' })).toHaveAttribute(
       'href',
@@ -528,6 +519,15 @@ export const AgentFullActivity: Story = {
     />
   ),
   parameters: { initialEntry: `${agent.path}?view=activity` },
+  // The app shell bounds the split page; the story needs the same height so
+  // Activity scrolls its records instead of growing with them.
+  decorators: [
+    (Story) => (
+      <div style={{ height: '100vh' }}>
+        <Story />
+      </div>
+    ),
+  ],
   play: async ({ canvas }) => {
     await expect(canvas.getByRole('heading', { name: 'Activity' })).toBeVisible()
     await expect(canvas.getByRole('link', { name: 'Back to agent' })).toHaveAttribute(

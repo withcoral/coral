@@ -62,7 +62,7 @@ export const agentDashboardGrid = style({
   gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
   minWidth: 0,
   '@media': {
-    'screen and (max-width: 480px)': { gridTemplateColumns: 'minmax(0, 1fr)' },
+    [`screen and (max-width: ${breakpoints.mobile})`]: { gridTemplateColumns: 'minmax(0, 1fr)' },
   },
 })
 export const agentDashboardSingle = style([agentDashboardGrid, { gridTemplateColumns: '1fr' }])
