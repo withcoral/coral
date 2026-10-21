@@ -88,7 +88,8 @@ export async function sharedAccountAtomicity(context: TestContext) {
       await openProviderSettings(page)
       await page.getByRole('link', { name: 'Check for updates', exact: true }).click()
       await page.getByRole('button', { name: 'Read operations', exact: true }).click()
-      await page.getByRole('heading', { name: 'Edit configuration', exact: true }).waitFor()
+      // The configuration step opens; the page before the read has no fields.
+      await page.getByLabel('Display name', { exact: true }).waitFor()
       expect(await page.getByRole('button', { name: /^Sign in/ }).count()).toBe(0)
       expect(active.counts.consents).toBe(1)
       const setupName = `${parent}/providerSetups/${new URL(page.url()).searchParams.get('setup')}`
@@ -177,6 +178,10 @@ export async function sharedAccountAtomicity(context: TestContext) {
           await page.getByText(/Granted permissions:.*additional\.permission/).waitFor()
           await checkRadio(page.getByRole('radio', { name: 'Use this account', exact: true }))
           expect((await api.setups.getProviderSetup({ name: setupName })).authorized).toBe(true)
+          const failedUrl = new URL(
+            (await page.locator('form:has(input[value="publish"])').getAttribute('action'))!,
+            page.url(),
+          ).toString()
           // A new shared account replaces the old one, so Save asks first.
           await page.getByRole('button', { name: 'Save', exact: true }).click()
           await page
@@ -185,6 +190,11 @@ export async function sharedAccountAtomicity(context: TestContext) {
             .click()
           await page.getByText('Not updated', { exact: true }).waitFor()
           expect((await api.setups.getProviderSetup({ name: setupName })).authorized).toBe(false)
+          // A replay of the failed request returns the same failure.
+          await page.goto(failedUrl)
+          await page.getByRole('button', { name: 'Retry', exact: true }).click()
+          await page.getByText('Not updated', { exact: true }).waitFor()
+          expect(await page.getByRole('button', { name: 'Retry', exact: true }).count()).toBe(0)
         }
         expect(await api.providers.getProvider({ name: provider.name })).toEqual(provider)
         expect(await inspectAccount()).toEqual(account)

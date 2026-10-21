@@ -59,8 +59,9 @@ describe('the sign-in application', () => {
   ])('%s', (_, automaticClientAvailable, application) => {
     expect(posted({ automaticClientAvailable })).toEqual({ application, clientId: null })
     expect(
-      screen.queryByText('Choose the OAuth application in configuration before you sign in.') !==
-        null,
+      screen.queryByText(
+        'Enter the client ID of your OAuth application in configuration before you sign in.',
+      ) !== null,
     ).toBe(application === null)
   })
 

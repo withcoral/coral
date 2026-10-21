@@ -34,9 +34,9 @@ import {
 import { OAuthApplicationBlock } from './oauth-application'
 import { FieldError, NamespaceField, NAMESPACE, RequiredMark, TextField } from './fields'
 import {
+  authenticationLabels,
   authenticationOptions,
   awaitingDiscovery,
-  ConfigurationDifferences,
   operationCount,
   serverLabel,
 } from './configuration-details'
@@ -44,6 +44,7 @@ import { ScopesField } from './scopes-field'
 import { ServerField } from './server-field'
 import { serverProblem, type ServerGroup } from './server-choices'
 import { StepFrame } from './step-frame'
+import { ConfigurationChanges } from './configuration-changes'
 import * as styles from './providers.css'
 
 /** Names that differ only in case or surrounding space read as the same provider. */
@@ -59,6 +60,54 @@ function ReadField({ label, value }: { label: string; value: string }) {
         {label}
       </Typography.BodySmallStrong>
       <Inputs.TextInput id={id} value={value} disabled />
+    </div>
+  )
+}
+
+/**
+ * A saved server the source no longer declares. Confirming cannot apply it, so
+ * the field shows why and Remove clears it.
+ */
+function StaleServer({
+  id,
+  selection,
+  onRemove,
+}: {
+  id: string
+  selection: ConfigurationValues['servers'][number]
+  onRemove: () => void
+}) {
+  const inputId = useId()
+  const label = serverLabel(selection.declaration)
+  return (
+    <div className={styles.field} role="group" aria-label={label}>
+      <Typography.BodySmallStrong as="label" htmlFor={inputId}>
+        {label}
+      </Typography.BodySmallStrong>
+      <div className={styles.fieldWithAction}>
+        <div className={styles.grow}>
+          <Inputs.TextInput
+            id={inputId}
+            value={selection.url}
+            readOnly
+            invalid
+            ariaDescribedBy={`${id}-error`}
+          />
+        </div>
+        <Button.TextButton
+          id={id}
+          type="button"
+          variant="secondary"
+          ariaLabel={`Remove ${label}`}
+          onClick={onRemove}
+        >
+          Remove
+        </Button.TextButton>
+      </div>
+      <FieldError
+        id={`${id}-error`}
+        message="The source does not have this saved server. Remove it to continue."
+      />
     </div>
   )
 }
@@ -89,6 +138,9 @@ export function ConfigurationStep({
   title = 'Setup',
   actions,
   confirmLabel = 'Next',
+  compare = false,
+  unchanged = false,
+  retry,
   onDirtyChange,
 }: {
   setup: SetupView
@@ -112,6 +164,12 @@ export function ConfigurationStep({
   actions?: ReactNode
   /** Save when confirming also publishes; Next when another step follows. */
   confirmLabel?: 'Next' | 'Save'
+  /** Shows where a new read of the source differs from the saved values. */
+  compare?: boolean
+  /** Nothing to save yet, so the confirm button stays off. */
+  unchanged?: boolean
+  /** Reads the source again after Coral cannot read it. */
+  retry?: ReactNode
   /** Reports whether the posted values differ from what the step first showed. */
   onDirtyChange?: (dirty: boolean) => void
 }) {
@@ -212,6 +270,13 @@ export function ConfigurationStep({
   const staleServers = value.servers.filter(
     (selection) => !review.servers.some((group) => group.declaration === selection.declaration),
   )
+  // A saved method the source no longer offers is an error on its field.
+  const signInError =
+    errors.authentication ??
+    (value.authentication &&
+    !review.authenticationMethods.some((method) => method === value.authentication)
+      ? `This ${source} does not support ${authenticationLabels[value.authentication]}. Choose a supported method.`
+      : undefined)
   const readFrom = `Read from ${setup.sourceHost || 'the document'}`
   const namespaceTaken = namespace !== undefined && takenNamespaces.includes(namespace)
   const displayNameTaken = takenDisplayNames.some(
@@ -266,15 +331,24 @@ export function ConfigurationStep({
       })
   if (!review.authenticationMethods.some((method) => method === value.authentication))
     blockers.push({ field: ids.signIn, message: 'Choose a sign-in method.' })
+  for (const selection of staleServers)
+    blockers.push({
+      field: ids.server(selection.declaration),
+      message: 'Remove the saved server that the source does not have.',
+    })
   for (const { group, problem, missing } of serverProblems)
     if (missing.length === 0)
       blockers.push({ field: ids.server(group.declaration), message: problem })
   const blocked = blockers.at(0)
+  const serverFieldsShowErrors =
+    staleServers.length > 0 ||
+    serverProblems.length > 0 ||
+    review.servers.some((group) => errors[group.declaration])
   const nextButton = (
     <Button.TextButton
       type="submit"
       form={formId}
-      disabled={pending || blocked !== undefined}
+      disabled={pending || unchanged || blocked !== undefined}
       focusableWhenDisabled
       onClick={() => {
         if (pending || !blocked) return
@@ -286,6 +360,15 @@ export function ConfigurationStep({
   )
   const confirm =
     blocked && !pending ? <Tooltip content={blocked.message}>{nextButton}</Tooltip> : nextButton
+  // Nothing on the form can fix a source Coral cannot read.
+  if (!review.readable)
+    return (
+      <StepFrame title={title} actions={actions}>
+        <Banner variant="error" title={`Cannot read this ${source}`} action={retry}>
+          Fix the {source} before you try again. Error code: {review.diagnostic}
+        </Banner>
+      </StepFrame>
+    )
   return (
     <StepFrame
       title={title}
@@ -305,8 +388,7 @@ export function ConfigurationStep({
         aria-busy={pending}
         onInput={checkDirty}
       >
-        {/* Where the new input differs from the saved values, when it does. */}
-        <ConfigurationDifferences setup={setup} />
+        {compare && <ConfigurationChanges setup={setup} />}
         <Fields form={form} intent="configure" />
         <input type="hidden" name="setup" value={setup.id} />
         <input type="hidden" name="configurationRevision" value={review.revision} />
@@ -404,6 +486,8 @@ export function ConfigurationStep({
               <div className={styles.inlineControl}>
                 <Picker
                   id={ids.signIn}
+                  invalid={Boolean(signInError)}
+                  ariaDescribedBy={signInError ? `${ids.signIn}-error` : undefined}
                   placeholder="Choose a method"
                   value={value.authentication}
                   options={options}
@@ -415,13 +499,7 @@ export function ConfigurationStep({
                 />
               </div>
             </div>
-            <FieldError message={errors.authentication} />
-            {value.authentication &&
-              !review.authenticationMethods.some((method) => method === value.authentication) && (
-                <Banner variant="warning">
-                  Your saved method does not apply to this {source}. Choose a supported method.
-                </Banner>
-              )}
+            <FieldError id={`${ids.signIn}-error`} message={signInError} />
             {value.authentication === 'header' &&
               review.authenticationMethods.includes('header') && (
                 <CredentialBindingsEditor
@@ -568,20 +646,12 @@ export function ConfigurationStep({
           {(staleServers.length > 0 || (!mcp && review.servers.length > 0)) && (
             <div className={styles.fullRow}>
               {staleServers.map((selection) => (
-                <Banner
+                <StaleServer
                   key={selection.declaration}
-                  variant="warning"
-                  title={serverLabel(selection.declaration)}
-                >
-                  This document cannot apply your saved server selection.
-                  <Button.TextButton
-                    type="button"
-                    variant="secondary"
-                    onClick={() => clearServer(selection.declaration)}
-                  >
-                    Remove this saved selection
-                  </Button.TextButton>
-                </Banner>
+                  id={ids.server(selection.declaration)}
+                  selection={selection}
+                  onRemove={() => clearServer(selection.declaration)}
+                />
               ))}
               {!mcp && review.servers.length > 0 && (
                 <section className={styles.stack} aria-label="Servers">
@@ -623,7 +693,9 @@ export function ConfigurationStep({
                 'authentication.scopes',
               ].includes(field) &&
               !isCredentialsError(field) &&
-              !review.servers.some((group) => group.declaration === field),
+              !review.servers.some((group) => group.declaration === field) &&
+              // A server field that shows its own error already explains this one.
+              !(field === 'servers' && serverFieldsShowErrors),
           )
           .map(([field, message]) => (
             <Banner key={field} variant="error">

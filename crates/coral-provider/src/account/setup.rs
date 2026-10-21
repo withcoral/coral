@@ -598,6 +598,40 @@ impl AccountModule {
         .await
     }
 
+    /// Whether a person's sign-in with `authentication` to this Setup has an
+    /// OAuth application: the one it names, or one Coral can set up with the
+    /// service. Device authorization takes only a named one.
+    /// # Errors
+    /// As [`Self::setup_automatic_client_available`].
+    pub async fn setup_oauth_application_available(
+        &self,
+        actor: &AuthenticatedUser,
+        owner: &WorkspaceId,
+        id: &ProviderSetupId,
+        authentication: Option<&AuthenticationConfiguration>,
+    ) -> Result<bool, Error> {
+        match authentication {
+            Some(AuthenticationConfiguration::OAuthAuthorizationCode { client: None, .. }) => {
+                self.setup_automatic_client_available(actor, owner, id)
+                    .await
+            }
+            _ => Ok(Self::names_oauth_application(authentication)),
+        }
+    }
+
+    /// Whether `authentication` names its OAuth application, or needs none.
+    /// Only [`Self::setup_oauth_application_available`] can find one that
+    /// Coral sets up.
+    #[must_use]
+    pub fn names_oauth_application(authentication: Option<&AuthenticationConfiguration>) -> bool {
+        !authentication.is_some_and(|method| {
+            matches!(
+                method,
+                AuthenticationConfiguration::OAuthAuthorizationCode { client: None, .. }
+            ) || super::oauth_client::device_client_missing(method)
+        })
+    }
+
     /// Reports only OAuth application choices this host can actually bootstrap.
     /// A document the policy excludes is not offered, and under the automatic
     /// policy neither is one whose URL is a non-public literal or localhost

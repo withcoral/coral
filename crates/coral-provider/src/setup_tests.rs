@@ -571,6 +571,10 @@ async fn changing_mcp_url_requires_fresh_discovery_without_forwarding_old_creden
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one MCP journey covers confirmation, publication and the update that follows"
+)]
 async fn anonymous_mcp_catalog_still_requires_explicit_configuration_confirmation() {
     let harness = harness().await;
     let (actor, workspace) = workspace_owner(&harness, "user:mcp-anonymous").await;
@@ -672,6 +676,26 @@ async fn anonymous_mcp_catalog_still_requires_explicit_configuration_confirmatio
             .provisional_grant_id
             .is_none()
     );
+    // Before discovery, an MCP server has not named itself or its sign-in, so
+    // an update has nothing read to compare with the saved choices.
+    let protected = mcp_server(TOKEN).await;
+    let update = harness
+        .providers
+        .prepare_setup(
+            &context,
+            &owner,
+            crate::tests::mcp_url(protected.uri()),
+            Some(published.published_provider().unwrap().id()),
+        )
+        .await
+        .unwrap();
+    let review = harness
+        .providers
+        .review_setup_configuration(&actor, &owner, update.id())
+        .await
+        .unwrap();
+    assert!(review.discovery_authorization_required);
+    assert_eq!(review.differences, []);
 }
 
 #[tokio::test]

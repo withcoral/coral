@@ -423,6 +423,8 @@ function configurationView(
       reasons,
     })),
     diagnostic: review.diagnostic,
+    // A source Coral read suggests a configuration, even one it cannot publish.
+    readable: review.suggested !== undefined || !review.diagnostic,
     errors: review.errors,
   }
 }

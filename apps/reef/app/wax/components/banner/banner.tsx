@@ -17,7 +17,8 @@ const ICONS: Record<BannerVariant, IconName> = {
 
 export type BannerProps = Omit<React.ComponentPropsWithoutRef<'div'>, 'children' | 'title'> & {
   action?: React.ReactNode
-  children: React.ReactNode
+  /** The message under the title. A title alone needs none. */
+  children?: React.ReactNode
   title?: React.ReactNode
   variant?: BannerVariant
 }
@@ -34,13 +35,13 @@ export function Banner({
   return (
     <div
       {...props}
-      className={classNames(styles.banner({ variant }), className)}
+      className={classNames(styles.banner({ variant, oneLine: !children }), className)}
       role={role ?? (variant === 'error' ? 'alert' : 'status')}
     >
       <Icon className={styles.icon} color="inherit" name={ICONS[variant]} size="18" />
       <div className={styles.content}>
         {title ? <span className={styles.title}>{title}</span> : null}
-        <div className={styles.message}>{children}</div>
+        {children ? <div className={styles.message}>{children}</div> : null}
       </div>
       {action ? <div className={styles.action}>{action}</div> : null}
     </div>

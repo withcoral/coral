@@ -10,6 +10,7 @@ use coral_catalog::{
     ProviderConfiguration, ServerSelection,
 };
 use coral_provider::access::{CredentialRoute, ProviderCallRoot, ProviderNamespace};
+use coral_provider::account::AccountModule;
 use coral_provider::{
     ManagementRequestId, OpenApiDocument, ProviderModule, ProviderSetupId, ProviderSetupSource,
     ProviderState, PublishabilityRejection, PublishedProvider, ResolvedInvocationOperation,
@@ -82,6 +83,8 @@ pub(crate) trait InvokingRun: Send + Sync {
 /// results link to.
 pub(crate) struct BuiltinHost<'a> {
     pub(crate) providers: &'a ProviderModule,
+    /// Where people sign in; without it, nobody can.
+    pub(crate) accounts: Option<&'a AccountModule>,
     pub(crate) publisher: Option<&'a dyn WorkspaceProviderPublisher>,
     pub(crate) context: &'a ChangeContext,
     pub(crate) principal: &'a Principal,
@@ -357,6 +360,16 @@ impl CreateProvider {
             .map_err(setup_error)?
         {
             SetupPublishability::Coral => Ok(Publisher::Coral),
+            // The person's sign-in could not start without an OAuth application.
+            SetupPublishability::Person
+                if !has_oauth_application(host, setup, confirmed.confirmed.as_ref()).await? =>
+            {
+                Err(invalid(
+                    "authentication.client",
+                    "Coral cannot register an OAuth application with this service; register \
+                     one with the service and give its `client_id`",
+                ))
+            }
             SetupPublishability::Person => Ok(Publisher::Person),
             SetupPublishability::Rejected(PublishabilityRejection::NotConfigured) => Err(invalid(
                 "source",
@@ -583,6 +596,28 @@ async fn require_current_run(host: &BuiltinHost<'_>, setup: &ProviderSetupId) ->
     }
     end_setup(host, setup).await;
     current.and(Err(Error::ProgramHostTerminated))
+}
+
+/// Whether a person's sign-in to `configuration` has an OAuth application, as
+/// Reef offers it. Without accounts, Coral sets none up.
+async fn has_oauth_application(
+    host: &BuiltinHost<'_>,
+    setup: &ProviderSetupId,
+    configuration: Option<&ProviderConfiguration>,
+) -> Result<bool, Error> {
+    let authentication = configuration.and_then(|values| values.authentication.as_ref());
+    match host.accounts {
+        Some(accounts) => accounts
+            .setup_oauth_application_available(
+                host.context.actor(),
+                host.workspace_id,
+                setup,
+                authentication,
+            )
+            .await
+            .map_err(setup_error),
+        None => Ok(AccountModule::names_oauth_application(authentication)),
+    }
 }
 
 /// Ends, as Coral, a Setup that this call prepared but nobody will finish.

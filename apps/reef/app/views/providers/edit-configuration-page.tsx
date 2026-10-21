@@ -3,6 +3,7 @@ import { Form, useBeforeUnload, useBlocker, useNavigation, useSubmit } from 'rea
 import {
   attemptPath,
   attemptProgress,
+  isOAuthMethod,
   reviseAttempt,
 } from '@/lib/provider-publication-attempt/model'
 import { Banner, Button, Radio, Typography } from '@/wax/components'
@@ -123,11 +124,10 @@ export function EditConfigurationPage({
   const unsaved =
     !ended &&
     !result?.failed &&
-    (accounts
-      ? settingChanged || Boolean(setup.authorized || setup.authorization)
-      : formDirty ||
-        setup.state !== 'awaiting_configuration' ||
-        Boolean(result?.configurationDraft))
+    (formDirty ||
+      (accounts
+        ? settingChanged || Boolean(setup.authorized || setup.authorization)
+        : setup.state !== 'awaiting_configuration' || Boolean(result?.configurationDraft)))
   const [confirming, setConfirming] = useState(view === 'configuration' && stage === 'publish')
   const publication = usePublication({
     attempt: {
@@ -209,7 +209,7 @@ export function EditConfigurationPage({
   const connecting = view === 'account' && route === 'fixed' && plan === 'shared-connect'
   const signInOpen =
     setup.authorization?.state === 'pending' || setup.authorization?.state === 'exchanging'
-  const oauth = setup.credentialMethod === 'oauth' || setup.credentialMethod === 'device'
+  const oauth = isOAuthMethod(setup.credentialMethod)
   const connect = (
     <Dialog.Root open={signingIn} onOpenChange={setSigningIn}>
       <Dialog.Trigger render={<Button.Container variant="primary" disabled={pending} />}>
@@ -387,10 +387,15 @@ export function EditConfigurationPage({
           pending={pending}
           result={result}
           callbackUrl={callbackUrl}
-          title="Edit configuration"
+          title={title}
           actions={cancel}
           // A refresh shows the operations next, so its form only confirms.
           confirmLabel={refresh ? 'Next' : 'Save'}
+          // Only a new read can differ from what is saved. Edit configuration
+          // reads the saved source, so its defaults are no change.
+          compare={refresh}
+          unchanged={!refresh && !unsaved}
+          retry={restart}
           onDirtyChange={setFormDirty}
         />
         {/* Save confirms the configuration first. When Coral needs your

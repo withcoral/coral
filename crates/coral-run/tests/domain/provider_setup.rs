@@ -62,6 +62,7 @@ struct AdminScope {
     upstream: Arc<ScriptedUpstream>,
     workspace_id: coral_workspace::WorkspaceId,
     owner: AuthenticatedPrincipal,
+    _vault: tempfile::TempDir,
 }
 
 impl AdminScope {
@@ -77,10 +78,13 @@ impl AdminScope {
         .await;
         let (workspace_id, owner) = fixture.user_scope(user, "Add a provider").await;
         let mut fixture = fixture;
+        // People sign in through the same accounts as in production.
+        let (vault, accounts) = fixture.accounts();
         fixture.runs = fixture
             .runs
             .clone()
-            .with_provider_publisher(Arc::new(workflow(&fixture)));
+            .with_provider_publisher(Arc::new(workflow(&fixture)))
+            .with_accounts(accounts);
         let mut transaction = fixture.database.begin().await.unwrap();
         fixture
             .providers
@@ -97,6 +101,7 @@ impl AdminScope {
             upstream,
             workspace_id,
             owner,
+            _vault: vault,
         }
     }
 
@@ -221,6 +226,36 @@ impl AdminScope {
         let mut created = self.created_setups().await;
         created.retain(|setup| !before.contains(setup));
         created
+    }
+
+    /// Asserts that a denied call changed nothing since `before` was read: it
+    /// published nothing, and every Setup it prepared has ended.
+    async fn assert_denial_changed_nothing(
+        &self,
+        before: &[coral_provider::AdministrativeLifecycleEvent],
+        case: &str,
+    ) {
+        for event in self.lifecycle_events().await {
+            if before.contains(&event) {
+                continue;
+            }
+            assert_ne!(
+                event.action(),
+                coral_provider::LifecycleAction::PublicationCompleted,
+                "{case}"
+            );
+            if event.action() == coral_provider::LifecycleAction::SetupCreated {
+                let setup = ProviderSetupId::parse(event.target_id()).unwrap();
+                let state = self
+                    .fixture
+                    .providers
+                    .get_setup(&self.owner_user(), &self.workspace_id, &setup)
+                    .await
+                    .unwrap()
+                    .state();
+                assert_eq!(state, ProviderSetupState::Canceled, "{case}");
+            }
+        }
     }
 
     /// Publishes the credential-free Weather document under `weather`, as an
@@ -501,14 +536,10 @@ async fn a_failed_publication_is_a_failure_the_program_catches() {
         let publisher: Arc<dyn coral_provider::WorkspaceProviderPublisher> = match fault {
             PublicationFault::Failed => Arc::new(FailingPublisher(workflow(&scope.fixture))),
             PublicationFault::SetupCanceled => {
-                let vault = tempfile::tempdir().unwrap();
+                let (vault, accounts) = scope.fixture.accounts();
                 Arc::new(SetupCanceledFirst {
                     workflow: workflow(&scope.fixture),
-                    accounts: coral_provider::account::AccountModule::new(
-                        scope.fixture.providers.clone(),
-                        coral_credentials::CredentialVault::open(&vault.path().join("key"))
-                            .unwrap(),
-                    ),
+                    accounts,
                     _vault: vault,
                 })
             }
@@ -1458,6 +1489,34 @@ async fn an_invalid_argument_names_what_to_correct() {
             " at `authentication.client`: Review the OAuth application, PKCE policy and \
              authorization parameters.",
         ),
+        // A person could not sign in: nothing names the application, and Coral
+        // cannot register one with this service.
+        (
+            valid_with(serde_json::json!({
+                "credentialRoute": "fixed",
+                "authentication": {
+                    "method": "oauth_authorization_code",
+                    "authorization_url": "https://weather.example/authorize",
+                    "token_url": "https://weather.example/token",
+                    "scopes": [],
+                },
+            })),
+            " at `authentication.client`: Coral cannot register an OAuth application with this \
+             service; register one with the service and give its `client_id`",
+        ),
+        (
+            valid_with(serde_json::json!({
+                "credentialRoute": "caller",
+                "authentication": {
+                    "method": "oauth_device_code",
+                    "device_authorization_url": "https://weather.example/device",
+                    "token_url": "https://weather.example/token",
+                    "scopes": [],
+                },
+            })),
+            " at `authentication.client`: Coral cannot register an OAuth application with this \
+             service; register one with the service and give its `client_id`",
+        ),
         (
             valid_with(serde_json::json!({
                 "credentialRoute": "fixed",
@@ -1495,6 +1554,7 @@ async fn an_invalid_argument_names_what_to_correct() {
             " at `credentialRoute`: the source needs a credential; use `fixed` or `caller`",
         ),
     ] {
+        let before = scope.lifecycle_events().await;
         let run = scope
             .start(
                 &scope.owner,
@@ -1509,6 +1569,9 @@ async fn an_invalid_argument_names_what_to_correct() {
             }),
             "{arguments}"
         );
+        scope
+            .assert_denial_changed_nothing(&before, &arguments.to_string())
+            .await;
     }
 }
 

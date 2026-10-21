@@ -72,6 +72,7 @@ const datadog: SetupView = {
     operationCount: null,
     unavailableOperations: [],
     diagnostic: '',
+    readable: true,
     errors: {},
   },
   id: 'setup-1',

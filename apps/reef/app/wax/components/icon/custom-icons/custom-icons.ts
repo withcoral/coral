@@ -76,6 +76,7 @@ import { SeverityCriticalIcon } from '@/wax/components/icon/custom-icons/severit
 import { SeverityLowIcon } from '@/wax/components/icon/custom-icons/severity-low'
 import { SeverityModerateIcon } from '@/wax/components/icon/custom-icons/severity-moderate'
 import { SeveritySevereIcon } from '@/wax/components/icon/custom-icons/severity-severe'
+import { ShieldBanIcon } from '@/wax/components/icon/custom-icons/shield-ban'
 import { SlackIcon } from '@/wax/components/icon/custom-icons/slack'
 import { SparklesIcon } from '@/wax/components/icon/custom-icons/sparkles'
 import { SquareFunctionIcon } from '@/wax/components/icon/custom-icons/square-function'
@@ -88,6 +89,7 @@ import { TrashIcon } from '@/wax/components/icon/custom-icons/trash'
 import { TriangleAlertIcon } from '@/wax/components/icon/custom-icons/triangle-alert'
 import { TriangleAlertFullIcon } from '@/wax/components/icon/custom-icons/triangle-alert-full'
 import { UploadIcon } from '@/wax/components/icon/custom-icons/upload'
+import { UserRoundXIcon } from '@/wax/components/icon/custom-icons/user-round-x'
 import { UsersIcon } from '@/wax/components/icon/custom-icons/users'
 import { WaypointsIcon } from '@/wax/components/icon/custom-icons/waypoints'
 import { WrenchIcon } from '@/wax/components/icon/custom-icons/wrench'
@@ -183,6 +185,7 @@ export const customIcons = {
   SeverityLow: SeverityLowIcon,
   SeverityModerate: SeverityModerateIcon,
   SeveritySevere: SeveritySevereIcon,
+  ShieldBan: ShieldBanIcon,
   Slack: SlackIcon,
   Sparkles: SparklesIcon,
   SquareFunction: SquareFunctionIcon,
@@ -195,6 +198,7 @@ export const customIcons = {
   TriangleAlert: TriangleAlertIcon,
   TriangleAlertFull: TriangleAlertFullIcon,
   Upload: UploadIcon,
+  UserRoundX: UserRoundXIcon,
   Users: UsersIcon,
   Waypoints: WaypointsIcon,
   Wrench: WrenchIcon,

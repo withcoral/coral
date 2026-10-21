@@ -177,6 +177,17 @@ impl TestModules {
         }
     }
 
+    /// Accounts over a filesystem vault in a fresh directory, never the OS
+    /// keychain. Keep the directory while the accounts are in use.
+    pub(crate) fn accounts(&self) -> (tempfile::TempDir, AccountModule) {
+        let dir = tempfile::tempdir().unwrap();
+        let accounts = AccountModule::new(
+            self.providers.clone(),
+            coral_credentials::CredentialVault::open(&dir.path().join("key")).unwrap(),
+        );
+        (dir, accounts)
+    }
+
     /// An Approval Module that decides deadlines on this fixture's clock and
     /// records through this fixture's Run Owners.
     pub(crate) fn approvals(&self) -> crate::approval::ApprovalModule {
@@ -725,11 +736,7 @@ pub(crate) async fn configure_authored_provider(
     values: coral_credentials::CredentialValues,
 ) -> (tempfile::TempDir, coral_provider::account::AccountModule) {
     let context = change(operation.user.clone(), 40, '4');
-    let dir = tempfile::tempdir().unwrap();
-    let accounts = coral_provider::account::AccountModule::new(
-        fixture.providers.clone(),
-        coral_credentials::CredentialVault::open(&dir.path().join("key")).unwrap(),
-    );
+    let (dir, accounts) = fixture.accounts();
     fixture
         .providers
         .delete_provider(&context, &operation.workspace_id, &operation.provider_id)
@@ -819,11 +826,7 @@ pub(crate) async fn configure_shared_provider(
     values: coral_credentials::CredentialValues,
 ) -> (tempfile::TempDir, coral_provider::account::AccountModule) {
     let context = change(operation.user.clone(), 40, '4');
-    let dir = tempfile::tempdir().unwrap();
-    let accounts = coral_provider::account::AccountModule::new(
-        fixture.providers.clone(),
-        coral_credentials::CredentialVault::open(&dir.path().join("key")).unwrap(),
-    );
+    let (dir, accounts) = fixture.accounts();
     fixture
         .providers
         .delete_provider(&context, &operation.workspace_id, &operation.provider_id)
@@ -897,12 +900,7 @@ pub(crate) async fn configure_user_caller(
         )
         .await
         .unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let accounts = coral_provider::account::AccountModule::new(
-        fixture.providers.clone(),
-        coral_credentials::CredentialVault::open(&dir.path().join("key")).unwrap(),
-    );
-    (dir, accounts)
+    fixture.accounts()
 }
 
 pub(crate) async fn assert_connection_completion_event(

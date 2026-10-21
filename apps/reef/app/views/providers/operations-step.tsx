@@ -4,7 +4,6 @@ import {
   type CreationAttempt,
 } from '@/lib/provider-publication-attempt/model'
 import { Button } from '@/wax/components'
-import { ConfigurationDifferences } from './configuration-details'
 import { OperationsSection, OperationsSummary } from './operations-section'
 import { DiscoveryPrompt } from './setup-steps'
 import type { FormContext, SetupView, StepperResult } from './types'
@@ -74,7 +73,6 @@ export function OperationsStep({
           ) : undefined
         }
       />
-      <ConfigurationDifferences setup={setup} compact />
     </StepFrame>
   )
 }

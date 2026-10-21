@@ -42,12 +42,12 @@ export interface WorkspaceOverviewProps {
   form: FormContext
   /** What the Add provider dialog offers. */
   recipes: readonly SourceChoice[]
-  /** The Workspace's activity reader, supplied by the route. */
-  activity: ReactNode
+  /** Recent activity totals, supplied by the route. */
+  summary?: ReactNode
 }
 
 /**
- * The Workspace home: a glimpse of its providers, agents, members and activity.
+ * The Workspace home: a glimpse of its providers, agents and members, then its recent activity totals.
  * Each empty list offers the one action that fills it.
  */
 export function WorkspaceOverview({
@@ -58,7 +58,7 @@ export function WorkspaceOverview({
   ownMembership,
   form,
   recipes,
-  activity,
+  summary,
 }: WorkspaceOverviewProps) {
   const owner = w.effectiveRole === 'owner'
   const active = w.state === 'active'
@@ -229,7 +229,7 @@ export function WorkspaceOverview({
           </Card.Container>
         )}
       </div>
-      <div className={styles.activityBrowser}>{activity}</div>
+      {summary}
     </ManagementLayout>
   )
 }

@@ -381,11 +381,19 @@ async fn client_secret_missing(
 pub(crate) fn require_device_client(
     contract: &coral_catalog::ProviderCredentialContract,
 ) -> Result<(), Error> {
-    if matches!(
-        contract.authentication(),
-        coral_catalog::AuthenticationConfiguration::OAuthDeviceCode { client: None, .. }
-    ) {
+    if device_client_missing(contract.authentication()) {
         return Err(Error::OAuthClientConfiguration);
     }
     Ok(())
+}
+
+/// Whether device authorization names no OAuth application. Coral never sets
+/// one up for it, so its sign-in cannot start.
+pub(crate) fn device_client_missing(
+    authentication: &coral_catalog::AuthenticationConfiguration,
+) -> bool {
+    matches!(
+        authentication,
+        coral_catalog::AuthenticationConfiguration::OAuthDeviceCode { client: None, .. }
+    )
 }

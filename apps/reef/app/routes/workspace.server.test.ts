@@ -12,7 +12,7 @@ vi.mock('@/lib/coral-request.server', () => ({
 const workspace = '00000000-0000-4000-8000-000000000001'
 const parent = `workspaces/${workspace}`
 
-it('leaves the Built-in Provider out of the overview, so a new workspace offers Add provider', async () => {
+function fakeCoral(summaries: number[] = []) {
   coral.transport = fakeManagementTransport({
     workspaces: {
       getWorkspace: ({ name }) => ({
@@ -47,11 +47,48 @@ it('leaves the Built-in Provider out of the overview, so a new workspace offers 
     activity: {
       browseActivityRoots: () => ({ roots: [] }),
       browseRequiredActions: () => ({ actions: [] }),
+      summarizeActivity: ({ days }) => {
+        summaries.push(days)
+        return {}
+      },
     },
   })
-  const result = await loader(
-    authRouteTestArgs(new Request(`http://reef/${parent}`), { workspace }, null),
-  )
+}
+
+const overview = (search = '') =>
+  loader(authRouteTestArgs(new Request(`http://reef/${parent}${search}`), { workspace }, null))
+
+it('leaves the Built-in Provider out of the overview, so a new workspace offers Add provider', async () => {
+  fakeCoral()
+  const result = await overview()
   if (result instanceof Response) throw new Error('The workspace page renders')
   expect(result.data.providers.map((provider) => provider.displayName)).toEqual(['Weather'])
+})
+
+// Catches: a reload showing another period than the URL names.
+it.each([
+  ['the default period', '', 7],
+  ['a period the URL names', '?days=30', 30],
+  ['the last 24 hours', '?days=1', 1],
+])('summarizes %s', async (_, search, days) => {
+  const summaries: number[] = []
+  fakeCoral(summaries)
+  const result = await overview(search)
+  if (result instanceof Response) throw new Error('The workspace page renders')
+  expect(result.data.activity.days).toBe(days)
+  expect(summaries).toEqual([days])
+})
+
+// Catches: a URL that names one period while the page shows another.
+it.each([
+  ['a period the page does not offer', '?days=3', `/${parent}`],
+  ['a period that is not a number', '?days=week', `/${parent}`],
+  ['the other query it keeps', '?days=3&created=a', `/${parent}?created=a`],
+])('redirects %s to the default period', async (_, search, location) => {
+  const summaries: number[] = []
+  fakeCoral(summaries)
+  const result = await overview(search)
+  if (!(result instanceof Response)) throw new Error('The loader redirects')
+  expect(result.headers.get('location')).toBe(location)
+  expect(summaries).toEqual([])
 })

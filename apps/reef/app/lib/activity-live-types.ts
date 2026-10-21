@@ -1,8 +1,6 @@
 import type { ActivityPage, ActivityRow } from '@/views/activity/types'
 
 export const ACTIVITY_CHILD_WINDOW = 100
-/** The Overview shows only the latest roots and links to the Activity page for the rest. */
-export const OVERVIEW_ACTIVITY_ROOTS = 5
 /** Ordinals only select a bounded window. Anchors are reauthorized, never retained content. */
 export interface ActivityViewport {
   offset: number

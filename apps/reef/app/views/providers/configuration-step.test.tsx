@@ -46,6 +46,7 @@ const review: ConfigurationReviewView = {
   operations: [],
   unavailableOperations: [],
   diagnostic: '',
+  readable: true,
   errors: {},
 }
 const setup: SetupView = {
@@ -418,15 +419,6 @@ describe('device configuration feedback', () => {
     authenticationMethods: ['device'],
     values: { ...review.values, authentication: 'device' },
   }
-
-  it('uses the readable device method label in configuration differences', () => {
-    const html = render({
-      ...device,
-      differences: [{ field: 'authentication.method', saved: 'oauth_device_code' }],
-    })
-    expect(html).toContain('Saved: OAuth device code')
-    expect(html).not.toContain('oauth_device_code')
-  })
 
   it('shows a device URL error once, beside the field', () => {
     const html = render({

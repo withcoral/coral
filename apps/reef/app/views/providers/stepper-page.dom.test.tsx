@@ -125,6 +125,7 @@ it("suggests the namespace from the document's name, not the host that serves it
       operations: [],
       unavailableOperations: [],
       diagnostic: '',
+      readable: true,
       errors: {},
     },
   }

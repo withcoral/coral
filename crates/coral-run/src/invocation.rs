@@ -628,6 +628,7 @@ impl OperationInvoker {
             .map_err(Error::from)?;
         let host = crate::builtin::BuiltinHost {
             providers: &self.providers,
+            accounts: self.accounts.as_ref(),
             publisher: self.provider_publisher.as_deref(),
             context: &context,
             principal: &self.principal,

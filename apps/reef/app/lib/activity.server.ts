@@ -845,8 +845,6 @@ export async function loadActivity(
     reading?: ActivityReadingWindow
     /** Where the reader navigates when it is embedded outside the Activity page. */
     listPath?: string
-    /** How many roots one page lists. */
-    pageSize?: number
   },
 ): Promise<ActivityPage> {
   const query = new URL(request.url).searchParams
@@ -1003,7 +1001,7 @@ export async function loadActivity(
         // A page request continues the list from its cursor alone.
         anchor: reading || query.has('before') || query.has('after') ? '' : (rootAnchor ?? ''),
         retained: reading && !reading.followRoot ? { names: reading.roots } : undefined,
-        pageSize: options.pageSize ?? ACTIVITY_PAGE_SIZE,
+        pageSize: ACTIVITY_PAGE_SIZE,
       },
       { signal },
     )

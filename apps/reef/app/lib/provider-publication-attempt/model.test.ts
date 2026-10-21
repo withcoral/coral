@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
+import type { ConfigurationReviewView } from '@/views/providers/types'
+
 import {
   acceptOperations,
   attemptParams,
@@ -146,6 +148,67 @@ describe('attemptProgress', () => {
     expect(attemptProgress(attempt, { ...setup, ...over }).stage).toBe(stage)
     // Next on the operations keeps the route, so the account question follows.
     expect(attemptProgress(acceptOperations(attempt), { ...setup, ...over }).stage).toBe(next)
+  })
+
+  // Catches: the agent's link for a configuration confirmed without an OAuth
+  // application, where Coral cannot set one up, passing the one step that asks
+  // for a client ID and reaching a sign-in that cannot start.
+  it.each([
+    ['an MCP sign-in Coral cannot set up', {}, {}, 'configuration'],
+    [
+      'an API sign-in Coral cannot set up',
+      { kind: 'openapi' as const, state: 'ready' as const },
+      {},
+      'configuration',
+    ],
+    [
+      'a device sign-in, which Coral never sets up',
+      { kind: 'openapi' as const, state: 'ready' as const, credentialMethod: 'device' as const },
+      { automaticClientAvailable: true },
+      'configuration',
+    ],
+    ['a sign-in Coral sets up', {}, { automaticClientAvailable: true }, 'discovery'],
+    [
+      'a sign-in already started with its application',
+      {
+        authorization: {
+          state: 'failed' as const,
+          requestedScopes: [],
+          bootstrap: 'document' as const,
+          failure: 'access_denied',
+          clientId: 'https://coral.test/.well-known/oauth-client',
+          expiresAt: '',
+        },
+      },
+      {},
+      'discovery',
+    ],
+    [
+      'a sign-in configuration chose the application for',
+      { kind: 'openapi' as const, state: 'ready' as const },
+      {
+        application: {
+          mode: 'manual' as const,
+          clientId: 'weather-app',
+          authentication: 'none' as const,
+          pkce: 's256' as const,
+          parameters: '',
+        },
+      },
+      'operations',
+    ],
+  ])("opens the agent's link for %s", (_, over, review, stage) => {
+    const attempt = parseAttempt(
+      'workspace',
+      new URLSearchParams(`setup=${setup.id}&namespace=weather&account=fixed`),
+    )
+    const configuration = {
+      revision: '1',
+      confirmed: true,
+      automaticClientAvailable: false,
+      ...review,
+    } as ConfigurationReviewView
+    expect(attemptProgress(attempt, { ...setup, ...over, configuration }).stage).toBe(stage)
   })
 
   it('discovers an update without asking a creation-only account question', () => {

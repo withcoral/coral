@@ -44,6 +44,7 @@ const review: ConfigurationReviewView = {
   unavailableOperations: [],
   operationCount: 1,
   diagnostic: '',
+  readable: true,
   errors: {},
 }
 const setup: SetupView = {
@@ -140,6 +141,8 @@ const rename = async () => {
   await userEvent.type(name, 'Renamed')
 }
 
+const saveButton = () => screen.getByRole('button', { name: 'Save' })
+
 // Catches: Cancel asking about changes that do not exist.
 it('cancels at once when nothing changed', async () => {
   const page = renderPage()
@@ -148,17 +151,22 @@ it('cancels at once when nothing changed', async () => {
   expect(page.intents).toEqual(['cancel'])
 })
 
+const cancel = () => userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
 // Catches: Cancel or a link silently dropping an edit, a Keep editing that
-// still leaves, or a discard that leaves the Setup open.
+// still leaves, or a discard that leaves the Setup open. A correction to an
+// account change that Coral sent back to the form is an edit too.
 it.each([
-  ['Cancel', () => userEvent.click(screen.getByRole('button', { name: 'Cancel' })), 'Provider'],
+  ['Cancel', 'configuration', cancel, 'Provider'],
   [
     'a link to another page',
+    'configuration',
     () => userEvent.click(screen.getByRole('link', { name: 'Providers' })),
     'Providers',
   ],
-])('asks before %s discards changes', async (_, leave, destination) => {
-  const page = renderPage()
+  ['Cancel in an account change', 'accounts', cancel, 'Provider'],
+] as const)('asks before %s discards changes', async (_, task, leave, destination) => {
+  const page = renderPage({ task })
   await rename()
 
   await leave()
@@ -247,9 +255,12 @@ it.each([
   expect(page.consents).toEqual([consent])
 })
 
-// Catches: a refresh that needs a configuration review hiding what the new
-// document changed, the one thing the review is for.
-it('shows what a new read changed before you confirm it', () => {
+// Catches: a refresh hiding what the new source changed, or Edit
+// configuration listing the saved source's own values as changes.
+it.each([
+  ['a refresh', 'refresh', true],
+  ['Edit configuration', 'configuration', false],
+] as const)('compares saved and new values in %s: %s', async (_, task, shown) => {
   renderPage({
     page: {
       ...setup,
@@ -258,13 +269,33 @@ it('shows what a new read changed before you confirm it', () => {
         differences: [{ field: 'display_name', saved: 'Records', document: 'Records v2' }],
       },
     },
-    task: 'refresh',
+    task,
   })
-  expect(screen.getByRole('heading', { name: 'Changes in the new input' })).toBeVisible()
-  expect(screen.getByText('Saved: Records')).toBeVisible()
-  expect(screen.getByText('New input: Records v2')).toBeVisible()
-  expect(screen.getByRole('button', { name: 'Next' })).toBeVisible()
+  const open = screen.queryByRole('button', { name: 'Review changes' })
+  expect(open !== null).toBe(shown)
+  if (!open) return
+  await userEvent.click(open)
+  const dialog = await screen.findByRole('dialog', { name: 'Review changes' })
+  const table = within(dialog).getByRole('table', { name: 'Saved and new values' })
+  const [, row] = within(table).getAllByRole('row')
+  expect(
+    within(row)
+      .getAllByRole('cell')
+      .map((cell) => cell.textContent),
+  ).toEqual(['Name', 'Records', 'Records v2'])
 })
+
+// Catches: Save publishing a configuration you did not change, or staying off
+// after you correct one that Coral sent back to an account change.
+it.each(['configuration', 'accounts'] as const)(
+  'turns on Save only after you change the configuration: %s',
+  async (task) => {
+    renderPage({ task })
+    expect(saveButton()).toHaveAttribute('aria-disabled', 'true')
+    await rename()
+    expect(saveButton()).not.toHaveAttribute('aria-disabled')
+  },
+)
 
 // Catches: an expired Setup that strands you, or a Start again that opens the
 // wrong task, rereads the saved source in place of a replacement, or carries the
@@ -309,4 +340,33 @@ it('sends you to settings to read an uploaded document again', () => {
     'href',
     `${providerPath}/settings`,
   )
+})
+
+// Catches: a form for a source Coral cannot read, where every save fails, in
+// place of the error and a way to read the source again.
+it('offers only a new read when Coral cannot read the source', async () => {
+  const page = renderPage({
+    page: {
+      ...setup,
+      sourceLabel: 'https://records.example.com/openapi.json',
+      sourceHost: 'records.example.com',
+      configuration: { ...review, diagnostic: 'duplicate_operation_key', readable: false },
+    },
+    task: 'refresh',
+  })
+  const error = screen.getByRole('alert')
+  expect(within(error).getByText('Cannot read this document')).toBeVisible()
+  expect(error).toHaveTextContent('Error code: duplicate_operation_key')
+  expect(screen.queryByRole('textbox', { name: /^Display name/ })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Next' })).not.toBeInTheDocument()
+
+  await userEvent.click(within(error).getByRole('button', { name: 'Start again' }))
+  await screen.findByRole('heading', { name: 'Provider' })
+  expect(page.prepares).toEqual([
+    expect.objectContaining({
+      source: 'url',
+      sourceUrl: 'https://records.example.com/openapi.json',
+      task: 'refresh',
+    }),
+  ])
 })

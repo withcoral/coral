@@ -17,7 +17,6 @@ function fixture(children = 0) {
   let resolved = false
   let reads = 0
   let exactReads = 0
-  let rootPageSize = 0
   const transport = createRouterTransport(({ service }) => {
     service(ActivityService, {
       watchActivity: changes.watch,
@@ -27,7 +26,6 @@ function fixture(children = 0) {
       },
       browseActivityRoots: (input) => {
         reads++
-        rootPageSize = input.pageSize
         if (!authorized)
           return {
             roots: [],
@@ -114,7 +112,6 @@ function fixture(children = 0) {
     },
     notify: changes.emit,
     reads: () => reads,
-    rootPageSize: () => rootPageSize,
     exactReads: () => exactReads,
   }
 }
@@ -331,23 +328,6 @@ it('keeps the Workspace Activity destination while updating independent exact de
     await reader.cancel()
   }
 })
-// The Overview shows only its latest roots, so a live update must not grow it to a full page.
-it.each([
-  ['Activity page', `/${workspace}/activity`, `/${workspace}/activity`, 25],
-  ['Workspace Overview', `/${workspace}`, `/${workspace}`, 5],
-  // Settings opens as a dialog over the Overview, whose reader keeps streaming.
-  ['Workspace Overview under Settings', `/${workspace}/settings`, `/${workspace}`, 5],
-])('keeps the %s reader on its own page and size', async (_, path, listPath, pageSize) => {
-  const f = fixture()
-  const response = await observeActivity(request({ ...observation, path }), f.api)
-  const reader = response.body!.getReader()
-  try {
-    expect((await emission(reader)).page.listPath).toBe(listPath)
-    expect(f.rootPageSize()).toBe(pageSize)
-  } finally {
-    await reader.cancel()
-  }
-})
 it('cancels a waiting emission when its authenticated request disconnects', async () => {
   const f = fixture()
   const cancellation = new AbortController()
@@ -379,6 +359,9 @@ it('rejects unbounded or invalid viewports before any domain query', async () =>
   const f = fixture()
   for (const body of [
     { ...observation, path: '/organization/members' },
+    // The Overview shows a summary, not an activity reader.
+    { ...observation, path: `/${workspace}` },
+    { ...observation, path: `/${workspace}/settings` },
     {
       ...observation,
       window: { ...observation.window, roots: Array(26).fill(task) },

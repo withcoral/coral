@@ -1,4 +1,5 @@
 import { useId, useState, type ReactNode } from 'react'
+import { automaticApplicationAllowed } from '@/lib/provider-publication-attempt/model'
 import { Button, Inputs, Radio, Typography } from '@/wax/components'
 import type { ConfigurationReviewView, SetupView } from './types'
 import * as styles from './providers.css'
@@ -25,7 +26,7 @@ export function OAuthApplicationBlock({
   configuring?: boolean
   clientSecretInput?: ReactNode
 }) {
-  const automaticAllowed = !device && setup.configuration?.automaticClientAvailable === true
+  const automaticAllowed = automaticApplicationAllowed(setup, device)
   // The OAuth host holds the registration; it can differ from the API host.
   const registrar = hostOf(setup.configuration?.values.tokenUrl) || 'the service'
   // A device sign-in happens on the verification page the service returns when
@@ -236,7 +237,7 @@ export function OAuthApplicationBlock({
         </>
       ) : (
         <Typography.BodySmall as="p" variant="tertiary">
-          Choose the OAuth application in configuration before you sign in.
+          Enter the client ID of your OAuth application in configuration before you sign in.
         </Typography.BodySmall>
       )}
     </div>

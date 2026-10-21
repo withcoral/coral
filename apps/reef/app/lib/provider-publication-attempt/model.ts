@@ -1,4 +1,4 @@
-import type { SetupView, StepperResult } from '@/views/providers/types'
+import type { CredentialMethod, SetupView, StepperResult } from '@/views/providers/types'
 
 export type AccountChoice = 'none' | 'fixed' | 'caller'
 /** Navigation context a launcher hands the page; never publication content. */
@@ -304,6 +304,33 @@ export function freezeAttempt(
 export type AttemptEnd = 'expired' | 'canceled' | 'consumed'
 const ATTEMPT_ENDS: readonly AttemptEnd[] = ['expired', 'canceled', 'consumed']
 
+/** Whether a person signs in through an OAuth application, in the browser or on a device. */
+export function isOAuthMethod(method: CredentialMethod | null) {
+  return method === 'oauth' || method === 'device'
+}
+
+/** Whether Coral sets up the OAuth application itself. A device sign-in never does. */
+export function automaticApplicationAllowed(
+  setup: SetupView,
+  device = setup.credentialMethod === 'device',
+) {
+  return !device && setup.configuration?.automaticClientAvailable === true
+}
+
+/**
+ * Whether an OAuth sign-in cannot start for want of an application: configuration
+ * chose none and Coral cannot set one up. A sign-in already started has its
+ * application.
+ */
+export function needsOAuthApplication(setup: SetupView) {
+  return (
+    !setup.authorization &&
+    isOAuthMethod(setup.credentialMethod) &&
+    !setup.configuration?.application &&
+    !automaticApplicationAllowed(setup)
+  )
+}
+
 /** One presentation decision from Coral progress plus explicit local choices. No lifecycle validation. */
 export function attemptProgress(
   attempt: PublicationAttempt,
@@ -326,6 +353,11 @@ export function attemptProgress(
             : attempt.account !== 'fixed' || (setup?.authorized && attempt.accountGrant)
               ? attempt.account
               : null
+  // A configuration confirmed without an OAuth application has nothing to sign
+  // in with. Coral's createProvider now refuses one, but an older Coral server
+  // can still confirm it. Only Configuration asks for an application.
+  const needsApplication =
+    !frozen && setup?.configuration?.confirmed === true && needsOAuthApplication(setup)
   // Why this Setup can go no further. A replay still reaches its publication.
   const ended: AttemptEnd | null =
     setup && !replaying && ATTEMPT_ENDS.includes(setup.state as AttemptEnd)
@@ -338,7 +370,8 @@ export function attemptProgress(
       : result?.failed
         ? 'publish'
         : setup.state === 'awaiting_configuration' ||
-            (setup.configuration && attempt.state === 'draft' && attempt.configure)
+            (setup.configuration && attempt.state === 'draft' && attempt.configure) ||
+            needsApplication
           ? 'configuration'
           : !replaying &&
               (setup.state === 'awaiting_authorization' || setup.state === 'awaiting_discovery')

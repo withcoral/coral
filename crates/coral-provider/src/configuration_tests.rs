@@ -1436,6 +1436,37 @@ async fn update_retains_saved_variables_and_exposes_changed_defaults_and_removed
             .input_digest(),
         replacement.input_digest()
     );
+    // A source Coral cannot read suggests nothing, so nothing differs from it.
+    let unreadable = OpenApiDocument::parse(
+        &json!({"openapi": "3.1.0", "info": {"title": "Region defaults", "version": "1"},
+        "servers": [{"url": "https://eu.example.test/api"}],
+        "paths": {
+            "/a": {"get": {"operationId": "same", "responses": {"200": {"description": "A"}}}},
+            "/b": {"get": {"operationId": "same", "responses": {"200": {"description": "B"}}}}}})
+        .to_string(),
+    )
+    .unwrap();
+    let unreadable = h
+        .providers
+        .prepare_setup(
+            &context,
+            &owner,
+            ProviderSetupSource::OpenApiDocument(unreadable),
+            Some(provider.id()),
+        )
+        .await
+        .unwrap();
+    let review = h
+        .providers
+        .review_setup_configuration(&actor, &owner, unreadable.id())
+        .await
+        .unwrap();
+    assert_eq!(
+        review.diagnostic.as_deref(),
+        Some("duplicate_operation_key")
+    );
+    assert!(review.document.is_none());
+    assert_eq!(review.differences, []);
 }
 
 #[tokio::test]

@@ -15,17 +15,10 @@ pub struct ConfigurationDifference {
     pub document: Option<String>,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one bounded comparison covers independently confirmed provider settings"
-)]
 pub(super) fn compare(
-    saved: Option<&ProviderConfiguration>,
-    document: Option<&ProviderConfiguration>,
+    saved: &ProviderConfiguration,
+    document: &ProviderConfiguration,
 ) -> Vec<ConfigurationDifference> {
-    let Some(saved) = saved else {
-        return Vec::new();
-    };
     let mut differences = Vec::new();
     let mut push = |field: String, saved: Option<String>, document: Option<String>| {
         if saved != document && differences.len() < 100 {
@@ -39,28 +32,22 @@ pub(super) fn compare(
     push(
         "display_name".into(),
         Some(saved.display_name.clone()),
-        document.map(|values| values.display_name.clone()),
+        Some(document.display_name.clone()),
     );
     for name in saved
         .request_headers
         .keys()
-        .chain(
-            document
-                .into_iter()
-                .flat_map(|values| values.request_headers.keys()),
-        )
+        .chain(document.request_headers.keys())
         .collect::<BTreeSet<_>>()
     {
         push(
             format!("request_headers.{name}"),
             saved.request_headers.get(name).cloned(),
-            document
-                .and_then(|values| values.request_headers.get(name))
-                .cloned(),
+            document.request_headers.get(name).cloned(),
         );
     }
     let previous = saved.authentication.as_ref();
-    let next = document.and_then(|values| values.authentication.as_ref());
+    let next = document.authentication.as_ref();
     push(
         "authentication.method".into(),
         previous.map(method),
@@ -110,15 +97,11 @@ pub(super) fn compare(
     let declarations = saved
         .servers
         .keys()
-        .chain(
-            document
-                .into_iter()
-                .flat_map(|values| values.servers.keys()),
-        )
+        .chain(document.servers.keys())
         .collect::<BTreeSet<_>>();
     for declaration in declarations {
         let old = saved.servers.get(declaration);
-        let new = document.and_then(|values| values.servers.get(declaration));
+        let new = document.servers.get(declaration);
         push(
             format!("{declaration}.url"),
             old.map(server_url),

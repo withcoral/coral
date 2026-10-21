@@ -351,7 +351,7 @@ test('Recover a different-account sign-in and review configuration-triggered red
   })
 })
 
-test('Refresh an uploaded document with failure, replay and stale-change protection', async (context) => {
+test('Refresh an uploaded document with unreadable and stale-change protection', async (context) => {
   await withOwnerSession(context, async ({ page, target, step, actor }) => {
     const workspace = await createWorkspace(actor.accessToken, `Update ${crypto.randomUUID()}`)
     const providerPath = await addProviderFromFile(
@@ -387,8 +387,7 @@ test('Refresh an uploaded document with failure, replay and stale-change protect
       )
       expect(await run('return typeof coral.providers.records.newReport;')).toContain('function')
     })
-    let failedUrl = ''
-    await step('Failure preserves the catalog and replay returns that failure', async () => {
+    await step('An unreadable document stops before configuration', async () => {
       await upload(
         Buffer.from(
           JSON.stringify({
@@ -402,23 +401,11 @@ test('Refresh an uploaded document with failure, replay and stale-change protect
           }),
         ),
       )
-      await page.getByRole('button', { name: 'Remove this saved selection', exact: true }).click()
-      await confirmConfiguration(page)
-      failedUrl = new URL(
-        (await page.locator('form:has(input[value="publish"])').getAttribute('action'))!,
-        page.url(),
-      ).toString()
-      await page.getByRole('button', { name: 'Save', exact: true }).click()
-      await page.getByText('Not updated', { exact: true }).waitFor()
-      await page.getByText('The provider is unchanged.').waitFor()
-      await page.goto(providerPath)
-      await waitForProviderStatus(page, 'Records', 'Ready', { available: 2, total: 2 })
-      await page.goto(failedUrl)
-      await page.getByRole('button', { name: 'Retry', exact: true }).click()
-      await page.getByText('Not updated', { exact: true }).waitFor()
-      expect(await page.getByRole('button', { name: 'Retry', exact: true }).count()).toBe(0)
-      // Start over returns to settings, where every change opens.
-      await page.getByRole('link', { name: 'Start over', exact: true }).click()
+      const error = page.getByRole('alert').filter({ hasText: 'Cannot read this document' })
+      await error.getByText('Error code: duplicate_operation_key', { exact: false }).waitFor()
+      expect(await page.getByLabel('Display name', { exact: true }).count()).toBe(0)
+      // An upload is not kept, so you choose the source again in settings.
+      await error.getByRole('link', { name: 'Choose a source', exact: true }).click()
       await page.waitForURL((url) => url.pathname === `${providerPath}/settings`)
       await page.getByRole('link', { name: 'Replace source', exact: true }).click()
       await chooseFile(
@@ -427,10 +414,6 @@ test('Refresh an uploaded document with failure, replay and stale-change protect
         openApiDocument('Records', { listRecords: {}, newReport: {} }),
       )
       await page.getByRole('button', { name: 'Read', exact: true }).click()
-      await page.getByRole('button', { name: 'Save', exact: true }).waitFor()
-      expect(await page.locator('input[name="requestId"]').last().inputValue()).not.toBe(
-        new URL(failedUrl).searchParams.get('requestId'),
-      )
       await save(page)
     })
     await step('A change in another tab invalidates the reviewed request', async () => {

@@ -16,6 +16,8 @@ export const banner = recipe({
     variant: 'info',
   },
   variants: {
+    // One line of text sits level with the icon and the action.
+    oneLine: { true: { alignItems: 'center' } },
     variant: {
       error: {
         background: theme.pill.red.background,

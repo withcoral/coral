@@ -258,6 +258,8 @@ export interface ConfigurationReviewView {
   operations: ReviewOperationView[]
   unavailableOperations: { key: string; reasons: string[] }[]
   diagnostic: string
+  /** False when Coral cannot read the source; the diagnostic says why. */
+  readable: boolean
   errors: Record<string, string>
 }
 

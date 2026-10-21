@@ -41,6 +41,23 @@ export const Variants: Story = {
   ),
 }
 
+/** A title alone sits level with its icon and action. */
+export const TitleOnly: Story = {
+  args: {
+    action: (
+      <Button.Container size="32" variant="primary">
+        <Button.Text>Review changes</Button.Text>
+      </Button.Container>
+    ),
+    title: 'The new source changes 3 settings',
+  },
+  render: (args) => (
+    <div style={{ maxWidth: 720 }}>
+      <Banner {...args} />
+    </div>
+  ),
+}
+
 export const LongText: Story = {
   args: {
     action: (

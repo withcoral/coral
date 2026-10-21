@@ -1,9 +1,10 @@
-import { data, redirect } from 'react-router'
+import { data, redirect, useLocation, useNavigate, useNavigation } from 'react-router'
 import type { Route } from './+types/workspace'
 import { ProviderState } from '@/generated/coral/management/v1/provider_pb'
-import { OVERVIEW_ACTIVITY_ROOTS } from '@/lib/activity-live-types'
 import { isBuiltinProvider } from '@/lib/call-root'
-import { loadActivity } from '@/lib/activity.server'
+import { DEFAULT_SUMMARY_DAYS, summaryDays, summarySearch } from '@/lib/activity-summary'
+import { glimpseActivitySummary } from '@/lib/activity-summary.server'
+import { useRevalidateWhileVisible } from '@/lib/use-revalidate-while-visible'
 import {
   actionFailure,
   field,
@@ -19,14 +20,17 @@ import { agentView, membershipView, ownerView } from '@/lib/management-views.ser
 import { RECIPE_CHOICES } from '@/lib/provider-recipes/library.server'
 import { blockerLabel, listAllProviders, providerPath } from '@/lib/providers.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
+import { ActivitySummary } from '@/views/activity/summary/summary'
 import { GLIMPSE_FETCH, WorkspaceOverview } from '@/views/management/workspace-overview'
-import { LiveActivity } from './activity-live'
 
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 
 export function shouldRevalidate() {
   return true
 }
+
+/** How often an open Overview reads its summary again. */
+const SUMMARY_REFRESH_MS = 30_000
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
@@ -35,7 +39,15 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     if (w.state === 'archived') return redirect(`${w.path}/activity`, { headers: privateHeaders })
     const owner = w.effectiveRole === 'owner'
     const people = !isLocalDeployment(context)
-    const [agents, providers, owners, own, activity] = await Promise.all([
+    const url = new URL(request.url)
+    const query = url.searchParams.get('days')
+    // A period the page does not offer leaves the URL, so the URL names what you see.
+    if (query !== null && summaryDays(query) === undefined)
+      return redirect(`${url.pathname}${summarySearch(url.search, DEFAULT_SUMMARY_DAYS)}`, {
+        headers: privateHeaders,
+      })
+    const days = summaryDays(query) ?? DEFAULT_SUMMARY_DAYS
+    const [agents, providers, owners, own, summary] = await Promise.all([
       owner ? api.agents.listAgents({ parent: w.name, pageSize: GLIMPSE_FETCH }) : null,
       listAllProviders(api, w.name),
       people ? api.memberships.listWorkspaceOwners({ parent: w.name }) : null,
@@ -44,11 +56,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         : api.memberships.getWorkspaceMembership({
             name: `${w.name}/memberships/${w.currentUser.slice('users/'.length)}`,
           }),
-      loadActivity(request, api, {
-        scope: { workspace: w.name },
-        listPath: `/${w.name}`,
-        pageSize: OVERVIEW_ACTIVITY_ROOTS,
-      }),
+      glimpseActivitySummary(api, w.name, days, request.signal),
     ])
     return data(
       {
@@ -73,7 +81,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         ownMembership: own ? membershipView(own) : null,
         form: formContext(context),
         recipes: RECIPE_CHOICES,
-        activity,
+        activity: { days, summary },
       },
       { headers: privateHeaders },
     )
@@ -119,20 +127,47 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 }
 
 export default function WorkspaceRoute({ loaderData }: Route.ComponentProps) {
-  // Keyed by workspace, not location: the activity reader navigates within this page.
+  // Keyed by workspace, not location: a new summary period navigates within this page.
   return (
     <WorkspaceOverview
       key={loaderData.workspace.name}
       {...loaderData}
-      activity={
-        <LiveActivity
-          initial={loaderData.activity}
-          more={{
-            to: `${loaderData.workspace.path}/activity`,
-            label: 'View all activity',
-            roots: OVERVIEW_ACTIVITY_ROOTS,
-          }}
+      summary={
+        <LiveSummary
+          {...loaderData.activity}
+          owner={loaderData.workspace.effectiveRole === 'owner'}
         />
+      }
+    />
+  )
+}
+
+/** The loader's summary, read again while you look at it. While a new period loads, the
+ * picker shows that period and the numbers fade.
+ */
+function LiveSummary({
+  days,
+  summary,
+  owner,
+}: Route.ComponentProps['loaderData']['activity'] & { owner: boolean }) {
+  useRevalidateWhileVisible(SUMMARY_REFRESH_MS)
+  const location = useLocation()
+  const navigation = useNavigation()
+  const navigate = useNavigate()
+  const target =
+    navigation.location?.pathname === location.pathname ? navigation.location : location
+  const chosen = summaryDays(new URLSearchParams(target.search).get('days')) ?? DEFAULT_SUMMARY_DAYS
+  return (
+    <ActivitySummary
+      summary={summary}
+      owner={owner}
+      days={chosen}
+      pending={chosen !== days}
+      onDaysChange={(next) =>
+        void navigate(
+          { search: summarySearch(location.search, next) },
+          { replace: true, preventScrollReset: true },
+        )
       }
     />
   )
