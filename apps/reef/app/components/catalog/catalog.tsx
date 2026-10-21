@@ -8,7 +8,7 @@ import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 
 import * as styles from './catalog.css'
 
-export { railItem } from './catalog.css'
+export { railItem, toolbarActionLabel } from './catalog.css'
 
 /**
  * A catalog page: a filterable rail of groups on the left and the grouped table
@@ -176,7 +176,11 @@ export function CatalogToolbar({
   /** Controls at the start of the row, such as actions on the selection. */
   leading?: ReactNode
   children?: ReactNode
-  /** The page's main action, such as "Add provider", last in the row. */
+  /**
+   * The page's main action, such as "Add provider", last in the row. Give it
+   * an icon and put `toolbarActionLabel` on its label: a narrow toolbar shows
+   * only the icon.
+   */
   action?: ReactNode
 }) {
   const { shortcut, fill, ...field } = filter
@@ -186,8 +190,20 @@ export function CatalogToolbar({
     input.current?.focus()
     input.current?.select()
   }, [])
+  const filterField = (
+    <div
+      className={classNames(
+        styles.toolbarFilter,
+        fill && styles.toolbarFilterFill,
+        field.className,
+      )}
+    >
+      <FilterInput {...field} ref={input} />
+      {shortcut && <KeyboardShortcut shortcut={shortcut} handler={focusFilter} />}
+    </div>
+  )
   return (
-    <div className={styles.toolbar}>
+    <div className={classNames(styles.toolbar, Boolean(action) && styles.toolbarWithAction)}>
       {/* An empty group would still take a gap, and push the controls off the table's edge. */}
       {(title || leading) && (
         <div className={styles.toolbarGroup}>
@@ -203,18 +219,16 @@ export function CatalogToolbar({
       )}
       <div className={classNames(styles.toolbarGroup, styles.toolbarControls)}>
         {children}
-        <div
-          className={classNames(
-            styles.toolbarFilter,
-            fill && styles.toolbarFilterFill,
-            field.className,
-          )}
-        >
-          <FilterInput {...field} ref={input} />
-          {shortcut && <KeyboardShortcut shortcut={shortcut} handler={focusFilter} />}
-        </div>
+        {action ? (
+          // One unit, so a wrapping row never leaves the action on a line alone.
+          <div className={styles.toolbarFilterAndAction}>
+            {filterField}
+            <div className={styles.toolbarAction}>{action}</div>
+          </div>
+        ) : (
+          filterField
+        )}
       </div>
-      {action && <div className={styles.toolbarAction}>{action}</div>}
     </div>
   )
 }

@@ -100,6 +100,8 @@ export const main = style({
   minHeight: 0,
   minWidth: 0,
   paddingInlineStart: 16,
+  // Below the rail, the content starts on the rail's edge.
+  '@media': { '(max-width: 760px)': { paddingInlineStart: 0 } },
 })
 // The rail's gap, so the first rail entry and the table start on one line.
 export const stack = style({
@@ -110,14 +112,7 @@ export const stack = style({
   minHeight: 0,
   minWidth: 0,
 })
-// The toolbar's own width decides where its action goes, since the rail
-// beside it narrows the column well before the viewport does.
-const toolbarContainer = createContainer()
-// Below this width the controls and the action no longer share one line.
-const NARROW_TOOLBAR = `${toolbarContainer} (max-width: 560px)`
 export const toolbar = style({
-  containerName: toolbarContainer,
-  containerType: 'inline-size',
   alignItems: 'center',
   display: 'flex',
   flexWrap: 'wrap',
@@ -132,29 +127,77 @@ export const toolbarGroup = style({
   gap: 12,
   minWidth: 0,
 })
-// The main action ends a wide row. In a narrow one, the controls have no room
-// for it, so it moves up to the title's row and the controls take their own.
-export const toolbarAction = style({
-  display: 'flex',
-  flexShrink: 0,
-  '@container': { [NARROW_TOOLBAR]: { order: 1 } },
+// A toolbar with an action lays itself out by its own width, since the rail
+// beside it narrows the column well before the viewport does. Without one,
+// a toolbar is no container, so a card's toolbar keeps sizing to its content.
+const toolbarContainer = createContainer()
+// The controls take their own row below the title.
+const STACKED_TOOLBAR = `${toolbarContainer} (max-width: 640px)`
+// The action shows only its icon, so the filter keeps room to type in.
+const COMPACT_TOOLBAR = `${toolbarContainer} (max-width: 420px)`
+export const toolbarWithAction = style({
+  containerName: toolbarContainer,
+  containerType: 'inline-size',
 })
 // The trailing group keeps its controls on one line, at the end. When the row
 // has no room for them at full width, the whole group moves below the title,
 // so the picker never stacks over the filter beside a title centred on both.
+// With an action, the group stays beside the title while the filter can
+// shrink, and the action never takes a line of its own; below that, the
+// group takes its own row and the filter fills it.
 export const toolbarControls = style({
   flex: '1 1 auto',
   flexWrap: 'nowrap',
   justifyContent: 'flex-end',
+  selectors: { [`${toolbarWithAction} > &`]: { flexBasis: 0 } },
   '@container': {
-    [NARROW_TOOLBAR]: {
-      selectors: { [`&:has(+ ${toolbarAction})`]: { flexBasis: '100%', order: 2 } },
+    [STACKED_TOOLBAR]: { selectors: { [`${toolbarWithAction} > &`]: { flexBasis: '100%' } } },
+    // Too narrow for the picker, the filter and the action on one line: the
+    // filter and the action wrap below the picker, never off the edge.
+    [COMPACT_TOOLBAR]: {
+      selectors: {
+        [`${toolbarWithAction} > &`]: { flexWrap: 'wrap', justifyContent: 'flex-start' },
+      },
+    },
+  },
+})
+export const toolbarFilterAndAction = style({
+  alignItems: 'center',
+  display: 'flex',
+  flex: '0 1 auto',
+  gap: 12,
+  '@container': {
+    [STACKED_TOOLBAR]: { flexGrow: 1 },
+    // Wraps at its least width (the filter's least and the action's), not
+    // its preferred one.
+    [COMPACT_TOOLBAR]: { flexBasis: 0 },
+  },
+})
+export const toolbarAction = style({ display: 'flex', flexShrink: 0 })
+// For the action's label: assistive technology still reads it as the
+// action's name when a narrow toolbar hides it.
+export const toolbarActionLabel = style({
+  '@container': {
+    [COMPACT_TOOLBAR]: {
+      border: 0,
+      clipPath: 'inset(50%)',
+      height: 1,
+      margin: -1,
+      overflow: 'hidden',
+      padding: 0,
+      position: 'absolute',
+      whiteSpace: 'nowrap',
+      width: 1,
     },
   },
 })
 export const toolbarTitle = style({ alignItems: 'center', display: 'flex', gap: 8, minWidth: 0 })
 // The basis decides when the group wraps; on its own line the filter then
 // shrinks to fit a phone.
-export const toolbarFilter = style({ flex: '0 1 360px', minWidth: 120 })
+export const toolbarFilter = style({
+  flex: '0 1 360px',
+  minWidth: 120,
+  '@container': { [STACKED_TOOLBAR]: { flexGrow: 1 } },
+})
 // In a narrow column the filter takes the rest of the row, so it stays beside its picker.
 export const toolbarFilterFill = style({ flex: '1 1 160px', minWidth: 0 })

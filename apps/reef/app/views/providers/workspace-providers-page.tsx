@@ -18,7 +18,13 @@ import { StatusDot } from '@/wax/components/status'
 import { InfoTip, Tooltip } from '@/wax/components/tooltip'
 import * as Table from '@/wax/components/table'
 import { CELL_HEIGHT_PX, groupHeadingHeightPx } from '@/wax/components/table'
-import { CatalogLayout, CatalogRail, CatalogRailItem, CatalogToolbar } from '@/components/catalog'
+import {
+  CatalogLayout,
+  CatalogRail,
+  CatalogRailItem,
+  CatalogToolbar,
+  toolbarActionLabel,
+} from '@/components/catalog'
 import { filterQuery, type FilterQuery } from '@/utils/filter-query'
 import { EmptyPage } from '@/components/empty-page'
 import {
@@ -233,7 +239,9 @@ function WorkspaceProvidersContent({
         </div>
       ) : (
         <ProvidersTableScreen
-          addButton={addButton}
+          addButton={
+            canChange && <AddProviderLauncher {...entry} labelClassName={toolbarActionLabel} />
+          }
           canChange={canChange}
           filteredProviders={filteredProviders}
           form={form}

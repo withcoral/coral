@@ -1,18 +1,25 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { createRoutesStub } from 'react-router'
+import { expect } from 'storybook/test'
 
 import { filterQuery } from '@/utils/filter-query'
-import { Table } from '@/wax/components'
+import { Button, Table } from '@/wax/components'
 
-import { CatalogLayout, CatalogRail, CatalogRailItem, CatalogToolbar } from './catalog'
+import {
+  CatalogLayout,
+  CatalogRail,
+  CatalogRailItem,
+  CatalogToolbar,
+  toolbarActionLabel,
+} from './catalog'
 
 const groups = [
   { name: 'finance', members: ['monthlyTotals', 'overdueInvoices'] },
   { name: 'linear', members: ['completedSince', 'issueBrief', 'myOpenIssues'] },
 ]
 
-function Catalog({ title }: { title?: string }) {
+function Catalog({ title, action }: { title?: string; action?: ReactNode }) {
   const [rail, setRail] = useState('')
   const [table, setTable] = useState('')
   const [current, setCurrent] = useState('finance')
@@ -47,6 +54,7 @@ function Catalog({ title }: { title?: string }) {
       >
         <CatalogToolbar
           title={title}
+          action={action}
           filter={{
             label: 'Filter members',
             value: table,
@@ -100,4 +108,30 @@ export const Default: Story = {
 export const Titled: Story = {
   args: { rail: null, children: null },
   render: () => <Catalog title="Functions" />,
+}
+
+// The main action ends the toolbar. A toolbar with an action lays itself out
+// by its own width, and that containment must not shrink it to its content.
+export const WithAction: Story = {
+  args: { rail: null, children: null },
+  render: () => (
+    <Catalog
+      title="Functions"
+      action={
+        <Button.Container variant="primary">
+          <Button.Icon name="Plus" />
+          <Button.Text className={toolbarActionLabel}>New function</Button.Text>
+        </Button.Container>
+      }
+    />
+  ),
+  play: async ({ canvas }) => {
+    const action = canvas.getByRole('button', { name: 'New function' })
+    await expect(action).toBeVisible()
+    let toolbar = action.parentElement
+    while (toolbar && getComputedStyle(toolbar).containerType !== 'inline-size')
+      toolbar = toolbar.parentElement
+    const parent = toolbar!.parentElement!
+    await expect(toolbar!.getBoundingClientRect().width).toBe(parent.getBoundingClientRect().width)
+  },
 }

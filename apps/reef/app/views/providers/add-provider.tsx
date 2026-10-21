@@ -126,9 +126,12 @@ export function AddProviderEntry({
  */
 export function AddProviderLauncher({
   description,
+  labelClassName,
   ...entry
 }: Omit<AddProviderEntryProps, 'result' | 'onReading'> & {
   description?: string
+  /** Styles the button's label, such as a toolbar's `toolbarActionLabel`. */
+  labelClassName?: string
 }) {
   const [open, setOpen] = useState(false)
   // A catalog read in flight keeps the dialog open: it moves on by itself when
@@ -143,7 +146,8 @@ export function AddProviderLauncher({
       }}
     >
       <Dialog.Trigger render={<Button.Container variant="primary" size="32" />}>
-        <Button.Text>Add provider</Button.Text>
+        <Button.Icon name="Plus" />
+        <Button.Text className={labelClassName}>Add provider</Button.Text>
       </Dialog.Trigger>
       {open && (
         <Dialog.Portal>
