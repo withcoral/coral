@@ -1289,7 +1289,7 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
     {
         let mut state = started(LIMITED);
         let mut answers = fence_each(&mut state, 3..7);
-        assert_eq!(state.dispatching(), 2);
+        assert_eq!(state.slots_held(), 2);
         assert_eq!(state.waiting_for_a_slot(), 2);
         assert_eq!(state.pending_chunks(), 1);
         let effects = apply(&mut state, Message::Drained, 7);
@@ -1304,7 +1304,7 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
             matches!(applied.try_recv(), Ok(Ok(()))),
             "answered at Applied"
         );
-        assert_eq!(state.dispatching(), 2);
+        assert_eq!(state.slots_held(), 2);
         assert_eq!(state.waiting_for_a_slot(), 1);
         let effects = apply(&mut state, Message::Drained, 10);
         let [Effect::Commit { chunk, .. }] = effects.as_slice() else {
@@ -1321,7 +1321,7 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         deliver(apply(&mut state, Message::DispatchEnded, 12));
         deliver(apply(&mut state, Message::DispatchEnded, 13));
         assert_eq!(
-            state.dispatching(),
+            state.slots_held(),
             1,
             "the fourth took the first slot freed"
         );
@@ -1331,40 +1331,90 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         deliver(apply(&mut state, Message::Committed, 15));
         let (effects, _) = fence(&mut state, 16);
         deliver(effects);
-        assert_eq!(state.dispatching(), 2);
+        assert_eq!(state.slots_held(), 2);
         assert_eq!(state.waiting_for_a_slot(), 0);
         assert_eq!(state.pending_chunks(), 1, "the free slot batches at once");
     }
 
-    // A stop answers a request waiting for a slot at once, as it answers a
-    // batch not yet committed: termination ends a slot wait.
+    // An over-budget result frees no slot: the owner applies nothing, the
+    // row stays dispatching, and the Invocation task frees the slot once
+    // the row's end is recorded (through `DispatchEnded`).
     {
-        let mut state = started(LIMITED);
+        let mut state = started(OwnerLimits {
+            run_output_bytes: 10,
+            ..LIMITED
+        });
         let mut answers = fence_each(&mut state, 20..23);
+        deliver(apply(&mut state, Message::Drained, 23));
+        deliver(apply(&mut state, Message::Committed, 24));
+        let (effects, mut refused, refused_work) = result(&mut state, 11, 25);
+        assert!(deliver(effects).is_empty());
+        assert!(matches!(
+            refused.try_recv(),
+            Ok(Err(Error::InvocationRejected(rejection)))
+                if rejection.failure() == CoralFailure::RunOutputTooLarge
+        ));
+        assert!(matches!(
+            refused_work.lock().expect("settle").as_ref(),
+            Some(Err(Error::InvocationRejected(_)))
+        ));
+        assert_eq!(state.slots_held(), 2, "a refused result frees no slot");
         assert_eq!(state.waiting_for_a_slot(), 1);
-        let rest = deliver(apply(&mut state, Message::Stop, 23));
-        assert!(
-            rest.iter()
-                .all(|effect| matches!(effect, Effect::TerminateProgram)),
-            "{rest:?}"
-        );
-        for answer in &mut answers {
-            assert!(matches!(
-                answered(answer),
-                Some(Err(Error::ProgramHostTerminated))
-            ));
-        }
-        assert_eq!(state.waiting_for_a_slot(), 0);
         assert_eq!(state.pending_chunks(), 0);
+        assert!(answered(answers.last_mut().expect("the waiting request")).is_none());
+        deliver(apply(&mut state, Message::DispatchEnded, 26));
+        assert_eq!(state.slots_held(), 2);
+        assert_eq!(state.waiting_for_a_slot(), 0);
+        assert_eq!(state.pending_chunks(), 1, "the row's end freed the slot");
+    }
+
+    // Once the Run takes no more Program requests, the request waiting for
+    // a slot is answered at once with the error the ending makes, while the
+    // batch in flight answers on its own: a stop, the Program's end and a
+    // lost claim each end a slot wait.
+    for (ending, message, lost) in [
+        (
+            "a stop",
+            Message::Stop,
+            (|error: &Error| matches!(error, Error::ProgramHostTerminated)) as fn(&Error) -> bool,
+        ),
+        (
+            "the Program's end",
+            Message::ProgramEnded(ExecutionCompletion::Succeeded(FinalValue::Absent)),
+            |error: &Error| matches!(error, Error::ProgramHostTerminated),
+        ),
+        (
+            "a lost claim",
+            Message::CommitRejected(CommitRejection::ClaimMismatch),
+            |error: &Error| matches!(error, Error::OwnerLost),
+        ),
+    ] {
+        let mut state = started(LIMITED);
+        let mut answers = fence_each(&mut state, 30..33);
+        deliver(apply(&mut state, Message::Drained, 33));
+        assert!(state.has_commit_in_flight(), "{ending}");
+        deliver(apply(&mut state, message, 34));
+        assert!(
+            matches!(
+                answered(answers.last_mut().expect("the waiting request")),
+                Some(Err(error)) if lost(&error)
+            ),
+            "{ending} answers the waiting request"
+        );
+        assert_eq!(state.waiting_for_a_slot(), 0, "{ending}");
+        assert!(
+            answered(answers.first_mut().expect("a batched request")).is_none(),
+            "{ending}: the batch in flight answers on its own"
+        );
     }
 
     // The Run deadline covers a slot wait: a slot freed past it answers
     // every waiting request at once, like a request that arrives past it.
     {
         let mut state = started(LIMITED);
-        let mut answers = fence_each(&mut state, 30..34);
-        deliver(apply(&mut state, Message::Drained, 34));
-        deliver(apply(&mut state, Message::Committed, 35));
+        let mut answers = fence_each(&mut state, 40..44);
+        deliver(apply(&mut state, Message::Drained, 44));
+        deliver(apply(&mut state, Message::Committed, 45));
         let effects = apply(
             &mut state,
             Message::DispatchEnded,
@@ -1380,51 +1430,19 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         assert_eq!(state.waiting_for_a_slot(), 0);
         assert_eq!(state.pending_chunks(), 0);
     }
+}
 
-    // The Program's end answers a request waiting for a slot at once: no
-    // dispatch of its starts after the Program that would take its result.
-    {
-        let mut state = started(LIMITED);
-        let mut answers = fence_each(&mut state, 40..43);
-        deliver(apply(&mut state, Message::Drained, 43));
-        let effects = apply(
-            &mut state,
-            Message::ProgramEnded(ExecutionCompletion::Succeeded(FinalValue::Absent)),
-            44,
-        );
-        assert!(
-            effects
-                .iter()
-                .any(|effect| matches!(effect, Effect::TerminateProgram)),
-            "{effects:?}"
-        );
-        deliver(effects);
-        assert!(matches!(
-            answered(answers.last_mut().expect("the waiting request")),
-            Some(Err(Error::ProgramHostTerminated))
-        ));
-        assert_eq!(state.waiting_for_a_slot(), 0);
-        assert!(
-            answered(answers.first_mut().expect("a batched request")).is_none(),
-            "the batch in flight answers on its own"
-        );
-    }
-
-    // A lost claim answers the waiting request with the loss, like every
-    // pending request.
-    {
-        let mut state = started(LIMITED);
-        let mut answers = fence_each(&mut state, 50..53);
-        deliver(apply(&mut state, Message::Drained, 53));
-        deliver(apply(
-            &mut state,
-            Message::CommitRejected(CommitRejection::ClaimMismatch),
-            54,
-        ));
-        assert!(matches!(
-            answered(answers.last_mut().expect("the waiting request")),
-            Some(Err(Error::OwnerLost))
-        ));
-        assert_eq!(state.waiting_for_a_slot(), 0);
-    }
+/// The Fan-out Limit admits at least one Invocation: at zero no dispatch
+/// could ever start.
+#[test]
+fn a_fan_out_limit_below_one_invocation_is_rejected() {
+    assert!(matches!(FanOutLimit::new(0), Err(Error::InvalidInput(_))));
+    assert_eq!(
+        FanOutLimit::new(1).expect("one Invocation").invocations(),
+        1
+    );
+    assert_eq!(
+        FanOutLimit::default().invocations(),
+        FanOutLimit::DEFAULT_INVOCATIONS
+    );
 }

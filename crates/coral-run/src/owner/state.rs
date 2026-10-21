@@ -126,14 +126,14 @@ pub(crate) struct OwnerState {
     /// No commit succeeded for longer than the suspect bound: Program
     /// requests answer only once recorded, until one does.
     suspect: bool,
-    /// Invocations whose dispatch the owner started and has not seen end:
-    /// the count the Fan-out Limit bounds. Owner memory only; a recovered
-    /// owner never dispatches, so nothing recomputes it from rows.
-    dispatching: usize,
-    /// Ready Invocations above the Fan-out Limit, in readiness order (their
+    /// Slots held under the Fan-out Limit: one per fence request the owner
+    /// has batched whose dispatch it has not seen end. Owner memory only; a
+    /// recovered owner never dispatches, so nothing recomputes it from rows.
+    slots_held: usize,
+    /// Ready Invocations waiting for a slot, in readiness order (their
     /// mailbox arrival order). Each one stays `pending`, with no Event, and
     /// joins a fence batch when an earlier dispatch ends.
-    ready: VecDeque<Box<FenceRequest>>,
+    waiting: VecDeque<Box<FenceRequest>>,
     open: ChunkBuild,
     closed: VecDeque<ChunkBuild>,
     in_flight: Option<InFlight>,
@@ -153,8 +153,8 @@ impl OwnerState {
             recorded_total: 0,
             last_commit_at_unix_nanos: accepted_at_unix_nanos,
             suspect: false,
-            dispatching: 0,
-            ready: VecDeque::new(),
+            slots_held: 0,
+            waiting: VecDeque::new(),
             open: ChunkBuild::default(),
             closed: VecDeque::new(),
             in_flight: None,
@@ -192,16 +192,16 @@ impl OwnerState {
         self.suspect
     }
 
-    /// Invocations whose dispatch the owner started and has not seen end.
+    /// Slots held under the Fan-out Limit.
     #[cfg(test)]
-    pub(crate) const fn dispatching(&self) -> usize {
-        self.dispatching
+    pub(crate) const fn slots_held(&self) -> usize {
+        self.slots_held
     }
 
     /// Ready Invocations waiting for a slot under the Fan-out Limit.
     #[cfg(test)]
     pub(crate) fn waiting_for_a_slot(&self) -> usize {
-        self.ready.len()
+        self.waiting.len()
     }
 
     /// The owner's own liveness, decided on every message: past the suspect
@@ -369,10 +369,12 @@ impl OwnerState {
         self.answer(reply)
     }
 
-    /// An upstream result ends the dispatch that produced it: whatever the
-    /// result's own fate, its slot under the Fan-out Limit goes to the
-    /// Invocation that has waited longest, whose fence joins the chunk
-    /// after this row's end.
+    /// An upstream result the owner applies ends the dispatch that produced
+    /// it: its slot under the Fan-out Limit goes to the Invocation that has
+    /// waited longest, whose fence joins the chunk after this row's end. A
+    /// result the owner refuses (over budget, or no longer taking work)
+    /// leaves the row `dispatching` and the slot with the Invocation task,
+    /// which frees it once the row's end is recorded.
     fn invocation_result(
         &mut self,
         bytes: usize,
@@ -380,8 +382,8 @@ impl OwnerState {
         reply: Reply,
         now_unix_nanos: i64,
     ) -> Vec<Effect> {
-        let mut effects = if !self.accepts_work() {
-            vec![
+        if !self.accepts_work() {
+            return vec![
                 Effect::Abandon(work, Error::ProgramHostTerminated),
                 Effect::Reply(
                     reply,
@@ -389,9 +391,10 @@ impl OwnerState {
                         "Program Run lost Invocation completion".to_string(),
                     )),
                 ),
-            ]
-        } else if !self.output_fits(bytes) {
-            vec![
+            ];
+        }
+        if !self.output_fits(bytes) {
+            return vec![
                 Effect::Abandon(
                     work,
                     Error::InvocationRejected(CoralFailure::RunOutputTooLarge.into()),
@@ -402,12 +405,11 @@ impl OwnerState {
                         CoralFailure::RunOutputTooLarge.into(),
                     )),
                 ),
-            ]
-        } else {
-            self.output_total = self.output_total.saturating_add(bytes);
-            self.push(ChunkItem::Work(work), 1, bytes);
-            self.answer(reply)
-        };
+            ];
+        }
+        self.output_total = self.output_total.saturating_add(bytes);
+        self.push(ChunkItem::Work(work), 1, bytes);
+        let mut effects = self.answer(reply);
         effects.extend(self.dispatch_ended(now_unix_nanos));
         effects
     }
@@ -436,11 +438,11 @@ impl OwnerState {
                 Error::ProgramHostTerminated,
             )];
         }
-        if self.dispatching >= self.limits.fan_out_invocations {
-            self.ready.push_back(request);
+        if self.slots_held >= self.limits.fan_out_invocations {
+            self.waiting.push_back(request);
             return Vec::new();
         }
-        self.dispatching += 1;
+        self.slots_held += 1;
         self.open.push_fence(*request);
         if self.open.is_full() {
             self.close_open();
@@ -454,20 +456,24 @@ impl OwnerState {
     /// wait: once the Run takes no more Program requests, every waiting
     /// Invocation is answered at once instead.
     fn dispatch_ended(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
-        self.dispatching = self.dispatching.saturating_sub(1);
+        // Saturating: the `apply` table sends results no fence preceded. In
+        // production a result or a `DispatchEnded` comes only from a task
+        // whose request the owner batched, so the count is exact.
+        self.slots_held = self.slots_held.saturating_sub(1);
         if !self.accepts_program_requests(now_unix_nanos) {
-            return self.abandon_ready(|| Error::ProgramHostTerminated);
+            return self.abandon_waiting(|| Error::ProgramHostTerminated);
         }
-        match self.ready.pop_front() {
+        match self.waiting.pop_front() {
             Some(request) => self.fence(request, now_unix_nanos),
             None => Vec::new(),
         }
     }
 
     /// Answers every Invocation waiting for a slot, as one batch, with the
-    /// error `lost` makes: no dispatch of theirs ever starts.
-    fn abandon_ready(&mut self, lost: impl Fn() -> Error) -> Vec<Effect> {
-        let mut waiting = self.ready.drain(..);
+    /// error `lost` makes: no dispatch of theirs ever starts. The slots the
+    /// abandoned batches held stay counted: the Run takes no more requests.
+    fn abandon_waiting(&mut self, lost: impl Fn() -> Error) -> Vec<Effect> {
+        let mut waiting = self.waiting.drain(..);
         let Some(first) = waiting.next() else {
             return Vec::new();
         };
@@ -495,7 +501,7 @@ impl OwnerState {
             }
         }
         self.closed.retain(|chunk| !chunk.is_empty());
-        effects.extend(self.abandon_ready(|| Error::ProgramHostTerminated));
+        effects.extend(self.abandon_waiting(|| Error::ProgramHostTerminated));
         effects.push(Effect::TerminateProgram);
         effects
     }
@@ -564,7 +570,7 @@ impl OwnerState {
     /// Settles every pending request and work item, and every Invocation
     /// waiting for a slot, with the error `lost` makes.
     fn abandon_pending(&mut self, lost: impl Fn() -> Error) -> Vec<Effect> {
-        let mut effects = self.abandon_ready(&lost);
+        let mut effects = self.abandon_waiting(&lost);
         let pending = self
             .closed
             .drain(..)
@@ -612,7 +618,7 @@ impl OwnerState {
                 // Wake every detached Invocation wait, as execution's end does;
                 // an Invocation still waiting for a slot never dispatches.
                 let mut effects = vec![Effect::TerminateProgram];
-                effects.extend(self.abandon_ready(|| Error::ProgramHostTerminated));
+                effects.extend(self.abandon_waiting(|| Error::ProgramHostTerminated));
                 effects.extend(self.advance_ending());
                 effects
             }

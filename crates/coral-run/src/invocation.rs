@@ -1199,7 +1199,6 @@ impl OperationInvoker {
         result_json: &str,
         slot: &mut DispatchSlot,
     ) -> Result<(), Error> {
-        slot.carry_with_result();
         let work = FinishWork {
             #[cfg(test)]
             observer: self.observer.clone(),
@@ -1210,9 +1209,18 @@ impl OperationInvoker {
             },
             reply: None,
         };
-        self.owner
+        slot.carry_with_result();
+        let applied = self
+            .owner
             .invocation_result(result_json.len(), Box::new(work))
-            .await
+            .await;
+        if applied.is_err() {
+            // The owner applied nothing (the result is over budget, or the
+            // Run takes no more work): the row is still dispatching and the
+            // slot stays with this task until the row's end is recorded.
+            slot.keep();
+        }
+        applied
     }
 
     /// Ends the Invocation with a known failure, recorded before the Program
@@ -1299,6 +1307,12 @@ impl DispatchSlot {
     /// applied; the drop then tells the owner nothing more.
     fn carry_with_result(&mut self) {
         self.carried_by_result = true;
+    }
+
+    /// The owner refused the result and freed nothing: the slot is this
+    /// task's again, freed on drop.
+    fn keep(&mut self) {
+        self.carried_by_result = false;
     }
 }
 
