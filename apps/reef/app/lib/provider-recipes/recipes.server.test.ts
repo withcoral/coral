@@ -1015,15 +1015,30 @@ describe('recipeConfiguration', () => {
       expect(warn).not.toHaveBeenCalled()
     })
 
+    const generator = '      client_config_hint_generator: slack_app_create_link'
     it.for([
-      { name: 'no hint without a generator', generator: [], hint: undefined },
+      { name: 'no hint without a generator', recipe: () => mcpRecipe(), hint: undefined },
       {
         name: 'the hint its generator writes',
-        generator: ['      client_config_hint_generator: slack_app_create_link'],
+        recipe: () => mcpRecipe(generator),
         hint: CLIENT_CONFIG_HINT_GENERATORS.slack_app_create_link(hintContext),
       },
-    ])('adds $name', ({ generator, hint }) => {
-      const configuration = recipeConfiguration(mcpRecipe(...generator), mcpSetup(false))
+      // The hint follows the option the recipe fills in, not any option with a generator.
+      {
+        name: 'no hint from an option the recipe does not fill in',
+        recipe: () =>
+          mcpRecipe(
+            '    hinted:',
+            '      method: oauth_discovery',
+            '      label: Sign in with a hint',
+            '      flow: authorization_code',
+            generator,
+            '  default: oauth',
+          ),
+        hint: undefined,
+      },
+    ])('adds $name', ({ recipe, hint }) => {
+      const configuration = recipeConfiguration(recipe(), mcpSetup(false))
       expect(configuration?.clientConfigHintMarkdown).toBe(hint)
     })
 
