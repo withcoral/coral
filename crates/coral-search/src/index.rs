@@ -406,9 +406,12 @@ impl SearchIndex {
             .map_err(|_elapsed| IndexError::TimedOut(self.write_limit))?
     }
 
-    /// Writes one entry under its Workspace's lock. The wait to begin and to
-    /// take the lock has a limit of its own, so a write that waited long for
-    /// another writer still has its whole write limit. A write that overruns
+    /// Writes one entry under its Workspace's lock. It builds the entry's
+    /// rows before it begins: on `SQLite` the write holds the one writer of
+    /// the process, which every other write waits for, so the text work must
+    /// not hold it. The wait to begin and to take the lock has a limit of its
+    /// own, so a write that waited long for another writer still has its
+    /// whole write limit. A write that overruns
     /// its wait fails as [`IndexError::WriterBusy`], which may pass on a
     /// later try. A write that overruns after it takes the lock fails as
     /// [`IndexError::Overran`], which repeats until something changes. A
@@ -419,6 +422,7 @@ impl SearchIndex {
         entry: &I::Entry,
     ) -> Result<(), IndexError> {
         let workspace_id = indexer.workspace_id(entry);
+        let rows = indexer.rows(entry)?;
         let started = Instant::now();
         let mut transaction = tokio::time::timeout(self.writer_wait_limit, async {
             let mut transaction = self.database.begin().await?;
@@ -436,7 +440,7 @@ impl SearchIndex {
             if let Some(stall) = self.stall_after_lock {
                 tokio::time::sleep(stall).await;
             }
-            if let Err(error) = indexer.index(&mut transaction, entry).await {
+            if let Err(error) = indexer.index(&mut transaction, entry, &rows).await {
                 rollback(transaction).await;
                 return Err(error);
             }

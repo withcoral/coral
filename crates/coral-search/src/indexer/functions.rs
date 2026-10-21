@@ -24,6 +24,7 @@ pub(crate) struct SavedFunctionIndexer;
 #[async_trait]
 impl EntityIndexer for SavedFunctionIndexer {
     type Entry = SavedFunctionEntry;
+    type Rows<'e> = FunctionRow<'e>;
     type Removal = Infallible;
     type Expected = SavedFunctionEntry;
 
@@ -31,13 +32,17 @@ impl EntityIndexer for SavedFunctionIndexer {
         entry.workspace_id()
     }
 
+    fn rows<'e>(&self, entry: &'e SavedFunctionEntry) -> Result<FunctionRow<'e>, IndexError> {
+        function_row(entry)
+    }
+
     async fn index(
         &self,
         transaction: &mut Transaction<'_>,
         entry: &SavedFunctionEntry,
+        row: &FunctionRow<'_>,
     ) -> Result<(), IndexError> {
-        let row = function_row(entry, now_unix_nanos()?)?;
-        repository::upsert_function_row(transaction, &row).await?;
+        repository::upsert_function_row(transaction, row, now_unix_nanos()?).await?;
         repository::delete_function_state(transaction, entry.workspace_id(), entry.id()).await?;
         repository::refresh_function_length(transaction, entry.workspace_id(), entry.id()).await?;
         repository::refresh_workspace_statistics(transaction, entry.workspace_id()).await?;
@@ -147,10 +152,7 @@ pub(crate) async fn record_failed_attempt(
     Ok(())
 }
 
-fn function_row(
-    entry: &SavedFunctionEntry,
-    indexed_at_unix_nanos: i64,
-) -> Result<FunctionRow<'_>, IndexError> {
+fn function_row(entry: &SavedFunctionEntry) -> Result<FunctionRow<'_>, IndexError> {
     let qualified_name = entry.path().as_str();
     let call_path = CallPath::saved_function(qualified_name)
         .map_err(|error| IndexError::InvalidEntry(error.to_string()))?;
@@ -163,7 +165,6 @@ fn function_row(
         description: entry.description().as_str(),
         searchable_text: searchable_text(entry),
         revision: entry.revision(),
-        indexed_at_unix_nanos,
     })
 }
 

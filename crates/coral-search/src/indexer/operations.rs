@@ -37,6 +37,7 @@ pub(crate) enum OperationRemoval {
 #[async_trait]
 impl EntityIndexer for OperationIndexer {
     type Entry = GenerationEntries;
+    type Rows<'e> = Vec<OperationRow<'e>>;
     type Removal = OperationRemoval;
     type Expected = ActiveGeneration;
 
@@ -44,25 +45,31 @@ impl EntityIndexer for OperationIndexer {
         entries.workspace_id()
     }
 
+    fn rows<'e>(
+        &self,
+        entries: &'e GenerationEntries,
+    ) -> Result<Vec<OperationRow<'e>>, IndexError> {
+        entries
+            .operations()
+            .iter()
+            .map(|operation| operation_row(entries, operation))
+            .collect()
+    }
+
     async fn index(
         &self,
         transaction: &mut Transaction<'_>,
         entries: &GenerationEntries,
+        rows: &Vec<OperationRow<'_>>,
     ) -> Result<(), IndexError> {
         let workspace_id = entries.workspace_id();
         let generation_id = entries.generation_id();
         let attempted_at = now_unix_nanos()?;
-        let rows = entries
-            .operations()
-            .iter()
-            .map(|operation| operation_row(entries, operation, attempted_at))
-            .collect::<Result<Vec<_>, _>>()?;
-        repository::upsert_operation_rows(transaction, &rows).await?;
+        repository::upsert_operation_rows(transaction, rows, attempted_at).await?;
         // A Generation keeps its Operations, but the reconcile task prepares
         // entries under the current rules, which may leave one out; a rewrite
         // then removes that row.
-        repository::delete_rows_not_written(transaction, workspace_id, generation_id, &rows)
-            .await?;
+        repository::delete_rows_not_written(transaction, workspace_id, generation_id, rows).await?;
         repository::write_generation_state(
             transaction,
             generation_state(entries.into(), attempted_at, AttemptState::Complete),
@@ -272,7 +279,6 @@ fn generation_state(
 fn operation_row<'a>(
     entries: &'a GenerationEntries,
     operation: &'a OperationEntry,
-    indexed_at_unix_nanos: i64,
 ) -> Result<OperationRow<'a>, IndexError> {
     let call_path = CallPath::operation(entries.call_root(), operation.relative_path())
         .map_err(|error| IndexError::InvalidEntry(error.to_string()))?;
@@ -294,7 +300,6 @@ fn operation_row<'a>(
         provider_name: format!("{} {}", entries.call_root().name(), entries.display_name()),
         searchable_text: searchable_text(entries, operation),
         deprecated: operation.deprecated(),
-        indexed_at_unix_nanos,
     })
 }
 

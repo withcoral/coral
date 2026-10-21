@@ -186,8 +186,9 @@ const OPERATION_COLUMNS: [SearchEntities; 15] = [
 ];
 
 /// One Operation's row in `search_entities`. The document id and the
-/// fingerprint derive from the Generation and the Operation Key.
-pub(super) struct OperationRow<'a> {
+/// fingerprint derive from the Generation and the Operation Key. The write
+/// stamps the row when it upserts it.
+pub(crate) struct OperationRow<'a> {
     pub(super) workspace_id: &'a WorkspaceId,
     pub(super) provider_id: &'a ProviderId,
     pub(super) generation_id: &'a ProviderGenerationId,
@@ -199,7 +200,6 @@ pub(super) struct OperationRow<'a> {
     pub(super) provider_name: String,
     pub(super) searchable_text: String,
     pub(super) deprecated: bool,
-    pub(super) indexed_at_unix_nanos: i64,
 }
 
 impl OperationRow<'_> {
@@ -207,7 +207,7 @@ impl OperationRow<'_> {
         format!("{}:{}", self.generation_id, self.operation_key.as_str())
     }
 
-    fn values(&self) -> [SimpleExpr; OPERATION_COLUMNS.len()] {
+    fn values(&self, indexed_at_unix_nanos: i64) -> [SimpleExpr; OPERATION_COLUMNS.len()] {
         let generation_id = self.generation_id.to_string();
         [
             self.workspace_id.to_string().into(),
@@ -224,7 +224,7 @@ impl OperationRow<'_> {
             self.searchable_text.clone().into(),
             self.deprecated.into(),
             generation_id.into(),
-            self.indexed_at_unix_nanos.into(),
+            indexed_at_unix_nanos.into(),
         ]
     }
 }
@@ -250,13 +250,14 @@ pub(super) struct GenerationState<'a> {
     pub(super) state: AttemptState,
 }
 
-/// Upserts Operation rows by Workspace and document id, as
-/// [`changed_rows_only`] describes. An update, never `INSERT OR REPLACE`: on
-/// `SQLite` a replace skips the delete trigger and leaves a stale copy in
-/// the FTS5 table.
+/// Upserts Operation rows by Workspace and document id, stamped with
+/// `indexed_at_unix_nanos`, as [`changed_rows_only`] describes. An update,
+/// never `INSERT OR REPLACE`: on `SQLite` a replace skips the delete trigger
+/// and leaves a stale copy in the FTS5 table.
 pub(super) async fn upsert_operation_rows(
     transaction: &mut Transaction<'_>,
     rows: &[OperationRow<'_>],
+    indexed_at_unix_nanos: i64,
 ) -> Result<(), Error> {
     for chunk in rows.chunks(CHUNK_ROWS) {
         let mut statement = Query::insert();
@@ -264,7 +265,7 @@ pub(super) async fn upsert_operation_rows(
             .into_table(SearchEntities::Table)
             .columns(OPERATION_COLUMNS);
         for row in chunk {
-            statement.values_panic(row.values());
+            statement.values_panic(row.values(indexed_at_unix_nanos));
         }
         statement.on_conflict(changed_rows_only(transaction.system(), OPERATION_COLUMNS));
         transaction.execute(statement).await?;
@@ -541,8 +542,8 @@ const FUNCTION_COLUMNS: [SearchEntities; 15] = [
 
 /// One Saved Function's row in `search_entities`. The document id is the
 /// function id; the fingerprint is [`function_fingerprint`] of the
-/// definition revision.
-pub(super) struct FunctionRow<'a> {
+/// definition revision. The write stamps the row when it upserts it.
+pub(crate) struct FunctionRow<'a> {
     pub(super) workspace_id: &'a WorkspaceId,
     pub(super) function_id: &'a SavedFunctionId,
     pub(super) principal: &'a Principal,
@@ -551,11 +552,10 @@ pub(super) struct FunctionRow<'a> {
     pub(super) description: &'a str,
     pub(super) searchable_text: String,
     pub(super) revision: u64,
-    pub(super) indexed_at_unix_nanos: i64,
 }
 
 impl FunctionRow<'_> {
-    fn values(&self) -> [SimpleExpr; FUNCTION_COLUMNS.len()] {
+    fn values(&self, indexed_at_unix_nanos: i64) -> [SimpleExpr; FUNCTION_COLUMNS.len()] {
         let function_id = self.function_id.to_string();
         [
             self.workspace_id.to_string().into(),
@@ -572,7 +572,7 @@ impl FunctionRow<'_> {
             self.searchable_text.clone().into(),
             false.into(),
             function_fingerprint(self.revision).into(),
-            self.indexed_at_unix_nanos.into(),
+            indexed_at_unix_nanos.into(),
         ]
     }
 }
@@ -597,12 +597,14 @@ pub(super) struct FailedFunctionState<'a> {
     pub(super) revision: u64,
 }
 
-/// Upserts a Saved Function row by Workspace and document id, as
-/// [`changed_rows_only`] describes. An update, never `INSERT OR REPLACE`,
-/// for the reason [`upsert_operation_rows`] gives.
+/// Upserts a Saved Function row by Workspace and document id, stamped with
+/// `indexed_at_unix_nanos`, as [`changed_rows_only`] describes. An update,
+/// never `INSERT OR REPLACE`, for the reason [`upsert_operation_rows`]
+/// gives.
 pub(super) async fn upsert_function_row(
     transaction: &mut Transaction<'_>,
     row: &FunctionRow<'_>,
+    indexed_at_unix_nanos: i64,
 ) -> Result<(), Error> {
     let on_conflict = changed_rows_only(transaction.system(), FUNCTION_COLUMNS);
     transaction
@@ -610,7 +612,7 @@ pub(super) async fn upsert_function_row(
             Query::insert()
                 .into_table(SearchEntities::Table)
                 .columns(FUNCTION_COLUMNS)
-                .values_panic(row.values())
+                .values_panic(row.values(indexed_at_unix_nanos))
                 .on_conflict(on_conflict)
                 .to_owned(),
         )
