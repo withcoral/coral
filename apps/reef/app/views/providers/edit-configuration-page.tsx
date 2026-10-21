@@ -3,6 +3,7 @@ import { Form, useBeforeUnload, useBlocker, useNavigation, useSubmit } from 'rea
 import {
   attemptPath,
   attemptProgress,
+  isOAuthMethod,
   reviseAttempt,
 } from '@/lib/provider-publication-attempt/model'
 import { Banner, Button, Radio, Typography } from '@/wax/components'
@@ -209,7 +210,7 @@ export function EditConfigurationPage({
   const connecting = view === 'account' && route === 'fixed' && plan === 'shared-connect'
   const signInOpen =
     setup.authorization?.state === 'pending' || setup.authorization?.state === 'exchanging'
-  const oauth = setup.credentialMethod === 'oauth' || setup.credentialMethod === 'device'
+  const oauth = isOAuthMethod(setup.credentialMethod)
   const connect = (
     <Dialog.Root open={signingIn} onOpenChange={setSigningIn}>
       <Dialog.Trigger render={<Button.Container variant="primary" disabled={pending} />}>

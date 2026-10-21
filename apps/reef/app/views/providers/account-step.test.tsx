@@ -281,6 +281,28 @@ it.each([
   },
 )
 
+// Catches: a failed publication returning to this step with no OAuth application
+// Coral can set up, and the sign-in button then sending a form that Reef rejects.
+// Otherwise attemptProgress sends such a Setup to configuration, not here.
+it.each([
+  ['the shared account', 'fixed'],
+  ['your own account', 'caller'],
+] as const)('starts no sign-in to %s until configuration names an application', (_, account) => {
+  renderRoute(
+    <AccountStep
+      attempt={{ ...attempt, account, accountReview: true }}
+      setup={{ ...setup, credentialMethod: 'oauth', serverName: 'Gmail' }}
+      basePath="/workspaces/demo/providers/new"
+      form={{ csrf: 'test-csrf', requestId: '22222222-2222-4222-8222-222222222222' }}
+      result={{ error: null, credential: null, failed: 'publication_failed' }}
+      pending={false}
+      callbackUrl="https://coral.test/callback"
+      backPath="/workspaces/demo/providers/new?setup=1"
+    />,
+  )
+  expect(screen.getByRole('button', { name: 'Sign in with Gmail' })).toBeDisabled()
+})
+
 it('opens a device sign-in in a new tab, so this page stays to pick up the result', () => {
   renderRoute(
     <AccountStep

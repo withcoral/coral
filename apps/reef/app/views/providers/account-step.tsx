@@ -2,6 +2,8 @@ import { useId, useState } from 'react'
 import { Form } from 'react-router'
 import {
   attemptProgress,
+  isOAuthMethod,
+  needsOAuthApplication,
   type AccountChoice,
   type CreationAttempt,
 } from '@/lib/provider-publication-attempt/model'
@@ -112,7 +114,7 @@ export function AccountStep({
   const secretFormId = useId()
   const [confirming, setConfirming] = useState(false)
   const method = setup.credentialMethod
-  const oauth = method === 'oauth' || method === 'device'
+  const oauth = isOAuthMethod(method)
   const shared = plan === 'shared-keep' || plan === 'shared-connect'
   const choice: AccountChoice = shared ? 'fixed' : 'caller'
   const frozen = attempt.state === 'frozen'
@@ -136,6 +138,7 @@ export function AccountStep({
   // OAuth confirms before leaving for the service; neither belongs on the step,
   // where it would ask for a credential nobody has chosen to give yet.
   const entering = signingIn && method !== null && method !== 'none' && !oauth
+  const unstartable = signingIn && needsOAuthApplication(setup)
   const intent = signingIn ? (oauth ? 'oauth-start' : 'secret') : 'account'
   // Said on the options it qualifies, not as a line of its own under them.
   const refresh =
@@ -345,7 +348,9 @@ export function AccountStep({
         </Dialog.Root>
       ) : signingIn && oauth && shared ? (
         <Dialog.Root open={confirming} onOpenChange={setConfirming}>
-          <Dialog.Trigger render={<Button.Container variant="primary" disabled={pending} />}>
+          <Dialog.Trigger
+            render={<Button.Container variant="primary" disabled={pending || unstartable} />}
+          >
             <Button.Text>{signInLabel(setup, pending)}</Button.Text>
           </Dialog.Trigger>
           <Dialog.Portal>
@@ -372,7 +377,7 @@ export function AccountStep({
           </Dialog.Portal>
         </Dialog.Root>
       ) : (
-        <Button.TextButton type="submit" form={formId} disabled={pending}>
+        <Button.TextButton type="submit" form={formId} disabled={pending || unstartable}>
           {signingIn && oauth ? signInLabel(setup, pending) : pending ? 'Saving…' : 'Next'}
         </Button.TextButton>
       )}

@@ -1,4 +1,5 @@
 import { Form } from 'react-router'
+import { isOAuthMethod } from '@/lib/provider-publication-attempt/model'
 import { Button, Inputs } from '@/wax/components'
 import { Fields } from '@/views/management/forms'
 import { OAuthApplicationBlock } from './oauth-application'
@@ -22,7 +23,7 @@ export function UpdateAuthorization({
   /** Names the sign-in form for a submit button outside it, which then replaces its own. */
   formId?: string
 }) {
-  const oauth = setup.credentialMethod === 'oauth' || setup.credentialMethod === 'device'
+  const oauth = isOAuthMethod(setup.credentialMethod)
   const inFlight =
     setup.authorization?.state === 'pending' || setup.authorization?.state === 'exchanging'
   return (
