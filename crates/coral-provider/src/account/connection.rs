@@ -582,18 +582,23 @@ pub async fn resolve_connection_in_transaction(
         // Another creator committed this User's request between the lookup
         // and the insert: it is pending (the index admits no other) and fresh
         // (committed moments ago with a full lifetime), so it is the one to
-        // wait on. Gone again already, the Invocation fails its gate like a
-        // missing Account, without inventing a request.
-        return match repository::pending_connection(tx, target_provider, &user, &contract).await? {
-            Some(id) => {
-                let joined = repository::load_connection(tx, workspace, &user, id).await?;
-                Ok(ConnectionResolution::Waiting {
-                    request: id,
-                    expires_at_unix_nanos: joined.expires_at_unix_nanos,
-                })
-            }
-            None => Err(Error::AccountRequired),
+        // wait on, read again as it stands now. Gone again already, or
+        // resolved meanwhile, the Invocation fails its gate like a missing
+        // Account, without inventing a request.
+        let Some(id) =
+            repository::pending_connection(tx, target_provider, &user, &contract).await?
+        else {
+            return Err(Error::AccountRequired);
         };
+        let mut joined = repository::load_connection(tx, workspace, &user, id).await?;
+        refresh(tx, workspace, &user, &mut joined, now).await?;
+        if joined.state != ConnectionState::Pending {
+            return Err(Error::AccountRequired);
+        }
+        return Ok(ConnectionResolution::Waiting {
+            request: id,
+            expires_at_unix_nanos: joined.expires_at_unix_nanos,
+        });
     };
     if &row.provider_id != target_provider.id()
         || row.provider_account_setting_version != target_provider.version()

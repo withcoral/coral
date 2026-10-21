@@ -489,6 +489,9 @@ async fn a_cancel_and_the_run_deadline_record_the_first_applied_kind() {
         let (workspace_id, principal) = fixture
             .user_scope("user:cancel-vs-deadline", "Cancel against the deadline")
             .await;
+        // The deadline's timer fires on the host clock: far enough for the
+        // cancel to come first, soon enough to wait for when it comes second.
+        let run_timeout = if deadline_first { 300 } else { 5_000 };
         let accepted = fixture
             .runs
             .start(
@@ -496,7 +499,7 @@ async fn a_cancel_and_the_run_deadline_record_the_first_applied_kind() {
                 &workspace_id,
                 RunSubmission::new(
                     ProgramSource::parse("blocked").expect("Program source"),
-                    RunTimeout::from_millis(300).expect("Run timeout"),
+                    RunTimeout::from_millis(run_timeout).expect("Run timeout"),
                 ),
             )
             .await

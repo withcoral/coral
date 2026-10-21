@@ -211,21 +211,23 @@ async fn a_run_whose_owner_retired_on_a_failed_settle_is_left_to_recovery() {
     let (workspace_id, principal) = fixture
         .user_scope("user:deadline-after-retire", "Survive the database")
         .await;
-    let (workspace_id, principal, run_id) = {
-        let accepted = fixture
-            .runs
-            .start(
-                &principal,
-                &workspace_id,
-                crate::RunSubmission::new(
-                    crate::ProgramSource::parse("deadline").unwrap(),
-                    crate::RunTimeout::from_millis(3_000).unwrap(),
-                ),
-            )
-            .await
-            .expect("accept the Program");
-        (workspace_id, principal, accepted.run_id().clone())
-    };
+    // Short enough that the deadline task this slice removed would have run
+    // its recovery pass well within the wait below.
+    let run_timeout = Duration::from_millis(500);
+    let accepted = fixture
+        .runs
+        .start(
+            &principal,
+            &workspace_id,
+            crate::RunSubmission::new(
+                crate::ProgramSource::parse("deadline").unwrap(),
+                crate::RunTimeout::from_millis(run_timeout.as_millis().try_into().unwrap())
+                    .unwrap(),
+            ),
+        )
+        .await
+        .expect("accept the Program");
+    let run_id = accepted.run_id().clone();
     wait_until_started(&fixture, &workspace_id, &run_id).await;
     let before = fixture.run_record(&workspace_id, &run_id).await;
     let claim_id = before.execution_claim_id.clone().expect("started Run");
@@ -256,15 +258,15 @@ async fn a_run_whose_owner_retired_on_a_failed_settle_is_left_to_recovery() {
         Some(crate::lifecycle::RunTerminationKind::Interrupted)
     );
 
-    // Past the Run deadline the Run is still as the owner left it: its
-    // timers retired with it, and nothing outside an owner writes on the
-    // clock.
+    // Past the Run deadline, on the clock and on the host, the Run is still
+    // as the owner left it: its timers retired with it, and nothing outside
+    // an owner writes on the clock.
     fixture.inject_fault("DROP INDEX reject_run_events").await;
     fixture
         .clock
         .next
         .store(before.deadline_at_unix_nanos + 1, Ordering::SeqCst);
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(run_timeout * 3).await;
     assert_eq!(fixture.run_record(&workspace_id, &run_id).await, left);
 
     fixture.runs.recover().await.expect("recovery's pass");

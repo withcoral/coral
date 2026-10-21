@@ -534,7 +534,8 @@ async fn an_ended_request_records_one_terminal_event_and_replays_unchanged() {
 /// The owner arms a timer at each connection request's deadline when an
 /// Invocation parks on it, beside the Run deadline's; when it fires, the
 /// parked Invocation rechecks its wait and the held recheck records what
-/// the request became. Nothing outside the owner sleeps until the deadline.
+/// the request became. (The parked wait's own sleep until the same instant
+/// stays a hint until slice 8 removes it.)
 #[tokio::test(flavor = "multi_thread")]
 async fn the_owner_arms_a_timer_at_a_connection_requests_deadline() {
     let server = MockServer::start().await;

@@ -811,6 +811,7 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
         .await;
     fixture.require_approval(&operation).await;
     let approvals = fixture.approvals();
+    let started = fixture.clock.next.load(Ordering::SeqCst);
     let run = fixture.runs.start(&operation.principal, &operation.workspace_id, RunSubmission::new(
         ProgramSource::parse("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }").unwrap(),
         RunTimeout::from_millis(900_000).unwrap())).await.unwrap();
@@ -821,11 +822,13 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
         run.run_id(),
     )
     .await;
+    // The deadline is the approval wait from the gate's clock sample, which
+    // lies between the start and this read on a clock that only ticks.
     let approval_wait_nanos = i64::try_from(approval_wait.as_nanos()).unwrap();
+    let created = request.deadline_at_unix_nanos - approval_wait_nanos;
     assert!(
-        request.deadline_at_unix_nanos
-            <= fixture.clock.next.load(Ordering::SeqCst) + approval_wait_nanos,
-        "the request's deadline is the approval wait from its creation"
+        (started..=fixture.clock.next.load(Ordering::SeqCst)).contains(&created),
+        "the request's deadline is the approval wait from its creation: {created} not in {started}..="
     );
     // The timer fires on the host clock; the test clock stays before the
     // deadline, so nothing but the owner's record can show the expiry.
@@ -2018,9 +2021,10 @@ async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
     )
     .await;
     // Isolate approval expiry from the capped Run deadline and worker-claim
-    // expiry: the request expires one second after its creation.
+    // expiry: the request expires two seconds after its creation, past the
+    // wait's second park below and before its 5 s fallback poll.
     fixture.runs.execution_policy =
-        crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(1));
+        crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(2));
     let operation = fixture
         .user_operation("user:quiet-expiry", "Expire by the timer")
         .await;

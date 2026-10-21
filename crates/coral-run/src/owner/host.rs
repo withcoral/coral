@@ -190,8 +190,8 @@ fn launched_at(module: &RunModule, accepted: &AcceptedRun) -> i64 {
 
 /// The timers the owner armed, one sleep each on this process's clock,
 /// except the idle tick, which the loop keeps in place. Arming a timer
-/// again replaces its sleep; a timer that fired is forgotten; retiring the
-/// owner drops them all.
+/// again replaces its sleep; a sleep that fired is forgotten; retiring the
+/// owner aborts the rest.
 #[derive(Default)]
 struct Timers(HashMap<Timer, tokio::task::JoinHandle<()>>);
 
@@ -208,8 +208,17 @@ impl Timers {
         }
     }
 
+    /// A `Message::Timer` was dequeued: its sleep is done, unless the
+    /// message came from a sleep since replaced, whose successor still runs
+    /// and stays in the map for retirement to abort.
     fn fired(&mut self, timer: &Timer) {
-        self.0.remove(timer);
+        if self
+            .0
+            .get(timer)
+            .is_some_and(tokio::task::JoinHandle::is_finished)
+        {
+            self.0.remove(timer);
+        }
     }
 }
 

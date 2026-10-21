@@ -263,7 +263,9 @@ async fn waiting_observation_wakes_on_a_committed_change() {
 /// never reaches the deadline here; the timer fires on the host clock.
 #[tokio::test]
 async fn waiting_observation_wakes_when_the_owner_records_an_actions_expiry() {
-    let held = HeldApproval::expiring("user:observation", Duration::from_millis(300)).await;
+    // The expiry is a host-clock timer from the request's creation: one
+    // second keeps the "still pending" check clear of it on a slow host.
+    let held = HeldApproval::expiring("user:observation", Duration::from_secs(1)).await;
     let pending = held.observe_changes(Duration::from_secs(10));
     tokio::pin!(pending);
     tokio::time::timeout(Duration::from_millis(50), &mut pending)

@@ -1284,6 +1284,10 @@ pub(crate) fn apply(state: &mut OwnerState, message: Message, now_unix_nanos: i6
 
 fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) -> Vec<Effect> {
     match message {
+        // The idle tick is armed from the launch, not the start mark: a
+        // start mark the database keeps not answering is judged by the
+        // owner's liveness like any other write, and the Run deadline alone
+        // does not end an owner still starting.
         Message::Launch => {
             state.phase = Phase::Starting;
             vec![
@@ -1293,6 +1297,7 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
                     state.limits.deadline_at_unix_nanos,
                     now_unix_nanos,
                 ),
+                state.arm_idle_tick(),
             ]
         }
         // While the owner interrupts its Run, the chunk and the start mark

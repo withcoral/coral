@@ -374,7 +374,8 @@ fn deliver(effects: Vec<Effect>) -> Vec<Effect> {
 }
 
 /// An owner launched at 1 and started at 2: the launch arms the Run
-/// deadline, the start mark arms the idle tick.
+/// deadline and the idle tick (the owner's liveness is judged from the
+/// start mark on), the start mark arms the idle tick again.
 fn started(limits: OwnerLimits) -> OwnerState {
     let mut state = OwnerState::new(limits, 1);
     assert!(matches!(
@@ -384,8 +385,12 @@ fn started(limits: OwnerLimits) -> OwnerState {
             Effect::ArmTimer {
                 timer: Timer::RunDeadline,
                 after_nanos,
+            },
+            Effect::ArmTimer {
+                timer: Timer::IdleTick,
+                after_nanos: tick,
             }
-        ] if *after_nanos == limits.deadline_at_unix_nanos - 1
+        ] if *after_nanos == limits.deadline_at_unix_nanos - 1 && *tick == limits.idle_tick_nanos
     ));
     assert!(matches!(
         crate::owner::apply(
