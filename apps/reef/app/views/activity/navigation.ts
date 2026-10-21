@@ -35,6 +35,22 @@ export function branchCoordinate(key: string): string | undefined {
  */
 export const selectionKeys = ['record', 'request', 'actionsAfter', 'live', 'liveExpanded'] as const
 const clearSelection = Object.fromEntries(selectionKeys.map((key) => [key, null]))
+const listKeys = new Set<string>([
+  ...selectionKeys,
+  'tree',
+  'expand',
+  'anchor',
+  'before',
+  'after',
+  'pendingAfter',
+  'root',
+  'rootMode',
+])
+
+/** Whether the query selects a record or positions the list, which only a complete list can show. */
+export function readsActivity(query: URLSearchParams) {
+  return [...query.keys()].some((key) => listKeys.has(key) || branchCoordinate(key) !== undefined)
+}
 
 /** Address changes that read the children of `parent` from `offset`, with no anchor. */
 export const windowAt = (parent: string, offset: number) => ({

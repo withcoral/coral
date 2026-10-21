@@ -536,7 +536,7 @@ export const AgentFullActivity: Story = {
     )
   },
 }
-// Catches: closing a record opened from Recent activity returning to the dashboard.
+// Catches: a link into the agent's Activity list opening the dashboard instead.
 export const AgentActivityAfterRecord: Story = {
   ...AgentFullActivity,
   parameters: { initialEntry: `${agent.path}?anchor=x&tree=1` },

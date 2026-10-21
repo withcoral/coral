@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router'
 import { Button, Typography } from '@/wax/components'
 import { PageLayout } from '@/wax/components/page-layout'
 import { Status } from '@/wax/components/status'
+import { readsActivity } from '@/views/activity/navigation'
 import { AgentProviders, type AgentProviderView } from './agent-providers'
 import { AgentQuickStart } from './quick-start'
 import { ArchivedBanner, trail } from './layout'
@@ -39,9 +40,8 @@ export function AgentActivityPage({
   const [search] = useSearchParams()
   const recentHeading = useId()
   const active = w.state === 'active'
-  // A record opened from Recent activity sets `tree`, and closing it keeps `tree`.
-  const fullActivity =
-    search.get('view') === 'activity' || search.has('record') || search.has('tree')
+  // A record opened from Recent activity keeps its list position after it closes.
+  const fullActivity = search.get('view') === 'activity' || readsActivity(search)
   if (fullActivity)
     return (
       <PageLayout

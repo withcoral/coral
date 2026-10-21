@@ -7,6 +7,7 @@ import {
   liveStep,
   liveTarget,
   orderedRecordPosition,
+  readsActivity,
   recordParents,
   resolveStop,
   stepStop,
@@ -221,6 +222,17 @@ it('names no anchor at the newest records and drops the coordinates of page link
   const query = target(nav.recordHref(run))
   for (const key of ['anchor', 'after', 'before', 'rootMode', 'root'])
     expect(query.has(key)).toBe(false)
+})
+it.each([
+  ['', false],
+  ['?view=activity', false],
+  ['?record=r', true],
+  ['?expand=t', true],
+  ['?anchor=t&tree=1', true],
+  ['?after=older', true],
+  ['?offset.t=4', true],
+])('reads %s as a list position: %s', (search, reads) => {
+  expect(readsActivity(new URLSearchParams(search))).toBe(reads)
 })
 
 const output = (parent: string, id: string, position: number): ActivityRow => ({

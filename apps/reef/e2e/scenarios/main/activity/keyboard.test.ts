@@ -197,8 +197,10 @@ test('The keyboard drives Agent Activity', async (context) => {
     const run = `${workspace.name}/runs/${observed.update.run_id}`
     const table = page.locator(TABLE)
 
-    await step('The Agent page takes the same keys', async () => {
-      await page.goto(`/${issued.agent!.name.split('/').map(encodeURIComponent).join('/')}`)
+    await step("The Agent's complete Activity takes the same keys", async () => {
+      await page.goto(
+        `/${issued.agent!.name.split('/').map(encodeURIComponent).join('/')}?view=activity`,
+      )
       await table.getByRole('link', { name: 'Agent goal', exact: true }).waitFor()
       await toBackground(page)
       await page.keyboard.press('ArrowDown')
