@@ -44,6 +44,22 @@ pub(super) fn app_input_fits(client_id: &str, redirect_uri: &str, state: Option<
     client_id.len() + redirect_uri.len() + state.map_or(0, str::len) <= MAX_APP_INPUT_BYTES
 }
 
+/// Whether a sealed sign-in of `sealed_len` bytes fits in one cookie.
+///
+/// [`app_input_fits`] bounds what an app sends; this also counts what Coral
+/// adds, such as the resource, so a request that cannot be carried is refused
+/// before consent rather than after it.
+pub(super) fn sealed_fits(sealed_len: usize, secure: bool) -> bool {
+    let longest_name = name("", u64::MAX, secure);
+    header_value(
+        &longest_name,
+        &"x".repeat(sealed_len),
+        MAX_AGE_SECONDS,
+        secure,
+    )
+    .is_some()
+}
+
 /// Host time in Unix seconds, or `None` before the epoch.
 pub(super) fn now_unix_secs() -> Option<u64> {
     SystemTime::now()

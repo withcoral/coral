@@ -108,9 +108,9 @@ Coral keeps no server state for a sign-in until the person signs in at the
 provider, so anonymous authorization requests cost no storage and have no shared
 budget to exhaust. The pending consent travels in the consent form and the sign-in
 in a browser cookie. Both are sealed with AES-256-GCM under keys derived from the
-session signing key, so every Coral process that shares that key can finish a
-sign-in that another process started. Authorization codes are stored in the
-database for five minutes, so any process can redeem them, once.
+session signing key. Authorization codes are stored in the database for five
+minutes. Every Coral process that shares the signing key and the database can
+therefore finish a sign-in that another process started and redeem its code, once.
 
 At capacity, the operator must review registrations before reclaiming space. V1 has
 no registration-management endpoint or UI. Stop every Coral process using the database,
@@ -321,13 +321,15 @@ the provider. A proxy in front of Coral must pass this cookie through to the
 callback.
 
 - A client's `client_id`, `redirect_uri`, and `state` together may be at most
-  1,536 bytes, so that the sign-in fits in one cookie. A longer request fails with
-  `invalid_request` before the consent page.
-- A browser holds at most three sign-ins at once. Starting a fourth ends the
-  oldest, so the browser's `Cookie` header stays under the 8 KB limit of common
-  proxies.
-- Each sign-in issues at most one authorization code. A replayed callback fails
-  with `invalid_request`.
+  1,536 bytes, so that the sign-in fits in one cookie. A longer request, or one
+  whose sign-in does not fit for another reason such as a long resource, fails
+  with `invalid_request` before the consent page.
+- A new sign-in ends the browser's oldest sign-ins beyond three. This keeps the
+  sign-in cookies under 7 KB, inside the 8 KB header limit of common proxies,
+  unless the browser holds other large cookies for this host. Sign-ins started at
+  the same moment can briefly exceed three until they finish or expire.
+- Each sign-in issues at most one authorization code. A replayed callback gets an
+  error and no code.
 - Rotating the session signing key ends the sign-ins in progress. Start them again.
 
 The remaining authorization-server, signing-key, and MCP listener settings are

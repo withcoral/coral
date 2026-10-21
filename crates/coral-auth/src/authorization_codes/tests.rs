@@ -117,30 +117,29 @@ async fn a_redemption_must_repeat_every_binding_and_a_mismatch_spends_nothing() 
 #[tokio::test]
 async fn a_sign_in_issues_at_most_one_code() {
     let (codes, _fixture) = codes().await;
-    codes
-        .issue("first", "sign-in", &grant(), NOW)
-        .await
-        .unwrap();
     let issued = grant();
-    for (moment, replay) in [
-        ("before redemption", "second"),
-        ("after redemption", "third"),
-    ] {
+    assert_eq!(
+        codes.issue("first", "sign-in", &issued, NOW).await,
+        Ok(CodeIssue::Issued)
+    );
+    let refuse_replay = async |replay: &str, at: i64| {
         assert_eq!(
-            codes.issue(replay, "sign-in", &grant(), NOW + 1).await,
+            codes.issue(replay, "sign-in", &grant(), at).await,
             Ok(CodeIssue::SignInAlreadyUsed),
-            "{moment}"
+            "{replay}"
         );
         assert_eq!(
-            codes.redeem(replay, redemption(&issued), NOW + 2).await,
+            codes.redeem(replay, redemption(&grant()), at + 1).await,
             Ok(None),
-            "{moment}: the refused code must not be redeemable"
+            "{replay}: the refused code must not be redeemable"
         );
-        codes
-            .redeem("first", redemption(&issued), NOW + 2)
-            .await
-            .unwrap();
-    }
+    };
+    refuse_replay("before-redemption", NOW + 1).await;
+    assert_eq!(
+        codes.redeem("first", redemption(&issued), NOW + 3).await,
+        Ok(Some(grant()))
+    );
+    refuse_replay("after-redemption", NOW + 4).await;
 }
 
 #[tokio::test]

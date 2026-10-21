@@ -93,6 +93,10 @@ pub(super) async fn oauth_authorize_get(
         code_challenge,
         resource,
     };
+    let sealed_len = approval.clone().into_sign_in().sealed_len();
+    if !sealed_len.is_ok_and(|length| sign_in_cookie::sealed_fits(length, state.secure_cookies())) {
+        return trusted.error("invalid_request", "authorization request is too large");
+    }
     // A trusted client proceeds as if the user had already pressed Allow.
     // The check sits after every validation above, so trust changes only the
     // confirmation step — never what counts as a valid request — and the
@@ -1473,17 +1477,43 @@ mod tests {
         }
     }
 
-    /// The sign-in cookie must fit in one browser cookie, so an app whose
-    /// inputs exceed the budget is refused before consent and holds nothing.
+    /// The sign-in cookie must fit in one browser cookie, so a request that
+    /// cannot be carried is refused before consent and holds nothing. The
+    /// second case stays inside the app budget but names a long configured
+    /// resource, which the cookie carries too.
     #[tokio::test]
-    async fn app_inputs_beyond_the_sign_in_budget_are_refused_before_consent() {
-        let mut oversized = pairs();
-        replace(&mut oversized, "state", Some(&"s".repeat(1536)));
-        let response = request(state("https://provider.invalid"), &oversized).await;
-        let error = Url::parse(location(&response).expect("client error redirect")).expect("URL");
-        let query = error.query_pairs().into_owned().collect::<Vec<_>>();
-        assert!(query.contains(&("error".into(), "invalid_request".into())));
-        assert!(response.headers().get(header::SET_COOKIE).is_none());
+    async fn requests_a_sign_in_cookie_cannot_carry_are_refused_before_consent() {
+        let long_resource = format!("https://api.example.test/{}", "r".repeat(2000));
+        let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
+        let mut long_resource_state =
+            http_state("https://provider.invalid", "", &[long_resource.as_str()]);
+        long_resource_state.client_metadata_resolver = resolver;
+        let mut oversized_app = pairs();
+        replace(&mut oversized_app, "state", Some(&"s".repeat(1536)));
+        let mut long_resource_pairs = pairs();
+        replace(&mut long_resource_pairs, "state", Some(&"s".repeat(1000)));
+        replace(&mut long_resource_pairs, "resource", Some(&long_resource));
+        for (case, auth_state, request_pairs) in [
+            (
+                "app inputs over budget",
+                state("https://provider.invalid"),
+                oversized_app,
+            ),
+            ("a long resource", long_resource_state, long_resource_pairs),
+        ] {
+            let response = request(auth_state, &request_pairs).await;
+            let error =
+                Url::parse(location(&response).expect("client error redirect")).expect("URL");
+            let query = error.query_pairs().into_owned().collect::<Vec<_>>();
+            assert!(
+                query.contains(&("error".into(), "invalid_request".into())),
+                "{case}"
+            );
+            assert!(
+                response.headers().get(header::SET_COOKIE).is_none(),
+                "{case}"
+            );
+        }
     }
 
     /// Every sign-in cookie rides on each request to this host, so a new

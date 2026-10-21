@@ -151,6 +151,21 @@ impl SignInSession {
         oidc_state: &str,
         expires_at_unix_secs: u64,
     ) -> Result<String, SealError> {
+        let frame = self.frame(expires_at_unix_secs)?;
+        keys.seal(&sign_in_aad(oidc_state), &frame.0)
+    }
+
+    /// The length of what [`Self::seal`] returns for this session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SealError::TooLarge`] when a field is too long to frame.
+    pub(crate) fn sealed_len(&self) -> Result<usize, SealError> {
+        let envelope = 1 + aead::NONCE_LEN + self.frame(0)?.0.len() + aead::AES_256_GCM.tag_len();
+        Ok((4 * envelope).div_ceil(3))
+    }
+
+    fn frame(&self, expires_at_unix_secs: u64) -> Result<Frame, SealError> {
         let mut frame = Frame::default();
         frame.put_str(&self.client_id)?;
         frame.put_str(&self.redirect_uri)?;
@@ -158,7 +173,7 @@ impl SignInSession {
         frame.put_str(&self.code_challenge)?;
         frame.put_str(&self.resource)?;
         frame.put_u64(expires_at_unix_secs);
-        keys.seal(&sign_in_aad(oidc_state), &frame.0)
+        Ok(frame)
     }
 
     /// Opens the session sealed for `oidc_state`, if it is intact, belongs to
@@ -364,6 +379,24 @@ mod tests {
             SignInSession::open(&keys(), STATE, sealed.as_bytes(), NOW),
             Some(without_state)
         );
+    }
+
+    #[test]
+    fn sealed_len_is_the_length_seal_produces() {
+        for client_state in [
+            None,
+            Some("s"),
+            Some("st"),
+            Some("sta"),
+            Some("a longer client state"),
+        ] {
+            let session = SignInSession {
+                client_state: client_state.map(str::to_owned),
+                ..session()
+            };
+            let sealed = session.seal(&keys(), STATE, NOW).expect("sealed");
+            assert_eq!(session.sealed_len(), Ok(sealed.len()), "{client_state:?}");
+        }
     }
 
     #[test]
