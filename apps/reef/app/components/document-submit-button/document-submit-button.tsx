@@ -1,12 +1,10 @@
-import { flushSync } from 'react-dom'
 import { useLayoutEffect, useRef, useState } from 'react'
 
 import { Button } from '@/wax/components'
 import type { TextButtonProps } from '@/wax/components/button/text-button'
 
-type PendingSubmission = { event: SubmitEvent; submitter: HTMLButtonElement }
-
-const pendingForms = new WeakMap<HTMLFormElement, PendingSubmission>()
+/** The submission each form is waiting on, so a second one cannot replace it. */
+const pendingForms = new WeakMap<HTMLFormElement, SubmitEvent>()
 
 export interface DocumentSubmitButtonProps extends Omit<TextButtonProps, 'busyStatus' | 'ref'> {
   /** Announced while the document request is in progress. */
@@ -28,45 +26,42 @@ export function DocumentSubmitButton({
   const [busy, setBusy] = useState(false)
 
   useLayoutEffect(() => {
-    const button = buttonRef.current
-    const formId = button?.getAttribute('form')
-    const form =
-      button?.form ?? (formId ? (document.getElementById(formId) as HTMLFormElement | null) : null)
-    if (!button || !form) return
-
-    const clear = () => {
-      const pending = pendingForms.get(form)
-      if (pending?.submitter === button) pendingForms.delete(form)
-      setBusy(false)
+    let submitted: { form: HTMLFormElement; event: SubmitEvent } | undefined
+    const release = () => {
+      if (submitted && pendingForms.get(submitted.form) === submitted.event) {
+        pendingForms.delete(submitted.form)
+      }
+      submitted = undefined
     }
-    const onPageShow = (event: PageTransitionEvent) => {
-      if (event.persisted) clear()
-    }
+    // The window sees a submit last, after React's handlers, so a cancellation
+    // by any of them is already visible here.
     const onSubmit = (event: SubmitEvent) => {
+      const form = event.target as HTMLFormElement
       const pending = pendingForms.get(form)
-      if (pending && pending.event !== event) {
+      if (pending && pending !== event) {
         event.preventDefault()
         return
       }
-      if (event.submitter !== button || (form.target && form.target !== '_self')) return
-
-      pendingForms.set(form, { event, submitter: button })
-      queueMicrotask(() => {
-        if (event.defaultPrevented) {
-          if (pendingForms.get(form)?.event === event) pendingForms.delete(form)
-          return
-        }
-        flushSync(() => setBusy(true))
-      })
+      const button = buttonRef.current
+      if (event.defaultPrevented || !button || event.submitter !== button) return
+      const target = button.formTarget || form.target
+      if (target && target !== '_self') return
+      pendingForms.set(form, event)
+      submitted = { form, event }
+      setBusy(true)
+    }
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return
+      release()
+      setBusy(false)
     }
 
-    form.addEventListener('submit', onSubmit)
+    window.addEventListener('submit', onSubmit)
     window.addEventListener('pageshow', onPageShow)
     return () => {
-      form.removeEventListener('submit', onSubmit)
+      window.removeEventListener('submit', onSubmit)
       window.removeEventListener('pageshow', onPageShow)
-      const pending = pendingForms.get(form)
-      if (pending?.submitter === button) pendingForms.delete(form)
+      release()
     }
   }, [])
 

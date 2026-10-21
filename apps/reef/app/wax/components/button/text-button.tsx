@@ -23,7 +23,7 @@ export function TextButton({ busyStatus, children, disabled, ref, ...rest }: Tex
       <Container
         ref={ref}
         {...rest}
-        aria-busy={busy || undefined}
+        aria-busy={busy ? true : rest['aria-busy']}
         disabled={disabled || busy}
         focusableWhenDisabled={busy || rest.focusableWhenDisabled}
       >

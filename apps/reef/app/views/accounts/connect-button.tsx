@@ -31,7 +31,7 @@ export function ConnectButton({
       {requestId && <input type="hidden" name="requestId" value={requestId} />}
       <DocumentSubmitButton
         type="submit"
-        busyStatus={label === 'Reconnect' ? 'Reconnecting…' : 'Connecting…'}
+        busyStatus="Connecting…"
         variant={primary ? 'primary' : 'secondary'}
         disabled={disabled}
         size={size}

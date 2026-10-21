@@ -189,14 +189,24 @@ it('drops the requirement when the person types their own server URL', async () 
 // Catches: a large document leaving Next unchanged while Coral confirms its
 // configuration and prepares the operation list.
 it('shows progress as soon as Next submits the configuration', async () => {
-  await renderStep(null)
-  const submitter = next()
-  const form = document.getElementById(submitter.getAttribute('form')!)!
+  const step = await renderStep(null, {
+    ...review,
+    values: {
+      ...review.values,
+      servers: [
+        {
+          declaration: '#/servers',
+          url: 'https://console.example.test/integration',
+          custom: true,
+          variables: {},
+        },
+      ],
+    },
+  })
 
-  await act(async () =>
-    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter })),
-  )
+  await act(async () => next().click())
 
+  expect(step.submitted()).toBe(true)
   expect(next()).toHaveAttribute('aria-busy', 'true')
   expect(next()).toHaveAttribute('aria-disabled', 'true')
   expect(next()).not.toBeDisabled()

@@ -43,13 +43,19 @@ it('shows progress only on the submitter and keeps its name and value successful
   expect(submit(form, approve).defaultPrevented).toBe(true)
 })
 
-it('ignores a submission that another handler cancels', async () => {
+it.each<[string, React.ComponentProps<'form'>, { formTarget?: string }]>([
+  ['another handler cancels', { onSubmit: (event) => event.preventDefault() }, {}],
+  ['its form opens in another window', { target: '_blank' }, {}],
+  ['its submitter opens in another window', {}, { formTarget: '_blank' }],
+])('ignores a submission that %s', async (_case, formProps, buttonProps) => {
   render(
-    <form aria-label="Canceled" onSubmit={(event) => event.preventDefault()}>
-      <DocumentSubmitButton busyStatus="Saving…">Save</DocumentSubmitButton>
+    <form aria-label="Example" {...formProps}>
+      <DocumentSubmitButton busyStatus="Saving…" {...buttonProps}>
+        Save
+      </DocumentSubmitButton>
     </form>,
   )
-  const form = screen.getByRole('form', { name: 'Canceled' }) as HTMLFormElement
+  const form = screen.getByRole('form', { name: 'Example' }) as HTMLFormElement
   const save = screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement
 
   await act(async () => submit(form, save))
