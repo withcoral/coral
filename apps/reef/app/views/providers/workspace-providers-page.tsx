@@ -412,7 +412,7 @@ function ProvidersTableScreen({
   selectedOperation,
   setRailFilter,
 }: {
-  /** The main action, at the foot of the rail so it shows on every tab. */
+  /** The main action, at the end of the toolbar so it shows on every tab. */
   addButton: ReactNode
   canChange: boolean
   filteredProviders: ProviderView[]
@@ -864,7 +864,6 @@ function ProvidersTableScreen({
           }}
           empty={filteredProviders.length === 0}
           emptyMessage="No providers match."
-          footer={addButton}
         >
           <CatalogRailItem
             to={providersPath}
@@ -913,6 +912,7 @@ function ProvidersTableScreen({
     >
       <CatalogToolbar
         title="Providers"
+        action={addButton}
         filter={{
           id: OPERATION_FILTER_ID,
           label: 'Filter operations',

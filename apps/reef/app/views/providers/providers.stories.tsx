@@ -229,12 +229,10 @@ const treeProps = {
 }
 
 export const TreeAddProviderLauncher: Story = {
-  // Another tab is current, and the rail still shows the Add button at its foot.
+  // Another tab is current, and the toolbar still ends with the Add button.
   render: () => <WorkspaceProvidersPage {...treeProps} selectedProvider="prov-weather" />,
   play: async ({ canvas }) => {
-    const add = within(
-      canvas.getByRole('complementary', { name: 'installed providers' }),
-    ).getByRole('button', { name: 'Add provider' })
+    const add = within(canvas.getByRole('main')).getByRole('button', { name: 'Add provider' })
     await expect(add).toBeVisible()
     await userEvent.click(add)
     const dialog = within(await screen.findByRole('dialog'))

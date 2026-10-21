@@ -65,7 +65,7 @@ function FilterInput({
 
 /**
  * The rail: its filter, then one entry per group, or `emptyMessage` when none
- * match, then any `footer` below the entries.
+ * match.
  */
 export function CatalogRail({
   label,
@@ -73,7 +73,6 @@ export function CatalogRail({
   empty,
   emptyMessage,
   children,
-  footer,
 }: {
   /** Names the rail and its list for assistive technology. */
   label: string
@@ -81,8 +80,6 @@ export function CatalogRail({
   empty: boolean
   emptyMessage: string
   children: ReactNode
-  /** Controls below the entries, such as the main action. They stay in view as the entries scroll. */
-  footer?: ReactNode
 }) {
   return (
     <aside className={styles.rail} aria-label={label}>
@@ -99,7 +96,6 @@ export function CatalogRail({
           {empty && <Typography.BodySmall as="p">{emptyMessage}</Typography.BodySmall>}
         </nav>
       </ScrollArea.Container>
-      {footer && <div className={styles.railFooter}>{footer}</div>}
     </aside>
   )
 }
@@ -157,13 +153,14 @@ export function CatalogRailItem({
 
 /**
  * The one row above the table: `leading` controls at the start, then any
- * other controls and the filter's input at the end.
+ * other controls, the filter's input, and the page's `action` at the end.
  */
 export function CatalogToolbar({
   title,
   filter,
   leading,
   children,
+  action,
 }: {
   /**
    * The page's h1, at the start of the row. Tell `PageLayout` the page is
@@ -179,6 +176,8 @@ export function CatalogToolbar({
   /** Controls at the start of the row, such as actions on the selection. */
   leading?: ReactNode
   children?: ReactNode
+  /** The page's main action, such as "Add provider", last in the row. */
+  action?: ReactNode
 }) {
   const { shortcut, fill, ...field } = filter
   const input = useRef<HTMLInputElement>(null)
@@ -202,7 +201,7 @@ export function CatalogToolbar({
           {leading}
         </div>
       )}
-      <div className={styles.toolbarGroup}>
+      <div className={classNames(styles.toolbarGroup, styles.toolbarControls)}>
         {children}
         <div
           className={classNames(
@@ -215,6 +214,7 @@ export function CatalogToolbar({
           {shortcut && <KeyboardShortcut shortcut={shortcut} handler={focusFilter} />}
         </div>
       </div>
+      {action && <div className={styles.toolbarAction}>{action}</div>}
     </div>
   )
 }

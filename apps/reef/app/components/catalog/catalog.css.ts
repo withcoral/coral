@@ -1,4 +1,4 @@
-import { globalStyle, style } from '@vanilla-extract/css'
+import { createContainer, globalStyle, style } from '@vanilla-extract/css'
 
 import { theme } from '@/wax/theme/theme.css'
 
@@ -32,13 +32,6 @@ export const rail = style({
 export const filterField = style({ display: 'flex', flexDirection: 'column', minWidth: 0 })
 // The rail owns its own scroll port; the page ancestor clips overflow.
 export const railScroll = style({ flex: '1 1 auto', minHeight: 0 })
-// A footer control takes the rail's width. A narrow rail already pads its end.
-export const railFooter = style({
-  display: 'grid',
-  flexShrink: 0,
-  paddingBlockEnd: 16,
-  '@media': { '(max-width: 760px)': { paddingBlockEnd: 0 } },
-})
 export const railList = style({
   display: 'flex',
   flexDirection: 'column',
@@ -117,7 +110,14 @@ export const stack = style({
   minHeight: 0,
   minWidth: 0,
 })
+// The toolbar's own width decides where its action goes, since the rail
+// beside it narrows the column well before the viewport does.
+const toolbarContainer = createContainer()
+// Below this width the controls and the action no longer share one line.
+const NARROW_TOOLBAR = `${toolbarContainer} (max-width: 560px)`
 export const toolbar = style({
+  containerName: toolbarContainer,
+  containerType: 'inline-size',
   alignItems: 'center',
   display: 'flex',
   flexWrap: 'wrap',
@@ -131,11 +131,25 @@ export const toolbarGroup = style({
   flexWrap: 'wrap',
   gap: 12,
   minWidth: 0,
-  // The trailing group keeps its controls on one line, at the end. When the row
-  // has no room for them at full width, the whole group moves below the title,
-  // so the picker never stacks over the filter beside a title centred on both.
-  selectors: {
-    '&:last-child': { flex: '1 1 auto', flexWrap: 'nowrap', justifyContent: 'flex-end' },
+})
+// The main action ends a wide row. In a narrow one, the controls have no room
+// for it, so it moves up to the title's row and the controls take their own.
+export const toolbarAction = style({
+  display: 'flex',
+  flexShrink: 0,
+  '@container': { [NARROW_TOOLBAR]: { order: 1 } },
+})
+// The trailing group keeps its controls on one line, at the end. When the row
+// has no room for them at full width, the whole group moves below the title,
+// so the picker never stacks over the filter beside a title centred on both.
+export const toolbarControls = style({
+  flex: '1 1 auto',
+  flexWrap: 'nowrap',
+  justifyContent: 'flex-end',
+  '@container': {
+    [NARROW_TOOLBAR]: {
+      selectors: { [`&:has(+ ${toolbarAction})`]: { flexBasis: '100%', order: 2 } },
+    },
   },
 })
 export const toolbarTitle = style({ alignItems: 'center', display: 'flex', gap: 8, minWidth: 0 })
