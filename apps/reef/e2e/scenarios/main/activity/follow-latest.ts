@@ -30,6 +30,9 @@ const inProgram = (line: number, name: string) => ({
   column: program.split('\n')[line - 1]!.indexOf(name) + 1,
 })
 
+/** The source of a record that no call made: nothing to highlight, nothing missing. */
+const noCall = { lines: [], unavailable: false }
+
 /** The drawer's highlighted source lines, and whether it says it has no location. */
 export async function highlighted(page: Page) {
   const pane = page.getByRole('dialog').getByRole('region', { name: 'Accepted source' })
@@ -85,7 +88,6 @@ export async function followLatest(context: TestContext) {
     const rail = page.getByRole('dialog', { name: 'Activity details' })
     const selected = rail.getByRole('region', { name: 'Selected record' })
     const toggle = rail.getByRole('button', { name: 'Follow latest record', exact: true })
-    const follow = rail.getByRole('switch', { name: 'Follow selection' })
     const address = () => new URL(page.url()).searchParams
     const selectedKey = () =>
       table.locator('[role=row][aria-selected=true]').first().getAttribute('data-record-key')
@@ -114,9 +116,8 @@ export async function followLatest(context: TestContext) {
       await header.getByRole('button', { name: 'Close details', exact: true }).waitFor()
       expect(await toggle.getAttribute('aria-pressed')).toBe('false')
       expect(address().has('live')).toBe(false)
-      // Your Follow selection choice holds while live mode replaces the record.
-      await follow.click()
-      expect(await follow.getAttribute('aria-checked')).toBe('false')
+      // The Run names no call, so its source has no highlight and no missing-location banner.
+      await expect.poll(() => highlighted(page)).toEqual(noCall)
     })
 
     await step('Turn on live mode and select the held operation call', async () => {
@@ -124,7 +125,6 @@ export async function followLatest(context: TestContext) {
       expect(first?.sourceLocation).toMatchObject(inProgram(1, 'lookup'))
       await toggle.click()
       await follows(first!.name, { lines: [1], unavailable: false })
-      expect(await follow.getAttribute('aria-checked')).toBe('false')
     })
 
     await step('Follow the next operation call Coral streams, at its own line', async () => {
@@ -133,13 +133,12 @@ export async function followLatest(context: TestContext) {
       const [, second] = await operations()
       expect(second?.sourceLocation).toMatchObject(inProgram(3, 'lookup'))
       await follows(second!.name, { lines: [3], unavailable: false })
-      expect(await follow.getAttribute('aria-checked')).toBe('false')
     })
 
     await step('Follow the final value once the Run ends', async () => {
       release()
-      // The Run's own record has no stored location of a call.
-      await follows(`${run}/final`, { lines: [], unavailable: true })
+      // The final value is not a call either: no highlight, and no banner.
+      await follows(`${run}/final`, noCall)
     })
 
     await step('Turn live mode off from the record header', async () => {
