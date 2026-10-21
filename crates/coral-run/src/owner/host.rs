@@ -265,7 +265,9 @@ fn run_effect(
 /// The end of a recorded termination's shutdown grace on this process's
 /// clock, from how much of it is left on the domain clock.
 fn grace_deadline(module: &RunModule, shutdown: &crate::termination::ShutdownAction) -> Instant {
-    // A clock that fails leaves no grace: the settle ends the Run at once.
+    // A clock that fails never extends the grace: the attempt that follows
+    // reads the same clock, fails on it, and retires the owner; the Run is
+    // recovery's then.
     let now = module
         .now()
         .unwrap_or(shutdown.deadline_at_unix_nanos())

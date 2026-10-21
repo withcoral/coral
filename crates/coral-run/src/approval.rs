@@ -342,7 +342,7 @@ impl ApprovalModule {
         else {
             // The Run ended since the snapshot: its terminal write closed the
             // request, and the record answers.
-            return self.reread(actor, workspace, &run.id, id).await;
+            return self.get(actor, workspace, id).await;
         };
         let answer = owner
             .decide(DecisionRequest {
@@ -370,34 +370,8 @@ impl ApprovalModule {
             }
             // Another decision won, or the request was closed meanwhile: the
             // record answers.
-            DecisionAnswer::FromRecord => self.reread(actor, workspace, &run.id, id).await,
+            DecisionAnswer::FromRecord => self.get(actor, workspace, id).await,
         }
-    }
-
-    /// The request as a fresh snapshot shows it, through the same visibility
-    /// rules as `get`.
-    async fn reread(
-        &self,
-        actor: &AuthenticatedPrincipal,
-        workspace: &WorkspaceId,
-        run_id: &RunId,
-        id: &ApprovalId,
-    ) -> Result<ApprovalRequest, Error> {
-        let mut tx = self.database.begin_read_snapshot().await?;
-        let run = self.visible_run(&mut tx, actor, workspace, run_id).await?;
-        let row = approval_repository::load(&mut tx, workspace, id).await?;
-        let request = view(
-            &mut tx,
-            &self.workspaces,
-            actor,
-            workspace,
-            &run,
-            row,
-            self.now()?,
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(request)
     }
 
     /// Lists safe evidence through the same human-only visibility as request detail.
