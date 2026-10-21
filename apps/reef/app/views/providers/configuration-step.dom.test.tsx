@@ -269,7 +269,7 @@ it('marks a saved server and method that the source dropped on their fields', as
   const server = field('Server for /removed')
   expect(server.getAttribute('aria-invalid')).toBe('true')
   expect(describedBy(server)).toBe(
-    'This document does not have this server. Remove it to continue.',
+    'The source does not have this saved server. Remove it to continue.',
   )
   // The menu offers only supported methods, so it shows its placeholder.
   const method = signIn()

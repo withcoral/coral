@@ -255,7 +255,7 @@ it.each([
 it.each([
   ['a refresh', 'refresh', true],
   ['Edit configuration', 'configuration', false],
-] as const)('compares saved and new values only in %s', async (_, task, shown) => {
+] as const)('compares saved and new values in %s: %s', async (_, task, shown) => {
   renderPage({
     page: {
       ...setup,
@@ -280,13 +280,17 @@ it.each([
   ).toEqual(['Name', 'Records', 'Records v2'])
 })
 
-// Catches: Save publishing a configuration you did not change.
-it('turns on Save only after you change the configuration', async () => {
-  renderPage()
-  expect(saveButton()).toHaveAttribute('aria-disabled', 'true')
-  await rename()
-  expect(saveButton()).not.toHaveAttribute('aria-disabled')
-})
+// Catches: Save publishing a configuration you did not change, or staying off
+// after you correct one that Coral sent back to an account change.
+it.each(['configuration', 'accounts'] as const)(
+  'turns on Save only after you change the configuration: %s',
+  async (task) => {
+    renderPage({ task })
+    expect(saveButton()).toHaveAttribute('aria-disabled', 'true')
+    await rename()
+    expect(saveButton()).not.toHaveAttribute('aria-disabled')
+  },
+)
 
 // Catches: an expired Setup that strands you, or a Start again that opens the
 // wrong task, rereads the saved source in place of a replacement, or carries the

@@ -123,11 +123,10 @@ export function EditConfigurationPage({
   const unsaved =
     !ended &&
     !result?.failed &&
-    (accounts
-      ? settingChanged || Boolean(setup.authorized || setup.authorization)
-      : formDirty ||
-        setup.state !== 'awaiting_configuration' ||
-        Boolean(result?.configurationDraft))
+    (formDirty ||
+      (accounts
+        ? settingChanged || Boolean(setup.authorized || setup.authorization)
+        : setup.state !== 'awaiting_configuration' || Boolean(result?.configurationDraft)))
   const [confirming, setConfirming] = useState(view === 'configuration' && stage === 'publish')
   const publication = usePublication({
     attempt: {

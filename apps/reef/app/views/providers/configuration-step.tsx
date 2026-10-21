@@ -71,12 +71,10 @@ function ReadField({ label, value }: { label: string; value: string }) {
 function StaleServer({
   id,
   selection,
-  source,
   onRemove,
 }: {
   id: string
   selection: ConfigurationValues['servers'][number]
-  source: string
   onRemove: () => void
 }) {
   const inputId = useId()
@@ -108,7 +106,7 @@ function StaleServer({
       </div>
       <FieldError
         id={`${id}-error`}
-        message={`This ${source} does not have this server. Remove it to continue.`}
+        message="The source does not have this saved server. Remove it to continue."
       />
     </div>
   )
@@ -336,7 +334,7 @@ export function ConfigurationStep({
   for (const selection of staleServers)
     blockers.push({
       field: ids.server(selection.declaration),
-      message: `Remove the saved server that this ${source} does not have.`,
+      message: 'Remove the saved server that the source does not have.',
     })
   for (const { group, problem, missing } of serverProblems)
     if (missing.length === 0)
@@ -367,7 +365,7 @@ export function ConfigurationStep({
     return (
       <StepFrame title={title} actions={actions}>
         <Banner variant="error" title={`Cannot read this ${source}`} action={retry}>
-          Fix the {source}, then try again. Error code: {review.diagnostic}
+          Fix the {source} before you try again. Error code: {review.diagnostic}
         </Banner>
       </StepFrame>
     )
@@ -652,7 +650,6 @@ export function ConfigurationStep({
                   key={selection.declaration}
                   id={ids.server(selection.declaration)}
                   selection={selection}
-                  source={source}
                   onRemove={() => clearServer(selection.declaration)}
                 />
               ))}

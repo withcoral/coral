@@ -46,7 +46,7 @@ export function ConfigurationChanges({ setup }: { setup: SetupView }) {
                     {differenceValue(difference.field, difference.saved, 'No value')}
                   </Table.Cell>
                   <Table.Cell wrap>
-                    {differenceValue(difference.field, difference.document, 'No single value')}
+                    {differenceValue(difference.field, difference.document, 'No default')}
                   </Table.Cell>
                 </Table.Row>
               ))}
