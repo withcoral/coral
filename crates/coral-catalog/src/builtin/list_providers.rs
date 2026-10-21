@@ -73,7 +73,7 @@ pub struct ListProvidersResult {
     #[schemars(
         description = "The Providers your createProvider calls asked a person to finish, which \
                        nobody has published yet, oldest first. Each expires an hour after \
-                       createProvider returned it."
+                       createProvider created it."
     )]
     pub setups: Vec<ListedSetup>,
 }

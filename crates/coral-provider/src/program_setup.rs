@@ -213,18 +213,21 @@ impl ProviderModule {
         owner: &WorkspaceId,
         now: i64,
     ) -> Result<Vec<ProviderSetup>, Error> {
-        self.require_owner_inspection(actor, owner).await?;
+        let mut tx = self.database.begin_read_snapshot().await?;
+        self.check_owner_inspection_in_transaction(&mut tx, actor, owner)
+            .await?;
         // Each Setup's deadline is a fixed time after it was created.
         let created_after =
             now.saturating_sub(crate::setup_credentials::SETUP_CREDENTIAL_LIFETIME_NANOS);
         let setups = crate::repository::requested_setups(
-            self.database.as_ref(),
+            &mut tx,
             owner,
             actor.user_id(),
             created_after,
             &ProviderSetupState::OPEN,
         )
         .await?;
+        tx.rollback().await?;
         Ok(setups.into_iter().map(|loaded| loaded.setup).collect())
     }
 }
