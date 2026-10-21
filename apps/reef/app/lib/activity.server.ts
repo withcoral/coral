@@ -915,9 +915,9 @@ async function selectedDetail(
 /**
  * The containing Run's accepted source and terminal evidence, for Activity's source pane.
  * It reads through the same `inspectRun` the Run's own detail uses, so the caller's access
- * to the Run authorizes it independently of the selected record. An unavailable Run
- * resolves to no context and leaves the record's own detail in place; any other failure
- * propagates like every other read here.
+ * to the Run authorizes it independently of the selected record. An unavailable Run, or a
+ * passing fault on this optional read, resolves to no context and leaves the record's own
+ * detail in place; any other failure propagates like every other read here.
  */
 async function runSourceContext(
   run: string,
@@ -929,7 +929,12 @@ async function runSourceContext(
   const context: ActivityPage = { ...page, selected: run, detail: null, selectedRow: null }
   const contextQuery = new URLSearchParams(query)
   contextQuery.set('request', '')
-  await selectedDetail(context, contextQuery, api, signal, false)
+  try {
+    await selectedDetail(context, contextQuery, api, signal, false)
+  } catch (error) {
+    if (!transient(error)) throw error
+    return undefined
+  }
   return context.detail?.kind === 'run' ? context.detail : undefined
 }
 

@@ -11,6 +11,7 @@ import {
   ActivityRunState,
   ActivityInvocationState,
   ActivityInvocationOutcome,
+  ActivityLogLevel,
 } from '@/generated/coral/management/v1/activity_pb'
 import { AccountConnectionState } from '@/generated/coral/management/v1/account_pb'
 import { fakeManagement, type ManagementHandlers } from './management.test-support'
@@ -433,7 +434,7 @@ function runEntries(
 
 function runDetail(
   options: AgentOption & {
-    runDetailUnavailable?: boolean
+    runDetailUnavailable?: boolean | Code
     resolved?: boolean
     retainedConnection?: boolean
     noFinalValue?: boolean
@@ -442,7 +443,11 @@ function runDetail(
   return {
     activity: {
       inspectRun: (input) => {
-        if (options.runDetailUnavailable) refuse('run unavailable')
+        if (options.runDetailUnavailable)
+          refuse(
+            'run unavailable',
+            options.runDetailUnavailable === true ? Code.NotFound : options.runDetailUnavailable,
+          )
         return {
           run: {
             ...execution,
@@ -481,22 +486,35 @@ function runDetail(
 }
 
 function runEvent(
-  options: AgentOption & { endedEvent?: boolean; location?: StoredLocation } = {},
+  options: AgentOption & {
+    endedEvent?: boolean
+    logged?: boolean
+    location?: StoredLocation
+    eventUnavailable?: Code
+  } = {},
 ): Handlers {
   return {
     activity: {
-      inspectRunEvent: (input) => ({
-        contextImpactBytes: options.endedEvent ? 4n : undefined,
-        run: { ...execution, agent: agentOf(options) },
-        event: {
-          sequence: input.sequence,
-          occurredAtUnixNanos: 3_000_000_000n,
-          payload: options.endedEvent
-            ? { case: 'ended', value: { state: ActivityRunState.SUCCEEDED } }
-            : { case: 'programEmitted', value: { valueJson: '{"invoices":24}' } },
-          sourceLocation: options.location,
-        },
-      }),
+      inspectRunEvent: (input) => {
+        if (options.eventUnavailable) refuse('event unavailable', options.eventUnavailable)
+        return {
+          contextImpactBytes: options.endedEvent ? 4n : undefined,
+          run: { ...execution, agent: agentOf(options) },
+          event: {
+            sequence: input.sequence,
+            occurredAtUnixNanos: 3_000_000_000n,
+            payload: options.endedEvent
+              ? { case: 'ended', value: { state: ActivityRunState.SUCCEEDED } }
+              : options.logged
+                ? {
+                    case: 'programLogged',
+                    value: { level: ActivityLogLevel.INFO, message: 'sent 24 reminders' },
+                  }
+                : { case: 'programEmitted', value: { valueJson: '{"invoices":24}' } },
+            sourceLocation: options.location,
+          },
+        }
+      },
     },
   }
 }
@@ -509,32 +527,39 @@ function invocationDetail(
     /** Retains a shared account connection request instead of an approval. */
     connection?: boolean
     location?: StoredLocation
+    invocationUnavailable?: Code
   } = {},
 ): Handlers {
   return {
     activity: {
-      inspectInvocation: () => ({
-        invocation: {
-          ...operation,
-          agent: agentOf(options),
-          state: options.resolved ? ActivityInvocationState.ENDED : ActivityInvocationState.PENDING,
-          outcome: options.resolved ? ActivityInvocationOutcome.UPSTREAM_OUTCOME : undefined,
-          requiresAction: !options.ordinary,
-          sourceLocation: options.location,
-        },
-        argumentsJson: '{"to":"private@example.com"}',
-        outcome: options.resolved
-          ? {
-              case: 'upstreamOutcomeJson',
-              value: '{"status":404,"data":null,"metadata":{"kind":"http"}}',
-            }
-          : undefined,
-        requests: options.connection
-          ? [{ request: { case: 'accountConnection', value: connection } }]
-          : options.ordinary
-            ? []
-            : [{ request: { case: 'approval', value: approval } }],
-      }),
+      inspectInvocation: () => {
+        if (options.invocationUnavailable)
+          refuse('operation unavailable', options.invocationUnavailable)
+        return {
+          invocation: {
+            ...operation,
+            agent: agentOf(options),
+            state: options.resolved
+              ? ActivityInvocationState.ENDED
+              : ActivityInvocationState.PENDING,
+            outcome: options.resolved ? ActivityInvocationOutcome.UPSTREAM_OUTCOME : undefined,
+            requiresAction: !options.ordinary,
+            sourceLocation: options.location,
+          },
+          argumentsJson: '{"to":"private@example.com"}',
+          outcome: options.resolved
+            ? {
+                case: 'upstreamOutcomeJson',
+                value: '{"status":404,"data":null,"metadata":{"kind":"http"}}',
+              }
+            : undefined,
+          requests: options.connection
+            ? [{ request: { case: 'accountConnection', value: connection } }]
+            : options.ordinary
+              ? []
+              : [{ request: { case: 'approval', value: approval } }],
+        }
+      },
     },
   }
 }
@@ -1419,18 +1444,82 @@ describe('hierarchical activity through the private server interface', () => {
       expected,
     )
   })
-  it('still shows the output itself when its parent Run’s context is unavailable', async () => {
-    const { api } = coral(list(), runEvent(), runDetail({ runDetailUnavailable: true }))
-    const page = await loadActivity(request({ record: `${run}/events/3`, tree: '1' }), api, {
-      scope,
-    })
-    expect(page.unavailable).toBe(false)
-    expect(page.detail).toMatchObject({
-      kind: 'output',
-      event: { kind: 'program.emitted', value: '{"invoices":24}' },
-    })
-    expect(page.detail).not.toHaveProperty('context')
-  })
+  // Catches: an optional Run read that takes the selected record down on a passing fault, or
+  // that hides an expired session, a refused request or a cancelled load behind the record.
+  const selections = [
+    {
+      selected: 'an operation',
+      reads: (code?: Code) => [
+        invocationDetail({ resolved: true, ordinary: true, invocationUnavailable: code }),
+      ],
+      record: invocation,
+      shown: { kind: 'invocation', invocation: { name: invocation } },
+    },
+    {
+      selected: 'a log',
+      reads: (code?: Code) => [runEvent({ logged: true, eventUnavailable: code })],
+      record: `${run}/events/3`,
+      shown: { kind: 'output', event: { kind: 'program.logged', message: 'sent 24 reminders' } },
+    },
+    {
+      selected: 'an emission',
+      reads: (code?: Code) => [runEvent({ eventUnavailable: code })],
+      record: `${run}/events/3`,
+      shown: { kind: 'output', event: { kind: 'program.emitted', value: '{"invoices":24}' } },
+    },
+  ]
+  const outcomes = [
+    { label: 'unavailable', code: Code.Unavailable, readable: true },
+    { label: 'failing inside Coral', code: Code.Internal, readable: true },
+    { label: 'not found', code: Code.NotFound, readable: true },
+    { label: 'refused to you', code: Code.PermissionDenied, readable: true },
+    { label: 'refused for your session', code: Code.Unauthenticated, readable: false },
+    { label: 'refused as invalid', code: Code.InvalidArgument, readable: false },
+    // An aborted load reaches Reef as Canceled.
+    { label: 'cancelled with the load', code: Code.Canceled, readable: false },
+  ]
+  const withRunRead = (readable: boolean) =>
+    selections.flatMap((selection) =>
+      outcomes
+        .filter((outcome) => outcome.readable === readable)
+        .map((outcome) => ({ ...selection, ...outcome })),
+    )
+  it.each(withRunRead(true))(
+    'keeps $selected readable without its source when its Run read is $label',
+    async ({ reads, record, shown, code }) => {
+      const { api } = coral(list(), ...reads(), runDetail({ runDetailUnavailable: code }))
+      const page = await loadActivity(request({ record, tree: '1' }), api, { scope })
+      expect(page.unavailable).toBe(false)
+      expect(page.detail).toMatchObject(shown)
+      expect(page.detail).not.toHaveProperty('context')
+    },
+  )
+  it.each(withRunRead(false))(
+    'fails the load of $selected when its Run read is $label',
+    async ({ reads, record, code }) => {
+      const { api } = coral(list(), ...reads(), runDetail({ runDetailUnavailable: code }))
+      await expect(
+        loadActivity(request({ record, tree: '1' }), api, { scope }),
+      ).rejects.toMatchObject({ code })
+    },
+  )
+  // Catches: the Run's fallback swallowing a failure of the selected record's own read.
+  it.each(
+    selections.flatMap((selection) =>
+      [Code.Unavailable, Code.Internal, Code.Unauthenticated].map((code) => ({
+        ...selection,
+        code,
+      })),
+    ),
+  )(
+    'fails the load when $selected itself fails to load with code $code',
+    async ({ reads, record, code }) => {
+      const { api } = coral(list(), ...reads(code), runDetail())
+      await expect(
+        loadActivity(request({ record, tree: '1' }), api, { scope }),
+      ).rejects.toMatchObject({ code })
+    },
+  )
   it('authorizes an ordinary operation selection’s parent Run source the same way, not only an approval review', async () => {
     const { api, calls } = coral(
       list(),
@@ -1489,17 +1578,6 @@ describe('hierarchical activity through the private server interface', () => {
       expect(loaded(calls, 'run')).toBeGreaterThanOrEqual(1)
     },
   )
-  it('still shows an ordinary operation when its parent Run’s context is unavailable', async () => {
-    const { api } = coral(
-      list(),
-      invocationDetail({ resolved: true, ordinary: true }),
-      runDetail({ runDetailUnavailable: true }),
-    )
-    const page = await loadActivity(request({ record: invocation, tree: '1' }), api, { scope })
-    expect(page.unavailable).toBe(false)
-    expect(page.detail).toMatchObject({ kind: 'invocation' })
-    expect(page.detail).not.toHaveProperty('context')
-  })
   it('does not re-read the parent Run when the selection is already under approval review', async () => {
     const { api, calls } = coral(
       list(),
