@@ -268,8 +268,9 @@ impl BuiltinArguments {
     }
 }
 
-/// One argument a Program must correct. Coral writes each reason; it never
-/// holds a submitted value.
+/// One argument a Program must correct. Coral writes each reason, and it never
+/// holds a submitted value. A field or key name the Program wrote can appear
+/// in the field and the reason, since it says what to correct.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArgumentProblem {
     field: String,

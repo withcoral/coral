@@ -1202,7 +1202,8 @@ async fn the_program_configures_how_a_person_signs_in() {
 
 /// An `invalid_input` message names each argument to correct and what to write,
 /// whether the contract rejects it or Coral does once it reads the source. It
-/// never repeats a submitted value. The contract's own tests hold each of its
+/// never repeats a submitted value, though it names a header or field the
+/// Program wrote. The contract's own tests hold each of its
 /// rules; one problem and several show how a message carries them.
 #[tokio::test]
 #[expect(
