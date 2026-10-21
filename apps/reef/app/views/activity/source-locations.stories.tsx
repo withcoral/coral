@@ -324,7 +324,7 @@ export const SameRunNavigation: Story = {
   play: async ({ canvasElement, userEvent }) => {
     const dialog = await within(canvasElement.ownerDocument.body).findByRole('dialog')
     const drawer = within(dialog)
-    await expectOwnHeader(dialog, 'Operation call ended: upstream outcome')
+    await expectOwnHeader(dialog, 'Operation call ended: completed')
     await expect(drawer.queryByText('Source location unavailable')).toBeNull()
     const code = dialog.querySelector('[data-line]')!.closest('pre')!
     // The source pane's own scrolling viewport, not a wrapper that never scrolls.

@@ -1974,6 +1974,8 @@ const exactCreateProviderArguments =
   `"source":{"kind":"openapi_document","document":${JSON.stringify(inlineDocument)}},` +
   '"credentialRoute":"fixed","maxForecasts":9007199254740993,' +
   '"label":"first as sent","label":"second as sent"}'
+/** The program that makes this exact call, its arguments written out as sent. */
+const exactCreateProviderProgram = `return await coral.workspace.createProvider(${exactCreateProviderArguments})`
 /** Edge case: createProvider JSON that rows would change, a large integer and a duplicate key,
  * shows whole, exactly as sent, in one block. The ordinary arguments renderer does this for any
  * such JSON; nothing here is special to OpenAPI: no copy apart, no placeholder. */
@@ -1987,6 +1989,7 @@ export const ApprovalInlineOpenApiDocument: Story = {
         providerLabel: 'Coral workspace',
         arguments: exactCreateProviderArguments,
       }),
+      { source: exactCreateProviderProgram },
     ),
     { evidence: ['9007199254740993', '"first as sent"', '"second as sent"'] },
   ),
@@ -2032,6 +2035,9 @@ const createProviderCall = {
     client: { client_id: 'weather-client', authentication: 'client_secret_post' },
   },
 }
+/** A typical program that adds the provider with this call. */
+const createProviderProgram = `const call = ${JSON.stringify(createProviderCall, null, 2)}
+return await coral.workspace.createProvider(call)`
 /** A typical createProvider call through the ordinary arguments: one row per field, and the
  * inline document whole inside `source`, as sent. The Arguments disclosure is the one way to
  * fold it; nothing is special to OpenAPI. */
@@ -2045,6 +2051,7 @@ export const ApprovalCreateProviderOpenApi: Story = {
         providerLabel: 'Coral workspace',
         arguments: JSON.stringify(createProviderCall),
       }),
+      { source: createProviderProgram },
     ),
     { evidence: 'coral.workspace.createProvider' },
   ),

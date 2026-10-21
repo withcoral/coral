@@ -283,26 +283,31 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
         await page.goto(
           `/workspaces/${first}/activity?record=${encodeURIComponent(selected)}&tree=1`,
         )
-        await page.getByRole('link', { name: 'Reveal record', exact: true }).click()
+        // Beside its Run's source, the emission leads back to history from its own
+        // detail, and the drawer gives way to the list anchored at it.
+        await page
+          .getByRole('dialog', { name: 'Activity details' })
+          .getByRole('region', { name: 'Selected record', exact: true })
+          .getByRole('link', { name: 'View in history', exact: true })
+          .click()
         await page.waitForURL(
           (url) => url.searchParams.get(`anchor.workspaces/${first}/runs/${run}`) === selected,
         )
-        // The record's row outside the page carries the same link until the
-        // revealed page replaces it, so wait for that row to go first.
+        await page.getByRole('dialog').waitFor({ state: 'hidden' })
+        // With no record selected, no row outside the page shows, so the link
+        // below is the revealed page's own row.
         await page
           .getByText('Outside this workspace or page:', { exact: true })
           .waitFor({ state: 'detached' })
-        await table
-          .getByRole('link', { name: 'emission #31', exact: true, includeHidden: true })
-          .waitFor()
+        await table.getByRole('link', { name: 'emission #31', exact: true }).waitFor()
         expect(new URL(page.url()).searchParams.has('scope')).toBe(false)
+        expect(new URL(page.url()).searchParams.has('record')).toBe(false)
         expect(new URL(page.url()).searchParams.get('anchor')).toBe(
           `workspaces/${first}/tasks/${task}`,
         )
         expect(new URL(page.url()).searchParams.get(`anchor.workspaces/${first}/runs/${run}`)).toBe(
           selected,
         )
-        await page.getByRole('button', { name: 'Close details', exact: true }).click()
         await table
           .getByRole('rowgroup', { name: 'Call one Operation records', exact: true })
           .evaluate((element) => {
@@ -353,11 +358,25 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
             )
             if (explicit) {
               await page.getByText('Outside this workspace or page:', { exact: true }).waitFor()
-              await page.getByRole('link', { name: 'Reveal record', exact: true }).click()
-              await page.waitForURL((url) => url.searchParams.get(`anchor.${runName}`) === selected)
+              await page
+                .getByRole('dialog', { name: 'Activity details' })
+                .getByRole('region', { name: 'Selected record', exact: true })
+                .getByRole('link', { name: 'View in history', exact: true })
+                .click()
+              await page.waitForURL(
+                (url) =>
+                  url.searchParams.get(`anchor.${runName}`) === selected &&
+                  !url.searchParams.has('record'),
+              )
+              await page.getByRole('dialog').waitFor({ state: 'hidden' })
             }
-            const selectedRow = table.locator('[role="row"][aria-selected="true"]')
-            const eventLink = selectedRow.getByRole('link', {
+            // Selected, the Event's own row; revealed, the one row the anchored page holds.
+            const row = explicit
+              ? table.getByRole('row').filter({
+                  has: page.getByRole('link', { name: 'execution ended', exact: true }),
+                })
+              : table.locator('[role="row"][aria-selected="true"]')
+            const eventLink = row.getByRole('link', {
               name: 'execution ended',
               exact: true,
               includeHidden: true,
@@ -368,8 +387,8 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
                 'record',
               ),
             ).toBe(selected)
-            expect(await selectedRow.count()).toBe(1)
-            expect(await selectedRow.getByLabel('23 B added', { exact: true }).count()).toBe(1)
+            expect(await row.count()).toBe(1)
+            expect(await row.getByLabel('23 B added', { exact: true }).count()).toBe(1)
             expect(
               await table
                 .getByRole('link', { name: 'final value', exact: true, includeHidden: true })
@@ -379,7 +398,6 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
               await page.getByText('Outside this workspace or page:', { exact: true }).count(),
             ).toBe(0)
           }
-          await page.getByRole('button', { name: 'Close details', exact: true }).click()
           await page.waitForURL((url) => !url.searchParams.has('record'))
           await table.getByRole('link', { name: 'execution ended', exact: true }).waitFor()
         },
