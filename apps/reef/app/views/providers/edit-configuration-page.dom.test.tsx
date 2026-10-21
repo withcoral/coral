@@ -151,17 +151,22 @@ it('cancels at once when nothing changed', async () => {
   expect(page.intents).toEqual(['cancel'])
 })
 
+const cancel = () => userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
 // Catches: Cancel or a link silently dropping an edit, a Keep editing that
-// still leaves, or a discard that leaves the Setup open.
+// still leaves, or a discard that leaves the Setup open. A correction to an
+// account change that Coral sent back to the form is an edit too.
 it.each([
-  ['Cancel', () => userEvent.click(screen.getByRole('button', { name: 'Cancel' })), 'Provider'],
+  ['Cancel', 'configuration', cancel, 'Provider'],
   [
     'a link to another page',
+    'configuration',
     () => userEvent.click(screen.getByRole('link', { name: 'Providers' })),
     'Providers',
   ],
-])('asks before %s discards changes', async (_, leave, destination) => {
-  const page = renderPage()
+  ['Cancel in an account change', 'accounts', cancel, 'Provider'],
+] as const)('asks before %s discards changes', async (_, task, leave, destination) => {
+  const page = renderPage({ task })
   await rename()
 
   await leave()
