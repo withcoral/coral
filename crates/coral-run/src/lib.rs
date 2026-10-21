@@ -141,6 +141,8 @@ mod required_actions_repository;
 pub mod retention;
 mod run_repository;
 mod source_location_repository;
+mod summary;
+mod summary_repository;
 mod termination;
 mod types;
 mod worker;
@@ -167,6 +169,10 @@ use owner::Owners;
 pub use required_actions::{
     ActionCursor, ActionPage, ActionSummary, QueueCursor, QueuedAction, RequiredAction,
     RequiredActionRequest, RequiredActions, RequiredActor,
+};
+pub use summary::{
+    ActivitySummary, ActorContext, ApprovalDecisions, CallOutcomes, MAX_SUMMARY_DAYS,
+    OperationCalls, StoppedOperation,
 };
 pub use types::{
     AppliedOutputCap, CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, COMBINED_TYPESCRIPT_MAX_BYTES,

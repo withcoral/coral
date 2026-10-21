@@ -139,6 +139,53 @@ pub(super) fn actor_label(
         coral_workspace::PrincipalKind::Agent => agent_label.unwrap_or(UNAVAILABLE_AGENT).into(),
     }
 }
+pub(super) fn summary(value: coral_run::ActivitySummary) -> wire::SummarizeActivityResponse {
+    let calls = value.calls;
+    wire::SummarizeActivityResponse {
+        calls: Some(wire::ActivityCallOutcomes {
+            answered: calls.answered,
+            blocked: calls.blocked,
+            not_allowed: calls.not_allowed,
+            needs_setup: calls.needs_setup,
+            failed: calls.failed,
+            canceled: calls.canceled,
+        }),
+        stopped: value
+            .stopped
+            .into_iter()
+            .map(|op| wire::ActivityStoppedOperation {
+                call_path: op.call_path,
+                blocked: op.blocked,
+                not_allowed: op.not_allowed,
+                needs_setup: op.needs_setup,
+            })
+            .collect(),
+        operations: value
+            .operations
+            .into_iter()
+            .map(|op| wire::ActivityOperationCalls {
+                call_path: op.call_path,
+                calls: op.calls,
+            })
+            .collect(),
+        approvals: Some(wire::ActivityApprovalDecisions {
+            approved: value.approvals.approved,
+            declined: value.approvals.declined,
+            median_wait_nanos: value.approvals.median_wait_nanos,
+        }),
+        context_impact_bytes: value.context_impact_bytes,
+        context_impact_partial: value.context_impact_partial,
+        actors: value
+            .actors
+            .iter()
+            .map(|actor| wire::ActivityContextShare {
+                key: actor.principal.id().to_string(),
+                label: actor_label(&actor.principal, actor.agent_label.as_deref()),
+                bytes: actor.bytes,
+            })
+            .collect(),
+    }
+}
 pub(super) fn action_summary(
     workspace: &WorkspaceId,
     action: &coral_run::ActionSummary,

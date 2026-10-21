@@ -12,7 +12,7 @@ macro_rules! coral_failures {
         }
 
         impl CoralFailure {
-            const ALL: &[Self] = &[$(Self::$variant),*];
+            pub(crate) const ALL: &[Self] = &[$(Self::$variant),*];
 
             /// Stable, transport-neutral code, with no retry or effect claim.
             #[must_use]

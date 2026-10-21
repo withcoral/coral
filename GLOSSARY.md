@@ -478,6 +478,10 @@ A Principal that needs a different Operation set belongs in a different Workspac
 _Avoid_: Principal policy, Agent policy, Account-specific policy, Credential Route policy, Provider permission,
 Operation Availability, allow/ask/deny
 
+**Context Impact**: The net payload bytes one ended Program Run adds to its caller's context: the bytes of its
+Emissions, Logs and Final Value, minus the bytes of its Invocations' retained Operation Results. Negative means saved. A
+Run that is running or has incomplete Invocation evidence has none. _Avoid_: token savings
+
 **Run Status Page**: The directly linked detail of one Program Run within Reef's activity interface, at one stable,
 non-secret URL, rather than a required standalone page. Every supported local or hosted deployment provides this
 interface, and its link opens the exact Run independently of the activity list's current filters. Opening it requires

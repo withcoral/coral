@@ -28,6 +28,11 @@ service ActivityService {
   rpc BrowseRequiredActions(BrowseRequiredActionsRequest) returns (BrowseRequiredActionsResponse);
   // Counts pending requests. A connection request shared by several Runs counts once.
   rpc CountRequiredActions(CountRequiredActionsRequest) returns (CountRequiredActionsResponse);
+  // Sums the caller's recent work in one Workspace: call outcomes, stopped and
+  // busiest Operations, approval decisions, and context impact. Counts the caller's
+  // own work and, in a Workspace the caller owns, its Agents' work, like the
+  // pending-request queue. Other Users' work is never counted.
+  rpc SummarizeActivity(SummarizeActivityRequest) returns (SummarizeActivityResponse);
   // Approves or declines one request. The first decision wins; the response gives
   // the resulting state, which may not be the caller's decision.
   rpc DecideApproval(DecideApprovalRequest) returns (DecideApprovalResponse);
@@ -623,6 +628,86 @@ message CountRequiredActionsRequest {
 message CountRequiredActionsResponse {
   // Pending requests. A connection request shared by several Runs counts once.
   int64 action_count = 1;
+}
+// Selects the Workspace and the window to summarize.
+message SummarizeActivityRequest {
+  // Required workspaces/{workspace}.
+  string workspace = 1;
+  // Days back from now that the window covers, 1 to 30.
+  uint32 days = 2;
+}
+// One window's totals. A failed read is an error, never zero totals. Each total is
+// windowed by the end time of its own fact: a call's end, a Run's end, or a decision.
+message SummarizeActivityResponse {
+  // Operation calls that ended in the window, by outcome.
+  ActivityCallOutcomes calls = 1;
+  // Operations with calls stopped in the window, one entry per Call Path, most stopped first.
+  repeated ActivityStoppedOperation stopped = 2;
+  // Operations with calls that ended in the window, one entry per Call Path.
+  repeated ActivityOperationCalls operations = 3;
+  // Approval requests decided in the window.
+  ActivityApprovalDecisions approvals = 4;
+  // Net context bytes of Runs that ended in the window. Negative means saved.
+  // Absent when no Run in the window has a measured total.
+  optional int64 context_impact_bytes = 5;
+  // True while a Run in scope is running, or when a Run that ended in the window
+  // has no measurement. context_impact_bytes then leaves that work out.
+  bool context_impact_partial = 6;
+  // Net context bytes per invoking actor, most saved first. They add up to
+  // context_impact_bytes.
+  repeated ActivityContextShare actors = 7;
+}
+// Ended Operation calls, by who acts next. The six counts add up to every ended call.
+message ActivityCallOutcomes {
+  // The upstream returned a complete response. It may still be an error response.
+  int64 answered = 1;
+  // A rule stopped the call: a disabled Operation, a required approval, lost access,
+  // or a rejected destination.
+  int64 blocked = 2;
+  // A person declined the approval or the Account connection, or let it expire.
+  int64 not_allowed = 3;
+  // A Provider, Account or credential needs repair.
+  int64 needs_setup = 4;
+  // The Program's call or the upstream failed, or the result is unknown.
+  int64 failed = 5;
+  // The Run ended before the call did.
+  int64 canceled = 6;
+}
+// One Operation's stopped calls, split by who must act.
+message ActivityStoppedOperation {
+  // Retained Program Call Path.
+  string call_path = 1;
+  // Calls a rule stopped.
+  int64 blocked = 2;
+  // Calls a person did not allow.
+  int64 not_allowed = 3;
+  // Calls that need setup.
+  int64 needs_setup = 4;
+}
+// One Operation's ended calls.
+message ActivityOperationCalls {
+  // Retained Program Call Path.
+  string call_path = 1;
+  // Calls that ended in the window.
+  int64 calls = 2;
+}
+// Approval decisions in a window.
+message ActivityApprovalDecisions {
+  // Requests a person approved.
+  int64 approved = 1;
+  // Requests a person declined.
+  int64 declined = 2;
+  // Median nanoseconds from the request to the decision. Absent when nobody decided.
+  optional int64 median_wait_nanos = 3;
+}
+// Net context bytes for one actor.
+message ActivityContextShare {
+  // Stable actor ID.
+  string key = 1;
+  // "You", the Agent's name, or an unavailable label.
+  string label = 2;
+  // Net bytes. Negative means saved.
+  int64 bytes = 3;
 }
 // Selects a page of pending requests that wait on the caller.
 message BrowseRequiredActionsRequest {

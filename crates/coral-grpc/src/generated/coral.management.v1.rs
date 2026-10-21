@@ -5961,6 +5961,120 @@ pub struct CountRequiredActionsResponse {
     #[prost(int64, tag = "1")]
     pub action_count: i64,
 }
+/// Selects the Workspace and the window to summarize.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SummarizeActivityRequest {
+    /// Required workspaces/{workspace}.
+    #[prost(string, tag = "1")]
+    pub workspace: ::prost::alloc::string::String,
+    /// Days back from now that the window covers, 1 to 30.
+    #[prost(uint32, tag = "2")]
+    pub days: u32,
+}
+/// One window's totals. A failed read is an error, never zero totals. Each total is
+/// windowed by the end time of its own fact: a call's end, a Run's end, or a decision.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SummarizeActivityResponse {
+    /// Operation calls that ended in the window, by outcome.
+    #[prost(message, optional, tag = "1")]
+    pub calls: ::core::option::Option<ActivityCallOutcomes>,
+    /// Operations with calls stopped in the window, one entry per Call Path, most stopped first.
+    #[prost(message, repeated, tag = "2")]
+    pub stopped: ::prost::alloc::vec::Vec<ActivityStoppedOperation>,
+    /// Operations with calls that ended in the window, one entry per Call Path.
+    #[prost(message, repeated, tag = "3")]
+    pub operations: ::prost::alloc::vec::Vec<ActivityOperationCalls>,
+    /// Approval requests decided in the window.
+    #[prost(message, optional, tag = "4")]
+    pub approvals: ::core::option::Option<ActivityApprovalDecisions>,
+    /// Net context bytes of Runs that ended in the window. Negative means saved.
+    /// Absent when no Run in the window has a measured total.
+    #[prost(int64, optional, tag = "5")]
+    pub context_impact_bytes: ::core::option::Option<i64>,
+    /// True while a Run in scope is running, or when a Run that ended in the window
+    /// has no measurement. context_impact_bytes then leaves that work out.
+    #[prost(bool, tag = "6")]
+    pub context_impact_partial: bool,
+    /// Net context bytes per invoking actor, most saved first. They add up to
+    /// context_impact_bytes.
+    #[prost(message, repeated, tag = "7")]
+    pub actors: ::prost::alloc::vec::Vec<ActivityContextShare>,
+}
+/// Ended Operation calls, by who acts next. The six counts add up to every ended call.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivityCallOutcomes {
+    /// The upstream returned a complete response. It may still be an error response.
+    #[prost(int64, tag = "1")]
+    pub answered: i64,
+    /// A rule stopped the call: a disabled Operation, a required approval, lost access,
+    /// or a rejected destination.
+    #[prost(int64, tag = "2")]
+    pub blocked: i64,
+    /// A person declined the approval or the Account connection, or let it expire.
+    #[prost(int64, tag = "3")]
+    pub not_allowed: i64,
+    /// A Provider, Account or credential needs repair.
+    #[prost(int64, tag = "4")]
+    pub needs_setup: i64,
+    /// The Program's call or the upstream failed, or the result is unknown.
+    #[prost(int64, tag = "5")]
+    pub failed: i64,
+    /// The Run ended before the call did.
+    #[prost(int64, tag = "6")]
+    pub canceled: i64,
+}
+/// One Operation's stopped calls, split by who must act.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivityStoppedOperation {
+    /// Retained Program Call Path.
+    #[prost(string, tag = "1")]
+    pub call_path: ::prost::alloc::string::String,
+    /// Calls a rule stopped.
+    #[prost(int64, tag = "2")]
+    pub blocked: i64,
+    /// Calls a person did not allow.
+    #[prost(int64, tag = "3")]
+    pub not_allowed: i64,
+    /// Calls that need setup.
+    #[prost(int64, tag = "4")]
+    pub needs_setup: i64,
+}
+/// One Operation's ended calls.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivityOperationCalls {
+    /// Retained Program Call Path.
+    #[prost(string, tag = "1")]
+    pub call_path: ::prost::alloc::string::String,
+    /// Calls that ended in the window.
+    #[prost(int64, tag = "2")]
+    pub calls: i64,
+}
+/// Approval decisions in a window.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivityApprovalDecisions {
+    /// Requests a person approved.
+    #[prost(int64, tag = "1")]
+    pub approved: i64,
+    /// Requests a person declined.
+    #[prost(int64, tag = "2")]
+    pub declined: i64,
+    /// Median nanoseconds from the request to the decision. Absent when nobody decided.
+    #[prost(int64, optional, tag = "3")]
+    pub median_wait_nanos: ::core::option::Option<i64>,
+}
+/// Net context bytes for one actor.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivityContextShare {
+    /// Stable actor ID.
+    #[prost(string, tag = "1")]
+    pub key: ::prost::alloc::string::String,
+    /// "You", the Agent's name, or an unavailable label.
+    #[prost(string, tag = "2")]
+    pub label: ::prost::alloc::string::String,
+    /// Net bytes. Negative means saved.
+    #[prost(int64, tag = "3")]
+    pub bytes: i64,
+}
 /// Selects a page of pending requests that wait on the caller.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BrowseRequiredActionsRequest {
@@ -7013,6 +7127,39 @@ pub mod activity_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Sums the caller's recent work in one Workspace: call outcomes, stopped and
+        /// busiest Operations, approval decisions, and context impact. Counts the caller's
+        /// own work and, in a Workspace the caller owns, its Agents' work, like the
+        /// pending-request queue. Other Users' work is never counted.
+        pub async fn summarize_activity(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SummarizeActivityRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SummarizeActivityResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.ActivityService/SummarizeActivity",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.ActivityService",
+                        "SummarizeActivity",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         /// Approves or declines one request. The first decision wins; the response gives
         /// the resulting state, which may not be the caller's decision.
         pub async fn decide_approval(
@@ -7234,6 +7381,17 @@ pub(crate) mod activity_service_server {
             request: tonic::Request<super::CountRequiredActionsRequest>,
         ) -> std::result::Result<
             tonic::Response<super::CountRequiredActionsResponse>,
+            tonic::Status,
+        >;
+        /// Sums the caller's recent work in one Workspace: call outcomes, stopped and
+        /// busiest Operations, approval decisions, and context impact. Counts the caller's
+        /// own work and, in a Workspace the caller owns, its Agents' work, like the
+        /// pending-request queue. Other Users' work is never counted.
+        async fn summarize_activity(
+            &self,
+            request: tonic::Request<super::SummarizeActivityRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SummarizeActivityResponse>,
             tonic::Status,
         >;
         /// Approves or declines one request. The first decision wins; the response gives
@@ -7807,6 +7965,52 @@ pub(crate) mod activity_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = CountRequiredActionsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.ActivityService/SummarizeActivity" => {
+                    #[allow(non_camel_case_types)]
+                    struct SummarizeActivitySvc<T: ActivityService>(pub Arc<T>);
+                    impl<
+                        T: ActivityService,
+                    > tonic::server::UnaryService<super::SummarizeActivityRequest>
+                    for SummarizeActivitySvc<T> {
+                        type Response = super::SummarizeActivityResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::SummarizeActivityRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ActivityService>::summarize_activity(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = SummarizeActivitySvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

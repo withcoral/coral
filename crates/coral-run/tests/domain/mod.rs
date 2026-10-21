@@ -23,6 +23,7 @@ mod refresh;
 mod required_actions;
 mod resilience;
 mod scoping;
+mod summary;
 mod support;
 mod updates;
 

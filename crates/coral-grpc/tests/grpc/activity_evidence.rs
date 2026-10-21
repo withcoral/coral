@@ -1378,3 +1378,71 @@ async fn activity_records_carry_their_authored_location_on_every_projection() {
     expected_rows.extend([in_snapshot(3, 37), program(4, 32)]);
     assert_eq!(row_locations, expected_rows);
 }
+
+/// A summary needs one Workspace, reports a rejected window as an invalid argument, and
+/// names its rows for Reef. `coral-run` owns which windows it accepts.
+#[tokio::test]
+async fn activity_summary_wire_rejects_malformed_windows_and_labels_its_rows() {
+    let f = Fixture::new().await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"temperature": 21})))
+        .mount(&server)
+        .await;
+    let provider = publish_http(&f, &server.uri()).await;
+    policy(&f, &provider, coral_policy::OperationAccessState::Enabled).await;
+    let run = start(
+        &f,
+        "await coral.providers.evidence.read({body: {}}); return 'done';",
+    )
+    .await;
+    terminal(&f, &run).await;
+    let mut client = f.activity();
+    let token = f.token(&f.member, "reef");
+    let workspace = format!("workspaces/{}", f.workspace.id());
+    for (name, days) in [(String::new(), 7), (workspace.clone(), 0)] {
+        let denied = client
+            .summarize_activity(request(
+                wire::SummarizeActivityRequest {
+                    workspace: name.clone(),
+                    days,
+                },
+                &token,
+                "reef",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            denied.code(),
+            tonic::Code::InvalidArgument,
+            "{name:?} {days}"
+        );
+    }
+    let summary = client
+        .summarize_activity(request(
+            wire::SummarizeActivityRequest {
+                workspace: workspace.clone(),
+                days: 7,
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let [operation] = summary.operations.as_slice() else {
+        panic!("one Operation: {:?}", summary.operations)
+    };
+    assert_eq!(operation.call_path, "coral.providers.evidence.read");
+    let [actor] = summary.actors.as_slice() else {
+        panic!("one actor: {:?}", summary.actors)
+    };
+    assert_eq!(actor.label, "You");
+    assert_eq!(
+        actor.key,
+        AuthenticatedPrincipal::user(f.member.clone())
+            .principal()
+            .id()
+            .to_string()
+    );
+}

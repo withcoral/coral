@@ -316,11 +316,11 @@ impl TestModules {
 
     /// Installs or removes a persistence fault, such as a constraint that rejects
     /// the next lifecycle event, after the fixture is arranged.
-    pub(crate) async fn inject_fault(&self, sql: &str) {
+    pub(crate) async fn inject_fault(&self, sql: &str) -> u64 {
         self.test_database
             .execute_fixture_sql(sql)
             .await
-            .expect("apply persistence fault");
+            .expect("apply persistence fault")
     }
 
     pub(crate) async fn user_scope(
