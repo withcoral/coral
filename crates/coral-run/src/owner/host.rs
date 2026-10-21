@@ -123,8 +123,8 @@ pub(crate) async fn host(
                 Message::Timer(Timer::IdleTick)
             }
         };
-        if let Message::Timer(timer) = &message {
-            timers.fired(timer);
+        if matches!(message, Message::Timer(_)) {
+            timers.fired();
         }
         #[cfg(test)]
         module.execution_observer.owner_message_dequeued();
@@ -190,13 +190,16 @@ fn launched_at(module: &RunModule, accepted: &AcceptedRun) -> i64 {
 
 /// The timers the owner armed, one sleep each on this process's clock,
 /// except the idle tick, which the loop keeps in place. Arming a timer
-/// again replaces its sleep; a sleep that fired is forgotten; retiring the
-/// owner aborts the rest.
+/// again replaces its sleep; a sleep that ended is forgotten at the next
+/// arm or fire (its message may be dequeued a moment before the task that
+/// sent it ends, and a message from a sleep since replaced must not forget
+/// the sleep that replaced it); retiring the owner aborts the rest.
 #[derive(Default)]
 struct Timers(HashMap<Timer, tokio::task::JoinHandle<()>>);
 
 impl Timers {
     fn arm(&mut self, handle: &OwnerHandle, timer: Timer, after_nanos: i64) {
+        self.prune();
         let fire = handle.clone();
         let fired = timer.clone();
         let sleep = tokio::spawn(async move {
@@ -208,17 +211,14 @@ impl Timers {
         }
     }
 
-    /// A `Message::Timer` was dequeued: its sleep is done, unless the
-    /// message came from a sleep since replaced, whose successor still runs
-    /// and stays in the map for retirement to abort.
-    fn fired(&mut self, timer: &Timer) {
-        if self
-            .0
-            .get(timer)
-            .is_some_and(tokio::task::JoinHandle::is_finished)
-        {
-            self.0.remove(timer);
-        }
+    /// A `Message::Timer` was dequeued.
+    fn fired(&mut self) {
+        self.prune();
+    }
+
+    /// Forgets every sleep that ended: it fired, or was replaced.
+    fn prune(&mut self) {
+        self.0.retain(|_, sleep| !sleep.is_finished());
     }
 }
 

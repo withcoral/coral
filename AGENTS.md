@@ -67,13 +67,18 @@
   cancellation, the deadline) rides a chunk's head update or the owner's
   terminal write; every chunk commit asserts the head the owner tracks in
   memory. A timer is armed as an effect and fires as a message into the
-  owner's mailbox, so an expiry or a timeout is recorded only when the
-  owner's pure `apply` decides it: nothing else compares `now` with a Run's
-  or a request's deadline to write Expired or TimedOut, and readers show the
-  recorded state beside the deadline rather than deriving one. The Dispatch
-  Fence alone still judges an approved request's deadline at dispatch, on
-  its one clock sample (ADR 0018 contract line 3); it records no expiry. Do
-  not open a transaction that holds the Run row from any of
+  owner's mailbox, so a Run's timeout and an Approval Request's expiry are
+  recorded only when the owner's pure `apply` decides them: no other Run
+  path compares `now` with those deadlines to write TimedOut or Expired, and
+  readers show the recorded state beside the deadline rather than deriving
+  one. Two judgements stay outside `apply`: the Dispatch Fence judges an
+  approved request's deadline at dispatch on its one clock sample (ADR 0018
+  contract line 3) and records no expiry, and recovery's explicit pass
+  records the timeout of a Run past its deadline that no owner ended. A
+  connection request is Account-owned and shared across Runs: the Account
+  module records its expiry when a holder reads it, and the owner's timer
+  only wakes the Invocations parked on it. Do not open a transaction that
+  holds the Run row from any of
   these paths, and do not write a nonterminal Run's row from outside its
   owner; recovery's explicit pass is the one outside writer.
   [ADR 0018](docs/adr/0018-run-owner-coordinates-each-run.md) has the
