@@ -3,7 +3,7 @@ import { Card, Typography } from '@/wax/components'
 import { Meter } from '@/wax/components/charts'
 import { Icon, type IconName } from '@/wax/components/icon'
 import { SegmentedControl } from '@/wax/components/segmented-control'
-import { Stat } from '@/wax/components/stat'
+import { Stat, type StatProps } from '@/wax/components/stat'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import {
   SUMMARY_DAYS,
@@ -75,7 +75,7 @@ function withOthers<T>(entries: readonly T[], limit: number) {
   return { shown, others: entries.slice(shown.length) }
 }
 
-function Tile(props: Parameters<typeof Stat>[0]) {
+function Tile(props: StatProps) {
   return (
     <Card.Container>
       <Stat {...props} />
@@ -391,10 +391,14 @@ export function ApprovalSummary({ approvals }: { approvals: ApprovalDecisions })
   )
 }
 
+/** Each unit is chosen from the rounded value, so 59.6 s reads "1 min", not "60 s". */
 function duration(seconds: number) {
-  if (seconds < 60) return `${Math.round(seconds)} s`
-  if (seconds < 3600) return `${Math.round(seconds / 60)} min`
-  if (seconds < 86_400) return `${Number((seconds / 3600).toPrecision(2))} h`
+  const s = Math.round(seconds)
+  if (s < 60) return `${s} s`
+  const min = Math.round(seconds / 60)
+  if (min < 60) return `${min} min`
+  const h = Number((seconds / 3600).toPrecision(2))
+  if (h < 24) return `${h} h`
   return `${Number((seconds / 86_400).toPrecision(2))} d`
 }
 

@@ -62,6 +62,8 @@ it.each([
   visibility('visible')
   await act(async () => event())
   expect(await screen.findByText('Read 2')).toBeTruthy()
+  await act(async () => {})
+  expect(screen.queryByText('Read 3')).toBeNull()
 })
 
 // Catches: reads before the interval, or from a tab nobody sees.

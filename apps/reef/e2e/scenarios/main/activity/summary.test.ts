@@ -15,7 +15,7 @@ import { OperationAccessState } from '../../../generated/coral/management/v1/pol
 const CALL =
   "try { await coral.providers.summaryFixture.read(); return 'sent'; } catch (error) { return error.code; }"
 
-test('The Overview summary counts not allowed calls, reads blocked and answered calls again when you return to it, and loads the period you choose', async (context) => {
+test('The Overview summary counts not allowed calls, reads blocked and answered calls again when you return to it, and keeps the period you choose in the URL', async (context) => {
   const upstream = await listen(
     context,
     createServer((_request, response) => {
@@ -116,7 +116,7 @@ test('The Overview summary counts not allowed calls, reads blocked and answered 
       expect(new URL(page.url()).pathname).toBe(overview)
     })
 
-    await step('The period you choose loads its own totals', async () => {
+    await step('Choosing 24 hours puts it in the URL and shows its totals', async () => {
       const period = summary.getByRole('radiogroup', { name: 'Period', exact: true })
       await period.getByRole('radio', { name: '24 hours', exact: true }).click()
       await page.waitForURL((url) => url.searchParams.get('days') === '1')

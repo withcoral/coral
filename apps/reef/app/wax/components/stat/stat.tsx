@@ -1,5 +1,5 @@
 import classNames from 'classnames'
-import { useId, type ReactNode } from 'react'
+import { useId } from 'react'
 import { Icon, type IconName } from '../icon'
 import { NumberPopIn } from '../number-pop-in'
 import { Typography } from '../typography'
@@ -12,7 +12,7 @@ export interface StatProps {
   value: string
   /** Spoken in place of the value when the value alone is ambiguous. */
   valueLabel?: string
-  detail?: ReactNode
+  detail?: string
   variant?: 'success' | 'error' | 'tertiary'
   /** A medium stat stands alone, as on a tile. A small one sits in a row of stats. */
   size?: 'medium' | 'small'

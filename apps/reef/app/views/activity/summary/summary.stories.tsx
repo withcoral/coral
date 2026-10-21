@@ -130,7 +130,17 @@ export const Others: Story = {
 }
 
 export const StillRunning: Story = {
-  args: { summary: { ...busy, contextImpactBytes: '-1820400', contextImpactPartial: true } },
+  args: {
+    summary: {
+      ...busy,
+      contextImpactBytes: '-1820400',
+      contextImpactPartial: true,
+      contextActors: [
+        { key: 'you', label: 'You', bytes: '-1500000' },
+        { key: 'triage', label: 'Triage agent', bytes: '-320400' },
+      ],
+    },
+  },
   // Catches: a partial context total read as the whole window's.
   play: async ({ canvas }) => {
     await expect(canvas.getByText('Saved · Incomplete')).toBeVisible()
@@ -159,7 +169,15 @@ export const Pending: Story = {
   },
 }
 
-export const ContextAdded: Story = { args: { summary: { ...busy, contextImpactBytes: '30500' } } }
+export const ContextAdded: Story = {
+  args: {
+    summary: {
+      ...busy,
+      contextImpactBytes: '30500',
+      contextActors: [{ key: 'you', label: 'You', bytes: '30500' }],
+    },
+  },
+}
 
 export const Quiet: Story = {
   args: { summary: quiet },
@@ -214,6 +232,7 @@ export const OneDay: Story = {
       operations: [{ callPath: 'coral.providers.gmail.listMessages', calls: 40 }],
       approvals: { approved: 3, declined: 1, medianWaitSeconds: 38 },
       contextImpactBytes: '-204800',
+      contextActors: [{ key: 'you', label: 'You', bytes: '-204800' }],
     },
   },
   // Catches: a count of one read with the plural verb, as in "1 need setup".
