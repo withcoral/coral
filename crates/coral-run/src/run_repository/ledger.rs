@@ -3,19 +3,22 @@
 //! A chunk is everything one Run write carries: its Events, the Run Output
 //! Budget total after them, and, for the Run Owner's chunks, the worker lease
 //! renewal.
-//! [`commit_chunk_with`] writes it in the caller's transaction under one
+//! [`commit_chunk`] writes it in the caller's transaction under one
 //! predicate, the execution claim id and the head the chunk was built on, and
 //! moves the head by one. The Run-scoped rows a chunk carries (Invocation
 //! rows, Approval Request rows) join the same transaction through their owning
-//! repositories; the Run row's own changes (termination intent, the terminal
-//! outcome) ride in the head update as further Run row columns.
+//! repositories; the Run row's own changes (the termination intent the chunk
+//! carries, the terminal outcome) ride in the head update as further Run row
+//! columns.
 
 use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
 use sea_query::{Expr, ExprTrait as _, Query};
 
 use super::events::{NewEvent, OwnedEvent, insert_events};
+use super::termination::request_values;
 use super::{ProgramRunRecords, RunRecord};
+use crate::lifecycle::RequestedTermination;
 use crate::{Error, RunId, RunState};
 
 /// One Event of a chunk and when it occurred.
@@ -38,6 +41,8 @@ pub(crate) struct Chunk<'a> {
     output_bytes: usize,
     /// Renews the worker lease to this instant when the writer holds the lease.
     lease_until_unix_nanos: Option<i64>,
+    /// The termination intent this chunk records in its head update.
+    termination: Option<&'a RequestedTermination>,
 }
 
 impl<'a> Chunk<'a> {
@@ -53,6 +58,7 @@ impl<'a> Chunk<'a> {
             events: Vec::new(),
             output_bytes: run.accumulated_output_bytes,
             lease_until_unix_nanos: None,
+            termination: None,
         }
     }
 
@@ -87,6 +93,14 @@ impl<'a> Chunk<'a> {
         self
     }
 
+    /// Records `intent` in this chunk's head update: the Run Owner's
+    /// cancellation beside its `cancellation.requested` Event, or the
+    /// interruption a recovering writer records for a Run it takes over.
+    pub(crate) const fn termination(mut self, intent: Option<&'a RequestedTermination>) -> Self {
+        self.termination = intent;
+        self
+    }
+
     #[cfg(test)]
     pub(crate) const fn built_on_head(mut self, head: u64) -> Self {
         self.head = head;
@@ -94,11 +108,10 @@ impl<'a> Chunk<'a> {
     }
 }
 
-/// Commits `chunk` in `transaction`, with `run_values` as further Run row
-/// columns written in the head update: asserts the claim, the head and a
-/// running Run, moves the head by one, writes the output total, renews the
-/// lease, and appends the Events after the Run's last one. The caller commits
-/// the transaction.
+/// Commits `chunk` in `transaction`: asserts the claim, the head and a running
+/// Run, moves the head by one, writes the output total, the termination intent
+/// the chunk carries and the lease renewal, and appends the Events after the
+/// Run's last one. The caller commits the transaction.
 ///
 /// The update also advances `next_event_sequence` by the chunk's Event count.
 /// This release never reads it, but the previous release numbers its Events
@@ -112,11 +125,24 @@ impl<'a> Chunk<'a> {
 /// [`Error::RunEnded`] when it holds the claim but the Run is terminal (no
 /// Event follows `run.ended`), [`Error::HeadMismatch`] when it holds the claim
 /// and is running but the head has moved. None of them writes anything.
+pub(crate) async fn commit_chunk(
+    transaction: &mut Transaction<'_>,
+    chunk: Chunk<'_>,
+) -> Result<(), Error> {
+    commit_chunk_with(transaction, chunk, Vec::new()).await
+}
+
+/// [`commit_chunk`] with `run_values` as further Run row columns written in
+/// the head update: the terminal outcome, a released worker claim.
 pub(super) async fn commit_chunk_with(
     transaction: &mut Transaction<'_>,
     chunk: Chunk<'_>,
     run_values: Vec<(ProgramRunRecords, Expr)>,
 ) -> Result<(), Error> {
+    let mut run_values = run_values;
+    if let Some(intent) = chunk.termination {
+        run_values.extend(request_values(intent));
+    }
     let head = i64::try_from(chunk.head)
         .map_err(|_error| Error::CorruptData("Run Ledger head overflowed".to_string()))?;
     let next_head = head

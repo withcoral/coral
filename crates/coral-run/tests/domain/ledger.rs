@@ -2,7 +2,7 @@
 //! lines 1, 2, 4 and 5), on a Run no worker touches.
 use super::*;
 
-use crate::run_repository::{Chunk, NewEvent, commit_owner_chunk, hold_run};
+use crate::run_repository::{Chunk, NewEvent, commit_chunk, hold_run};
 
 const LEASE_UNTIL: i64 = 1_000_000_000_000;
 
@@ -53,7 +53,7 @@ async fn a_chunk_built_on_a_stale_claim_matches_no_row_and_changes_nothing() {
             )
             .output_bytes(5)
             .renew_lease(LEASE_UNTIL + 1);
-        let rejected = commit_owner_chunk(&mut transaction, chunk, None).await;
+        let rejected = commit_chunk(&mut transaction, chunk).await;
         assert!(
             matches!(rejected, Err(Error::ClaimMismatch)),
             "{label}: {rejected:?}"
@@ -91,11 +91,10 @@ async fn a_chunk_built_on_a_stale_head_matches_no_row_and_changes_nothing() {
         .await
         .expect("hold")
         .expect("Run exists");
-    commit_owner_chunk(
+    commit_chunk(
         &mut transaction,
         Chunk::new(&run, Some("claim-a"))
             .event(NewEvent::Logged(ProgramLogLevel::Info, "one", None), 2_000),
-        None,
     )
     .await
     .expect("the first chunk commits");
@@ -119,7 +118,7 @@ async fn a_chunk_built_on_a_stale_head_matches_no_row_and_changes_nothing() {
             )
             .output_bytes(before.accumulated_output_bytes + 5)
             .renew_lease(LEASE_UNTIL + 1);
-        let rejected = commit_owner_chunk(&mut transaction, chunk, None).await;
+        let rejected = commit_chunk(&mut transaction, chunk).await;
         assert!(
             matches!(rejected, Err(Error::HeadMismatch)),
             "head {stale_head}: {rejected:?}"
@@ -171,7 +170,7 @@ async fn a_chunk_of_n_events_moves_the_head_once_and_lands_prefix_complete() {
             2_000 + i64::try_from(index).expect("index"),
         );
     }
-    commit_owner_chunk(&mut transaction, chunk, None)
+    commit_chunk(&mut transaction, chunk)
         .await
         .expect("the chunk commits");
 
@@ -243,13 +242,12 @@ async fn writers_serialized_by_the_run_hold_number_their_events_after_each_other
                 .await
                 .expect("hold")
                 .expect("Run exists");
-            commit_owner_chunk(
+            commit_chunk(
                 &mut transaction,
                 Chunk::new(&run, Some("claim-a")).event(
                     NewEvent::Logged(ProgramLogLevel::Info, "serial", None),
                     2_000,
                 ),
-                None,
             )
             .await
             .expect("a serialized writer's chunk commits");
@@ -305,11 +303,10 @@ async fn no_chunk_lands_after_run_ended() {
         .await
         .expect("hold")
         .expect("Run exists");
-    let rejected = commit_owner_chunk(
+    let rejected = commit_chunk(
         &mut transaction,
         Chunk::new(&run, Some("claim-a"))
             .event(NewEvent::Logged(ProgramLogLevel::Info, "late", None), 3_000),
-        None,
     )
     .await;
     assert!(matches!(rejected, Err(Error::RunEnded)), "{rejected:?}");

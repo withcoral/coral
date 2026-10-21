@@ -622,13 +622,17 @@ async fn commit_once(
             lease_until = lease_until.saturating_add(1);
         }
         written.lease_until_unix_nanos = Some(lease_until);
-        run_repository::commit_owner_chunk(
+        debug_assert!(
+            termination.is_none_or(|intent| !intent.release_worker_claim),
+            "a Run Owner never releases its own worker claim in a chunk"
+        );
+        run_repository::commit_chunk(
             &mut transaction,
             Chunk::new(&run, Some(claim_id))
                 .owned_events(events)
                 .output_bytes(output_total)
-                .renew_lease(lease_until),
-            termination,
+                .renew_lease(lease_until)
+                .termination(termination),
         )
         .await?;
         transaction.commit().await.map_err(Error::from)?;

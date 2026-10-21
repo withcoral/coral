@@ -3,7 +3,7 @@
 use coral_db::Transaction;
 use sea_query::Expr;
 
-use super::ledger::commit_chunk_with;
+use super::ledger::{commit_chunk, commit_chunk_with};
 use super::{Chunk, NewEvent, OwnedEvent, ProgramRunRecords};
 use crate::lifecycle::{RequestedTermination, RunRecord, RunTermination};
 use crate::{Error, FinalValue, RunTerminalOutcome};
@@ -29,14 +29,13 @@ pub(crate) async fn request_termination(
             request.termination.started_at_unix_nanos,
         );
     }
-    commit_chunk_with(transaction, chunk, request_values(request)).await
+    commit_chunk(transaction, chunk.termination(Some(request))).await
 }
 
 /// The Run row columns a termination intent writes: the termination, the
 /// cancellation's requester and instant when a Principal asked for it, and
-/// the released worker claim when the intent releases it. The Run Owner
-/// writes them in the head update of the chunk that carries its
-/// `cancellation.requested` Event.
+/// the released worker claim when the intent releases it. A chunk that
+/// carries the intent writes them in its head update.
 pub(super) fn request_values(request: &RequestedTermination) -> Vec<(ProgramRunRecords, Expr)> {
     let mut values = termination_values(&request.termination);
     if let Some(requester) = &request.requester {

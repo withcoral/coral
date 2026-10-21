@@ -226,7 +226,7 @@ impl OwnedEvent {
 }
 
 /// Appends `events` after the Run's last Event, in multi-row statements of at
-/// most [`EVENT_INSERT_ROWS`] rows each. Only [`super::commit_owner_chunk`] and
+/// most [`EVENT_INSERT_ROWS`] rows each. Only [`super::commit_chunk`] and
 /// acceptance's `run.started` write Events.
 ///
 /// Each statement numbers its rows from `MAX(sequence)` read in that same
