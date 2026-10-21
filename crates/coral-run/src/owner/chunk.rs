@@ -46,13 +46,6 @@ pub(crate) trait ChunkWork: Send + fmt::Debug {
         None
     }
 
-    /// Whether this decision work records the decision (`Some(true)`) or
-    /// closes the request (`Some(false)`); `None` for other work.
-    #[cfg(test)]
-    fn decides(&self) -> Option<bool> {
-        None
-    }
-
     /// Delivers the outcome once the chunk is recorded, or the failure that
     /// lost it before it ran or before it committed.
     fn settle(self: Box<Self>, recorded: Result<(), Error>);
@@ -185,9 +178,6 @@ pub(crate) struct ChunkBuildView {
     /// Invocations in the fence batch.
     pub(crate) fenced: usize,
     pub(crate) termination: Option<RequestedTermination>,
-    /// Each decision work in order: `true` records the decision, `false`
-    /// closes the request.
-    pub(crate) decisions: Vec<bool>,
 }
 
 #[cfg(test)]
@@ -202,14 +192,6 @@ impl ChunkBuildView {
             works: chunk.works,
             fenced: chunk.fence.as_ref().map_or(0, |batch| batch.len()),
             termination: chunk.termination.clone(),
-            decisions: chunk
-                .items
-                .iter()
-                .filter_map(|item| match item {
-                    ChunkItem::Work(work) => work.decides(),
-                    ChunkItem::Event(_) => None,
-                })
-                .collect(),
         }
     }
 }

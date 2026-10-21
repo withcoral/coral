@@ -634,6 +634,29 @@ impl OwnerState {
         )
     }
 
+    /// Answers an outside request from memory when nothing is left to decide
+    /// for it: its entity is recorded, or the owner records nothing more.
+    /// Otherwise hands the reply back for the request to go on.
+    fn answer_from_memory(
+        &self,
+        key: &RequestKey,
+        reply: RequestReply,
+    ) -> Result<Vec<Effect>, RequestReply> {
+        if self.recorded_requests.contains(key) {
+            return Ok(vec![Effect::Answer(reply, Ok(DecisionAnswer::FromRecord))]);
+        }
+        if self.refuses_requests() {
+            return Ok(vec![Effect::Answer(reply, Err(Error::OwnerLost))]);
+        }
+        Err(reply)
+    }
+
+    /// Whether an outside request waits for an answer in progress: the chunk
+    /// recording its entity, or the terminal write.
+    fn must_park(&self, key: &RequestKey) -> bool {
+        self.request_is_pending(key) || self.phase == Phase::Completing
+    }
+
     /// A decision on one Approval Request: the first for the request rides
     /// the next chunk, recording the decision while the Run accepts actions
     /// and closing the request otherwise; a repeat waits for that chunk or
@@ -645,13 +668,11 @@ impl OwnerState {
         now_unix_nanos: i64,
     ) -> Vec<Effect> {
         let key = RequestKey::Approval(request.approval.clone());
-        if self.recorded_requests.contains(&key) {
-            return vec![Effect::Answer(reply, Ok(DecisionAnswer::FromRecord))];
-        }
-        if self.refuses_requests() {
-            return vec![Effect::Answer(reply, Err(Error::OwnerLost))];
-        }
-        if self.request_is_pending(&key) || self.phase == Phase::Completing {
+        let reply = match self.answer_from_memory(&key, reply) {
+            Ok(effects) => return effects,
+            Err(reply) => reply,
+        };
+        if self.must_park(&key) {
             self.parked.push(Message::Decide { request, reply });
             return Vec::new();
         }
@@ -681,13 +702,11 @@ impl OwnerState {
         now_unix_nanos: i64,
     ) -> Vec<Effect> {
         let key = RequestKey::Termination;
-        if self.recorded_requests.contains(&key) {
-            return vec![Effect::Answer(reply, Ok(DecisionAnswer::FromRecord))];
-        }
-        if self.refuses_requests() {
-            return vec![Effect::Answer(reply, Err(Error::OwnerLost))];
-        }
-        if self.request_is_pending(&key) || self.phase == Phase::Completing {
+        let reply = match self.answer_from_memory(&key, reply) {
+            Ok(effects) => return effects,
+            Err(reply) => reply,
+        };
+        if self.must_park(&key) {
             self.parked.push(Message::Cancel { requester, reply });
             return Vec::new();
         }

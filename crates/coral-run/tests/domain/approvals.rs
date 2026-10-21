@@ -924,10 +924,6 @@ async fn expired_approval_cannot_be_approved_and_settles_with_a_safe_failure() {
     assert_eq!(event.state, ApprovalState::Expired);
 }
 
-/// A decision judges the request deadline on time sampled after its gate
-/// took its holds, which can wait behind a policy writer: a decision that
-/// begins before the deadline and passes the gate at it settles Expired,
-/// never Approved.
 /// A decision applied at the request deadline expires the request instead
 /// of approving it: the owner's chunk commit samples the clock once, and
 /// the decision is judged on that sample.

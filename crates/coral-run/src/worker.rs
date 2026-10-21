@@ -30,6 +30,7 @@ impl RunModule {
         let supervised = run.clone();
         let deadline_at_unix_nanos = run.deadline_at_unix_nanos;
         let accepted_at_unix_nanos = run.accepted_at_unix_nanos;
+        let (workspace_id, run_id) = (run.workspace_id.clone(), run.id.clone());
         let owner_task = tokio::spawn(owner::host(
             self.clone(),
             run,
@@ -47,18 +48,27 @@ impl RunModule {
             }
         });
         // The deadline reaches the owner through its mailbox: the owner
-        // applies the timeout as it applies a cancellation. A retired owner
-        // has no Run left to time out here; recovery (slice 9) ends a Run
-        // whose owner is gone.
-        let deadline_clock = self.clone();
+        // applies the timeout as it applies a cancellation. Once the owner
+        // retired, recovery's explicit pass ends a Run it left running past
+        // its deadline (an owner that retired on a failed write); a Run the
+        // owner ended is nothing to recover.
+        let deadline_module = self.clone();
         let deadline_owner = handle;
         let _deadline_task = tokio::spawn(async move {
-            let now = deadline_clock
+            let now = deadline_module
                 .now()
                 .unwrap_or(accepted_at_unix_nanos)
                 .max(accepted_at_unix_nanos);
             tokio::time::sleep(duration_until(deadline_at_unix_nanos, now)).await;
             deadline_owner.deadline();
+            deadline_owner.wait_stopped().await;
+            if let Err(error) = deadline_module.recover_run(&workspace_id, &run_id).await {
+                tracing::warn!(
+                    run_id = %run_id,
+                    ?error,
+                    "recovery after the Run deadline failed; the next recovery pass retries"
+                );
+            }
         });
     }
 
@@ -275,10 +285,7 @@ impl RunModule {
         if run.termination.is_some() {
             return Ok(run);
         }
-        run_repository::request_termination(transaction, &run, intent).await?;
-        run_repository::find_exact_in_transaction(transaction, &run.workspace_id, &run.id)
-            .await?
-            .ok_or(Error::RunNotFound)
+        self.record_termination(transaction, &run, intent).await
     }
 
     /// The terminal write for the Program's completion, after the owner has

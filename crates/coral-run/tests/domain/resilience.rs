@@ -199,6 +199,83 @@ async fn a_definite_database_rejection_stops_the_owner_without_a_retry() {
     );
 }
 
+/// The deadline task is recovery's trigger once the owner is gone: an owner
+/// whose settle of the interruption it recorded fails retires and leaves
+/// its Run `running`, and the deadline still ends the Run, with no explicit
+/// recovery pass.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_whose_owner_retired_on_a_failed_settle_is_ended_by_its_deadline() {
+    let (engine, gates) = BurstEngine::new(vec!["\"one\"".to_string()]);
+    let probe = CommitProbe::new();
+    let fixture = quiet_fixture(engine.clone(), probe.clone()).await;
+    let (workspace_id, principal) = fixture
+        .user_scope("user:deadline-after-retire", "Survive the database")
+        .await;
+    let accepted = fixture
+        .runs
+        .start(
+            &principal,
+            &workspace_id,
+            crate::RunSubmission::new(
+                crate::ProgramSource::parse("deadline").unwrap(),
+                crate::RunTimeout::from_millis(1_000).unwrap(),
+            ),
+        )
+        .await
+        .expect("accept the Program");
+    let run_id = accepted.run_id().clone();
+    wait_until_started(&fixture, &workspace_id, &run_id).await;
+    let before = fixture.run_record(&workspace_id, &run_id).await;
+    let claim_id = before.execution_claim_id.clone().expect("started Run");
+    let owner = fixture
+        .runs
+        .owners
+        .find(&run_id, &claim_id)
+        .expect("the owner is live");
+    // Every Event insert after `run.started` is rejected: the Emission's
+    // chunk stops the owner, its terminal write records the interruption
+    // (an intent, no Event), and the settle's `run.ended` fails.
+    fixture
+        .inject_fault("CREATE UNIQUE INDEX reject_run_events ON program_run_events(run_id)")
+        .await;
+    gates.go.send(()).expect("start the burst");
+    wait_until(|| engine.acknowledged.load(Ordering::SeqCst) == 1).await;
+    wait_until(|| owner.stop().is_requested()).await;
+    gates.release.send(()).expect("release the Program");
+    wait_until(|| owner.is_retired()).await;
+    let left = fixture.run_record(&workspace_id, &run_id).await;
+    assert_eq!(
+        left.state,
+        RunState::Running,
+        "the owner left the Run running"
+    );
+    assert_eq!(
+        left.termination.map(|termination| termination.kind),
+        Some(crate::lifecycle::RunTerminationKind::Interrupted)
+    );
+
+    fixture.inject_fault("DROP INDEX reject_run_events").await;
+    fixture
+        .clock
+        .next
+        .store(before.deadline_at_unix_nanos + 1, Ordering::SeqCst);
+    wait_until_async_within(Duration::from_secs(5), async || {
+        fixture
+            .run_record(&workspace_id, &run_id)
+            .await
+            .state
+            .is_terminal()
+    })
+    .await;
+    let terminal = wait_for_terminal(&fixture.runs, &principal, &workspace_id, &run_id).await;
+    assert_eq!(
+        terminal.state(),
+        RunState::Interrupted,
+        "the recorded interruption is settled, not replaced by a timeout"
+    );
+    assert!(!fixture.runs.has_owner(&run_id));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reread_that_shows_a_foreign_head_fails_loudly_and_changes_nothing() {
     let (engine, gates) = BurstEngine::new(vec!["\"one\"".to_string()]);

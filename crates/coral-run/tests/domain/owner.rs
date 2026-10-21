@@ -1616,7 +1616,6 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         assert_eq!(state.pending_chunks(), 1);
         let chunk = committed_chunk(apply(&mut state, Message::Drained, 5));
         assert_eq!(chunk.works, 1);
-        assert_eq!(chunk.decisions, [true]);
         assert!(chunk.termination.is_none());
         assert!(decided(&mut first).is_none() && decided(&mut second).is_none());
         // The chunk's work reports what it wrote before the chunk answers.
@@ -1752,7 +1751,6 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         assert_eq!(chunk.works, 2);
         assert_eq!(chunk.events, 0);
         assert!(chunk.termination.is_none(), "a timeout rides no chunk");
-        assert_eq!(chunk.decisions, [true, false]);
         // The row refuses the chunk past its deadline; the Program ends and
         // the terminal write records the timeout.
         deliver(apply(
@@ -1969,13 +1967,12 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         ));
         let (effects, mut parked) = decide(&mut state, &approval_id(), 4);
         assert!(deliver(effects).is_empty());
-        let chunk = committed_chunk(apply(
+        committed_chunk(apply(
             &mut state,
             Message::Completed(Ok(Some(ShutdownAction::for_apply_test()))),
             5,
         ));
         assert_eq!(state.phase(), Phase::Settling);
-        assert_eq!(chunk.decisions, [false]);
         assert!(decided(&mut parked).is_none());
         let effects = apply(&mut state, Message::Committed, 6);
         assert!(

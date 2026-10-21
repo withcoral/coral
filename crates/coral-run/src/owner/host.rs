@@ -391,8 +391,8 @@ enum Resolution {
 
 /// Why one attempt's transaction did not reach its commit.
 enum CommitFailure {
-    /// The Run row no longer takes this owner's chunks.
-    Refused,
+    /// The Run row as read no longer takes this owner's chunks.
+    Rejected(CommitRejection),
     Error(Error),
 }
 
@@ -578,17 +578,11 @@ async fn commit_once(
             return Ok(());
         }
         let now = module.now()?.max(run.accepted_at_unix_nanos);
-        match refusal(&run, claim_id, written.head_before) {
-            Some(CommitRejection::Refused) => return Err(CommitFailure::Refused),
-            Some(CommitRejection::RunEnded) => return Err(Error::RunEnded.into()),
-            Some(CommitRejection::ClaimMismatch) => return Err(Error::ClaimMismatch.into()),
-            Some(CommitRejection::Corrupt | CommitRejection::Failed) => {
-                return Err(Error::HeadMismatch.into());
-            }
-            None => {}
+        if let Some(rejection) = refusal(&run, claim_id, written.head_before) {
+            return Err(CommitFailure::Rejected(rejection));
         }
         if !run.accepts_owner_chunk(claim_id, now) {
-            return Err(CommitFailure::Refused);
+            return Err(CommitFailure::Rejected(CommitRejection::Refused));
         }
         // Row work runs in arrival order; its Events take the work's place
         // among the applied ones.
@@ -641,7 +635,7 @@ async fn commit_once(
     .await;
     match outcome {
         Ok(()) => Attempt::Landed,
-        Err(CommitFailure::Refused) => Attempt::Rejected(CommitRejection::Refused),
+        Err(CommitFailure::Rejected(rejection)) => Attempt::Rejected(rejection),
         Err(CommitFailure::Error(error)) if error.is_operational() => Attempt::Unanswered(error),
         // The head update matched no row under the claim: a writer moved
         // the row between the read and the update. The row read again says

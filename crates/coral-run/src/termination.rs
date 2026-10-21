@@ -10,7 +10,7 @@ use coral_db::Transaction;
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use tokio::time::timeout;
 
-use crate::lifecycle::{RunRecord, RunTerminationKind};
+use crate::lifecycle::{RequestedTermination, RunRecord, RunTerminationKind};
 use crate::observation::validate_cursor;
 use crate::{
     Error, RunId, RunModule, RunObservation, RunState, RunUpdate, duration_until,
@@ -115,7 +115,13 @@ impl RunModule {
         }
     }
 
-    async fn recover_run(&self, workspace_id: &WorkspaceId, run_id: &RunId) -> Result<(), Error> {
+    /// Recovery's pass over one Run, as the sweep and the deadline task of a
+    /// retired owner run it.
+    pub(crate) async fn recover_run(
+        &self,
+        workspace_id: &WorkspaceId,
+        run_id: &RunId,
+    ) -> Result<(), Error> {
         let mut transaction = self.database.begin().await?;
         let Some(mut run) =
             run_repository::hold_run(&mut transaction, workspace_id, run_id).await?
@@ -310,7 +316,17 @@ impl RunModule {
         started_at_unix_nanos: i64,
     ) -> Result<RunRecord, Error> {
         let request = run.request_termination(kind, started_at_unix_nanos)?;
-        run_repository::request_termination(transaction, run, &request).await?;
+        self.record_termination(transaction, run, &request).await
+    }
+
+    /// Records `intent` on the Run row and returns the row as recorded.
+    pub(crate) async fn record_termination(
+        &self,
+        transaction: &mut Transaction<'_>,
+        run: &RunRecord,
+        intent: &RequestedTermination,
+    ) -> Result<RunRecord, Error> {
+        run_repository::request_termination(transaction, run, intent).await?;
         run_repository::find_exact_in_transaction(transaction, &run.workspace_id, &run.id)
             .await?
             .ok_or(Error::RunNotFound)

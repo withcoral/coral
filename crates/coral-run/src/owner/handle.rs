@@ -33,8 +33,8 @@ pub(crate) enum DecisionAnswer {
         state: ApprovalState,
         decided_at_unix_nanos: i64,
     },
-    /// The request changed nothing: the record (an earlier decision, a
-    /// closed request) answers it.
+    /// The record answers: an earlier decision or a closed request for a
+    /// decision, the recorded intent for a cancellation.
     FromRecord,
 }
 

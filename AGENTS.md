@@ -60,14 +60,12 @@
   rechecks, the Dispatch Fence, Invocation completion) and the outside
   requests (an approval decision, a cancellation, the deadline) alike. An
   Event is applied in owner memory and a row write is a `ChunkWork` that
-  joins the owner's chunk commit; a request that decides something is keyed
-  by the entity it decides, so the first wins and a repeat receives the
-  recorded answer. Do not open a transaction that holds the Run row from any
-  of these paths, and do not write a nonterminal Run's row from outside its
-  owner: the owner's chunk commit asserts the head it tracks in memory and
-  treats a head it did not move as corruption. Recovery's explicit pass is
-  the one remaining outside writer until the expired-lease sweep (slice 9 of
-  [ADR 0018](docs/adr/0018-run-owner-coordinates-each-run.md)) replaces it.
+  joins the owner's chunk commit, whose head update asserts the head the
+  owner tracks in memory. Do not open a transaction that holds the Run row
+  from any of these paths, and do not write a nonterminal Run's row from
+  outside its owner; recovery's explicit pass is the one outside writer.
+  [ADR 0018](docs/adr/0018-run-owner-coordinates-each-run.md) has the
+  request model (requests keyed by the entity they decide, the first wins).
 - A Run Owner's write ends on the database's answer, never on the clock: an
   unanswered write (`Error::is_operational`: a lost connection, a pool
   timeout, a lock race) means a reread and a retry with bounded backoff until

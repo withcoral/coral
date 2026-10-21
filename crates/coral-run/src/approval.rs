@@ -829,11 +829,6 @@ impl ChunkWork for DecideWork {
             .map(|answer| (RequestKey::Approval(self.request.approval.clone()), answer))
     }
 
-    #[cfg(test)]
-    fn decides(&self) -> Option<bool> {
-        Some(self.decide)
-    }
-
     /// The requester is answered by the owner, with the chunk's fate or the
     /// failure this work reported.
     fn settle(self: Box<Self>, _recorded: Result<(), Error>) {}
