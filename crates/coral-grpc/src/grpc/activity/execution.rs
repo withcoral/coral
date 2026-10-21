@@ -18,6 +18,16 @@ pub(super) fn run_error(error: coral_run::Error) -> Status {
         | coral_run::Error::Workspace(coral_workspace::Error::PermissionDenied(_)) => {
             Status::permission_denied("history unavailable")
         }
+        // The Run Owner stopped before it recorded the request: the outcome
+        // is unknown until the record is read again.
+        coral_run::Error::OwnerLost => {
+            Status::aborted("request outcome unknown; read the run again")
+        }
+        // No owner for a nonterminal Run in this process: another process
+        // holds it, or the sweep has not ended it yet. Retryable.
+        coral_run::Error::OwnedElsewhere => {
+            Status::unavailable("run is owned by another process; retry")
+        }
         // Name every remaining variant so a new domain error needs an explicit wire decision.
         coral_run::Error::ProgramAdmission(_)
         | coral_run::Error::Functions(_)
@@ -35,7 +45,6 @@ pub(super) fn run_error(error: coral_run::Error) -> Status {
         | coral_run::Error::ClaimMismatch
         | coral_run::Error::HeadMismatch
         | coral_run::Error::RunEnded
-        | coral_run::Error::OwnerLost
         | coral_run::Error::ProgramHostTerminated
         | coral_run::Error::Provider(_)
         | coral_run::Error::Policy(_)

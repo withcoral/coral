@@ -5,11 +5,13 @@ use sea_query::Expr;
 
 use super::ledger::commit_chunk_with;
 use super::{Chunk, NewEvent, OwnedEvent, ProgramRunRecords};
-use crate::lifecycle::{RunRecord, RunTermination};
+use crate::lifecycle::{RequestedTermination, RunRecord, RunTermination};
 use crate::{Error, FinalValue, RunTerminalOutcome};
 
 /// Records termination intent, and `cancellation.requested` when a Principal
-/// asked for it, as one chunk built on `run` under the Run hold.
+/// asked for it, as one chunk built on `run` as the writer read it: the
+/// writers outside the Run Owner (recovery, a Run that times out before it
+/// starts, the terminal write of a Program that ended without one).
 ///
 /// # Errors
 ///
@@ -18,16 +20,30 @@ use crate::{Error, FinalValue, RunTerminalOutcome};
 pub(crate) async fn request_termination(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
-    request: &crate::lifecycle::RequestedTermination<'_>,
+    request: &RequestedTermination,
 ) -> Result<(), Error> {
-    let mut values = termination_values(&request.termination);
     let mut chunk = Chunk::new(run, run.execution_claim_id.as_deref());
-    if let Some(requester) = request.requester {
-        let started_at_unix_nanos = request.termination.started_at_unix_nanos;
+    if let Some(requester) = &request.requester {
+        chunk = chunk.event(
+            NewEvent::CancellationRequested(requester),
+            request.termination.started_at_unix_nanos,
+        );
+    }
+    commit_chunk_with(transaction, chunk, request_values(request)).await
+}
+
+/// The Run row columns a termination intent writes: the termination, the
+/// cancellation's requester and instant when a Principal asked for it, and
+/// the released worker claim when the intent releases it. The Run Owner
+/// writes them in the head update of the chunk that carries its
+/// `cancellation.requested` Event.
+pub(super) fn request_values(request: &RequestedTermination) -> Vec<(ProgramRunRecords, Expr)> {
+    let mut values = termination_values(&request.termination);
+    if let Some(requester) = &request.requester {
         values.extend([
             (
                 ProgramRunRecords::CancellationRequestedAtUnixNanos,
-                Expr::val(started_at_unix_nanos),
+                Expr::val(request.termination.started_at_unix_nanos),
             ),
             (
                 ProgramRunRecords::CancellationPrincipalId,
@@ -38,15 +54,11 @@ pub(crate) async fn request_termination(
                 Expr::val(requester.kind().as_storage_str()),
             ),
         ]);
-        chunk = chunk.event(
-            NewEvent::CancellationRequested(requester),
-            started_at_unix_nanos,
-        );
     }
     if request.release_worker_claim {
         values.extend(released_worker_claim());
     }
-    commit_chunk_with(transaction, chunk, values).await
+    values
 }
 
 pub(crate) async fn finish_unstarted_run(

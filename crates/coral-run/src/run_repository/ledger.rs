@@ -3,12 +3,12 @@
 //! A chunk is everything one Run write carries: its Events, the Run Output
 //! Budget total after them, and, for the Run Owner's chunks, the worker lease
 //! renewal.
-//! [`commit_chunk`] writes it in the caller's transaction under one predicate,
-//! the execution claim id and the head the chunk was built on, and moves the
-//! head by one. The Run-scoped rows a chunk carries (Invocation rows, Approval
-//! Request rows) join the same transaction through their owning repositories;
-//! the Run row's own changes (termination intent, the terminal outcome) ride in
-//! the head update through [`commit_chunk_with`].
+//! [`commit_chunk_with`] writes it in the caller's transaction under one
+//! predicate, the execution claim id and the head the chunk was built on, and
+//! moves the head by one. The Run-scoped rows a chunk carries (Invocation
+//! rows, Approval Request rows) join the same transaction through their owning
+//! repositories; the Run row's own changes (termination intent, the terminal
+//! outcome) ride in the head update as further Run row columns.
 
 use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
@@ -94,10 +94,11 @@ impl<'a> Chunk<'a> {
     }
 }
 
-/// Commits `chunk` in `transaction`: asserts the claim, the head and a running
-/// Run, moves the head by one, writes the output total, renews the lease, and
-/// appends the Events after the Run's last one. The caller commits the
-/// transaction.
+/// Commits `chunk` in `transaction`, with `run_values` as further Run row
+/// columns written in the head update: asserts the claim, the head and a
+/// running Run, moves the head by one, writes the output total, renews the
+/// lease, and appends the Events after the Run's last one. The caller commits
+/// the transaction.
 ///
 /// The update also advances `next_event_sequence` by the chunk's Event count.
 /// This release never reads it, but the previous release numbers its Events
@@ -111,14 +112,6 @@ impl<'a> Chunk<'a> {
 /// [`Error::RunEnded`] when it holds the claim but the Run is terminal (no
 /// Event follows `run.ended`), [`Error::HeadMismatch`] when it holds the claim
 /// and is running but the head has moved. None of them writes anything.
-pub(crate) async fn commit_chunk(
-    transaction: &mut Transaction<'_>,
-    chunk: Chunk<'_>,
-) -> Result<(), Error> {
-    commit_chunk_with(transaction, chunk, Vec::new()).await
-}
-
-/// [`commit_chunk`] with further Run row columns written in the head update.
 pub(super) async fn commit_chunk_with(
     transaction: &mut Transaction<'_>,
     chunk: Chunk<'_>,

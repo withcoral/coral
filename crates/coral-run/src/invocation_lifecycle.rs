@@ -1,14 +1,14 @@
 //! Invocation completion and termination decisions. Every write joins the
 //! caller's transaction: the Invocation and Approval rows through their
 //! repositories, and the `invocation.ended` Events are returned for the
-//! caller's Run Ledger chunk, the owner's or an outside writer's own.
+//! caller's Run Ledger chunk, the owner's or the terminal chunk of a writer
+//! outside it (recovery, until slice 9).
 
 use crate::invocation::{AdmittedInvocation, InvocationCompletion};
 use crate::lifecycle::RunRecord;
-use crate::run_repository::{Chunk, OwnedEvent, OwnedEventKind};
+use crate::run_repository::{OwnedEvent, OwnedEventKind};
 use crate::{
     CoralFailure, Error, InvocationId, InvocationResultKind, approval, invocation_repository,
-    run_repository,
 };
 use coral_db::Transaction;
 
@@ -117,40 +117,28 @@ pub(crate) async fn finish(
 }
 
 /// Ends a pending Invocation with `failure` from an approval decision and
-/// returns its `invocation.ended` for the caller's chunk.
+/// returns its `invocation.ended` for the caller's chunk. `None` when the
+/// Invocation is no longer pending: an earlier chunk ended it, and the
+/// decision's record stands on its own.
 pub(crate) async fn finish_approval_failure(
     tx: &mut Transaction<'_>,
     run: &RunRecord,
     invocation: &InvocationId,
     failure: CoralFailure,
     now: i64,
-) -> Result<OwnedEvent, Error> {
+) -> Result<Option<OwnedEvent>, Error> {
     if !invocation_repository::end_pending_with_failure(tx, run, invocation, failure, now).await? {
-        return Err(Error::InvocationPersistence(
-            "Approval lost its pending Invocation".into(),
-        ));
+        tracing::warn!(
+            run_id = %run.id,
+            invocation_id = %invocation,
+            "approval decision found its Invocation no longer pending"
+        );
+        return Ok(None);
     }
-    Ok(OwnedEvent::new(
+    Ok(Some(OwnedEvent::new(
         OwnedEventKind::InvocationEnded(invocation.clone(), InvocationResultKind::CoralFailure),
         now,
-    ))
-}
-
-/// Commits `events` as one chunk under the Run's claim, for the writers that
-/// still write outside the Run Owner (approval decisions).
-pub(crate) async fn commit_outside_owner(
-    tx: &mut Transaction<'_>,
-    run: &RunRecord,
-    events: &[OwnedEvent],
-) -> Result<(), Error> {
-    if events.is_empty() {
-        return Ok(());
-    }
-    let claim = run
-        .execution_claim_id
-        .as_deref()
-        .ok_or(Error::ProgramHostTerminated)?;
-    run_repository::commit_chunk(tx, Chunk::new(run, Some(claim)).owned_events(events)).await
+    )))
 }
 
 /// Ends every nonterminal Invocation of `run` for its termination: pending

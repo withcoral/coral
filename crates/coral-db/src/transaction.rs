@@ -350,6 +350,42 @@ impl Transaction<'_> {
         Ok(())
     }
 
+    /// Opens the savepoint `name` inside this transaction. Writes after it
+    /// are kept by [`Self::release_savepoint`] and undone by
+    /// [`Self::rollback_to_savepoint`], which also makes the transaction
+    /// usable again after a statement failed inside the savepoint (Postgres
+    /// aborts a transaction on a failed statement until then).
+    ///
+    /// `name` must be an identifier; it is not bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error.
+    pub async fn savepoint(&mut self, name: &str) -> Result<(), Error> {
+        self.execute_script(&format!("SAVEPOINT {name}")).await
+    }
+
+    /// Keeps the writes since the savepoint `name` and closes it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error.
+    pub async fn release_savepoint(&mut self, name: &str) -> Result<(), Error> {
+        self.execute_script(&format!("RELEASE SAVEPOINT {name}"))
+            .await
+    }
+
+    /// Undoes the writes since the savepoint `name` and keeps the
+    /// transaction usable. The savepoint stays open until it is released.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error.
+    pub async fn rollback_to_savepoint(&mut self, name: &str) -> Result<(), Error> {
+        self.execute_script(&format!("ROLLBACK TO SAVEPOINT {name}"))
+            .await
+    }
+
     /// Fetches the first matching domain row in this transaction.
     ///
     /// Returns `None` when no row matches. This does not verify that the

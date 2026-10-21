@@ -350,10 +350,12 @@ impl PublicClientAccount {
         let account_id = Self::connect(&accounts, &context, &operation).await;
         let runs = fixture.live_runs(Some(accounts.clone()));
         fixture.require_approval(&operation).await;
+        // Decisions are recorded by the Run's owner, which the live module holds.
         let approvals = crate::approval::ApprovalModule::new(
             fixture.database.clone(),
             fixture.workspaces.clone(),
-        );
+        )
+        .with_owners(runs.owners.clone());
         Self {
             server,
             fixture,

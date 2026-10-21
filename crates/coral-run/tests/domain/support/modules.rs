@@ -177,10 +177,18 @@ impl TestModules {
         }
     }
 
-    /// An Approval Module that decides deadlines on this fixture's clock.
+    /// An Approval Module that decides deadlines on this fixture's clock and
+    /// records through this fixture's Run Owners.
     pub(crate) fn approvals(&self) -> crate::approval::ApprovalModule {
+        self.approvals_for(&self.runs)
+    }
+
+    /// An Approval Module that records through `runs`' Run Owners: the
+    /// module that started the Run holds its owner.
+    pub(crate) fn approvals_for(&self, runs: &RunModule) -> crate::approval::ApprovalModule {
         crate::approval::ApprovalModule::new(self.database.clone(), self.workspaces.clone())
             .with_clock(self.clock.clone())
+            .with_owners(runs.owners.clone())
     }
 
     /// Publishes a second credential-free Provider in the fixture Operation's

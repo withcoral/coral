@@ -180,6 +180,8 @@ pub(crate) struct OwnedEvent {
 pub(crate) enum OwnedEventKind {
     InvocationStarted(InvocationId),
     InvocationEnded(InvocationId, InvocationResultKind),
+    /// A cancellation the Run Owner applied, by the Principal who asked.
+    CancellationRequested(Principal),
     /// A Program Emission as its encoded JSON: what the row stores, and all
     /// the owner keeps in memory until the chunk commits.
     Emitted(String),
@@ -198,6 +200,9 @@ impl OwnedEvent {
         match &self.kind {
             OwnedEventKind::InvocationStarted(id) => NewEvent::InvocationStarted(id),
             OwnedEventKind::InvocationEnded(id, kind) => NewEvent::InvocationEnded(id, *kind),
+            OwnedEventKind::CancellationRequested(requester) => {
+                NewEvent::CancellationRequested(requester)
+            }
             OwnedEventKind::Emitted(value) => NewEvent::Emitted(value),
             OwnedEventKind::Logged(level, message) => NewEvent::Logged(*level, message),
         }
@@ -210,7 +215,7 @@ impl OwnedEvent {
 }
 
 /// Appends `events` after the Run's last Event, in multi-row statements of at
-/// most [`EVENT_INSERT_ROWS`] rows each. Only [`super::commit_chunk`] and
+/// most [`EVENT_INSERT_ROWS`] rows each. Only [`super::commit_owner_chunk`] and
 /// acceptance's `run.started` write Events.
 ///
 /// Each statement numbers its rows from `MAX(sequence)` read in that same

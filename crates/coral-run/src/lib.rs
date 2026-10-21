@@ -23,9 +23,11 @@
 //!   Principal-filtered required actions and terminal data on the final output page.
 //!   Bounded waiting ignores internal lifecycle records. Initial observation batches
 //!   authored output until human action, terminal state, or the requested deadline.
-//! - [`RunModule::cancel`] durably records cancellation through the same
-//!   Principal-specific visibility rules, terminates active execution, and waits
-//!   for bounded child shutdown before returning the winning terminal result.
+//! - [`RunModule::cancel`] asks the Run's owner to cancel it, through the same
+//!   Principal-specific visibility rules: the owner terminates active execution
+//!   at once and records the intent in its next chunk, and the call waits for
+//!   the owner to end the Run within the shutdown grace before returning the
+//!   recorded result.
 //! - [`RunModule::activity_entries`] reads bounded chronological child summaries.
 //!   Exact Event/Invocation anchors retain their identities. Upper owners can join
 //!   authorized read snapshots through transaction facets without Task dependencies.
@@ -96,6 +98,17 @@
 //! owner at once: it terminates the Program, cancels its dispatches, and
 //! answers waiting requests `OwnerLost`. A Run cannot complete while any child
 //! Invocation is nonterminal.
+//! While a Run is nonterminal its owner is the only writer of its row and its
+//! Events: an approval decision and a cancellation are Run Requests the owner
+//! records in its next chunk, keyed by the entity they decide (the first wins,
+//! a repeat receives the recorded answer, one that changes nothing joins no
+//! chunk), the deadline reaches the owner the same way, and the owner ends
+//! every nonterminal Invocation and the Run itself once the dispatches in
+//! flight have recorded their results or the shutdown grace is out. No chunk
+//! commit holds the Run row: its predicate on the claim and the head the owner
+//! tracks is the fence, and a head the owner did not move is corruption. A
+//! request for a nonterminal Run with no owner in this process is answered
+//! `OwnedElsewhere`; a terminal Run answers from its record.
 //! Cancellation and deadline intent stop new Program work, request uncatchable V8
 //! termination, and preserve complete child outcomes that beat bounded cleanup.
 //! Recovery revokes a stale started claim before settling its children and Run.

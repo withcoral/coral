@@ -1,14 +1,21 @@
 //! The task that hosts one Run Owner: it drains the mailbox, calls
 //! [`apply`], and runs the effects, holding the chunk commit, the Program
-//! execution and the terminal write.
+//! execution, the terminal write and the settle of a recorded termination.
 //!
 //! Every write the owner starts ends on an answer, never on the clock. A
 //! chunk commit the database does not answer is resolved by rereading the Run
 //! row under the owner's claim: landed (the row carries the lease this very
 //! attempt renewed), fenced (another claim, or an ended Run), not landed
-//! (recommit the chunk exactly as built), or corrupt (a head below the one
-//! the chunk was built on). The start mark, the terminal write and the
+//! (recommit the chunk exactly as built), or corrupt (a head the owner did
+//! not move). The start mark, the terminal write, the settle and the
 //! Interrupted record retry the same way.
+//!
+//! The owner is the only writer of its nonterminal Run's ledger, so no
+//! chunk commit holds the Run row: the commit's predicate on the claim and
+//! the head the owner tracks in memory is the fence, and the owner runs its
+//! writes one at a time.
+
+use std::time::Duration;
 
 use tokio::time::Instant;
 
@@ -27,16 +34,11 @@ use super::chunk::{ChunkBuild, ChunkItem};
 use super::handle::{CommitRejection, Mailbox, Message, OwnerHandle, OwnerRegistration};
 use super::state::{Effect, OwnerLimits, OwnerState, apply};
 
-/// Until slice 6 routes approval decisions, cancellation and the deadline
-/// through the owner, those writers move the Run Ledger head outside it, so
-/// a reread after an uncertain commit may find the head moved without the
-/// chunk having landed; the chunk is then recommitted on the head read under
-/// the hold. Slice 6 sets this to `false`: from then on a head the owner did
-/// not move is corruption.
-const HEAD_MOVES_OUTSIDE_THE_OWNER: bool = true;
+/// The wait between two settle attempts while a dispatch is still in flight
+/// within the shutdown grace.
+const SETTLE_RETRY: Duration = Duration::from_millis(10);
 
-/// Hosts the owner of `accepted` until it retires, then settles a recorded
-/// termination when the terminal write left one to settle.
+/// Hosts the owner of `accepted` until it retires.
 pub(crate) async fn host(
     module: RunModule,
     accepted: AcceptedRun,
@@ -58,6 +60,7 @@ pub(crate) async fn host(
             applied_cap_bytes: module.applied_output_cap.bytes(),
             fan_out_invocations: module.fan_out_limit.invocations(),
             deadline_at_unix_nanos: accepted.deadline_at_unix_nanos,
+            shutdown_grace_nanos: accepted.shutdown_grace_nanos,
             suspect_after_nanos: module.execution_policy.suspect_after_nanos(),
             self_interrupt_after_nanos: module.execution_policy.self_interrupt_after_nanos(),
         },
@@ -66,6 +69,9 @@ pub(crate) async fn host(
     let idle_tick = module.execution_policy.idle_tick();
     let idle = tokio::time::sleep(idle_tick);
     tokio::pin!(idle);
+    // The shutdown grace of a recorded termination, on this process's clock:
+    // set by the first settle attempt, read by every later one.
+    let mut settle_deadline: Option<Instant> = None;
     let mut effects = apply(&mut state, Message::Launch, accepted.accepted_at_unix_nanos);
     loop {
         let mut retired = false;
@@ -97,6 +103,11 @@ pub(crate) async fn host(
                     );
                     handle.stop().request();
                     spawn_interruption(&module, &accepted, &handle);
+                }
+                Effect::Settle { shutdown, again } => {
+                    let deadline =
+                        *settle_deadline.get_or_insert_with(|| grace_deadline(&module, &shutdown));
+                    spawn_settle(&module, &accepted, &handle, shutdown, again, deadline);
                 }
                 other => run_effect(&module, &accepted, &actor, &handle, other),
             }
@@ -140,9 +151,9 @@ pub(crate) async fn host(
     drop(registration);
 }
 
-/// Runs every effect but the commit, the interruption and the retirement,
-/// which the loop owns. A write retried past the owner's retirement answers
-/// a mailbox nobody reads.
+/// Runs every effect but the commit, the settle, the interruption and the
+/// retirement, which the loop owns. A write retried past the owner's
+/// retirement answers a mailbox nobody reads.
 fn run_effect(
     module: &RunModule,
     accepted: &AcceptedRun,
@@ -155,6 +166,7 @@ fn run_effect(
             // The requester may have stopped waiting; the owner's decision stands.
             let _delivered = reply.send(result);
         }
+        Effect::Answer(requester, recorded) => requester.answer(recorded),
         Effect::Start => {
             let module = module.clone();
             let accepted = accepted.clone();
@@ -199,8 +211,18 @@ fn run_effect(
             });
         }
         Effect::TerminateProgram => handle.stop().request(),
+        Effect::GraceTimer { grace_nanos } => {
+            let handle = handle.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_nanos(
+                    u64::try_from(grace_nanos).unwrap_or(0),
+                ))
+                .await;
+                handle.send(Message::GraceExpired);
+            });
+        }
         Effect::Abandon(work, error) => work.settle(Err(error)),
-        Effect::CompleteExecution(completion) => {
+        Effect::CompleteExecution { completion, intent } => {
             let module = module.clone();
             let accepted = accepted.clone();
             let handle = handle.clone();
@@ -209,23 +231,14 @@ fn run_effect(
                     &accepted.id,
                     "terminal write",
                     || !handle.is_retired(),
-                    || module.complete_execution(&accepted, &completion),
+                    || module.complete_execution(&accepted, &completion, intent.as_ref()),
                 )
                 .await;
                 handle.send(Message::Completed(completed));
             });
         }
-        Effect::Settle(shutdown) => {
-            let module = module.clone();
-            let handle = handle.clone();
-            tokio::spawn(async move {
-                // The recorded termination is the recovery source when the
-                // settle itself fails.
-                let _settled = module.settle_within_grace(shutdown).await;
-                handle.send(Message::Settled);
-            });
-        }
         Effect::Commit { .. }
+        | Effect::Settle { .. }
         | Effect::Suspect { .. }
         | Effect::Interrupt { .. }
         | Effect::Retire => {
@@ -235,6 +248,46 @@ fn run_effect(
             );
         }
     }
+}
+
+/// The end of a recorded termination's shutdown grace on this process's
+/// clock, from how much of it is left on the domain clock.
+fn grace_deadline(module: &RunModule, shutdown: &crate::termination::ShutdownAction) -> Instant {
+    let now = module
+        .now()
+        .unwrap_or(shutdown.accepted_at_unix_nanos())
+        .max(shutdown.accepted_at_unix_nanos());
+    Instant::now() + crate::duration_until(shutdown.deadline_at_unix_nanos(), now)
+}
+
+/// One settle attempt, after a moment when the previous one found a
+/// dispatch in flight; `deadline` is the end of the shutdown grace on this
+/// process's clock, after which the attempt ends the Run whatever is still
+/// dispatching.
+fn spawn_settle(
+    module: &RunModule,
+    accepted: &AcceptedRun,
+    handle: &OwnerHandle,
+    shutdown: crate::termination::ShutdownAction,
+    again: bool,
+    deadline: Instant,
+) {
+    let module = module.clone();
+    let accepted = accepted.clone();
+    let handle = handle.clone();
+    tokio::spawn(async move {
+        if again {
+            tokio::time::sleep(SETTLE_RETRY).await;
+        }
+        let attempted = until_answered(
+            &accepted.id,
+            "settle",
+            || !handle.is_retired(),
+            || module.settle_attempt(&shutdown, Instant::now() >= deadline),
+        )
+        .await;
+        handle.send(Message::SettleAttempted(attempted));
+    });
 }
 
 fn spawn_interruption(module: &RunModule, accepted: &AcceptedRun, handle: &OwnerHandle) {
@@ -286,10 +339,10 @@ fn spawn_commit(
 
 /// What the commit attempts so far wrote: enough to recognize the chunk on
 /// the Run row when an attempt gets no answer.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct Written {
-    /// The head the last attempt was built on, read under its hold.
-    head_before: Option<u64>,
+    /// The head the chunk is built on: the one the owner tracks.
+    head_before: u64,
     /// The lease the last attempt that got to write renewed. No other writer
     /// renews the lease, and the owner commits one chunk at a time, so a row
     /// that carries exactly this instant carries this chunk.
@@ -298,16 +351,14 @@ struct Written {
 
 impl Written {
     /// Whether `run` carries the chunk: the lease an attempt renewed is on
-    /// the row, and the head has moved past the one the attempt was built
-    /// on. The commit makes its lease instant distinct from the one it found
-    /// on the row, so a coarse clock cannot make the previous chunk's lease
-    /// pass for this one.
+    /// the row, and the head has moved past the one the chunk is built on.
+    /// The commit makes its lease instant distinct from the one it found on
+    /// the row, so a coarse clock cannot make the previous chunk's lease pass
+    /// for this one.
     fn landed_on(self, run: &RunRecord) -> bool {
         self.lease_until_unix_nanos.is_some()
             && run.worker_claim_expires_at_unix_nanos == self.lease_until_unix_nanos
-            && self
-                .head_before
-                .is_none_or(|head| run.chunk_sequence > head)
+            && run.chunk_sequence > self.head_before
     }
 }
 
@@ -342,9 +393,11 @@ impl From<Error> for CommitFailure {
 /// Commits `chunk` until the database answers: the attempt, a reread after
 /// an attempt without an answer (bounded backoff between them), a recommit
 /// of the chunk exactly as built when the reread shows it did not land. Row
-/// work learns the chunk's fate once, when it is known. `None` once the owner
-/// retired while the chunk was still unanswered: the work is dropped
-/// unsettled, which its waiters read as a lost owner.
+/// work learns the chunk's fate once, when it is known, and an outside
+/// request the chunk could not record is reported before the chunk's own
+/// answer. `None` once the owner retired while the chunk was still
+/// unanswered: the work is dropped unsettled, which its waiters read as a
+/// lost owner.
 async fn commit_until_answered(
     module: &RunModule,
     accepted: &AcceptedRun,
@@ -354,7 +407,11 @@ async fn commit_until_answered(
 ) -> Option<Result<(), CommitRejection>> {
     let mut items = chunk.items;
     let mut fence = chunk.fence;
-    let mut written = Written::default();
+    let termination = chunk.termination;
+    let mut written = Written {
+        head_before: chunk.head,
+        lease_until_unix_nanos: None,
+    };
     let mut backoff = Backoff::new(&accepted.id, "chunk commit");
     let outcome = loop {
         match commit_once(
@@ -362,6 +419,7 @@ async fn commit_until_answered(
             accepted,
             &mut items,
             &mut fence,
+            termination.as_ref(),
             output_total,
             &mut written,
         )
@@ -389,6 +447,18 @@ async fn commit_until_answered(
             ?written,
             "Run Ledger head contradicts its Run Owner's history; the owner stops and writes nothing more"
         );
+    }
+    if outcome.is_ok() {
+        for item in &mut items {
+            if let ChunkItem::Work(work) = item
+                && let Some((key, recorded)) = work.take_request_outcome()
+            {
+                handle.send(match recorded {
+                    Ok(answer) => Message::RequestRecorded { key, answer },
+                    Err(error) => Message::RequestNotRecorded { key, error },
+                });
+            }
+        }
     }
     for item in items {
         if let ChunkItem::Work(work) = item {
@@ -431,47 +501,54 @@ async fn reread_until_resolved(
 
 /// Resolves an unanswered attempt from the Run row as reread.
 fn resolve(run: &RunRecord, claim_id: &str, written: Written) -> Resolution {
-    let head_before = written.head_before;
     if written.landed_on(run) {
         return Resolution::Landed;
     }
-    if run.execution_claim_id.as_deref() != Some(claim_id) {
-        return Resolution::Rejected(CommitRejection::ClaimMismatch);
-    }
-    if run.state.is_terminal() {
-        return Resolution::Rejected(CommitRejection::RunEnded);
-    }
-    if head_before.is_some_and(|head| run.chunk_sequence < head) {
-        return Resolution::Rejected(CommitRejection::Corrupt);
-    }
-    if run.worker_claim_id.as_deref() != Some(claim_id) {
-        return Resolution::Rejected(CommitRejection::Refused);
-    }
-    if head_before.is_none_or(|head| run.chunk_sequence == head) {
-        return Resolution::Recommit;
-    }
-    // The head moved and the chunk is not on the row: an outside writer's
-    // chunk until slice 6, corruption from then on.
-    if HEAD_MOVES_OUTSIDE_THE_OWNER {
-        Resolution::Recommit
-    } else {
-        Resolution::Rejected(CommitRejection::Corrupt)
+    match refusal(run, claim_id, written.head_before) {
+        Some(rejection) => Resolution::Rejected(rejection),
+        None => Resolution::Recommit,
     }
 }
 
-/// One attempt to commit the chunk: holds the Run row, checks that it still
-/// takes this owner's chunks, runs the row work in arrival order and then the
-/// chunk's Dispatch Fence, and writes the Events and the head under the
-/// owner's claim with its lease renewed.
-/// Until slice 6 the head is the one read under the hold: cancel, approval
-/// decisions, the deadline and recovery still write outside the owner and
-/// move it. A recommit finds under the hold whether the attempt it repeats
-/// landed after all, and then writes nothing.
+/// Why the Run row as read no longer takes a chunk built on `head`, in the
+/// order the evidence is judged: a terminal Run, another execution claim, a
+/// row that refuses the owner's chunks (a released worker claim, the
+/// deadline), and a head the owner did not move, which one serial owner
+/// cannot cause and is corruption. `None` when the row takes the chunk.
+fn refusal(run: &RunRecord, claim_id: &str, head: u64) -> Option<CommitRejection> {
+    if run.state.is_terminal() {
+        return Some(CommitRejection::RunEnded);
+    }
+    if run.execution_claim_id.as_deref() != Some(claim_id) {
+        return Some(CommitRejection::ClaimMismatch);
+    }
+    if run.chunk_sequence < head {
+        return Some(CommitRejection::Corrupt);
+    }
+    if run.worker_claim_id.as_deref() != Some(claim_id) {
+        return Some(CommitRejection::Refused);
+    }
+    if run.chunk_sequence != head {
+        return Some(CommitRejection::Corrupt);
+    }
+    None
+}
+
+/// One attempt to commit the chunk: reads the Run row without holding it,
+/// checks that it still takes this owner's chunks on the head the owner
+/// tracks, runs the row work in arrival order and then the chunk's Dispatch
+/// Fence, and writes the Events, the termination intent and the head under
+/// the owner's claim with its lease renewed. A recommit finds on the row
+/// whether the attempt it repeats landed after all, and then writes
+/// nothing. A head update that matches no row is classified from the row
+/// read again: an ended Run, another claim, a released worker claim, or
+/// corruption.
 async fn commit_once(
     module: &RunModule,
     accepted: &AcceptedRun,
     items: &mut [ChunkItem],
     fence: &mut Option<Box<FenceBatch>>,
+    termination: Option<&crate::lifecycle::RequestedTermination>,
     output_total: usize,
     written: &mut Written,
 ) -> Attempt {
@@ -484,21 +561,27 @@ async fn commit_once(
     }
     let outcome: Result<(), CommitFailure> = async {
         let mut transaction = module.database.begin().await.map_err(Error::from)?;
-        let run = run_repository::hold_run(&mut transaction, &accepted.workspace_id, &accepted.id)
-            .await?
-            .ok_or(Error::ClaimMismatch)?;
+        let run = run_repository::find_exact_in_transaction(
+            &mut transaction,
+            &accepted.workspace_id,
+            &accepted.id,
+        )
+        .await?
+        .ok_or(Error::ClaimMismatch)?;
         if written.landed_on(&run) {
             // The attempt this one repeats landed between the reread and
-            // this hold.
+            // this read.
             return Ok(());
         }
-        written.head_before = Some(run.chunk_sequence);
         let now = module.now()?.max(run.accepted_at_unix_nanos);
-        if run.state.is_terminal() {
-            return Err(Error::RunEnded.into());
-        }
-        if run.execution_claim_id.as_deref() != Some(claim_id) {
-            return Err(Error::ClaimMismatch.into());
+        match refusal(&run, claim_id, written.head_before) {
+            Some(CommitRejection::Refused) => return Err(CommitFailure::Refused),
+            Some(CommitRejection::RunEnded) => return Err(Error::RunEnded.into()),
+            Some(CommitRejection::ClaimMismatch) => return Err(Error::ClaimMismatch.into()),
+            Some(CommitRejection::Corrupt | CommitRejection::Failed) => {
+                return Err(Error::HeadMismatch.into());
+            }
+            None => {}
         }
         if !run.accepts_owner_chunk(claim_id, now) {
             return Err(CommitFailure::Refused);
@@ -512,7 +595,7 @@ async fn commit_once(
             }
         }
         // The fence decides every ready Invocation of the chunk together,
-        // after the row work, under the same hold; it writes no Event.
+        // after the row work; it writes no Event.
         if let Some(batch) = fence.as_mut() {
             batch.run(&mut transaction, &run, now).await?;
         }
@@ -531,12 +614,13 @@ async fn commit_once(
             lease_until = lease_until.saturating_add(1);
         }
         written.lease_until_unix_nanos = Some(lease_until);
-        run_repository::commit_chunk(
+        run_repository::commit_owner_chunk(
             &mut transaction,
             Chunk::new(&run, Some(claim_id))
                 .owned_events(events)
                 .output_bytes(output_total)
                 .renew_lease(lease_until),
+            termination,
         )
         .await?;
         transaction.commit().await.map_err(Error::from)?;
@@ -551,6 +635,22 @@ async fn commit_once(
         Ok(()) => Attempt::Landed,
         Err(CommitFailure::Refused) => Attempt::Rejected(CommitRejection::Refused),
         Err(CommitFailure::Error(error)) if error.is_operational() => Attempt::Unanswered(error),
+        // The head update matched no row under the claim: a writer moved
+        // the row between the read and the update. The row read again says
+        // which writer it could be; an answer it does not give is an
+        // unanswered attempt, resolved by the reread.
+        Err(CommitFailure::Error(Error::HeadMismatch)) => {
+            match run_repository::find_exact(&module.database, &accepted.workspace_id, &accepted.id)
+                .await
+            {
+                Ok(Some(run)) => Attempt::Rejected(
+                    refusal(&run, claim_id, written.head_before)
+                        .unwrap_or(CommitRejection::Corrupt),
+                ),
+                Ok(None) => Attempt::Rejected(CommitRejection::ClaimMismatch),
+                Err(error) => Attempt::Unanswered(error),
+            }
+        }
         Err(CommitFailure::Error(error)) => Attempt::Rejected(CommitRejection::from(error)),
     }
 }

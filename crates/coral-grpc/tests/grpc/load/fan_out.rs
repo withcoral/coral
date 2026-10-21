@@ -9,7 +9,7 @@ use super::{
     setting, setting_u64, settle, submission,
 };
 use coral_run::RunObservation;
-use coral_run::approval::{ApprovalDecision, ApprovalModule, ApprovalState};
+use coral_run::approval::{ApprovalDecision, ApprovalState};
 use serde_json::json;
 use std::time::{Duration, Instant};
 
@@ -30,7 +30,7 @@ async fn run_fan_out_load() {
     // HTTP Operations require approval by default; the busy Run keeps that policy.
     publish_http(&h.f, &h.f.workspace, "evidence", &h.upstream.uri()).await;
     let mut probe = h.open_probe().await;
-    let approvals = ApprovalModule::new(h.f.database.database(), h.f.workspaces.clone());
+    let approvals = h.f.runs.approvals();
     eprintln!("load: calls={calls} mode={mode} hold={hold:?}");
 
     let probes = h.start_probes();

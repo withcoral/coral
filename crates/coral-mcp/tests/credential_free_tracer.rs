@@ -266,7 +266,8 @@ impl Tracer {
         )
         .expect("start real Program runtime");
         let search = UniversalSearchModule::new(db.clone(), workspaces.clone());
-        let approvals = coral_run::approval::ApprovalModule::new(db.clone(), workspaces.clone());
+        // Reef decides through the Run Module that owns the Runs.
+        let approvals = runs.approvals();
         let workspace_a = create_workspace(&workspaces, &local_user, "Tracer A", 10, '1').await;
         let workspace_b = create_workspace(&workspaces, &local_user, "Tracer B", 11, '2').await;
         let provider_id = publish_operations(

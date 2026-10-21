@@ -55,13 +55,19 @@
   Account placeholder, a connection request) is inserted with
   `ON CONFLICT DO NOTHING` and reread, since no shared hold serializes its
   creators.
-- A Run's Program paths (Emissions, Logs, Invocation admission, held
-  rechecks, the Dispatch Fence, Invocation completion) write only through its
-  Run Owner: an Event is applied in owner memory and a row write is a
-  `ChunkWork` that joins the owner's chunk commit. Do not open a transaction
-  that holds the Run row from a Program path. See
-  [ADR 0018](docs/adr/0018-run-owner-coordinates-each-run.md) for the writers
-  that still hold the row from outside the owner.
+- A nonterminal Run's row and Events are written only through its Run
+  Owner: the Program paths (Emissions, Logs, Invocation admission, held
+  rechecks, the Dispatch Fence, Invocation completion) and the outside
+  requests (an approval decision, a cancellation, the deadline) alike. An
+  Event is applied in owner memory and a row write is a `ChunkWork` that
+  joins the owner's chunk commit; a request that decides something is keyed
+  by the entity it decides, so the first wins and a repeat receives the
+  recorded answer. Do not open a transaction that holds the Run row from any
+  of these paths, and do not write a nonterminal Run's row from outside its
+  owner: the owner's chunk commit asserts the head it tracks in memory and
+  treats a head it did not move as corruption. Recovery's explicit pass is
+  the one remaining outside writer until the expired-lease sweep (slice 9 of
+  [ADR 0018](docs/adr/0018-run-owner-coordinates-each-run.md)) replaces it.
 - A Run Owner's write ends on the database's answer, never on the clock: an
   unanswered write (`Error::is_operational`: a lost connection, a pool
   timeout, a lock race) means a reread and a retry with bounded backoff until

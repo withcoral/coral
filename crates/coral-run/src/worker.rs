@@ -1,12 +1,18 @@
 //! One Run's execution under its Run Owner: the owner's first chunk (the
 //! execution-start mark under the claim acceptance wrote), the deadline task,
 //! and the terminal write once the Program has ended.
+//!
+//! The owner's own writes outside its chunk commits (the start mark and the
+//! terminal write here, the Interrupted record and the settle beside them)
+//! read the Run row without holding it: the owner runs one write at a time,
+//! nothing writes a nonterminal Run's row from outside it, and every write
+//! is predicated on the claim and the head the row showed.
 
 use coral_workspace::AuthenticatedPrincipal;
 
-use crate::engine::{ExecutionCompletion, ProgramPackage};
-use crate::lifecycle::{RunRecord, RunTerminationKind};
-use crate::owner::{self, OwnerHandle};
+use crate::engine::ExecutionCompletion;
+use crate::lifecycle::{RequestedTermination, RunRecord, RunTerminationKind};
+use crate::owner::{self, OwnerHandle, StartedExecution};
 use crate::termination::ShutdownAction;
 use crate::types::AcceptedRun;
 use crate::{
@@ -21,16 +27,18 @@ impl RunModule {
     pub(crate) fn schedule_execution(&self, run: AcceptedRun, actor: AuthenticatedPrincipal) {
         let (handle, mailbox) = OwnerHandle::new(run.id.clone(), run.claim_id.clone());
         let registration = self.owners.register(handle.clone());
+        let supervised = run.clone();
+        let deadline_at_unix_nanos = run.deadline_at_unix_nanos;
+        let accepted_at_unix_nanos = run.accepted_at_unix_nanos;
         let owner_task = tokio::spawn(owner::host(
             self.clone(),
-            run.clone(),
+            run,
             actor,
-            handle,
+            handle.clone(),
             mailbox,
             registration,
         ));
         let supervisor = self.clone();
-        let supervised = run.clone();
         let _supervisor_task = tokio::spawn(async move {
             if let Err(ended) = owner_task.await {
                 supervisor
@@ -38,14 +46,19 @@ impl RunModule {
                     .await;
             }
         });
-        let deadline_module = self.clone();
+        // The deadline reaches the owner through its mailbox: the owner
+        // applies the timeout as it applies a cancellation. A retired owner
+        // has no Run left to time out here; recovery (slice 9) ends a Run
+        // whose owner is gone.
+        let deadline_clock = self.clone();
+        let deadline_owner = handle;
         let _deadline_task = tokio::spawn(async move {
-            let now = deadline_module
+            let now = deadline_clock
                 .now()
-                .unwrap_or(run.accepted_at_unix_nanos)
-                .max(run.accepted_at_unix_nanos);
-            tokio::time::sleep(duration_until(run.deadline_at_unix_nanos, now)).await;
-            let _timed_out = deadline_module.begin_deadline_shutdown(&run).await;
+                .unwrap_or(accepted_at_unix_nanos)
+                .max(accepted_at_unix_nanos);
+            tokio::time::sleep(duration_until(deadline_at_unix_nanos, now)).await;
+            deadline_owner.deadline();
         });
     }
 
@@ -90,23 +103,26 @@ impl RunModule {
     }
 
     /// The owner's first chunk: rechecks the Run and the Principal's current
-    /// authority under the Run hold, then writes the execution-start mark and
-    /// returns the package to execute. `None` when there is nothing to run:
-    /// the Run ended or was terminated first, its deadline passed (recorded
-    /// here), its lease lapsed, or authority was lost (the Run fails here).
-    /// Run again after an attempt the database did not answer, it returns the
-    /// package when that attempt's start mark landed, so the Program starts
-    /// exactly once.
+    /// authority, then writes the execution-start mark and returns the
+    /// package to execute with the head the mark left. `None` when there is
+    /// nothing to run: the Run ended or was terminated first, its deadline
+    /// passed (recorded here), its lease lapsed, or authority was lost (the
+    /// Run fails here). Run again after an attempt the database did not
+    /// answer, it returns the package when that attempt's start mark landed,
+    /// so the Program starts exactly once.
     pub(crate) async fn start_execution(
         &self,
         accepted: &AcceptedRun,
         actor: &AuthenticatedPrincipal,
-    ) -> Result<Option<ProgramPackage>, Error> {
+    ) -> Result<Option<StartedExecution>, Error> {
         let claim_id = accepted.claim_id.as_str();
         let mut transaction = self.database.begin().await?;
-        let Some(run) =
-            run_repository::hold_run(&mut transaction, &accepted.workspace_id, &accepted.id)
-                .await?
+        let Some(run) = run_repository::find_exact_in_transaction(
+            &mut transaction,
+            &accepted.workspace_id,
+            &accepted.id,
+        )
+        .await?
         else {
             return Ok(None);
         };
@@ -190,7 +206,10 @@ impl RunModule {
         run_repository::start_execution(&mut transaction, &run, claim_id, started_at, lease_until)
             .await?;
         transaction.commit().await?;
-        Ok(Some(package))
+        Ok(Some(StartedExecution {
+            package,
+            head: run.chunk_sequence + 1,
+        }))
     }
 
     /// The package of a Run whose start mark this owner's earlier attempt
@@ -202,7 +221,7 @@ impl RunModule {
         mut transaction: coral_db::Transaction<'_>,
         run: &RunRecord,
         accepted: &AcceptedRun,
-    ) -> Result<Option<ProgramPackage>, Error> {
+    ) -> Result<Option<StartedExecution>, Error> {
         let now = self.now()?.max(run.accepted_at_unix_nanos);
         if now >= run.deadline_at_unix_nanos {
             return self.time_out_before_start(transaction, run, now).await;
@@ -215,7 +234,10 @@ impl RunModule {
         .await?
         .ok_or_else(|| Error::CorruptData("started Run has no Program package".to_string()))?;
         transaction.commit().await?;
-        Ok(Some(package))
+        Ok(Some(StartedExecution {
+            package,
+            head: run.chunk_sequence,
+        }))
     }
 
     /// Ends a Run whose deadline passed before its Program started: the
@@ -225,13 +247,12 @@ impl RunModule {
         mut transaction: coral_db::Transaction<'_>,
         run: &RunRecord,
         now_unix_nanos: i64,
-    ) -> Result<Option<ProgramPackage>, Error> {
+    ) -> Result<Option<StartedExecution>, Error> {
         let run = self
             .request_termination(
                 &mut transaction,
                 run,
                 RunTerminationKind::TimedOut,
-                None,
                 now_unix_nanos,
             )
             .await?;
@@ -241,9 +262,30 @@ impl RunModule {
         Ok(None)
     }
 
+    /// Records the intent the owner applied but no chunk recorded (the
+    /// deadline, or a cancellation whose chunk did not land) before the
+    /// terminal write decides: it never records less than the owner decided.
+    /// A termination already on the row stands.
+    async fn record_owner_intent(
+        &self,
+        transaction: &mut coral_db::Transaction<'_>,
+        run: RunRecord,
+        intent: &RequestedTermination,
+    ) -> Result<RunRecord, Error> {
+        if run.termination.is_some() {
+            return Ok(run);
+        }
+        run_repository::request_termination(transaction, &run, intent).await?;
+        run_repository::find_exact_in_transaction(transaction, &run.workspace_id, &run.id)
+            .await?
+            .ok_or(Error::RunNotFound)
+    }
+
     /// The terminal write for the Program's completion, after the owner has
     /// recorded every chunk it applied. Returns the shutdown still to settle
-    /// when a termination is recorded instead of a completion.
+    /// when a termination is recorded instead of a completion: one the
+    /// owner's chunks carried (a cancellation, the deadline), or one found
+    /// or recorded here, with the head the owner goes on from.
     ///
     /// # Errors
     ///
@@ -253,12 +295,16 @@ impl RunModule {
         &self,
         accepted: &AcceptedRun,
         completion: &ExecutionCompletion,
+        intent: Option<&RequestedTermination>,
     ) -> Result<Option<ShutdownAction>, Error> {
         let claim_id = accepted.claim_id.as_str();
         let mut transaction = self.database.begin().await?;
-        let Some(mut run) =
-            run_repository::hold_run(&mut transaction, &accepted.workspace_id, &accepted.id)
-                .await?
+        let Some(mut run) = run_repository::find_exact_in_transaction(
+            &mut transaction,
+            &accepted.workspace_id,
+            &accepted.id,
+        )
+        .await?
         else {
             return Ok(None);
         };
@@ -267,22 +313,14 @@ impl RunModule {
             transaction.commit().await?;
             return Ok(None);
         }
-        let new_termination = if run.termination.is_some() {
-            None
-        } else if now >= run.deadline_at_unix_nanos {
-            Some(RunTerminationKind::TimedOut)
-        } else if *completion == ExecutionCompletion::ProgramHostTerminated
-            || !run.program_work_is_current(claim_id, now)
-        {
-            Some(RunTerminationKind::Interrupted)
-        } else if *completion == ExecutionCompletion::MemoryLimitExceeded {
-            Some(RunTerminationKind::MemoryLimitExceeded)
-        } else {
-            None
-        };
-        if let Some(kind) = new_termination {
+        if let Some(intent) = intent {
             run = self
-                .request_termination(&mut transaction, &run, kind, None, now)
+                .record_owner_intent(&mut transaction, run, intent)
+                .await?;
+        }
+        if let Some(kind) = termination_for_completion(&run, completion, claim_id, now) {
+            run = self
+                .request_termination(&mut transaction, &run, kind, now)
                 .await?;
         }
         if run.termination.is_some() {
@@ -316,7 +354,7 @@ impl RunModule {
                 RunTerminationKind::Interrupted
             };
             let run = self
-                .request_termination(&mut transaction, &run, kind, None, completed_at)
+                .request_termination(&mut transaction, &run, kind, completed_at)
                 .await?;
             self.finish_termination_in_transaction(&mut transaction, &run, completed_at)
                 .await?;
@@ -351,5 +389,30 @@ impl RunModule {
             .await?;
         transaction.commit().await?;
         Ok(None)
+    }
+}
+
+/// The termination the terminal write records for a Run with none: the
+/// timeout past its deadline, an interruption when the Program host ended
+/// it or its claim is no longer current, the memory limit; `None` for a
+/// Program that completed on its own.
+fn termination_for_completion(
+    run: &RunRecord,
+    completion: &ExecutionCompletion,
+    claim_id: &str,
+    now_unix_nanos: i64,
+) -> Option<RunTerminationKind> {
+    if run.termination.is_some() {
+        None
+    } else if now_unix_nanos >= run.deadline_at_unix_nanos {
+        Some(RunTerminationKind::TimedOut)
+    } else if *completion == ExecutionCompletion::ProgramHostTerminated
+        || !run.program_work_is_current(claim_id, now_unix_nanos)
+    {
+        Some(RunTerminationKind::Interrupted)
+    } else if *completion == ExecutionCompletion::MemoryLimitExceeded {
+        Some(RunTerminationKind::MemoryLimitExceeded)
+    } else {
+        None
     }
 }

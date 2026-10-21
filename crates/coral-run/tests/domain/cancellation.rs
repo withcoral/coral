@@ -100,12 +100,17 @@ async fn user_and_agent_cancellation_wait_for_started_program_execution_to_stop(
     }
 }
 
+/// A nonterminal Run with no owner in this process answers `OwnedElsewhere`
+/// and writes nothing: no intent, no Event, no head move, the Program
+/// running on. The owning process then cancels it.
 #[tokio::test]
-async fn durable_cancellation_stops_execution_owned_by_an_independent_worker() {
+async fn a_cancel_for_a_run_owned_elsewhere_is_refused_without_a_write() {
     let engine = Arc::new(StopAwareEngine::default());
-    let fixture = TestModules::new(engine.clone()).await;
+    let mut fixture = TestModules::new(engine.clone()).await;
+    fixture.runs.execution_policy =
+        crate::execution::ExecutionPolicy::testing_with_claim_lease(Duration::from_secs(60));
     let (workspace_id, principal) = fixture
-        .user_scope("user:remote-cancel", "Cancel independent worker")
+        .user_scope("user:remote-cancel", "Cancel from another process")
         .await;
     let accepted = fixture
         .runs
@@ -113,7 +118,10 @@ async fn durable_cancellation_stops_execution_owned_by_an_independent_worker() {
         .await
         .expect("accept Program");
     wait_until(|| engine.started.load(Ordering::SeqCst)).await;
-    let canceling_worker = RunModule::with_adapters(
+    wait_until_started(&fixture, &workspace_id, accepted.run_id()).await;
+    let before = fixture.run_record(&workspace_id, accepted.run_id()).await;
+    // Another process: the same database, none of this process's owners.
+    let elsewhere = RunModule::with_adapters(
         fixture.database.clone(),
         fixture.workspaces.clone(),
         fixture.providers.clone(),
@@ -126,7 +134,30 @@ async fn durable_cancellation_stops_execution_owned_by_an_independent_worker() {
         ),
     );
 
-    let canceled = canceling_worker
+    let refused = elsewhere
+        .cancel(
+            &principal,
+            &workspace_id,
+            accepted.run_id(),
+            &immediate(None, 100),
+        )
+        .await;
+    assert!(matches!(refused, Err(Error::OwnedElsewhere)), "{refused:?}");
+    assert_eq!(
+        fixture.run_record(&workspace_id, accepted.run_id()).await,
+        before,
+        "a refused request writes nothing"
+    );
+    assert!(!engine.stopped.load(Ordering::SeqCst));
+    assert!(
+        retained_events(&fixture.runs, &principal, &workspace_id, accepted.run_id())
+            .await
+            .iter()
+            .all(|event| !matches!(event.kind(), RunEventKind::CancellationRequested { .. }))
+    );
+
+    let canceled = fixture
+        .runs
         .cancel(
             &principal,
             &workspace_id,
@@ -134,20 +165,209 @@ async fn durable_cancellation_stops_execution_owned_by_an_independent_worker() {
             &immediate(None, 100),
         )
         .await
-        .expect("cancel from independent worker");
-
+        .expect("the owning process cancels");
     assert_eq!(canceled.state(), RunState::Canceled);
-    // The canceling worker holds no owner for the Run: it ended the Run on
-    // its own, and the owner stops at its next commit (an idle tick at the
-    // latest), which finds the Run ended.
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !engine.stopped.load(Ordering::SeqCst) || fixture.runs.has_owner(accepted.run_id()) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the owner's next commit stops the Program and retires it");
+    assert!(engine.stopped.load(Ordering::SeqCst));
     assert_eq!(engine.executions.load(Ordering::SeqCst), 1);
+}
+
+/// A cancel that reaches the owner while a Dispatch Fence is in flight is
+/// applied at once: the Program is terminated before the fence returns, and
+/// nothing is recorded until it has. Then `cancellation.requested` is
+/// recorded, every Invocation the fence permitted ends `run_terminated`
+/// instead of sending, and `run.ended` follows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey: the cancel applied under a held fence, then the recorded order"
+)]
+async fn a_cancel_during_an_in_flight_fence_is_applied_at_once_and_run_ended_follows_the_fence() {
+    let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
+    let latch = FenceLatch::holding_both();
+    let fixture = TestModules::with_invocation_adapters(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        upstream.clone(),
+        latch.clone(),
+    )
+    .await;
+    let operation = fixture
+        .user_operation("user:cancel-mid-fence", "Cancel during a fence")
+        .await;
+    let run = fixture
+        .runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission(
+                "await Promise.all([coral.providers.weather.getForecast(), coral.providers.weather.getForecast()]); return 'sent';",
+            ),
+        )
+        .await
+        .unwrap();
+    latch.until_arrived(2).await;
+    latch.release_arrivals();
+    // The batch of both has read its facts and holds the commit slot.
+    latch.until_loaded(1).await;
+    let before = fixture
+        .run_record(&operation.workspace_id, run.run_id())
+        .await;
+    let runs = fixture.runs.clone();
+    let actor = operation.principal.clone();
+    let workspace = operation.workspace_id.clone();
+    let run_id = run.run_id().clone();
+    let cancel = tokio::spawn(async move {
+        runs.cancel(&actor, &workspace, &run_id, &immediate(None, 100))
+            .await
+    });
+    let owner = fixture
+        .runs
+        .owners
+        .find(
+            run.run_id(),
+            before.execution_claim_id.as_deref().expect("started"),
+        )
+        .expect("the owner is live");
+    wait_until(|| owner.is_stopping()).await;
+    assert_eq!(
+        fixture
+            .run_record(&operation.workspace_id, run.run_id())
+            .await,
+        before,
+        "the intent waits behind the fence in flight"
+    );
+    latch.release_loaded();
+    let canceled = cancel.await.expect("join").expect("cancel");
+    assert_eq!(canceled.state(), RunState::Canceled);
+    let events = fixture
+        .events_after(
+            &operation.workspace_id,
+            run.run_id(),
+            last_sequence(&before),
+        )
+        .await;
+    let kinds: Vec<&str> = events
+        .iter()
+        .map(|event| match event.kind() {
+            RunEventKind::CancellationRequested { .. } => "cancellation.requested",
+            RunEventKind::InvocationEnded {
+                result_kind: crate::InvocationResultKind::RunTerminated,
+                ..
+            } => "invocation.ended(run_terminated)",
+            RunEventKind::Ended {
+                state: RunState::Canceled,
+                ..
+            } => "run.ended(canceled)",
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "cancellation.requested",
+            "invocation.ended(run_terminated)",
+            "invocation.ended(run_terminated)",
+            "run.ended(canceled)",
+        ]
+    );
+    let rows = fixture
+        .invocation_rows(&operation.workspace_id, run.run_id())
+        .await;
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows.iter()
+            .all(|row| row.result_kind == Some(crate::InvocationResultKind::RunTerminated)),
+        "{rows:?}"
+    );
+    // The batch in flight permitted its Invocations and the pre-send check
+    // ended them; a request that reached the owner after that batch went in
+    // flight was answered terminated with no dispatch start.
+    assert!(
+        rows.iter()
+            .any(|row| row.dispatch_started_at_unix_nanos.is_some()),
+        "{rows:?}"
+    );
+    assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
+}
+
+/// A second cancel on an ending Run joins no chunk: the first intent is
+/// recorded once, the head does not move for the repeat, and both receive
+/// the recorded answer once the Run has ended.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_cancel_on_an_ending_run_joins_no_chunk() {
+    let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
+        200,
+        serde_json::json!({"temperature": 21}),
+    )));
+    let mut fixture = TestModules::with_upstream(
+        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
+        upstream.clone(),
+    )
+    .await;
+    fixture.runs.execution_policy =
+        crate::execution::ExecutionPolicy::testing_with_shutdown_grace(Duration::from_secs(30));
+    let operation = fixture
+        .user_operation("user:second-cancel", "Second cancel")
+        .await;
+    let run = fixture
+        .runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission("invoke"),
+        )
+        .await
+        .unwrap();
+    wait_until(|| upstream.entered.load(Ordering::SeqCst)).await;
+    let cancel = |label: &'static str| {
+        let runs = fixture.runs.clone();
+        let actor = operation.principal.clone();
+        let workspace = operation.workspace_id.clone();
+        let run_id = run.run_id().clone();
+        tokio::spawn(async move {
+            runs.cancel(&actor, &workspace, &run_id, &immediate(None, 100))
+                .await
+                .unwrap_or_else(|error| panic!("{label}: {error}"))
+        })
+    };
+    let first = cancel("first");
+    wait_until_async(async || {
+        fixture
+            .run_record(&operation.workspace_id, run.run_id())
+            .await
+            .termination
+            .is_some()
+    })
+    .await;
+    let recorded = fixture
+        .run_record(&operation.workspace_id, run.run_id())
+        .await;
+    let second = cancel("second");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!second.is_finished(), "the Run is still ending");
+    assert_eq!(
+        fixture
+            .run_record(&operation.workspace_id, run.run_id())
+            .await,
+        recorded,
+        "the repeat moves nothing"
+    );
+    upstream.release.store(true, Ordering::SeqCst);
+    let first = first.await.expect("join");
+    let second = second.await.expect("join");
+    assert_eq!(first.state(), RunState::Canceled);
+    assert_eq!(second.state(), RunState::Canceled);
+    let requested: Vec<_> = retained_events(
+        &fixture.runs,
+        &operation.principal,
+        &operation.workspace_id,
+        run.run_id(),
+    )
+    .await
+    .into_iter()
+    .filter(|event| matches!(event.kind(), RunEventKind::CancellationRequested { .. }))
+    .collect();
+    assert_eq!(requested.len(), 1, "{requested:?}");
+    assert_eq!(upstream.sends.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -174,15 +394,30 @@ async fn queued_user_and_agent_cancellation_record_intent_without_starting_javas
             .expect("accept queued Program");
         wait_until(|| claim_gate.entered.load(Ordering::SeqCst)).await;
 
-        let canceled = fixture
-            .runs
-            .cancel(
-                &principal,
-                &workspace_id,
-                accepted.run_id(),
+        // The cancel is applied in owner memory at once and recorded once the
+        // held start mark has landed: nothing commits before it.
+        let runs = fixture.runs.clone();
+        let cancel_principal = principal.clone();
+        let cancel_workspace = workspace_id.clone();
+        let cancel_run_id = accepted.run_id().clone();
+        let cancel = tokio::spawn(async move {
+            runs.cancel(
+                &cancel_principal,
+                &cancel_workspace,
+                &cancel_run_id,
                 &immediate(None, 100),
             )
             .await
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !cancel.is_finished(),
+            "{caller:?}: answered only once recorded"
+        );
+        claim_gate.release.store(true, Ordering::SeqCst);
+        let canceled = cancel
+            .await
+            .expect("join cancellation")
             .expect("cancel queued Run");
         assert_eq!(canceled.state(), RunState::Canceled, "{caller:?}");
         assert!(
@@ -197,7 +432,6 @@ async fn queued_user_and_agent_cancellation_record_intent_without_starting_javas
             "{caller:?}"
         );
         assert_eq!(engine.executions.load(Ordering::SeqCst), 0, "{caller:?}");
-        claim_gate.release.store(true, Ordering::SeqCst);
         wait_until(|| claim_gate.finished.load(Ordering::SeqCst) == 1).await;
     }
 }
@@ -229,12 +463,15 @@ async fn queued_deadline_expires_without_starting_javascript() {
         .await
         .expect("accept queued Program");
     wait_until(|| claim_gate.entered.load(Ordering::SeqCst)).await;
+    // The deadline reaches the owner's mailbox before its start mark lands:
+    // the Program never starts, and the timeout is recorded.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    claim_gate.release.store(true, Ordering::SeqCst);
 
     let terminal =
         wait_for_terminal(&fixture.runs, &principal, &workspace_id, accepted.run_id()).await;
     assert_eq!(terminal.state(), RunState::TimedOut);
     assert_eq!(engine.executions.load(Ordering::SeqCst), 0);
-    claim_gate.release.store(true, Ordering::SeqCst);
     wait_until(|| claim_gate.finished.load(Ordering::SeqCst) == 1).await;
 }
 

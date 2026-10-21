@@ -351,6 +351,12 @@ pub enum Error {
     /// unknown: read the Run again.
     #[error("Program Run Owner stopped before recording the request")]
     OwnerLost,
+    /// The Run is nonterminal and no Run Owner for it lives in this process:
+    /// its lease is held by another process (a rolling update), or lapsed
+    /// and not yet swept. Nothing was written; the request may be retried,
+    /// and once the Run is terminal it is answered from the durable record.
+    #[error("Program Run is owned by another process")]
+    OwnedElsewhere,
     /// A fatal Program host failure stopped execution for recovery.
     #[error("Program host terminated execution")]
     ProgramHostTerminated,
@@ -500,6 +506,7 @@ mod tests {
         }
         assert!(!Error::RunNotFound.is_operational());
         assert!(!Error::ClaimMismatch.is_operational());
+        assert!(!Error::OwnedElsewhere.is_operational());
     }
 
     #[test]

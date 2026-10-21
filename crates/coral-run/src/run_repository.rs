@@ -27,7 +27,8 @@ use events::last_event_sequence;
 pub(crate) use events::{
     NewEvent, OwnedEvent, OwnedEventKind, event_page_in_transaction, output_page_in_transaction,
 };
-pub(crate) use ledger::{Chunk, ChunkEvent, commit_chunk};
+use ledger::commit_chunk_with;
+pub(crate) use ledger::{Chunk, ChunkEvent};
 pub(crate) use retention::{delete_retained_history, retention_activity};
 use run_row::RunRow;
 pub(crate) use termination::{
@@ -64,6 +65,30 @@ enum ProgramRunRecords {
     NextEventSequence,
     AccumulatedOutputBytes,
     ChunkSequence,
+}
+
+/// Commits one of the Run Owner's chunks, with the termination intent the
+/// owner applied into this chunk written in the same head update when it did.
+/// An intent that releases the worker claim never rides an owner chunk, whose
+/// head update renews the lease.
+///
+/// # Errors
+///
+/// [`Error::ClaimMismatch`] when the Run row holds another execution claim,
+/// [`Error::RunEnded`] when it holds the claim but the Run is terminal (no
+/// Event follows `run.ended`), [`Error::HeadMismatch`] when it holds the claim
+/// and is running but the head has moved. None of them writes anything.
+pub(crate) async fn commit_owner_chunk(
+    transaction: &mut Transaction<'_>,
+    chunk: Chunk<'_>,
+    intent: Option<&crate::lifecycle::RequestedTermination>,
+) -> Result<(), Error> {
+    debug_assert!(
+        intent.is_none_or(|intent| !intent.release_worker_claim),
+        "a Run Owner never releases its own worker claim in a chunk"
+    );
+    let values = intent.map(termination::request_values).unwrap_or_default();
+    commit_chunk_with(transaction, chunk, values).await
 }
 
 /// Locks the Run row for the rest of `transaction` and returns the Run as the

@@ -79,21 +79,43 @@ impl RunRecord {
         self.execution_started_at_unix_nanos.is_some()
     }
 
-    pub(crate) fn request_termination<'a>(
+    /// A termination intent no Principal asked for: the deadline, or an
+    /// interruption. A cancellation's intent is the Run Owner's to apply.
+    pub(crate) fn request_termination(
         &self,
         kind: RunTerminationKind,
-        requester: Option<&'a Principal>,
         started_at_unix_nanos: i64,
-    ) -> Result<RequestedTermination<'a>, Error> {
+    ) -> Result<RequestedTermination, Error> {
+        RequestedTermination::new(kind, None, started_at_unix_nanos, self.shutdown_grace_nanos)
+    }
+}
+
+/// A termination intent as a writer records it: the termination, the
+/// Principal who asked for a cancellation, and whether the intent releases
+/// the worker claim (an interruption does: the Run has no live owner).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RequestedTermination {
+    pub(crate) termination: RunTermination,
+    pub(crate) requester: Option<Principal>,
+    pub(crate) release_worker_claim: bool,
+}
+
+impl RequestedTermination {
+    pub(crate) fn new(
+        kind: RunTerminationKind,
+        requester: Option<Principal>,
+        started_at_unix_nanos: i64,
+        shutdown_grace_nanos: i64,
+    ) -> Result<Self, Error> {
         if (kind == RunTerminationKind::Canceled) != requester.is_some() {
             return Err(Error::CorruptData(
                 "Run termination has inconsistent requester evidence".into(),
             ));
         }
         let deadline_at_unix_nanos = started_at_unix_nanos
-            .checked_add(self.shutdown_grace_nanos)
+            .checked_add(shutdown_grace_nanos)
             .ok_or_else(|| Error::CorruptData("Run termination deadline overflowed".into()))?;
-        Ok(RequestedTermination {
+        Ok(Self {
             termination: RunTermination {
                 kind,
                 started_at_unix_nanos,
@@ -103,12 +125,6 @@ impl RunRecord {
             release_worker_claim: kind == RunTerminationKind::Interrupted,
         })
     }
-}
-
-pub(crate) struct RequestedTermination<'a> {
-    pub(crate) termination: RunTermination,
-    pub(crate) requester: Option<&'a Principal>,
-    pub(crate) release_worker_claim: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

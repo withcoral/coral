@@ -5,8 +5,10 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use coral_workspace::{Principal, TraceId};
 use tokio::sync::{Notify, mpsc, oneshot};
 
+use crate::approval::{ApprovalDecision, ApprovalId, ApprovalState};
 use crate::engine::{ExecutionCompletion, ProgramPackage};
 use crate::execution::ExecutionStop;
 use crate::invocation::FenceRequest;
@@ -15,17 +17,65 @@ use crate::{Error, ProgramLogLevel, ProgramValue, RunId};
 
 use super::chunk::ChunkWork;
 
-/// The answer to one Program request, at Applied or at Recorded.
+/// The answer to one request: a Program request at Applied or at Recorded,
+/// a cancellation at Recorded.
 pub(crate) type Reply = oneshot::Sender<Result<(), Error>>;
 
+/// The answer to one decision, at Recorded.
+pub(crate) type DecisionReply = oneshot::Sender<Result<DecisionAnswer, Error>>;
+
+/// What a decision request learns once it is recorded: what its chunk's
+/// work wrote for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DecisionAnswer {
+    /// This request's decision is the one recorded, as its chunk wrote it.
+    Recorded {
+        state: ApprovalState,
+        decided_at_unix_nanos: i64,
+    },
+    /// The request changed nothing: the record (an earlier decision, a
+    /// closed request) answers it.
+    FromRecord,
+}
+
+/// What the owner's first chunk started: the package to execute, and the
+/// Run Ledger head after the execution-start mark, which the owner tracks
+/// from here on.
+pub(crate) struct StartedExecution {
+    pub(crate) package: ProgramPackage,
+    pub(crate) head: u64,
+}
+
+/// One outside request's identity: the entity it decides. The first request
+/// for an entity wins; a repeat receives the recorded answer.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum RequestKey {
+    /// A decision on one Approval Request.
+    Approval(ApprovalId),
+    /// The Run's termination intent: one cancellation, or the deadline.
+    Termination,
+}
+
+/// A decision an outside requester asks the owner to record on one Approval
+/// Request of its Run. Authorized and concealed before it reaches the owner.
+#[derive(Debug, Clone)]
+pub(crate) struct DecisionRequest {
+    pub(crate) approval: ApprovalId,
+    pub(crate) decision: ApprovalDecision,
+    pub(crate) actor: Principal,
+    pub(crate) comment: Option<String>,
+    pub(crate) trace: TraceId,
+}
+
 /// Everything the Run Owner's loop decides on: Run Requests from the Program
-/// host, the outcomes of the effects the hosting task ran, and the two signals
-/// the hosting task adds (the drained mailbox and the idle tick).
+/// host and from outside, the outcomes of the effects the hosting task ran,
+/// and the two signals the hosting task adds (the drained mailbox and the
+/// idle tick).
 pub(crate) enum Message {
     /// The owner exists; commit its first chunk.
     Launch,
-    /// The first chunk's outcome: the package to execute, or nothing to run.
-    Started(Result<Option<ProgramPackage>, Error>),
+    /// The first chunk's outcome: the execution to start, or nothing to run.
+    Started(Result<Option<StartedExecution>, Error>),
     Emit {
         value: ProgramValue,
         reply: Reply,
@@ -58,17 +108,55 @@ pub(crate) enum Message {
     /// Run is ending. An Invocation that does record a result frees its slot
     /// through [`Self::InvocationResult`] instead.
     DispatchEnded,
+    /// An outside requester decides one Approval Request. The first decision
+    /// on a request wins and rides the next chunk; a repeat receives the
+    /// recorded answer. Answered once recorded.
+    Decide {
+        request: DecisionRequest,
+        reply: DecisionReply,
+    },
+    /// An outside requester cancels the Run: the termination intent and
+    /// `cancellation.requested` ride the next chunk, and the Program is
+    /// terminated at once. A repeat receives the recorded answer. Answered
+    /// once recorded.
+    Cancel {
+        requester: Principal,
+        reply: Reply,
+    },
+    /// The Run deadline passed: the Run times out.
+    Deadline,
+    /// The shutdown grace since the owner stopped its Program passed
+    /// without the Program reporting its end: the owner ends the Run
+    /// without it.
+    GraceExpired,
     /// The Program's execution ended.
     ProgramEnded(ExecutionCompletion),
     /// The chunk in flight landed.
     Committed,
+    /// What an outside request's work recorded in the chunk in flight.
+    /// Reaches the owner before that chunk's `Committed`, which answers the
+    /// requester with it.
+    RequestRecorded {
+        key: RequestKey,
+        answer: DecisionAnswer,
+    },
+    /// An outside request the chunk in flight carried was not recorded by
+    /// it: its own write failed and was undone, and the chunk went on
+    /// without it. Reaches the owner before that chunk's `Committed`; the
+    /// requester receives the failure.
+    RequestNotRecorded {
+        key: RequestKey,
+        error: Error,
+    },
     /// The chunk in flight did not land, definitively: an answer the database
     /// did not give is resolved by the hosting task before it reaches here.
     CommitRejected(CommitRejection),
     /// The terminal write ran; a shutdown settle may still be due.
     Completed(Result<Option<ShutdownAction>, Error>),
-    /// The recorded termination is settled: the Run is terminal.
-    Settled,
+    /// One settle attempt of the recorded termination ended: `Ok(true)` the
+    /// Run is terminal; `Ok(false)` a dispatch is still in flight within the
+    /// shutdown grace, and the owner tries again.
+    SettleAttempted(Result<bool, Error>),
     /// The self-interrupt's one chunk is recorded, or another writer ended or
     /// took the Run first.
     Interrupted(Result<(), CommitRejection>),
@@ -108,11 +196,32 @@ impl fmt::Debug for Message {
             Self::Work(work) => formatter.debug_tuple("Work").field(work).finish(),
             Self::Fence(request) => formatter.debug_tuple("Fence").field(request).finish(),
             Self::DispatchEnded => formatter.write_str("DispatchEnded"),
+            Self::Decide { request, .. } => formatter
+                .debug_struct("Decide")
+                .field("approval", &request.approval)
+                .field("decision", &request.decision)
+                .finish(),
+            Self::Cancel { requester, .. } => formatter
+                .debug_struct("Cancel")
+                .field("requester", requester)
+                .finish(),
+            Self::Deadline => formatter.write_str("Deadline"),
+            Self::GraceExpired => formatter.write_str("GraceExpired"),
             Self::ProgramEnded(completion) => formatter
                 .debug_tuple("ProgramEnded")
                 .field(completion)
                 .finish(),
             Self::Committed => formatter.write_str("Committed"),
+            Self::RequestRecorded { key, answer } => formatter
+                .debug_struct("RequestRecorded")
+                .field("key", key)
+                .field("answer", answer)
+                .finish(),
+            Self::RequestNotRecorded { key, error } => formatter
+                .debug_struct("RequestNotRecorded")
+                .field("key", key)
+                .field("error", error)
+                .finish(),
             Self::CommitRejected(rejection) => formatter
                 .debug_tuple("CommitRejected")
                 .field(rejection)
@@ -121,7 +230,10 @@ impl fmt::Debug for Message {
                 .debug_tuple("Completed")
                 .field(&result.as_ref().map(Option::is_some))
                 .finish(),
-            Self::Settled => formatter.write_str("Settled"),
+            Self::SettleAttempted(result) => formatter
+                .debug_tuple("SettleAttempted")
+                .field(result)
+                .finish(),
             Self::Interrupted(result) => {
                 formatter.debug_tuple("Interrupted").field(result).finish()
             }
@@ -157,7 +269,7 @@ pub(crate) enum CommitRejection {
 }
 
 impl CommitRejection {
-    /// The answer every request lost with the chunk receives.
+    /// The answer every Program request lost with the chunk receives.
     pub(crate) fn lost(self) -> Error {
         match self {
             Self::ClaimMismatch => Error::OwnerLost,
@@ -170,11 +282,10 @@ impl CommitRejection {
 }
 
 impl From<Error> for CommitRejection {
-    /// The rejection a definite answer means. The head is read under the Run
-    /// hold until slice 6, so a head mismatch under a matching claim can only
-    /// mean the row changed under the lock: corruption, already. A row that
-    /// does not decode is a failure like any other definite answer, with its
-    /// own reason.
+    /// The rejection a definite answer means. The owner is the only writer
+    /// of a nonterminal Run's ledger, so a head mismatch under a matching
+    /// claim is corruption. A row that does not decode is a failure like any
+    /// other definite answer, with its own reason.
     fn from(error: Error) -> Self {
         match error {
             Error::ClaimMismatch => Self::ClaimMismatch,
@@ -189,8 +300,9 @@ impl From<Error> for CommitRejection {
 /// request or row work is awaited by the task that queued it, so the queue
 /// never holds more than the Program's outstanding calls (one Emission or Log
 /// at a time; one message per Invocation in flight, which admission does not
-/// cap) plus the owner's own few messages, and the owner applies each one in
-/// memory without I/O. The owner's own messages must never wait.
+/// cap) plus the outside requests in flight and the owner's own few
+/// messages, and the owner applies each one in memory without I/O. The
+/// owner's own messages must never wait.
 pub(crate) type Mailbox = mpsc::UnboundedReceiver<Message>;
 
 struct Shared {
@@ -203,7 +315,8 @@ struct Shared {
 }
 
 /// A handle on one live Run Owner: the Program host and the Invocation tasks
-/// send it Run Requests; outside writers ask it to stop.
+/// send it Program requests, outside requesters their decisions and
+/// cancellations, the deadline task the deadline; recovery asks it to stop.
 #[derive(Clone)]
 pub(crate) struct OwnerHandle {
     shared: Arc<Shared>,
@@ -330,7 +443,41 @@ impl OwnerHandle {
         self.send(Message::DispatchEnded);
     }
 
-    async fn ask(&self, build: impl FnOnce(Reply) -> Message) -> Result<(), Error> {
+    /// Asks the owner to decide one Approval Request; answers once the
+    /// decision, or the one that won before it, is recorded: with the
+    /// decision as its chunk wrote it, or with nothing when the record
+    /// answers (an earlier decision, a closed request).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::OwnerLost`] when the owner stopped before it recorded the
+    /// request: the outcome is unknown, read the request again.
+    pub(crate) async fn decide(&self, request: DecisionRequest) -> Result<DecisionAnswer, Error> {
+        self.ask(|reply| Message::Decide { request, reply }).await
+    }
+
+    /// Asks the owner to cancel its Run; answers once the termination intent
+    /// is recorded, or the one that won before it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::OwnerLost`] when the owner stopped before it recorded the
+    /// request: the outcome is unknown, read the Run again.
+    pub(crate) async fn cancel(&self, requester: Principal) -> Result<(), Error> {
+        self.ask(|reply| Message::Cancel { requester, reply }).await
+    }
+
+    /// Tells the owner that the Run deadline passed.
+    pub(crate) fn deadline(&self) {
+        self.send(Message::Deadline);
+    }
+
+    /// Sends one request and waits for its answer; a retired owner, or one
+    /// that dropped the reply, answers [`Error::OwnerLost`].
+    async fn ask<T>(
+        &self,
+        build: impl FnOnce(oneshot::Sender<Result<T, Error>>) -> Message,
+    ) -> Result<T, Error> {
         let (reply, answer) = oneshot::channel();
         self.shared
             .sender
