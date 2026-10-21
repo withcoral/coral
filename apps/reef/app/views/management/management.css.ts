@@ -49,15 +49,34 @@ export const listRow = style({
 export const section = style({ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 })
 export const panel = style({ gap: 20, minWidth: 0 })
 export const quickStart = style({ gap: 16, minWidth: 0 })
-// The quick start beside the agent's accounts. The tracks stay two wide after
-// the quick start goes, so the accounts keep their width alone.
-export const agentSetup = style({
+// An agent's setup leads; accounts and a short Activity reader share the row below it.
+export const agentDashboard = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 16,
+  minWidth: 0,
+})
+export const agentDashboardGrid = style({
   display: 'grid',
   gap: 16,
   gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+  minWidth: 0,
   '@media': {
-    [`screen and (max-width: ${breakpoints.md})`]: { gridTemplateColumns: 'minmax(0, 1fr)' },
+    'screen and (max-width: 480px)': { gridTemplateColumns: 'minmax(0, 1fr)' },
   },
+})
+export const agentDashboardSingle = style([agentDashboardGrid, { gridTemplateColumns: '1fr' }])
+export const agentRecentActivity = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 16,
+  height: 292,
+  minWidth: 0,
+})
+export const agentRecentActivityBody = style({
+  flex: '1 1 auto',
+  minHeight: 0,
+  minWidth: 0,
 })
 // Above the overview's cards, the setup spans their row.
 export const overviewQuickStart = style({ gap: 16, minWidth: 0 })

@@ -195,6 +195,16 @@ export default function AgentRoute({ loaderData, params }: Route.ComponentProps)
       providers={loaderData.providers}
       form={loaderData.form}
       activity={<LiveActivity initial={loaderData.activity} />}
+      recentActivity={
+        <LiveActivity
+          initial={loaderData.activity}
+          more={{
+            to: `${loaderData.agent.path}?view=activity`,
+            label: 'View all activity',
+            roots: 3,
+          }}
+        />
+      }
       idle={loaderData.idle}
     />
   )
