@@ -129,8 +129,13 @@ export function NameHeading({
             }}
           />
         </div>
-        <Button.TextButton type="submit" size="32" disabled={saving}>
-          {saving ? 'Saving…' : 'Save'}
+        <Button.TextButton
+          type="submit"
+          size="32"
+          disabled={saving}
+          busyStatus={saving ? 'Saving…' : undefined}
+        >
+          Save
         </Button.TextButton>
         <Button.TextButton
           type="button"

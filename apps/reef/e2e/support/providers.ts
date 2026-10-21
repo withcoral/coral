@@ -87,7 +87,7 @@ export async function chooseFile(page: Page, name: string, buffer: Buffer) {
 
 /** Configuration moves on with a Next button; every later step uses a Next link. */
 export function configurationNext(page: Page) {
-  return page.getByRole('button', { name: /^(Next|Confirming…)$/ })
+  return page.getByRole('button', { name: 'Next', exact: true })
 }
 
 /**
@@ -635,7 +635,7 @@ export async function confirmConfiguration(
   const confirm =
     submit === 'Next'
       ? configurationNext(page)
-      : page.getByRole('button', { name: /^(Save|Saving…)$/ })
+      : page.getByRole('button', { name: 'Save', exact: true })
   await confirm.waitFor()
   await ensureNamespace(page)
   if (authentication) await chooseSignIn(page, authentication)

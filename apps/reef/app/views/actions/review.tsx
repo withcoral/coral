@@ -154,6 +154,7 @@ export function ApprovalReview({
   const formId = `${id}-decision`
   const available = detail.actionable === true
   const pending = fetcher.state !== 'idle'
+  const submitting = pending ? fetcher.formData?.get('intent') : undefined
   // `in` narrowing leaves `state` unknown on the error and cancel results.
   const winning =
     fetcher.data && 'state' in fetcher.data && typeof fetcher.data.state === 'string'
@@ -277,10 +278,9 @@ export function ApprovalReview({
             value="decline"
             variant="destructive"
             disabled={pending || !connected || commentInvalid}
+            busyStatus={submitting === 'decline' ? 'Denying…' : undefined}
           >
-            {pending && fetcher.formData?.get('intent') === 'decline'
-              ? 'Denying…'
-              : 'Deny this call'}
+            Deny this call
           </Button.TextButton>
           <Button.TextButton
             type="submit"
@@ -288,10 +288,9 @@ export function ApprovalReview({
             name="intent"
             value="approve"
             disabled={pending || !connected || commentInvalid}
+            busyStatus={submitting === 'approve' ? 'Approving…' : undefined}
           >
-            {pending && fetcher.formData?.get('intent') === 'approve'
-              ? 'Approving…'
-              : 'Approve this call'}
+            Approve this call
           </Button.TextButton>
         </PanelFooter>
       )}
@@ -314,6 +313,7 @@ export function QuickDecision({ name, label }: { name: string; label: string }) 
   const connected = useActivityConnected()
   const fetcher = useFetcher<typeof action>({ key: `queue:${name}` })
   const pending = fetcher.state !== 'idle'
+  const submitting = pending ? fetcher.formData?.get('intent') : undefined
   const winning =
     fetcher.data && 'state' in fetcher.data && typeof fetcher.data.state === 'string'
       ? fetcher.data.state
@@ -330,8 +330,9 @@ export function QuickDecision({ name, label }: { name: string; label: string }) 
         variant="destructive"
         disabled={decided || !connected}
         ariaLabel={`Deny: ${label}`}
+        busyStatus={submitting === 'decline' ? 'Denying…' : undefined}
       >
-        {pending && fetcher.formData?.get('intent') === 'decline' ? 'Denying…' : 'Deny'}
+        Deny
       </Button.TextButton>
       <Button.TextButton
         type="submit"
@@ -339,8 +340,9 @@ export function QuickDecision({ name, label }: { name: string; label: string }) 
         value="approve"
         disabled={decided || !connected}
         ariaLabel={`Approve: ${label}`}
+        busyStatus={submitting === 'approve' ? 'Approving…' : undefined}
       >
-        {pending && fetcher.formData?.get('intent') === 'approve' ? 'Approving…' : 'Approve'}
+        Approve
       </Button.TextButton>
       {fetcher.data && 'error' in fetcher.data && (
         <Typography.BodySmall role="alert">{fetcher.data.error}</Typography.BodySmall>
@@ -366,9 +368,10 @@ export function CancelRun({
       <Button.TextButton
         variant={variant}
         disabled={!connected || fetcher.state !== 'idle'}
+        busyStatus={fetcher.state === 'idle' ? undefined : 'Requesting cancellation…'}
         onClick={() => setConfirming(true)}
       >
-        {fetcher.state === 'idle' ? 'Cancel run' : 'Requesting cancellation…'}
+        Cancel run
       </Button.TextButton>
       {fetcher.data && (
         <Typography.Body role="status">

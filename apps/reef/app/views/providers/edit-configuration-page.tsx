@@ -184,8 +184,12 @@ export function EditConfigurationPage({
         ) : (
           <input type="hidden" name="source" value="current" />
         )}
-        <Button.TextButton type="submit" disabled={pending}>
-          {pending ? 'Starting…' : 'Start again'}
+        <Button.TextButton
+          type="submit"
+          disabled={pending}
+          busyStatus={pending ? 'Starting…' : undefined}
+        >
+          Start again
         </Button.TextButton>
       </Form>
     )
@@ -198,11 +202,12 @@ export function EditConfigurationPage({
   const save = (
     <Button.TextButton
       disabled={saveDisabled}
+      busyStatus={pending ? 'Saving…' : undefined}
       {...(needsConsent
         ? { onClick: () => setConfirming(true) }
         : { type: 'submit', form: publication.formId })}
     >
-      {pending ? 'Saving…' : 'Save'}
+      Save
     </Button.TextButton>
   )
   // Connecting the shared account asks first, as Add provider does. The sign-in
@@ -451,8 +456,9 @@ export function EditConfigurationPage({
                   form={publication.formId}
                   variant={needsConsent ? 'destructive' : 'primary'}
                   disabled={saveDisabled}
+                  busyStatus={pending ? 'Saving…' : undefined}
                 >
-                  {pending ? 'Saving…' : 'Save'}
+                  Save
                 </Button.TextButton>
               </Dialog.Actions>
             </Dialog.Popup>

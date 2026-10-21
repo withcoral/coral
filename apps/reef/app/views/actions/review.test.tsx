@@ -219,9 +219,11 @@ describe('exact approval review', () => {
 
       expect(page.submissions).toHaveLength(1)
       expect(page.submissions[0].form.get('intent')).toBe(intent)
-      expect(button(pending)).toBeDisabled()
+      expect(button(label)).toHaveAttribute('aria-busy', 'true')
+      expect(button(label)).toHaveAttribute('aria-disabled', 'true')
+      expect(page.container.querySelector('[role="status"]')).toHaveTextContent(pending)
       expect(button(other)).toBeDisabled()
-      await click(pending)
+      await click(label)
       await click(other)
       expect(page.submissions).toHaveLength(1)
       expect(comment()).toHaveValue('Reviewed the exact arguments.')

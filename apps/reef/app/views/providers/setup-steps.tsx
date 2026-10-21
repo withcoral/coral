@@ -69,8 +69,7 @@ export function SignInStatus({ setup }: { setup: SetupView }) {
 }
 
 /** The primary action that starts or restarts a sign-in with the service. */
-export function signInLabel(setup: SetupView, pending: boolean) {
-  if (pending) return 'Starting…'
+export function signInLabel(setup: SetupView) {
   const a = setup.authorization
   if (a && a.state !== 'pending') return 'Sign in again'
   return setup.serverName ? `Sign in with ${setup.serverName}` : 'Sign in'
@@ -189,8 +188,13 @@ export function DiscoveryPrompt({
             <Form method="post">
               <Fields form={form} intent="oauth-retry" />
               <SetupFields setup={setup} />
-              <Button.TextButton type="submit" size="36" disabled={pending}>
-                {pending ? 'Trying…' : 'Try again'}
+              <Button.TextButton
+                type="submit"
+                size="36"
+                disabled={pending}
+                busyStatus={pending ? 'Trying…' : undefined}
+              >
+                Try again
               </Button.TextButton>
             </Form>
           </div>
@@ -251,7 +255,7 @@ export function DiscoveryPrompt({
                 render={<Button.Container variant="primary" size="36" disabled={pending} />}
               >
                 <Button.Text>
-                  {bearer ? 'Enter a token to read the operations' : signInLabel(setup, pending)}
+                  {bearer ? 'Enter a token to read the operations' : signInLabel(setup)}
                 </Button.Text>
               </Dialog.Trigger>
               <Dialog.Portal>
@@ -289,7 +293,7 @@ export function DiscoveryPrompt({
                       busyStatus={bearer ? 'Reading…' : 'Opening sign-in…'}
                       disabled={pending}
                     >
-                      {bearer ? 'List operations' : signInLabel(setup, false)}
+                      {bearer ? 'List operations' : signInLabel(setup)}
                     </DocumentSubmitButton>
                   </Dialog.Actions>
                 </Dialog.Popup>
@@ -364,8 +368,13 @@ export function DiscoveryStep({
               }
             />
             <SetupFields setup={setup} />
-            <Button.TextButton type="submit" size="36" disabled={pending}>
-              {pending ? 'Trying…' : 'Try again'}
+            <Button.TextButton
+              type="submit"
+              size="36"
+              disabled={pending}
+              busyStatus={pending ? 'Trying…' : undefined}
+            >
+              Try again
             </Button.TextButton>
           </Form>
         </div>
@@ -467,7 +476,7 @@ export function DiscoveryStep({
               busyStatus="Opening sign-in…"
               disabled={pending}
             >
-              {signInLabel(setup, false)}
+              {signInLabel(setup)}
             </DocumentSubmitButton>
           </div>
         </>

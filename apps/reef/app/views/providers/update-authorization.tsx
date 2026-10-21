@@ -58,7 +58,7 @@ export function UpdateAuthorization({
               busyStatus={oauth ? 'Opening sign-in…' : 'Authorizing…'}
               disabled={pending}
             >
-              {oauth ? signInLabel(setup, false) : 'Authorize replacement'}
+              {oauth ? signInLabel(setup) : 'Authorize replacement'}
             </DocumentSubmitButton>
           )}
         </Form>

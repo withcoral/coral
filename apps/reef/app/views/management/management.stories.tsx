@@ -1185,8 +1185,11 @@ export const AddMemberPending: Story = {
   play: async ({ canvas, canvasElement }) => {
     const dialog = await openAddMembers(canvas, canvasElement)
     await pickPerson(dialog, canvasElement, /Sam Rivera/)
-    await userEvent.click(dialog.getByRole('button', { name: 'Add member' }))
-    await expect(await dialog.findByRole('button', { name: 'Saving…' })).toBeDisabled()
+    const add = dialog.getByRole('button', { name: 'Add member' })
+    await userEvent.click(add)
+    await waitFor(() => expect(add).toHaveAttribute('aria-busy', 'true'))
+    await expect(add).toHaveAttribute('aria-disabled', 'true')
+    await expect(dialog.getByRole('status')).toHaveTextContent('Saving…')
   },
 }
 export const MembershipRoleSelection: Story = {

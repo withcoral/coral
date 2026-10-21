@@ -246,8 +246,13 @@ function AddEnded({
           Start again
         </Button.InternalLink>
       ) : (
-        <Button.TextButton type="button" disabled={Boolean(reading)} onClick={() => read(source)}>
-          {reading ? 'Starting…' : 'Start again'}
+        <Button.TextButton
+          type="button"
+          disabled={Boolean(reading)}
+          busyStatus={reading ? 'Starting…' : undefined}
+          onClick={() => read(source)}
+        >
+          Start again
         </Button.TextButton>
       )}
     </AttemptEnded>

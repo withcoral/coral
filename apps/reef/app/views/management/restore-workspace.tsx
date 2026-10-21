@@ -45,8 +45,14 @@ export function RestoreWorkspaceButton({
           disabled={pending}
         />
       ) : (
-        <Button.TextButton type="submit" size="22" variant="secondary" disabled={pending}>
-          {pending ? 'Restoring…' : 'Restore workspace'}
+        <Button.TextButton
+          type="submit"
+          size="22"
+          variant="secondary"
+          disabled={pending}
+          busyStatus={pending ? 'Restoring…' : undefined}
+        >
+          Restore workspace
         </Button.TextButton>
       )}
       {!compact && error && (

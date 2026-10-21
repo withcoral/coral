@@ -86,16 +86,13 @@ export function usePublication({
             Back
           </Button.InternalLink>
         ) : null}
-        <Button.TextButton type="submit" form={formId} disabled={pending || disabled}>
-          {pending
-            ? updating
-              ? 'Applying…'
-              : 'Adding…'
-            : retrying
-              ? 'Retry'
-              : updating
-                ? 'Apply changes'
-                : 'Add provider'}
+        <Button.TextButton
+          type="submit"
+          form={formId}
+          disabled={pending || disabled}
+          busyStatus={pending ? (updating ? 'Applying…' : 'Adding…') : undefined}
+        >
+          {retrying ? 'Retry' : updating ? 'Apply changes' : 'Add provider'}
         </Button.TextButton>
       </>
     ),

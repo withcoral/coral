@@ -348,7 +348,7 @@ export function AccountStep({
           <Dialog.Trigger
             render={<Button.Container variant="primary" disabled={pending || unstartable} />}
           >
-            <Button.Text>{signInLabel(setup, pending)}</Button.Text>
+            <Button.Text>{signInLabel(setup)}</Button.Text>
           </Dialog.Trigger>
           <Dialog.Portal>
             <Dialog.Backdrop />
@@ -383,7 +383,7 @@ export function AccountStep({
           busyStatus={signingIn && oauth ? 'Opening sign-in…' : 'Saving…'}
           disabled={pending || unstartable}
         >
-          {signingIn && oauth ? signInLabel(setup, false) : 'Next'}
+          {signingIn && oauth ? signInLabel(setup) : 'Next'}
         </DocumentSubmitButton>
       )}
     </>
