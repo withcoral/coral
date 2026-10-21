@@ -1,7 +1,5 @@
 use super::super::provider_client::OidcAuthorizationRequest;
-use super::super::state_store::{
-    OAuthAuthorizationApprovalRecord, OAuthAuthorizationSessionRecord, OAuthSignInBinding,
-};
+use super::super::sealed_handshake::PendingApproval;
 use super::client_metadata::OAuthClientRegistration;
 use super::response::{TrustedRedirect, direct_error, redirect};
 use super::{
@@ -11,7 +9,6 @@ use axum::extract::{RawQuery, Request, State};
 use axum::http::{HeaderMap, header};
 use axum::response::Response;
 use coral_outbound::{BrowserRedirect, EndpointUrl};
-use ring::rand::SystemRandom;
 
 mod confirmation;
 
@@ -81,7 +78,14 @@ pub(super) async fn oauth_authorize_get(
     {
         return trusted.error("invalid_target", "resource does not match this server");
     }
-    let approval = OAuthAuthorizationApprovalRecord {
+    // The sign-in cookie carries these inputs, so they must fit in one.
+    if !sign_in_cookie::app_input_fits(client_id, redirect_uri, query.state.as_deref()) {
+        return trusted.error(
+            "invalid_request",
+            "client_id, redirect_uri and state are too long together",
+        );
+    }
+    let approval = PendingApproval {
         client_id: client_id.to_string(),
         client_name,
         redirect_uri: redirect_uri.to_string(),
@@ -98,41 +102,44 @@ pub(super) async fn oauth_authorize_get(
         .authorization_server()
         .is_trusted_client(client_id, redirect_uri)
     {
-        return provider_sign_in(&state, approval, &trusted).await;
+        return provider_sign_in(&state, approval, &trusted, &headers).await;
     }
-    let Ok(ticket) = confirmation::new_ticket() else {
-        return trusted.error("server_error", "authorization failed");
-    };
+    consent_page(&state, &approval, &callback, &headers)
+        .unwrap_or_else(|| trusted.error("server_error", "authorization failed"))
+}
+
+/// Renders the consent page carrying `approval`, sealed for this browser.
+fn consent_page(
+    state: &AuthorizationServerHttpState,
+    approval: &PendingApproval,
+    callback: &EndpointUrl<BrowserRedirect>,
+    headers: &HeaderMap,
+) -> Option<Response> {
     let secure_cookie = state.secure_cookies();
-    let Ok(browser_binding) = confirmation::browser_binding_for_page(&headers, secure_cookie)
-    else {
-        return trusted.error("server_error", "authorization failed");
-    };
-    let Some(page) = confirmation::response(
+    let browser_binding = confirmation::browser_binding_for_page(headers, secure_cookie).ok()?;
+    let expires_at = sign_in_cookie::now_unix_secs()? + confirmation::APPROVAL_MAX_AGE_SECONDS;
+    let ticket = approval
+        .seal(
+            state.settings.handshake_keys(),
+            browser_binding.as_bytes(),
+            expires_at,
+        )
+        .ok()?;
+    confirmation::response(
         &ticket,
         &approval.client_name,
         &approval.client_id,
-        &callback,
+        callback,
         &browser_binding,
         secure_cookie,
-    ) else {
-        return trusted.error("server_error", "authorization failed");
-    };
-    if state
-        .approval_store
-        .store_authorization_approval(&ticket, &browser_binding, approval)
-        .await
-        .is_err()
-    {
-        return trusted.error("server_error", "authorization failed");
-    }
-    page
+    )
 }
 
 pub(super) async fn oauth_authorize_post(
     State(state): State<AuthorizationServerHttpState>,
     request: Request,
 ) -> Response {
+    let headers = request.headers().clone();
     let Ok((ticket, browser_binding, decision)) = confirmation::parse_submission(
         request,
         state.settings.authorization_server().issuer(),
@@ -142,11 +149,10 @@ pub(super) async fn oauth_authorize_post(
     else {
         return approval_error();
     };
-    let Ok(Some(approval)) = state
-        .approval_store
-        .take_authorization_approval(&ticket, &browser_binding)
-        .await
-    else {
+    let keys = state.settings.handshake_keys();
+    let Some(approval) = sign_in_cookie::now_unix_secs().and_then(|now| {
+        PendingApproval::open(keys, browser_binding.as_bytes(), ticket.as_bytes(), now)
+    }) else {
         return approval_error();
     };
     let Some(trusted) =
@@ -157,61 +163,53 @@ pub(super) async fn oauth_authorize_post(
     if decision == ApprovalDecision::Cancel {
         return trusted.error("access_denied", "authorization was denied");
     }
-    provider_sign_in(&state, approval, &trusted).await
+    provider_sign_in(&state, approval, &trusted, &headers).await
 }
 
 /// Sends an approved authorization on to the upstream provider.
 ///
 /// This is the step an Allow submission continues into and a trusted client
-/// skips to directly. The session is stored before the redirect is returned,
-/// so the callback can never arrive ahead of the state it needs, and the store
-/// hands it out once, so the callback that consumes it is the only one that
-/// can. The redirect also hands this browser the sign-in cookie that the
-/// stored session is bound to, so only this browser's callback can take it.
+/// skips to directly. The redirect hands this browser the sign-in cookie that
+/// carries the sealed session, so the callback can never arrive ahead of the
+/// state it needs, any process can finish it, and only this browser can.
+/// Older sign-ins beyond the per-browser cap are expired on the same response.
 async fn provider_sign_in(
     state: &AuthorizationServerHttpState,
-    approval: OAuthAuthorizationApprovalRecord,
+    approval: PendingApproval,
     trusted: &TrustedRedirect,
+    headers: &HeaderMap,
 ) -> Response {
-    let request = match state
-        .provider_client
-        .authorization_request(state.settings.provider())
-        .await
-    {
-        Ok(request) => request,
-        Err(_error) => return trusted.error("server_error", "authorization failed"),
-    };
-    let OidcAuthorizationRequest {
+    let keys = state.settings.handshake_keys();
+    let Ok(OidcAuthorizationRequest {
         url,
         state: oidc_state,
-        nonce: oidc_nonce,
-        code_verifier: oidc_code_verifier,
-    } = request;
-    let session = OAuthAuthorizationSessionRecord {
-        client_id: approval.client_id,
-        redirect_uri: approval.redirect_uri,
-        client_state: approval.client_state,
-        code_challenge: approval.code_challenge,
-        resource: approval.resource,
-        oidc_code_verifier,
-        oidc_nonce,
-    };
-    let Ok(binding) = OAuthSignInBinding::generate(&SystemRandom::new()) else {
-        return trusted.error("server_error", "authorization failed");
-    };
-    let Some(cookie) = sign_in_cookie::set_header(&oidc_state, &binding, state.secure_cookies())
+    }) = state
+        .provider_client
+        .authorization_request(state.settings.provider(), keys)
+        .await
     else {
         return trusted.error("server_error", "authorization failed");
     };
-    if state
-        .session_store
-        .store_authorization_session(&oidc_state, &binding, session)
-        .await
-        .is_err()
-    {
+    let session = approval.into_sign_in();
+    let secure = state.secure_cookies();
+    let Some(cookie) = sign_in_cookie::now_unix_secs().and_then(|now| {
+        let sealed = session
+            .seal(keys, &oidc_state, now + sign_in_cookie::MAX_AGE_SECONDS)
+            .ok()?;
+        sign_in_cookie::set_header(
+            &sign_in_cookie::name(&oidc_state, now, secure),
+            &sealed,
+            secure,
+        )
+    }) else {
         return trusted.error("server_error", "authorization failed");
-    }
+    };
     let mut response = redirect(url.as_str());
+    for evicted in sign_in_cookie::evicted_by_new_sign_in(headers, secure) {
+        if let Some(clear) = sign_in_cookie::clear_header(&evicted, secure) {
+            response.headers_mut().append(header::SET_COOKIE, clear);
+        }
+    }
     response.headers_mut().append(header::SET_COOKIE, cookie);
     response
 }
@@ -331,7 +329,6 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Duration;
 
     use axum::body::{Body, to_bytes};
     use axum::http::{HeaderValue, StatusCode, header};
@@ -340,7 +337,6 @@ mod tests {
 
     use serde_json::json;
     use sha2::{Digest as _, Sha256};
-    use tokio::sync::Barrier;
     use url::{Url, form_urlencoded};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -351,10 +347,7 @@ mod tests {
     };
     use super::super::test_state::http_state;
     use super::*;
-    use crate::auth::state_store::{
-        ApprovalStore, InMemoryStateStore, OAuthAuthorizationApprovalBrowserBinding,
-        OAuthAuthorizationApprovalTicket, OAuthSignInBinding, SessionStore,
-    };
+    use crate::auth::sealed_handshake::SignInSession;
     use crate::auth::test_config::{AUTH_ISSUER, PROVIDER_SECRET};
 
     const RESOURCE: &str = "https://api.example.test/mcp";
@@ -407,10 +400,9 @@ mod tests {
 
     fn state_with_resolver(
         issuer: &str,
-        store: Arc<InMemoryStateStore>,
         resolver: Arc<dyn ClientMetadataResolver>,
     ) -> AuthorizationServerHttpState {
-        state_with(issuer, "", store, resolver)
+        state_with(issuer, "", resolver)
     }
 
     /// The authorize route's state for `issuer`, with `extra` settings and
@@ -418,20 +410,20 @@ mod tests {
     fn state_with(
         issuer: &str,
         extra: &str,
-        store: Arc<InMemoryStateStore>,
         resolver: Arc<dyn ClientMetadataResolver>,
     ) -> AuthorizationServerHttpState {
-        let mut state = http_state(issuer, extra, store, &[RESOURCE]);
+        let mut state = http_state(issuer, extra, &[RESOURCE]);
         state.client_metadata_resolver = resolver;
         state
     }
 
-    /// The sign-in binding a browser holds after following `response`.
-    fn returned_binding(
+    /// The sign-in a browser carries after following `response`, opened as
+    /// the callback would open it.
+    fn returned_session(
+        state: &AuthorizationServerHttpState,
         response: &Response,
         oidc_state: &str,
-        secure_cookies: bool,
-    ) -> OAuthSignInBinding {
+    ) -> SignInSession {
         let mut cookies = HeaderMap::new();
         for set_cookie in response.headers().get_all(header::SET_COOKIE) {
             let pair = set_cookie.to_str().expect("ASCII").split(';').next();
@@ -440,7 +432,25 @@ mod tests {
                 HeaderValue::from_str(pair.expect("name and value")).expect("cookie"),
             );
         }
-        sign_in_cookie::binding(&cookies, oidc_state, secure_cookies).expect("sign-in cookie")
+        let (_name, sealed) = sign_in_cookie::find(&cookies, oidc_state, state.secure_cookies())
+            .expect("sign-in cookie");
+        let now = sign_in_cookie::now_unix_secs().expect("clock");
+        SignInSession::open(state.settings.handshake_keys(), oidc_state, &sealed, now)
+            .expect("sealed sign-in")
+    }
+
+    /// The approval a consent page's ticket carries, opened as a submission
+    /// from this browser would open it.
+    fn opened_approval(ticket: &str) -> PendingApproval {
+        let state = state("https://provider.invalid");
+        let now = sign_in_cookie::now_unix_secs().expect("clock");
+        PendingApproval::open(
+            state.settings.handshake_keys(),
+            &BROWSER_BINDING,
+            ticket.as_bytes(),
+            now,
+        )
+        .expect("sealed approval")
     }
 
     fn sets_approval_cookie(response: &Response) -> bool {
@@ -459,9 +469,9 @@ mod tests {
         format!("[auth]\ntrusted_clients = ['{client_id}']")
     }
 
-    fn state(issuer: &str, store: Arc<InMemoryStateStore>) -> AuthorizationServerHttpState {
+    fn state(issuer: &str) -> AuthorizationServerHttpState {
         let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
-        state_with_resolver(issuer, store, resolver)
+        state_with_resolver(issuer, resolver)
     }
 
     fn pairs() -> Vec<(String, String)> {
@@ -519,8 +529,8 @@ mod tests {
         headers
     }
 
-    fn browser_binding() -> OAuthAuthorizationApprovalBrowserBinding {
-        OAuthAuthorizationApprovalBrowserBinding::from_bytes(BROWSER_BINDING)
+    fn browser_binding() -> confirmation::BrowserBinding {
+        confirmation::BrowserBinding::from_bytes(BROWSER_BINDING)
     }
 
     async fn response_body(response: Response) -> String {
@@ -636,7 +646,6 @@ mod tests {
 
     #[tokio::test]
     async fn confirmation_is_secure_and_stores_only_validated_data() {
-        let store = Arc::new(InMemoryStateStore::new());
         let expected_style_src = approval_page_style_src();
         let expected_csp = format!(
             "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; {expected_style_src}"
@@ -644,11 +653,7 @@ mod tests {
         let mut request_pairs = pairs();
         request_pairs.push(("approved".into(), "true".into()));
         request_pairs.push(("decision".into(), "continue".into()));
-        let response = request(
-            state("https://provider.invalid", store.clone()),
-            &request_pairs,
-        )
-        .await;
+        let response = request(state("https://provider.invalid"), &request_pairs).await;
         assert_eq!(response.status(), StatusCode::OK);
         for (name, value) in [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
@@ -711,18 +716,7 @@ mod tests {
             )
         );
         assert!(!set_cookie.contains(&ticket));
-        let ticket = OAuthAuthorizationApprovalTicket::from_bytes(
-            URL_SAFE_NO_PAD
-                .decode(ticket)
-                .expect("ticket")
-                .try_into()
-                .expect("ticket length"),
-        );
-        let approval = store
-            .take_authorization_approval(&ticket, &browser_binding())
-            .await
-            .expect("store")
-            .expect("approval");
+        let approval = opened_approval(&ticket);
         assert_eq!(approval.client_id, CLIENT_ID);
         assert_eq!(approval.client_name, "Test Client");
         assert_eq!(approval.redirect_uri, REDIRECT_URI);
@@ -736,12 +730,11 @@ mod tests {
     #[tokio::test]
     async fn app_scheme_callback_reaches_the_approval_page() {
         const APP_CALLBACK: &str = "com.raycast:/oauth";
-        let store = Arc::new(InMemoryStateStore::new());
         let (resolver, _calls) = fake_resolver(Ok(registration(&[APP_CALLBACK])));
         let mut request_pairs = pairs();
         replace(&mut request_pairs, "redirect_uri", Some(APP_CALLBACK));
         let response = request(
-            state_with_resolver("https://provider.invalid", store.clone(), resolver),
+            state_with_resolver("https://provider.invalid", resolver),
             &request_pairs,
         )
         .await;
@@ -749,25 +742,14 @@ mod tests {
         let page = response_body(response).await;
         assert!(page.contains("Redirect app scheme</dt>"));
         assert!(page.contains(">com.raycast</dd>"));
-        let ticket = OAuthAuthorizationApprovalTicket::from_bytes(
-            URL_SAFE_NO_PAD
-                .decode(ticket_from_page(&page))
-                .expect("ticket")
-                .try_into()
-                .expect("ticket length"),
-        );
-        let approval = store
-            .take_authorization_approval(&ticket, &browser_binding())
-            .await
-            .expect("store")
-            .expect("approval");
+        let approval = opened_approval(&ticket_from_page(&page));
         assert_eq!(approval.redirect_uri, APP_CALLBACK);
     }
 
     #[tokio::test]
     async fn confirmation_page_displays_loopback_destination_and_escapes_client_text() {
         let loopback = confirmation::response(
-            &OAuthAuthorizationApprovalTicket::from_bytes([6; 32]),
+            "sealed-approval",
             "Local Test Client",
             CLIENT_ID,
             &EndpointUrl::<BrowserRedirect>::parse("http://127.0.0.1:14554/oauth/callback")
@@ -794,7 +776,7 @@ mod tests {
         assert!(!loopback_cookie.contains("; Secure"));
 
         let escaped = confirmation::response(
-            &OAuthAuthorizationApprovalTicket::from_bytes([7; 32]),
+            "sealed-approval",
             "</bdi><script>alert(\"x\")</script>&' @@ticket@@ @@styles@@",
             CLIENT_ID,
             &EndpointUrl::<BrowserRedirect>::parse(REDIRECT_URI).expect("redirect"),
@@ -838,7 +820,7 @@ mod tests {
             format!("ticket={ticket}&ticket={ticket}&decision=continue"),
             format!("ticket={ticket}&decision=approve"),
             format!("ticket={ticket}=&decision=continue"),
-            "x".repeat(257),
+            "x".repeat(16 * 1024 + 1),
         ];
         for body in malformed {
             let request = submission(body, cookie(), FORM);
@@ -870,7 +852,7 @@ mod tests {
                 confirmation::parse_submission(request, AUTH_ISSUER, true)
                     .await
                     .expect("rejected a well-formed approval submission");
-            assert_eq!(ticket.as_bytes(), &[7; 32]);
+            assert_eq!(ticket.as_str(), URL_SAFE_NO_PAD.encode([7; 32]));
             assert_eq!(browser_binding.as_bytes(), &BROWSER_BINDING);
             assert!(decision == ApprovalDecision::Cancel);
         }
@@ -878,10 +860,7 @@ mod tests {
 
     #[tokio::test]
     async fn submission_requires_same_origin_browser_binding_without_consuming_the_approval() {
-        let auth_state = state(
-            "https://provider.invalid",
-            Arc::new(InMemoryStateStore::new()),
-        );
+        let auth_state = state("https://provider.invalid");
         let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
 
         let missing_cookie = oauth_authorize_post(
@@ -933,10 +912,7 @@ mod tests {
     /// The remaining directives still deny every fetch, base URI and framing.
     #[tokio::test]
     async fn approval_page_does_not_restrict_form_action() {
-        let auth_state = state(
-            "https://provider.invalid",
-            Arc::new(InMemoryStateStore::new()),
-        );
+        let auth_state = state("https://provider.invalid");
         let page = request(auth_state, &pairs()).await;
         assert_eq!(page.status(), StatusCode::OK);
         let policy = page.headers()[header::CONTENT_SECURITY_POLICY]
@@ -963,10 +939,7 @@ mod tests {
     /// `Origin: null` case below is the submission this policy would produce.
     #[tokio::test]
     async fn approval_page_referrer_policy_preserves_the_submission_origin() {
-        let auth_state = state(
-            "https://provider.invalid",
-            Arc::new(InMemoryStateStore::new()),
-        );
+        let auth_state = state("https://provider.invalid");
         let page = request(auth_state.clone(), &pairs()).await;
         assert_eq!(page.status(), StatusCode::OK);
         assert_eq!(page.headers()[header::CACHE_CONTROL], "no-store");
@@ -988,10 +961,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_consent_pages_reuse_the_binding_and_remain_valid() {
-        let auth_state = state(
-            "https://provider.invalid",
-            Arc::new(InMemoryStateStore::new()),
-        );
+        let auth_state = state("https://provider.invalid");
         let first = oauth_authorize_get(
             State(auth_state.clone()),
             RawQuery(Some(encode(&pairs()))),
@@ -1031,11 +1001,7 @@ mod tests {
         mount_discovery(&provider, 200).await;
         let (resolver, calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
         let request_pairs = pairs();
-        let auth_state = state_with_resolver(
-            &provider.uri(),
-            Arc::new(InMemoryStateStore::new()),
-            resolver,
-        );
+        let auth_state = state_with_resolver(&provider.uri(), resolver);
         let response = request(auth_state.clone(), &request_pairs).await;
         assert_eq!(response.status(), StatusCode::OK);
         let page = response_body(response).await;
@@ -1063,11 +1029,7 @@ mod tests {
             "https://client.example.test/other-callback",
         ])));
         let response = request(
-            state_with_resolver(
-                "https://provider.invalid",
-                Arc::new(InMemoryStateStore::new()),
-                resolver,
-            ),
+            state_with_resolver("https://provider.invalid", resolver),
             &pairs(),
         )
         .await;
@@ -1083,11 +1045,7 @@ mod tests {
         let mut request_pairs = pairs();
         replace(&mut request_pairs, "client_id", Some(&client_id));
         let response = request(
-            state_with_resolver(
-                "https://provider.invalid",
-                Arc::new(InMemoryStateStore::new()),
-                resolver,
-            ),
+            state_with_resolver("https://provider.invalid", resolver),
             &request_pairs,
         )
         .await;
@@ -1103,7 +1061,6 @@ mod tests {
 
     #[tokio::test]
     async fn client_and_redirect_must_match_exactly_before_redirecting() {
-        let store = Arc::new(InMemoryStateStore::new());
         let (resolver, _calls) = fake_resolver(Err(ClientMetadataError::InvalidMetadata));
         let mut wrong_client = pairs();
         replace(
@@ -1112,7 +1069,7 @@ mod tests {
             Some("https://client.example.test/oauth/%63lient.json"),
         );
         let response = request(
-            state_with_resolver("https://provider.invalid", store.clone(), resolver),
+            state_with_resolver("https://provider.invalid", resolver),
             &wrong_client,
         )
         .await;
@@ -1126,18 +1083,14 @@ mod tests {
             "redirect_uri",
             Some("https://client.example.test/other"),
         );
-        let response = request(
-            state("https://provider.invalid", store.clone()),
-            &wrong_redirect,
-        )
-        .await;
+        let response = request(state("https://provider.invalid"), &wrong_redirect).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_security(&response);
         assert!(location(&response).is_none());
 
         let raw = format!("{}&client%5Fid=raw-secret", encode(&pairs()));
         let response = oauth_authorize_get(
-            State(state("https://provider.invalid", store)),
+            State(state("https://provider.invalid")),
             RawQuery(Some(raw)),
             browser_headers(),
         )
@@ -1149,15 +1102,13 @@ mod tests {
 
     #[tokio::test]
     async fn registered_redirect_outside_browser_policy_never_becomes_a_redirect() {
-        let store = Arc::new(InMemoryStateStore::new());
         for uri in [
             "javascript:alert(1)",
             "data:text/html,<script>alert(1)</script>",
             "http://client.example.test/callback",
         ] {
             let (resolver, _calls) = fake_resolver(Ok(registration(&[uri])));
-            let auth_state =
-                state_with_resolver("https://provider.invalid", store.clone(), resolver);
+            let auth_state = state_with_resolver("https://provider.invalid", resolver);
             let mut request_pairs = pairs();
             replace(&mut request_pairs, "redirect_uri", Some(uri));
             let response = request(auth_state, &request_pairs).await;
@@ -1331,11 +1282,7 @@ mod tests {
     async fn loopback_client_returns_to_the_port_it_requested() {
         let requested = "http://127.0.0.1:3118/callback";
         let (resolver, _calls) = fake_resolver(Ok(registration(&["http://127.0.0.1/callback"])));
-        let auth_state = state_with_resolver(
-            "https://provider.invalid",
-            Arc::new(InMemoryStateStore::new()),
-            resolver,
-        );
+        let auth_state = state_with_resolver("https://provider.invalid", resolver);
         let mut request_pairs = pairs();
         replace(&mut request_pairs, "redirect_uri", Some(requested));
         let response = request(auth_state.clone(), &request_pairs).await;
@@ -1356,7 +1303,6 @@ mod tests {
 
     #[tokio::test]
     async fn trusted_protocol_errors_redirect_with_one_encoded_client_state() {
-        let store = Arc::new(InMemoryStateStore::new());
         for (field, value, expected) in [
             ("response_type", None, "invalid_request"),
             ("response_type", Some("token"), "unsupported_response_type"),
@@ -1369,11 +1315,7 @@ mod tests {
         ] {
             let mut request_pairs = pairs();
             replace(&mut request_pairs, field, value);
-            let response = request(
-                state("https://provider.invalid", store.clone()),
-                &request_pairs,
-            )
-            .await;
+            let response = request(state("https://provider.invalid"), &request_pairs).await;
             assert_eq!(response.status(), StatusCode::FOUND);
             assert_security(&response);
             let url = Url::parse(location(&response).expect("error redirect")).expect("URL");
@@ -1390,102 +1332,95 @@ mod tests {
 
     #[tokio::test]
     async fn empty_resource_allowlist_fails_closed() {
-        let mut auth_state = state(
-            "https://provider.invalid",
-            Arc::new(InMemoryStateStore::new()),
-        );
+        let mut auth_state = state("https://provider.invalid");
         auth_state.authorization_resources = Arc::new(BTreeSet::new());
         let response = request(auth_state, &pairs()).await;
         let location = location(&response).expect("trusted error redirect");
         assert!(location.contains("error=invalid_target"));
     }
 
+    /// A consent page holds no server state, so its submission may reach any
+    /// process. Submitting it twice only repeats the person's own decision in
+    /// the browser the page was shown to.
     #[tokio::test]
-    async fn cancel_is_trusted_once_while_replay_and_restart_are_direct_errors() {
-        let store = Arc::new(InMemoryStateStore::new());
-        let auth_state = state("https://provider.invalid", store);
-        let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
-        let cancelled = submit(auth_state.clone(), &ticket, "cancel").await;
-        let callback = Url::parse(location(&cancelled).expect("client redirect")).expect("URL");
-        let query = callback.query_pairs().into_owned().collect::<Vec<_>>();
-        assert!(query.contains(&("tenant".into(), "one".into())));
-        assert!(query.contains(&("error".into(), "access_denied".into())));
-        assert!(query.contains(&("state".into(), CLIENT_STATE.into())));
-
-        let replay = submit(auth_state, &ticket, "cancel").await;
-        let restarted = submit(
-            state(
-                "https://provider.invalid",
-                Arc::new(InMemoryStateStore::new()),
-            ),
-            &ticket,
-            "continue",
-        )
-        .await;
-        for response in [replay, restarted] {
+    async fn consent_is_honored_by_any_process_for_the_browser_it_was_shown_to() {
+        let ticket = approval_ticket(state("https://provider.invalid"), &pairs()).await;
+        for process in ["another process", "the same page again"] {
+            let cancelled = submit(state("https://provider.invalid"), &ticket, "cancel").await;
+            let callback = Url::parse(location(&cancelled).expect("client redirect")).expect("URL");
+            let query = callback.query_pairs().into_owned().collect::<Vec<_>>();
+            assert!(
+                query.contains(&("tenant".into(), "one".into())),
+                "{process}"
+            );
+            assert!(
+                query.contains(&("error".into(), "access_denied".into())),
+                "{process}"
+            );
+            assert!(
+                query.contains(&("state".into(), CLIENT_STATE.into())),
+                "{process}"
+            );
+        }
+        let middle = ticket.len() / 2;
+        let flipped = if ticket.get(middle..=middle) == Some("A") {
+            "B"
+        } else {
+            "A"
+        };
+        let altered = format!(
+            "{}{flipped}{}",
+            ticket.get(..middle).expect("head"),
+            ticket.get(middle + 1..).expect("tail")
+        );
+        for forged in [altered, URL_SAFE_NO_PAD.encode([7; 32])] {
+            let response = submit(state("https://provider.invalid"), &forged, "continue").await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
             assert!(location(&response).is_none());
             let body = response_body(response).await;
             assert!(body.contains("authorization approval is invalid or expired"));
-            assert!(!body.contains(&ticket));
             assert!(!body.contains(REDIRECT_URI));
         }
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn expired_approval_is_a_direct_error() {
-        let auth_state = state(
-            "https://provider.invalid",
-            Arc::new(InMemoryStateStore::new()),
-        );
-        let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
-        tokio::time::advance(Duration::from_mins(6)).await;
-        let response = submit(auth_state, &ticket, "continue").await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert!(location(&response).is_none());
-    }
-
+    /// Each Allow starts its own sign-in in its own cookie, so a double
+    /// submission leaves two independent sign-ins rather than a race.
     #[tokio::test]
-    async fn concurrent_double_submit_has_one_winner() {
+    async fn each_allow_starts_an_independent_sign_in() {
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
-        let auth_state = state(&provider.uri(), Arc::new(InMemoryStateStore::new()));
+        let auth_state = state(&provider.uri());
         let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
-        let barrier = Arc::new(Barrier::new(3));
-        let spawn = |state: AuthorizationServerHttpState| {
-            let barrier = barrier.clone();
-            let ticket = ticket.clone();
-            tokio::spawn(async move {
-                barrier.wait().await;
-                submit(state, &ticket, "continue").await
-            })
+        let (first, second) = tokio::join!(
+            submit(auth_state.clone(), &ticket, "continue"),
+            submit(auth_state.clone(), &ticket, "continue")
+        );
+        let oidc_state = |response: &Response| {
+            Url::parse(location(response).expect("provider redirect"))
+                .expect("URL")
+                .query_pairs()
+                .find(|(key, _value)| key == "state")
+                .expect("OIDC state")
+                .1
+                .into_owned()
         };
-        let first = spawn(auth_state.clone());
-        let second = spawn(auth_state);
-        barrier.wait().await;
-        let (first, second) = tokio::join!(first, second);
-        let (first, second) = (first.expect("first submit"), second.expect("second submit"));
-        assert!(
-            matches!(
-                (first.status(), second.status()),
-                (StatusCode::FOUND, StatusCode::BAD_REQUEST)
-                    | (StatusCode::BAD_REQUEST, StatusCode::FOUND)
-            ),
-            "one submission must win"
+        let (first_state, second_state) = (oidc_state(&first), oidc_state(&second));
+        assert_ne!(first_state, second_state);
+        assert_eq!(
+            returned_session(&auth_state, &first, &first_state).client_id,
+            CLIENT_ID
         );
         assert_eq!(
-            provider.received_requests().await.expect("requests").len(),
-            1
+            returned_session(&auth_state, &second, &second_state).client_id,
+            CLIENT_ID
         );
     }
 
     #[tokio::test]
-    async fn continue_stores_single_use_session_before_provider_redirect() {
+    async fn continue_hands_the_browser_a_sealed_sign_in_with_the_provider_redirect() {
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
-        let store = Arc::new(InMemoryStateStore::new());
-        let auth_state = state(&provider.uri(), store.clone());
-        let secure_cookies = auth_state.secure_cookies();
+        let auth_state = state(&provider.uri());
         let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
         assert!(
             provider
@@ -1494,7 +1429,7 @@ mod tests {
                 .expect("requests")
                 .is_empty()
         );
-        let response = submit(auth_state, &ticket, "continue").await;
+        let response = submit(auth_state.clone(), &ticket, "continue").await;
         let provider_url = location(&response).expect("provider redirect");
         let query = Url::parse(provider_url)
             .expect("URL")
@@ -1517,29 +1452,87 @@ mod tests {
                 "{attribute} in {set_cookie}"
             );
         }
-        let binding = returned_binding(&response, oidc_state, secure_cookies);
-        let session = store
-            .take_authorization_session(oidc_state, &binding)
-            .await
-            .expect("store")
-            .expect("stored before redirect");
+        let session = returned_session(&auth_state, &response, oidc_state);
         assert_eq!(session.client_id, CLIENT_ID);
         assert_eq!(session.redirect_uri, REDIRECT_URI);
         assert_eq!(session.client_state.as_deref(), Some(CLIENT_STATE));
         assert_eq!(session.code_challenge, CHALLENGE);
         assert_eq!(session.resource, RESOURCE);
-        assert_eq!(session.oidc_code_verifier.len(), 43);
-        assert_eq!(session.oidc_nonce.len(), 43);
+        let keys = auth_state.settings.handshake_keys();
+        let verifier = keys.pkce_verifier(oidc_state);
+        assert_eq!(
+            query.get("code_challenge"),
+            Some(&URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())))
+        );
+        assert_eq!(query.get("nonce"), Some(&keys.nonce(oidc_state)));
         assert!(!query.values().any(|value| value == CLIENT_STATE));
-        for secret in [&session.oidc_code_verifier, PROVIDER_SECRET] {
+        assert!(!set_cookie.contains(CLIENT_STATE));
+        for secret in [verifier.as_str(), PROVIDER_SECRET] {
             assert!(!provider_url.contains(secret));
+            assert!(!set_cookie.contains(secret));
         }
+    }
+
+    /// The sign-in cookie must fit in one browser cookie, so an app whose
+    /// inputs exceed the budget is refused before consent and holds nothing.
+    #[tokio::test]
+    async fn app_inputs_beyond_the_sign_in_budget_are_refused_before_consent() {
+        let mut oversized = pairs();
+        replace(&mut oversized, "state", Some(&"s".repeat(1536)));
+        let response = request(state("https://provider.invalid"), &oversized).await;
+        let error = Url::parse(location(&response).expect("client error redirect")).expect("URL");
+        let query = error.query_pairs().into_owned().collect::<Vec<_>>();
+        assert!(query.contains(&("error".into(), "invalid_request".into())));
+        assert!(response.headers().get(header::SET_COOKIE).is_none());
+    }
+
+    /// Every sign-in cookie rides on each request to this host, so a new
+    /// sign-in expires the browser's oldest ones beyond three.
+    #[tokio::test]
+    async fn a_new_sign_in_expires_the_browsers_oldest_beyond_three() {
+        let provider = MockServer::start().await;
+        mount_discovery(&provider, 200).await;
+        let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
+        let auth_state = state_with(&provider.uri(), &trusting(CLIENT_ID), resolver);
+        let held = [30, 10, 20].map(|started_at| {
+            sign_in_cookie::name(&format!("held-{started_at}"), started_at, true)
+        });
+        let mut headers = browser_headers();
+        for name in &held {
+            headers.append(
+                header::COOKIE,
+                HeaderValue::from_str(&format!("{name}=sealed")).expect("cookie"),
+            );
+        }
+        let response =
+            oauth_authorize_get(State(auth_state), RawQuery(Some(encode(&pairs()))), headers).await;
+        let set_cookies = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|value| value.to_str().expect("ASCII").to_owned())
+            .collect::<Vec<_>>();
+        let oldest = sign_in_cookie::name("held-10", 10, true);
         assert!(
-            store
-                .take_authorization_session(oidc_state, &binding)
-                .await
-                .expect("store")
-                .is_none()
+            set_cookies
+                .iter()
+                .any(|cookie| cookie.starts_with(&format!("{oldest}=;"))
+                    && cookie.contains("Max-Age=0")),
+            "{set_cookies:?}"
+        );
+        assert_eq!(
+            set_cookies
+                .iter()
+                .filter(|cookie| cookie.contains("Max-Age=0"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            set_cookies
+                .iter()
+                .filter(|cookie| cookie.contains("Max-Age=300"))
+                .count(),
+            1
         );
     }
 
@@ -1555,7 +1548,6 @@ mod tests {
             let mut state = state_with(
                 &provider.uri(),
                 "[listeners.web]\npublic_url = 'https://web.example.test'",
-                Arc::new(InMemoryStateStore::new()),
                 resolver,
             );
             state.authorization_resources = Arc::new(BTreeSet::from([WEB.into(), RESOURCE.into()]));
@@ -1623,13 +1615,11 @@ mod tests {
         const WEB_CLIENT: &str = "https://web.example.test/.well-known/oauth-client";
         const WEB_CALLBACK: &str = "https://web.example.test/auth/callback";
         const SETUP_CALLBACK: &str = "https://web.example.test/provider-setup/oauth/callback";
-        let store = Arc::new(InMemoryStateStore::new());
         let build_state = |redirects: &[&str]| {
             let (resolver, _) = fake_resolver(Ok(registration(redirects)));
             let mut state = state_with(
                 "https://provider.invalid",
                 "[listeners.web]\npublic_url = 'https://web.example.test'",
-                store.clone(),
                 resolver,
             );
             state.authorization_resources = Arc::new(BTreeSet::from([WEB.into(), RESOURCE.into()]));
@@ -1644,18 +1634,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let page = response_body(response).await;
         assert!(page.contains("Allow workspace access?"));
-        let ticket = OAuthAuthorizationApprovalTicket::from_bytes(
-            URL_SAFE_NO_PAD
-                .decode(ticket_from_page(&page))
-                .expect("ticket")
-                .try_into()
-                .expect("ticket length"),
-        );
-        let approval = store
-            .take_authorization_approval(&ticket, &browser_binding())
-            .await
-            .expect("store")
-            .expect("approval");
+        let approval = opened_approval(&ticket_from_page(&page));
         assert_eq!(approval.client_id, WEB_CLIENT);
         assert_eq!(approval.redirect_uri, SETUP_CALLBACK);
         assert_eq!(approval.resource, RESOURCE);
@@ -1685,19 +1664,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trusted_client_skips_the_approval_page_and_stores_a_single_use_session() {
+    async fn trusted_client_skips_the_approval_page_and_carries_a_sealed_sign_in() {
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
-        let store = Arc::new(InMemoryStateStore::new());
         let (resolver, calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
-        let auth_state = state_with(
-            &provider.uri(),
-            &trusting(CLIENT_ID),
-            store.clone(),
-            resolver,
-        );
-        let secure_cookies = auth_state.secure_cookies();
-        let response = request(auth_state, &pairs()).await;
+        let auth_state = state_with(&provider.uri(), &trusting(CLIENT_ID), resolver);
+        let response = request(auth_state.clone(), &pairs()).await;
         assert_eq!(response.status(), StatusCode::FOUND);
         assert_security(&response);
         assert!(
@@ -1716,24 +1688,12 @@ mod tests {
             .into_owned()
             .collect::<BTreeMap<_, _>>();
         let oidc_state = query.get("state").expect("OIDC state");
-        let binding = returned_binding(&response, oidc_state, secure_cookies);
-        let session = store
-            .take_authorization_session(oidc_state, &binding)
-            .await
-            .expect("store")
-            .expect("stored before redirect");
+        let session = returned_session(&auth_state, &response, oidc_state);
         assert_eq!(session.client_id, CLIENT_ID);
         assert_eq!(session.redirect_uri, REDIRECT_URI);
         assert_eq!(session.client_state.as_deref(), Some(CLIENT_STATE));
         assert_eq!(session.code_challenge, CHALLENGE);
         assert_eq!(session.resource, RESOURCE);
-        assert!(
-            store
-                .take_authorization_session(oidc_state, &binding)
-                .await
-                .expect("store")
-                .is_none()
-        );
     }
 
     /// Trust skips only the approval page. Every validation the page sits
@@ -1741,15 +1701,8 @@ mod tests {
     /// like anyone else's rather than being waved through to the provider.
     #[tokio::test]
     async fn trusted_client_requests_are_validated_like_any_other() {
-        let store = Arc::new(InMemoryStateStore::new());
-        let trusted_state = |resolver| {
-            state_with(
-                "https://provider.invalid",
-                &trusting(CLIENT_ID),
-                store.clone(),
-                resolver,
-            )
-        };
+        let trusted_state =
+            |resolver| state_with("https://provider.invalid", &trusting(CLIENT_ID), resolver);
 
         let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
         let mut missing_challenge = pairs();
@@ -1777,7 +1730,6 @@ mod tests {
         let auth_state = state_with(
             "https://provider.invalid",
             &trusting("https://other.example.test/oauth/client.json"),
-            Arc::new(InMemoryStateStore::new()),
             resolver,
         );
         let response = request(auth_state, &pairs()).await;
@@ -1794,12 +1746,7 @@ mod tests {
         let provider = MockServer::start().await;
         mount_discovery(&provider, 500).await;
         let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
-        let auth_state = state_with(
-            &provider.uri(),
-            &trusting(CLIENT_ID),
-            Arc::new(InMemoryStateStore::new()),
-            resolver,
-        );
+        let auth_state = state_with(&provider.uri(), &trusting(CLIENT_ID), resolver);
         let response = request(auth_state, &pairs()).await;
         let error_location = location(&response).expect("error redirect");
         assert!(error_location.starts_with("https://client.example.test/callback"));
@@ -1808,58 +1755,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_and_store_failures_are_generic_trusted_errors() {
+    async fn provider_failures_after_consent_are_generic_trusted_errors() {
         let provider = MockServer::start().await;
         mount_discovery(&provider, 500).await;
-        let store = Arc::new(InMemoryStateStore::new());
-        let auth_state = state(&provider.uri(), store.clone());
+        let auth_state = state(&provider.uri());
         let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
         let response = submit(auth_state, &ticket, "continue").await;
         let error_location = location(&response).expect("error redirect");
         assert!(error_location.contains("error=server_error"));
         assert!(!error_location.contains(PROVIDER_SECRET));
-
-        // Every filler entry names its own client, because the per-client
-        // bound is what stops one client from reaching the shared budget on
-        // its own. Reaching it at all is the setup for the assertion below,
-        // not the behavior under test.
-        let filler = OAuthAuthorizationApprovalRecord {
-            client_id: CLIENT_ID.into(),
-            client_name: "Test Client".into(),
-            redirect_uri: REDIRECT_URI.into(),
-            client_state: None,
-            code_challenge: CHALLENGE.into(),
-            resource: RESOURCE.into(),
-        };
-        for index in 0_u64..4096 {
-            let mut ticket = [0; 32];
-            ticket[..8].copy_from_slice(&index.to_le_bytes());
-            let ticket = OAuthAuthorizationApprovalTicket::from_bytes(ticket);
-            store
-                .store_authorization_approval(
-                    &ticket,
-                    &browser_binding(),
-                    OAuthAuthorizationApprovalRecord {
-                        client_id: format!("https://filler-{index}.example.test/client.json"),
-                        ..filler.clone()
-                    },
-                )
-                .await
-                .expect("fill approval store");
-        }
-        let response = request(state(&provider.uri(), store), &pairs()).await;
-        assert!(
-            location(&response)
-                .expect("store error redirect")
-                .contains("error=server_error")
-        );
     }
 
     #[tokio::test]
     async fn listener_exposes_authorize_route() {
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
-        let auth_state = state(&provider.uri(), Arc::new(InMemoryStateStore::new()));
+        let auth_state = state(&provider.uri());
         let bind_addr = auth_state.settings.bind_addr();
         let server = super::super::start_listener(bind_addr, super::super::auth_router(auth_state))
             .await

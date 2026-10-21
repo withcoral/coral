@@ -404,7 +404,6 @@ mod tests {
     use super::super::query;
     use super::super::test_state::http_state;
     use super::*;
-    use crate::auth::state_store::InMemoryStateStore;
     use coral_auth::SessionTokenIssuer;
     use coral_auth::authorization_codes::{AuthorizationCodes, CodeIssue};
     use coral_test_support::TestDatabase;
@@ -425,12 +424,7 @@ mod tests {
             .await
             .expect("test database");
         let codes = AuthorizationCodes::new(database.database());
-        let mut state = http_state(
-            "https://accounts.example.test",
-            "",
-            Arc::new(InMemoryStateStore::new()),
-            &[RESOURCE],
-        );
+        let mut state = http_state("https://accounts.example.test", "", &[RESOURCE]);
         state.codes = Some(codes.clone());
         let session_tokens = state.session_tokens.clone();
         (state, codes, session_tokens, database)

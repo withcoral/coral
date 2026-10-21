@@ -10,7 +10,6 @@ use super::OIDC_CALLBACK_PATH;
 use super::config::{AuthSettings, ResolvedAuthSettings, signing_key_env_error};
 use super::error::AuthServerError;
 use super::provider_client::OidcProviderClient;
-use super::state_store::{ApprovalStore, InMemoryStateStore, SessionStore};
 use crate::oauth_resource::{CanonicalOauthUrl, OauthUrlError};
 use crate::workspace_mcp_urls::WorkspaceMcpUrls;
 use axum::Router;
@@ -45,7 +44,6 @@ pub struct CoralAuthorizationServer {
     outbound_policy: coral_outbound::DestinationPolicy,
     settings: Arc<ResolvedAuthSettings>,
     session_tokens: SessionTokenIssuer,
-    state_store: Arc<InMemoryStateStore>,
     authorization_resources: BTreeSet<String>,
     workspace_resource_family: Option<WorkspaceMcpUrls>,
     user_directory: Option<UserDirectory>,
@@ -118,7 +116,6 @@ impl CoralAuthorizationServer {
             outbound_policy,
             settings: Arc::new(settings),
             session_tokens,
-            state_store: Arc::new(InMemoryStateStore::new()),
             authorization_resources: BTreeSet::new(),
             workspace_resource_family: None,
             user_directory: None,
@@ -237,7 +234,6 @@ impl CoralAuthorizationServer {
         let mut state = AuthorizationServerHttpState::new(
             self.settings,
             self.session_tokens,
-            self.state_store,
             Arc::new(self.authorization_resources),
             self.workspace_resource_family,
             self.user_directory,
@@ -378,8 +374,6 @@ impl Drop for RunningCoralAuthorizationServer {
 struct AuthorizationServerHttpState {
     settings: Arc<ResolvedAuthSettings>,
     session_tokens: SessionTokenIssuer,
-    approval_store: Arc<dyn ApprovalStore>,
-    session_store: Arc<dyn SessionStore>,
     /// Authorization codes awaiting redemption, shared by every process.
     ///
     /// `None` until application bootstrap attaches a database; the callback
@@ -401,7 +395,6 @@ impl AuthorizationServerHttpState {
     fn new(
         settings: Arc<ResolvedAuthSettings>,
         session_tokens: SessionTokenIssuer,
-        state_store: Arc<InMemoryStateStore>,
         authorization_resources: Arc<BTreeSet<String>>,
         workspace_resource_family: Option<WorkspaceMcpUrls>,
         user_directory: Option<UserDirectory>,
@@ -439,8 +432,6 @@ impl AuthorizationServerHttpState {
         Ok(Self {
             settings,
             session_tokens,
-            approval_store: state_store.clone(),
-            session_store: state_store,
             codes: None,
             provider_client: OidcProviderClient::new(outbound_policy)
                 .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
@@ -483,25 +474,22 @@ mod test_state {
     use std::sync::Arc;
 
     use super::AuthorizationServerHttpState;
-    use crate::auth::state_store::InMemoryStateStore;
     use crate::auth::test_config::{loopback_policy, resolved_settings};
 
-    /// Builds the production state over `store` for a provider at
-    /// `provider_issuer`, accepting only the exact `resources`.
+    /// Builds the production state for a provider at `provider_issuer`,
+    /// accepting only the exact `resources`.
     ///
     /// `extra` is passed to [`resolved_settings`]. Tests replace individual
     /// fields, such as the client metadata resolver, on the returned state.
     pub(super) fn http_state(
         provider_issuer: &str,
         extra: &str,
-        store: Arc<InMemoryStateStore>,
         resources: &[&str],
     ) -> AuthorizationServerHttpState {
         let (settings, session_tokens) = resolved_settings(provider_issuer, extra);
         AuthorizationServerHttpState::new(
             Arc::new(settings),
             session_tokens,
-            store,
             Arc::new(
                 resources
                     .iter()
@@ -666,7 +654,6 @@ mod tests {
         let state = super::AuthorizationServerHttpState::new(
             prepared.settings,
             prepared.session_tokens,
-            prepared.state_store,
             Arc::new(prepared.authorization_resources),
             prepared.workspace_resource_family,
             prepared.user_directory,

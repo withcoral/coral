@@ -18,6 +18,7 @@ use zeroize::Zeroizing;
 
 use super::OIDC_CALLBACK_PATH;
 use super::error::AuthServerError;
+use super::sealed_handshake::HandshakeKeys;
 use crate::oauth_resource::CanonicalOauthUrl;
 use coral_auth::SessionTokenIssuer;
 use coral_outbound::{Configured, EndpointUrl};
@@ -143,12 +144,15 @@ impl AuthSettings {
             access_token_ttl,
         )
         .map_err(AuthServerError::Config)?;
+        let handshake_keys = HandshakeKeys::derive(key.as_slice())
+            .map_err(|error| session_config_error(error.to_string()))?;
         Ok((
             ResolvedAuthSettings {
                 bind_addr: self.bind_addr,
                 authorization_server: self.authorization_server,
                 access_token_ttl,
                 provider,
+                handshake_keys: Arc::new(handshake_keys),
             },
             session_tokens,
         ))
@@ -165,6 +169,8 @@ pub(crate) struct ResolvedAuthSettings {
     authorization_server: AuthorizationServerSettings,
     access_token_ttl: Duration,
     provider: ResolvedOidcProvider,
+    /// Seals sign-in state into browsers; derived from the session signing key.
+    handshake_keys: Arc<HandshakeKeys>,
 }
 
 impl ResolvedAuthSettings {
@@ -178,6 +184,10 @@ impl ResolvedAuthSettings {
 
     pub(super) fn provider(&self) -> &ResolvedOidcProvider {
         &self.provider
+    }
+
+    pub(super) fn handshake_keys(&self) -> &HandshakeKeys {
+        &self.handshake_keys
     }
 
     pub(crate) fn bootstrap_owner(&self) -> Option<(&str, &str)> {
