@@ -37,7 +37,9 @@ mod list_providers;
 pub use create_provider::{
     ConfigurationChoices, CreateProviderArguments, CreateProviderResult, ProviderSourceArgument,
 };
-pub use list_providers::{ListProvidersResult, ListedProvider, ListedProviderState};
+pub use list_providers::{
+    ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup, ListedSetupState,
+};
 
 /// Safe display name of the Built-in Provider.
 pub const BUILTIN_PROVIDER_DISPLAY_NAME: &str = "Coral";

@@ -27,7 +27,7 @@ import {
   workspaceName,
 } from './management.server'
 import { authorizedWorkspace } from './workspace-route.server'
-import { blockerLabel, providerName, uuidOr404 } from './providers.server'
+import { blockerLabel, providerName, routeChoice, uuidOr404 } from './providers.server'
 import type { AgentProviderView } from '@/views/management/agent-providers'
 import type { Crumb } from '@/views/management/types'
 import {
@@ -264,13 +264,7 @@ async function accountsContext(
     throw new Response('Not found', { status: 404, headers: accountHeaders })
   const { workspace: ws } = await authorizedWorkspace(request, context, params.workspace)
   const provider = await api.providers.getProvider({ name: providerName(ws.name, params.provider) })
-  const route = (
-    {
-      [CredentialRoute_Kind.NONE]: 'none',
-      [CredentialRoute_Kind.CALLER]: 'caller',
-      [CredentialRoute_Kind.FIXED]: 'fixed',
-    } as Partial<Record<CredentialRoute_Kind, AccountsView['route']>>
-  )[provider.credentialRoute?.kind ?? 0]
+  const route = routeChoice(provider.credentialRoute)
   if (!route)
     throw new Response('Unrecognized account setting', { status: 503, headers: accountHeaders })
   // Your own account lives under Accounts; this page serves shared and Agent accounts.

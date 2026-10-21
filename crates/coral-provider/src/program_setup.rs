@@ -4,7 +4,10 @@
 use coral_db::Transaction;
 use coral_workspace::{AuthenticatedUser, WorkspaceId};
 
-use crate::{CredentialRoute, Error, Provider, ProviderModule, ProviderSetupId};
+use crate::{
+    CredentialRoute, Error, Provider, ProviderModule, ProviderSetup, ProviderSetupId,
+    ProviderSetupState,
+};
 
 /// Who can publish a Setup under a Credential Route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,5 +197,34 @@ impl ProviderModule {
         .await?;
         transaction.commit().await?;
         Ok(())
+    }
+
+    /// The Setups that Programs prepared as `actor` and a person can still
+    /// finish, oldest first. A Setup past its deadline is left out, though it
+    /// expires only when it is next read.
+    ///
+    /// # Errors
+    ///
+    /// Requires current Workspace Owner authority. Returns a persistence or
+    /// corrupt-evidence failure.
+    pub async fn open_requested_setups(
+        &self,
+        actor: &AuthenticatedUser,
+        owner: &WorkspaceId,
+        now: i64,
+    ) -> Result<Vec<ProviderSetup>, Error> {
+        self.require_owner_inspection(actor, owner).await?;
+        let setups = crate::repository::requested_setups(
+            self.database.as_ref(),
+            owner,
+            actor.user_id(),
+            &ProviderSetupState::OPEN,
+        )
+        .await?;
+        Ok(setups
+            .into_iter()
+            .map(|loaded| loaded.setup)
+            .filter(|setup| !setup.is_past_deadline(now))
+            .collect())
     }
 }

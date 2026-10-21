@@ -49,8 +49,8 @@ pub(super) fn definition() -> Definition {
                  the URL is reachable, then call again. When status is \
                  published, call the Provider's Operations under \
                  coral.providers.<namespace>. When status is needs_sign_in, show the \
-                 person the returned url. To check later whether it is published, search \
-                 with its namespace as provider."
+                 person the returned url. To check later whether the person published it, \
+                 call coral.workspace.listProviders."
                     .to_string(),
             ),
         ),

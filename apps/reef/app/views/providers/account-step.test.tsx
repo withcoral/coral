@@ -203,23 +203,26 @@ it.each([
   // Choosing to connect later after starting a sign-in leaves it pending.
   // The later answer wins over the sign-in it abandoned.
   ['a sign-in abandoned for a later answer', 'pending', false, 'Connect later'],
-] as const)('keeps the right answer on reload after %s', (_case, state, accountReview, chosen) => {
-  renderRoute(() => (
-    <AccountStep
-      attempt={{ ...attempt, account: 'caller', accountReview }}
-      setup={{ ...setup, ...device, authorization: { ...device.authorization!, state } }}
-      basePath="/workspaces/demo/providers/new"
-      form={{ csrf: 'test-csrf', requestId: '22222222-2222-4222-8222-222222222222' }}
-      pending={false}
-      callbackUrl="https://coral.test/callback"
-      backPath="/workspaces/demo/providers/new?setup=1"
-    />
-  ))
-  // The sign-in code dialog covers the step, so the answer sits behind it.
-  expect(
-    screen.getByRole('radio', { name: chosen, hidden: true }).getAttribute('aria-checked'),
-  ).toBe('true')
-})
+] as const)(
+  'keeps the right answer on reload after %s',
+  (_case, state, returnFromConnect, chosen) => {
+    renderRoute(() => (
+      <AccountStep
+        attempt={{ ...attempt, account: 'caller', returnFromConnect }}
+        setup={{ ...setup, ...device, authorization: { ...device.authorization!, state } }}
+        basePath="/workspaces/demo/providers/new"
+        form={{ csrf: 'test-csrf', requestId: '22222222-2222-4222-8222-222222222222' }}
+        pending={false}
+        callbackUrl="https://coral.test/callback"
+        backPath="/workspaces/demo/providers/new?setup=1"
+      />
+    ))
+    // The sign-in code dialog covers the step, so the answer sits behind it.
+    expect(
+      screen.getByRole('radio', { name: chosen, hidden: true }).getAttribute('aria-checked'),
+    ).toBe('true')
+  },
+)
 
 // A redirect sign-in returns through its callback with the account in hand.
 const redirectDone: Partial<SetupView> = {
@@ -234,19 +237,16 @@ it.each([
   ['a device sign-in for the shared account', 'fixed', true, device, deviceDone, true],
   // The redirect callback reloads this step with the account already in hand.
   ['a redirect sign-in', 'caller', true, redirectDone, redirectDone, true],
-  // A sign-in this question did not start, such as one that read the
-  // operations, leaves the question to the person.
-  ['a sign-in made before the question', 'caller', false, redirectDone, redirectDone, false],
   // Add provider is unavailable, so the sign-in cannot send it either.
   ['a sign-in with an invalid namespace', 'caller', true, redirectDone, redirectDone, false, true],
 ] as const)(
   'adds the provider without asking again after %s',
-  async (_case, account, accountReview, before, after, adds, disabled: boolean = false) => {
+  async (_case, account, returnFromConnect, before, after, adds, disabled: boolean = false) => {
     const submissions: FormData[] = []
     const { router } = renderRoute(
       (location) => (
         <AccountStep
-          attempt={{ ...attempt, account, accountReview }}
+          attempt={{ ...attempt, account, returnFromConnect }}
           setup={{ ...setup, ...(location.search ? after : before) }}
           basePath="/workspaces/demo/providers/new"
           form={{ csrf: 'test-csrf', requestId: '22222222-2222-4222-8222-222222222222' }}
@@ -291,7 +291,7 @@ it.each([
 ] as const)('starts no sign-in to %s until configuration names an application', (_, account) => {
   renderRoute(
     <AccountStep
-      attempt={{ ...attempt, account, accountReview: true }}
+      attempt={{ ...attempt, account, returnFromConnect: true }}
       setup={{ ...setup, credentialMethod: 'oauth', serverName: 'Gmail' }}
       basePath="/workspaces/demo/providers/new"
       form={{ csrf: 'test-csrf', requestId: '22222222-2222-4222-8222-222222222222' }}
@@ -307,7 +307,7 @@ it.each([
 it('opens a device sign-in in a new tab, so this page stays to pick up the result', () => {
   renderRoute(
     <AccountStep
-      attempt={{ ...attempt, account: 'caller', accountReview: true }}
+      attempt={{ ...attempt, account: 'caller', returnFromConnect: true }}
       setup={{ ...setup, ...device }}
       basePath="/workspaces/demo/providers/new"
       form={{ csrf: 'test-csrf', requestId: '22222222-2222-4222-8222-222222222222' }}

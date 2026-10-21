@@ -1541,7 +1541,7 @@ export const StepAccountPersonalOAuthPending: Story = {
     <StepperPage
       {...stepperWorkspace}
       setup={{ ...setupOpenApiOAuth, authorization: pendingConsent('manual-client', 'manual') }}
-      attempt={{ ...stepperWorkspace.attempt, account: 'caller', accountReview: true }}
+      attempt={{ ...stepperWorkspace.attempt, account: 'caller', returnFromConnect: true }}
     />
   ),
   parameters: workspaceEntry,

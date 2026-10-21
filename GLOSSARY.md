@@ -197,7 +197,8 @@ Provider consumes the prepared setup; Coral does not fetch a different descripto
 or `canceled`. Only a
 ready Setup feeds Publication. Every open Setup has a host deadline one hour after it is created; a Setup still open
 then, ready or not, expires, and Publication refuses it. Expiry and explicit cancellation scrub setup-scoped credential
-material. _Avoid_: Provider Definition inspection, live Provider,
+material. A Setup that `coral.workspace.createProvider` prepares records the Provider Namespace and Credential Route the
+Program asked for; the person who finishes it can change either. _Avoid_: Provider Definition inspection, live Provider,
 implicit refresh
 _In Reef_: never named; preparation within "Add provider", "Refresh operations", "Edit configuration", and "Change account setting"
 
@@ -233,7 +234,8 @@ has no Provider Accounts. When Coral boots, it updates every Workspace's Built-i
 serves; a Workspace whose update fails keeps its catalog until the next boot. Coral itself publishes the Provider
 only from a ready Setup on the `none` route. A credential-requiring Setup, on the `fixed` or the `caller` route, always
 needs a person to sign in. If a person must finish the Setup and the Run is still current, the Operation returns the
-Reef page and does not wait; Coral ends a Setup it prepared that nobody will finish. Its Operations never return a
+Reef page, which names only the Setup, and does not wait; `listProviders` reports the open Setups that the invoking
+User's `createProvider` calls prepared, until each is published, expires or is canceled. Coral ends a Setup it prepared that nobody will finish. Its Operations never return a
 secret or an OAuth URL to the Program, and never take a secret from it: a person enters a confidential OAuth
 application's secret in Reef. A Reef link one returns may name a Provider Setup; that Setup's identity grants nothing,
 and only the User who started the Setup can publish it.

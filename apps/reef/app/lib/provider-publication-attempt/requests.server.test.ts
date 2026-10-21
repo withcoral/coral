@@ -14,7 +14,8 @@ import {
 } from '@/generated/coral/management/v1/provider_pb'
 import { fakeManagement } from '@/lib/management.test-support'
 import { authTestContext } from '@/auth/server-context.test-helper'
-import { attemptAction } from './requests.server'
+import { parseAttempt } from './model'
+import { attemptAction, loadAttempt } from './requests.server'
 import { readCallbackReturn, setupView } from './setup.server'
 
 const context = authTestContext(null)
@@ -124,6 +125,38 @@ describe('atomic publication', () => {
       expect(requests).toHaveLength(2)
       expect(requests[1]).toEqual(requests[0])
     })
+  })
+})
+
+// Catches: an agent's link that names only its Setup losing the namespace and
+// route the agent asked for, or a route this Reef does not know making the
+// agent's Setup look like one a person started.
+describe("loading an agent's link", () => {
+  const parent = 'workspaces/11111111-1111-4111-8111-111111111111'
+  const id = '29a180e5-397c-4844-92de-8bbea6066235'
+  it.each([
+    [CredentialRoute_Kind.CALLER, { namespace: 'weather', route: 'caller' }],
+    [CredentialRoute_Kind.FIXED, { namespace: 'weather', route: 'fixed' }],
+    [99 as CredentialRoute_Kind, { namespace: 'weather', route: null }],
+  ])('reads route %s and the namespace from the Setup', async (kind, request) => {
+    const api = fakeManagement({
+      setups: {
+        getProviderSetup: () =>
+          create(ProviderSetupSchema, {
+            name: `${parent}/providerSetups/${id}`,
+            inputKind: ProviderSetupInputKind.OPENAPI,
+            state: ProviderSetupState.READY,
+            credentialMethod: CredentialMethod.BEARER,
+            request: { namespace: 'weather', credentialRoute: { kind } },
+          }),
+      },
+    })
+    const loaded = await loadAttempt(
+      api,
+      parent,
+      parseAttempt('workspace', new URLSearchParams({ setup: id })),
+    )
+    expect(loaded.setup?.request).toEqual(request)
   })
 })
 
@@ -650,7 +683,7 @@ describe('consent issuance', () => {
         api,
         new Request(
           `http://127.0.0.1:3000${basePath}?setup=${setup}&namespace=weather` +
-            '&operationsAccepted=1&account=fixed&accountReview=1',
+            '&operationsAccepted=1&account=fixed&returnFromConnect=1',
         ),
         context,
         formWith({
@@ -668,7 +701,7 @@ describe('consent issuance', () => {
         'http://127.0.0.1:3000',
       ).searchParams
       expect(progress.get('account')).toBe('fixed')
-      expect(progress.get('accountReview')).toBe(review)
+      expect(progress.get('returnFromConnect')).toBe(review)
     },
   )
 

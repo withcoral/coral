@@ -58,6 +58,8 @@ enum ProviderSetups {
     DiscoveryFailureCode,
     ConsumedByPublicationId,
     CreatedAtUnixNanos,
+    RequestedNamespace,
+    RequestedRoute,
 }
 
 #[derive(Iden)]
@@ -160,6 +162,8 @@ struct SetupRow {
     discovery_failure_code: Option<String>,
     consumed_by_publication_id: Option<String>,
     created_at_unix_nanos: i64,
+    requested_namespace: Option<String>,
+    requested_route: Option<String>,
 }
 
 impl SetupRow {
@@ -260,6 +264,20 @@ impl SetupRow {
             .map_err(|_error| {
                 Error::CorruptData("Provider Setup has invalid configuring User".to_string())
             })?;
+        let request = match (self.requested_namespace, self.requested_route) {
+            (None, None) => None,
+            (Some(namespace), Some(route)) => Some(crate::SetupRequest {
+                namespace: crate::ProviderNamespace::parse(&namespace).map_err(|_error| {
+                    Error::CorruptData("Provider Setup has invalid requested namespace".to_string())
+                })?,
+                route: crate::CredentialRoute::from_storage_str(&route)?,
+            }),
+            _ => {
+                return Err(Error::CorruptData(
+                    "Provider Setup has an incomplete request".to_string(),
+                ));
+            }
+        };
         Ok(LoadedSetup {
             configuration_revision: self.configuration_revision,
             source_analysis: self
@@ -294,7 +312,8 @@ impl SetupRow {
                 state,
                 self.created_at_unix_nanos,
             )
-            .with_source(self.input_url, self.expires_at_unix_nanos),
+            .with_source(self.input_url, self.expires_at_unix_nanos)
+            .with_request(request),
             setup_input,
             actor_user_id,
             authorization_requirement: self.authorization_requirement,
@@ -480,7 +499,7 @@ impl LifecycleEventRow {
     }
 }
 
-fn setup_columns() -> [ProviderSetups; 20] {
+fn setup_columns() -> [ProviderSetups; 22] {
     [
         ProviderSetups::Id,
         ProviderSetups::WorkspaceId,
@@ -502,6 +521,8 @@ fn setup_columns() -> [ProviderSetups; 20] {
         ProviderSetups::DiscoveryFailureCode,
         ProviderSetups::ConsumedByPublicationId,
         ProviderSetups::CreatedAtUnixNanos,
+        ProviderSetups::RequestedNamespace,
+        ProviderSetups::RequestedRoute,
     ]
 }
 
@@ -548,6 +569,16 @@ pub(super) async fn insert_setup(
             Expr::val(Option::<String>::None),
             Expr::val(Option::<String>::None),
             Expr::val(setup.created_at_unix_nanos()),
+            Expr::val(
+                setup
+                    .request()
+                    .map(|request| request.namespace.as_str().to_owned()),
+            ),
+            Expr::val(
+                setup
+                    .request()
+                    .map(|request| request.route.as_storage_str()),
+            ),
         ])
         .to_owned();
     transaction.execute(statement).await?;
@@ -791,6 +822,35 @@ pub(super) async fn setup(
         )
         .await?;
     row.map(SetupRow::decode).transpose()
+}
+
+/// The Setups that Programs asked `actor` to finish in `owner`, in one of
+/// `states` and not consumed, oldest first.
+pub(super) async fn requested_setups(
+    executor: impl QueryExecutor,
+    owner: &WorkspaceId,
+    actor: &UserId,
+    states: &[ProviderSetupState],
+) -> Result<Vec<LoadedSetup>, Error> {
+    let rows: Vec<SetupRow> = executor
+        .fetch_all(
+            Query::select()
+                .columns(setup_columns())
+                .from(ProviderSetups::Table)
+                .and_where(exact_setup_owner(owner))
+                .and_where(Expr::col(ProviderSetups::ActorUserId).eq(actor.as_str()))
+                .and_where(Expr::col(ProviderSetups::RequestedNamespace).is_not_null())
+                .and_where(
+                    Expr::col(ProviderSetups::State)
+                        .is_in(states.iter().map(ProviderSetupState::as_storage_str)),
+                )
+                .and_where(Expr::col(ProviderSetups::ConsumedByPublicationId).is_null())
+                .order_by(ProviderSetups::CreatedAtUnixNanos, Order::Asc)
+                .order_by(ProviderSetups::Id, Order::Asc)
+                .to_owned(),
+        )
+        .await?;
+    rows.into_iter().map(SetupRow::decode).collect()
 }
 
 pub(super) async fn lock_setup_for_publication(

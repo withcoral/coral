@@ -26,8 +26,11 @@ type WorkspaceChoices = {
   kind: 'workspace'
   namespace: string
   account: AccountChoice | null
-  /** Return from sign-in to review its grant without losing the chosen account setting. */
-  accountReview?: boolean
+  /**
+   * The person clicked Connect on the account question and left to sign in to
+   * the service; this page is their return. Only `accountStep` reads it.
+   */
+  returnFromConnect?: boolean
   /** Exact Setup grant explicitly reviewed for shared or self use. */
   accountGrant?: string
 }
@@ -91,10 +94,14 @@ export function parseAttempt(
   const configurationEdit = scalar('configure')
   if (configurationEdit && configurationEdit !== '1') throw new InvalidAttempt()
   const configure = configurationEdit === '1'
-  const accountReview = scalar('accountReview')
+  const returnFromConnect = scalar('returnFromConnect')
   if (
-    accountReview &&
-    (accountReview !== '1' || kind !== 'workspace' || !account || account === 'none' || requestId)
+    returnFromConnect &&
+    (returnFromConnect !== '1' ||
+      kind !== 'workspace' ||
+      !account ||
+      account === 'none' ||
+      requestId)
   )
     throw new InvalidAttempt()
   const accountGrant = params.has('accountGrant') ? id(scalar('accountGrant')) : undefined
@@ -144,7 +151,7 @@ export function parseAttempt(
         namespace: scalar('namespace'),
         account,
         accountGrant,
-        ...(accountReview ? { accountReview: true } : {}),
+        ...(returnFromConnect ? { returnFromConnect: true } : {}),
       }
     case 'update': {
       const task = scalar('task', 'refresh')
@@ -187,7 +194,8 @@ export function attemptParams(attempt: PublicationAttempt): URLSearchParams {
     case 'workspace':
       params.set('namespace', attempt.namespace)
       if (attempt.account) params.set('account', attempt.account)
-      if (attempt.accountReview && attempt.state === 'draft') params.set('accountReview', '1')
+      if (attempt.returnFromConnect && attempt.state === 'draft')
+        params.set('returnFromConnect', '1')
       if (attempt.accountGrant) params.set('accountGrant', attempt.accountGrant)
       break
     case 'update':
@@ -247,12 +255,12 @@ export function reviseAttempt(
         kind: attempt.kind,
         namespace: attempt.namespace,
         account: edit === 'account' ? null : attempt.account,
-        accountReview:
+        returnFromConnect:
           edit === 'configuration'
-            ? attempt.accountReview || Boolean(attempt.accountGrant)
+            ? attempt.returnFromConnect || Boolean(attempt.accountGrant)
             : edit
               ? undefined
-              : attempt.accountReview,
+              : attempt.returnFromConnect,
         accountGrant: edit ? undefined : attempt.accountGrant,
       }
     case 'update':
@@ -270,7 +278,17 @@ export function reviseAttempt(
   }
 }
 
-/** Consumption preserves committed requests; configuration edits discard request identity. */
+/**
+ * Consumption preserves committed requests; configuration edits discard request identity.
+ * An agent's link names only the Setup, so the namespace it asked for comes from the
+ * Setup until the person chooses one.
+ */
+export function reconcileAttempt(attempt: CreationAttempt, setup: SetupView | null): CreationAttempt
+export function reconcileAttempt(attempt: UpdateAttempt, setup: SetupView | null): UpdateAttempt
+export function reconcileAttempt(
+  attempt: PublicationAttempt,
+  setup: SetupView | null,
+): PublicationAttempt
 export function reconcileAttempt(
   attempt: PublicationAttempt,
   setup: SetupView | null,
@@ -281,6 +299,8 @@ export function reconcileAttempt(
     attempt.configurationRevision !== setup?.configuration?.revision
   )
     attempt = reviseAttempt(attempt)
+  if (attempt.kind === 'workspace' && !attempt.namespace && setup?.request)
+    attempt = { ...attempt, namespace: setup.request.namespace }
   return attempt
 }
 
@@ -331,6 +351,11 @@ export function needsOAuthApplication(setup: SetupView) {
   )
 }
 
+/** Whether the confirmed configuration takes no credential, so nobody signs in. */
+function isCredentialFree(setup: SetupView) {
+  return setup.credentialMethod === 'none' && setup.configuration?.confirmed === true
+}
+
 /** One presentation decision from Coral progress plus explicit local choices. No lifecycle validation. */
 export function attemptProgress(
   attempt: PublicationAttempt,
@@ -339,8 +364,7 @@ export function attemptProgress(
 ) {
   const frozen = attempt.state === 'frozen'
   const replaying = frozen && setup?.state === 'consumed'
-  const credentialFree =
-    setup?.credentialMethod === 'none' && setup.configuration?.confirmed === true
+  const credentialFree = Boolean(setup && isCredentialFree(setup))
   const account =
     attempt.kind === 'update'
       ? null
@@ -382,8 +406,7 @@ export function attemptProgress(
               // Only Add requires a separate Operations acceptance step.
               attempt.kind !== 'update' && attempt.state === 'draft' && !attempt.operationsAccepted
               ? 'operations'
-              : attempt.kind !== 'update' &&
-                  (!account || (!credentialFree && attempt.accountReview))
+              : attempt.kind !== 'update' && (!account || accountStep(attempt, setup).reopens)
                 ? 'account'
                 : 'publish'
   return {
@@ -394,6 +417,61 @@ export function attemptProgress(
     credentialFree,
     canRevise: !replaying && !result?.failed,
     requiresInterruptionAcceptance: !replaying && setup?.configuration?.interruptsAccess === true,
+  }
+}
+
+/**
+ * One outcome for the account question: which route the provider takes, and
+ * what becomes of the sign-in in hand.
+ */
+export type AccountPlan =
+  | 'shared-keep'
+  | 'shared-connect'
+  | 'own-connect'
+  | 'own-keep'
+  | 'own-later'
+
+/**
+ * The account question's one decision: whether it opens again on the return
+ * from Connect, the outcome it opens on, and whether that sign-in adds the
+ * provider as soon as it lands.
+ *
+ * The return reopens it even though the URL names an account, so the sign-in
+ * just made can be kept as that account.
+ *
+ * A sign-in in hand is kept by default, whichever route the attempt names. A
+ * route not chosen yet is the one the agent asked for. An agent's own-account
+ * Setup opens on Connect: a confidential application takes its secret only at
+ * that sign-in, so connecting later could not add the provider. An agent's
+ * Setup never adds itself: the person confirms the finished provider with
+ * Add provider.
+ */
+export function accountStep(
+  attempt: CreationAttempt,
+  setup: SetupView,
+): { reopens: boolean; plan: AccountPlan; publishOnReturn: boolean } {
+  const held = setup.authorized && Boolean(setup.provisionalGrantId)
+  const returning = Boolean(attempt.returnFromConnect)
+  const credentialFree = isCredentialFree(setup)
+  const route = attempt.account ?? setup.request?.route ?? null
+  const plan: AccountPlan =
+    route === 'fixed'
+      ? held
+        ? 'shared-keep'
+        : 'shared-connect'
+      : route === 'caller'
+        ? held
+          ? 'own-keep'
+          : returning || !attempt.account
+            ? 'own-connect'
+            : 'own-later'
+        : held
+          ? 'own-keep'
+          : 'shared-connect'
+  return {
+    reopens: returning && !credentialFree,
+    plan,
+    publishOnReturn: returning && !setup.request,
   }
 }
 

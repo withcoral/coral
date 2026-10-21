@@ -360,6 +360,12 @@ export interface SetupView {
    * own host. Empty when that is unknown or split across hosts.
    */
   serverName: string
+  /**
+   * What an agent's createProvider call asked this Setup to publish. Absent
+   * when a person started the Setup. The person can change either. The route
+   * is null when a newer Coral asked for one this Reef does not know.
+   */
+  request?: { namespace: string; route: AccountChoice | null }
 }
 
 export interface StepperResult extends ActionResult {

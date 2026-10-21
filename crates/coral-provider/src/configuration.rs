@@ -459,8 +459,7 @@ pub(crate) fn require_editable(
             | ProviderSetupState::Canceled
     ) || loaded
         .setup
-        .expires_at_unix_nanos()
-        .is_some_and(|deadline| context.occurred_at_unix_nanos() >= deadline)
+        .is_past_deadline(context.occurred_at_unix_nanos())
     {
         return Err(Error::ProviderSetupNotApplicable);
     }

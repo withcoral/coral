@@ -223,7 +223,7 @@ export const DeviceSignIn: Story = {
         expiresAt: '',
       },
     },
-    attempt: { ...workspaceAttempt, account: 'caller', accountReview: true },
+    attempt: { ...workspaceAttempt, account: 'caller', returnFromConnect: true },
   },
 }
 

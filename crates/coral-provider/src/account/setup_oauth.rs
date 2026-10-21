@@ -1079,12 +1079,7 @@ pub(super) async fn settle_deadlines(
         )
         .await?;
     }
-    if loaded.setup.state().is_open()
-        && loaded
-            .setup
-            .expires_at_unix_nanos()
-            .is_some_and(|deadline| now >= deadline)
-    {
+    if loaded.setup.state().is_open() && loaded.setup.is_past_deadline(now) {
         let from = [
             ProviderSetupState::AwaitingConfiguration,
             ProviderSetupState::AwaitingAuthorization,
