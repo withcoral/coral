@@ -57,6 +57,10 @@ pub struct SearchIndex {
     /// A test-only pause in each write once it holds its Workspace's lock.
     #[cfg(any(test, feature = "test-fixtures"))]
     stall_after_lock: Option<Duration>,
+    /// A test-only pause in each write after it builds its rows, before it
+    /// begins its transaction.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    stall_before_write: Option<Duration>,
 }
 
 impl SearchIndex {
@@ -78,6 +82,8 @@ impl SearchIndex {
             inert: false,
             #[cfg(any(test, feature = "test-fixtures"))]
             stall_after_lock: None,
+            #[cfg(any(test, feature = "test-fixtures"))]
+            stall_before_write: None,
         }
     }
 
@@ -326,6 +332,16 @@ impl SearchIndex {
         self
     }
 
+    /// Pauses each later write for `stall` once it has built its rows,
+    /// before it begins its transaction, so a test can stand in for a slow
+    /// row build.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub const fn with_stall_before_write(mut self, stall: Duration) -> Self {
+        self.stall_before_write = Some(stall);
+        self
+    }
+
     /// Writes one Generation's entries, then logs each search warning their
     /// preparation left. A failure is logged and recorded. The caller holds
     /// the mutex.
@@ -423,6 +439,10 @@ impl SearchIndex {
     ) -> Result<(), IndexError> {
         let workspace_id = indexer.workspace_id(entry);
         let rows = indexer.rows(entry)?;
+        #[cfg(any(test, feature = "test-fixtures"))]
+        if let Some(stall) = self.stall_before_write {
+            tokio::time::sleep(stall).await;
+        }
         let started = Instant::now();
         let mut transaction = tokio::time::timeout(self.writer_wait_limit, async {
             let mut transaction = self.database.begin().await?;

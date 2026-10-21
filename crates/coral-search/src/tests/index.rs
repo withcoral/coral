@@ -187,6 +187,43 @@ async fn a_timeout_waiting_for_the_writer_is_transient() {
 }
 
 #[tokio::test]
+async fn another_write_can_take_the_writer_while_a_write_builds_its_rows() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let entries = world.stored_entries(&world.tracer).await;
+    // The pause stands in for a slow row build.
+    let index = world
+        .index
+        .clone()
+        .with_stall_before_write(std::time::Duration::from_secs(2));
+    let database = world.modules.search.database.clone();
+
+    notify(&index, &entries);
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // SQLite's writer, or Postgres's lock on the Workspace's index writes.
+    let probe = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+        let mut probe = database.begin().await.expect("begin the probe");
+        crate::indexer::lock_workspace(&mut probe, &world.workspace)
+            .await
+            .expect("take the Workspace's index lock");
+        probe
+    })
+    .await
+    .expect("the writer is free while the rows build");
+    probe.rollback().await.expect("release the writer");
+    index.settled().await;
+
+    assert_eq!(
+        world.states().await,
+        [StateRow::complete(
+            &world.tracer,
+            &entries.generation_id().to_string(),
+            "Weather Tracer"
+        )]
+    );
+}
+
+#[tokio::test]
 async fn a_write_that_waited_for_the_writer_still_has_its_whole_limit() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
