@@ -629,7 +629,11 @@ impl ProgramEngine for ScriptedCallsEngine {
             }
             match commands.recv_timeout(Duration::from_millis(5)) {
                 Ok(ScriptedCall::Invoke(call_path)) => {
-                    calls.push(runtime.spawn(host.clone().invoke(call_path, "{}".to_string())));
+                    calls.push(runtime.spawn(host.clone().invoke(
+                        call_path,
+                        "{}".to_string(),
+                        None,
+                    )));
                 }
                 Ok(ScriptedCall::Finish) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
