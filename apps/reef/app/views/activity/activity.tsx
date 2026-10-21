@@ -547,7 +547,7 @@ function liveFollow(
   // The records that lead to the selected one stay open until the selection moves.
   const selectedChain = liveChain(page.selectedRow)
   // An advance follows the reviewed Run with live mode off.
-  const target = liveTarget(page, scope ?? 'run', actionable)
+  const target = liveTarget(page, scope ?? 'run')
   if (target.kind === 'wait') return null
   if (target.kind === 'newest')
     return { key: 'newest', href: nav.href({ anchor: null, before: null, after: null }) }
@@ -1125,14 +1125,6 @@ export function Activity({
       <ActivityConnectedContext value={live?.connected ?? true}>
         <div className={styles.root}>
           <div className={styles.toolbar}>
-            {!glimpse && (
-              <LiveToggle
-                scope="latest"
-                on={liveScope === 'latest'}
-                blocked={liveScope === 'latest' && stalled}
-                onToggle={() => toggleLive('latest', [])}
-              />
-            )}
             {live && !live.connected && (
               <Typography.BodySmall role="status">
                 Activity is unavailable. Reconnecting…
@@ -1164,9 +1156,19 @@ export function Activity({
               setTableFocused(Boolean(tableRef.current?.contains(event.relatedTarget)))
             }
           >
-            {!page.agent && (
-              <Typography.HeadingSmall as="h2">Your recent activity</Typography.HeadingSmall>
-            )}
+            <div className={styles.listHeading}>
+              {!page.agent && (
+                <Typography.HeadingSmall as="h2">Your recent activity</Typography.HeadingSmall>
+              )}
+              {!glimpse && (
+                <LiveToggle
+                  scope="latest"
+                  on={liveScope === 'latest'}
+                  blocked={liveScope === 'latest' && stalled}
+                  onToggle={() => toggleLive('latest', [])}
+                />
+              )}
+            </div>
             {page.listUnavailable && <Typography.Body>This list is unavailable.</Typography.Body>}
             {page.anchorUnavailable && (
               <Typography.Body>

@@ -16,6 +16,14 @@ export const toolbar = style({
   gap: 12,
   selectors: { '&:empty': { display: 'none' } },
 })
+/** The list's heading, with the page's live toggle right after it. */
+export const listHeading = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  minWidth: 0,
+  selectors: { '&:empty': { display: 'none' } },
+})
 export const filters = style({
   display: 'flex',
   flexWrap: 'wrap',

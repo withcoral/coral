@@ -323,57 +323,98 @@ export type LiveTarget =
   | { kind: 'newest' }
   | { kind: 'wait' }
 
+/** How long after it starts page live mode still opens a Task, in milliseconds. */
+export const TAKS_MAX_AGE = 60 * 60 * 1000
+
 /**
- * The target of live mode in `scope`.
- * - `run`: the selected record's Run.
- * - `latest`: the newest top-level record in Coral's order. A standalone Run is followed
- *   itself, a Task through its latest Run, or the Task while it has none.
- * - `task`: the selected record's Task, through its first Run by submission that has
- *   not ended, else its last Run.
- *
- * A Run that waits on an action you can take holds `latest` until the action ends.
- * `actionable` is false where you cannot act.
+ * The target of live mode in `scope`. It never moves off the Task or Run you have open:
+ * a Run stays followed through its records and its end, whatever arrives.
+ * - `run`: the open record's Run.
+ * - `latest`: the open record's Run, else the open Task's latest Run that has not
+ *   ended. With nothing open, the newest top-level record in Coral's order that has not
+ *   ended: a standalone Run itself, a Task through its latest Run that has not ended,
+ *   or a Task that has not ended while it has none.
+ *   Of those, it passes a Task that started more than `TAKS_MAX_AGE` before `now`.
+ * - `task`: the open record's Run, else the open Task's first Run by submission that
+ *   has not ended, else its last Run.
  */
-export function liveTarget(page: ActivityPage, scope: LiveScope, actionable = true): LiveTarget {
-  const current = liveRun(page.selectedRow)
-  if (scope === 'run') return current ? { kind: 'run', ...current } : { kind: 'wait' }
-  if (scope === 'task') {
-    const row = page.selectedRow
-    const task = row?.kind === 'task' ? row.name : row && 'task' in row ? (row.task ?? '') : ''
-    return task ? taskTarget(page, task, 'next') : { kind: 'wait' }
+export function liveTarget(page: ActivityPage, scope: LiveScope, now = Date.now()): LiveTarget {
+  const row = page.selectedRow
+  const current = liveRun(row)
+  if (current) return { kind: 'run', ...current }
+  const task = row?.kind === 'task' ? row.name : row && 'task' in row ? (row.task ?? '') : ''
+  if (scope === 'task' && task) return taskTarget(page, task)
+  if (scope === 'latest' && task) {
+    // The open Task can open its own Run, and nothing else.
+    const root = page.rows.find((item) => item.name === task)
+    const target = root && rootTarget(page, root)
+    return target && target.kind !== 'select' ? target : { kind: 'wait' }
   }
-  // The loader names the action only for the selected record's Run.
-  if (actionable && current && page.liveAction?.run === current.run)
-    return { kind: 'run', ...current }
+  if (scope !== 'latest' || row) return { kind: 'wait' }
   if (page.hasBefore) return { kind: 'newest' }
-  const root = page.rows[0]
-  if (root?.kind === 'run') return { kind: 'run', run: root.name, chain: [root.name] }
-  if (root?.kind === 'task') return taskTarget(page, root.name, 'latest')
+  for (const root of page.rows) {
+    if (root.kind === 'task' && now - Date.parse(root.startedAt) > TAKS_MAX_AGE) continue
+    const target = rootTarget(page, root)
+    if (target) return target
+  }
   return { kind: 'wait' }
 }
 
+type RunRow = Extract<ActivityRow, { kind: 'run' }>
+
+/** What `latest` follows in `root`, or null when its work has ended. */
+function rootTarget(page: ActivityPage, root: ActivityRow): LiveTarget | null {
+  if (root.kind === 'run')
+    return root.state === 'running' ? { kind: 'run', run: root.name, chain: [root.name] } : null
+  if (root.kind !== 'task') return null
+  // An ended Task can still hold a Run that has not ended; `contextImpactPartial` says so.
+  if (root.endedAt && !root.contextImpactPartial) return null
+  const task = root.name
+  const loaded = taskRuns(page, task)
+  if (loaded.kind !== 'runs') return loaded
+  // The latest Run may be past the window.
+  if (loaded.end < loaded.total)
+    return { kind: 'load', parent: task, offset: loaded.total, chain: [task] }
+  const latest = loaded.runs.findLast((row) => row.state === 'running')
+  if (latest) return { kind: 'run', run: latest.name, chain: [task, latest.name] }
+  // An ended Task's Run that runs is past the loaded Runs. Passing it would collapse
+  // the Task, then expand it again on the next step.
+  return root.endedAt ? { kind: 'wait' } : { kind: 'select', record: task, chain: [task] }
+}
+
 /**
- * A Run of `task` by submission: its latest, or the next one that has not ended. Runs
- * never start again once they end, so the next one never lies before the loaded window.
- * Without a Run, the Task itself.
+ * The loaded Runs of `task` by submission, where its window ends, and how many children
+ * it has. Without them, the step that reads them.
  */
-function taskTarget(page: ActivityPage, task: string, which: 'latest' | 'next'): LiveTarget {
-  const chain = [task]
-  if (!page.expanded.includes(task)) return { kind: 'expand', chain }
+function taskRuns(
+  page: ActivityPage,
+  task: string,
+): LiveTarget | { kind: 'runs'; runs: RunRow[]; end: number; total: number } {
+  if (!page.expanded.includes(task)) return { kind: 'expand', chain: [task] }
   const branch = page.branches[task]
   if (!branch || branch.unavailable) return { kind: 'wait' }
   const { items, total } = childWindow(branch)
   const runs = items
-    .filter((item) => item.row.kind === 'run')
     .toSorted((a, b) => a.index - b.index)
-    .map(({ row }) => row)
-  const next = which === 'next' && runs.find((row) => row.kind === 'run' && row.state === 'running')
-  if (next) return { kind: 'run', run: next.name, chain: [task, next.name] }
-  // Past the window, the latest Run, or the next one, may wait.
+    .flatMap(({ row }) => (row.kind === 'run' ? [row] : []))
   const end = Math.max(branch.offset ?? 0, ...items.map(({ index }) => index + 1))
-  if (end < total)
-    return { kind: 'load', parent: task, offset: which === 'latest' ? total : end, chain }
-  const last = runs.at(-1)?.name
+  return { kind: 'runs', runs, end, total }
+}
+
+/**
+ * The next Run of `task` by submission that has not ended, else its last Run, else the
+ * Task. Runs never start again once they end, so the next one never lies before the
+ * loaded window.
+ */
+function taskTarget(page: ActivityPage, task: string): LiveTarget {
+  const chain = [task]
+  const loaded = taskRuns(page, task)
+  if (loaded.kind !== 'runs') return loaded
+  const next = loaded.runs.find((row) => row.state === 'running')
+  if (next) return { kind: 'run', run: next.name, chain: [task, next.name] }
+  // Past the window, the next one may wait.
+  if (loaded.end < loaded.total) return { kind: 'load', parent: task, offset: loaded.end, chain }
+  const last = loaded.runs.at(-1)?.name
   return last
     ? { kind: 'run', run: last, chain: [task, last] }
     : { kind: 'select', record: task, chain }
