@@ -106,6 +106,7 @@ function StepperAttemptPage({
       takenDisplayNames={takenDisplayNames}
       suggestedName={answers.displayName ?? local.suggestedName}
       recipe={recipeConfiguration}
+      retry={<Button.InternalLink to={basePath}>Choose a source</Button.InternalLink>}
     />
   ) : stage === 'discovery' || stage === 'operations' ? (
     // Discovery is this same step without a list yet: it asks for the sign-in

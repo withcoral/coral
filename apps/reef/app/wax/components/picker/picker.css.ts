@@ -1,5 +1,6 @@
 import { popup as menuPopup } from '@/wax/components/menu/menu.css'
 import { style } from '@/wax/css'
+import { theme } from '@/wax/theme/theme.css'
 
 export const label = style({
   paddingBlockEnd: '6px',
@@ -16,4 +17,10 @@ export const popup = style({
       width: 'max-content',
     },
   },
+})
+
+// A secondary button has no border, so an inset ring draws the error border
+// that a text input draws.
+export const invalid = style({
+  boxShadow: `inset 0 0 0 1px ${theme.input.stroke.error}`,
 })

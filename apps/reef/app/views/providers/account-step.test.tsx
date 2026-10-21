@@ -44,6 +44,7 @@ const review: ConfigurationReviewView = {
   unavailableOperations: [],
   operationCount: 0,
   diagnostic: '',
+  readable: true,
   errors: {},
 }
 const setup: SetupView = {

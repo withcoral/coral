@@ -699,10 +699,10 @@ fn review(
             Err(diagnostic) => result.diagnostic = Some(diagnostic.code().into()),
         }
     }
-    result.differences = differences::compare(
-        loaded.previous_configuration.as_ref(),
-        result.document.as_ref().map(|review| &review.suggested),
-    );
+    // A source Coral could not read suggests nothing, so nothing differs from it.
+    if let (Some(saved), Some(review)) = (&loaded.previous_configuration, &result.document) {
+        result.differences = differences::compare(saved, &review.suggested);
+    }
     if let Some(preview) = &loaded.configuration_preview {
         let preview = preview.for_policy(policy);
         result.preview_contract = preview

@@ -73,6 +73,13 @@ export const WithLabel: Story = {
   },
 }
 
+export const Invalid: Story = {
+  render: function Render() {
+    const [status, setStatus] = useState('OPEN')
+    return <Picker invalid onChange={setStatus} options={STATUS_PICKER_OPTIONS} value={status} />
+  },
+}
+
 /** Different severity level configurations */
 export const SeverityConfigurations: Story = {
   render: function Render() {

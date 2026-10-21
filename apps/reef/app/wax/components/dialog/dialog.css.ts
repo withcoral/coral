@@ -105,6 +105,8 @@ export const popupSize = styleVariants({
   l: { width: '600px' },
   m: { width: '400px' },
   xl: { width: '700px' },
+  // Side-by-side values, such as a comparison table.
+  xxl: { width: '960px' },
 })
 
 /** At this width or less a long-form popup fills the screen, and a rail is modal. */

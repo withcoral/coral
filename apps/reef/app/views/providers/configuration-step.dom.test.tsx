@@ -57,6 +57,7 @@ const review: ConfigurationReviewView = {
   operations: [],
   unavailableOperations: [],
   diagnostic: '',
+  readable: true,
   errors: {},
 }
 
@@ -115,7 +116,7 @@ const headerRecipe: RecipeConfigurationView = {
   },
 }
 
-async function renderStep(recipe: RecipeConfigurationView, configuration = review) {
+async function renderStep(recipe: RecipeConfigurationView | null, configuration = review) {
   // The step's form reloads the document, so a router action never sees it post.
   let submitted = false
   const router = createMemoryRouter(
@@ -227,4 +228,63 @@ it.each<[string, RecipeConfigurationView, ConfigurationReviewView, () => Element
   await act(async () => next().click())
   expect(document.activeElement).toBe(expected())
   expect(step.submitted()).toBe(false)
+})
+
+// A saved configuration that a new read of the source no longer supports.
+const stale: ConfigurationReviewView = {
+  ...review,
+  confirmed: true,
+  servers: [
+    {
+      declaration: '#/servers',
+      operations: ['listSites'],
+      options: [{ url: 'https://api.example.test', variables: [] }],
+    },
+  ],
+  values: {
+    ...review.values,
+    authentication: 'bearer',
+    servers: [
+      { declaration: '#/servers', url: 'https://api.example.test', custom: false, variables: {} },
+      {
+        declaration: '#/paths/~1removed/servers',
+        url: 'https://removed.example.test',
+        custom: true,
+        variables: {},
+      },
+    ],
+  },
+}
+const button = (label: string) =>
+  [...document.querySelectorAll('button')].find(
+    (element) => element.getAttribute('aria-label') === label || element.textContent === label,
+  )!
+const describedBy = (element: Element) =>
+  document.getElementById(element.getAttribute('aria-describedby') ?? '')?.textContent
+
+// Catches: a saved server or method that the source dropped, shown apart from
+// its field, or a Next that confirms a value Coral cannot apply.
+it('marks a saved server and method that the source dropped on their fields', async () => {
+  const step = await renderStep(null, stale)
+  const server = field('Server for /removed')
+  expect(server.getAttribute('aria-invalid')).toBe('true')
+  expect(describedBy(server)).toBe(
+    'This document does not have this server. Remove it to continue.',
+  )
+  // The menu offers only supported methods, so it shows its placeholder.
+  const method = signIn()
+  expect(method.getAttribute('aria-invalid')).toBe('true')
+  expect(describedBy(method)).toBe(
+    'This document does not support Bearer token. Choose a supported method.',
+  )
+  expect(alerts()).toHaveLength(2)
+
+  await act(async () => next().click())
+  expect(step.submitted()).toBe(false)
+
+  await act(async () => button('Remove Server for /removed').click())
+  expect(document.querySelector('[aria-label="Server for /removed"]')).toBeNull()
+  expect(alerts()).toEqual([
+    'This document does not support Bearer token. Choose a supported method.',
+  ])
 })

@@ -17,9 +17,13 @@ type IconOption = PickerOption & Required<Pick<PickerOption, 'icon'>>
 export interface PickerProps {
   /** Names the control for assistive technology when no visible label does. */
   ariaLabel?: string
+  /** The id of the text that explains the value, such as its error. */
+  ariaDescribedBy?: string
   disabled?: boolean
   /** The trigger's id, for a page that moves focus to it. */
   id?: string
+  /** Draws the error border and marks the value invalid. */
+  invalid?: boolean
   label?: string
   onChange?: (value: string) => void
   options: Omit<PickerOption, 'icon'>[] | IconOption[]
@@ -30,8 +34,10 @@ export interface PickerProps {
 
 export function Picker({
   ariaLabel,
+  ariaDescribedBy,
   disabled = false,
   id,
+  invalid = false,
   label,
   onChange,
   options,
@@ -47,7 +53,16 @@ export function Picker({
       <Menu.Trigger
         disabled={disabled}
         id={id}
-        render={<Button.Container variant="secondary" ariaLabel={ariaLabel} />}
+        render={
+          // Menu.Trigger forwards only its own props, so ARIA state goes on the button.
+          <Button.Container
+            variant="secondary"
+            ariaLabel={ariaLabel}
+            aria-invalid={invalid || undefined}
+            aria-describedby={ariaDescribedBy}
+            className={invalid ? styles.invalid : undefined}
+          />
+        }
       >
         {selectedIcon && <Icon color={selectedIcon.color} name={selectedIcon.name} size="16" />}
         <Button.Text>{displayLabel}</Button.Text>

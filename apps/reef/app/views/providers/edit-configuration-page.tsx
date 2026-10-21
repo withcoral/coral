@@ -387,10 +387,15 @@ export function EditConfigurationPage({
           pending={pending}
           result={result}
           callbackUrl={callbackUrl}
-          title="Edit configuration"
+          title={title}
           actions={cancel}
           // A refresh shows the operations next, so its form only confirms.
           confirmLabel={refresh ? 'Next' : 'Save'}
+          // Only a new read can differ from what is saved. Edit configuration
+          // reads the saved source, so its defaults are no change.
+          compare={refresh}
+          unchanged={!refresh && !unsaved}
+          retry={restart}
           onDirtyChange={setFormDirty}
         />
         {/* Save confirms the configuration first. When Coral needs your

@@ -17,7 +17,7 @@ export interface PopupProps extends BaseDialog.Popup.Props {
   fullWidthOnMobile?: boolean
 }
 
-export type PopupSize = 'l' | 'm' | 'xl'
+export type PopupSize = 'l' | 'm' | 'xl' | 'xxl'
 
 export function Popup({
   children,

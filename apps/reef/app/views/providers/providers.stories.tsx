@@ -973,6 +973,7 @@ const setupReady: SetupView = {
     operations: [],
     unavailableOperations: [],
     diagnostic: '',
+    readable: true,
     errors: {},
   },
   id: 'setup-1',
@@ -1063,6 +1064,7 @@ const configurationSetup: SetupView = {
     operations: [],
     unavailableOperations: [],
     diagnostic: '',
+    readable: true,
     errors: {},
   },
 }
@@ -2002,6 +2004,34 @@ export const UpdateExpired: Story = {
       {...updateStory}
       attempt={{ ...updateStory.attempt, task: 'configuration' }}
       setup={{ ...setupReady, state: 'expired' }}
+    />
+  ),
+  parameters: { initialEntry: '/workspaces/demo/providers/records/update' },
+}
+export const UpdateCompareValues: Story = {
+  render: () => (
+    <EditConfigurationPage
+      {...updateStory}
+      attempt={{ ...updateStory.attempt, task: 'refresh' } as UpdateAttempt}
+      setup={updateReview}
+    />
+  ),
+  parameters: { initialEntry: '/workspaces/demo/providers/records/update' },
+}
+export const UpdateUnreadableSource: Story = {
+  render: () => (
+    <EditConfigurationPage
+      {...updateStory}
+      attempt={{ ...updateStory.attempt, task: 'refresh' } as UpdateAttempt}
+      setup={{
+        ...updateReview,
+        configuration: {
+          ...updateReview.configuration!,
+          differences: [],
+          diagnostic: 'duplicate_operation_key',
+          readable: false,
+        },
+      }}
     />
   ),
   parameters: { initialEntry: '/workspaces/demo/providers/records/update' },
