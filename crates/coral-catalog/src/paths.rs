@@ -213,6 +213,19 @@ pub fn call_path_segment_is_reserved(value: &str) -> bool {
     matches!(value, "then" | "constructor" | "prototype" | "__proto__")
 }
 
+/// Whether `value` can be a Provider Namespace: a non-reserved safe ASCII
+/// JavaScript identifier of at most 128 bytes.
+#[must_use]
+pub fn provider_namespace_is_valid(value: &str) -> bool {
+    const MAX_BYTES: usize = 128;
+    let mut bytes = value.bytes();
+    let valid_first = bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || matches!(byte, b'_' | b'$'));
+    let valid_rest = bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$'));
+    valid_first && valid_rest && value.len() <= MAX_BYTES && !call_path_segment_is_reserved(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

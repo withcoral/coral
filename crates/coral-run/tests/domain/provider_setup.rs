@@ -984,7 +984,7 @@ async fn recovery_settles_a_lost_publication_from_its_publication() {
     }
 }
 
-// Catches: input Coral can judge on its own being stored with the Invocation,
+// Catches: input the contract rejects being stored with the Invocation,
 // waiting for an Owner's approval, or reaching a fetch or a Setup, before it fails.
 #[tokio::test]
 async fn invalid_input_fails_before_storage_approval_fetch_or_setup() {
@@ -994,75 +994,12 @@ async fn invalid_input_fails_before_storage_approval_fetch_or_setup() {
     let arguments = |namespace: &str, source: &serde_json::Value| serde_json::json!({ "namespace": namespace, "source": source, "credentialRoute": "fixed" });
     let authenticated = |authentication: serde_json::Value| serde_json::json!({ "namespace": "weather", "source": fetchable, "credentialRoute": "fixed", "authentication": authentication });
     let before = scope.lifecycle_events().await.len();
+    // The contract's own tests hold each rule; one shape and one value rule
+    // show that a rejection comes before anything else.
     for arguments in [
         arguments("not-an-identifier", &fetchable),
-        arguments("", &fetchable),
-        arguments("coral.providers.weather", &fetchable),
-        arguments(
-            "weather",
-            &serde_json::json!({ "kind": "openapi_url", "url": "not a url" }),
-        ),
-        arguments(
-            "weather",
-            &serde_json::json!({ "kind": "openapi_url", "url": "ftp://weather.example/openapi.json" }),
-        ),
-        arguments(
-            "weather",
-            &serde_json::json!({ "kind": "mcp_url", "url": "file:///etc/passwd" }),
-        ),
-        // A Setup takes no credentials or fragment in its source URL.
-        arguments(
-            "weather",
-            &serde_json::json!({ "kind": "openapi_url", "url": "https://user:secret@weather.example/openapi.json" }),
-        ),
-        arguments(
-            "weather",
-            &serde_json::json!({ "kind": "mcp_url", "url": "https://weather.example/mcp#tools" }),
-        ),
-        authenticated(serde_json::json!({
-            "method": "header_credentials",
-            "headers": { "x-weather-key": { "source": "literal", "value": "secret" } },
-        })),
         // A method that takes no settings takes no credential beside it.
         authenticated(serde_json::json!({ "method": "bearer", "token": "secret" })),
-        authenticated(serde_json::json!({ "method": "none", "token": "secret" })),
-        // Device authorization takes no authorization parameters.
-        authenticated(serde_json::json!({
-            "method": "oauth_device_code",
-            "device_authorization_url": "https://weather.example/device",
-            "token_url": "https://weather.example/token",
-            "scopes": [],
-            "client": {
-                "client_id": "weather-app",
-                "authorization_parameters": { "audience": "weather" },
-            },
-        })),
-        // An OAuth endpoint or parameter that could carry a credential.
-        authenticated(serde_json::json!({
-            "method": "oauth_authorization_code",
-            "authorization_url": "https://user:secret@weather.example/authorize",
-            "token_url": "https://weather.example/token",
-            "scopes": [],
-        })),
-        authenticated(serde_json::json!({
-            "method": "oauth_authorization_code",
-            "authorization_url": "https://weather.example/authorize",
-            "token_url": "https://weather.example/token?client_secret=secret",
-            "scopes": [],
-        })),
-        authenticated(serde_json::json!({
-            "method": "oauth_authorization_code",
-            "authorization_url": "https://weather.example/authorize",
-            "token_url": "https://weather.example/token",
-            "scopes": [],
-            "client": {
-                "client_id": "weather-app",
-                "authorization_parameters": { "client_secret": "secret" },
-            },
-        })),
-        // A credential field takes no value: a person enters it when they sign in.
-        serde_json::json!({ "namespace": "weather", "source": fetchable, "credentialRoute": "fixed",
-            "credentialFields": { "token": { "label": "Bot token", "sensitive": true, "value": "secret" } } }),
     ] {
         // createProvider waits for approval by default; input it can judge alone never does.
         let run = scope
@@ -1153,61 +1090,6 @@ async fn an_operation_this_version_does_not_perform_fails_before_approval() {
         "no approval request"
     );
     assert!(!scope.recorded_an_invocation(&run).await);
-}
-
-// Catches: a header named for a credential carrying its value through the
-// Program, or a service header such as `Idempotency-Key` rejected because a
-// credential word appears inside its name.
-#[tokio::test]
-async fn credential_headers_are_rejected_by_their_exact_name() {
-    for (header, outcome) in [
-        ("Authorization", "invalid_input"),
-        ("proxy-authorization", "invalid_input"),
-        ("Cookie", "invalid_input"),
-        ("X-API-Key", "invalid_input"),
-        ("Api-Key", "invalid_input"),
-        ("X-Auth-Token", "invalid_input"),
-        ("X-Client-Secret", "invalid_input"),
-        ("Idempotency-Key", "published"),
-    ] {
-        let scope = AdminScope::new("user:credential-headers").await;
-        scope.set_access(OperationAccessState::Enabled).await;
-        let run = scope
-            .start(
-                &scope.owner,
-                create_provider(
-                    &serde_json::json!({
-                        "namespace": "weather",
-                        "source": document_source(),
-                        "credentialRoute": "none",
-                        "requestHeaders": { header: "value" },
-                    }),
-                    "error.code",
-                ),
-            )
-            .await;
-        let terminal = scope.terminal(&scope.owner, &run).await;
-        let ended = match final_value(&terminal) {
-            serde_json::Value::String(code) => code,
-            value => value
-                .pointer("/data/status")
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .to_owned(),
-        };
-        assert_eq!(ended, outcome, "{header}");
-        if outcome == "invalid_input" {
-            assert!(
-                !scope.recorded_an_invocation(&run).await,
-                "{header}: no Invocation stores the value"
-            );
-            assert!(
-                scope.created_setups().await.is_empty(),
-                "{header}: no Setup"
-            );
-        }
-    }
 }
 
 // Catches: a Program unable to configure how a person signs in as Reef's
@@ -1319,8 +1201,10 @@ async fn the_program_configures_how_a_person_signs_in() {
 }
 
 /// An `invalid_input` message names each argument to correct and what to write,
-/// whether Coral rejects it before or after it reads the source. It never
-/// repeats a submitted value.
+/// whether the contract rejects it or Coral does once it reads the source. It
+/// never repeats a submitted value, though it names a header or field the
+/// Program wrote. The contract's own tests hold each of its
+/// rules; one problem and several show how a message carries them.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -1332,37 +1216,8 @@ async fn an_invalid_argument_names_what_to_correct() {
     scope.set_access(OperationAccessState::Enabled).await;
     for (arguments, message) in [
         (
-            serde_json::json!({ "namespace": "weather", "source": document_source() }),
-            " at `credentialRoute`: choose `none`, `fixed` or `caller`",
-        ),
-        (
-            // serde quotes the value before its own `expected` clause.
-            valid_with(serde_json::json!({ "credentialRoute": format!("expected {CANARY}") })),
-            " at `credentialRoute`: expected one of `none`, `fixed`, `caller`",
-        ),
-        (
-            valid_with(serde_json::json!({ "displayName": [CANARY] })),
-            " at `displayName`: expected a string",
-        ),
-        (
-            valid_with(serde_json::json!({ "displayname": "Forecasts" })),
-            " at `displayname`: unknown field `displayname`, expected one of `namespace`, \
-             `source`, `credentialRoute`, `displayName`, `servers`, `authentication`, \
-             `requestHeaders`, `credentialFields`",
-        ),
-        (
             valid_with(serde_json::json!({ "namespace": "not-an-identifier" })),
             " at `namespace`: use a JavaScript identifier of at most 128 bytes, such as `weather`",
-        ),
-        (
-            valid_with(serde_json::json!({ "source": { "kind": "openapi_url" } })),
-            " at `source`: missing field `url`",
-        ),
-        (
-            valid_with(serde_json::json!({
-                "source": { "kind": "openapi_url", "url": format!("ftp://{CANARY}.example") },
-            })),
-            " at `source.url`: use an absolute `http` or `https` URL without credentials or a fragment",
         ),
         (
             valid_with(
@@ -1371,88 +1226,8 @@ async fn an_invalid_argument_names_what_to_correct() {
             " at `source`: Coral cannot build a Provider from the source (invalid_openapi_document)",
         ),
         (
-            valid_with(serde_json::json!({
-                "credentialRoute": "fixed",
-                "authentication": { "method": "bearer", "token": CANARY },
-            })),
-            " at `authentication`: unknown field `token`, there are no fields",
-        ),
-        (
-            valid_with(serde_json::json!({ "requestHeaders": { "X-Api-Key": CANARY } })),
-            " at `requestHeaders.X-Api-Key`: this header names a credential; send it through \
-             `authentication` so a person enters its value when they sign in",
-        ),
-        (
             valid_with(serde_json::json!({ "requestHeaders": { "Host": "weather.example" } })),
             " at `requestHeaders.Host`: Use a header that Coral does not set for credentials or transport.",
-        ),
-        (
-            valid_with(serde_json::json!({
-                "credentialRoute": "fixed",
-                "authentication": {
-                    "method": "basic_auth",
-                    "username": { "source": "field", "field": "username" },
-                    "password": { "source": "literal", "value": CANARY },
-                },
-            })),
-            " at `authentication.password`: a literal credential value must be empty; use a \
-             `field` source so a person enters the value when they sign in",
-        ),
-        (
-            valid_with(serde_json::json!({
-                "credentialRoute": "fixed",
-                "authentication": {
-                    "method": "query_credentials",
-                    "parameters": { "api_key": { "source": "literal", "value": CANARY } },
-                },
-            })),
-            " at `authentication.parameters.api_key`: a literal credential value must be empty; \
-             use a `field` source so a person enters the value when they sign in",
-        ),
-        (
-            valid_with(serde_json::json!({
-                "credentialRoute": "fixed",
-                "authentication": {
-                    "method": "oauth_authorization_code",
-                    "authorization_url": format!("https://user:{CANARY}@weather.example/authorize"),
-                    "token_url": "https://weather.example/token",
-                    "scopes": [],
-                },
-            })),
-            " at `authentication.authorization_url`: use an absolute `http` or `https` URL \
-             without credentials, a fragment or an OAuth parameter that Coral sets, such as \
-             `client_secret`",
-        ),
-        (
-            valid_with(serde_json::json!({
-                "credentialRoute": "fixed",
-                "authentication": {
-                    "method": "oauth_authorization_code",
-                    "authorization_url": "https://weather.example/authorize",
-                    "token_url": format!("https://weather.example/token?client_secret={CANARY}"),
-                    "scopes": [],
-                },
-            })),
-            " at `authentication.token_url`: use an absolute `http` or `https` URL without \
-             credentials, a fragment or an OAuth parameter that Coral sets, such as \
-             `client_secret`",
-        ),
-        (
-            valid_with(serde_json::json!({
-                "credentialRoute": "fixed",
-                "authentication": {
-                    "method": "oauth_authorization_code",
-                    "authorization_url": "https://weather.example/authorize",
-                    "token_url": "https://weather.example/token",
-                    "scopes": [],
-                    "client": {
-                        "client_id": "weather-app",
-                        "authorization_parameters": { "client_secret": CANARY },
-                    },
-                },
-            })),
-            " at `authentication.client.authorization_parameters.client_secret`: Coral sets \
-             this OAuth parameter, or a person enters it when they sign in; remove it",
         ),
         (
             serde_json::json!({

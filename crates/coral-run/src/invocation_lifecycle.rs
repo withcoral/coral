@@ -22,13 +22,16 @@ pub(crate) enum InvocationState {
 pub(crate) struct UnfinishedInvocation {
     pub(crate) id: InvocationId,
     pub(crate) state: InvocationState,
-    pub(crate) call_path: String,
+    /// The Generation and Operation the Invocation called.
+    pub(crate) generation: coral_catalog::ProviderGenerationId,
+    pub(crate) operation: coral_catalog::OperationKey,
 }
 
 impl UnfinishedInvocation {
     /// How the Invocation ends with its Run, and the Operation Result recovery
-    /// can still establish. A lost send is indeterminate. A lost
-    /// `createProvider` is not: Coral's own Publication shows what happened.
+    /// can still establish. A lost send is indeterminate. A lost Built-in
+    /// Operation may not be: a `createProvider`'s own Publication shows what
+    /// happened.
     async fn settle_for_termination(
         &self,
         transaction: &mut Transaction<'_>,
@@ -36,12 +39,15 @@ impl UnfinishedInvocation {
     ) -> Result<(InvocationResultKind, Option<String>), Error> {
         match self.state {
             InvocationState::Pending => Ok((InvocationResultKind::RunTerminated, None)),
-            InvocationState::Dispatching
-                if crate::builtin::names_create_provider(&self.call_path) =>
-            {
-                crate::builtin::recover_create_provider(transaction, run, &self.id).await
-            }
-            InvocationState::Dispatching => Ok((InvocationResultKind::Indeterminate, None)),
+            InvocationState::Dispatching => Ok(crate::builtin::recover(
+                transaction,
+                run,
+                &self.id,
+                &self.generation,
+                &self.operation,
+            )
+            .await?
+            .unwrap_or((InvocationResultKind::Indeterminate, None))),
             InvocationState::Ended => Err(Error::CorruptData(
                 "Invocation has invalid nonterminal state".into(),
             )),

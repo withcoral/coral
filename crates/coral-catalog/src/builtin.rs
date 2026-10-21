@@ -4,11 +4,21 @@
 //! output schemas, presentation, and Operation Hints. No OpenAPI document or
 //! MCP snapshot exists. The Generation pins this catalog's identity instead,
 //! so each Workspace's Generation records which definition it materialized.
+//!
+//! Each Operation's module owns its whole contract: the schemas a Program is
+//! typed from, the arguments Coral reads against the input schema, and the
+//! result it writes against the output schema. Each schema is derived from
+//! the types Coral reads or writes, and a test holds each parser and result to
+//! its schema where serde and the derivation could still differ.
 
 use std::fmt;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use schemars::generate::{Contract, SchemaSettings};
+use schemars::transform::{RecursiveTransform, RestrictFormats};
+use schemars::{JsonSchema, Schema};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Value, json};
 
 use crate::schema::{
@@ -16,10 +26,18 @@ use crate::schema::{
     TypeScriptProjector, canonicalize, render_callable_declaration,
 };
 use crate::{
-    CatalogDiagnostic, Error, ExecutionBinding, MaterializedOperation, OperationHints,
-    OperationKey, OperationPresentation, PreparedProviderCatalog, SchemaGraph, SchemaId,
-    SchemaSemantics,
+    AuthenticationKind, CatalogDiagnostic, Error, ExecutionBinding, MaterializedOperation,
+    OperationHints, OperationKey, OperationPresentation, PreparedProviderCatalog, SchemaGraph,
+    SchemaId, SchemaSemantics,
 };
+
+mod create_provider;
+mod list_providers;
+
+pub use create_provider::{
+    ConfigurationChoices, CreateProviderArguments, CreateProviderResult, ProviderSourceArgument,
+};
+pub use list_providers::{ListProvidersResult, ListedProvider, ListedProviderState};
 
 /// Safe display name of the Built-in Provider.
 pub const BUILTIN_PROVIDER_DISPLAY_NAME: &str = "Coral";
@@ -139,8 +157,8 @@ impl BuiltinCatalog {
                 None,
             ),
             hints,
-            input: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-            output: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            input: empty_object_schema(),
+            output: empty_object_schema(),
         }));
         Self::from_definitions(definitions)
     }
@@ -219,18 +237,255 @@ impl BuiltinExecutionBinding {
     }
 }
 
-/// Each Credential Route, as a Program writes it.
-const CREDENTIAL_ROUTES: [&str; 3] = ["none", "fixed", "caller"];
-/// Each way Coral sends a Provider's credentials, as a Program reads it.
-const AUTHENTICATION_KINDS: [&str; 7] = [
-    "none",
-    "bearer",
-    "header_credentials",
-    "basic_auth",
-    "query_credentials",
-    "oauth_device_code",
-    "oauth_authorization_code",
+/// One Built-in Operation's arguments, read against its input schema and
+/// checked by every rule that needs no Workspace state.
+#[derive(Debug, Clone)]
+pub enum BuiltinArguments {
+    /// `createProvider`'s arguments.
+    CreateProvider(Box<CreateProviderArguments>),
+    /// `listProviders` takes none.
+    ListProviders,
+}
+
+impl BuiltinArguments {
+    /// Reads `operation`'s arguments.
+    ///
+    /// # Errors
+    ///
+    /// Returns every argument to correct. A shape the schema forbids stops
+    /// the reading at its first problem; the other checks each report theirs.
+    pub fn parse(
+        operation: BuiltinOperation,
+        arguments: &Value,
+    ) -> Result<Self, Vec<ArgumentProblem>> {
+        match operation {
+            BuiltinOperation::CreateProvider => CreateProviderArguments::parse(arguments)
+                .map(|arguments| Self::CreateProvider(Box::new(arguments))),
+            BuiltinOperation::ListProviders => {
+                list_providers::parse(arguments).map(|()| Self::ListProviders)
+            }
+        }
+    }
+}
+
+/// One argument a Program must correct. Coral writes each reason, and it never
+/// holds a submitted value. A field or key name the Program wrote can appear
+/// in the field and the reason, since it says what to correct.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArgumentProblem {
+    field: String,
+    reason: String,
+}
+
+impl ArgumentProblem {
+    fn new(field: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            field: field.into(),
+            reason: reason.into(),
+        }
+    }
+
+    /// The argument's dotted path from the arguments object; empty for the
+    /// object itself.
+    #[must_use]
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+
+    /// What to correct.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+}
+
+/// Reads `arguments` as `T`, or names the first argument whose shape is wrong.
+fn read<T: DeserializeOwned>(arguments: &Value) -> Result<T, ArgumentProblem> {
+    serde_path_to_error::deserialize(arguments).map_err(|error| {
+        let field = error.path().to_string();
+        let field = if field == "." { String::new() } else { field };
+        ArgumentProblem::new(field, shape_reason(&error.into_inner().to_string()))
+    })
+}
+
+/// What is wrong with the shape of one argument, from serde's message without
+/// the submitted value: a misplaced credential must not reach a failure message.
+/// Field and variant names the contract declares stay, since they say what to write.
+fn shape_reason(message: &str) -> String {
+    if message.starts_with("missing field") || message.starts_with("unknown field") {
+        return message.to_owned();
+    }
+    // serde writes the submitted value first, so only the last clause is its own.
+    match message.rsplit_once("expected ") {
+        Some((_found, expected)) => format!("expected {expected}"),
+        None => "has a value Coral does not accept".to_owned(),
+    }
+}
+
+/// Reads an optional argument that, when present, must have its type: the
+/// schema has no `null` for an argument to omit.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+/// An object with no fields.
+fn empty_object_schema() -> Value {
+    json!({ "type": "object", "properties": {}, "additionalProperties": false })
+}
+
+/// The schema a Program is typed from, derived from `T` as Coral reads it
+/// (`Contract::Deserialize`) or writes it (`Contract::Serialize`). It states
+/// no defaults or titles: a description says what an omitted argument means.
+///
+/// schemars turns rustdoc into a `description`, and no transform can tell it
+/// from text written for Programs. So a type or field whose rustdoc is not for
+/// Programs sets `#[schemars(description = "")]`, and Program text goes in
+/// `#[schemars(description = "...")]`, as in coral-mcp.
+fn derived_schema<T: JsonSchema>(contract: Contract) -> Value {
+    SchemaSettings::draft2020_12()
+        .with(|settings| {
+            settings.meta_schema = None;
+            settings.contract = contract;
+        })
+        .with_transform(RecursiveTransform(|schema: &mut Schema| {
+            schema.remove("default");
+            schema.remove("title");
+        }))
+        .with_transform(RestrictFormats::default())
+        .into_generator()
+        .into_root_schema_for::<T>()
+        .to_value()
+}
+
+/// The Operation Result a Built-in Operation returns, with Coral as the
+/// Upstream Service.
+fn operation_result(data: &impl Serialize) -> Value {
+    json!({ "data": data, "metadata": { "kind": "builtin" } })
+}
+
+/// A Credential Route, as Built-in Operations spell it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuiltinCredentialRoute {
+    /// No Account.
+    None,
+    /// One shared Account.
+    Fixed,
+    /// Each caller's own Account.
+    Caller,
+}
+
+impl JsonSchema for BuiltinCredentialRoute {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "CredentialRoute".into()
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> Schema {
+        words_schema(&Self::names())
+    }
+}
+
+impl BuiltinCredentialRoute {
+    const ALL: [Self; 3] = [Self::None, Self::Fixed, Self::Caller];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Fixed => "fixed",
+            Self::Caller => "caller",
+        }
+    }
+
+    /// Each route's name, for a schema's `enum`.
+    fn names() -> [&'static str; 3] {
+        Self::ALL.map(Self::name)
+    }
+}
+
+/// Each way Coral sends a Provider's credentials, in the order a Program reads them.
+const AUTHENTICATION_KINDS: [AuthenticationKind; 7] = [
+    AuthenticationKind::None,
+    AuthenticationKind::Bearer,
+    AuthenticationKind::HeaderCredentials,
+    AuthenticationKind::BasicAuth,
+    AuthenticationKind::QueryCredentials,
+    AuthenticationKind::OAuthDeviceCode,
+    AuthenticationKind::OAuthAuthorizationCode,
 ];
+
+/// The Program's name for each method, as the `createProvider` input spells
+/// it. Stored configuration has its own encoding, which never becomes the
+/// Program contract.
+const fn authentication_name(kind: AuthenticationKind) -> &'static str {
+    match kind {
+        AuthenticationKind::None => "none",
+        AuthenticationKind::Bearer => "bearer",
+        AuthenticationKind::HeaderCredentials => "header_credentials",
+        AuthenticationKind::BasicAuth => "basic_auth",
+        AuthenticationKind::QueryCredentials => "query_credentials",
+        AuthenticationKind::OAuthDeviceCode => "oauth_device_code",
+        AuthenticationKind::OAuthAuthorizationCode => "oauth_authorization_code",
+    }
+}
+
+/// A string that is one of `words`.
+fn words_schema(words: &[&str]) -> Schema {
+    schemars::json_schema!({ "type": "string", "enum": words })
+}
+
+/// Each method, by the name a Program reads.
+fn authentication_schema(_generator: &mut schemars::SchemaGenerator) -> Schema {
+    words_schema(&AUTHENTICATION_KINDS.map(authentication_name))
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's serialize_with passes a reference"
+)]
+fn serialize_authentication<S: Serializer>(
+    kind: &AuthenticationKind,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(authentication_name(*kind))
+}
+
+/// What `createProvider` and `listProviders` report about a Provider: how to
+/// call it and whether the Program needs a person first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(deny_unknown_fields, description = "")]
+pub struct ProviderFacts {
+    /// The Provider display name.
+    #[schemars(description = "The Provider display name.")]
+    pub display_name: String,
+    /// Whose Account Invocations use.
+    #[schemars(description = "Whose account Invocations use.")]
+    pub credential_route: BuiltinCredentialRoute,
+    /// How Coral sends the Provider's credentials.
+    #[serde(serialize_with = "serialize_authentication")]
+    #[schemars(
+        schema_with = "authentication_schema",
+        description = "How Coral sends the Provider's credentials."
+    )]
+    pub authentication: AuthenticationKind,
+    /// How many of its Operations the caller can discover and call.
+    #[schemars(description = "How many of the Provider's Operations you can discover and call.")]
+    pub operations: usize,
+    /// Whether the caller must connect an Account before calling it.
+    #[schemars(
+        description = "True when you must connect your own Account before your calls can use the \
+                       Provider. Your first call then asks you to connect it."
+    )]
+    pub account_required: bool,
+}
 
 struct Definition {
     key: &'static str,
@@ -241,412 +496,10 @@ struct Definition {
     output: Value,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "each Built-in Operation's whole contract reads as one declaration"
-)]
 fn definition(operation: BuiltinOperation) -> Definition {
     match operation {
-        BuiltinOperation::CreateProvider => Definition {
-            key: operation.key(),
-            summary: "Create a Provider from an OpenAPI document or URL, or an MCP server URL",
-            presentation: OperationPresentation::new(
-                Some("Create provider".to_string()),
-                "Create a Provider in this Workspace from an OpenAPI document, an OpenAPI \
-                 document URL, or an MCP server URL. Coral publishes it when nobody needs to \
-                 sign in. Otherwise it returns a Coral UI link where a person finishes \
-                 and publishes it."
-                    .to_string(),
-                false,
-                vec!["providers".to_string()],
-                Some(
-                    "Choose credentialRoute to match the source: none when it needs no \
-                     credential, fixed for one shared account, caller for each person's own \
-                     account. A route that does not match the source fails with invalid_input. \
-                     Omit displayName, servers, authentication, credentialFields and \
-                     requestHeaders to use what the source suggests, or give them to override \
-                     it. When the source declares no credential but the service needs one, \
-                     give authentication, such as { method: \"bearer\" }, with fixed or \
-                     caller. Never pass a secret or a literal credential value: Coral stores \
-                     your arguments, and Workspace Owners can see them. When Coral cannot \
-                     fetch a source URL, the call fails with upstream_incomplete: check that \
-                     the URL is reachable, then call again. When status is \
-                     published, call the Provider's Operations under \
-                     coral.providers.<namespace>. When status is needs_sign_in, show the \
-                     person the returned url. To check later whether it is published, search \
-                     with its namespace as provider."
-                        .to_string(),
-                ),
-            ),
-            // No read-only hint: the default Operation Access State is approval_required.
-            hints: OperationHints::default(),
-            input: json!({
-                "type": "object",
-                "required": ["namespace", "source", "credentialRoute"],
-                "properties": {
-                    "namespace": {
-                        "type": "string",
-                        "description": "Provider Namespace: a short JavaScript identifier, such as github. The Provider's Operations are called under coral.providers.<namespace>."
-                    },
-                    "source": { "$ref": "#/$defs/ProviderSource" },
-                    "credentialRoute": {
-                        "enum": CREDENTIAL_ROUTES,
-                        "description": "Whose account Invocations use: none for a source that needs no credential, fixed for one shared account that a person signs in to, or caller for each person's own account."
-                    },
-                    "displayName": {
-                        "type": "string",
-                        "description": "The Provider's name. Omit it to use the source's title."
-                    },
-                    "servers": {
-                        "type": "object",
-                        "description": "Server choice per server declaration, keyed by declaration pointer such as #/servers. Omit it to use the source's server. If the source declares none, or a server variable has no default, the call fails with invalid_input: find the value in the source's documentation or ask the user, then pass it here.",
-                        "additionalProperties": { "$ref": "#/$defs/ServerSelection" }
-                    },
-                    "authentication": { "$ref": "#/$defs/Authentication" },
-                    "credentialFields": {
-                        "type": "object",
-                        "description": "The values a person enters when they sign in, keyed by field name, such as token. Omit it to use the source's fields. Give it when authentication names a field the source does not declare. Never include a value.",
-                        "additionalProperties": { "$ref": "#/$defs/CredentialField" }
-                    },
-                    "requestHeaders": {
-                        "type": "object",
-                        "description": "Non-secret headers sent with every request. Omit it to use the source's suggestion. Authorization, Proxy-Authorization, Cookie, X-API-Key, Api-Key, and any header that ends in -Token or -Secret fail with invalid_input: a person enters credentials when they sign in.",
-                        "additionalProperties": { "type": "string" }
-                    }
-                },
-                "additionalProperties": false,
-                "$defs": {
-                    "CredentialField": {
-                        "type": "object",
-                        "required": ["label", "sensitive"],
-                        "properties": {
-                            "label": { "type": "string", "description": "The name of the box the person fills in." },
-                            "description": { "type": "string", "description": "Help text." },
-                            "sensitive": { "type": "boolean", "description": "Masks the value while it is typed." }
-                        },
-                        "additionalProperties": false
-                    },
-                    "Authentication": {
-                        "description": "The authentication method and its non-secret settings. Omit it to use the method the source declares. Never include a secret or a literal value: a header, query parameter or Basic part names a field from credentialFields. The one literal is empty, for a Basic or query part the service leaves blank.",
-                        "oneOf": [
-                            {
-                                "type": "object",
-                                "required": ["method"],
-                                "properties": { "method": { "enum": ["none", "bearer"] } },
-                                "additionalProperties": false
-                            },
-                            {
-                                "type": "object",
-                                "required": ["method", "headers"],
-                                "properties": {
-                                    "method": { "const": "header_credentials" },
-                                    "headers": {
-                                        "type": "object",
-                                        "description": "Header name to the field it sends.",
-                                        "additionalProperties": { "$ref": "#/$defs/HeaderField" }
-                                    }
-                                },
-                                "additionalProperties": false
-                            },
-                            {
-                                "type": "object",
-                                "required": ["method", "username", "password"],
-                                "properties": {
-                                    "method": { "const": "basic_auth" },
-                                    "username": { "$ref": "#/$defs/CredentialPart" },
-                                    "password": { "$ref": "#/$defs/CredentialPart" }
-                                },
-                                "additionalProperties": false
-                            },
-                            {
-                                "type": "object",
-                                "required": ["method", "parameters"],
-                                "properties": {
-                                    "method": { "const": "query_credentials" },
-                                    "parameters": {
-                                        "type": "object",
-                                        "description": "Query parameter name to the field it sends.",
-                                        "additionalProperties": { "$ref": "#/$defs/CredentialPart" }
-                                    }
-                                },
-                                "additionalProperties": false
-                            },
-                            {
-                                "type": "object",
-                                "required": ["method", "device_authorization_url", "token_url", "scopes"],
-                                "properties": {
-                                    "method": { "const": "oauth_device_code" },
-                                    "device_authorization_url": { "type": "string" },
-                                    "token_url": { "type": "string" },
-                                    "scopes": { "type": "array", "items": { "type": "string" } },
-                                    "scope_format": { "$ref": "#/$defs/ScopeFormat" },
-                                    "client": { "$ref": "#/$defs/DeviceOAuthClient" }
-                                },
-                                "additionalProperties": false
-                            },
-                            {
-                                "type": "object",
-                                "required": ["method", "authorization_url", "token_url", "scopes"],
-                                "properties": {
-                                    "method": { "const": "oauth_authorization_code" },
-                                    "authorization_url": { "type": "string" },
-                                    "token_url": { "type": "string" },
-                                    "scopes": { "type": "array", "items": { "type": "string" } },
-                                    "scope_format": { "$ref": "#/$defs/ScopeFormat" },
-                                    "client": { "$ref": "#/$defs/OAuthClient" }
-                                },
-                                "additionalProperties": false
-                            }
-                        ]
-                    },
-                    "HeaderField": {
-                        "type": "object",
-                        "required": ["source", "field"],
-                        "properties": {
-                            "source": { "const": "field" },
-                            "field": { "type": "string", "description": "A field from credentialFields." },
-                            "prefix": { "type": "string", "description": "Non-secret text sent before the value, such as Bot . Never a credential." }
-                        },
-                        "additionalProperties": false
-                    },
-                    "CredentialPart": {
-                        "oneOf": [
-                            {
-                                "type": "object",
-                                "required": ["source", "field"],
-                                "properties": {
-                                    "source": { "const": "field" },
-                                    "field": { "type": "string", "description": "A field from credentialFields." }
-                                },
-                                "additionalProperties": false
-                            },
-                            {
-                                "type": "object",
-                                "required": ["source", "value"],
-                                "description": "A part the service leaves blank, such as a Basic password.",
-                                "properties": {
-                                    "source": { "const": "literal" },
-                                    "value": { "const": "" }
-                                },
-                                "additionalProperties": false
-                            }
-                        ]
-                    },
-                    "ScopeFormat": {
-                        "enum": ["space", "comma"],
-                        "description": "How scopes are joined in the request. Omit it for space."
-                    },
-                    "OAuthClient": {
-                        "type": "object",
-                        "description": "An OAuth application registered with the service. Omit it to let Coral register one, when the service allows it. A confidential application never takes its secret here: the person enters it when they sign in.",
-                        "required": ["client_id"],
-                        "properties": {
-                            "client_id": { "type": "string" },
-                            "authentication": {
-                                "enum": ["none", "client_secret_basic", "client_secret_post"],
-                                "description": "How the application authenticates at the token endpoint. Omit it, or give none, for a public application."
-                            },
-                            "pkce": {
-                                "enum": ["s256", "disabled"],
-                                "description": "Authorization-code protection. Omit it for s256."
-                            },
-                            "authorization_parameters": {
-                                "type": "object",
-                                "description": "Non-secret authorization options, such as access_type.",
-                                "additionalProperties": { "type": "string" }
-                            }
-                        },
-                        "additionalProperties": false
-                    },
-                    "DeviceOAuthClient": {
-                        "type": "object",
-                        "description": "An OAuth application registered with the service. A confidential application never takes its secret here: the person enters it when they sign in. Device authorization takes no authorization parameters.",
-                        "required": ["client_id"],
-                        "properties": {
-                            "client_id": { "type": "string" },
-                            "authentication": {
-                                "enum": ["none", "client_secret_basic", "client_secret_post"],
-                                "description": "How the application authenticates at the token endpoint. Omit it, or give none, for a public application."
-                            },
-                            "pkce": {
-                                "enum": ["s256", "disabled"],
-                                "description": "Device code never uses it."
-                            }
-                        },
-                        "additionalProperties": false
-                    },
-                    "ServerSelection": {
-                        "oneOf": [
-                            {
-                                "type": "object",
-                                "required": ["kind", "url", "variables"],
-                                "properties": {
-                                    "kind": { "const": "declared" },
-                                    "url": { "type": "string", "description": "A server URL template the source declares." },
-                                    "variables": { "type": "object", "additionalProperties": { "type": "string" } }
-                                },
-                                "additionalProperties": false
-                            },
-                            {
-                                "type": "object",
-                                "required": ["kind", "url"],
-                                "properties": {
-                                    "kind": { "const": "custom" },
-                                    "url": { "type": "string", "description": "An absolute HTTP or HTTPS base URL, without credentials, a query, or a fragment." }
-                                },
-                                "additionalProperties": false
-                            }
-                        ]
-                    },
-                    "ProviderSource": {
-                        "oneOf": [
-                            {
-                                "type": "object",
-                                "required": ["kind", "document"],
-                                "properties": {
-                                    "kind": { "const": "openapi_document" },
-                                    "document": { "type": "string", "description": "A complete OpenAPI document, as JSON or YAML text." }
-                                },
-                                "additionalProperties": false
-                            },
-                            {
-                                "type": "object",
-                                "required": ["kind", "url"],
-                                "properties": {
-                                    "kind": { "const": "openapi_url" },
-                                    "url": { "type": "string", "description": "The URL of an OpenAPI document." }
-                                },
-                                "additionalProperties": false
-                            },
-                            {
-                                "type": "object",
-                                "required": ["kind", "url"],
-                                "properties": {
-                                    "kind": { "const": "mcp_url" },
-                                    "url": { "type": "string", "description": "The URL of a Streamable HTTP MCP server." }
-                                },
-                                "additionalProperties": false
-                            }
-                        ]
-                    }
-                }
-            }),
-            output: json!({
-                "oneOf": [
-                    {
-                        "type": "object",
-                        "required": [
-                            "status", "namespace", "displayName", "credentialRoute",
-                            "authentication", "operations", "accountRequired"
-                        ],
-                        "properties": {
-                            "status": { "const": "published", "description": "Coral published the Provider. You can call it now." },
-                            "namespace": { "type": "string", "description": "The published Provider Namespace." },
-                            "displayName": { "type": "string", "description": "The published Provider display name." },
-                            "credentialRoute": {
-                                "enum": CREDENTIAL_ROUTES,
-                                "description": "The published Credential Route."
-                            },
-                            "authentication": {
-                                "enum": AUTHENTICATION_KINDS,
-                                "description": "How Coral sends the Provider's credentials, as resolved from your input and the source."
-                            },
-                            "operations": {
-                                "type": "integer",
-                                "minimum": 0,
-                                "description": "How many of the Provider's Operations you can discover and call."
-                            },
-                            "accountRequired": {
-                                "type": "boolean",
-                                "description": "True when you must connect your own Account before your calls can use the Provider. Your first call then asks you to connect it."
-                            }
-                        },
-                        "additionalProperties": false
-                    },
-                    {
-                        "type": "object",
-                        "required": ["status", "url", "namespace"],
-                        "properties": {
-                            "status": { "const": "needs_sign_in", "description": "A person must finish the Provider in the Coral UI." },
-                            "url": { "type": "string", "description": "The Coral UI page where a person finishes and publishes the Provider." },
-                            "namespace": { "type": "string", "description": "The requested Provider Namespace. The person can change it." }
-                        },
-                        "additionalProperties": false
-                    }
-                ]
-            }),
-        },
-        BuiltinOperation::ListProviders => Definition {
-            key: operation.key(),
-            summary: "List the Providers in this Workspace",
-            presentation: OperationPresentation::new(
-                Some("List providers".to_string()),
-                "List every Provider in this Workspace, including disabled ones and Coral's \
-                 own, in the order they were created."
-                    .to_string(),
-                false,
-                vec!["providers".to_string()],
-                Some(
-                    "Pass an empty object. A namespace in the list is taken, even when its \
-                     Provider is disabled. Call a Provider's Operations under \
-                     coral.providers.<namespace>."
-                        .to_string(),
-                ),
-            ),
-            // Read-only: the default Operation Access State is enabled.
-            hints: OperationHints::new(Some(true), None, Some(true), None),
-            input: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-            output: json!({
-                "type": "object",
-                "required": ["providers"],
-                "properties": {
-                    "providers": {
-                        "type": "array",
-                        "description": "Every Provider in this Workspace, in the order they were created. Coral's own comes first.",
-                        "items": { "$ref": "#/$defs/Provider" }
-                    }
-                },
-                "additionalProperties": false,
-                "$defs": {
-                    "Provider": {
-                        "type": "object",
-                        "required": [
-                            "namespace", "displayName", "state", "credentialRoute",
-                            "authentication", "operations", "accountRequired"
-                        ],
-                        "properties": {
-                            "namespace": {
-                                "type": ["string", "null"],
-                                "description": "The Provider Namespace. Its Operations are called under coral.providers.<namespace>. Null for Coral's own Provider, whose Operations are called under coral.workspace."
-                            },
-                            "displayName": { "type": "string", "description": "The Provider display name." },
-                            "state": {
-                                "enum": ["active", "disabled"],
-                                "description": "Whether the Provider accepts calls. A disabled Provider still holds its namespace."
-                            },
-                            "credentialRoute": {
-                                "enum": CREDENTIAL_ROUTES,
-                                "description": "Whose account Invocations use."
-                            },
-                            "authentication": {
-                                "enum": AUTHENTICATION_KINDS,
-                                "description": "How Coral sends the Provider's credentials."
-                            },
-                            "operations": {
-                                "type": "integer",
-                                "minimum": 0,
-                                "description": "How many of the Provider's Operations you can discover and call."
-                            },
-                            "accountRequired": {
-                                "type": "boolean",
-                                "description": "True when you must connect your own Account before your calls can use the Provider."
-                            }
-                        },
-                        "additionalProperties": false
-                    }
-                }
-            }),
-        },
+        BuiltinOperation::CreateProvider => create_provider::definition(),
+        BuiltinOperation::ListProviders => list_providers::definition(),
     }
 }
 
@@ -762,3 +615,6 @@ fn encode(schema: &Value) -> Result<String, CatalogDiagnostic> {
 fn invalid(message: &'static str) -> CatalogDiagnostic {
     CatalogDiagnostic::stable("invalid_builtin_catalog", message)
 }
+
+#[cfg(test)]
+mod tests;

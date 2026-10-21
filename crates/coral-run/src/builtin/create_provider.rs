@@ -1,0 +1,469 @@
+//! Performs `coral.workspace.createProvider`, and settles one whose worker was
+//! lost after the Dispatch Fence.
+
+use coral_catalog::{
+    ConfigurationChoices, CreateProviderArguments, CreateProviderResult, ProviderConfiguration,
+    ProviderSourceArgument,
+};
+use coral_db::Transaction;
+use coral_provider::access::{CredentialRoute, ProviderNamespace};
+use coral_provider::account::AccountModule;
+use coral_provider::{
+    ManagementRequestId, ProviderSetupId, ProviderSetupSource, PublishabilityRejection,
+    PublishedProvider, SetupPublishability, WorkspaceProviderPublicationRequest,
+};
+use coral_workspace::WorkspaceId;
+
+use super::{BuiltinHost, authority_error, provider_facts};
+use crate::error::InputProblem;
+use crate::lifecycle::RunRecord;
+use crate::{CoralFailure, Error, InvocationId, InvocationResultKind, Rejection};
+
+/// `createProvider`'s arguments in Coral's domain types.
+#[derive(Clone)]
+pub(crate) struct CreateProvider {
+    namespace: ProviderNamespace,
+    source: ProviderSetupSource,
+    route: CredentialRoute,
+    choices: ConfigurationChoices,
+}
+
+/// Who publishes a configured Setup.
+enum Publisher {
+    /// Nobody needs to sign in, so Coral publishes it at once.
+    Coral,
+    /// A person signs in or enters a credential, and Reef publishes it.
+    Person,
+}
+
+impl CreateProvider {
+    /// The call for arguments the contract accepted. An MCP server is
+    /// discovered with the same non-secret headers it is configured with.
+    pub(super) fn new(arguments: CreateProviderArguments) -> Result<Self, Rejection> {
+        // The contract checks the namespace with the same rule, so this does
+        // not fail.
+        let namespace = ProviderNamespace::parse(&arguments.namespace)
+            .map_err(|_error| Rejection::from(CoralFailure::InvalidInput))?;
+        let source = match arguments.source {
+            ProviderSourceArgument::OpenApiDocument(document) => {
+                ProviderSetupSource::OpenApiDocument(document)
+            }
+            ProviderSourceArgument::OpenApiUrl(url) => ProviderSetupSource::OpenApiUrl(url),
+            ProviderSourceArgument::McpUrl(url) => ProviderSetupSource::McpUrl {
+                url,
+                request_headers: arguments
+                    .choices
+                    .request_headers
+                    .clone()
+                    .unwrap_or_default(),
+            },
+        };
+        Ok(Self {
+            namespace,
+            source,
+            route: arguments.credential_route.into(),
+            choices: arguments.choices,
+        })
+    }
+
+    /// Prepares and configures a Setup as the invoking User. Coral publishes it
+    /// when nobody needs to sign in; otherwise the result is the Reef page where
+    /// a person finishes it. The call never waits for that person.
+    pub(super) async fn perform(&self, host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
+        // A taken namespace would fail the Publication; fail before any fetch or Setup.
+        if host
+            .providers
+            .namespace_in_use(host.context.actor(), host.workspace_id, &self.namespace)
+            .await
+            .map_err(setup_error)?
+        {
+            return Err(Error::InvocationRejected(
+                CoralFailure::ProviderNamespaceConflict.into(),
+            ));
+        }
+        // Only the fetch waits on the network, so only it stops with the Run.
+        // Once a Setup exists, the call runs to an end that publishes it,
+        // links a person to it, or ends it.
+        let setup = tokio::select! {
+            biased;
+            () = host.run.stopped() => return Err(Error::ProgramHostTerminated),
+            setup = host.providers.prepare_setup(
+                host.context,
+                host.workspace_id,
+                self.source.clone(),
+                None,
+            ) => setup.map_err(setup_error)?,
+        };
+        #[cfg(test)]
+        host.run.setup_prepared();
+        let publisher = match self.configure(host, setup.id()).await {
+            Ok(publisher) => publisher,
+            Err(error) => {
+                // Nobody will finish a Setup whose configuration failed.
+                end_setup(host, setup.id()).await;
+                return Err(error);
+            }
+        };
+        match publisher {
+            Publisher::Person => {
+                // A Run that ended could no longer hand anyone the link.
+                require_current_run(host, setup.id()).await?;
+                Ok(self.needs_sign_in(host, setup.id()))
+            }
+            Publisher::Coral => self.publish(host, setup.id()).await,
+        }
+    }
+
+    /// Confirms the Program's configuration over the source's suggestions and
+    /// decides who publishes the Setup. The route must suit the source.
+    async fn configure(
+        &self,
+        host: &BuiltinHost<'_>,
+        setup: &ProviderSetupId,
+    ) -> Result<Publisher, Error> {
+        let invalid = |field: &str, reason: &str| {
+            Error::InvocationRejected(Rejection::invalid_input(field, reason))
+        };
+        let review = host
+            .providers
+            .review_setup_configuration(host.context.actor(), host.workspace_id, setup)
+            .await
+            .map_err(setup_error)?;
+        let Some(document) = review.document else {
+            return Err(Error::InvocationRejected(
+                configuration_rejection(&review).unwrap_or_else(|| {
+                    Rejection::invalid_input(
+                        "source",
+                        "Coral could not read a configuration from the source",
+                    )
+                }),
+            ));
+        };
+        let suggested = document.suggested;
+        let confirmed = host
+            .providers
+            .confirm_setup_configuration(
+                host.context,
+                host.workspace_id,
+                setup,
+                review.revision,
+                self.choices.over(suggested),
+            )
+            .await
+            .map_err(setup_error)?;
+        if let Some(rejection) = configuration_rejection(&confirmed) {
+            return Err(Error::InvocationRejected(rejection));
+        }
+        match host
+            .providers
+            .setup_publishability(host.context.actor(), host.workspace_id, setup, self.route)
+            .await
+            .map_err(setup_error)?
+        {
+            SetupPublishability::Coral => Ok(Publisher::Coral),
+            // The person's sign-in could not start without an OAuth application.
+            SetupPublishability::Person
+                if !has_oauth_application(host, setup, confirmed.confirmed.as_ref()).await? =>
+            {
+                Err(invalid(
+                    "authentication.client",
+                    "Coral cannot register an OAuth application with this service; register \
+                     one with the service and give its `client_id`",
+                ))
+            }
+            SetupPublishability::Person => Ok(Publisher::Person),
+            SetupPublishability::Rejected(PublishabilityRejection::NotConfigured) => Err(invalid(
+                "source",
+                "Coral could not tell whether the source needs a credential",
+            )),
+            // The route must suit the source, as Reef offers it; no route falls back to another.
+            SetupPublishability::Rejected(PublishabilityRejection::SourceNeedsCredential) => {
+                Err(invalid(
+                    "credentialRoute",
+                    "the source needs a credential; use `fixed` or `caller`",
+                ))
+            }
+            SetupPublishability::Rejected(PublishabilityRejection::SourceNeedsNoCredential) => {
+                Err(invalid(
+                    "credentialRoute",
+                    "the source declares no credential; use `none`, or give `authentication` \
+                     to say how a person signs in",
+                ))
+            }
+        }
+    }
+
+    /// The Reef page where a person finishes the Setup.
+    fn needs_sign_in(&self, host: &BuiltinHost<'_>, setup: &ProviderSetupId) -> serde_json::Value {
+        let url = host.human_interface.page_url(&setup_path(
+            host.workspace_id,
+            setup,
+            &self.namespace,
+            self.route,
+        ));
+        CreateProviderResult::NeedsSignIn {
+            url,
+            namespace: self.namespace.as_str().to_owned(),
+        }
+        .into_operation_result()
+    }
+
+    /// Publishes the Setup as the invoking User, through the workflow Reef
+    /// publishes with, and returns what the Program needs to call it.
+    async fn publish(
+        &self,
+        host: &BuiltinHost<'_>,
+        setup: &ProviderSetupId,
+    ) -> Result<serde_json::Value, Error> {
+        let Some(publisher) = host.publisher else {
+            end_setup(host, setup).await;
+            return Err(Error::InvocationRejected(
+                CoralFailure::OperationUnavailable.into(),
+            ));
+        };
+        // A Run that ended could no longer return the Provider: publish nothing.
+        // The Run can still end between this check and the Publication; the
+        // Provider then exists and search finds it, though the call ended.
+        require_current_run(host, setup).await?;
+        let publication = match publisher
+            .publish_workspace_provider(
+                host.context,
+                WorkspaceProviderPublicationRequest::new(
+                    host.request_id.clone(),
+                    host.workspace_id.clone(),
+                    setup.clone(),
+                    self.namespace.clone(),
+                    self.route,
+                ),
+            )
+            .await
+        {
+            Ok(publication) => publication,
+            Err(error) => {
+                // The Publication left the Setup reusable, but nobody will reuse it.
+                end_setup(host, setup).await;
+                return Err(publication_error(error));
+            }
+        };
+        let Some(provider) = publication.published_provider() else {
+            return Err(Error::InvocationRejected(
+                if publication.failed_on_namespace_conflict() {
+                    CoralFailure::ProviderNamespaceConflict
+                } else {
+                    CoralFailure::ProviderPublicationFailed
+                }
+                .into(),
+            ));
+        };
+        let details = host
+            .providers
+            .published_provider(host.workspace_id, provider, host.principal)
+            .await?;
+        Ok(published_result(&details))
+    }
+}
+
+/// Settles a `createProvider` whose worker was lost after the dispatch fence,
+/// from the Publication Coral attempted under the Invocation's identity. A
+/// published Provider becomes the Operation Result; otherwise the Run ended
+/// first. A Setup that was never published expires at its deadline.
+pub(super) async fn recover(
+    transaction: &mut Transaction<'_>,
+    run: &RunRecord,
+    invocation: &InvocationId,
+) -> Result<(InvocationResultKind, Option<String>), Error> {
+    let request = ManagementRequestId::parse(&invocation.to_string())?;
+    let published = match coral_provider::publication_for_request_in_transaction(
+        transaction,
+        &run.workspace_id,
+        &request,
+    )
+    .await?
+    {
+        Some(publication) => publication.published_provider().cloned(),
+        None => None,
+    };
+    let Some(provider) = published else {
+        return Ok((InvocationResultKind::RunTerminated, None));
+    };
+    let published = match coral_provider::published_provider_in_transaction(
+        transaction,
+        &run.workspace_id,
+        &provider,
+        &run.principal,
+    )
+    .await
+    {
+        Ok(published) => published,
+        // An Owner deleted the Provider since; no result can describe it now.
+        Err(coral_provider::Error::ProviderNotFound) => {
+            return Ok((InvocationResultKind::RunTerminated, None));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let result =
+        serde_json::to_string(&published_result(&published)).map_err(Error::ProgramValueJson)?;
+    Ok((InvocationResultKind::UpstreamOutcome, Some(result)))
+}
+
+/// Fails unless the Run still accepts this call's result. A Run that ended,
+/// or whose state cannot be read, ends the Setup this call prepared.
+async fn require_current_run(host: &BuiltinHost<'_>, setup: &ProviderSetupId) -> Result<(), Error> {
+    let current = host.run.still_current().await;
+    if matches!(current, Ok(true)) {
+        return Ok(());
+    }
+    end_setup(host, setup).await;
+    current.and(Err(Error::ProgramHostTerminated))
+}
+
+/// Whether a person's sign-in to `configuration` has an OAuth application, as
+/// Reef offers it. Without accounts, Coral sets none up.
+async fn has_oauth_application(
+    host: &BuiltinHost<'_>,
+    setup: &ProviderSetupId,
+    configuration: Option<&ProviderConfiguration>,
+) -> Result<bool, Error> {
+    let authentication = configuration.and_then(|values| values.authentication.as_ref());
+    match host.accounts {
+        Some(accounts) => accounts
+            .setup_oauth_application_available(
+                host.context.actor(),
+                host.workspace_id,
+                setup,
+                authentication,
+            )
+            .await
+            .map_err(setup_error),
+        None => Ok(AccountModule::names_oauth_application(authentication)),
+    }
+}
+
+/// Ends, as Coral, a Setup that this call prepared but nobody will finish.
+/// Best effort: the Setup still expires at its deadline.
+async fn end_setup(host: &BuiltinHost<'_>, setup: &ProviderSetupId) {
+    let Ok(now) = host.run.now() else {
+        return;
+    };
+    let _ended = host
+        .providers
+        .abandon_setup(host.workspace_id, setup, now)
+        .await;
+}
+
+/// The Operation Result for a Provider Coral published. It says what Coral
+/// resolved, so the Program need not guess whether its next call needs a person.
+fn published_result(published: &PublishedProvider) -> serde_json::Value {
+    CreateProviderResult::Published {
+        namespace: published.provider.call_root().name().to_owned(),
+        facts: provider_facts(published),
+    }
+    .into_operation_result()
+}
+
+/// Reef's new-provider stepper for one Setup. The namespace and the Credential
+/// Route are already chosen. The link opens on the Operations, so the person
+/// sees what the Program's Provider can do before signing in and publishing.
+/// A valid namespace, a Setup id and a route need no URL encoding.
+fn setup_path(
+    workspace: &WorkspaceId,
+    setup: &ProviderSetupId,
+    namespace: &ProviderNamespace,
+    route: CredentialRoute,
+) -> String {
+    let path = format!(
+        "/workspaces/{workspace}/providers/new?setup={setup}&namespace={}",
+        namespace.as_str()
+    );
+    // Reef asks the account question only for a route that has an Account.
+    // `accountReview` would also let a sign-in in hand add the Provider without
+    // a click, so the link carries it only where the question needs it.
+    match route {
+        CredentialRoute::None => path,
+        CredentialRoute::Fixed => format!("{path}&account=fixed"),
+        // It opens the question on Connect now. A confidential application
+        // takes its secret only at that sign-in, so Connect later could not
+        // publish.
+        CredentialRoute::Caller => format!("{path}&account=caller&accountReview=1"),
+    }
+}
+
+/// A Publication rejected because its Setup ended or changed, or its request
+/// is stale, is a failure the Program can catch. Persistence and corrupt
+/// evidence still stop the Run for recovery.
+fn publication_error(error: coral_provider::Error) -> Error {
+    match error {
+        coral_provider::Error::ProviderSetupNotFound
+        | coral_provider::Error::ProviderSetupNotReady
+        | coral_provider::Error::ProviderSetupConsumed
+        | coral_provider::Error::EtagMismatch
+        | coral_provider::Error::RequestIdConflict
+        | coral_provider::Error::ProviderChangedDuringPublication => {
+            Error::InvocationRejected(CoralFailure::ProviderPublicationFailed.into())
+        }
+        other => setup_error(other),
+    }
+}
+
+/// Maps a Setup preparation failure to the Program-safe vocabulary. Only
+/// input problems are the Program's to catch; anything else is a host defect.
+fn setup_error(error: coral_provider::Error) -> Error {
+    let source =
+        |reason: &str| Error::InvocationRejected(Rejection::invalid_input("source", reason));
+    match error {
+        coral_provider::Error::OutboundDestinationRejected => {
+            Error::InvocationRejected(CoralFailure::OutboundDestinationRejected.into())
+        }
+        // Coral got no usable response from the source: it did not answer, or
+        // answered with an error status. The arguments may be right, so this
+        // is not the Program's to correct.
+        coral_provider::Error::InputUnavailable => {
+            Error::InvocationRejected(CoralFailure::UpstreamIncomplete.into())
+        }
+        // A source Coral fetched but cannot use is the Program's to correct.
+        // Each reason is Coral's own: a fetched body or error never reaches it.
+        coral_provider::Error::InvalidInput(_)
+        | coral_provider::Error::Catalog(coral_catalog::Error::InvalidInput(_)) => {
+            source("Coral cannot read an OpenAPI document or an MCP server from the source")
+        }
+        coral_provider::Error::Catalog(coral_catalog::Error::OpenApiDocumentTooLarge) => {
+            source("the OpenAPI document exceeds Coral's size limit")
+        }
+        coral_provider::Error::AuthorizationDiscovery(code) => source(&format!(
+            "Coral could not discover how to sign in to the MCP server ({code})"
+        )),
+        coral_provider::Error::AccountInput => Error::InvocationRejected(Rejection::invalid_input(
+            "authentication",
+            "Coral cannot use this authentication method for the source",
+        )),
+        coral_provider::Error::ProviderCallRootConflict => {
+            Error::InvocationRejected(CoralFailure::ProviderNamespaceConflict.into())
+        }
+        other => authority_error(other),
+    }
+}
+
+/// Every problem Coral found when it read or confirmed the configuration, as
+/// the arguments to correct. Coral writes these field errors and diagnostic
+/// codes without any submitted value.
+fn configuration_rejection(
+    confirmed: &coral_provider::SetupConfigurationReview,
+) -> Option<Rejection> {
+    let problems: Vec<_> = confirmed
+        .errors
+        .iter()
+        .map(|error| {
+            InputProblem::new(
+                CreateProviderArguments::argument_for(&error.field),
+                error.message.clone(),
+            )
+        })
+        .chain(confirmed.diagnostic.iter().map(|diagnostic| {
+            InputProblem::new(
+                "source",
+                format!("Coral cannot build a Provider from the source ({diagnostic})"),
+            )
+        }))
+        .collect();
+    (!problems.is_empty()).then(|| Rejection::invalid_inputs(problems))
+}
