@@ -12,7 +12,7 @@ use crate::lifecycle::{RequestedTermination, RunRecord};
 use crate::run_repository::OwnedEvent;
 use crate::{CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, Error};
 
-use super::handle::{DecisionAnswer, DecisionReply, Reply, RequestKey};
+use super::handle::{DecisionAnswer, Reply, RequestKey, RequestReply};
 
 /// Row work items per chunk. Each one queries the database inside the
 /// commit, so this keeps a commit transaction short.
@@ -58,35 +58,12 @@ pub(crate) trait ChunkWork: Send + fmt::Debug {
     fn settle(self: Box<Self>, recorded: Result<(), Error>);
 }
 
-/// An outside requester waiting for a chunk's answer.
-#[derive(Debug)]
-pub(crate) enum Requester {
-    Decision(DecisionReply),
-    Cancellation(Reply),
-}
-
-impl Requester {
-    /// Answers the requester: a decision with what its chunk recorded, a
-    /// cancellation with its chunk's fate.
-    pub(crate) fn answer(self, recorded: Result<DecisionAnswer, Error>) {
-        // The requester may have stopped waiting; the record stands.
-        match self {
-            Self::Decision(reply) => {
-                let _delivered = reply.send(recorded);
-            }
-            Self::Cancellation(reply) => {
-                let _delivered = reply.send(recorded.map(drop));
-            }
-        }
-    }
-}
-
 /// One outside request a chunk records: the entity it decides, who waits
 /// for the answer, and what the chunk's work wrote for it once reported.
 #[derive(Debug)]
 pub(crate) struct PendingRequest {
     pub(crate) key: RequestKey,
-    pub(crate) requester: Requester,
+    pub(crate) reply: RequestReply,
     pub(crate) answer: Option<DecisionAnswer>,
 }
 

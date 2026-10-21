@@ -41,9 +41,9 @@ use crate::run_repository::{OwnedEvent, OwnedEventKind};
 use crate::termination::ShutdownAction;
 use crate::{CoralFailure, Error};
 
-use super::chunk::{ChunkBuild, ChunkItem, ChunkWork, PendingRequest, Requester};
+use super::chunk::{ChunkBuild, ChunkItem, ChunkWork, PendingRequest};
 use super::handle::{
-    CommitRejection, DecisionAnswer, DecisionReply, DecisionRequest, Message, Reply, RequestKey,
+    CommitRejection, DecisionAnswer, DecisionRequest, Message, Reply, RequestKey, RequestReply,
     StartedExecution,
 };
 
@@ -52,9 +52,9 @@ use super::handle::{
 pub(crate) enum Effect {
     /// Answer one Program request.
     Reply(Reply, Result<(), Error>),
-    /// Answer one outside requester: with what its chunk recorded for it,
-    /// or with its loss.
-    Answer(Requester, Result<DecisionAnswer, Error>),
+    /// Answer one outside request: with what its chunk recorded for it, or
+    /// with its loss.
+    Answer(RequestReply, Result<DecisionAnswer, Error>),
     /// Commit the owner's first chunk: the execution-start mark.
     Start,
     /// Execute the accepted package.
@@ -169,11 +169,11 @@ enum Settle {
 enum Parked {
     Decide {
         request: DecisionRequest,
-        reply: DecisionReply,
+        reply: RequestReply,
     },
     Cancel {
         requester: Principal,
-        reply: Reply,
+        reply: RequestReply,
     },
 }
 
@@ -381,7 +381,7 @@ impl OwnerState {
                 flight
                     .requests
                     .into_iter()
-                    .map(|request| Effect::Answer(request.requester, Err(Error::OwnerLost))),
+                    .map(|request| Effect::Answer(request.reply, Err(Error::OwnerLost))),
             );
         }
         effects.extend(self.abandon_pending(&lost, || Err(Error::OwnerLost)));
@@ -672,31 +672,22 @@ impl OwnerState {
     fn decide(
         &mut self,
         request: DecisionRequest,
-        reply: DecisionReply,
+        reply: RequestReply,
         now_unix_nanos: i64,
     ) -> Vec<Effect> {
         let key = RequestKey::Approval(request.approval.clone());
         if self.recorded_requests.contains(&key) {
-            return vec![Effect::Answer(
-                Requester::Decision(reply),
-                Ok(DecisionAnswer::FromRecord),
-            )];
+            return vec![Effect::Answer(reply, Ok(DecisionAnswer::FromRecord))];
         }
         if self.refuses_requests() {
-            return vec![Effect::Answer(
-                Requester::Decision(reply),
-                Err(Error::OwnerLost),
-            )];
+            return vec![Effect::Answer(reply, Err(Error::OwnerLost))];
         }
         if self.request_is_pending(&key) || self.phase == Phase::Completing {
             self.parked.push(Parked::Decide { request, reply });
             return Vec::new();
         }
         if !self.accepts_work() {
-            return vec![Effect::Answer(
-                Requester::Decision(reply),
-                Err(Error::OwnerLost),
-            )];
+            return vec![Effect::Answer(reply, Err(Error::OwnerLost))];
         }
         let decide = self.accepts_program_requests(now_unix_nanos);
         let work = DecideWork::new(request, decide);
@@ -704,7 +695,7 @@ impl OwnerState {
             .requests
             .push(PendingRequest {
                 key,
-                requester: Requester::Decision(reply),
+                reply,
                 answer: None,
             });
         Vec::new()
@@ -717,19 +708,18 @@ impl OwnerState {
     /// terminated, and `cancellation.requested` with the intent ride the
     /// next chunk. Past the Run deadline the Run times out instead, with no
     /// requester, as a cancel found on the record would.
-    fn cancel(&mut self, requester: Principal, reply: Reply, now_unix_nanos: i64) -> Vec<Effect> {
+    fn cancel(
+        &mut self,
+        requester: Principal,
+        reply: RequestReply,
+        now_unix_nanos: i64,
+    ) -> Vec<Effect> {
         let key = RequestKey::Termination;
         if self.recorded_requests.contains(&key) {
-            return vec![Effect::Answer(
-                Requester::Cancellation(reply),
-                Ok(DecisionAnswer::FromRecord),
-            )];
+            return vec![Effect::Answer(reply, Ok(DecisionAnswer::FromRecord))];
         }
         if self.refuses_requests() {
-            return vec![Effect::Answer(
-                Requester::Cancellation(reply),
-                Err(Error::OwnerLost),
-            )];
+            return vec![Effect::Answer(reply, Err(Error::OwnerLost))];
         }
         if self.request_is_pending(&key) || self.phase == Phase::Completing {
             self.parked.push(Parked::Cancel { requester, reply });
@@ -738,10 +728,7 @@ impl OwnerState {
         match self.phase {
             // The terminal write recorded a termination of its own; this
             // changes nothing.
-            Phase::Settling => vec![Effect::Answer(
-                Requester::Cancellation(reply),
-                Ok(DecisionAnswer::FromRecord),
-            )],
+            Phase::Settling => vec![Effect::Answer(reply, Ok(DecisionAnswer::FromRecord))],
             // Past the Run deadline the Run times out: no chunk commits any
             // more, and the terminal write records the timeout; the request
             // is answered once it has.
@@ -759,10 +746,7 @@ impl OwnerState {
                 now_unix_nanos,
             ),
             Phase::Completing | Phase::Stopped(_) | Phase::Interrupting | Phase::Retired => {
-                vec![Effect::Answer(
-                    Requester::Cancellation(reply),
-                    Err(Error::OwnerLost),
-                )]
+                vec![Effect::Answer(reply, Err(Error::OwnerLost))]
             }
         }
     }
@@ -812,7 +796,7 @@ impl OwnerState {
         &mut self,
         kind: RunTerminationKind,
         requester: Option<Principal>,
-        reply: Option<Reply>,
+        reply: Option<RequestReply>,
         now_unix_nanos: i64,
     ) -> Vec<Effect> {
         let intent = match RequestedTermination::new(
@@ -824,7 +808,7 @@ impl OwnerState {
             Ok(intent) => intent,
             Err(error) => {
                 return reply
-                    .map(|reply| Effect::Reply(reply, Err(error)))
+                    .map(|reply| Effect::Answer(reply, Err(error)))
                     .into_iter()
                     .collect();
             }
@@ -844,7 +828,7 @@ impl OwnerState {
         chunk.termination = Some(intent);
         chunk.requests.extend(reply.map(|reply| PendingRequest {
             key: RequestKey::Termination,
-            requester: Requester::Cancellation(reply),
+            reply,
             answer: None,
         }));
         self.stop()
@@ -870,11 +854,8 @@ impl OwnerState {
         std::mem::take(&mut self.parked)
             .into_iter()
             .map(|parked| match parked {
-                Parked::Decide { reply, .. } => {
-                    Effect::Answer(Requester::Decision(reply), answer())
-                }
-                Parked::Cancel { reply, .. } => {
-                    Effect::Answer(Requester::Cancellation(reply), answer())
+                Parked::Decide { reply, .. } | Parked::Cancel { reply, .. } => {
+                    Effect::Answer(reply, answer())
                 }
             })
             .collect()
@@ -969,7 +950,7 @@ impl OwnerState {
             for request in flight.requests {
                 self.recorded_requests.insert(request.key);
                 let answer = request.answer.unwrap_or(DecisionAnswer::FromRecord);
-                effects.push(Effect::Answer(request.requester, Ok(answer)));
+                effects.push(Effect::Answer(request.reply, Ok(answer)));
             }
         }
         effects.extend(self.unpark(now_unix_nanos));
@@ -1037,7 +1018,7 @@ impl OwnerState {
                 chunk
                     .requests
                     .into_iter()
-                    .map(|request| Effect::Answer(request.requester, requests())),
+                    .map(|request| Effect::Answer(request.reply, requests())),
             );
         }
         effects

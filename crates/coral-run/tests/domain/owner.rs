@@ -346,8 +346,8 @@ fn deliver(effects: Vec<Effect>) -> Vec<Effect> {
                 work.settle(Err(error));
                 None
             }
-            Effect::Answer(requester, recorded) => {
-                requester.answer(recorded);
+            Effect::Answer(reply, recorded) => {
+                let _delivered = reply.send(recorded);
                 None
             }
             other => Some(other),
@@ -1548,8 +1548,8 @@ fn decided(receiver: &mut Decided) -> Option<Result<DecisionAnswer, Error>> {
     receiver.try_recv().ok()
 }
 
-fn cancel(state: &mut OwnerState, now: i64) -> (Vec<Effect>, Answer) {
-    let (reply, receiver) = reply();
+fn cancel(state: &mut OwnerState, now: i64) -> (Vec<Effect>, Decided) {
+    let (reply, receiver) = tokio::sync::oneshot::channel();
     (
         apply(
             state,
@@ -1700,14 +1700,14 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
             intent.termination.map(|intent| intent.termination.kind),
             Some(RunTerminationKind::Canceled)
         );
-        assert!(answered(&mut first).is_none() && answered(&mut second).is_none());
+        assert!(decided(&mut first).is_none() && decided(&mut second).is_none());
         let effects = deliver(apply(&mut state, Message::Committed, 9));
         assert!(effects.is_empty(), "{effects:?}");
-        assert!(matches!(answered(&mut first), Some(Ok(()))));
-        assert!(matches!(answered(&mut second), Some(Ok(()))));
+        assert!(matches!(decided(&mut first), Some(Ok(_))));
+        assert!(matches!(decided(&mut second), Some(Ok(_))));
         let (effects, mut third) = cancel(&mut state, 10);
         assert!(deliver(effects).is_empty());
-        assert!(matches!(answered(&mut third), Some(Ok(()))));
+        assert!(matches!(decided(&mut third), Some(Ok(_))));
         assert_eq!(state.pending_chunks(), 0);
         assert_eq!(state.head(), 3);
     }
@@ -1816,14 +1816,14 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
             ),
             "{effects:?}"
         );
-        assert!(answered(&mut late).is_none());
+        assert!(decided(&mut late).is_none());
         let effects = deliver(apply(
             &mut state,
             Message::Completed(Ok(Some(ShutdownAction::for_apply_test()))),
             LIMITS.deadline_at_unix_nanos + 3,
         ));
         assert!(matches!(effects.as_slice(), [Effect::Settle { .. }]));
-        assert!(matches!(answered(&mut late), Some(Ok(()))));
+        assert!(matches!(decided(&mut late), Some(Ok(_))));
     }
 
     // A Program that never reports its end after the cancel: once the
@@ -1835,7 +1835,7 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         deliver(effects);
         committed_chunk(apply(&mut state, Message::Drained, 4));
         deliver(apply(&mut state, Message::Committed, 5));
-        assert!(matches!(answered(&mut requester), Some(Ok(()))));
+        assert!(matches!(decided(&mut requester), Some(Ok(_))));
         let effects = apply(&mut state, Message::GraceExpired, 6);
         assert!(
             matches!(
@@ -1883,10 +1883,7 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         for answer in [&mut first, &mut repeat] {
             assert!(matches!(decided(answer), Some(Err(Error::OwnerLost))));
         }
-        assert!(matches!(
-            answered(&mut pending),
-            Some(Err(Error::OwnerLost))
-        ));
+        assert!(matches!(decided(&mut pending), Some(Err(Error::OwnerLost))));
         assert_eq!(
             state.phase(),
             Phase::Stopped(CommitRejection::ClaimMismatch)
@@ -1931,7 +1928,7 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
             "{effects:?}"
         );
         deliver(effects);
-        assert!(matches!(answered(&mut early), Some(Ok(()))));
+        assert!(matches!(decided(&mut early), Some(Ok(_))));
         let effects = apply(
             &mut state,
             Message::Completed(Ok(Some(ShutdownAction::for_apply_test()))),

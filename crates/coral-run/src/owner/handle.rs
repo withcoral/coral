@@ -17,12 +17,12 @@ use crate::{Error, ProgramLogLevel, ProgramValue, RunId, SourceLocation};
 
 use super::chunk::ChunkWork;
 
-/// The answer to one request: a Program request at Applied or at Recorded,
-/// a cancellation at Recorded.
+/// The answer to one Program request, at Applied or at Recorded.
 pub(crate) type Reply = oneshot::Sender<Result<(), Error>>;
 
-/// The answer to one decision, at Recorded.
-pub(crate) type DecisionReply = oneshot::Sender<Result<DecisionAnswer, Error>>;
+/// The answer to one outside request (a decision, a cancellation), at
+/// Recorded: what its chunk recorded for it.
+pub(crate) type RequestReply = oneshot::Sender<Result<DecisionAnswer, Error>>;
 
 /// What a decision request learns once it is recorded: what its chunk's
 /// work wrote for it.
@@ -115,13 +115,16 @@ pub(crate) enum Message {
     /// recorded answer. Answered once recorded.
     Decide {
         request: DecisionRequest,
-        reply: DecisionReply,
+        reply: RequestReply,
     },
     /// An outside requester cancels the Run: the termination intent and
     /// `cancellation.requested` ride the next chunk, and the Program is
     /// terminated at once. A repeat receives the recorded answer. Answered
     /// once recorded.
-    Cancel { requester: Principal, reply: Reply },
+    Cancel {
+        requester: Principal,
+        reply: RequestReply,
+    },
     /// The Run deadline passed: the Run times out.
     Deadline,
     /// The shutdown grace since the owner stopped its Program passed
@@ -465,7 +468,9 @@ impl OwnerHandle {
     /// [`Error::OwnerLost`] when the owner stopped before it recorded the
     /// request: the outcome is unknown, read the Run again.
     pub(crate) async fn cancel(&self, requester: Principal) -> Result<(), Error> {
-        self.ask(|reply| Message::Cancel { requester, reply }).await
+        self.ask(|reply| Message::Cancel { requester, reply })
+            .await
+            .map(drop)
     }
 
     /// Tells the owner that the Run deadline passed.

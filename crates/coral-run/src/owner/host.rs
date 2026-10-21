@@ -166,7 +166,10 @@ fn run_effect(
             // The requester may have stopped waiting; the owner's decision stands.
             let _delivered = reply.send(result);
         }
-        Effect::Answer(requester, recorded) => requester.answer(recorded),
+        // The requester may have stopped waiting; the record stands.
+        Effect::Answer(reply, recorded) => {
+            let _delivered = reply.send(recorded);
+        }
         Effect::Start => {
             let module = module.clone();
             let accepted = accepted.clone();
