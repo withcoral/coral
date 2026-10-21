@@ -145,8 +145,6 @@ fn oauth(extra: Value) -> Value {
     authenticated(authentication)
 }
 
-const HEADER_REASON: &str = "this header names a credential; send it through `authentication` \
-     so a person enters its value when they sign in";
 const LITERAL_REASON: &str = "a literal credential value must be empty; use a `field` source so \
      a person enters the value when they sign in";
 const ENDPOINT_REASON: &str = "use an absolute `http` or `https` URL without credentials, a \
@@ -330,20 +328,13 @@ fn each_rejected_argument_names_what_to_correct() {
             )],
         ),
         (
-            valid_with(json!({ "requestHeaders": { "X-Api-Key": CANARY } })),
-            vec![("requestHeaders.X-Api-Key", HEADER_REASON)],
-        ),
-        (
             // Every problem Coral can find without the source, at once.
             json!({
                 "namespace": "not-an-identifier",
                 "source": { "kind": "openapi_url", "url": "ftp://weather.example" },
-                "requestHeaders": { "X-Api-Key": CANARY, "Authorization": CANARY },
             }),
             vec![
                 ("namespace", NAMESPACE_REASON),
-                ("requestHeaders.Authorization", HEADER_REASON),
-                ("requestHeaders.X-Api-Key", HEADER_REASON),
                 ("credentialRoute", "choose `none`, `fixed` or `caller`"),
                 ("source.url", SOURCE_URL_REASON),
             ],
@@ -362,40 +353,6 @@ fn each_rejected_argument_names_what_to_correct() {
                 .all(|problem| !problem.reason().contains(CANARY)),
             "{arguments}: a reason repeats a submitted value"
         );
-    }
-}
-
-// Catches: a header named for a credential carrying its value through the
-// Program, or a service header such as `Idempotency-Key` rejected because a
-// credential word appears inside its name.
-#[test]
-fn credential_headers_are_rejected_by_their_exact_name() {
-    for (header, rejected) in [
-        ("Authorization", true),
-        ("proxy-authorization", true),
-        ("Cookie", true),
-        ("X-API-Key", true),
-        ("Api-Key", true),
-        ("X-Auth-Token", true),
-        ("X-Client-Secret", true),
-        ("Idempotency-Key", false),
-    ] {
-        let problems = CreateProviderArguments::parse(&valid_with(
-            json!({ "requestHeaders": { header: "value" } }),
-        ))
-        .err()
-        .unwrap_or_default();
-        let found = problems
-            .iter()
-            .map(|problem| (problem.field(), problem.reason()))
-            .collect::<Vec<_>>();
-        let field = format!("requestHeaders.{header}");
-        let expected = if rejected {
-            vec![(field.as_str(), HEADER_REASON)]
-        } else {
-            Vec::new()
-        };
-        assert_eq!(found, expected, "{header}");
     }
 }
 

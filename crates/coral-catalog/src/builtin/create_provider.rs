@@ -168,9 +168,8 @@ struct Arguments {
     #[schemars(
         with = "BTreeMap<String, String>",
         description = "Non-secret headers sent with every request. Omit it to use the source's \
-                       suggestion. Authorization, Proxy-Authorization, Cookie, X-API-Key, \
-                       Api-Key, and any header that ends in -Token or -Secret fail with \
-                       invalid_input: a person enters credentials when they sign in."
+                       suggestion. Send a credential through authentication, so a person \
+                       enters it when they sign in."
     )]
     request_headers: Option<BTreeMap<String, String>>,
     #[serde(default, deserialize_with = "present")]
@@ -241,21 +240,6 @@ impl CreateProviderArguments {
             problems.push(ArgumentProblem::new(
                 "namespace",
                 "use a JavaScript identifier of at most 128 bytes, such as `weather`",
-            ));
-        }
-        // A credential-named header would carry a credential value through the
-        // Program; a person enters every value in Reef. The authentication input
-        // takes no literal value but an empty one.
-        for name in arguments
-            .request_headers
-            .iter()
-            .flat_map(BTreeMap::keys)
-            .filter(|name| names_a_credential(name))
-        {
-            problems.push(ArgumentProblem::new(
-                format!("requestHeaders.{name}"),
-                "this header names a credential; send it through `authentication` \
-                 so a person enters its value when they sign in",
             ));
         }
         let authentication = arguments
@@ -373,23 +357,6 @@ impl CreateProviderResult {
     pub fn into_operation_result(self) -> Value {
         operation_result(&self)
     }
-}
-
-/// Header names whose value is a credential. Request headers are non-secret by
-/// contract, but only a name can show what a value is.
-const CREDENTIAL_HEADERS: [&str; 5] = [
-    "authorization",
-    "proxy-authorization",
-    "cookie",
-    "x-api-key",
-    "api-key",
-];
-
-fn names_a_credential(header: &str) -> bool {
-    let header = header.to_ascii_lowercase();
-    CREDENTIAL_HEADERS.contains(&header.as_str())
-        || header.ends_with("-token")
-        || header.ends_with("-secret")
 }
 
 /// A source URL must be an http or https URL with a host, and no credentials

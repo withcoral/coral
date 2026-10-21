@@ -1233,13 +1233,8 @@ async fn an_invalid_argument_names_what_to_correct() {
             serde_json::json!({
                 "namespace": "not-an-identifier",
                 "source": document_source(),
-                "requestHeaders": { "X-Api-Key": CANARY, "Authorization": CANARY },
             }),
             ": `namespace`: use a JavaScript identifier of at most 128 bytes, such as `weather`; \
-             `requestHeaders.Authorization`: this header names a credential; send it through \
-             `authentication` so a person enters its value when they sign in; \
-             `requestHeaders.X-Api-Key`: this header names a credential; send it through \
-             `authentication` so a person enters its value when they sign in; \
              `credentialRoute`: choose `none`, `fixed` or `caller`",
         ),
         (
