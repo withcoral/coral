@@ -126,7 +126,8 @@ pub(crate) trait EntityIndexer: Send + Sync {
     /// Writes the entry's `rows` and state, all or nothing within the
     /// transaction. Writing the same entry again leaves the same rows. The
     /// caller holds the entry's Workspace lock, so the write's statistics
-    /// count sees every write of that Workspace before it.
+    /// count sees every write of that Workspace before it. Stamp the rows with
+    /// the time taken under that lock, not the time `rows` built them.
     async fn index(
         &self,
         transaction: &mut Transaction<'_>,
