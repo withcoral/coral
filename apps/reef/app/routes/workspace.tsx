@@ -1,15 +1,10 @@
-import { data, redirect, useSearchParams, type ShouldRevalidateFunctionArgs } from 'react-router'
+import { data, redirect, useLocation, useNavigate, useNavigation } from 'react-router'
 import type { Route } from './+types/workspace'
 import { ProviderState } from '@/generated/coral/management/v1/provider_pb'
 import { isBuiltinProvider } from '@/lib/call-root'
-import {
-  DEFAULT_SUMMARY_DAYS,
-  summaryDays,
-  type ActivitySummaryData,
-  type SummaryDays,
-} from '@/lib/activity-summary'
+import { DEFAULT_SUMMARY_DAYS, summaryDays, summarySearch } from '@/lib/activity-summary'
 import { glimpseActivitySummary } from '@/lib/activity-summary.server'
-import { useActivitySummary } from '@/lib/use-activity-summary'
+import { useRevalidateWhileVisible } from '@/lib/use-revalidate-while-visible'
 import {
   actionFailure,
   field,
@@ -30,25 +25,12 @@ import { GLIMPSE_FETCH, WorkspaceOverview } from '@/views/management/workspace-o
 
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 
-const withoutDays = (url: URL) => {
-  const query = new URLSearchParams(url.search)
-  query.delete('days')
-  return `${url.pathname}?${query}`
+export function shouldRevalidate() {
+  return true
 }
 
-// A new summary period reaches the summary through its stream, whose first value is a
-// fresh read. The rest of the Overview stays. Everything else reloads it.
-export function shouldRevalidate({
-  currentUrl,
-  nextUrl,
-  formMethod,
-}: ShouldRevalidateFunctionArgs) {
-  return (
-    formMethod !== undefined ||
-    currentUrl.search === nextUrl.search ||
-    withoutDays(currentUrl) !== withoutDays(nextUrl)
-  )
-}
+/** How often an open Overview reads its summary again. */
+const SUMMARY_REFRESH_MS = 30_000
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
@@ -57,7 +39,14 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     if (w.state === 'archived') return redirect(`${w.path}/activity`, { headers: privateHeaders })
     const owner = w.effectiveRole === 'owner'
     const people = !isLocalDeployment(context)
-    const days = summaryDays(new URL(request.url).searchParams.get('days')) ?? DEFAULT_SUMMARY_DAYS
+    const url = new URL(request.url)
+    const query = url.searchParams.get('days')
+    // A period the page does not offer leaves the URL, so the URL names what you see.
+    if (query !== null && summaryDays(query) === undefined)
+      return redirect(`${url.pathname}${summarySearch(url.search, DEFAULT_SUMMARY_DAYS)}`, {
+        headers: privateHeaders,
+      })
+    const days = summaryDays(query) ?? DEFAULT_SUMMARY_DAYS
     const [agents, providers, owners, own, summary] = await Promise.all([
       owner ? api.agents.listAgents({ parent: w.name, pageSize: GLIMPSE_FETCH }) : null,
       listAllProviders(api, w.name),
@@ -92,8 +81,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         ownMembership: own ? membershipView(own) : null,
         form: formContext(context),
         recipes: RECIPE_CHOICES,
-        summary,
-        days,
+        activity: { days, summary },
       },
       { headers: privateHeaders },
     )
@@ -138,47 +126,46 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   }
 }
 
-export default function WorkspaceRoute({ loaderData, params }: Route.ComponentProps) {
+export default function WorkspaceRoute({ loaderData }: Route.ComponentProps) {
   // Keyed by workspace, not location: a new summary period navigates within this page.
   return (
     <WorkspaceOverview
       key={loaderData.workspace.name}
       {...loaderData}
       summary={
-        loaderData.summary && (
-          <LiveSummary
-            initial={{ days: loaderData.days, summary: loaderData.summary }}
-            workspace={params.workspace}
-          />
-        )
+        <LiveSummary
+          {...loaderData.activity}
+          owner={loaderData.workspace.effectiveRole === 'owner'}
+        />
       }
     />
   )
 }
 
+/** The loader's summary, read again while you look at it. While a new period loads, the
+ * picker shows that period and the numbers fade.
+ */
 function LiveSummary({
-  initial,
-  workspace,
-}: {
-  initial: { days: SummaryDays; summary: ActivitySummaryData }
-  /** The Workspace ID, as the route names it. */
-  workspace: string
-}) {
-  const [searchParams, setSearchParams] = useSearchParams()
-  const days = summaryDays(searchParams.get('days')) ?? DEFAULT_SUMMARY_DAYS
-  const shown = useActivitySummary(initial, workspace, days)
+  days,
+  summary,
+  owner,
+}: Route.ComponentProps['loaderData']['activity'] & { owner: boolean }) {
+  useRevalidateWhileVisible(SUMMARY_REFRESH_MS)
+  const location = useLocation()
+  const navigation = useNavigation()
+  const navigate = useNavigate()
+  const target =
+    navigation.location?.pathname === location.pathname ? navigation.location : location
+  const chosen = summaryDays(new URLSearchParams(target.search).get('days')) ?? DEFAULT_SUMMARY_DAYS
   return (
     <ActivitySummary
-      {...shown.summary}
-      days={days}
-      pending={shown.days !== days}
+      summary={summary}
+      owner={owner}
+      days={chosen}
+      pending={chosen !== days}
       onDaysChange={(next) =>
-        setSearchParams(
-          (params) => {
-            if (next === DEFAULT_SUMMARY_DAYS) params.delete('days')
-            else params.set('days', String(next))
-            return params
-          },
+        void navigate(
+          { search: summarySearch(location.search, next) },
           { replace: true, preventScrollReset: true },
         )
       }

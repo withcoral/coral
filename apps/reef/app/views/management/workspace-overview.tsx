@@ -42,7 +42,7 @@ export interface WorkspaceOverviewProps {
   form: FormContext
   /** What the Add provider dialog offers. */
   recipes: readonly SourceChoice[]
-  /** Recent activity totals, supplied by the route. Absent when they cannot load. */
+  /** Recent activity totals, supplied by the route. */
   summary?: ReactNode
 }
 

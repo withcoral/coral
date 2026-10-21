@@ -191,39 +191,42 @@ export const SummaryOverview: Story = {
         <ActivitySummary
           days={7}
           onDaysChange={() => {}}
-          calls={{
-            answered: 128,
-            blocked: 4,
-            notAllowed: 2,
-            needsSetup: 0,
-            failed: 3,
-            canceled: 0,
-          }}
-          stopped={[
-            {
-              callPath: 'coral.providers.github.deleteRepository',
+          owner
+          summary={{
+            calls: {
+              answered: 128,
               blocked: 4,
-              notAllowed: 0,
-              needsSetup: 0,
-            },
-            {
-              callPath: 'coral.providers.gmail.sendMessage',
-              blocked: 0,
               notAllowed: 2,
               needsSetup: 0,
+              failed: 3,
+              canceled: 0,
             },
-          ]}
-          operations={[
-            { callPath: 'coral.providers.github.getIssue', calls: 81 },
-            { callPath: 'coral.providers.linear.searchIssues', calls: 40 },
-            { callPath: 'coral.providers.gmail.sendMessage', calls: 16 },
-          ]}
-          approvals={{ approved: 5, declined: 2, medianWaitSeconds: 95 }}
-          contextImpactBytes="-3204411"
-          contextActors={[
-            { key: 'you', label: 'You', bytes: '-2900000' },
-            { key: 'triage', label: 'Triage agent', bytes: '-304411' },
-          ]}
+            stopped: [
+              {
+                callPath: 'coral.providers.github.deleteRepository',
+                blocked: 4,
+                notAllowed: 0,
+                needsSetup: 0,
+              },
+              {
+                callPath: 'coral.providers.gmail.sendMessage',
+                blocked: 0,
+                notAllowed: 2,
+                needsSetup: 0,
+              },
+            ],
+            operations: [
+              { callPath: 'coral.providers.github.getIssue', calls: 81 },
+              { callPath: 'coral.providers.linear.searchIssues', calls: 40 },
+              { callPath: 'coral.providers.gmail.sendMessage', calls: 16 },
+            ],
+            approvals: { approved: 5, declined: 2, medianWaitSeconds: 95 },
+            contextImpactBytes: '-3204411',
+            contextActors: [
+              { key: 'you', label: 'You', bytes: '-2900000' },
+              { key: 'triage', label: 'Triage agent', bytes: '-304411' },
+            ],
+          }}
         />
       }
     />

@@ -39,7 +39,7 @@ export interface ContextEntry {
   bytes: string
 }
 
-/** One window's totals, as the loader and the stream supply them. */
+/** One window's totals. */
 export interface ActivitySummaryData {
   calls: CallOutcomes
   /** Most stopped first. */
@@ -62,4 +62,13 @@ export const DEFAULT_SUMMARY_DAYS: SummaryDays = 7
 export function summaryDays(value: unknown): SummaryDays | undefined {
   const days = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value
   return SUMMARY_DAYS.find((option) => option === days)
+}
+
+/** `search` with `days` as its period. The default period leaves the URL. */
+export function summarySearch(search: string, days: SummaryDays) {
+  const query = new URLSearchParams(search)
+  if (days === DEFAULT_SUMMARY_DAYS) query.delete('days')
+  else query.set('days', String(days))
+  const text = query.toString()
+  return text ? `?${text}` : ''
 }

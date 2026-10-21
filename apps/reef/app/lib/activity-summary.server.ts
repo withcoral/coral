@@ -2,7 +2,7 @@ import type { ActivitySummaryData, SummaryDays } from './activity-summary'
 import { Code, ConnectError } from '@connectrpc/connect'
 import type { ManagementApi } from './management.server'
 
-const count = (value: bigint | undefined) => Number(value ?? 0n)
+const toCount = (value: bigint | undefined) => Number(value ?? 0n)
 
 /** The caller's summary of one Workspace for the last `days`. A failed read rejects; it is never zeros. */
 export async function loadActivitySummary(
@@ -15,23 +15,23 @@ export async function loadActivitySummary(
   const wait = value.approvals?.medianWaitNanos
   return {
     calls: {
-      answered: count(value.calls?.answered),
-      blocked: count(value.calls?.blocked),
-      notAllowed: count(value.calls?.notAllowed),
-      needsSetup: count(value.calls?.needsSetup),
-      failed: count(value.calls?.failed),
-      canceled: count(value.calls?.canceled),
+      answered: toCount(value.calls?.answered),
+      blocked: toCount(value.calls?.blocked),
+      notAllowed: toCount(value.calls?.notAllowed),
+      needsSetup: toCount(value.calls?.needsSetup),
+      failed: toCount(value.calls?.failed),
+      canceled: toCount(value.calls?.canceled),
     },
     stopped: value.stopped.map((op) => ({
       callPath: op.callPath,
-      blocked: count(op.blocked),
-      notAllowed: count(op.notAllowed),
-      needsSetup: count(op.needsSetup),
+      blocked: toCount(op.blocked),
+      notAllowed: toCount(op.notAllowed),
+      needsSetup: toCount(op.needsSetup),
     })),
-    operations: value.operations.map((op) => ({ callPath: op.callPath, calls: count(op.calls) })),
+    operations: value.operations.map((op) => ({ callPath: op.callPath, calls: toCount(op.calls) })),
     approvals: {
-      approved: count(value.approvals?.approved),
-      declined: count(value.approvals?.declined),
+      approved: toCount(value.approvals?.approved),
+      declined: toCount(value.approvals?.declined),
       medianWaitSeconds: wait === undefined ? null : Number(wait) / 1e9,
     },
     contextImpactBytes: value.contextImpactBytes?.toString(),

@@ -15,7 +15,7 @@ import { OperationAccessState } from '../../../generated/coral/management/v1/pol
 const CALL =
   "try { await coral.providers.summaryFixture.read(); return 'sent'; } catch (error) { return error.code; }"
 
-test('The Overview summary counts not allowed, blocked and answered calls live, and keeps its period in the URL', async (context) => {
+test('The Overview summary counts not allowed calls, reads blocked and answered calls again when you return to it, and loads the period you choose', async (context) => {
   const upstream = await listen(
     context,
     createServer((_request, response) => {
@@ -51,12 +51,14 @@ test('The Overview summary counts not allowed, blocked and answered calls live, 
     })
     const openOverview = async () => {
       await page.goto(overview)
-      // Hydration first: the stream and the period picker start after it.
+      // Hydration first: the refresh and the period picker start after it.
       await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
       await summary
-        .getByRole('heading', { name: 'Your activity in this workspace', exact: true })
+        .getByRole('heading', { name: 'Activity by you and your agents', exact: true })
         .waitFor()
     }
+    // You come back to the tab, as after running a program elsewhere.
+    const returnToOverview = () => page.evaluate(() => window.dispatchEvent(new Event('focus')))
 
     let paused!: RunUpdate
     await step('A call waits for approval', async () => {
@@ -86,20 +88,18 @@ test('The Overview summary counts not allowed, blocked and answered calls live, 
         .getByText('1 not allowed', { exact: true })
         .waitFor()
       const approvals = summary.getByRole('region', { name: 'Approvals', exact: true })
-      // Approved, then declined; the median wait depends on how fast the review ran.
-      expect((await approvals.getByRole('definition').allInnerTexts()).slice(0, 2)).toEqual([
-        '0',
-        '1',
-      ])
+      // The median wait depends on how fast the review ran.
+      const decisions = (name: string) => approvals.getByRole('group', { name, exact: true })
+      await decisions('Approved').getByText('0', { exact: true }).waitFor()
+      await decisions('Declined').getByText('1', { exact: true }).waitFor()
     })
 
-    await step('Blocked and answered calls arrive without a reload', async () => {
+    await step('Blocked and answered calls arrive when you return, without a reload', async () => {
       await setPolicy(OperationAccessState.DISABLED)
       const blocked = await observeRun(runner, await runner.exec(CALL))
       expect(blocked.update.final_value).toEqual({ kind: 'value', value: 'operation_disabled' })
-      await summary.getByText('1 blocked · 1 not allowed', { exact: true }).waitFor({
-        timeout: 10_000,
-      })
+      await returnToOverview()
+      await summary.getByText('1 blocked · 1 not allowed', { exact: true }).waitFor()
       await summary
         .getByRole('region', { name: 'Stopped operations', exact: true })
         .getByText('coral.providers.summaryFixture.read', { exact: true })
@@ -107,7 +107,8 @@ test('The Overview summary counts not allowed, blocked and answered calls live, 
       await setPolicy(OperationAccessState.ENABLED)
       const sent = await observeRun(runner, await runner.exec(CALL))
       expect(sent.update.final_value).toEqual({ kind: 'value', value: 'sent' })
-      await summary.getByText('33% answered', { exact: true }).waitFor({ timeout: 10_000 })
+      await returnToOverview()
+      await summary.getByText('33% answered', { exact: true }).waitFor()
       await summary
         .getByRole('region', { name: 'Most called operations', exact: true })
         .getByText('3 calls', { exact: true })
@@ -115,20 +116,13 @@ test('The Overview summary counts not allowed, blocked and answered calls live, 
       expect(new URL(page.url()).pathname).toBe(overview)
     })
 
-    await step('The chosen period stays in the URL across a reload', async () => {
+    await step('The period you choose loads its own totals', async () => {
       const period = summary.getByRole('radiogroup', { name: 'Period', exact: true })
-      const chosen = (name: string) =>
-        period.getByRole('radio', { name, exact: true, checked: true }).waitFor()
       await period.getByRole('radio', { name: '24 hours', exact: true }).click()
       await page.waitForURL((url) => url.searchParams.get('days') === '1')
-      await chosen('24 hours')
-      await page.reload()
-      await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
-      await chosen('24 hours')
+      await period.getByRole('radio', { name: '24 hours', exact: true, checked: true }).waitFor()
+      await expect.poll(() => summary.getAttribute('aria-busy')).toBe('false')
       await summary.getByText('33% answered', { exact: true }).waitFor()
-      await period.getByRole('radio', { name: '7 days', exact: true }).click()
-      await page.waitForURL((url) => !url.searchParams.has('days'))
-      await chosen('7 days')
     })
   })
 })

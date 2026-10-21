@@ -1,10 +1,6 @@
 import { activityStream } from './activity-stream.server'
 import { loadActivity, type ActivityApi } from './activity.server'
-import {
-  ACTIVITY_CHILD_WINDOW,
-  OVERVIEW_ACTIVITY_ROOTS,
-  type ActivityObservation,
-} from './activity-live-types'
+import { ACTIVITY_CHILD_WINDOW, type ActivityObservation } from './activity-live-types'
 import { agentName, workspaceName, privateHeaders } from './management.server'
 
 const invalid = () =>
@@ -39,7 +35,7 @@ async function observation(request: Request): Promise<ActivityObservation> {
     if (
       !value ||
       typeof value.path !== 'string' ||
-      !/^\/workspaces\/[\w-]+(\/(activity|settings|(agents|runs)\/[\w:.-]+))?$/.test(value.path) ||
+      !/^\/workspaces\/[\w-]+\/(activity|(agents|runs)\/[\w:.-]+)$/.test(value.path) ||
       typeof value.search !== 'string' ||
       value.search.length > 32768 ||
       !value.window ||
@@ -91,10 +87,7 @@ export async function observeActivity(
       ? { scope: { workspace, agent: agentName(parts[2], parts[4]) } }
       : parts[3] === 'runs'
         ? { scope: { workspace }, run: `${workspace}/runs/${parts[4]}` }
-        : parts[3] === 'activity'
-          ? { scope: { workspace } }
-          : // The Overview, alone or under its Settings dialog.
-            { scope: { workspace }, listPath: `/${workspace}`, pageSize: OVERVIEW_ACTIVITY_ROOTS }
+        : { scope: { workspace } }
   const url = new URL(input.path, request.url)
   url.search = input.search
   url.searchParams.set('tree', '1')

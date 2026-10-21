@@ -46,27 +46,22 @@ it('reports no decisions and no measured context as absent, not zero', async () 
   expect(summary.contextImpactBytes).toBeUndefined()
 })
 
-it.each([Code.NotFound, Code.PermissionDenied, Code.Unavailable])(
-  'hides an unavailable glimpse rather than showing zeros (%s)',
-  async (code) => {
-    const api = {
-      activity: activity(() => {
-        throw new ConnectError('private error', code)
-      }),
-    }
-    expect(await glimpseActivitySummary(api, workspace, 7)).toBeNull()
-  },
-)
-
-// Catches: a rejected session or a defect hidden as an unavailable summary.
-it.each([Code.Unauthenticated, Code.InvalidArgument, Code.Internal])(
-  'rejects the glimpse on any other failure (%s)',
-  async (code) => {
-    const api = {
-      activity: activity(() => {
-        throw new ConnectError('failed', code)
-      }),
-    }
-    await expect(glimpseActivitySummary(api, workspace, 7)).rejects.toMatchObject({ code })
-  },
-)
+// Catches: zeros shown for an unavailable summary, or a rejected session or a defect
+// hidden as one.
+it.each([
+  [Code.NotFound, 'hidden'],
+  [Code.PermissionDenied, 'hidden'],
+  [Code.Unavailable, 'hidden'],
+  [Code.Unauthenticated, 'rejected'],
+  [Code.InvalidArgument, 'rejected'],
+  [Code.Internal, 'rejected'],
+] as const)('a glimpse that fails with code %s is %s', async (code, expected) => {
+  const api = {
+    activity: activity(() => {
+      throw new ConnectError('private error', code)
+    }),
+  }
+  const glimpse = glimpseActivitySummary(api, workspace, 7)
+  if (expected === 'hidden') expect(await glimpse).toBeNull()
+  else await expect(glimpse).rejects.toMatchObject({ code })
+})

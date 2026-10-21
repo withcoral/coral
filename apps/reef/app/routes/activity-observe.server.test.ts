@@ -5,7 +5,6 @@ import { requestAuthContext } from '@/auth/server-context'
 import { hostedRuntimeConfig, requiredAuthConfig } from '@/auth/test-config'
 import { action as countAction } from './activity-count'
 import { action } from './activity-observe'
-import { action as summaryAction } from './activity-summary'
 
 it.each([undefined, 'https://other.test'])(
   'rejects missing or foreign browser origins before allocating an observation',
@@ -61,25 +60,18 @@ it('accepts the configured HTTPS browser origin behind an HTTP reverse proxy', a
   expect(await response.text()).toContain('sessionExpired')
 })
 // The stream owns expiry (activity-stream.server.test.ts); each route only hands it the deadline.
-const observation = {
-  path: '/workspaces/00000000-0000-4000-8000-000000000001/activity',
-  search: '',
-  window: { roots: [], followRoot: false, branches: {} },
-}
 it.each([
-  ['count', countAction, '/activity/count', observation],
-  ['observe', action, '/activity/observe', observation],
-  [
-    'summary',
-    summaryAction,
-    '/activity/summary',
-    { workspace: '00000000-0000-4000-8000-000000000001', days: 7 },
-  ],
-] as const)('passes the session deadline to the %s stream', async (_, route, path, input) => {
+  ['count', countAction, '/activity/count'],
+  ['observe', action, '/activity/observe'],
+] as const)('passes the session deadline to the %s stream', async (_, route, path) => {
   const request = new Request(`http://reef.test${path}`, {
     method: 'POST',
     headers: { origin: 'http://reef.test' },
-    body: JSON.stringify(input),
+    body: JSON.stringify({
+      path: '/workspaces/00000000-0000-4000-8000-000000000001/activity',
+      search: '',
+      window: { roots: [], followRoot: false, branches: {} },
+    }),
   })
   const args = authRouteTestArgs(request, {})
   args.context.set(requestAuthContext, {

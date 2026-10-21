@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { BarChart } from '../bar-chart'
 import { LineChart } from '../line-chart'
+import { Meter } from '../meter'
 import { Sparkline } from '../sparkline'
 
 // --- BarChart ---
@@ -112,6 +113,19 @@ export const SparklineVaryingData: StoryObj<typeof Sparkline> = {
     <div style={{ alignItems: 'center', display: 'flex', gap: 16 }}>
       <Sparkline data={[1, 1, 1, 5, 20, 50, 100]} width={120} />
       <Sparkline color="red" data={[100, 80, 60, 40, 20, 10, 5]} width={120} />
+    </div>
+  ),
+}
+
+// --- Meter ---
+
+export const MeterSizes: StoryObj<typeof Meter> = {
+  render: () => (
+    <div style={{ display: 'grid', gap: 12, width: 240 }}>
+      <Meter value={3} max={4} />
+      <Meter value={1} max={4} size="small" />
+      <Meter value={1} max={1000} />
+      <Meter value={0} max={4} />
     </div>
   ),
 }

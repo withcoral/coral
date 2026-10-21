@@ -3,9 +3,6 @@ import type {
   ActivityObservation,
   ActivityPageValue,
   ActivityStreamEvent,
-  ActivityStreamValue,
-  ActivitySummaryInput,
-  ActivitySummaryValue,
 } from './activity-live-types'
 
 /** Coral heartbeats every 5 seconds. Three missed heartbeats end the authorized view. */
@@ -15,13 +12,8 @@ const RETRY_MS = 2000
 interface Streams {
   '/activity/count': { input: undefined; value: ActivityCountValue }
   '/activity/observe': { input: ActivityObservation; value: ActivityPageValue }
-  '/activity/summary': { input: ActivitySummaryInput; value: ActivitySummaryValue }
 }
-const valueKinds = {
-  '/activity/count': 'count',
-  '/activity/observe': 'page',
-  '/activity/summary': 'summary',
-} as const
+const valueKinds = { '/activity/count': 'count', '/activity/observe': 'page' } as const
 
 export interface ActivityStreamSubscription {
   /** Replace the connection after `delay` ms. The lease keeps running, so rescheduling
@@ -147,7 +139,7 @@ export function subscribeActivityStream<Path extends keyof Streams>(
 /** SSE over fetch keeps the bounded reading window in a POST body, not a URL.
  * Exported for tests that read the server adapter's output.
  */
-export async function* streamEvents<Value extends ActivityStreamValue>(
+export async function* streamEvents<Value extends ActivityPageValue | ActivityCountValue>(
   response: Response,
 ): AsyncGenerator<ActivityStreamEvent<Value>> {
   if (
