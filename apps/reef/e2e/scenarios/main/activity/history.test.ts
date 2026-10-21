@@ -462,7 +462,11 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
         expect(await table.getByLabel('No net context change', { exact: true }).count()).toBe(1)
         await operationLink.click()
         // The one scalar argument shows under its own field, with its exact JSON spelling.
-        await page.getByText('"exact-arguments-249"', { exact: true }).waitFor()
+        // The program beside it spells the same token, so read the record's own detail.
+        await page
+          .getByRole('region', { name: 'Selected record', exact: true })
+          .getByText('"exact-arguments-249"', { exact: true })
+          .waitFor()
         await page.getByText('Coral failure: operation_disabled', { exact: true }).waitFor()
       })
       await step(
