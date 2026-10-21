@@ -364,9 +364,7 @@ impl OperationInvoker {
                         .finish_failure(&admitted, &progress, CoralFailure::AuthorityLost)
                         .await?);
                 }
-                FenceOutcome::RunTerminated => {
-                    return Err(InvocationHostError::Fatal(Error::ProgramHostTerminated));
-                }
+                FenceOutcome::RunTerminated => return Err(Error::ProgramHostTerminated.into()),
                 FenceOutcome::RefreshRequired => {
                     // No dispatch start exists, and the refresh is an account
                     // wait: the slot is freed before the next fence. Prepare
