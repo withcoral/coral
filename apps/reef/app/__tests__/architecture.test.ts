@@ -533,6 +533,10 @@ const actionsWithoutMutationForm = new Map([
     'activity-observe.ts',
     'a read-only SSE stream: assertManagementOrigin, then the session deadline',
   ],
+  [
+    'activity-summary.ts',
+    'a read-only SSE stream: assertManagementOrigin, then the session deadline',
+  ],
   ['logout.tsx', 'outside the protected boundary: validates its own CSRF token'],
 ])
 

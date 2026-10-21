@@ -3,13 +3,6 @@ import { style } from '@vanilla-extract/css'
 import { breakpoints } from '@/styles/breakpoints'
 import { theme } from '@/wax/theme/theme.css'
 
-// Embedded activity fits its rows and scrolls in its own pane once they pass the cap.
-export const activityBrowser = style({
-  display: 'flex',
-  flexDirection: 'column',
-  maxHeight: '70dvh',
-  minWidth: 0,
-})
 export const stack = style({ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 })
 export const intro = style({ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 })
 export const heading = style({

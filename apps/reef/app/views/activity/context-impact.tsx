@@ -9,7 +9,7 @@ const units = ['B', 'kB', 'MB', 'GB', 'TB', 'PB', 'EB'] as const
  * A partial total sums only finished work and changes when running work ends.
  */
 export function ContextImpact({ bytes, partial = false }: { bytes?: string; partial?: boolean }) {
-  const impact = bytes === undefined ? undefined : describe(BigInt(bytes), partial)
+  const impact = bytes === undefined ? undefined : describeContextImpact(BigInt(bytes), partial)
   return (
     <Typography.CodeSmallInline
       variant={impact?.variant ?? 'tertiary'}
@@ -21,7 +21,8 @@ export function ContextImpact({ bytes, partial = false }: { bytes?: string; part
   )
 }
 
-function describe(value: bigint, partial: boolean) {
+/** Rounded label, spoken meaning, one-word change, exact title and tone for net context bytes. */
+export function describeContextImpact(value: bigint, partial: boolean) {
   const magnitude = value < 0n ? -value : value
   // Round before selecting the unit so 999.5 kB becomes 1 MB, not 1,000 kB.
   let size = Number(Number(magnitude).toPrecision(3))
@@ -35,6 +36,7 @@ function describe(value: bigint, partial: boolean) {
   const exact = `${magnitude.toLocaleString('en-US')} ${magnitude === 1n ? 'byte' : 'bytes'}${value === 0n ? '' : ` ${direction}`}`
   return {
     label: `${value < 0n ? '−' : value > 0n ? '+' : ''}${formatted}`,
+    change: value < 0n ? 'Saved' : value > 0n ? 'Added' : 'No change',
     meaning: `${value === 0n ? 'No net context change' : `${formatted} ${direction}`}${partial ? ' so far' : ''}`,
     title: `${partial ? 'Some work is still running. This total changes when it ends. ' : ''}${exact}. Display values are rounded. Compare retained output with operation results. Parent totals use exact byte counts. Totals include all pages. This measures payload bytes, not tokens.`,
     variant:

@@ -1,4 +1,5 @@
 import type { ActivityPage, ActivityRow } from '@/views/activity/types'
+import type { ActivitySummaryData, SummaryDays } from './activity-summary'
 
 export const ACTIVITY_CHILD_WINDOW = 100
 /** The Overview shows only the latest roots and links to the Activity page for the rest. */
@@ -23,8 +24,16 @@ export type ActivityPageValue = { kind: 'page'; page: ActivityPage }
 /** Pending-action counts keyed by Workspace path. Null marks a count that is unavailable. */
 export type ActionCounts = Record<string, string | null>
 export type ActivityCountValue = { kind: 'count'; counts: ActionCounts }
+/** Which summary a stream follows: a Workspace ID and a period. */
+export interface ActivitySummaryInput {
+  workspace: string
+  days: SummaryDays
+}
+export type ActivitySummaryValue = { kind: 'summary'; summary: ActivitySummaryData }
+/** Every value kind a stream can carry. */
+export type ActivityStreamValue = ActivityPageValue | ActivityCountValue | ActivitySummaryValue
 /** One stream's server-sent events. A stream carries only its own value kind. */
-export type ActivityStreamEvent<Value extends ActivityPageValue | ActivityCountValue> =
+export type ActivityStreamEvent<Value extends ActivityStreamValue> =
   | Value
   | { kind: 'heartbeat' }
   | { kind: 'unavailable' }

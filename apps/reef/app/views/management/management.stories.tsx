@@ -10,6 +10,7 @@ import { OrganizationWorkspacesPage } from './organization-workspaces-page'
 import { WorkspaceMembersPage, type WorkspaceMembersPageProps } from './workspace-members-page'
 import { Activity } from '@/views/activity/activity'
 import type { ActivityRow } from '@/views/activity/types'
+import { ActivitySummary } from '@/views/activity/summary/summary'
 import { WorkspaceOverview, type WorkspaceOverviewProps } from './workspace-overview'
 
 const form = { csrf: 'storybook-csrf', requestId: 'storybook-request' }
@@ -92,7 +93,6 @@ const activityPage = (rows: ActivityRow[], owner: string | null = null) => (
     }}
   />
 )
-const emptyActivity = activityPage([])
 const emptyAgentActivity = activityPage([], agent.name)
 const overview: WorkspaceOverviewProps = {
   workspace,
@@ -115,7 +115,6 @@ const overview: WorkspaceOverviewProps = {
   ],
   form,
   recipes: [],
-  activity: emptyActivity,
   owners,
   ownMembership: null,
 }
@@ -183,6 +182,53 @@ export const Unavailable: Story = { render: () => <ManagementError status={503} 
 
 // Overview
 export const OwnerOverview: Story = { render: () => <WorkspaceOverview {...overview} /> }
+// The last week's totals sit under the cards.
+export const SummaryOverview: Story = {
+  render: () => (
+    <WorkspaceOverview
+      {...overview}
+      summary={
+        <ActivitySummary
+          days={7}
+          onDaysChange={() => {}}
+          calls={{
+            answered: 128,
+            blocked: 4,
+            notAllowed: 2,
+            needsSetup: 0,
+            failed: 3,
+            canceled: 0,
+          }}
+          stopped={[
+            {
+              callPath: 'coral.providers.github.deleteRepository',
+              blocked: 4,
+              notAllowed: 0,
+              needsSetup: 0,
+            },
+            {
+              callPath: 'coral.providers.gmail.sendMessage',
+              blocked: 0,
+              notAllowed: 2,
+              needsSetup: 0,
+            },
+          ]}
+          operations={[
+            { callPath: 'coral.providers.github.getIssue', calls: 81 },
+            { callPath: 'coral.providers.linear.searchIssues', calls: 40 },
+            { callPath: 'coral.providers.gmail.sendMessage', calls: 16 },
+          ]}
+          approvals={{ approved: 5, declined: 2, medianWaitSeconds: 95 }}
+          contextImpactBytes="-3204411"
+          contextActors={[
+            { key: 'you', label: 'You', bytes: '-2900000' },
+            { key: 'triage', label: 'Triage agent', bytes: '-304411' },
+          ]}
+        />
+      }
+    />
+  ),
+}
 // Each card lists three rows, then links to the page that lists them all.
 export const CrowdedOverview: Story = {
   render: () => (
@@ -208,27 +254,6 @@ export const CrowdedOverview: Story = {
         profile: { user: `users/u${i}`, name, email: `u${i}@example.com`, local: false },
         enabled: true,
       }))}
-    />
-  ),
-}
-// A long history stops at the pane's cap and scrolls inside it.
-export const BusyOverview: Story = {
-  render: () => (
-    <WorkspaceOverview
-      {...overview}
-      activity={activityPage(
-        Array.from({ length: 25 }, (_, i) => ({
-          kind: 'task' as const,
-          name: `${workspace.name}/tasks/t${i}`,
-          workspace: workspace.name,
-          agent: '',
-          actor: 'you',
-          intent: `Triage issue batch ${i + 1}`,
-          outcome: 'success',
-          startedAt: '2026-09-22T09:00:00.000Z',
-          endedAt: '2026-09-22T09:01:00.000Z',
-        })),
-      )}
     />
   ),
 }

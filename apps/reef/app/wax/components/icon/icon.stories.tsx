@@ -61,10 +61,12 @@ const productIconNames = [
   'Save',
   'Search',
   'Settings',
+  'ShieldBan',
   'Slack',
   'SquareFunction',
   'Terminal',
   'TriangleAlertFull',
+  'UserRoundX',
   'X',
 ] as const satisfies readonly IconName[]
 

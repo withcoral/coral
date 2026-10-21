@@ -1,16 +1,12 @@
 import { createHash } from 'node:crypto'
 import { Code, ConnectError } from '@connectrpc/connect'
-import type {
-  ActivityCountValue,
-  ActivityPageValue,
-  ActivityStreamEvent,
-} from './activity-live-types'
+import type { ActivityStreamEvent, ActivityStreamValue } from './activity-live-types'
 import { privateHeaders, type ManagementApi } from './management.server'
 
 /** Compare authorized evidence, not clock samples. Otherwise unrelated private
  * mutations could leak through changing duration fields in an unchanged view.
  */
-function evidence(value: ActivityPageValue | ActivityCountValue) {
+function evidence(value: ActivityStreamValue) {
   return createHash('sha256')
     .update(
       JSON.stringify(value, (key, field: unknown) =>
@@ -33,7 +29,7 @@ export const STREAM_LIFETIME_MS = 2 * 60_000
  * activity read. No idle reload timer, raw invalidation hints or hidden payloads reach the
  * browser.
  */
-export function activityStream<Value extends ActivityPageValue | ActivityCountValue>(
+export function activityStream<Value extends ActivityStreamValue>(
   request: Request,
   api: Pick<ManagementApi, 'activity'>,
   read: (signal: AbortSignal) => Promise<Value>,

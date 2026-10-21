@@ -1,0 +1,65 @@
+/** How the ended Operation calls in a window ended, by who acts next. */
+export interface CallOutcomes {
+  /** The upstream returned a complete response, which may still be an error response. */
+  answered: number
+  /** A rule stopped the call: a disabled operation, a required approval, access, or a destination. */
+  blocked: number
+  /** A person declined the approval or the account connection, or let it expire. */
+  notAllowed: number
+  /** A provider, account or credential needs repair. */
+  needsSetup: number
+  /** The program's call or the upstream failed, or the result is unknown. */
+  failed: number
+  /** The run ended before the call did. */
+  canceled: number
+}
+export type CallOutcome = keyof CallOutcomes
+/** The outcomes a person or a rule stopped. */
+export type StopReason = 'blocked' | 'notAllowed' | 'needsSetup'
+
+/** One operation's stopped calls, split by who must act. */
+export type StoppedOperation = { callPath: string } & Record<StopReason, number>
+/** One operation's ended calls. */
+export interface OperationCalls {
+  callPath: string
+  calls: number
+}
+/** Approval decisions made in the window. */
+export interface ApprovalDecisions {
+  approved: number
+  declined: number
+  /** Median time from the request to the decision. Null when nobody decided. */
+  medianWaitSeconds: number | null
+}
+/** One caller's net context bytes. */
+export interface ContextEntry {
+  key: string
+  label: string
+  /** Exact net bytes; negative means context was saved. */
+  bytes: string
+}
+
+/** One window's totals, as the loader and the stream supply them. */
+export interface ActivitySummaryData {
+  calls: CallOutcomes
+  /** Most stopped first. */
+  stopped: readonly StoppedOperation[]
+  /** Most called first. */
+  operations: readonly OperationCalls[]
+  approvals: ApprovalDecisions
+  contextImpactBytes?: string
+  contextImpactPartial?: boolean
+  /** Net bytes per caller, most saved first. They add up to `contextImpactBytes`. */
+  contextActors?: readonly ContextEntry[]
+}
+
+/** Days a summary can cover. */
+export const SUMMARY_DAYS = [1, 7, 30] as const
+export type SummaryDays = (typeof SUMMARY_DAYS)[number]
+export const DEFAULT_SUMMARY_DAYS: SummaryDays = 7
+
+/** A period the summary offers, or undefined. */
+export function summaryDays(value: unknown): SummaryDays | undefined {
+  const days = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value
+  return SUMMARY_DAYS.find((option) => option === days)
+}

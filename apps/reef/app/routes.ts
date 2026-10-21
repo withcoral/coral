@@ -14,6 +14,7 @@ export default [
   layout('routes/_protected.tsx', [
     route('activity/observe', 'routes/activity-observe.ts'),
     route('activity/count', 'routes/activity-count.ts'),
+    route('activity/summary', 'routes/activity-summary.ts'),
     route('activity/resolve', 'routes/activity-resolve.ts'),
     route('provider-setup/oauth/callback', 'routes/provider-setup-oauth-callback.ts'),
     route(
