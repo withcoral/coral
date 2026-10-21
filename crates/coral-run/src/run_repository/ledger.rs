@@ -43,6 +43,8 @@ pub(crate) struct Chunk<'a> {
     lease_until_unix_nanos: Option<i64>,
     /// The termination intent this chunk records in its head update.
     termination: Option<&'a RequestedTermination>,
+    /// The worker claim the Run row must still hold for this chunk to land.
+    worker_claim_id: Option<&'a str>,
 }
 
 impl<'a> Chunk<'a> {
@@ -59,7 +61,16 @@ impl<'a> Chunk<'a> {
             output_bytes: run.accumulated_output_bytes,
             lease_until_unix_nanos: None,
             termination: None,
+            worker_claim_id: None,
         }
+    }
+
+    /// Predicates the chunk on the Run row still holding `claim_id` as its
+    /// worker claim: the start mark, written before any execution claim
+    /// exists, must not land on a claim recovery released meanwhile.
+    pub(crate) const fn held_by_worker(mut self, claim_id: &'a str) -> Self {
+        self.worker_claim_id = Some(claim_id);
+        self
     }
 
     /// Appends an Event after the ones already in the chunk.
@@ -171,6 +182,9 @@ pub(super) async fn commit_chunk_with(
         .and_where(Expr::col(ProgramRunRecords::Id).eq(chunk.run_id.to_string()))
         .and_where(Expr::col(ProgramRunRecords::State).eq(RunState::Running.as_storage_str()))
         .and_where(Expr::col(ProgramRunRecords::ChunkSequence).eq(head));
+    if let Some(worker_claim_id) = chunk.worker_claim_id {
+        statement.and_where(Expr::col(ProgramRunRecords::WorkerClaimId).eq(worker_claim_id));
+    }
     match chunk.execution_claim_id {
         Some(claim_id) => {
             statement.and_where(Expr::col(ProgramRunRecords::ExecutionClaimId).eq(claim_id));
@@ -199,11 +213,12 @@ pub(super) async fn commit_chunk_with(
 /// change between the update and this read. A missing row counts as a claim
 /// mismatch: no row holds the chunk's claim.
 async fn rejection(transaction: &mut Transaction<'_>, chunk: &Chunk<'_>) -> Result<Error, Error> {
-    let row: Option<(Option<String>, String)> = transaction
+    let row: Option<(Option<String>, Option<String>, String)> = transaction
         .fetch_optional(
             Query::select()
                 .columns([
                     ProgramRunRecords::ExecutionClaimId,
+                    ProgramRunRecords::WorkerClaimId,
                     ProgramRunRecords::State,
                 ])
                 .from(ProgramRunRecords::Table)
@@ -215,7 +230,12 @@ async fn rejection(transaction: &mut Transaction<'_>, chunk: &Chunk<'_>) -> Resu
         )
         .await?;
     Ok(match row {
-        Some((claim_id, state)) if claim_id.as_deref() == chunk.execution_claim_id => {
+        Some((claim_id, worker_claim_id, state))
+            if claim_id.as_deref() == chunk.execution_claim_id
+                && chunk
+                    .worker_claim_id
+                    .is_none_or(|held| worker_claim_id.as_deref() == Some(held)) =>
+        {
             if RunState::from_storage_str(&state)?.is_terminal() {
                 Error::RunEnded
             } else {

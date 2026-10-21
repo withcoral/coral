@@ -340,8 +340,9 @@ impl ApprovalModule {
         }
         let Some(owner) = owner::local_owner(&self.owners, &self.database, workspace, &run).await?
         else {
-            // A terminal Run: the record answers, as read.
-            return Ok(request);
+            // The Run ended since the snapshot: its terminal write closed the
+            // request, and the record answers.
+            return self.reread(actor, workspace, &run.id, id).await;
         };
         let answer = owner
             .decide(DecisionRequest {
@@ -369,24 +370,34 @@ impl ApprovalModule {
             }
             // Another decision won, or the request was closed meanwhile: the
             // record answers.
-            DecisionAnswer::FromRecord => {
-                let mut tx = self.database.begin_read_snapshot().await?;
-                let run = self.visible_run(&mut tx, actor, workspace, &run.id).await?;
-                let row = approval_repository::load(&mut tx, workspace, id).await?;
-                let request = view(
-                    &mut tx,
-                    &self.workspaces,
-                    actor,
-                    workspace,
-                    &run,
-                    row,
-                    self.now()?,
-                )
-                .await?;
-                tx.commit().await?;
-                Ok(request)
-            }
+            DecisionAnswer::FromRecord => self.reread(actor, workspace, &run.id, id).await,
         }
+    }
+
+    /// The request as a fresh snapshot shows it, through the same visibility
+    /// rules as `get`.
+    async fn reread(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace: &WorkspaceId,
+        run_id: &RunId,
+        id: &ApprovalId,
+    ) -> Result<ApprovalRequest, Error> {
+        let mut tx = self.database.begin_read_snapshot().await?;
+        let run = self.visible_run(&mut tx, actor, workspace, run_id).await?;
+        let row = approval_repository::load(&mut tx, workspace, id).await?;
+        let request = view(
+            &mut tx,
+            &self.workspaces,
+            actor,
+            workspace,
+            &run,
+            row,
+            self.now()?,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(request)
     }
 
     /// Lists safe evidence through the same human-only visibility as request detail.
@@ -466,11 +477,13 @@ async fn decision_required(
     target: &invocation_repository::ApprovalTarget,
     now: i64,
 ) -> Result<bool, Error> {
-    if workspaces
+    if let Err(error) = workspaces
         .check_invoking_principal_in_snapshot(tx, &run.workspace_id, &run.principal, now)
         .await
-        .is_err()
     {
+        // A lost authority makes the request moot; any other failure is the
+        // caller's to see.
+        crate::fence::authority_failure(error)?;
         return Ok(false);
     }
     let operation =
@@ -727,9 +740,10 @@ pub(super) async fn close_for_invocation(
 /// One decision as the Run Owner records it in a chunk: the Approval
 /// Request's transition and its lifecycle event, and the end of a declined
 /// or expired Invocation. A request no longer pending records nothing: the
-/// first decision won, and the record answers. A write that fails with a
-/// definite answer fails the chunk, as any row work's does: the read before
-/// it decides every outcome the request can have.
+/// first decision won, and the record answers. The owner runs its decisions
+/// one at a time, so the read before the write decides every outcome the
+/// request can have; a write that still fails with a definite answer fails
+/// the chunk, as any row work's does.
 pub(crate) struct DecideWork {
     request: DecisionRequest,
     /// Record the decision; `false` closes the request instead, the Run no

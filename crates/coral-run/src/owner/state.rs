@@ -634,9 +634,10 @@ impl OwnerState {
         )
     }
 
-    /// Answers an outside request from memory when nothing is left to decide
-    /// for it: its entity is recorded, or the owner records nothing more.
-    /// Otherwise hands the reply back for the request to go on.
+    /// Answers an outside request from memory when the owner cannot take it
+    /// on: its entity is recorded already, or the owner no longer takes
+    /// requests (its outcome stays unknown to the requester, who reads the
+    /// record). Otherwise hands the reply back for the request to go on.
     fn answer_from_memory(
         &self,
         key: &RequestKey,
@@ -832,11 +833,11 @@ impl OwnerState {
     fn answer_parked(&mut self, answer: impl Fn() -> Result<DecisionAnswer, Error>) -> Vec<Effect> {
         std::mem::take(&mut self.parked)
             .into_iter()
-            .filter_map(|message| match message {
+            .map(|message| match message {
                 Message::Decide { reply, .. } | Message::Cancel { reply, .. } => {
-                    Some(Effect::Answer(reply, answer()))
+                    Effect::Answer(reply, answer())
                 }
-                _ => None,
+                _ => unreachable!("only outside requests are parked"),
             })
             .collect()
     }

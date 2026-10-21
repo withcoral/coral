@@ -1,7 +1,7 @@
 //! The Run Owner (ADR 0018): Program requests answer at Applied (at Recorded
 //! while the owner is suspect), the Run Ledger lands in chunks, the lease
-//! rides every commit, and a claim mismatch stops the owner. The last test
-//! drives `apply` without a database.
+//! rides every commit, and a claim mismatch stops the owner. The `apply`
+//! tables drive the owner's loop without a database.
 use super::*;
 
 use crate::owner::{
@@ -623,11 +623,9 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         );
         let rest = deliver(effects);
         assert!(
-            rest.iter().all(|effect| matches!(
-                effect,
-                Effect::TerminateProgram | Effect::GraceTimer { .. }
-            )),
-            "a stop terminates the Program and starts the shutdown grace: {rest:?}"
+            rest.iter()
+                .all(|effect| matches!(effect, Effect::TerminateProgram)),
+            "a rejected commit terminates the Program; the grace starts with a stop, not here: {rest:?}"
         );
         assert!(matches!(
             answered(&mut waiting),
@@ -1048,11 +1046,9 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         );
         let rest = deliver(effects);
         assert!(
-            rest.iter().all(|effect| matches!(
-                effect,
-                Effect::TerminateProgram | Effect::GraceTimer { .. }
-            )),
-            "a stop terminates the Program and starts the shutdown grace: {rest:?}"
+            rest.iter()
+                .all(|effect| matches!(effect, Effect::TerminateProgram)),
+            "a rejected commit terminates the Program; the grace starts with a stop, not here: {rest:?}"
         );
         assert!(matches!(
             pending_work.lock().expect("settle").as_ref(),

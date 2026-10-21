@@ -215,7 +215,14 @@ impl RunModule {
     ) -> Result<(), Error> {
         match timeout(remaining, drain).await {
             Ok(result) => result,
-            Err(_elapsed) => self.settle_termination(shutdown, true).await.map(drop),
+            // Past the grace: end the Run now, reading it again after a head
+            // another writer moved.
+            Err(_elapsed) => {
+                while !self.settle_termination(shutdown, true).await? {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Ok(())
+            }
         }
     }
 

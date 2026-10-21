@@ -1780,7 +1780,7 @@ async fn concurrent_run_termination_protects_its_group_from_stale_cleanup() {
     };
     let stale_cutoff = entry.completed_at_unix_nanos.unwrap();
     // The lost handoff left the Run with no owner: recovery ends it at its
-    // deadline, holding the Run row behind the cleanup's hold.
+    // deadline, contending with cleanup for the Run row the blocker holds.
     fixture.move_deadline_into_the_past(&run).await;
     let mut blocker = fixture.tasks.database.begin().await.unwrap();
     coral_run::retention::hold_in_transaction(&mut blocker, &fixture.workspace, &run)

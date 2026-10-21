@@ -5,8 +5,9 @@
 //! The owner's own writes outside its chunk commits (the start mark and the
 //! terminal write here, the Interrupted record and the settle beside them)
 //! read the Run row without holding it: the owner runs one write at a time,
-//! nothing writes a nonterminal Run's row from outside it, and every write
-//! is predicated on the claim and the head the row showed.
+//! nothing writes a nonterminal Run's row from outside it while it lives
+//! (recovery's pass writes once it retired), and every write is predicated
+//! on the claim and the head the row showed.
 
 use coral_workspace::AuthenticatedPrincipal;
 

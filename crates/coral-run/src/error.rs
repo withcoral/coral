@@ -355,7 +355,7 @@ pub enum Error {
     /// its lease is held by another process (a rolling update), or lapsed
     /// and not yet swept. Nothing was written; the request may be retried,
     /// and once the Run is terminal it is answered from the durable record.
-    #[error("Program Run is owned by another process")]
+    #[error("Program Run has no live owner in this process")]
     OwnedElsewhere,
     /// A fatal Program host failure stopped execution for recovery.
     #[error("Program host terminated execution")]

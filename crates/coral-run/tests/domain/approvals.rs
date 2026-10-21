@@ -1372,6 +1372,10 @@ async fn approval_does_not_bypass_a_later_restrictive_policy_at_the_fence() {
 /// own), and the Run ends Interrupted with the request Closed by the
 /// terminal write.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one decided event seeds the fault; the rest is the one scenario"
+)]
 async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decision() {
     let fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
@@ -1385,7 +1389,42 @@ async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decisi
     let source =
         "try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }";
     let trace = TraceId::parse(&"f".repeat(32)).unwrap();
-    decline_one_run(&fixture, &operation, &approvals, source, &trace).await;
+    // One decided lifecycle event in the Workspace, for the fault to collide
+    // with.
+    let first = fixture
+        .runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission(source),
+        )
+        .await
+        .unwrap();
+    let request = wait_for_approval(
+        &approvals,
+        &operation.principal,
+        &operation.workspace_id,
+        first.run_id(),
+    )
+    .await;
+    approvals
+        .decide(
+            &operation.principal,
+            &operation.workspace_id,
+            &request.id,
+            ApprovalDecision::Decline,
+            None,
+            &trace,
+        )
+        .await
+        .unwrap();
+    wait_for_terminal(
+        &fixture.runs,
+        &operation.principal,
+        &operation.workspace_id,
+        first.run_id(),
+    )
+    .await;
     approval_event_fault(&fixture, true).await;
     let run = fixture
         .runs
@@ -1438,7 +1477,8 @@ async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decisi
             .await
             .unwrap()
             .iter()
-            .all(|event| event.state == ApprovalState::Closed),
+            .map(|event| event.state)
+            .eq([ApprovalState::Closed]),
         "the terminal write closed the request; the decision wrote nothing"
     );
     assert!(
@@ -1450,59 +1490,14 @@ async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decisi
         )
         .await
         .iter()
-        .all(|event| !matches!(
-            event.kind(),
-            RunEventKind::InvocationEnded { result_kind, .. }
-                if *result_kind != crate::InvocationResultKind::RunTerminated
-        )),
+        .filter_map(|event| match event.kind() {
+            RunEventKind::InvocationEnded { result_kind, .. } => Some(*result_kind),
+            _ => None,
+        })
+        .eq([crate::InvocationResultKind::RunTerminated]),
         "the Invocation ended with the Run, not with the decision"
     );
     approval_event_fault(&fixture, false).await;
-}
-
-/// Runs `source` to its Approval Request, declines it and waits for the
-/// Run's end: one decided lifecycle event in the Workspace.
-async fn decline_one_run(
-    fixture: &TestModules,
-    operation: &OperationFixture,
-    approvals: &ApprovalModule,
-    source: &str,
-    trace: &TraceId,
-) {
-    let run = fixture
-        .runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission(source),
-        )
-        .await
-        .unwrap();
-    let request = wait_for_approval(
-        approvals,
-        &operation.principal,
-        &operation.workspace_id,
-        run.run_id(),
-    )
-    .await;
-    approvals
-        .decide(
-            &operation.principal,
-            &operation.workspace_id,
-            &request.id,
-            ApprovalDecision::Decline,
-            None,
-            trace,
-        )
-        .await
-        .unwrap();
-    wait_for_terminal(
-        &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
-        run.run_id(),
-    )
-    .await;
 }
 
 /// Rejects a second decided (not Closed) lifecycle event in a Workspace:
@@ -1656,7 +1651,7 @@ impl InvocationObserver for ApprovalFailureGate {
 
 /// A decision reads no policy: a decline made after the Operation was
 /// disabled is recorded as the decline, and the Invocation ends declined
-/// before any fence judges the policy.
+/// even though the fence already judged the policy failure.
 #[tokio::test]
 async fn a_decline_after_a_policy_change_is_recorded_as_the_decline() {
     let (gate, release) = FenceGate::blocking();

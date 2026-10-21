@@ -59,9 +59,10 @@
   Owner: the Program paths (Emissions, Logs, Invocation admission, held
   rechecks, the Dispatch Fence, Invocation completion) and the outside
   requests (an approval decision, a cancellation, the deadline) alike. An
-  Event is applied in owner memory and a row write is a `ChunkWork` that
-  joins the owner's chunk commit, whose head update asserts the head the
-  owner tracks in memory. Do not open a transaction that holds the Run row
+  Event is applied in owner memory, a row write is a `ChunkWork` that joins
+  the owner's chunk commit, and an intent (a cancellation, the deadline)
+  rides a chunk's head update or the owner's terminal write; every chunk
+  commit asserts the head the owner tracks in memory. Do not open a transaction that holds the Run row
   from any of these paths, and do not write a nonterminal Run's row from
   outside its owner; recovery's explicit pass is the one outside writer.
   [ADR 0018](docs/adr/0018-run-owner-coordinates-each-run.md) has the

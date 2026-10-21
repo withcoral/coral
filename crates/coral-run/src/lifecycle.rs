@@ -79,8 +79,9 @@ impl RunRecord {
         self.execution_started_at_unix_nanos.is_some()
     }
 
-    /// A termination intent no Principal asked for: the deadline, or an
-    /// interruption. A cancellation's intent is the Run Owner's to apply.
+    /// A termination intent no Principal asked for: the deadline, an
+    /// interruption, or the memory limit. A cancellation's intent is the Run
+    /// Owner's to apply.
     pub(crate) fn request_termination(
         &self,
         kind: RunTerminationKind,

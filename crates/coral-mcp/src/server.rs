@@ -722,7 +722,7 @@ fn run_failure(error: coral_run::Error) -> DispatchError {
         ),
         coral_run::Error::OwnedElsewhere => ToolFailure::stable(
             "run_owned_elsewhere",
-            "Program Run is owned by another process; retry",
+            "Program Run has no live owner in this process; retry",
         ),
         coral_run::Error::Functions(error) => return functions_failure(error),
         coral_run::Error::ProgramValueTooLarge => ToolFailure::stable(
