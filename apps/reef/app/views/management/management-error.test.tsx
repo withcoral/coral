@@ -27,5 +27,5 @@ it.each([
       },
     ],
   })
-  expect(await screen.findByText(message)).toBeInTheDocument()
+  expect(await screen.findByRole('alert', { name: message })).toBeInTheDocument()
 })
