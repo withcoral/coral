@@ -51,10 +51,11 @@ pub(crate) enum Message {
     /// One ready Invocation asks for the Dispatch Fence: it joins the batch
     /// the next chunk commit decides, and answers once that chunk is recorded.
     Fence(Box<FenceRequest>),
-    /// The dispatch one fence decided is over without an upstream result
-    /// (denied, superseded, parked on a refresh, failed, the Run ending):
-    /// its slot under the Fan-out Limit is free. An upstream result frees
-    /// the slot itself, as [`Self::InvocationResult`].
+    /// A fenced Invocation gave back its slot under the Fan-out Limit
+    /// without an upstream result: the fence denied it, another writer ended
+    /// it, it stopped to refresh a token, its send failed, or the Run is
+    /// ending. An Invocation that does send a result frees its slot through
+    /// [`Self::InvocationResult`] instead.
     DispatchEnded,
     /// The Program's execution ended.
     ProgramEnded(ExecutionCompletion),
