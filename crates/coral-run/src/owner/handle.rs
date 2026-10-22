@@ -147,9 +147,10 @@ pub(crate) struct DecisionRequest {
 }
 
 /// Everything the Run Owner's loop decides on: Run Requests from the Program
-/// host and from outside, the outcomes of the effects the hosting task ran,
-/// and the two signals the hosting task adds (the drained mailbox and the
-/// idle tick).
+/// host and from outside, the outcomes of the effects the hosting task ran
+/// (a chunk's answer and what its work recorded or parked, a snapshot check
+/// of the parked waits), and the signals the hosting task adds (the drained
+/// mailbox, the timers, and the change signal's rings).
 pub(crate) enum Message {
     /// The owner exists; commit its first chunk.
     Launch,
