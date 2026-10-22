@@ -1751,6 +1751,54 @@ async fn a_request_for_a_run_being_recovered_is_owned_elsewhere_until_its_chunk_
     );
 }
 
+/// A recovered owner takes the Run over only from the claim and lease the
+/// sweep read: a holder that renewed its lease before the chunk was written
+/// keeps the Run, even once the renewed lease lapsed too. The recovered
+/// owner writes nothing and retires, and the next sweep reads the Run afresh.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_recovered_owner_leaves_a_lease_renewed_since_the_sweep_read_it() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let (workspace_id, principal) = fixture
+        .user_scope("user:renewed-lease", "Renew a swept lease")
+        .await;
+    let run_id = fixture
+        .staged_run(&principal, &workspace_id, "renewed-lease")
+        .await;
+    fixture
+        .hand_to(&workspace_id, &run_id, "slow-holder", None)
+        .await;
+    let (gate, release) = CommitGate::blocking();
+    let next = fixture.next_process_observed(gate.clone());
+    assert_eq!(next.sweep_expired_leases().await.unwrap(), 1);
+    wait_until(|| gate.entered()).await;
+
+    let renewed_until = fixture.clock.next.load(Ordering::SeqCst) + 10;
+    let renewed = fixture
+        .hand_to(&workspace_id, &run_id, "slow-holder", Some(renewed_until))
+        .await;
+    fixture
+        .clock
+        .next
+        .store(renewed_until + 1, Ordering::SeqCst);
+    release
+        .send(())
+        .expect("release the recovered owner's chunk");
+    wait_until(|| !next.has_owner(&run_id)).await;
+    assert_eq!(
+        fixture.run_record(&workspace_id, &run_id).await,
+        renewed,
+        "the recovered owner writes nothing"
+    );
+
+    assert_eq!(next.sweep_expired_leases().await.unwrap(), 1);
+    let ended = fixture.terminal_record(&workspace_id, &run_id).await;
+    assert_eq!(
+        ended.chunk_sequence,
+        renewed.chunk_sequence + 1,
+        "one chunk"
+    );
+}
+
 /// A `running` Run is another process's while its lease lives: one with no
 /// claim (as the previous release left one between acceptance and its claim)
 /// for one lease after acceptance, one another process holds until its lease
