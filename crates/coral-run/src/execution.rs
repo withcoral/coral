@@ -131,10 +131,6 @@ pub(crate) trait ExecutionObserver: Send + Sync {
     /// The owner's task dequeued one message; a test may panic here.
     fn owner_message_dequeued(&self) {}
 
-    /// A recovered owner is about to write its one chunk; a test may hold
-    /// it here.
-    async fn before_recovery_write(&self) {}
-
     /// The owner armed `timer` to fire after `after_nanos` on the host clock.
     fn timer_armed(&self, _timer: &crate::owner::Timer, _after_nanos: i64) {}
 

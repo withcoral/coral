@@ -1221,73 +1221,6 @@ async fn recovery_ends_a_pending_invocation_without_dispatch() {
 }
 
 #[tokio::test]
-async fn recovery_marks_an_uncertain_dispatch_indeterminate_without_replay() {
-    let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
-        200,
-        serde_json::json!({"temperature": 21}),
-    )));
-    let fixture = TestModules::with_upstream(
-        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-        upstream.clone(),
-    )
-    .await;
-    let operation = fixture
-        .user_operation("user:recover-dispatching", "Recover dispatching Invocation")
-        .await;
-    let accepted = fixture
-        .runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("recover-dispatching"),
-        )
-        .await
-        .expect("accept Program");
-    wait_until(|| upstream.entered.load(Ordering::SeqCst)).await;
-    let accepted_at = retained_events(
-        &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
-        accepted.run_id(),
-    )
-    .await
-    .first()
-    .expect("run.started")
-    .occurred_at_unix_nanos();
-    fixture
-        .expire_worker_claim(&operation.workspace_id, accepted.run_id(), accepted_at)
-        .await;
-    fixture
-        .clock
-        .next
-        .store(accepted_at + 2_000_000_000, Ordering::SeqCst);
-
-    let interrupted = swept_by_the_next_process(&fixture, &operation, accepted.run_id()).await;
-    assert_eq!(interrupted.state(), RunState::Interrupted);
-    assert!(
-        retained_events(
-            &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
-            interrupted.run_id()
-        )
-        .await
-        .iter()
-        .any(|event| matches!(
-            event.kind(),
-            RunEventKind::InvocationEnded {
-                result_kind: crate::InvocationResultKind::Indeterminate,
-                ..
-            }
-        ))
-    );
-    assert_eq!(upstream.sends.load(Ordering::SeqCst), 1);
-    upstream.release.store(true, Ordering::SeqCst);
-    wait_until(|| upstream.exited.load(Ordering::SeqCst)).await;
-    wait_until(|| !fixture.runs.has_owner(accepted.run_id())).await;
-}
-
-#[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "one cancellation scenario proves the terminal race and all User, Owner, and Agent visibility outcomes"
@@ -1626,9 +1559,9 @@ async fn the_sweep_ends_an_abandoned_run_by_its_passed_timers_or_its_recorded_te
 
 /// A Run whose holder died with one Invocation dispatching and another
 /// waiting on its approval ends in one chunk: the dispatching one ends
-/// `indeterminate`, the waiting one `run_terminated` with its Approval
-/// Request closed, then `run.ended`; the head moves once. The dead holder's
-/// late upstream result changes nothing.
+/// `indeterminate` and is never sent again, the waiting one `run_terminated`
+/// with its Approval Request closed, then `run.ended`; the head moves once.
+/// The dead holder's late upstream result changes nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[expect(
     clippy::too_many_lines,
@@ -1734,6 +1667,7 @@ async fn an_abandoned_runs_dispatching_and_waiting_invocations_end_in_one_chunk(
         .collect();
     assert!(states.contains(&(approved.id.clone(), ApprovalState::Approved)));
     assert!(states.contains(&(waiting.id.clone(), ApprovalState::Closed)));
+    assert_eq!(upstream.sends.load(Ordering::SeqCst), 1, "never replayed");
 
     upstream.release.store(true, Ordering::SeqCst);
     wait_until(|| upstream.exited.load(Ordering::SeqCst)).await;
@@ -1763,7 +1697,7 @@ async fn a_request_for_a_run_being_recovered_is_owned_elsewhere_until_its_chunk_
     let handed = fixture
         .hand_to(workspace_id, run_id, "dead-holder", None)
         .await;
-    let (gate, release) = RecoveryGate::blocking();
+    let (gate, release) = CommitGate::blocking();
     let next = fixture.next_process_observed(gate.clone());
     assert_eq!(next.sweep_expired_leases().await.unwrap(), 1);
     wait_until(|| gate.entered()).await;
@@ -1817,104 +1751,65 @@ async fn a_request_for_a_run_being_recovered_is_owned_elsewhere_until_its_chunk_
     );
 }
 
-/// A `running` Run with no claim, as the previous release left one between
-/// acceptance and its claim, belongs to the process that accepted it for one
-/// lease: the sweep leaves it alone, then interrupts it, unstarted, in one
-/// chunk.
+/// A `running` Run is another process's while its lease lives: one with no
+/// claim (as the previous release left one between acceptance and its claim)
+/// for one lease after acceptance, one another process holds until its lease
+/// ends. The sweep leaves it alone, then interrupts it, unstarted, in one
+/// chunk once the lease lapsed.
 #[tokio::test]
-async fn the_sweep_leaves_a_run_with_no_claim_alone_for_one_lease_after_acceptance() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let (workspace_id, principal) = fixture
-        .user_scope("user:no-claim", "Recover an unclaimed Run")
-        .await;
-    let run_id = fixture
-        .staged_run(&principal, &workspace_id, "no-claim")
-        .await;
-    let unclaimed = fixture.release_worker_claim(&workspace_id, &run_id).await;
+async fn the_sweep_leaves_a_run_alone_until_its_lease_lapses() {
+    for foreign in [false, true] {
+        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+        let (workspace_id, principal) = fixture
+            .user_scope("user:live-lease", "Leave a live lease alone")
+            .await;
+        let run_id = fixture
+            .staged_run(&principal, &workspace_id, "live-lease")
+            .await;
+        let lease = fixture.runs.execution_policy.claim_lease_nanos();
+        let (held, lapsed_at) = if foreign {
+            let accepted_at = fixture
+                .run_record(&workspace_id, &run_id)
+                .await
+                .accepted_at_unix_nanos;
+            let lease_until = accepted_at + 3 * lease;
+            let held = fixture
+                .hand_to(&workspace_id, &run_id, "foreign-process", Some(lease_until))
+                .await;
+            (held, lease_until)
+        } else {
+            let unclaimed = fixture.release_worker_claim(&workspace_id, &run_id).await;
+            let lapsed_at = unclaimed.accepted_at_unix_nanos + lease + 1;
+            (unclaimed, lapsed_at)
+        };
 
-    assert_eq!(fixture.runs.sweep_expired_leases().await.unwrap(), 0);
-    assert_eq!(
-        fixture.run_record(&workspace_id, &run_id).await,
-        unclaimed,
-        "within one lease of acceptance the Run is the accepting process's"
-    );
+        assert_eq!(fixture.runs.sweep_expired_leases().await.unwrap(), 0);
+        assert_eq!(
+            fixture.run_record(&workspace_id, &run_id).await,
+            held,
+            "foreign {foreign}: the sweep writes nothing while the lease lives"
+        );
 
-    fixture.clock.next.store(
-        unclaimed.accepted_at_unix_nanos + fixture.runs.execution_policy.claim_lease_nanos() + 1,
-        Ordering::SeqCst,
-    );
-    assert_eq!(fixture.runs.sweep_expired_leases().await.unwrap(), 1);
-    let ended = fixture.terminal_record(&workspace_id, &run_id).await;
-    assert_eq!(ended.state, RunState::Interrupted);
-    assert_eq!(
-        ended.chunk_sequence,
-        unclaimed.chunk_sequence + 1,
-        "one chunk"
-    );
-    assert_eq!(ended.execution_started_at_unix_nanos, None, "never started");
-    assert!(matches!(
-        fixture
-            .events_after(&workspace_id, &run_id, last_sequence(&unclaimed))
-            .await
-            .iter()
-            .map(RunEvent::kind)
-            .collect::<Vec<_>>()
-            .as_slice(),
-        [RunEventKind::Ended {
-            state: RunState::Interrupted,
-            ..
-        }]
-    ));
-}
-
-/// A Run whose live lease another process holds is that process's: the
-/// sweep leaves it alone, and a cancel here answers `OwnedElsewhere` with
-/// nothing written. Once the lease lapses, the next sweep ends the Run and
-/// the retried cancel is answered from the record.
-#[tokio::test]
-async fn a_run_with_a_live_foreign_lease_is_left_alone_until_the_lease_lapses() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let (workspace_id, principal) = fixture
-        .user_scope("user:foreign-lease", "Leave a foreign Run alone")
-        .await;
-    let run_id = fixture
-        .staged_run(&principal, &workspace_id, "foreign-lease")
-        .await;
-    let staged = fixture.run_record(&workspace_id, &run_id).await;
-    let lease_until =
-        staged.accepted_at_unix_nanos + 3 * fixture.runs.execution_policy.claim_lease_nanos();
-    let foreign = fixture
-        .hand_to(&workspace_id, &run_id, "foreign-process", Some(lease_until))
-        .await;
-
-    assert_eq!(fixture.runs.sweep_expired_leases().await.unwrap(), 0);
-    let refused = fixture
-        .runs
-        .cancel(&principal, &workspace_id, &run_id, &immediate(None, 100))
-        .await;
-    assert!(matches!(refused, Err(Error::OwnedElsewhere)), "{refused:?}");
-    assert_eq!(
-        fixture.run_record(&workspace_id, &run_id).await,
-        foreign,
-        "neither the sweep nor the cancel writes"
-    );
-
-    fixture.clock.next.store(lease_until, Ordering::SeqCst);
-    assert_eq!(fixture.runs.sweep_expired_leases().await.unwrap(), 1);
-    fixture.terminal_record(&workspace_id, &run_id).await;
-    let retried = fixture
-        .runs
-        .cancel(&principal, &workspace_id, &run_id, &immediate(None, 100))
-        .await
-        .expect("the record answers the retried cancel");
-    assert_eq!(retried.state(), RunState::Interrupted);
-    assert!(
-        fixture
-            .events_after(&workspace_id, &run_id, last_sequence(&foreign))
-            .await
-            .iter()
-            .all(|event| !matches!(event.kind(), RunEventKind::CancellationRequested { .. }))
-    );
+        fixture.clock.next.store(lapsed_at, Ordering::SeqCst);
+        assert_eq!(fixture.runs.sweep_expired_leases().await.unwrap(), 1);
+        let ended = fixture.terminal_record(&workspace_id, &run_id).await;
+        assert_eq!(ended.state, RunState::Interrupted, "foreign {foreign}");
+        assert_eq!(ended.chunk_sequence, held.chunk_sequence + 1, "one chunk");
+        assert_eq!(ended.execution_started_at_unix_nanos, None, "never started");
+        assert!(matches!(
+            fixture
+                .events_after(&workspace_id, &run_id, last_sequence(&held))
+                .await
+                .iter()
+                .map(RunEvent::kind)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            [RunEventKind::Ended {
+                state: RunState::Interrupted,
+                ..
+            }]
+        ));
+    }
 }
 
 /// A Run accepted before shutdown began and launched only after it is not

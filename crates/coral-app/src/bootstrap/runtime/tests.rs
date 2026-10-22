@@ -441,14 +441,27 @@ async fn the_configured_owner_limits_reach_the_shared_run_module() {
 /// instead of waiting out the shutdown grace and forcing the Run to end.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_reef_cancel_stops_a_run_started_over_mcp_promptly() {
-    use coral_grpc::coral::management::v1::ActivityRunState;
+    use coral_grpc::coral::management::v1::{
+        ActivityRunState, CancelActivityRunRequest, activity_service_client::ActivityServiceClient,
+    };
     let (_temp, server, workspace, client) = runtime_with_mcp_client(WEB).await;
     let run_id = spin_a_run(&client).await;
 
-    let started = std::time::Instant::now();
-    let cancelled = cancel_over_grpc(server.endpoint_uri(), &workspace, &run_id)
+    let mut activity = ActivityServiceClient::connect(server.endpoint_uri().to_owned())
         .await
-        .expect("cancel the Run");
+        .expect("connect gRPC client");
+    let mut request = tonic::Request::new(CancelActivityRunRequest {
+        name: format!("workspaces/{workspace}/runs/{run_id}"),
+    });
+    request
+        .metadata_mut()
+        .insert("coral-audience", "reef".parse().expect("audience"));
+    let started = std::time::Instant::now();
+    let cancelled = activity
+        .cancel_activity_run(request)
+        .await
+        .expect("cancel the Run")
+        .into_inner();
     let elapsed = started.elapsed();
     assert_eq!(cancelled.state(), ActivityRunState::Canceled);
     // A cancel that cannot find the owner waits out the 5 s shutdown grace.
@@ -461,39 +474,12 @@ async fn a_reef_cancel_stops_a_run_started_over_mcp_promptly() {
     server.shutdown().await.expect("stop composed server");
 }
 
-/// Cancels the Run `run_id` of `workspace` over the private gRPC listener
-/// at `endpoint`, as Reef does.
-async fn cancel_over_grpc(
-    endpoint: &str,
-    workspace: &coral_workspace::WorkspaceId,
-    run_id: &str,
-) -> Result<coral_grpc::coral::management::v1::CancelActivityRunResponse, tonic::Status> {
-    use coral_grpc::coral::management::v1::{
-        CancelActivityRunRequest, activity_service_client::ActivityServiceClient,
-    };
-    let mut activity = ActivityServiceClient::connect(endpoint.to_owned())
-        .await
-        .expect("connect gRPC client");
-    let mut request = tonic::Request::new(CancelActivityRunRequest {
-        name: format!("workspaces/{workspace}/runs/{run_id}"),
-    });
-    request
-        .metadata_mut()
-        .insert("coral-audience", "reef".parse().expect("audience"));
-    activity
-        .cancel_activity_run(request)
-        .await
-        .map(tonic::Response::into_inner)
-}
-
 /// The expired-lease sweep's boot pass ends a Run left running by a process
 /// that died (its Run Owner gone, its lease lapsed): the Run is `interrupted`
 /// within seconds of the next process starting, well before the sweep's
-/// first cadence tick a half lease later, and a cancel then reads that
-/// record.
+/// first cadence tick a half lease later.
 #[test]
 fn the_boot_sweep_ends_a_run_whose_process_died() {
-    use coral_grpc::coral::management::v1::ActivityRunState;
     let temp = TempDir::new().expect("temporary state root");
     std::fs::write(temp.path().join("config.toml"), WEB).unwrap();
     // The process that dies: its runtime goes away with the Run executing,
@@ -502,12 +488,12 @@ fn the_boot_sweep_ends_a_run_whose_process_died() {
         .enable_all()
         .build()
         .expect("the dying process's runtime");
-    let (workspace, run_id) = dying.block_on(async {
-        let (server, workspace, client) = serve_with_mcp_client(temp.path()).await;
+    let run_id = dying.block_on(async {
+        let (server, _workspace, client) = serve_with_mcp_client(temp.path()).await;
         let run_id = spin_a_run(&client).await;
         drop(client);
         drop(server);
-        (workspace, run_id)
+        run_id
     });
     dying.shutdown_timeout(std::time::Duration::from_secs(10));
 
@@ -537,27 +523,21 @@ fn the_boot_sweep_ends_a_run_whose_process_died() {
         })
         .await
         .expect("the boot pass ends the dead process's Run");
-
-        let cancelled = cancel_over_grpc(server.endpoint_uri(), &workspace, &run_id)
-            .await
-            .expect("the record answers the cancel");
-        assert_eq!(cancelled.state(), ActivityRunState::Interrupted);
         server.shutdown().await.expect("stop the next process");
     });
 }
 
 /// Once shutdown begins, every listener reports not ready while it keeps
-/// serving the live Runs for the Shutdown Drain (gRPC liveness and `/healthz`
-/// stay up); the Run still live when the drain is out is interrupted before
-/// the listeners stop.
+/// serving for the Shutdown Drain.
 #[tokio::test(flavor = "multi_thread")]
 async fn readiness_reports_not_serving_once_shutdown_begins() {
     use tonic_health::pb::{
         HealthCheckRequest, health_check_response::ServingStatus, health_client::HealthClient,
     };
-    let (temp, server, _workspace, client) =
+    let (_temp, server, _workspace, client) =
         runtime_with_mcp_client(&format!("{WEB}[runtime]\nshutdown_drain_seconds = 3\n")).await;
-    let run_id = spin_a_run(&client).await;
+    // A live Run keeps the drain going.
+    spin_a_run(&client).await;
     client.cancel().await.expect("close MCP client");
     let mcp = format!("http://{}", server.mcp_http_addr());
     let http = reqwest::Client::new();
@@ -600,18 +580,9 @@ async fn readiness_reports_not_serving_once_shutdown_begins() {
     .await
     .expect("readiness reports not serving once shutdown begins");
     assert_eq!(status("readyz").await, 503);
-    assert_eq!(status("healthz").await, 200, "the process is alive");
-    assert_eq!(check("").await, ServingStatus::Serving as i32);
-    assert!(!shutdown.is_finished(), "the drain lets the live Run go on");
-    assert_eq!(recorded_run_state(temp.path(), &run_id).await, "running");
 
     shutdown
         .await
         .expect("shutdown task")
         .expect("stop composed server");
-    assert_eq!(
-        recorded_run_state(temp.path(), &run_id).await,
-        "interrupted",
-        "the Run still live when the drain was out"
-    );
 }

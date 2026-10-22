@@ -93,7 +93,7 @@ pub(crate) async fn find_exact_in_transaction(
 /// Every `running` Run no process owns at `now_unix_nanos`, as the
 /// expired-lease sweep reads them in one snapshot, in acceptance order: its
 /// lease lapsed, or it has no claim and was accepted more than `lease_nanos`
-/// ago (the previous release claimed a moment after acceptance).
+/// ago: the predicate of `RunRecord::lease_lapsed`.
 pub(crate) async fn lapsed_leases(
     transaction: &mut Transaction<'_>,
     now_unix_nanos: i64,

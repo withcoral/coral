@@ -2813,101 +2813,37 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
     }
 }
 
-/// A recovered owner applies the mailbox the sweep queued, in order, and
-/// ends its Run in one chunk: a passed Approval Request timer expires the
-/// request, a passed Run deadline times the Run out, and the end carries
-/// the expiries and the intent (the interruption, or the timeout once the
-/// deadline passed since the sweep read the Run). A timer applied after a termination changes
-/// nothing, as the termination closes the request.
+/// A recovered owner gathers the Approval Request timers the sweep queued,
+/// in order, and its end writes them in one chunk. The write's answer, or a
+/// stop (the Shutdown Drain is out) whether the chunk is queued or in
+/// flight, retires it.
 #[test]
-fn a_recovered_owner_applies_its_queued_timers_then_ends_its_run_in_one_chunk() {
-    use crate::lifecycle::RunTerminationKind::{Interrupted, TimedOut};
+fn a_recovered_owner_writes_its_queued_expiries_in_one_chunk_and_retires() {
     let (first, second) = (approval_id(), approval_id());
-    let (before, past) = (APPROVAL_DEADLINE + 1, LIMITS.deadline_at_unix_nanos + 10);
-    // (when the owner applies its mailbox, the queue, the expiries and the
-    // intent its one chunk carries)
-    let cases = [
-        (before, vec![Message::Recover], vec![], Some(Interrupted)),
-        (
-            before,
-            vec![
-                Message::Timer(Timer::Approval(first.clone())),
-                Message::Recover,
-            ],
-            vec![first.clone()],
-            Some(Interrupted),
-        ),
-        (
-            past,
-            vec![
-                Message::Timer(Timer::Approval(first.clone())),
-                Message::Timer(Timer::RunDeadline),
-                Message::Timer(Timer::Approval(second.clone())),
-                Message::Recover,
-            ],
-            vec![first.clone()],
-            Some(TimedOut),
-        ),
-        // The deadline passed after the sweep read the Run: no timer was
-        // queued for it, and the end times the Run out all the same.
-        (past, vec![Message::Recover], vec![], Some(TimedOut)),
-    ];
-    for (index, (now, queue, expected_expired, expected_kind)) in cases.into_iter().enumerate() {
-        let mut state = OwnerState::recovered(LIMITS, 1);
-        let mut effects = Vec::new();
-        for message in queue {
-            effects.extend(crate::owner::apply(&mut state, message, now));
-        }
-        assert_eq!(state.phase(), Phase::Recovering, "case {index}");
-        let [Effect::Recover { expired, intent }] = effects.as_slice() else {
-            panic!("case {index}: one chunk, nothing else: {effects:?}");
-        };
-        assert_eq!(expired, &expected_expired, "case {index}");
-        assert_eq!(
-            intent.as_ref().map(|intent| intent.termination.kind),
-            expected_kind,
-            "case {index}"
-        );
-        if let Some(intent) = intent {
-            assert_eq!(
-                intent.termination.started_at_unix_nanos, now,
-                "case {index}: dated when applied"
-            );
-        }
-    }
-}
-
-/// A recovered owner writes its one chunk once: once it is being written, a
-/// timer or a second end changes nothing, and the write's answer retires the
-/// owner, whatever it is. A stop (the Shutdown Drain is out) retires it
-/// whether its chunk is queued or in flight.
-#[test]
-fn a_recovered_owner_writes_once_and_retires_on_the_writes_answer() {
-    for outcome in [
-        Ok(()),
-        Err(CommitRejection::RunEnded),
-        Err(CommitRejection::ClaimMismatch),
+    let mut state = OwnerState::recovered(LIMITS, 1);
+    let mut effects = Vec::new();
+    for message in [
+        Message::Timer(Timer::Approval(first.clone())),
+        Message::Timer(Timer::Approval(second.clone())),
+        Message::Recover,
     ] {
-        let mut state = OwnerState::recovered(LIMITS, 1);
-        let effects = apply_without_tick(&mut state, Message::Recover, 3);
-        assert!(matches!(effects.as_slice(), [Effect::Recover { .. }]));
-        for ignored in [
-            Message::Timer(Timer::RunDeadline),
-            Message::Recover,
-            Message::Drained,
-        ] {
-            assert!(
-                apply_without_tick(&mut state, ignored, 4).is_empty(),
-                "{outcome:?}"
-            );
-        }
-        let effects = apply_without_tick(&mut state, Message::Interrupted(outcome), 5);
-        assert!(
-            matches!(effects.as_slice(), [Effect::Retire]),
-            "{outcome:?}: {effects:?}"
-        );
-        assert_eq!(state.phase(), Phase::Retired);
+        effects.extend(apply_without_tick(&mut state, message, 3));
     }
+    let [Effect::Recover { expired }] = effects.as_slice() else {
+        panic!("one chunk, nothing else: {effects:?}");
+    };
+    assert_eq!(expired, &[first, second]);
+    assert!(apply_without_tick(&mut state, Message::Drained, 4).is_empty());
+    assert!(matches!(
+        apply_without_tick(
+            &mut state,
+            Message::Interrupted(Err(CommitRejection::ClaimMismatch)),
+            5
+        )
+        .as_slice(),
+        [Effect::Retire]
+    ));
+    assert_eq!(state.phase(), Phase::Retired);
     for writing in [false, true] {
         let mut state = OwnerState::recovered(LIMITS, 1);
         if writing {

@@ -2,7 +2,8 @@
 //! ownership, so a `running` Run whose lease lapsed with no owner in this
 //! process, or one with no claim accepted more than one lease ago, has no
 //! process that owns it. The sweep recreates its Run Owner with the mailbox
-//! already queued (every timer that passed, in deadline order, then the end)
+//! already queued (every Approval Request timer that passed, in deadline
+//! order, then the end)
 //! and that owner writes one chunk: the expiries, then the Run's end with
 //! every nonterminal Invocation ended, the Run taken over with a new claim.
 //! Coral never resumes a Run.
@@ -19,7 +20,7 @@ use coral_workspace::WorkspaceId;
 use uuid::Uuid;
 
 use crate::approval::ApprovalId;
-use crate::lifecycle::{RequestedTermination, RunRecord, RunTerminationKind};
+use crate::lifecycle::{RunRecord, RunTerminationKind};
 use crate::owner::{self, Message, OwnerHandle, OwnerStart, Timer};
 use crate::termination::end_in_one_chunk;
 use crate::types::AcceptedRun;
@@ -157,7 +158,7 @@ impl RunModule {
     /// over from `taken`, the claim its row held when the sweep found its
     /// lease lapsed, with `takeover_claim_id`, expires the `expired` Approval
     /// Requests, and ends the Run with the termination its row records, else
-    /// `intent`, else timed out past its deadline or interrupted. A
+    /// timed out past its deadline, else interrupted. A
     /// termination the row records since the sweep read it was applied
     /// first: only the queued expiries whose deadline came before it still
     /// apply. The row is read without a hold; the write is predicated on the
@@ -175,7 +176,7 @@ impl RunModule {
     /// anything.
     pub(crate) async fn record_recovery(&self, recovery: &RecoveryWrite<'_>) -> Result<(), Error> {
         #[cfg(test)]
-        self.execution_observer.before_recovery_write().await;
+        self.execution_observer.before_chunk_commit().await;
         let mut transaction = self.database.begin().await?;
         let run = run_repository::find_exact_in_transaction(
             &mut transaction,
@@ -221,17 +222,15 @@ impl RunModule {
             }
             _ => recovery.expired.to_vec(),
         };
-        let termination = match (run.termination, recovery.intent) {
-            (Some(recorded), _) => recorded,
-            (None, Some(intent)) => intent.termination,
-            (None, None) => {
-                let kind = if now >= run.deadline_at_unix_nanos {
-                    RunTerminationKind::TimedOut
-                } else {
-                    RunTerminationKind::Interrupted
-                };
-                run.request_termination(kind, now)?.termination
-            }
+        let termination = if let Some(recorded) = run.termination {
+            recorded
+        } else {
+            let kind = if now >= run.deadline_at_unix_nanos {
+                RunTerminationKind::TimedOut
+            } else {
+                RunTerminationKind::Interrupted
+            };
+            run.request_termination(kind, now)?.termination
         };
         end_in_one_chunk(
             &mut transaction,
@@ -255,34 +254,25 @@ pub(crate) struct RecoveryWrite<'a> {
     pub(crate) taken: Option<&'a str>,
     pub(crate) takeover_claim_id: &'a str,
     pub(crate) expired: &'a [ApprovalId],
-    pub(crate) intent: Option<&'a RequestedTermination>,
 }
 
-/// The Run's timers that passed by `now_unix_nanos`, in deadline order: each
-/// Approval Request's still undecided, and the Run deadline. A termination
-/// the row records was applied at its start: only an Approval Request whose
-/// deadline came before it still expires, and the deadline no longer
-/// applies. An Approval Request and the Run deadline at the same instant
-/// expire the request first.
+/// The Run's Approval Request timers that passed by `now_unix_nanos`, in
+/// deadline order: each request still undecided. A termination the row
+/// records was applied at its start: only a request whose deadline came
+/// before it still expires. The Run deadline is judged by the chunk's write,
+/// and no request's deadline comes after it.
 async fn passed_timers(
     transaction: &mut coral_db::Transaction<'_>,
     run: &RunRecord,
     now_unix_nanos: i64,
 ) -> Result<Vec<Timer>, Error> {
-    let applies_before_termination = |deadline: i64| {
-        run.termination
-            .is_none_or(|termination| deadline < termination.started_at_unix_nanos)
-    };
-    let mut timers: Vec<(i64, bool, Timer)> =
-        approval::undecided_by(transaction, run, now_unix_nanos)
-            .await?
-            .into_iter()
-            .filter(|(_, deadline)| applies_before_termination(*deadline))
-            .map(|(approval, deadline)| (deadline, false, Timer::Approval(approval)))
-            .collect();
-    if run.termination.is_none() && run.deadline_at_unix_nanos <= now_unix_nanos {
-        timers.push((run.deadline_at_unix_nanos, true, Timer::RunDeadline));
-    }
-    timers.sort_by_key(|(deadline, run_deadline, _)| (*deadline, *run_deadline));
-    Ok(timers.into_iter().map(|(_, _, timer)| timer).collect())
+    Ok(approval::undecided_by(transaction, run, now_unix_nanos)
+        .await?
+        .into_iter()
+        .filter(|(_, deadline)| {
+            run.termination
+                .is_none_or(|termination| *deadline < termination.started_at_unix_nanos)
+        })
+        .map(|(approval, _)| Timer::Approval(approval))
+        .collect())
 }

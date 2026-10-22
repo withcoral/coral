@@ -88,10 +88,9 @@
   module records its expiry when a holder reads it, and the owner's timer
   only wakes the Invocations parked on it. Do not open a transaction that
   holds the Run row from any of these paths, and do not write a nonterminal
-  Run's row from outside its owner. A Run that lost its owner gets one back:
-  the expired-lease sweep recreates it with the timers that passed queued,
-  and that owner writes the Run's one ending chunk; retention holds and
-  deletes terminal Runs only.
+  Run's row from outside its owner. A Run that lost its owner gets one back
+  from the expired-lease sweep (the Recovery section of ADR 0018); retention
+  holds and deletes terminal Runs only.
   [ADR 0018](docs/adr/0018-run-owner-coordinates-each-run.md) has the
   request model (requests keyed by the entity they decide, the first wins).
 - A Run Owner's write ends on the database's answer, never on the clock: an
@@ -101,13 +100,11 @@
   rejection, a claim mismatch, an ended Run, a corrupt head) stops it; the
   Interrupted record alone retries every answer but a claim mismatch or an
   ended Run. The worker lease is ownership between processes, renewed by
-  every commit; it never ends a Run from inside its own process. The owner's
+  every commit: never write a Run whose live lease another process holds.
+  The lease never ends a Run from inside its own process. The owner's
   own bounds do (suspect after one lease without a commit, self-interrupt
   after three, constants in `crates/coral-run/src/execution.rs`), and the
   supervisor of a panicked owner task writes the same one Interrupted chunk.
-  Never write a Run whose live lease another process holds: during a
-  rolling update the other process owns it, and a request for it here is
-  answered `OwnedElsewhere`.
 - Give each independently identified entity one stable ID as its sole primary
   key. Use a composite primary key only when the tuple is the domain identity.
 - For Workspace-owned data, every externally influenced read or write must

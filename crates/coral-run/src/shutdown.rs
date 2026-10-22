@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::watch;
 use tokio::time::timeout;
 
-use crate::{Error, RunModule, ShutdownDrain};
+use crate::{Error, RunModule};
 
 /// Whether the process still accepts new owners, and how many it admitted
 /// that have not registered yet; shared by every clone of one Run module.
@@ -77,15 +77,9 @@ impl Drop for Admitted {
 }
 
 impl RunModule {
-    /// Returns the Shutdown Drain [`Self::shutdown`] waits.
-    #[must_use]
-    pub const fn shutdown_drain(&self) -> ShutdownDrain {
-        self.shutdown_drain
-    }
-
     /// Replaces the Shutdown Drain on a built module.
     #[cfg(test)]
-    pub(crate) const fn with_shutdown_drain(mut self, drain: ShutdownDrain) -> Self {
+    pub(crate) const fn with_shutdown_drain(mut self, drain: crate::ShutdownDrain) -> Self {
         self.shutdown_drain = drain;
         self
     }

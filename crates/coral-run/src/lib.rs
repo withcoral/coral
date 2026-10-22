@@ -109,15 +109,11 @@
 //! mailbox order with them (see [`owner`]); a request for a nonterminal Run
 //! with no owner in this process is answered `OwnedElsewhere`. The worker
 //! lease is ownership between processes: a Run whose lease lapsed with no
-//! owner here is the expired-lease sweep's, which recreates its owner with
-//! the timers that passed queued, and a Run whose live lease another process
-//! holds is never touched. A Run's timeout and an Approval Request's expiry
-//! are decided only in the owner's pure `apply`, in mailbox order: when its
-//! timer fires (the host fires it on its clock, the sweep queues it for a
-//! recovered owner), or when a request applied first finds the deadline
-//! passed. The owner's own writes read the clock only to date what they
-//! record. A connection request is Account-owned: the
-//! Account module records its expiry when a holder reads it, and the
+//! owner here is the expired-lease sweep's, which recreates its owner, and a
+//! Run whose live lease another process holds is never touched. The clock
+//! decides a Run's timeout and an Approval Request's expiry only inside the
+//! owner (its `apply`, and its own writes' clock sample). A connection
+//! request is Account-owned: the Account module records its expiry when a holder reads it, and the
 //! owner's timer at its deadline only wakes the Invocations parked on it.
 //! Readers show the recorded state beside a deadline and never derive an
 //! expiry or a timeout from `now`.
@@ -125,8 +121,8 @@
 //! termination, and preserve complete child outcomes that beat bounded cleanup.
 //! A recovered owner takes the Run over with a new claim in the same chunk that
 //! ends its children and the Run, so nothing still in flight under the old
-//! claim lands. The first terminal transaction wins. User work remains private; Workspace
-//! Owners can observe and cancel Workspace-owned Agent
+//! claim lands. The first terminal transaction wins. User work remains
+//! private; Workspace Owners can observe and cancel Workspace-owned Agent
 //! Runs, while an Agent can address only that same Agent's Run in its fixed
 //! Workspace. Run identifiers and cursors grant no authority.
 

@@ -1055,13 +1055,9 @@ impl Default for FanOutLimit {
 }
 
 /// The Shutdown Drain: how long a process that is shutting down lets its live
-/// Runs end on their own before it interrupts the rest.
-///
-/// During the drain the process refuses new Runs and its Run Owners keep
-/// working. Once it is out, every owner still live is interrupted and given
-/// the commit grace to record that; a Run whose owner records nothing keeps
-/// its lease, and the next process's expired-lease sweep ends it. Set at
-/// process bootstrap; the default is 30 seconds, and zero interrupts at once.
+/// Runs end on their own before it interrupts the rest
+/// ([`RunModule::shutdown`](crate::RunModule::shutdown)). Set at process
+/// bootstrap; the default is 30 seconds, and zero interrupts at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShutdownDrain {
     duration: Duration,

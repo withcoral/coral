@@ -47,10 +47,6 @@ use super::state::{Effect, OwnerLimits, OwnerState, apply};
 /// within the shutdown grace.
 const SETTLE_RETRY: Duration = Duration::from_millis(10);
 
-/// How many times a recovered owner reads the Run again after another writer
-/// moved its head between the read and the write.
-const RECOVERY_HEAD_RETRIES: u32 = 3;
-
 /// How an owner begins.
 pub(crate) enum OwnerStart {
     /// The owner of a Run this process accepted: it commits the start mark
@@ -110,12 +106,10 @@ pub(crate) async fn host(
                         *settle_deadline.get_or_insert_with(|| grace_deadline(&module, &shutdown));
                     spawn_settle(&module, &accepted, &handle, shutdown, again, deadline);
                 }
-                Effect::Recover { expired, intent } => {
-                    let OwnerStart::Recovery { taken } = &start else {
-                        debug_assert!(false, "only a recovered owner writes a recovery");
-                        continue;
-                    };
-                    spawn_recovery(&module, &accepted, &handle, taken.clone(), expired, intent);
+                Effect::Recover { expired } => {
+                    if let OwnerStart::Recovery { taken } = &start {
+                        spawn_recovery(&module, &accepted, &handle, taken.clone(), expired);
+                    }
                 }
                 other => run_effect(&module, &accepted, &start, &handle, other),
             }
@@ -375,10 +369,6 @@ fn run_effect(
             #[cfg(test)]
             module.execution_observer.clone(),
         ),
-        // A recovered owner starts no Program: its `apply` never asks.
-        Effect::Start | Effect::StartProgram(_) if matches!(start, OwnerStart::Recovery { .. }) => {
-            debug_assert!(false, "a recovered owner starts no Program");
-        }
         Effect::Start => {
             let OwnerStart::Program(actor) = start else {
                 return;
@@ -557,17 +547,15 @@ fn spawn_interruption(module: &RunModule, accepted: &AcceptedRun, handle: &Owner
     });
 }
 
-/// The recovered owner's one chunk, written until the database answers; a
-/// head another writer moved between the read and the write reads the row
-/// again. Its outcome reaches the owner as [`Message::Interrupted`]: a
-/// definite failure leaves the Run to the next sweep.
+/// The recovered owner's one chunk, written until the database answers. Its
+/// outcome reaches the owner as [`Message::Interrupted`]: a definite failure
+/// leaves the Run to the next sweep.
 fn spawn_recovery(
     module: &RunModule,
     accepted: &AcceptedRun,
     handle: &OwnerHandle,
     taken: Option<String>,
     expired: Vec<crate::approval::ApprovalId>,
-    intent: Option<crate::lifecycle::RequestedTermination>,
 ) {
     let module = module.clone();
     let accepted = accepted.clone();
@@ -579,11 +567,7 @@ fn spawn_recovery(
             taken: taken.as_deref(),
             takeover_claim_id: &accepted.claim_id,
             expired: &expired,
-            intent: intent.as_ref(),
         };
-        // A head another writer moved between the read and the write is read
-        // again after a backoff, a few times; after that the next sweep
-        // tries afresh.
         // A mass recovery writes a few chunks at a time.
         let _permit = module.recovery_writes.acquire().await;
         // A stop retired the owner while it waited: the Run is left to the
@@ -591,24 +575,13 @@ fn spawn_recovery(
         if handle.is_retired() {
             return;
         }
-        let mut moved = Backoff::new(&accepted.id, "recovery after a moved head");
-        let mut attempts = 0;
-        let recorded = loop {
-            match until_answered(
-                &accepted.id,
-                "recovery",
-                || !handle.is_retired(),
-                || module.record_recovery(&write),
-            )
-            .await
-            {
-                Err(error @ Error::HeadMismatch) if attempts < RECOVERY_HEAD_RETRIES => {
-                    attempts += 1;
-                    moved.wait(&error).await;
-                }
-                answered => break answered,
-            }
-        };
+        let recorded = until_answered(
+            &accepted.id,
+            "recovery",
+            || !handle.is_retired(),
+            || module.record_recovery(&write),
+        )
+        .await;
         match &recorded {
             Ok(()) => tracing::info!(run_id = %accepted.id, "recovered Run Owner ended its Run"),
             Err(Error::RunEnded) => tracing::info!(

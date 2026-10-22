@@ -564,12 +564,9 @@ impl RunningServer {
         self.shutdown_inner().await
     }
 
-    /// Begins a graceful shutdown while every listener still serves:
-    /// readiness reports not serving, the expired-lease sweep stops, new
-    /// Runs are refused, and the live Runs get the Shutdown Drain to end on
-    /// their own before the rest are interrupted within the commit grace.
-    /// Returns once that is done; stop the listeners after it. Only the
-    /// first call drains.
+    /// Reports not ready, stops the expired-lease sweep and drains the Runs
+    /// ([`coral_run::RunModule::shutdown`]) while every listener still
+    /// serves; stop the listeners after it.
     pub async fn drain_runs(&self) {
         self.readiness.stop_serving();
         self.run_recovery.abort();

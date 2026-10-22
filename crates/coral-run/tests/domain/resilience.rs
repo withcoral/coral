@@ -202,9 +202,8 @@ async fn a_definite_database_rejection_stops_the_owner_without_a_retry() {
 /// An owner whose settle of the interruption it recorded fails retires and
 /// leaves its Run `running` with the termination recorded and its worker
 /// claim released: no timer of its own fires after it retired, and nothing
-/// renews a lease. The expired-lease sweep leaves that Run alone for one
-/// lease after acceptance, then recreates its owner, which finishes the
-/// recorded interruption rather than replacing it.
+/// renews a lease. Once its lease lapsed, the expired-lease sweep recreates
+/// its owner, which ends the Run in one chunk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_run_whose_owner_retired_on_a_failed_settle_is_ended_by_the_next_sweep() {
     let (engine, gates) = BurstEngine::new(vec!["\"one\"".to_string()]);
@@ -242,21 +241,13 @@ async fn a_run_whose_owner_retired_on_a_failed_settle_is_ended_by_the_next_sweep
     assert_eq!(left.worker_claim_id, None, "the interruption released it");
     fixture.inject_fault("DROP INDEX reject_run_events").await;
 
-    // Within one lease of acceptance a Run with no claim is not abandoned.
-    assert_eq!(fixture.runs.sweep_expired_leases().await.unwrap(), 0);
-    assert_eq!(fixture.run_record(&workspace_id, &run_id).await, left);
-
     fixture.clock.next.store(
         before.accepted_at_unix_nanos + 2 * fixture.runs.execution_policy.claim_lease_nanos(),
         Ordering::SeqCst,
     );
     assert_eq!(fixture.runs.sweep_expired_leases().await.unwrap(), 1);
     let terminal = wait_for_terminal(&fixture.runs, &principal, &workspace_id, &run_id).await;
-    assert_eq!(
-        terminal.state(),
-        RunState::Interrupted,
-        "the recorded interruption is finished, not replaced"
-    );
+    assert_eq!(terminal.state(), RunState::Interrupted);
     let after = fixture.run_record(&workspace_id, &run_id).await;
     assert_eq!(after.chunk_sequence, left.chunk_sequence + 1, "one chunk");
     wait_until(|| !fixture.runs.has_owner(&run_id)).await;
