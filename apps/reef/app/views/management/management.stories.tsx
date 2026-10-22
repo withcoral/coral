@@ -674,10 +674,8 @@ export const OrganizationMembers: Story = {
   parameters: { chromatic: { viewports: [390, 1280] } },
   play: async ({ canvas }) => {
     await expect(canvas.getByText('Jordan Lee (You)')).toBeVisible()
-    await expect(
-      canvas.getByTitle(`${alice.name}\n${alice.email}`, { normalizer: (t) => t }),
-    ).toBeVisible()
-    await expect(canvas.queryByText(alice.email)).not.toBeInTheDocument()
+    await expect(canvas.getByTitle(alice.name)).toBeVisible()
+    await expect(canvas.getByRole('cell', { name: alice.email })).toBeVisible()
     await expect(canvas.getByText('Disabled')).toBeVisible()
   },
 }
@@ -1259,6 +1257,12 @@ export const ProfileFallbacks: Story = {
     />
   ),
   parameters: { chromatic: { viewports: [390, 1280] } },
+  // Catches: a person with no name repeating their email as the name.
+  play: async ({ canvas }) => {
+    const row = canvas.getByRole('row', { name: /person-with-a-very-long-email-address/ })
+    await expect(within(row).getByText('(no name)')).toBeVisible()
+    await expect(within(row).getAllByText(/person-with-a-very-long-email-address/)).toHaveLength(1)
+  },
 }
 export const LocalUser: Story = {
   render: () => (

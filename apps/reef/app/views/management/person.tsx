@@ -16,6 +16,7 @@ export function Person({
   currentUser,
   compact = false,
   disabled = false,
+  emailColumn = false,
 }: {
   person: PersonView
   currentUser: string
@@ -23,10 +24,15 @@ export function Person({
   compact?: boolean
   /** Marks a person whose organization membership is disabled, in words. */
   disabled?: boolean
+  /** The table shows the email in its own column, so the name never falls back to it. */
+  emailColumn?: boolean
 }) {
   const label = personLabel(person)
-  const name = personName(person, currentUser)
-  const showEmail = Boolean(person.name && person.email)
+  const name =
+    emailColumn && !person.local && !person.name
+      ? `(no name)${person.user === currentUser ? ' (You)' : ''}`
+      : personName(person, currentUser)
+  const showEmail = !emailColumn && Boolean(person.name && person.email)
   if (compact) {
     // The full name and the email show on hover, since a narrow column truncates the name.
     return (

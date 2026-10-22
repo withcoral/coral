@@ -69,6 +69,7 @@ export function MembersTable({
         staticRows
         columns={[
           { label: 'Name', width: { fill: 2 } },
+          { label: 'Email', width: { fill: 2 } },
           { label: 'Role', width: 'fill' },
           { label: 'State', width: 'fill' },
           { ariaLabel: 'Actions', width: 48 },
@@ -85,8 +86,9 @@ export function MembersTable({
           {shown.map((row) => (
             <Table.Row key={row.key}>
               <Table.Cell>
-                <Person person={row.profile} currentUser={currentUser} compact />
+                <Person person={row.profile} currentUser={currentUser} compact emailColumn />
               </Table.Cell>
+              <Table.Cell title={row.profile.email}>{row.profile.email}</Table.Cell>
               <Table.Cell>
                 <Pill color={row.role === 'Owner' ? 'blue' : 'gray'}>{row.role}</Pill>
               </Table.Cell>
