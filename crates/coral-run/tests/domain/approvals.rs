@@ -2047,17 +2047,21 @@ async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
     probe.until_parked(2).await;
 
     // Without the timer's chunk, the wait would sleep until its 5 s fallback poll.
-    let terminal = tokio::time::timeout(
-        Duration::from_secs(3),
-        wait_for_terminal(
-            &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
-            run.run_id(),
-        ),
+    wait_until_async_within(Duration::from_secs(3), async || {
+        fixture
+            .run_record(&operation.workspace_id, run.run_id())
+            .await
+            .state
+            .is_terminal()
+    })
+    .await;
+    let terminal = wait_for_terminal(
+        &fixture.runs,
+        &operation.principal,
+        &operation.workspace_id,
+        run.run_id(),
     )
-    .await
-    .expect("the expiry chunk wakes the wait long before the fallback poll");
+    .await;
     assert_final_code(&terminal, "approval_expired");
     assert_eq!(
         approvals
