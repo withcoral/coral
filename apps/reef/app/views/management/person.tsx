@@ -7,9 +7,9 @@ import * as styles from './management.css'
 export function personLabel(person: PersonView) {
   return person.local ? 'Local user' : person.name || person.email || 'Unnamed user'
 }
-/** A person's label, marked "(You)" for the signed-in user. */
-export function personName(person: PersonView, currentUser: string) {
-  return `${personLabel(person)}${person.user === currentUser ? ' (You)' : ''}`
+/** A person's label, or the given one, marked "(You)" for the signed-in user. */
+export function personName(person: PersonView, currentUser: string, label = personLabel(person)) {
+  return `${label}${person.user === currentUser ? ' (You)' : ''}`
 }
 export function Person({
   person,
@@ -28,10 +28,11 @@ export function Person({
   emailColumn?: boolean
 }) {
   const label = personLabel(person)
-  const name =
-    emailColumn && !person.local && !person.name
-      ? `(no name)${person.user === currentUser ? ' (You)' : ''}`
-      : personName(person, currentUser)
+  const name = personName(
+    person,
+    currentUser,
+    emailColumn && !person.local && !person.name ? '(no name)' : undefined,
+  )
   const showEmail = !emailColumn && Boolean(person.name && person.email)
   if (compact) {
     // The full name and the email show on hover, since a narrow column truncates the name.
