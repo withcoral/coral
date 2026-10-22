@@ -109,16 +109,6 @@
       "description": "The route you tried does not exist. Swim back to the [docs home](/) and pick a guide from there."
     }
   },
-  "integrations": {
-    "posthog": {
-      "apiKey": "phc_vgjDFiUbVgKPsKQL3wKPwsG3z7KnH4hgLi6n57PX7HEs",
-      "apiHost": "https://eu.posthog.com",
-      "sessionRecording": false
-    },
-    "ga4": {
-      "measurementId": "G-MZ1LQREJTK"
-    }
-  },
   "thumbnails": {
     "background": "/images/og-image-dark.png",
     "appearance": "dark"
