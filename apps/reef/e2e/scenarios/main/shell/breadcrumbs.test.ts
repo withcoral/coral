@@ -49,9 +49,15 @@ test('Each page has one title, and breadcrumbs lead back from nested pages', asy
       await crumbs.getByRole('link', { name: 'Agents', exact: true }).click()
       await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/agents`)
     })
-    await step('Page actions sit in the top bar', async () => {
+    await step('Create agent ends the agents toolbar', async () => {
       await heading.waitFor()
-      await topBar.getByRole('button', { name: 'Create agent', exact: true }).waitFor()
+      await page
+        .getByRole('main')
+        .getByRole('button', { name: 'Create agent', exact: true })
+        .waitFor()
+      expect(await topBar.getByRole('button', { name: 'Create agent', exact: true }).count()).toBe(
+        0,
+      )
     })
     await step(
       'Each setup step titles the page with its provider and heads its content with its actions',
