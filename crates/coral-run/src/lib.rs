@@ -23,9 +23,11 @@
 //!   Principal-filtered required actions and terminal data on the final output page.
 //!   Bounded waiting ignores internal lifecycle records. Initial observation batches
 //!   authored output until human action, terminal state, or the requested deadline.
-//! - [`RunModule::cancel`] durably records cancellation through the same
-//!   Principal-specific visibility rules, terminates active execution, and waits
-//!   for bounded child shutdown before returning the winning terminal result.
+//! - [`RunModule::cancel`] asks the Run's owner to cancel it, through the same
+//!   Principal-specific visibility rules: the owner terminates active execution
+//!   at once and records the intent in its next chunk. The call waits up to
+//!   the shutdown grace for the owner to end the Run, then returns the state
+//!   recorded by then.
 //! - [`RunModule::activity_entries`] reads bounded chronological child summaries.
 //!   Exact Event/Invocation anchors retain their identities. Upper owners can join
 //!   authorized read snapshots through transaction facets without Task dependencies.
@@ -74,12 +76,12 @@
 //! waits for the chunk. Emissions and Logs remain observable after a later
 //! failure. Invocation admission retains its Provider target, arguments,
 //! child record, and `invocation.started` in one chunk. The Dispatch Fence is
-//! one batched check per chunk commit: under the held Run it reads the
-//! Workspace, Agent/Registration, Provider, policy and Account facts the
-//! chunk's ready Invocations share once, holding their rows shared so fences
-//! of other Runs read beside it and an authority writer waits for it,
-//! decides each Invocation in memory against those facts, the Run facts the
-//! owner holds and the approval its gate recorded, at one clock sample after
+//! one batched check per chunk commit: inside the chunk's transaction it
+//! reads the Workspace, Agent/Registration, Provider, policy and Account
+//! facts the chunk's ready Invocations share once, holding their rows shared
+//! so fences of other Runs read beside it and an authority writer waits for
+//! it, decides each Invocation in memory against those facts, the Run row as
+//! the chunk read it and the approval its gate recorded, at one clock sample after
 //! the last read, and records every permitted dispatch start in the same
 //! commit; it reads the retained Operation by its Generation id and never
 //! the Account's material. Decryption and the upstream send run outside
@@ -96,6 +98,11 @@
 //! owner at once: it terminates the Program, cancels its dispatches, and
 //! answers waiting requests `OwnerLost`. A Run cannot complete while any child
 //! Invocation is nonterminal.
+//! While a Run is nonterminal its owner is the only writer of its row and its
+//! Events, recovery's explicit pass excepted: approval decisions, cancellation
+//! and the deadline reach the owner as requests (see [`owner`]), and such a
+//! request for a nonterminal Run with no owner in this process is answered
+//! `OwnedElsewhere`.
 //! Cancellation and deadline intent stop new Program work, request uncatchable V8
 //! termination, and preserve complete child outcomes that beat bounded cleanup.
 //! Recovery revokes a stale started claim before settling its children and Run.

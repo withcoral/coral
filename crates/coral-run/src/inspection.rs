@@ -105,9 +105,17 @@ impl RunModule {
     ) -> Result<crate::approval::ApprovalRequest, Error> {
         self.approvals().get(actor, workspace, id).await
     }
-    fn approvals(&self) -> crate::approval::ApprovalModule {
-        crate::approval::ApprovalModule::new(self.database.clone(), self.workspaces.clone())
-            .with_clock(self.clock.clone())
+    /// The Approval Module that decides through this module's Run Owners
+    /// and on its clock: the one a decision on a Run this module started
+    /// must go through.
+    #[must_use]
+    pub fn approvals(&self) -> crate::approval::ApprovalModule {
+        crate::approval::ApprovalModule::new(
+            self.database.clone(),
+            self.workspaces.clone(),
+            self.owners.clone(),
+        )
+        .with_clock(self.clock.clone())
     }
 
     /// Resolves one exact human approval through its owning module.

@@ -6,7 +6,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SetupView } from '@/views/providers/types'
 
 import { byService } from './choice'
-import { recipeConfiguration, recipeDocumentationUrl } from './configuration.server'
+import { CLIENT_CONFIG_HINT_GENERATORS } from './client-config-hints'
+import {
+  recipeConfiguration as configurationFor,
+  recipeDocumentationUrl,
+} from './configuration.server'
 import { defaultAnswers, filledRecipe, refilled, withRecipe } from './fill-inputs'
 import { OPENAPI_DOCUMENT_MAX_BYTES } from '../provider-input-limits'
 import {
@@ -17,7 +21,7 @@ import {
   recipeDocument,
 } from './library.server'
 import { parseRecipe } from './parse-recipe'
-import { recipeJsonSchema } from './recipe-format'
+import { recipeJsonSchema, type Recipe } from './recipe-format'
 
 const reefRoot = path.resolve(import.meta.dirname, '../../..')
 const recipeLibraries = ['recipes']
@@ -562,6 +566,12 @@ function mcpRecipe(...client: string[]) {
   return result.recipe
 }
 
+const hintContext = { callbackUrl: 'https://coral.example.com/provider-setup/oauth/callback' }
+
+function recipeConfiguration(recipe: Recipe, setup: SetupView) {
+  return configurationFor(recipe, setup, hintContext)
+}
+
 function mcpSetup(automaticClientAvailable: boolean) {
   return setupWith({ authenticationMethods: ['oauth'], automaticClientAvailable }, 'mcp')
 }
@@ -1003,6 +1013,33 @@ describe('recipeConfiguration', () => {
         scopeFormat: 'space',
       })
       expect(warn).not.toHaveBeenCalled()
+    })
+
+    const generator = '      client_config_hint_generator: slack_app_create_link'
+    it.for([
+      { name: 'no hint without a generator', recipe: () => mcpRecipe(), hint: undefined },
+      {
+        name: 'the hint its generator writes',
+        recipe: () => mcpRecipe(generator),
+        hint: CLIENT_CONFIG_HINT_GENERATORS.slack_app_create_link(hintContext),
+      },
+      // The hint follows the option the recipe fills in, not any option with a generator.
+      {
+        name: 'no hint from an option the recipe does not fill in',
+        recipe: () =>
+          mcpRecipe(
+            '    hinted:',
+            '      method: oauth_discovery',
+            '      label: Sign in with a hint',
+            '      flow: authorization_code',
+            generator,
+            '  default: oauth',
+          ),
+        hint: undefined,
+      },
+    ])('adds $name', ({ recipe, hint }) => {
+      const configuration = recipeConfiguration(recipe(), mcpSetup(false))
+      expect(configuration?.clientConfigHintMarkdown).toBe(hint)
     })
 
     it('asks for your own application when Coral cannot register one', () => {

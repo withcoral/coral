@@ -4,10 +4,12 @@ import type { ConfigurationReviewView } from '@/views/providers/types'
 
 import {
   acceptOperations,
+  accountStep,
   attemptParams,
   attemptProgress,
   InvalidAttempt,
   parseAttempt,
+  reconcileAttempt,
   reviseAttempt,
 } from './model'
 
@@ -41,22 +43,25 @@ describe('recipe in an attempt URL', () => {
   })
 })
 
+/** A protected MCP server's Setup, awaiting a sign-in to read its operations. */
+const mcpSetup: import('@/views/providers/types').SetupView = {
+  id: '11111111-1111-4111-8111-111111111111',
+  kind: 'mcp',
+  state: 'awaiting_authorization',
+  credentialMethod: 'oauth',
+  credentialFields: [],
+  authorized: false,
+  grantedScope: '',
+  authorization: null,
+  discoveryFailure: '',
+  expiresAt: '',
+  sourceLabel: 'https://example.test/mcp',
+  sourceHost: 'example.test',
+  serverName: 'example.test',
+}
+
 describe('attemptProgress', () => {
-  const setup: import('@/views/providers/types').SetupView = {
-    id: '11111111-1111-4111-8111-111111111111',
-    kind: 'mcp',
-    state: 'awaiting_authorization',
-    credentialMethod: 'oauth',
-    credentialFields: [],
-    authorized: false,
-    grantedScope: '',
-    authorization: null,
-    discoveryFailure: '',
-    expiresAt: '',
-    sourceLabel: 'https://example.test/mcp',
-    sourceHost: 'example.test',
-    serverName: 'example.test',
-  }
+  const setup = mcpSetup
 
   it('discovers protected operations before asking workspace account use', () => {
     const attempt = parseAttempt('workspace', new URLSearchParams({ setup: setup.id }))
@@ -108,7 +113,7 @@ describe('attemptProgress', () => {
   it('keeps personal grant review after accepting operations and returning from sign-in', () => {
     const attempt = parseAttempt(
       'workspace',
-      new URLSearchParams({ setup: setup.id, account: 'caller', accountReview: '1' }),
+      new URLSearchParams({ setup: setup.id, account: 'caller', returnFromConnect: '1' }),
     )
     const accepted = acceptOperations(attempt)
     const returned = parseAttempt('workspace', attemptParams(accepted))
@@ -136,18 +141,30 @@ describe('attemptProgress', () => {
       'operations',
       'account',
     ],
-  ])("opens the agent's link for %s at the operations", (_, account, over, stage, next) => {
-    // The link Coral returns when a createProvider call needs sign-in. Only a
-    // caller link opens the question on Connect now.
-    const review = account === 'caller' ? '&accountReview=1' : ''
+  ])("opens the agent's link for %s at the operations", (_, route, over, stage, next) => {
+    // The link Coral returns when a createProvider call needs sign-in names
+    // only the Setup, which holds the namespace and route the Program asked for.
+    const requested = {
+      ...setup,
+      ...over,
+      request: { namespace: 'weather', route: route as 'fixed' | 'caller' },
+    }
+    const attempt = reconcileAttempt(
+      parseAttempt('workspace', new URLSearchParams({ setup: setup.id })),
+      requested,
+    )
+    expect(attempt).toMatchObject({ namespace: 'weather', account: null })
+    expect(attemptProgress(attempt, requested).stage).toBe(stage)
+    expect(attemptProgress(acceptOperations(attempt), requested).stage).toBe(next)
+  })
+
+  it("keeps a namespace the person chose over the Program's", () => {
+    const requested = { ...setup, request: { namespace: 'weather', route: 'fixed' as const } }
     const attempt = parseAttempt(
       'workspace',
-      new URLSearchParams(`setup=${setup.id}&namespace=weather&account=${account}${review}`),
+      new URLSearchParams({ setup: setup.id, namespace: 'forecast' }),
     )
-    expect(attempt).toMatchObject({ namespace: 'weather', account })
-    expect(attemptProgress(attempt, { ...setup, ...over }).stage).toBe(stage)
-    // Next on the operations keeps the route, so the account question follows.
-    expect(attemptProgress(acceptOperations(attempt), { ...setup, ...over }).stage).toBe(next)
+    expect(reconcileAttempt(attempt, requested)).toMatchObject({ namespace: 'forecast' })
   })
 
   // Catches: the agent's link for a configuration confirmed without an OAuth
@@ -198,17 +215,17 @@ describe('attemptProgress', () => {
       'operations',
     ],
   ])("opens the agent's link for %s", (_, over, review, stage) => {
-    const attempt = parseAttempt(
-      'workspace',
-      new URLSearchParams(`setup=${setup.id}&namespace=weather&account=fixed`),
-    )
+    const attempt = parseAttempt('workspace', new URLSearchParams({ setup: setup.id }))
     const configuration = {
       revision: '1',
       confirmed: true,
       automaticClientAvailable: false,
       ...review,
     } as ConfigurationReviewView
-    expect(attemptProgress(attempt, { ...setup, ...over, configuration }).stage).toBe(stage)
+    const request = { namespace: 'weather', route: 'fixed' as const }
+    expect(attemptProgress(attempt, { ...setup, ...over, configuration, request }).stage).toBe(
+      stage,
+    )
   })
 
   it('discovers an update without asking a creation-only account question', () => {
@@ -317,5 +334,70 @@ describe('accepting the listed operations', () => {
     const attempt = parseAttempt('update', new URLSearchParams({ setup: setupId }), 'etag')
     expect(attempt.state === 'draft' && attempt.operationsAccepted).toBe(false)
     expect(attemptProgress(attempt, ready).stage).toBe('publish')
+  })
+})
+
+/** A Setup a Program's createProvider call prepared, asking for `route`. */
+const requested = (route: 'fixed' | 'caller') => ({ request: { namespace: 'weather', route } })
+
+describe('accountStep', () => {
+  const grant = '33333333-3333-4333-8333-333333333333'
+  const setup = { ...mcpSetup, state: 'ready' as const }
+  const held = { authorized: true, provisionalGrantId: grant }
+  // Catches: a Program's Setup added with no "Add provider" click once a
+  // sign-in lands, a person's own sign-in no longer adding it, or the account
+  // question opening on an outcome nobody chose.
+  it.each([
+    ['nothing chosen yet', '', {}, 'shared-connect', false],
+    ['nothing chosen, a sign-in in hand', '', held, 'own-keep', false],
+    ['a shared account', 'account=fixed', {}, 'shared-connect', false],
+    ['a shared account in hand', 'account=fixed', held, 'shared-keep', false],
+    ['own accounts, later', 'account=caller', {}, 'own-later', false],
+    ['own accounts, after Connect', 'account=caller&returnFromConnect=1', {}, 'own-connect', true],
+    [
+      'own accounts, back from Connect',
+      'account=caller&returnFromConnect=1',
+      held,
+      'own-keep',
+      true,
+    ],
+    ['shared, back from Connect', 'account=fixed&returnFromConnect=1', held, 'shared-keep', true],
+    ["the Program's shared account", '', requested('fixed'), 'shared-connect', false],
+    [
+      "the Program's shared account in hand",
+      '',
+      { ...requested('fixed'), ...held },
+      'shared-keep',
+      false,
+    ],
+    ["the Program's own accounts", '', requested('caller'), 'own-connect', false],
+    [
+      "the Program's own accounts, back from Connect",
+      'account=caller&returnFromConnect=1',
+      { ...requested('caller'), ...held },
+      'own-keep',
+      false,
+    ],
+    [
+      "a Program's route this Reef does not know, back from Connect",
+      'account=caller&returnFromConnect=1',
+      { request: { namespace: 'weather', route: null }, ...held },
+      'own-keep',
+      false,
+    ],
+    [
+      "the Program's shared account, back from Connect",
+      'account=fixed&returnFromConnect=1',
+      { ...requested('fixed'), ...held },
+      'shared-keep',
+      false,
+    ],
+  ] as const)('for %s', (_, query, over, plan, publishOnReturn) => {
+    const attempt = parseAttempt('workspace', new URLSearchParams(`setup=${setup.id}&${query}`))
+    expect(accountStep(attempt, { ...setup, ...over })).toEqual({
+      reopens: query.includes('returnFromConnect'),
+      plan,
+      publishOnReturn,
+    })
   })
 })

@@ -549,7 +549,8 @@ pub(super) async fn nonterminal_for_run(
                 .columns([
                     OperationInvocations::Id,
                     OperationInvocations::State,
-                    OperationInvocations::CallPath,
+                    OperationInvocations::ProviderGenerationId,
+                    OperationInvocations::OperationKey,
                 ])
                 .from(OperationInvocations::Table)
                 .and_where(
@@ -570,7 +571,10 @@ pub(super) async fn nonterminal_for_run(
             Ok(UnfinishedInvocation {
                 id: invocation_id(&row.id)?,
                 state: InvocationState::from_storage_str(&row.state)?,
-                call_path: row.call_path,
+                generation: coral_catalog::ProviderGenerationId::parse(&row.provider_generation_id)
+                    .map_err(coral_provider::Error::from)?,
+                operation: coral_catalog::OperationKey::parse(&row.operation_key)
+                    .map_err(coral_provider::Error::from)?,
             })
         })
         .collect()
@@ -619,7 +623,8 @@ pub(super) async fn end_for_termination(
 struct NonterminalInvocationRow {
     id: String,
     state: String,
-    call_path: String,
+    provider_generation_id: String,
+    operation_key: String,
 }
 
 pub(super) async fn has_nonterminal_for_run(

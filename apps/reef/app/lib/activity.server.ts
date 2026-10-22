@@ -20,6 +20,7 @@ import type {
   InspectInvocationResponse,
   ActivityRequestReference,
   ActivityRunEvent,
+  ActivitySourceLocation,
   InspectRunResponse,
 } from '@/generated/coral/management/v1/activity_pb'
 import type {
@@ -44,6 +45,9 @@ import type {
   RunEvent,
   RunTerminal,
   RunFailureCode,
+  ActionPage,
+  RunDetail,
+  RecordSourceLocation,
 } from '@/views/activity/types'
 import {
   privateHeaders,
@@ -295,6 +299,35 @@ function runView(value: ActivityRun): ExecutionRow {
       : undefined,
   }
 }
+/**
+ * The later page of a Run's actions that a "More actions" link asks for, after `cursor`. Coral
+ * returns up to 100 actions a page. A page that fails leaves the first page, marked incomplete.
+ */
+async function laterRunActions(
+  api: ActivityApi,
+  run: string,
+  first: ActionPage,
+  cursor: string,
+  signal: AbortSignal | undefined,
+): Promise<ActionPage> {
+  try {
+    const value = await api.activity.inspectRun(
+      { name: run, pageSize: 1, actionAfter: cursor },
+      { signal },
+    )
+    const page = value.run?.actionPage
+    if (page)
+      return {
+        actions: page.actions.flatMap(actionSummaryView),
+        total: page.total.toString(),
+        next: page.nextAction,
+        after: cursor,
+      }
+  } catch (error) {
+    if (signal?.aborted) throw error
+  }
+  return { ...first, incomplete: true }
+}
 function actionSummaryView(value: ActivityActionSummary): ActionSummary[] {
   if (!value.request) return []
   const reference = requestReferenceView(value.request)
@@ -324,6 +357,22 @@ function invocationView(value: ActivityInvocation): InvocationRow {
     operation: value.operation,
     callPath: value.callPath,
     outcome: enumLabel(invocationOutcomes, value.outcome),
+    sourceLocation: sourceLocationView(value.sourceLocation),
+  }
+}
+/** A stored location in a document this client knows; anything else is unavailable. */
+function sourceLocationView(
+  value: ActivitySourceLocation | undefined,
+): RecordSourceLocation | undefined {
+  if (!value) return undefined
+  const { document, line, column } = value
+  switch (document.case) {
+    case 'program':
+      return { document: { kind: 'program' }, line, column }
+    case 'savedFunction':
+      return { document: { kind: 'saved_function', savedFunction: document.value }, line, column }
+    default:
+      return undefined
   }
 }
 function errorView(value: ActivityProgramError): ProgramError {
@@ -494,6 +543,14 @@ function unavailable(error: unknown) {
     (error.code === Code.NotFound || error.code === Code.PermissionDenied)
   )
 }
+/** A passing Coral fault. Only optional context may leave it out; sign-in, validation and a
+ * cancelled load still fail the read. */
+function transient(error: unknown) {
+  return (
+    error instanceof ConnectError &&
+    (error.code === Code.Unavailable || error.code === Code.Internal)
+  )
+}
 function invalid(message: string): never {
   throw new Response(message, { status: 400, headers: privateHeaders })
 }
@@ -533,7 +590,13 @@ function eventLabel(kind: string, sequence: string) {
 }
 function outputRow(
   run: string,
-  event: { sequence: string; occurredAt: string; kind: string; contextImpactBytes?: bigint },
+  event: {
+    sequence: string
+    occurredAt: string
+    kind: string
+    contextImpactBytes?: bigint
+    sourceLocation?: ActivitySourceLocation
+  },
   task = '',
   agent = '',
 ): Extract<ActivityRow, { kind: 'output' }> {
@@ -548,6 +611,7 @@ function outputRow(
     eventKind: event.kind,
     task,
     agent,
+    sourceLocation: sourceLocationView(event.sourceLocation),
   }
 }
 
@@ -595,13 +659,24 @@ async function selectedDetail(
         )
         if (!value.event) throw new ConnectError('unavailable', Code.NotFound)
         const event = runEventView(value.event)
-        page.detail = { kind: 'output', run, event }
+        const detail: NonNullable<ActivityPage['detail']> & { kind: 'output' } = {
+          kind: 'output',
+          run,
+          event,
+        }
+        page.detail = detail
         page.selectedRow = outputRow(
           run,
-          { ...event, contextImpactBytes: value.contextImpactBytes },
+          {
+            ...event,
+            contextImpactBytes: value.contextImpactBytes,
+            sourceLocation: value.event.sourceLocation,
+          },
           value.run?.task,
           value.run?.agent,
         )
+        const context = await runSourceContext(run, page, query, api, signal)
+        if (context) detail.context = context
         break
       }
       case 'run':
@@ -611,7 +686,8 @@ async function selectedDetail(
           {
             name: run,
             pageSize: 1,
-            actionAfter: query.get('actionsAfter') ?? '',
+            // The first page of actions. A "More actions" link reads its later page on its own.
+            actionAfter: '',
             accountConnection: /^workspaces\/[^/]+\/accountConnections\/[^/]+$/.test(
               selectedRequest,
             )
@@ -630,7 +706,12 @@ async function selectedDetail(
           throw new ConnectError('unavailable', Code.NotFound)
         }
         const row = runView(value.run)
-        if (selectInitialRequest && !query.has('request') && name === run) {
+        // The Run's list, and a review opened from it, keep the page a "More actions" link named.
+        // A separate read, so a page that fails leaves the Run and its exact review readable.
+        const cursor = name === run ? query.get('actionsAfter') : null
+        if (row.actionPage && cursor)
+          row.actionPage = await laterRunActions(api, run, row.actionPage, cursor, signal)
+        if (selectInitialRequest && !query.has('request') && name === run && !cursor) {
           const first = row.actionPage?.actions[0]
           if (first?.kind === 'account_connection') {
             selectedRequest = first.name
@@ -684,6 +765,11 @@ async function selectedDetail(
         }
         page.detail = detail
         page.selectedRow = { ...row, kind: 'invocation' }
+        // An approval review reads this Run itself below; reading it here too would repeat it.
+        if (!selectedRequest) {
+          const context = await runSourceContext(row.run, page, query, api, signal)
+          if (context) detail.context = context
+        }
       }
     }
     const detail = page.detail
@@ -709,7 +795,7 @@ async function selectedDetail(
             (detail.kind === 'invocation' && request.invocation !== detail.invocation.name)
           )
             throw new ConnectError('unavailable', Code.NotFound)
-          const review: RequestDetail = {
+          const review: Extract<RequestDetail, { kind: 'approval' }> = {
             kind: 'approval',
             actionable: request.actionable,
             name: request.name,
@@ -772,6 +858,19 @@ async function selectedDetail(
             detail.context = context.detail
             detail.request = review
           }
+          // Approval review shows why the Task started. The Run names its Task only when the
+          // caller can see it; an unavailable Task, or a passing fault on this optional read,
+          // leaves the intent out, not the review.
+          const owner =
+            page.detail?.kind === 'invocation' ? page.detail.context?.run.task : undefined
+          if (owner) {
+            try {
+              const value = await api.activity.inspectTask({ name: owner, pageSize: 1 }, { signal })
+              if (value.task?.intent) review.taskIntent = value.task.intent
+            } catch (error) {
+              if (!unavailable(error) && !transient(error)) throw error
+            }
+          }
         } else if (
           reference?.kind === 'account_connection' ||
           selectedRequest === retainedConnection
@@ -798,6 +897,12 @@ async function selectedDetail(
         if (unavailable(error)) detail.requestUnavailable = true
         else throw error
       }
+      // Only a successful approval review reads the Run above. Any other request, or one
+      // that is unavailable, leaves the operation with the Run's own authorized source.
+      if (detail.kind === 'invocation' && !detail.context) {
+        const context = await runSourceContext(run, page, query, api, signal)
+        if (context) detail.context = context
+      }
     }
   } catch (error) {
     if (!unavailable(error)) throw error
@@ -805,6 +910,32 @@ async function selectedDetail(
     page.selectedRow = null
     page.unavailable = true
   }
+}
+
+/**
+ * The containing Run's accepted source and terminal evidence, for Activity's source pane.
+ * It reads through the same `inspectRun` the Run's own detail uses, so the caller's access
+ * to the Run authorizes it independently of the selected record. An unavailable Run, or a
+ * passing fault on this optional read, resolves to no context and leaves the record's own
+ * detail in place; any other failure propagates like every other read here.
+ */
+async function runSourceContext(
+  run: string,
+  page: ActivityPage,
+  query: URLSearchParams,
+  api: ActivityApi,
+  signal: AbortSignal,
+): Promise<RunDetail | undefined> {
+  const context: ActivityPage = { ...page, selected: run, detail: null, selectedRow: null }
+  const contextQuery = new URLSearchParams(query)
+  contextQuery.set('request', '')
+  try {
+    await selectedDetail(context, contextQuery, api, signal, false)
+  } catch (error) {
+    if (!transient(error)) throw error
+    return undefined
+  }
+  return context.detail?.kind === 'run' ? context.detail : undefined
 }
 
 const missingBranch = (): ActivityBranch => ({ rows: [], next: '', unavailable: true })
@@ -1050,6 +1181,7 @@ export async function loadActivity(
               kind: record.value.kind,
               contextImpactBytes: record.value.contextImpactBytes,
               occurredAt: timestamp(record.value.occurredAtUnixNanos),
+              sourceLocation: record.value.sourceLocation,
             },
             row.task,
             row.agent,
@@ -1143,13 +1275,19 @@ export async function loadActivity(
   return page
 }
 
+// A Run identifier: four or five lowercase words of at most 20 letters joined
+// by hyphens, or the canonical UUID of a Run from before Coral named Runs with
+// words. The same pattern as `SCHEMA_PATTERN` in `crates/coral-identifier`.
+const RUN_IDENTIFIER =
+  /^([a-z]{1,20}(-[a-z]{1,20}){3,4}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/
+
 export function loadRunActivity(
   request: Request,
   api: ActivityApi,
   params: { workspace: string; run: string },
 ) {
   const workspace = workspaceName(params.workspace)
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(params.run))
+  if (!RUN_IDENTIFIER.test(params.run))
     throw new Response('Not found', { status: 404, headers: privateHeaders })
   return loadActivity(request, api, {
     scope: { workspace },

@@ -122,6 +122,7 @@ coral-credentials = { path = "crates/coral-credentials" }
 coral-db = { path = "crates/coral-db" }
 coral-functions = { path = "crates/coral-functions" }
 coral-grpc = { path = "crates/coral-grpc" }
+coral-identifier = { path = "crates/coral-identifier" }
 coral-mcp = { path = "crates/coral-mcp" }
 coral-outbound = { path = "crates/coral-outbound" }
 coral-policy = { path = "crates/coral-policy" }

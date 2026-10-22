@@ -58,6 +58,153 @@ async fn unconfirmed_authentication_review_does_not_require_a_materializable_cat
     assert!(inspected.configuration.destinations.is_empty());
 }
 
+// Catches: the namespace and route a Program asked for living only in a link,
+// or a listing that shows a Setup nobody can finish any more, one another User
+// started, or one no Program asked for.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one listing is checked against every way a Setup leaves it"
+)]
+async fn a_requested_setup_keeps_its_request_and_is_listed_while_open() {
+    let harness = harness().await;
+    let (actor, workspace) = workspace_owner(&harness, "requested-owner").await;
+    let owner = workspace.id().clone();
+    let other = organization_user(
+        harness.database.clone(),
+        "requested-other",
+        OrganizationRole::Owner,
+    )
+    .await;
+    super::tests::join_as_owner(&harness.workspaces, &other, &owner).await;
+    let server = MockServer::start().await;
+    let document = || {
+        ProviderSetupSource::OpenApiDocument(
+            coral_catalog::OpenApiDocument::parse(&credential_free_openapi(&server)).unwrap(),
+        )
+    };
+    let request = |namespace: &str, route| crate::SetupRequest {
+        namespace: ProviderNamespace::parse(namespace).unwrap(),
+        route,
+    };
+    let prepare = |context, namespace: &'static str, route| {
+        let providers = &harness.providers;
+        let owner = &owner;
+        let source = document();
+        async move {
+            providers
+                .prepare_requested_setup(&context, owner, source, request(namespace, route))
+                .await
+                .unwrap()
+        }
+    };
+    let context = || change_context(actor.clone(), 2, '2');
+    let weather = prepare(context(), "weather", CredentialRoute::Caller).await;
+    let tides = prepare(
+        change_context(actor.clone(), 3, '3'),
+        "tides",
+        CredentialRoute::Fixed,
+    )
+    .await;
+    let abandoned = prepare(context(), "abandoned", CredentialRoute::Fixed).await;
+    let published = prepare(context(), "published", CredentialRoute::None).await;
+    // Only the Programs' Setups are listed, and each only to the User who started it.
+    harness
+        .providers
+        .prepare_setup(&context(), &owner, document(), None)
+        .await
+        .unwrap();
+    prepare(
+        change_context(other.clone(), 2, '2'),
+        "theirs",
+        CredentialRoute::Fixed,
+    )
+    .await;
+    harness
+        .providers
+        .abandon_setup(&owner, abandoned.id(), 3)
+        .await
+        .unwrap();
+    let review = harness
+        .providers
+        .review_setup_configuration(&actor, &owner, published.id())
+        .await
+        .unwrap();
+    let mut configuration = review.document.unwrap().suggested;
+    configuration.authentication = Some(AuthenticationConfiguration::None);
+    let confirmed = harness
+        .providers
+        .confirm_setup_configuration(
+            &context(),
+            &owner,
+            published.id(),
+            review.revision,
+            configuration,
+        )
+        .await
+        .unwrap();
+    assert!(confirmed.errors.is_empty());
+    harness
+        .providers
+        .publish_workspace_provider(
+            &context(),
+            publication_request(
+                &owner,
+                published.id(),
+                "published",
+                CredentialRoute::None,
+                "00000000-0000-4000-8000-000000000001",
+            ),
+        )
+        .await
+        .unwrap();
+
+    let inspected = harness
+        .providers
+        .inspect_setup(&actor, &owner, weather.id(), 3)
+        .await
+        .unwrap();
+    assert_eq!(
+        inspected.setup.request(),
+        Some(&request("weather", CredentialRoute::Caller))
+    );
+    let listed = |now| {
+        let providers = &harness.providers;
+        let (actor, owner) = (&actor, &owner);
+        async move {
+            providers
+                .open_requested_setups(actor, owner, now)
+                .await
+                .unwrap()
+                .iter()
+                .map(|setup| (setup.id().clone(), setup.request().cloned()))
+                .collect::<Vec<_>>()
+        }
+    };
+    let both = [
+        (
+            weather.id().clone(),
+            Some(request("weather", CredentialRoute::Caller)),
+        ),
+        (
+            tides.id().clone(),
+            Some(request("tides", CredentialRoute::Fixed)),
+        ),
+    ];
+    assert_eq!(listed(3).await, both);
+    // Each Setup expires an hour after it was created.
+    let deadline = |created| crate::setup_credentials::setup_deadline(created).unwrap();
+    assert_eq!(listed(deadline(2) - 1).await, both);
+    assert_eq!(
+        listed(deadline(2)).await,
+        [(
+            tides.id().clone(),
+            Some(request("tides", CredentialRoute::Fixed))
+        )]
+    );
+    assert!(listed(deadline(3)).await.is_empty());
+}
+
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,

@@ -39,8 +39,7 @@ export async function binaryOutput(context: TestContext) {
     await step('Reef shows the same value on the Run Status Page', async () => {
       await page.goto(`/${runName}`)
       const shown = page
-        .locator('details')
-        .filter({ has: page.locator('summary', { hasText: 'Final value' }) })
+        .getByRole('region', { name: 'Final value', exact: true })
         .locator('pre')
         .filter({ hasText: image.data })
       await shown.waitFor()

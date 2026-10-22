@@ -968,8 +968,10 @@ async fn a_begun_attempt_can_accept_after_closure_and_lost_handoff_keeps_the_run
             .await
             .unwrap()
     );
-    // Identified Run access needs no live or open Task and grants no replay permission.
-    let canceled = fixture
+    // The lost handoff left the Run with no owner: a cancel is refused
+    // without a write, and recovery ends the Run at its deadline. Identified
+    // Run access needs no live or open Task and grants no replay permission.
+    let refused = fixture
         .runs
         .cancel(
             &fixture.actor,
@@ -977,9 +979,13 @@ async fn a_begun_attempt_can_accept_after_closure_and_lost_handoff_keeps_the_run
             &run,
             &coral_run::RunObservation::immediate(None, 100).unwrap(),
         )
-        .await
-        .unwrap();
-    assert_eq!(canceled.state(), coral_run::RunState::Canceled);
+        .await;
+    assert!(
+        matches!(refused, Err(coral_run::Error::OwnedElsewhere)),
+        "{refused:?}"
+    );
+    let timed_out = fixture.recover_at_deadline(&run).await;
+    assert_eq!(timed_out.state(), coral_run::RunState::TimedOut);
     assert!(
         !fixture
             .tasks
@@ -1773,6 +1779,9 @@ async fn concurrent_run_termination_protects_its_group_from_stale_cleanup() {
         panic!("accepted Run association")
     };
     let stale_cutoff = entry.completed_at_unix_nanos.unwrap();
+    // The lost handoff left the Run with no owner: recovery ends it at its
+    // deadline, contending with cleanup for the Run row the blocker holds.
+    fixture.move_deadline_into_the_past(&run).await;
     let mut blocker = fixture.tasks.database.begin().await.unwrap();
     coral_run::retention::hold_in_transaction(&mut blocker, &fixture.workspace, &run)
         .await
@@ -1787,23 +1796,23 @@ async fn concurrent_run_termination_protects_its_group_from_stale_cleanup() {
             .await
     });
     let runs = fixture.runs.clone();
-    let actor = fixture.actor.clone();
-    let workspace = fixture.workspace.clone();
-    let run_id = run.clone();
-    let termination = tokio::spawn(async move {
-        runs.cancel(
-            &actor,
-            &workspace,
-            &run_id,
-            &coral_run::RunObservation::immediate(None, 100).unwrap(),
-        )
-        .await
-    });
+    let termination = tokio::spawn(async move { runs.recover().await });
     tokio::task::yield_now().await;
     blocker.commit().await.unwrap();
+    termination.await.unwrap().unwrap();
     assert_eq!(
-        termination.await.unwrap().unwrap().state(),
-        coral_run::RunState::Canceled
+        fixture
+            .runs
+            .observe(
+                &fixture.actor,
+                &fixture.workspace,
+                &run,
+                &coral_run::RunObservation::immediate(None, 100).unwrap(),
+            )
+            .await
+            .unwrap()
+            .state(),
+        coral_run::RunState::TimedOut
     );
     assert!(!cleanup.await.unwrap().unwrap());
     assert_eq!(
@@ -2084,4 +2093,35 @@ async fn repeated_empty_searches_are_distinct_complete_attempts_and_closure_reje
             .len(),
         2
     );
+}
+
+impl Fixture {
+    /// Moves the Run deadline into the past, as the host's clock would find
+    /// it once the deadline has passed.
+    async fn move_deadline_into_the_past(&self, run: &coral_run::RunId) {
+        self.test_database
+            .execute_fixture_sql(&format!(
+                "UPDATE program_run_records \
+                 SET deadline_at_unix_nanos = accepted_at_unix_nanos + 1 \
+                 WHERE id = '{run}'"
+            ))
+            .await
+            .expect("move the Run deadline");
+    }
+
+    /// Recovery's answer to a Run with no owner once its deadline passed: the
+    /// Run as recorded after the pass.
+    async fn recover_at_deadline(&self, run: &coral_run::RunId) -> coral_run::RunUpdate {
+        self.move_deadline_into_the_past(run).await;
+        self.runs.recover().await.expect("recover the Run");
+        self.runs
+            .observe(
+                &self.actor,
+                &self.workspace,
+                run,
+                &coral_run::RunObservation::immediate(None, 100).unwrap(),
+            )
+            .await
+            .expect("observe the recovered Run")
+    }
 }

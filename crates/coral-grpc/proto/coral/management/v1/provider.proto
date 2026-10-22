@@ -782,6 +782,17 @@ message ProviderSetup {
   ProviderDiagnostic discovery_failure = 14;
   // Host deadline for a pre-ready Setup; absent once ready without material.
   google.protobuf.Timestamp expire_time = 15;
+  // What a Program asked this Setup to publish; absent for a Setup a person started.
+  ProviderSetupRequest request = 20;
+}
+
+// What a Program asked a Setup to publish when it called createProvider. The
+// person who finishes the Setup can change either.
+message ProviderSetupRequest {
+  // The Provider Namespace the Program asked for.
+  string namespace = 1;
+  // The Credential Route the Program asked for.
+  CredentialRoute credential_route = 2;
 }
 
 // Starts the setup-scoped OAuth Authorization.

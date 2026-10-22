@@ -17,7 +17,8 @@ use crate::{Error, RunState};
 /// The Run Owner's first chunk: the execution-start mark under the claim the
 /// acceptance transaction wrote, with the worker lease renewed. Built before
 /// any execution claim exists, so it is predicated on the claim column being
-/// unset, the head, and a running Run.
+/// unset, the worker claim still held (recovery releases an expired one), the
+/// head, and a running Run.
 pub(crate) async fn start_execution(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
@@ -27,7 +28,7 @@ pub(crate) async fn start_execution(
 ) -> Result<(), Error> {
     commit_chunk_with(
         transaction,
-        Chunk::new(run, None),
+        Chunk::new(run, None).held_by_worker(claim_id),
         vec![
             (ProgramRunRecords::ExecutionClaimId, Expr::val(claim_id)),
             (

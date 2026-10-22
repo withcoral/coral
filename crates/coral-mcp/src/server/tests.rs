@@ -146,3 +146,33 @@ async fn omitted_null_and_zero_wait_observe_immediately_but_positive_wait_waits(
         );
     }
 }
+
+/// A Run Owner that stopped before answering, and a Run owned by another
+/// process, each project one stable code; neither is an internal error.
+#[test]
+fn owner_lost_and_owned_elsewhere_project_stable_retryable_codes() {
+    let cases = [
+        (coral_run::Error::OwnerLost, "run_owner_lost"),
+        (coral_run::Error::OwnedElsewhere, "run_owned_elsewhere"),
+    ];
+    for (error, code) in cases {
+        let label = format!("{error:?}");
+        let super::DispatchError::Tool(failure) = super::run_failure(error) else {
+            panic!("{label}: a tool failure, not a protocol error");
+        };
+        let projected =
+            serde_json::to_value(&failure).expect("string-only tool failures serialize");
+        assert_eq!(
+            projected.get("code").and_then(serde_json::Value::as_str),
+            Some(code),
+            "{label}"
+        );
+        assert!(
+            projected
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|message| !message.is_empty()),
+            "{label}"
+        );
+    }
+}

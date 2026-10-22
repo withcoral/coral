@@ -9,7 +9,9 @@
   Conventional Commits, `type(scope): summary`, and keep the title current as
   the branch changes. Only `feat`, `fix`, `perf`, and breaking (`type!:`)
   titles open a release PR and reach the changelog, so give a user-visible
-  change one of those.
+  change one of those. The scope appears in the release notes, so name what a
+  user sees, not an internal codename: `ui` for Reef and Wax, never `reef`.
+  `.github/workflows/pr.yml` lists the rejected scopes.
 - Tracker conventions, triage labels, and domain-document rules are under
   `docs/agents/`.
 
@@ -55,13 +57,18 @@
   Account placeholder, a connection request) is inserted with
   `ON CONFLICT DO NOTHING` and reread, since no shared hold serializes its
   creators.
-- A Run's Program paths (Emissions, Logs, Invocation admission, held
-  rechecks, the Dispatch Fence, Invocation completion) write only through its
-  Run Owner: an Event is applied in owner memory and a row write is a
-  `ChunkWork` that joins the owner's chunk commit. Do not open a transaction
-  that holds the Run row from a Program path. See
-  [ADR 0018](docs/adr/0018-run-owner-coordinates-each-run.md) for the writers
-  that still hold the row from outside the owner.
+- A nonterminal Run's row and Events are written only through its Run
+  Owner: the Program paths (Emissions, Logs, Invocation admission, held
+  rechecks, the Dispatch Fence, Invocation completion) and the outside
+  requests (an approval decision, a cancellation, the deadline) alike. An
+  Event is applied in owner memory, a row write is a `ChunkWork` that joins
+  the owner's chunk commit, and an intent (a cancellation, the deadline)
+  rides a chunk's head update or the owner's terminal write; every chunk
+  commit asserts the head the owner tracks in memory. Do not open a transaction that holds the Run row
+  from any of these paths, and do not write a nonterminal Run's row from
+  outside its owner; recovery's explicit pass is the one outside writer.
+  [ADR 0018](docs/adr/0018-run-owner-coordinates-each-run.md) has the
+  request model (requests keyed by the entity they decide, the first wins).
 - A Run Owner's write ends on the database's answer, never on the clock: an
   unanswered write (`Error::is_operational`: a lost connection, a pool
   timeout, a lock race) means a reread and a retry with bounded backoff until

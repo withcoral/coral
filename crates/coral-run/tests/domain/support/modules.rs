@@ -188,10 +188,16 @@ impl TestModules {
         (dir, accounts)
     }
 
-    /// An Approval Module that decides deadlines on this fixture's clock.
+    /// An Approval Module that decides deadlines on this fixture's clock and
+    /// records through this fixture's Run Owners (a `live_runs` module runs on
+    /// the system clock and builds its own, as `credentials.rs` does).
     pub(crate) fn approvals(&self) -> crate::approval::ApprovalModule {
-        crate::approval::ApprovalModule::new(self.database.clone(), self.workspaces.clone())
-            .with_clock(self.clock.clone())
+        crate::approval::ApprovalModule::new(
+            self.database.clone(),
+            self.workspaces.clone(),
+            self.runs.owners.clone(),
+        )
+        .with_clock(self.clock.clone())
     }
 
     /// Publishes a second credential-free Provider in the fixture Operation's
@@ -1005,6 +1011,68 @@ pub(crate) async fn wait_for_terminal(
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     panic!("Run did not become terminal");
+}
+
+/// Every Run-addressed read and command answers `RunNotFound` for `run`, and
+/// no action prompt is offered: the answer an absent Run gets. `case` names
+/// the scenario in the failure message.
+pub(crate) async fn assert_run_not_found(
+    runs: &RunModule,
+    caller: &AuthenticatedPrincipal,
+    workspace: &coral_workspace::WorkspaceId,
+    run: &crate::RunId,
+    case: &str,
+) {
+    let not_found = |read: &str, result: Result<(), crate::Error>| {
+        assert!(
+            matches!(result, Err(crate::Error::RunNotFound)),
+            "{case}, {read}: {result:?}"
+        );
+    };
+    not_found(
+        "observe",
+        runs.observe(caller, workspace, run, &immediate(None, 100))
+            .await
+            .map(drop),
+    );
+    not_found(
+        "inspect_run",
+        runs.inspect_run(caller, workspace, run, &crate::RunInspection::default())
+            .await
+            .map(drop),
+    );
+    not_found(
+        "inspect_event",
+        runs.inspect_event(caller, workspace, run, 1)
+            .await
+            .map(drop),
+    );
+    not_found(
+        "activity_entries",
+        runs.activity_entries(
+            caller,
+            workspace,
+            run,
+            &crate::RunEntryWindow::Start,
+            10,
+            None,
+        )
+        .await
+        .map(drop),
+    );
+    not_found(
+        "cancel",
+        runs.cancel(caller, workspace, run, &immediate(None, 100))
+            .await
+            .map(drop),
+    );
+    assert!(
+        runs.action_prompts(caller, workspace, run)
+            .await
+            .unwrap()
+            .is_empty(),
+        "{case}: no prompt is offered"
+    );
 }
 
 pub(crate) async fn retained_events(

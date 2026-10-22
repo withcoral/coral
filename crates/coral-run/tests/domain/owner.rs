@@ -1,11 +1,12 @@
 //! The Run Owner (ADR 0018): Program requests answer at Applied (at Recorded
 //! while the owner is suspect), the Run Ledger lands in chunks, the lease
-//! rides every commit, and a claim mismatch stops the owner. The last test
-//! drives `apply` without a database.
+//! rides every commit, and a claim mismatch stops the owner. The `apply`
+//! tables drive the owner's loop without a database.
 use super::*;
 
 use crate::owner::{
-    CHUNK_WORK_CAP, CommitRejection, Effect, Message, OwnerLimits, OwnerState, Phase, apply,
+    CHUNK_WORK_CAP, CommitRejection, DecisionAnswer, Effect, Message, OwnerLimits, OwnerState,
+    Phase, StartedExecution, apply,
 };
 use crate::termination::ShutdownAction;
 use crate::{AppliedOutputCap, CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, CoralFailure, FanOutLimit};
@@ -345,6 +346,10 @@ fn deliver(effects: Vec<Effect>) -> Vec<Effect> {
                 work.settle(Err(error));
                 None
             }
+            Effect::Answer(reply, recorded) => {
+                let _delivered = reply.send(recorded);
+                None
+            }
             other => Some(other),
         })
         .collect()
@@ -359,13 +364,17 @@ fn started(limits: OwnerLimits) -> OwnerState {
     assert!(matches!(
         apply(
             &mut state,
-            Message::Started(Ok(Some(ProgramPackage::scripted("x")))),
+            Message::Started(Ok(Some(StartedExecution {
+                package: ProgramPackage::scripted("x"),
+                head: 1,
+            }))),
             2
         )
         .as_slice(),
         [Effect::StartProgram(_)]
     ));
     assert_eq!(state.phase(), Phase::Running);
+    assert_eq!(state.head(), 1);
     state
 }
 
@@ -376,6 +385,7 @@ const LIMITS: OwnerLimits = OwnerLimits {
     applied_cap_bytes: AppliedOutputCap::DEFAULT_BYTES,
     fan_out_invocations: FanOutLimit::DEFAULT_INVOCATIONS,
     deadline_at_unix_nanos: 1_000_000,
+    shutdown_grace_nanos: 1_000,
     suspect_after_nanos: LEASE,
     self_interrupt_after_nanos: 3 * LEASE,
 };
@@ -615,7 +625,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert!(
             rest.iter()
                 .all(|effect| matches!(effect, Effect::TerminateProgram)),
-            "{rest:?}"
+            "a rejected commit terminates the Program; the grace starts with a stop, not here: {rest:?}"
         );
         assert!(matches!(
             answered(&mut waiting),
@@ -668,9 +678,10 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert!(
             matches!(
                 effects.as_slice(),
-                [Effect::CompleteExecution(
-                    ExecutionCompletion::ProgramHostTerminated
-                )]
+                [Effect::CompleteExecution {
+                    completion: ExecutionCompletion::ProgramHostTerminated,
+                    ..
+                }]
             ),
             "{effects:?}"
         );
@@ -721,9 +732,10 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert!(
             matches!(
                 effects.as_slice(),
-                [Effect::CompleteExecution(ExecutionCompletion::Succeeded(
-                    FinalValue::Absent
-                ))]
+                [Effect::CompleteExecution {
+                    completion: ExecutionCompletion::Succeeded(FinalValue::Absent),
+                    ..
+                }]
             ),
             "{effects:?}"
         );
@@ -764,7 +776,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert!(
             matches!(
                 effects.as_slice(),
-                [Effect::TerminateProgram, Effect::CompleteExecution(_)]
+                [Effect::TerminateProgram, Effect::CompleteExecution { .. }]
             ),
             "{effects:?}"
         );
@@ -782,9 +794,10 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert!(
             matches!(
                 effects.as_slice(),
-                [Effect::CompleteExecution(ExecutionCompletion::Succeeded(
-                    FinalValue::Absent
-                ))]
+                [Effect::CompleteExecution {
+                    completion: ExecutionCompletion::Succeeded(FinalValue::Absent),
+                    ..
+                }]
             ),
             "{effects:?}"
         );
@@ -796,8 +809,11 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert_eq!(state.phase(), Phase::Retired);
     }
 
-    // A settled termination with a chunk in flight: the owner retires only
-    // once that chunk has answered, and accepts nothing more meanwhile.
+    // A recorded termination is settled between the owner's commits, never
+    // beside one: a result pending at the terminal write commits first, a
+    // settle attempt follows each commit, a result that arrives during an
+    // attempt commits before the next attempt, and the attempt that ends
+    // the Run retires the owner, which accepts nothing more.
     {
         let mut state = started(LIMITS);
         deliver(apply(
@@ -813,15 +829,47 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
             92,
         );
         assert!(
-            matches!(
-                effects.as_slice(),
-                [Effect::Settle(_), Effect::Commit { .. }]
-            ),
+            matches!(effects.as_slice(), [Effect::Commit { .. }]),
             "{effects:?}"
         );
-        assert!(apply(&mut state, Message::Settled, 93).is_empty());
         assert_eq!(state.phase(), Phase::Settling);
-        let (effects, mut refused, refused_work) = result(&mut state, 10, 94);
+        assert!(
+            matches!(
+                apply(&mut state, Message::Committed, 93).as_slice(),
+                [Effect::Settle { again: false, .. }]
+            ),
+            "the settle is attempted once the pending result is recorded"
+        );
+        let (effects, mut late, late_work) = result(&mut state, 10, 94);
+        assert!(deliver(effects).is_empty());
+        assert!(matches!(answered(&mut late), Some(Ok(()))));
+        assert!(
+            apply(&mut state, Message::Drained, 95).is_empty(),
+            "nothing commits during a settle attempt"
+        );
+        let effects = apply(&mut state, Message::SettleAttempted(Ok(false)), 96);
+        assert!(
+            matches!(effects.as_slice(), [Effect::Commit { .. }]),
+            "the late result commits before the next attempt: {effects:?}"
+        );
+        assert!(matches!(
+            apply(&mut state, Message::Committed, 97).as_slice(),
+            [Effect::Settle { again: false, .. }]
+        ));
+        assert!(late_work.lock().expect("settle").is_none());
+        assert!(
+            matches!(
+                apply(&mut state, Message::SettleAttempted(Ok(false)), 98).as_slice(),
+                [Effect::Settle { again: true, .. }]
+            ),
+            "with nothing to commit the next attempt waits a moment"
+        );
+        assert!(matches!(
+            apply(&mut state, Message::SettleAttempted(Ok(true)), 99).as_slice(),
+            [Effect::Retire]
+        ));
+        assert_eq!(state.phase(), Phase::Retired);
+        let (effects, mut refused, refused_work) = result(&mut state, 10, 100);
         assert!(deliver(effects).is_empty());
         assert!(matches!(
             answered(&mut refused),
@@ -831,11 +879,6 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
             refused_work.lock().expect("settle").as_ref(),
             Some(Err(Error::ProgramHostTerminated))
         ));
-        assert!(matches!(
-            apply(&mut state, Message::Committed, 95).as_slice(),
-            [Effect::Retire]
-        ));
-        assert_eq!(state.phase(), Phase::Retired);
     }
 
     // Suspect: past one lease without a successful commit, a Program request
@@ -1005,7 +1048,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert!(
             rest.iter()
                 .all(|effect| matches!(effect, Effect::TerminateProgram)),
-            "{rest:?}"
+            "a rejected commit terminates the Program; the grace starts with a stop, not here: {rest:?}"
         );
         assert!(matches!(
             pending_work.lock().expect("settle").as_ref(),
@@ -1199,9 +1242,11 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         );
         let rest = deliver(effects);
         assert!(
-            rest.iter()
-                .all(|effect| matches!(effect, Effect::TerminateProgram)),
-            "{rest:?}"
+            rest.iter().all(|effect| matches!(
+                effect,
+                Effect::TerminateProgram | Effect::GraceTimer { .. }
+            )),
+            "a stop terminates the Program and starts the shutdown grace: {rest:?}"
         );
         for answer in [&mut first, &mut second] {
             assert!(
@@ -1279,7 +1324,7 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         );
         let effects = apply(&mut state, Message::Committed, 33);
         assert!(
-            matches!(effects.as_slice(), [Effect::CompleteExecution(_)]),
+            matches!(effects.as_slice(), [Effect::CompleteExecution { .. }]),
             "{effects:?}"
         );
     }
@@ -1450,4 +1495,493 @@ fn a_fan_out_limit_below_one_invocation_is_rejected() {
         FanOutLimit::default().invocations(),
         FanOutLimit::DEFAULT_INVOCATIONS
     );
+}
+
+/// A decision request for the apply table, on a fresh Approval Request id.
+fn decision(approval: &crate::approval::ApprovalId) -> crate::owner::DecisionRequest {
+    crate::owner::DecisionRequest {
+        approval: approval.clone(),
+        decision: crate::approval::ApprovalDecision::Approve,
+        actor: requester(),
+        comment: None,
+        trace: TraceId::parse(&"e".repeat(32)).expect("a trace id"),
+    }
+}
+
+fn requester() -> coral_workspace::Principal {
+    coral_workspace::Principal::from_parts(
+        coral_workspace::PrincipalId::parse("user:apply").expect("a principal id"),
+        coral_workspace::PrincipalKind::User,
+    )
+}
+
+fn approval_id() -> crate::approval::ApprovalId {
+    crate::approval::ApprovalId::parse(&uuid::Uuid::new_v4().to_string()).expect("an id")
+}
+
+type Decided = tokio::sync::oneshot::Receiver<Result<DecisionAnswer, Error>>;
+
+fn decide(
+    state: &mut OwnerState,
+    approval: &crate::approval::ApprovalId,
+    now: i64,
+) -> (Vec<Effect>, Decided) {
+    let (reply, receiver) = tokio::sync::oneshot::channel();
+    (
+        apply(
+            state,
+            Message::Decide {
+                request: decision(approval),
+                reply,
+            },
+            now,
+        ),
+        receiver,
+    )
+}
+
+fn decided(receiver: &mut Decided) -> Option<Result<DecisionAnswer, Error>> {
+    receiver.try_recv().ok()
+}
+
+fn cancel(state: &mut OwnerState, now: i64) -> (Vec<Effect>, Decided) {
+    let (reply, receiver) = tokio::sync::oneshot::channel();
+    (
+        apply(
+            state,
+            Message::Cancel {
+                requester: requester(),
+                reply,
+            },
+            now,
+        ),
+        receiver,
+    )
+}
+
+/// The one pending chunk a commit effect carries.
+fn committed_chunk(effects: Vec<Effect>) -> crate::owner::ChunkBuildView {
+    let effects = deliver(effects);
+    let [Effect::Commit { chunk, .. }] = effects.as_slice() else {
+        panic!("{effects:?}");
+    };
+    crate::owner::ChunkBuildView::of(chunk)
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of outside-request message orders, each case a block"
+)]
+async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_cancel_at_once() {
+    use crate::invocation::FenceRequest;
+    use crate::lifecycle::RunTerminationKind;
+
+    let (engine, _release) = BlockingEngine::new();
+    let fixture = TestModules::new(Arc::new(engine)).await;
+    let operation = fixture
+        .user_operation("user:apply-requests", "Request rows")
+        .await;
+    let run = fixture
+        .runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission("return 1;"),
+        )
+        .await
+        .unwrap();
+    wait_until_started(&fixture, &operation.workspace_id, run.run_id()).await;
+    let record = fixture
+        .run_record(&operation.workspace_id, run.run_id())
+        .await;
+    let admitted = admitted_invocation(&fixture, &operation, run.run_id()).await;
+    let invoker = test_invoker(&fixture, &operation, &record);
+
+    // Two decisions on one request: the first rides the next chunk, the
+    // second waits parked for that chunk's answer and is then answered from
+    // memory, as is a third; no second chunk is built.
+    {
+        let mut state = started(LIMITS);
+        let approval = approval_id();
+        let (effects, mut first) = decide(&mut state, &approval, 3);
+        assert!(deliver(effects).is_empty());
+        let (effects, mut second) = decide(&mut state, &approval, 4);
+        assert!(deliver(effects).is_empty());
+        assert_eq!(state.parked_requests(), 1);
+        assert_eq!(state.pending_chunks(), 1);
+        let chunk = committed_chunk(apply(&mut state, Message::Drained, 5));
+        assert_eq!(chunk.works, 1);
+        assert!(chunk.termination.is_none());
+        assert!(decided(&mut first).is_none() && decided(&mut second).is_none());
+        // The chunk's work reports what it wrote before the chunk answers.
+        let effects = apply(
+            &mut state,
+            Message::RequestRecorded {
+                key: crate::owner::RequestKey::Approval(approval.clone()),
+                answer: DecisionAnswer::Recorded {
+                    state: crate::approval::ApprovalState::Approved,
+                    decided_at_unix_nanos: 5,
+                },
+            },
+            6,
+        );
+        assert!(effects.is_empty(), "{effects:?}");
+        let effects = deliver(apply(&mut state, Message::Committed, 6));
+        assert!(effects.is_empty(), "{effects:?}");
+        assert!(matches!(
+            decided(&mut first),
+            Some(Ok(DecisionAnswer::Recorded {
+                state: crate::approval::ApprovalState::Approved,
+                decided_at_unix_nanos: 5
+            }))
+        ));
+        assert!(
+            matches!(decided(&mut second), Some(Ok(DecisionAnswer::FromRecord))),
+            "the loser reads the record"
+        );
+        assert_eq!(state.parked_requests(), 0);
+        let (effects, mut third) = decide(&mut state, &approval, 7);
+        assert!(deliver(effects).is_empty());
+        assert!(matches!(
+            decided(&mut third),
+            Some(Ok(DecisionAnswer::FromRecord))
+        ));
+        assert_eq!(
+            state.pending_chunks(),
+            0,
+            "a recorded request joins no chunk"
+        );
+        assert_eq!(state.head(), 2);
+    }
+
+    // A cancel while a fence is in flight: applied at once (the Program is
+    // terminated, the batch in flight is left to return on its own), the
+    // intent and `cancellation.requested` ride the next chunk, and the
+    // requester is answered once that chunk is recorded. A second cancel
+    // waits parked and is answered with it; a third from memory, with no
+    // chunk.
+    {
+        let mut state = started(LIMITS);
+        let (sender, _receiver) = tokio::sync::oneshot::channel();
+        let request = FenceRequest::for_apply_test(invoker.clone(), admitted.clone(), sender);
+        deliver(apply(&mut state, Message::Fence(Box::new(request)), 3));
+        let batch = committed_chunk(apply(&mut state, Message::Drained, 4));
+        assert_eq!(batch.fenced, 1);
+        let (effects, mut first) = cancel(&mut state, 5);
+        let effects = deliver(effects);
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::GraceTimer { .. }, Effect::TerminateProgram]
+            ),
+            "{effects:?}"
+        );
+        assert_eq!(
+            state.termination().map(|intent| intent.termination.kind),
+            Some(RunTerminationKind::Canceled)
+        );
+        assert_eq!(state.pending_chunks(), 1);
+        let (effects, mut second) = cancel(&mut state, 6);
+        assert!(deliver(effects).is_empty());
+        assert_eq!(state.parked_requests(), 1);
+        assert!(
+            deliver(apply(&mut state, Message::Drained, 7)).is_empty(),
+            "the intent waits behind the fence in flight"
+        );
+        let intent = committed_chunk(apply(&mut state, Message::Committed, 8));
+        assert_eq!(intent.events, 1, "`cancellation.requested`");
+        assert_eq!(
+            intent.termination.map(|intent| intent.termination.kind),
+            Some(RunTerminationKind::Canceled)
+        );
+        assert!(decided(&mut first).is_none() && decided(&mut second).is_none());
+        let effects = deliver(apply(&mut state, Message::Committed, 9));
+        assert!(effects.is_empty(), "{effects:?}");
+        assert!(matches!(decided(&mut first), Some(Ok(_))));
+        assert!(matches!(decided(&mut second), Some(Ok(_))));
+        let (effects, mut third) = cancel(&mut state, 10);
+        assert!(deliver(effects).is_empty());
+        assert!(matches!(decided(&mut third), Some(Ok(_))));
+        assert_eq!(state.pending_chunks(), 0);
+        assert_eq!(state.head(), 3);
+    }
+
+    // The deadline against a decision: a decision applied before the
+    // deadline rides a chunk; the deadline terminates the Program and is
+    // the intent the terminal write records (no chunk carries it, the row
+    // refusing chunks past its deadline); a decision applied after it
+    // closes the request instead.
+    {
+        let mut state = started(LIMITS);
+        let approval = approval_id();
+        let (effects, _first) = decide(&mut state, &approval, 3);
+        assert!(deliver(effects).is_empty());
+        let effects = deliver(apply(
+            &mut state,
+            Message::Deadline,
+            LIMITS.deadline_at_unix_nanos,
+        ));
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::GraceTimer { .. }, Effect::TerminateProgram]
+            ),
+            "{effects:?}"
+        );
+        assert_eq!(
+            state.termination().map(|intent| intent.termination.kind),
+            Some(RunTerminationKind::TimedOut)
+        );
+        let (effects, _late) = decide(
+            &mut state,
+            &approval_id(),
+            LIMITS.deadline_at_unix_nanos + 1,
+        );
+        assert!(deliver(effects).is_empty());
+        let chunk = committed_chunk(apply(
+            &mut state,
+            Message::Drained,
+            LIMITS.deadline_at_unix_nanos + 2,
+        ));
+        assert_eq!(chunk.works, 2);
+        assert_eq!(chunk.events, 0);
+        assert!(chunk.termination.is_none(), "a timeout rides no chunk");
+        // The row refuses the chunk past its deadline; the Program ends and
+        // the terminal write records the timeout.
+        deliver(apply(
+            &mut state,
+            Message::CommitRejected(CommitRejection::Refused),
+            LIMITS.deadline_at_unix_nanos + 3,
+        ));
+        let effects = apply(
+            &mut state,
+            Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
+            LIMITS.deadline_at_unix_nanos + 4,
+        );
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::CompleteExecution {
+                    completion: ExecutionCompletion::ProgramHostTerminated,
+                    intent: Some(intent),
+                }] if intent.termination.kind == RunTerminationKind::TimedOut
+                    && intent.requester.is_none()
+            ),
+            "{effects:?}"
+        );
+    }
+
+    // A cancel past the deadline times the Run out: the Program is
+    // terminated, no chunk is built, and the requester is answered once the
+    // terminal write has recorded the timeout.
+    {
+        let mut state = started(LIMITS);
+        let (effects, mut late) = cancel(&mut state, LIMITS.deadline_at_unix_nanos);
+        assert!(matches!(
+            deliver(effects).as_slice(),
+            [Effect::GraceTimer { .. }, Effect::TerminateProgram]
+        ));
+        assert_eq!(state.pending_chunks(), 0);
+        assert_eq!(state.parked_requests(), 1);
+        assert!(
+            apply(
+                &mut state,
+                Message::Drained,
+                LIMITS.deadline_at_unix_nanos + 1
+            )
+            .is_empty()
+        );
+        let effects = apply(
+            &mut state,
+            Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
+            LIMITS.deadline_at_unix_nanos + 2,
+        );
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [
+                    Effect::TerminateProgram,
+                    Effect::CompleteExecution {
+                        intent: Some(intent),
+                        ..
+                    }
+                ] if intent.termination.kind == RunTerminationKind::TimedOut
+            ),
+            "{effects:?}"
+        );
+        assert!(decided(&mut late).is_none());
+        let effects = deliver(apply(
+            &mut state,
+            Message::Completed(Ok(Some(ShutdownAction::for_apply_test()))),
+            LIMITS.deadline_at_unix_nanos + 3,
+        ));
+        assert!(matches!(effects.as_slice(), [Effect::Settle { .. }]));
+        assert!(matches!(decided(&mut late), Some(Ok(_))));
+    }
+
+    // A Program that never reports its end after the cancel: once the
+    // shutdown grace is out the owner ends the Run without it, and a late
+    // end changes nothing.
+    {
+        let mut state = started(LIMITS);
+        let (effects, mut requester) = cancel(&mut state, 3);
+        deliver(effects);
+        committed_chunk(apply(&mut state, Message::Drained, 4));
+        deliver(apply(&mut state, Message::Committed, 5));
+        assert!(matches!(decided(&mut requester), Some(Ok(_))));
+        let effects = apply(&mut state, Message::GraceExpired, 6);
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [
+                    Effect::TerminateProgram,
+                    Effect::CompleteExecution { intent: None, .. }
+                ]
+            ),
+            "{effects:?}"
+        );
+        assert_eq!(state.phase(), Phase::Completing);
+        assert!(
+            apply(
+                &mut state,
+                Message::ProgramEnded(ExecutionCompletion::Succeeded(FinalValue::Absent)),
+                7,
+            )
+            .is_empty()
+        );
+    }
+
+    // A lost claim answers every outside requester `OwnerLost`: the one on
+    // the chunk in flight, the one parked behind it, and the one on a chunk
+    // not yet committed.
+    {
+        let mut state = started(LIMITS);
+        let approval = approval_id();
+        let (effects, mut first) = decide(&mut state, &approval, 3);
+        assert!(deliver(effects).is_empty());
+        committed_chunk(apply(&mut state, Message::Drained, 4));
+        let (effects, mut repeat) = decide(&mut state, &approval, 5);
+        assert!(deliver(effects).is_empty());
+        let (effects, mut pending) = cancel(&mut state, 6);
+        deliver(effects);
+        let effects = deliver(apply(
+            &mut state,
+            Message::CommitRejected(CommitRejection::ClaimMismatch),
+            7,
+        ));
+        assert!(
+            matches!(effects.as_slice(), [Effect::TerminateProgram]),
+            "{effects:?}"
+        );
+        for answer in [&mut first, &mut repeat] {
+            assert!(matches!(decided(answer), Some(Err(Error::OwnerLost))));
+        }
+        assert!(matches!(decided(&mut pending), Some(Err(Error::OwnerLost))));
+        assert_eq!(
+            state.phase(),
+            Phase::Stopped(CommitRejection::ClaimMismatch)
+        );
+        let (effects, mut late) = decide(&mut state, &approval_id(), 8);
+        let _ = deliver(effects);
+        assert!(matches!(decided(&mut late), Some(Err(Error::OwnerLost))));
+    }
+
+    // A cancel before the Run started: the Program never starts, the intent
+    // commits once the start mark has, and the terminal write ends the Run.
+    {
+        let mut state = OwnerState::new(LIMITS, 1);
+        deliver(apply(&mut state, Message::Launch, 1));
+        let (effects, mut early) = cancel(&mut state, 2);
+        assert!(matches!(
+            deliver(effects).as_slice(),
+            [Effect::GraceTimer { .. }, Effect::TerminateProgram]
+        ));
+        let chunk = committed_chunk(apply(
+            &mut state,
+            Message::Started(Ok(Some(StartedExecution {
+                package: ProgramPackage::scripted("x"),
+                head: 1,
+            }))),
+            3,
+        ));
+        assert_eq!(state.phase(), Phase::Ending);
+        assert_eq!(chunk.events, 1);
+        let effects = apply(&mut state, Message::Committed, 4);
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [
+                    Effect::Answer(..),
+                    Effect::CompleteExecution {
+                        completion: ExecutionCompletion::ProgramHostTerminated,
+                        ..
+                    }
+                ]
+            ),
+            "{effects:?}"
+        );
+        deliver(effects);
+        assert!(matches!(decided(&mut early), Some(Ok(_))));
+        let effects = apply(
+            &mut state,
+            Message::Completed(Ok(Some(ShutdownAction::for_apply_test()))),
+            5,
+        );
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Settle { again: false, .. }]
+        ));
+    }
+
+    // A decision during the terminal write waits for it: the Run ended,
+    // the requester is answered and reads the record; a termination to
+    // settle closes the request in a chunk of the settle.
+    {
+        let mut state = started(LIMITS);
+        deliver(apply(
+            &mut state,
+            Message::ProgramEnded(ExecutionCompletion::Succeeded(FinalValue::Absent)),
+            3,
+        ));
+        assert_eq!(state.phase(), Phase::Completing);
+        let (effects, mut during) = decide(&mut state, &approval_id(), 4);
+        assert!(deliver(effects).is_empty());
+        assert_eq!(state.parked_requests(), 1);
+        let effects = deliver(apply(&mut state, Message::Completed(Ok(None)), 5));
+        assert!(matches!(effects.as_slice(), [Effect::Retire]));
+        assert!(matches!(
+            decided(&mut during),
+            Some(Ok(DecisionAnswer::FromRecord))
+        ));
+
+        let mut state = started(LIMITS);
+        deliver(apply(
+            &mut state,
+            Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
+            3,
+        ));
+        let (effects, mut parked) = decide(&mut state, &approval_id(), 4);
+        assert!(deliver(effects).is_empty());
+        committed_chunk(apply(
+            &mut state,
+            Message::Completed(Ok(Some(ShutdownAction::for_apply_test()))),
+            5,
+        ));
+        assert_eq!(state.phase(), Phase::Settling);
+        assert!(decided(&mut parked).is_none());
+        let effects = apply(&mut state, Message::Committed, 6);
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::Answer(..), Effect::Settle { again: false, .. }]
+            ),
+            "{effects:?}"
+        );
+        deliver(effects);
+        assert!(matches!(
+            decided(&mut parked),
+            Some(Ok(DecisionAnswer::FromRecord))
+        ));
+    }
 }

@@ -34,3 +34,6 @@ jobs:
             chore
             revert
           requireScope: false
+          disallowScopes: |
+            reef
+            coral-ui

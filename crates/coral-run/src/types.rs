@@ -6,6 +6,7 @@ use base64::Engine as _;
 use coral_workspace::Principal;
 use coral_workspace::WorkspaceId;
 use serde_json::Value;
+use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 use crate::Error;
@@ -34,39 +35,47 @@ pub const CHUNK_EVENTS_CAP: usize = 1000;
 /// Event commits alone.
 pub const CHUNK_BYTES_CAP: usize = 1024 * 1024;
 
-const RUN_CURSOR_FORMAT: u8 = 3;
-const RUN_CURSOR_PAYLOAD_BYTES: usize = 1 + 16 + 8 + 32;
+const RUN_CURSOR_FORMAT: u8 = 4;
+const RUN_CURSOR_PAYLOAD_BYTES: usize = 1 + RUN_DIGEST_BYTES + 8 + 32;
+const RUN_DIGEST_BYTES: usize = 16;
 const RUN_CURSOR_TOKEN_BYTES: usize = 76;
 
-/// Stable Coral-generated Program Run identity.
+/// Stable Coral-generated Program Run identity: four words from Coral's word
+/// list, such as `height-word-database-library`, or the UUID of a Run accepted
+/// before Coral issued words. The text is the stored primary key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct RunId(Uuid);
+pub struct RunId(String);
 
 impl RunId {
-    pub(crate) fn generate() -> Self {
-        Self(Uuid::new_v4())
+    /// Draws a fresh identifier. Only a successful insert proves it unused.
+    pub(crate) fn generate() -> Result<Self, Error> {
+        coral_identifier::generate()
+            .map(Self)
+            .map_err(|error| Error::IdentifierIssuance(error.to_string()))
     }
 
     /// Parses a Run identity at an Adapter boundary.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidInput`] when `value` is not a canonical UUID.
+    /// Returns [`Error::InvalidInput`] unless `value` is four or five lowercase
+    /// words joined by hyphens, or a canonical lowercase UUID.
     pub fn parse(value: &str) -> Result<Self, Error> {
-        let id = Uuid::parse_str(value)
-            .map_err(|_error| Error::InvalidInput("run id must be a UUID".to_string()))?;
-        if id.hyphenated().to_string() != value {
-            return Err(Error::InvalidInput(
-                "run id must use canonical lowercase UUID form".to_string(),
-            ));
-        }
-        Ok(Self(id))
+        coral_identifier::validate(value)
+            .map_err(|error| Error::InvalidInput(format!("run id is invalid: {error}")))?;
+        Ok(Self(value.to_string()))
+    }
+
+    /// The identifier text, as stored and shown.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
 impl fmt::Display for RunId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}", self.0.hyphenated())
+        formatter.write_str(&self.0)
     }
 }
 
@@ -608,22 +617,37 @@ impl ProgramLogLevel {
 /// its own numeric Event positions, never these tokens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunCursor {
-    run_id: RunId,
+    /// The first 16 bytes of the SHA-256 of the Run identifier text, so the
+    /// token stays fixed-size whatever the identifier's length.
+    run_digest: [u8; RUN_DIGEST_BYTES],
     event_sequence: u64,
     required_action_revision: [u8; 32],
 }
 
 impl RunCursor {
-    pub(crate) const fn new(
-        run_id: RunId,
+    pub(crate) fn new(
+        run_id: &RunId,
+        event_sequence: u64,
+        required_action_revision: [u8; 32],
+    ) -> Self {
+        Self::from_parts(run_digest(run_id), event_sequence, required_action_revision)
+    }
+
+    const fn from_parts(
+        run_digest: [u8; RUN_DIGEST_BYTES],
         event_sequence: u64,
         required_action_revision: [u8; 32],
     ) -> Self {
         Self {
-            run_id,
+            run_digest,
             event_sequence,
             required_action_revision,
         }
+    }
+
+    /// Whether this cursor was issued for `run_id`.
+    pub(crate) fn belongs_to(&self, run_id: &RunId) -> bool {
+        self.run_digest == run_digest(run_id)
     }
 
     /// Parses the opaque value returned by [`fmt::Display`].
@@ -647,10 +671,12 @@ impl RunCursor {
         {
             return Err(invalid_cursor());
         }
-        let (run_id, positions) = payload.split_at_checked(16).ok_or_else(invalid_cursor)?;
+        let (run_digest, positions) = payload
+            .split_at_checked(RUN_DIGEST_BYTES)
+            .ok_or_else(invalid_cursor)?;
         let (event_sequence, required_action_revision) =
             positions.split_at_checked(8).ok_or_else(invalid_cursor)?;
-        let run_id = Uuid::from_slice(run_id).map_err(|_error| invalid_cursor())?;
+        let run_digest = run_digest.try_into().map_err(|_error| invalid_cursor())?;
         let event_sequence = u64::from_be_bytes(
             event_sequence
                 .try_into()
@@ -659,15 +685,11 @@ impl RunCursor {
         let required_action_revision = required_action_revision
             .try_into()
             .map_err(|_error| invalid_cursor())?;
-        Ok(Self::new(
-            RunId(run_id),
+        Ok(Self::from_parts(
+            run_digest,
             event_sequence,
             required_action_revision,
         ))
-    }
-
-    pub(crate) const fn run_id(&self) -> &RunId {
-        &self.run_id
     }
 
     pub(crate) const fn event_sequence(&self) -> u64 {
@@ -683,11 +705,20 @@ impl fmt::Display for RunCursor {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut bytes = Vec::with_capacity(RUN_CURSOR_PAYLOAD_BYTES);
         bytes.push(RUN_CURSOR_FORMAT);
-        bytes.extend_from_slice(self.run_id.0.as_bytes());
+        bytes.extend_from_slice(&self.run_digest);
         bytes.extend_from_slice(&self.event_sequence.to_be_bytes());
         bytes.extend_from_slice(&self.required_action_revision);
         formatter.write_str(&base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
     }
+}
+
+fn run_digest(run_id: &RunId) -> [u8; RUN_DIGEST_BYTES] {
+    let digest = Sha256::digest(run_id.as_str().as_bytes());
+    let mut prefix = [0_u8; RUN_DIGEST_BYTES];
+    for (slot, byte) in prefix.iter_mut().zip(digest.iter()) {
+        *slot = *byte;
+    }
+    prefix
 }
 
 fn invalid_cursor() -> Error {

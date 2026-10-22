@@ -10,11 +10,14 @@
 //! clock sample, from the decision the held gate recorded: an approval never
 //! changes once made.
 //!
-//! Every transition holds the Run before Workspace authority, just like Invocation
-//! and cancellation. The first terminal transition and its safe lifecycle event
-//! commit together; a lost response can be recovered by reading or deciding again.
-//! Invocation owns live gate ordering and Promise settlement. Approval owns only
-//! request validity, decisions and evidence, not required-action projections or UI.
+//! A decision is authorized and concealed here, then recorded by the Run's
+//! owner in its next chunk; the first decision wins, and a repeat receives the
+//! recorded answer. The decision reads no policy: the Dispatch Fence judges
+//! the approval when the Invocation dispatches. The first terminal transition
+//! and its safe lifecycle event commit together; a lost response can be
+//! recovered by reading or deciding again. Invocation owns live gate ordering
+//! and Promise settlement. Approval owns only request validity, decisions and
+//! evidence, not required-action projections or UI.
 
 use crate::lifecycle::RunRecord;
 use std::sync::Arc;
@@ -33,16 +36,17 @@ use crate::approval_repository::{self, StoredApproval};
 use crate::engine::{Clock, SystemClock};
 use crate::fence::ApprovalFact;
 use crate::invocation::AdmittedInvocation;
+use crate::owner::{ChunkWork, DecisionAnswer, DecisionRequest, Owners, RequestKey};
 use crate::run_repository::OwnedEvent;
 use crate::{
-    CoralFailure, Error, InvocationId, RunId, RunState, invocation_repository, run_repository,
+    CoralFailure, Error, InvocationId, RunId, invocation_repository, owner, run_repository,
 };
 
 /// Host approval wait limit, further bounded by the accepted Run deadline.
 const APPROVAL_WAIT_NANOS: i64 = 900_000_000_000;
 
 /// Opaque, non-authorizing Approval Request identity.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ApprovalId(Uuid);
 impl ApprovalId {
     /// Parses a canonical lowercase UUID.
@@ -179,15 +183,25 @@ pub struct ApprovalModule {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
     clock: Arc<dyn Clock>,
+    /// The Run Owners this module decides through: the owning Run Module's.
+    /// To a registry with none of a Run's owner (another process's), every
+    /// nonterminal Run is owned elsewhere.
+    owners: Owners,
 }
 impl ApprovalModule {
-    /// Builds the Approval module against the Run domain's migrated database.
+    /// Builds the Approval module against the Run domain's migrated database,
+    /// deciding through `owners`.
     #[must_use]
-    pub fn new(database: Arc<Database>, workspaces: WorkspaceModule) -> Self {
+    pub(crate) fn new(
+        database: Arc<Database>,
+        workspaces: WorkspaceModule,
+        owners: Owners,
+    ) -> Self {
         Self {
             database,
             workspaces,
             clock: Arc::new(SystemClock),
+            owners,
         }
     }
 
@@ -256,13 +270,20 @@ impl ApprovalModule {
         Ok(request)
     }
 
-    /// Commits the first authorized decision and safe lifecycle evidence together.
+    /// Decides one Approval Request through its Run's owner and returns the
+    /// request as recorded.
     ///
     /// Authentication supplies current Organization Membership; Workspace supplies
     /// the User's Workspace Membership authority. Comments are limited to 1024 UTF-8 bytes.
     /// Approval does not attest to any other current dispatch-authority fact.
+    /// The first decision on a request wins; a repeat, and a loser, receive
+    /// the recorded answer: the decision, who made it and when. A request of
+    /// a terminal Run, or one decided already, is answered from the record.
     /// # Errors
     /// Conceals unauthorized targets; rejects invalid comments and persistence faults.
+    /// [`Error::OwnedElsewhere`] when the Run is nonterminal and no owner for
+    /// it lives in this process; [`Error::OwnerLost`] when the owner stopped
+    /// before it recorded the decision (the outcome is unknown: read again).
     pub async fn decide(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -277,90 +298,80 @@ impl ApprovalModule {
                 "approval comment must be at most 1024 bytes without null characters".into(),
             ));
         }
-        let mut tx = self.database.begin().await?;
-        // An approval never changes Run. Conceal it before holding that Run.
-        let run_id = approval_repository::load(&mut tx, workspace, id)
-            .await?
-            .run_id;
-        self.visible_run(&mut tx, actor, workspace, &run_id).await?;
-        let Some(_) = run_repository::hold_run(&mut tx, workspace, &run_id).await? else {
-            return Err(Error::ApprovalNotFound);
-        };
-        let run = self.visible_run(&mut tx, actor, workspace, &run_id).await?;
-        let mut row = approval_repository::load(&mut tx, workspace, id).await?;
-        if row.state == ApprovalState::Pending {
+        // One snapshot authorizes the request and reads the request as it
+        // stands; a recorded decision of this request is then this view with
+        // the decision the chunk wrote, read from no second snapshot.
+        let (mut request, run, own_name) = {
+            let mut tx = self.database.begin_read_snapshot().await?;
+            let row = approval_repository::load(&mut tx, workspace, id).await?;
+            let run = self
+                .visible_run(&mut tx, actor, workspace, &row.run_id)
+                .await?;
             let now = self.now()?;
-            let authority = self
-                .workspaces
-                .check_principal_inspection_in_transaction(&mut tx, actor, workspace, now)
-                .await
-                .map_err(conceal)?;
-            // Agent approval requires the live Membership role, not the role in
-            // the request's earlier authentication context.
-            if run.principal.kind() == coral_workspace::PrincipalKind::Agent
-                && authority.effective_user_role() != Some(WorkspaceRole::Owner)
-            {
-                return Err(Error::ApprovalNotFound);
-            }
-            let target = invocation_repository::approval_target(
-                &mut tx,
-                workspace,
-                &run.id,
-                &row.invocation_id,
-            )
-            .await?;
-            let gate = decision_gate(
-                &mut tx,
-                &self.workspaces,
-                &run,
-                &target,
-                now,
-                PolicyRead::Hold,
-            )
-            .await?;
-            // The gate's shared hold can wait behind a policy writer: the
-            // deadlines are judged on time sampled after it.
-            let now = self.now()?;
-            let state = if run.state != RunState::Running
-                || run.termination.is_some()
-                || now >= run.deadline_at_unix_nanos
-            {
-                ApprovalState::Closed
-            } else if now >= row.deadline_at_unix_nanos {
-                ApprovalState::Expired
-            } else if !matches!(gate, DecisionGate::Required) {
-                ApprovalState::Closed
-            } else {
-                match decision {
-                    ApprovalDecision::Approve => ApprovalState::Approved,
-                    ApprovalDecision::Decline => ApprovalState::Declined,
+            let mut own_name = None;
+            if row.state == ApprovalState::Pending {
+                let authority = self
+                    .workspaces
+                    .check_principal_inspection_in_snapshot(&mut tx, actor, workspace, now)
+                    .await
+                    .map_err(conceal)?;
+                // Agent approval requires the live Membership role, not the role in
+                // the request's earlier authentication context.
+                if run.principal.kind() == coral_workspace::PrincipalKind::Agent
+                    && authority.effective_user_role() != Some(WorkspaceRole::Owner)
+                {
+                    return Err(Error::ApprovalNotFound);
                 }
-            };
-            let human = matches!(state, ApprovalState::Approved | ApprovalState::Declined);
-            transition(
-                &mut tx,
-                workspace,
-                &mut row,
-                state,
-                now,
-                human.then_some((actor.principal(), comment)),
-                trace,
-            )
-            .await?;
-            settle_decision(&mut tx, &run, &row, state, gate, now).await?;
+                own_name = approver_name(
+                    &mut tx,
+                    &self.workspaces,
+                    actor,
+                    workspace,
+                    actor.principal(),
+                )
+                .await?;
+            }
+            let request = view(&mut tx, &self.workspaces, actor, workspace, &run, row, now).await?;
+            tx.commit().await?;
+            (request, run, own_name)
+        };
+        if request.state != ApprovalState::Pending {
+            return Ok(request);
         }
-        let request = view(
-            &mut tx,
-            &self.workspaces,
-            actor,
-            workspace,
-            &run,
-            row,
-            self.now()?,
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(request)
+        let Some(owner) = owner::local_owner(&self.owners, &self.database, workspace, &run).await?
+        else {
+            // The Run ended since the snapshot: its terminal write closed the
+            // request, and the record answers.
+            return self.get(actor, workspace, id).await;
+        };
+        let answer = owner
+            .decide(DecisionRequest {
+                approval: id.clone(),
+                decision,
+                actor: actor.principal().clone(),
+                comment: comment.map(str::to_owned),
+                trace: trace.clone(),
+            })
+            .await?;
+        match answer {
+            DecisionAnswer::Recorded {
+                state,
+                decided_at_unix_nanos,
+            } => {
+                request.state = state;
+                request.actionable = false;
+                request.decided_at_unix_nanos = Some(decided_at_unix_nanos);
+                if matches!(state, ApprovalState::Approved | ApprovalState::Declined) {
+                    request.approver = Some(actor.principal().clone());
+                    request.approver_name = own_name;
+                    request.comment = comment.map(str::to_owned);
+                }
+                Ok(request)
+            }
+            // Another decision won, or the request was closed meanwhile: the
+            // record answers.
+            DecisionAnswer::FromRecord => self.get(actor, workspace, id).await,
+        }
     }
 
     /// Lists safe evidence through the same human-only visibility as request detail.
@@ -429,37 +440,25 @@ fn conceal(error: coral_workspace::Error) -> Error {
         other => other.into(),
     }
 }
-enum DecisionGate {
-    Required,
-    NotRequired,
-    Rejected(CoralFailure),
-}
-
-/// How a decision gate reads Operation policy.
-#[derive(Clone, Copy)]
-enum PolicyRead {
-    /// Holds the policy shared until commit: a policy change waits for the
-    /// decision, as it waits for the Dispatch Fences reading the rule.
-    Hold,
-    /// Makes the identical decision without acquiring mutation locks.
-    Inspect,
-}
-
-async fn decision_gate(
+/// Whether the Operation's current policy asks for a decision, as a read
+/// snapshot shows it: the request's `actionable` projection. A decision
+/// itself reads no policy; the Dispatch Fence judges the approval against
+/// the policy current when the Invocation dispatches.
+async fn decision_required(
     tx: &mut Transaction<'_>,
     workspaces: &WorkspaceModule,
     run: &RunRecord,
     target: &invocation_repository::ApprovalTarget,
     now: i64,
-    policy_read: PolicyRead,
-) -> Result<DecisionGate, Error> {
+) -> Result<bool, Error> {
     if let Err(error) = workspaces
         .check_invoking_principal_in_snapshot(tx, &run.workspace_id, &run.principal, now)
         .await
     {
-        return Ok(DecisionGate::Rejected(crate::fence::authority_failure(
-            error,
-        )?));
+        // A lost authority makes the request moot; any other failure is the
+        // caller's to see.
+        crate::fence::authority_failure(error)?;
+        return Ok(false);
     }
     let operation =
         coral_catalog::operation_in_transaction(tx, &target.generation, &target.operation)
@@ -471,34 +470,35 @@ async fn decision_gate(
         target.provider_id.clone(),
         target.operation.clone(),
     );
-    let policy = match policy_read {
-        PolicyRead::Hold => {
-            coral_policy::invocation_decision_in_transaction(
-                tx,
-                &policy_target,
-                operation.hints(),
-                operation.http_method(),
-                coral_db::RowLock::Shared,
-            )
-            .await?
-        }
-        PolicyRead::Inspect => {
-            coral_policy::discovery_decision_in_transaction(
-                tx,
-                &policy_target,
-                operation.hints(),
-                operation.http_method(),
-            )
-            .await?
-        }
-    };
-    Ok(match policy.access_state() {
-        coral_policy::OperationAccessState::ApprovalRequired => DecisionGate::Required,
-        coral_policy::OperationAccessState::Enabled => DecisionGate::NotRequired,
-        coral_policy::OperationAccessState::Disabled => {
-            DecisionGate::Rejected(CoralFailure::OperationDisabled)
-        }
-    })
+    let policy = coral_policy::discovery_decision_in_transaction(
+        tx,
+        &policy_target,
+        operation.hints(),
+        operation.http_method(),
+    )
+    .await?;
+    Ok(policy.access_state() == coral_policy::OperationAccessState::ApprovalRequired)
+}
+
+/// The approver's current name, when Workspace profile rules let `actor`
+/// read it.
+async fn approver_name(
+    tx: &mut Transaction<'_>,
+    workspaces: &WorkspaceModule,
+    actor: &AuthenticatedPrincipal,
+    workspace: &WorkspaceId,
+    approver: &Principal,
+) -> Result<Option<String>, Error> {
+    let user = actor.authenticated_user().ok_or(Error::ApprovalNotFound)?;
+    let id = coral_workspace::UserId::parse(approver.id().as_str())?;
+    match workspaces
+        .inspect_user_profile_in_transaction(tx, user, workspace, &id)
+        .await
+    {
+        Ok(profile) => Ok(profile.name.filter(|name| !name.trim().is_empty())),
+        Err(coral_workspace::Error::MembershipNotFound) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 async fn view(
@@ -515,25 +515,12 @@ async fn view(
     let actionable = row.state == ApprovalState::Pending
         && now < row.deadline_at_unix_nanos
         && crate::required_actions::run_accepts_actions(run, now)
-        && matches!(
-            decision_gate(tx, workspaces, run, &target, now, PolicyRead::Inspect).await?,
-            DecisionGate::Required
-        );
+        && decision_required(tx, workspaces, run, &target, now).await?;
     let (provider_label, agent_label) =
         crate::inspection_repository::approval_labels(tx, workspace, &row.invocation_id).await?;
-    let approver_name = if let Some(approver) = &row.approver {
-        let user = actor.authenticated_user().ok_or(Error::ApprovalNotFound)?;
-        let id = coral_workspace::UserId::parse(approver.id().as_str())?;
-        match workspaces
-            .inspect_user_profile_in_transaction(tx, user, workspace, &id)
-            .await
-        {
-            Ok(profile) => profile.name.filter(|name| !name.trim().is_empty()),
-            Err(coral_workspace::Error::MembershipNotFound) => None,
-            Err(error) => return Err(error.into()),
-        }
-    } else {
-        None
+    let approver_name = match &row.approver {
+        Some(approver) => approver_name(tx, workspaces, actor, workspace, approver).await?,
+        None => None,
     };
     Ok(ApprovalRequest {
         approver_name,
@@ -724,37 +711,115 @@ pub(super) async fn close_for_invocation(
     Ok(())
 }
 
-/// Ends the Invocation a human decision rejected, or a closed request's
-/// Invocation that the gate had already rejected. This decision still writes
-/// outside the Run Owner (until slice 6): the Invocation's end is one chunk
-/// of its own under the Run's claim.
-async fn settle_decision(
-    tx: &mut Transaction<'_>,
-    run: &RunRecord,
-    row: &StoredApproval,
-    state: ApprovalState,
-    gate: DecisionGate,
-    now: i64,
-) -> Result<(), Error> {
-    let mut events = Vec::new();
-    if state == ApprovalState::Closed
-        && crate::required_actions::run_accepts_actions(run, now)
-        && let DecisionGate::Rejected(failure) = gate
-    {
-        events.push(
-            crate::invocation_lifecycle::finish_approval_failure(
-                tx,
-                run,
-                &row.invocation_id,
-                failure,
-                now,
-            )
-            .await?,
-        );
-    } else {
-        events.extend(settle_rejection(tx, run, row, now).await?);
+/// One decision as the Run Owner records it in a chunk: the Approval
+/// Request's transition and its lifecycle event, and the end of a declined
+/// or expired Invocation. A request no longer pending records nothing: the
+/// first decision won, and the record answers. The owner runs its decisions
+/// one at a time, so the read before the write decides every outcome the
+/// request can have; a write that still fails with a definite answer fails
+/// the chunk, as any row work's does.
+pub(crate) struct DecideWork {
+    request: DecisionRequest,
+    /// Record the decision; `false` closes the request instead, the Run no
+    /// longer accepting actions when the owner applied it.
+    decide: bool,
+    answer: Option<DecisionAnswer>,
+}
+
+impl DecideWork {
+    pub(crate) fn new(request: DecisionRequest, decide: bool) -> Self {
+        Self {
+            request,
+            decide,
+            answer: None,
+        }
     }
-    crate::invocation_lifecycle::commit_outside_owner(tx, run, &events).await
+
+    async fn record(
+        &self,
+        tx: &mut Transaction<'_>,
+        run: &RunRecord,
+        now: i64,
+    ) -> Result<(Vec<OwnedEvent>, DecisionAnswer), Error> {
+        let row = approval_repository::load(tx, &run.workspace_id, &self.request.approval).await;
+        let mut row = match row {
+            Ok(row) => row,
+            Err(Error::ApprovalNotFound) => return Ok((Vec::new(), DecisionAnswer::FromRecord)),
+            Err(error) => return Err(error),
+        };
+        if row.state != ApprovalState::Pending {
+            return Ok((Vec::new(), DecisionAnswer::FromRecord));
+        }
+        let state = if !self.decide {
+            ApprovalState::Closed
+        } else if now >= row.deadline_at_unix_nanos {
+            ApprovalState::Expired
+        } else {
+            match self.request.decision {
+                ApprovalDecision::Approve => ApprovalState::Approved,
+                ApprovalDecision::Decline => ApprovalState::Declined,
+            }
+        };
+        let human = matches!(state, ApprovalState::Approved | ApprovalState::Declined)
+            .then_some((&self.request.actor, self.request.comment.as_deref()));
+        transition(
+            tx,
+            &run.workspace_id,
+            &mut row,
+            state,
+            now,
+            human,
+            &self.request.trace,
+        )
+        .await?;
+        let events = settle_rejection(tx, run, &row, now)
+            .await?
+            .into_iter()
+            .collect();
+        Ok((
+            events,
+            DecisionAnswer::Recorded {
+                state,
+                decided_at_unix_nanos: now,
+            },
+        ))
+    }
+}
+
+impl std::fmt::Debug for DecideWork {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DecideWork")
+            .field("approval", &self.request.approval)
+            .field("decision", &self.request.decision)
+            .field("decide", &self.decide)
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait::async_trait]
+impl ChunkWork for DecideWork {
+    async fn run(
+        &mut self,
+        tx: &mut Transaction<'_>,
+        run: &RunRecord,
+        now_unix_nanos: i64,
+    ) -> Result<Vec<OwnedEvent>, Error> {
+        let now = now_unix_nanos.max(run.accepted_at_unix_nanos);
+        let (events, answer) = self.record(tx, run, now).await?;
+        self.answer = Some(answer);
+        Ok(events)
+    }
+
+    fn take_recorded_request(&mut self) -> Option<(RequestKey, DecisionAnswer)> {
+        self.answer
+            .take()
+            .map(|answer| (RequestKey::Approval(self.request.approval.clone()), answer))
+    }
+
+    /// The requester is answered by the owner, with the chunk's fate or the
+    /// failure this work reported.
+    fn settle(self: Box<Self>, _recorded: Result<(), Error>) {}
 }
 
 /// Ends the Invocation of a declined or expired request and returns its
@@ -772,7 +837,6 @@ async fn settle_rejection(
     };
     crate::invocation_lifecycle::finish_approval_failure(tx, run, &row.invocation_id, failure, now)
         .await
-        .map(Some)
 }
 
 async fn transition(
@@ -788,7 +852,7 @@ async fn transition(
     let comment = human.and_then(|(_, comment)| comment);
     if !approval_repository::update_pending(tx, workspace, &row.id, state, now, human).await? {
         return Err(Error::InvocationPersistence(
-            "Approval decision lost its Run hold".into(),
+            "Approval decision found its request decided".into(),
         ));
     }
     approval_repository::insert_lifecycle_event(tx, workspace, &row.id, state, now, actor, trace)

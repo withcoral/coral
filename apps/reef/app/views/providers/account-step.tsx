@@ -1,10 +1,12 @@
 import { useId, useState } from 'react'
 import { Form } from 'react-router'
 import {
+  accountStep,
   attemptProgress,
   isOAuthMethod,
   needsOAuthApplication,
   type AccountChoice,
+  type AccountPlan,
   type CreationAttempt,
 } from '@/lib/provider-publication-attempt/model'
 import { Banner, Button, Inputs, Radio, Typography } from '@/wax/components'
@@ -33,12 +35,6 @@ import * as styles from './providers.css'
  * separate use can connect now, retain the reviewed grant, or connect later.
  */
 const SIGN_IN_ACTION = 'Sign in and share the account'
-
-/**
- * One outcome for the account question: which route the provider takes, and
- * what becomes of the sign-in in hand.
- */
-type AccountPlan = 'shared-keep' | 'shared-connect' | 'own-connect' | 'own-keep' | 'own-later'
 
 /**
  * Whose account the provider uses, as two columns of outcomes: one shared
@@ -73,29 +69,13 @@ export function AccountStep({
   disabled?: boolean
 }) {
   const { account: settled, credentialFree } = attemptProgress(attempt, setup, result)
-  const { account } = attempt
   const audience = useAccountAudience()
   const grant = setup.provisionalGrantId
   const held = setup.authorized && Boolean(grant)
   const authorization = setup.authorization
-  // A sign-in in hand is kept by default, whichever route the attempt already
-  // names. Giving it up is a choice someone makes, not one a reload makes.
-  const [plan, setPlan] = useState<AccountPlan>(
-    account === 'fixed'
-      ? held
-        ? 'shared-keep'
-        : 'shared-connect'
-      : account === 'caller'
-        ? held
-          ? 'own-keep'
-          : // Starting a sign-in marks the attempt for review; a later answer clears it.
-            attempt.accountReview
-            ? 'own-connect'
-            : 'own-later'
-        : held
-          ? 'own-keep'
-          : 'shared-connect',
-  )
+  const opening = accountStep(attempt, setup)
+  // Giving up a sign-in in hand is a choice someone makes, not one a reload makes.
+  const [plan, setPlan] = useState<AccountPlan>(opening.plan)
   // A device sign-in finishes in another tab while this page revalidates, so
   // the new account arrives without a reload. Keep it, as a reload would.
   const [seenGrant, setSeenGrant] = useState(held ? grant : undefined)
@@ -151,14 +131,10 @@ export function AccountStep({
       Back
     </Button.InternalLink>
   )
-  // Starting a sign-in from this question was the answer (accountReview). Once
-  // it lands, add the provider as Add provider would, rather than ask again.
+  // Starting a sign-in from this question can be the answer. Once it lands,
+  // add the provider as Add provider would, rather than ask again.
   const answered =
-    !frozen &&
-    oauth &&
-    keeping &&
-    Boolean(attempt.accountReview) &&
-    authorization?.state === 'succeeded'
+    !frozen && oauth && keeping && opening.publishOnReturn && authorization?.state === 'succeeded'
   const publication = usePublication({
     submitNow: answered,
     attempt: submission,

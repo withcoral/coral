@@ -1,12 +1,16 @@
-import { globalStyle, style } from '@/wax/css'
+import { globalStyle, style, styleVariants } from '@/wax/css'
 
 import { theme } from '@/wax/theme/theme.css'
 
 export const root = style({
   ...theme.typography.bodySmall,
-  color: theme.content.secondary,
   minWidth: 0,
   overflowWrap: 'anywhere',
+})
+
+export const color = styleVariants({
+  secondary: { color: theme.content.secondary },
+  tertiary: { color: theme.content.tertiary },
 })
 
 globalStyle(`${root} > :first-child`, { marginBlockStart: 0 })

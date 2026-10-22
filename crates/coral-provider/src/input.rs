@@ -6,7 +6,9 @@ use coral_workspace::WorkspaceAction;
 use coral_workspace::WorkspaceId;
 
 use crate::setup_credentials::{InspectedAuthorization, StoredRequirement};
-use crate::{Error, OpenApiDocument, ProviderId, ProviderModule, ProviderSetup, repository};
+use crate::{
+    Error, OpenApiDocument, ProviderId, ProviderModule, ProviderSetup, SetupRequest, repository,
+};
 
 const SOURCE_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -30,17 +32,54 @@ pub enum ProviderSetupSource {
     },
 }
 
+/// What a new Setup is for.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SetupPurpose<'a> {
+    /// A new Provider, with what a Program asked for, if a Program prepared it.
+    Create(Option<&'a SetupRequest>),
+    /// A new Generation of this Provider.
+    Update(&'a ProviderId),
+}
+
+impl<'a> SetupPurpose<'a> {
+    pub(crate) const fn update_target(self) -> Option<&'a ProviderId> {
+        match self {
+            Self::Create(_) => None,
+            Self::Update(target) => Some(target),
+        }
+    }
+
+    pub(crate) const fn request(self) -> Option<&'a SetupRequest> {
+        match self {
+            Self::Create(request) => request,
+            Self::Update(_) => None,
+        }
+    }
+}
+
 impl ProviderModule {
+    /// Acquires an input and prepares a Setup for the Provider a Program asked
+    /// for, recording `request` on it so that the person who finishes it, and
+    /// the Program, can read it back.
+    /// # Errors
+    /// As [`Self::prepare_setup`] for a new Provider.
+    pub async fn prepare_requested_setup(
+        &self,
+        context: &ChangeContext,
+        owner: &WorkspaceId,
+        source: ProviderSetupSource,
+        request: SetupRequest,
+    ) -> Result<ProviderSetup, Error> {
+        self.prepare(context, owner, source, SetupPurpose::Create(Some(&request)))
+            .await
+    }
+
     /// Acquires an input and prepares its Setup, optionally for an exact Update target.
     /// Target identity and authority are checked before acquisition and again when
     /// the Setup, saved configuration and lifecycle evidence are committed together.
     /// # Errors
     /// Rejects missing/out-of-scope targets, unsafe or unavailable input and authority
     /// lost during acquisition. Failure creates no Setup or Setup lifecycle event.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one acquisition sequence keeps preflight, protocol inspection and atomic persistence together"
-    )]
     pub async fn prepare_setup(
         &self,
         context: &ChangeContext,
@@ -48,6 +87,25 @@ impl ProviderModule {
         source: ProviderSetupSource,
         update_target: Option<&ProviderId>,
     ) -> Result<ProviderSetup, Error> {
+        let purpose = match update_target {
+            Some(target) => SetupPurpose::Update(target),
+            None => SetupPurpose::Create(None),
+        };
+        self.prepare(context, owner, source, purpose).await
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one acquisition sequence keeps preflight, protocol inspection and atomic persistence together"
+    )]
+    async fn prepare(
+        &self,
+        context: &ChangeContext,
+        owner: &WorkspaceId,
+        source: ProviderSetupSource,
+        purpose: SetupPurpose<'_>,
+    ) -> Result<ProviderSetup, Error> {
+        let update_target = purpose.update_target();
         let mut tx = self.database.begin_read_snapshot().await?;
         self.workspaces
             .check_in_transaction(&mut tx, context.actor(), owner, WorkspaceAction::Configure)
@@ -112,7 +170,7 @@ impl ProviderModule {
                     &initial_headers,
                     metadata,
                     input_url,
-                    update_target,
+                    purpose,
                 )
                 .await
             }
@@ -124,7 +182,7 @@ impl ProviderModule {
                     &initial_headers,
                     None,
                     None,
-                    update_target,
+                    purpose,
                 )
                 .await
             }
@@ -136,7 +194,7 @@ impl ProviderModule {
                     &initial_headers,
                     None,
                     None,
-                    update_target,
+                    purpose,
                 )
                 .await
             }
@@ -150,7 +208,7 @@ impl ProviderModule {
                     &initial_headers,
                     None,
                     Some(url),
-                    update_target,
+                    purpose,
                 )
                 .await
             }
@@ -189,7 +247,7 @@ impl ProviderModule {
                                     failure_code: None,
                                 }),
                                 Some(url),
-                                update_target,
+                                purpose,
                             )
                             .await;
                     }
@@ -230,7 +288,7 @@ impl ProviderModule {
                     &initial_headers,
                     metadata,
                     Some(url),
-                    update_target,
+                    purpose,
                 )
                 .await
             }

@@ -1,4 +1,4 @@
-import { recipe } from '@/wax/css'
+import { recipe, style, styleVariants } from '@/wax/css'
 import type { RecipeVariants } from '@/wax/css'
 
 import { animation, theme } from '@/wax/theme/theme.css'
@@ -66,3 +66,17 @@ export const iconContainer = recipe({
 })
 
 export type IconContainerVariants = RecipeVariants<typeof iconContainer>
+
+const plateBase = style({
+  alignItems: 'center',
+  borderRadius: 8,
+  display: 'inline-flex',
+  flexShrink: 0,
+  height: 32,
+  justifyContent: 'center',
+  width: 32,
+})
+export const plate = styleVariants(
+  { amber: theme.pill.amber, green: theme.pill.green, red: theme.pill.red, gray: theme.pill.gray },
+  (tone) => [plateBase, { background: tone.background, color: tone.color }],
+)

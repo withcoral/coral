@@ -1,33 +1,82 @@
 //! The Run Owner (ADR 0018): one in-process actor per nonterminal Run, created
-//! with the Run's acceptance and the only writer of its Run Ledger on every
-//! path the Program takes.
+//! with the Run's acceptance and the only writer of its Run Ledger while the
+//! Run is nonterminal.
 //!
 //! The loop is [`state::apply`], a pure function from the owner's memory and
 //! one [`handle::Message`] to [`state::Effect`]s, with no I/O: it decides the
 //! Run Output Budget against the exact in-memory total, the Applied cap, how
-//! Events and row work fill chunks, and what a lost commit means. The hosting
-//! task in [`host`] drains the mailbox in arrival order, calls `apply`, and
-//! runs the effects: it holds the chunk commit, the Program execution and the
-//! terminal write, and settles a recorded termination when the owner retires.
+//! Events and row work fill chunks, the outside requests (a decision on an
+//! Approval Request, a cancellation, the deadline), and what a lost commit
+//! means. The hosting task in [`host`] drains the mailbox in arrival order,
+//! calls `apply`, and runs the effects: it holds the chunk commit, the
+//! Program execution, the terminal write and the settle of a recorded
+//! termination, one write at a time.
 //!
 //! Row work that must join a chunk (an Invocation's admission, its held
-//! rechecks, the Dispatch Fence, its completion) implements [`ChunkWork`]: it
-//! runs inside the commit transaction after the Run row is held, and learns
-//! the chunk's fate once the transaction ends. A chunk commit is one short
-//! transaction: `hold_run`, the row work, the Events, the head update that
-//! asserts the owner's claim and renews its lease.
+//! rechecks, the Dispatch Fence, its completion, a decision) implements
+//! [`ChunkWork`]: it runs inside the commit transaction and learns the
+//! chunk's fate once the transaction ends. A chunk commit is one short
+//! transaction: the Run row read without a hold, the row work, the Events,
+//! the head update that asserts the owner's claim and the head it tracks in
+//! memory, carries the termination intent, and renews its lease.
+//!
+//! An outside request reaches the owner of a nonterminal Run through
+//! [`local_owner`]; a nonterminal Run with no owner in this process is owned
+//! elsewhere, and a terminal Run is answered from its record.
 
 mod chunk;
 mod handle;
 mod host;
 mod state;
 
+use coral_db::Database;
+use coral_workspace::WorkspaceId;
+
+use crate::lifecycle::RunRecord;
+use crate::{Error, run_repository};
+
 pub(crate) use chunk::ChunkWork;
 #[cfg(test)]
-pub(crate) use chunk::{CHUNK_WORK_CAP, FENCE_BATCH_CAP};
+pub(crate) use chunk::{CHUNK_WORK_CAP, ChunkBuildView, FENCE_BATCH_CAP};
 #[cfg(test)]
 pub(crate) use handle::{CommitRejection, Message, Reply};
-pub(crate) use handle::{OwnerHandle, Owners};
+pub(crate) use handle::{
+    DecisionAnswer, DecisionRequest, OwnerHandle, Owners, RequestKey, StartedExecution,
+};
 pub(crate) use host::host;
 #[cfg(test)]
 pub(crate) use state::{Effect, OwnerLimits, OwnerState, Phase, apply};
+
+/// The owner of `run` in this process, for an outside request: `None` when
+/// the Run is terminal (the request is answered from the record), the
+/// owner holding the Run's claim when one is live here.
+///
+/// # Errors
+///
+/// [`Error::OwnedElsewhere`] for a nonterminal Run with no live owner here:
+/// its lease is held by another process, or lapsed and not yet swept. The
+/// Run is read again first, since an owner retires once its Run is
+/// terminal.
+pub(crate) async fn local_owner(
+    owners: &Owners,
+    database: &Database,
+    workspace_id: &WorkspaceId,
+    run: &RunRecord,
+) -> Result<Option<OwnerHandle>, Error> {
+    if run.state.is_terminal() {
+        return Ok(None);
+    }
+    let owner = run
+        .execution_claim_id
+        .as_deref()
+        .or(run.worker_claim_id.as_deref())
+        .and_then(|claim_id| owners.find(&run.id, claim_id));
+    if let Some(owner) = owner {
+        return Ok(Some(owner));
+    }
+    let current = run_repository::find_exact(database, workspace_id, &run.id).await?;
+    match current {
+        Some(current) if current.state.is_terminal() => Ok(None),
+        Some(_) | None => Err(Error::OwnedElsewhere),
+    }
+}

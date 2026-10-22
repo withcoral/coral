@@ -224,6 +224,7 @@ impl GrpcServices {
                     | coral_task::Error::Functions(_)
                     | coral_task::Error::Run(_)
                     | coral_task::Error::Clock
+                    | coral_task::Error::IdentifierIssuance(_)
                     | coral_task::Error::Workspace(_)
                     | coral_task::Error::CorruptData(_)
                     | coral_task::Error::Database(_) => Status::unavailable("resource unavailable"),

@@ -3,11 +3,14 @@ import { createRoutesStub, useSearchParams } from 'react-router'
 import { expect, fn, waitFor, within } from 'storybook/test'
 import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
+import { resizeViewport } from '../../../.storybook/browser'
 import { Activity } from './activity'
 import { ActionReviewSession } from '../actions/review'
 import { stored } from './discovery/fixtures'
 import { discoveryView, functionTarget } from './discovery/response'
+import { programAt } from './side-panel-fixtures'
 import { operationOwner } from '@/lib/call-root'
+import { freezeStoryClock, minutesAfterStoryNow } from './story-clock'
 import type {
   ActivityPage,
   ActivityRow,
@@ -19,6 +22,99 @@ import type {
 /** Highlighted code splits its text across token spans, so match the whole block. */
 const codeContaining = (text: string) => (_: string, element: Element | null) =>
   element?.textContent?.includes(text) ?? false
+
+/** Each panel header centres its icon (when it has one), its heading's first line, its status
+ * and its close control on one line, whether the heading wraps or not. */
+async function expectAlignedHeaders(dialog: HTMLElement) {
+  const centre = (element: Element) => {
+    const box = element.getBoundingClientRect()
+    return box.top + box.height / 2
+  }
+  const headers = [...dialog.querySelectorAll('header')].filter((header) =>
+    header.querySelector(':scope > div > h2, :scope > div > h3'),
+  )
+  await expect(headers.length).toBeGreaterThan(0)
+  for (const header of headers) {
+    const heading = header.querySelector('h2, h3')!
+    const style = getComputedStyle(heading)
+    const firstLine =
+      heading.getBoundingClientRect().top +
+      parseFloat(style.paddingTop) +
+      parseFloat(style.lineHeight) / 2
+    // The heading's own container is never a leading mark; only a sibling icon is.
+    const leadingIcon = header.firstElementChild!.contains(heading)
+      ? []
+      : [header.firstElementChild!]
+    const marks = [...leadingIcon, ...header.lastElementChild!.children]
+    for (const mark of marks)
+      await expect(Math.abs(centre(mark) - firstLine)).toBeLessThanOrEqual(1)
+  }
+}
+
+/** The element that scrolls `pane`'s content: the drawer itself, or a split pane's viewport. */
+function scrollerIn(pane: HTMLElement) {
+  if (/auto|scroll/.test(getComputedStyle(pane).overflowY)) return pane
+  return [...pane.querySelectorAll<HTMLElement>('*')].find((element) =>
+    /auto|scroll/.test(getComputedStyle(element).overflowY),
+  )!
+}
+
+/** The selected record's decision sits below its scrolling evidence, never inside it: it
+ * stays in view, the evidence's fade never covers it, and a click reaches each control. */
+async function expectDecisionBelowEvidence(pane: HTMLElement, names: string[]) {
+  const scroller = scrollerIn(pane)
+  for (const name of names) {
+    // One control per choice: the footer is not repeated inside the evidence.
+    const [control, ...copies] = within(pane).getAllByRole('button', { name })
+    await expect(copies).toEqual([])
+    await expect(scroller).not.toContainElement(control!)
+    await waitFor(() => {
+      const box = control!.getBoundingClientRect()
+      const bounds = pane.getBoundingClientRect()
+      expect(box.top).toBeGreaterThanOrEqual(scroller.getBoundingClientRect().bottom)
+      expect(box.bottom).toBeLessThanOrEqual(bounds.bottom)
+      for (const y of [box.top + 2, box.top + box.height / 2, box.bottom - 2])
+        expect(control).toContainElement(
+          document.elementFromPoint(box.left + box.width / 2, y) as HTMLElement,
+        )
+    })
+  }
+}
+
+/** Reading the evidence never scrolls the decision out of the selected record's pane. */
+async function expectPinnedFooter(pane: HTMLElement, names: string[]) {
+  const scroller = scrollerIn(pane)
+  await waitFor(() => expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight * 2))
+  for (const fraction of [0, 0.5, 1]) {
+    scroller.scrollTop = (scroller.scrollHeight - scroller.clientHeight) * fraction
+    await expectDecisionBelowEvidence(pane, names)
+  }
+  // Long content wraps or scrolls inside its block, never the drawer sideways.
+  await expect(scroller.scrollWidth).toBeLessThanOrEqual(scroller.clientWidth)
+}
+
+/** The height of the fade that marks evidence below the visible part of `scroller`. */
+const fadeBelow = (scroller: HTMLElement) =>
+  parseFloat(getComputedStyle(scroller, '::after').height) || 0
+
+/** A short phone screen: Chromatic reads `viewports`; the Vitest run reads the `viewport` global. */
+const shortScreen = { viewport: { value: 'mobile1', isRotated: false } }
+
+/** The Run's accepted source beside the selected record highlights `line`, and says so. */
+async function expectSourceLine(dialog: HTMLElement, line: number) {
+  const source = within(dialog).getByRole('region', { name: 'Accepted source' })
+  await waitFor(() =>
+    expect(
+      [...source.querySelectorAll<HTMLElement>('[data-highlighted]')].map(
+        (item) => item.dataset.line,
+      ),
+    ).toEqual([`${line}`]),
+  )
+  await expect(within(source).getByRole('status')).toHaveTextContent(`Line ${line}`)
+}
+
+const openDrawer = async (canvasElement: HTMLElement, name?: string) =>
+  within(canvasElement.ownerDocument.body).findByRole('dialog', name ? { name } : undefined)
 
 const workspace = 'workspaces/finance'
 const task = `${workspace}/tasks/invoices`
@@ -41,6 +137,8 @@ const execution: ActivityRow & { kind: 'run' } = {
   name: run,
   workspace,
   actor: 'Collections agent',
+  actorLabel: 'You',
+  workspaceLabel: 'Finance',
   agent: '',
   task,
   state: 'running',
@@ -59,6 +157,14 @@ const execution: ActivityRow & { kind: 'run' } = {
     agent: '',
   },
 }
+/** The program the Run accepted; its operation call and its emission sit at their own lines. */
+const program = [
+  "const invoices = await coral.providers.billing.listInvoices({ status: 'overdue' })",
+  'const owner = await coral.providers.crm.getOwner({ invoice: invoices.data[0].id })',
+  "coral.emit({ invoices: 24, groupedBy: 'owner' })",
+  "await coral.providers.mail.send({ to: owner.email, subject: 'Invoice INV-4171 is overdue' })",
+  'return { invoices: 24 }',
+].join('\n')
 const call: ActivityRow & { kind: 'invocation' } = {
   kind: 'invocation',
   name: invocation,
@@ -78,6 +184,7 @@ const call: ActivityRow & { kind: 'invocation' } = {
   requiresAction: true,
   dispatchedAt: null,
   waitingNanos: '221000000000',
+  sourceLocation: programAt('coral.providers.mail.send', program),
 }
 const emission: ActivityRow = {
   kind: 'output',
@@ -88,6 +195,7 @@ const emission: ActivityRow = {
   startedAt: at,
   eventKind: 'program.emitted',
   agent: '',
+  sourceLocation: programAt('coral.emit', program),
 }
 const standalone: ActivityRow & { kind: 'run' } = {
   ...execution,
@@ -117,6 +225,15 @@ const tool = (
   acceptedRun: '',
   agent: '',
 })
+// An approval is always reviewed inside its Run, and any call shows beside the Run's program.
+const approvalContext: RunDetail = {
+  kind: 'run',
+  run: execution,
+  submission: execution.submission,
+  source: program,
+  linkedFunctions: [],
+  terminal: { kind: 'unavailable' },
+}
 const detail: InvocationDetail = {
   kind: 'invocation',
   invocation: call,
@@ -126,15 +243,7 @@ const detail: InvocationDetail = {
   requests: [{ kind: 'approval', name: `${workspace}/approvals/mail` }],
   request: null,
   requestUnavailable: false,
-}
-// An approval is always reviewed inside its Run.
-const approvalContext: RunDetail = {
-  kind: 'run',
-  run: execution,
-  submission: execution.submission,
-  source: 'export default async () => null',
-  linkedFunctions: [],
-  terminal: { kind: 'unavailable' },
+  context: approvalContext,
 }
 const page: ActivityPage = {
   rows: [
@@ -163,6 +272,7 @@ const page: ActivityPage = {
           ...call,
           name: `${workspace}/invocations/list`,
           callPath: 'billing.listInvoices',
+          sourceLocation: programAt('coral.providers.billing.listInvoices', program),
           state: 'ended',
           outcome: 'upstream_outcome',
           requiresAction: false,
@@ -172,6 +282,7 @@ const page: ActivityPage = {
           ...call,
           name: `${workspace}/invocations/uncertain`,
           callPath: 'crm.getOwner',
+          sourceLocation: programAt('coral.providers.crm.getOwner', program),
           state: 'ended',
           outcome: 'indeterminate',
           requiresAction: false,
@@ -229,11 +340,15 @@ export default meta
 type Story = StoryObj<typeof meta>
 export const MixedHistory: Story = {
   play: async ({ canvasElement }) => {
-    const drawer = within(await within(canvasElement.ownerDocument.body).findByRole('dialog'))
-    await expect(drawer.getByText('Exact logical arguments')).toBeVisible()
+    const dialog = await within(canvasElement.ownerDocument.body).findByRole('dialog')
+    const drawer = within(dialog)
+    // The call shows beside its Run's program, at the line that made it.
+    await expectSourceLine(dialog, 4)
+    await expect(drawer.getByText('Arguments (3)')).toBeVisible()
     await expect(drawer.getByRole('button', { name: 'Close details' })).toBeVisible()
     await expect(drawer.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
     await expect(drawer.queryByText('Copy link')).not.toBeInTheDocument()
+    await expectAlignedHeaders(await openDrawer(canvasElement))
   },
 }
 export const CompletionFeedback: Story = {
@@ -249,6 +364,17 @@ export const CompletionFeedback: Story = {
           'I could not find an operation to export invoices.\nSearch returned no matching operations.',
       },
     },
+  },
+  // On a phone the Task heading wraps; its status and close control still centre on its first line.
+  globals: shortScreen,
+  play: async ({ canvasElement }) => {
+    const dialog = await openDrawer(canvasElement, 'Activity details')
+    const heading = within(dialog).getByRole('heading', { level: 2, name: goal.intent })
+    const line = parseFloat(getComputedStyle(heading).lineHeight)
+    await expect(heading.getBoundingClientRect().height).toBeGreaterThan(line * 2)
+    await expectAlignedHeaders(dialog)
+    // Nothing to decide leaves no footer bar.
+    for (const footer of dialog.querySelectorAll('footer')) await expect(footer).not.toBeVisible()
   },
 }
 export const StreamingHistory: Story = {
@@ -324,6 +450,8 @@ export const ContextImpact: Story = {
               ...emission,
               name: `${run}/final`,
               eventKind: 'run.ended',
+              // A Run's end is no call of the program's.
+              sourceLocation: undefined,
               label: 'final value',
               contextImpactBytes: '14500',
             },
@@ -396,6 +524,8 @@ export const StatusMarkers: Story = {
               outcome: 'upstream_outcome',
               requiresAction: false,
               callPath: 'coral.providers.linear.listIssues',
+              // A list layout only; nothing opens it beside a program.
+              sourceLocation: undefined,
             },
             {
               ...call,
@@ -404,6 +534,8 @@ export const StatusMarkers: Story = {
               outcome: 'coral_failure',
               requiresAction: false,
               callPath: 'coral.providers.linear.updateIssue',
+              // A list layout only; nothing opens it beside a program.
+              sourceLocation: undefined,
             },
             {
               ...call,
@@ -412,6 +544,8 @@ export const StatusMarkers: Story = {
               outcome: 'indeterminate',
               requiresAction: false,
               callPath: 'coral.providers.linear.createIssue',
+              // A list layout only; nothing opens it beside a program.
+              sourceLocation: undefined,
             },
           ],
           next: '',
@@ -481,6 +615,8 @@ const busyTask = {
         ...call,
         name: `${workspace}/invocations/${i}`,
         callPath: `billing.listInvoices.${i}`,
+        // A list layout only; nothing opens it beside a program.
+        sourceLocation: undefined,
         state: 'ended' as const,
         outcome: 'upstream_outcome',
         requiresAction: false,
@@ -593,6 +729,8 @@ function addLargeRun(row: ActivityRow & { kind: 'run' }, operations: number) {
       run: row.name,
       startedAt: row.startedAt,
       callPath: `billing.listInvoices.page${k + 1}`,
+      // A list layout only; nothing opens it beside a program.
+      sourceLocation: undefined,
       state: 'ended' as const,
       outcome: k % 9 === 8 ? 'coral_failure' : 'upstream_outcome',
       requiresAction: false,
@@ -841,6 +979,9 @@ export const StandaloneExecution: Story = {
       },
     },
   },
+  play: async ({ canvasElement }) => {
+    await expectAlignedHeaders(await openDrawer(canvasElement, 'Activity details'))
+  },
 }
 /** An uncaught upstream error shows the response's status and the start of its body. */
 export const UpstreamOperationError: Story = {
@@ -928,6 +1069,8 @@ export const FinalValueOnExec: Story = {
               ...emission,
               name: `${run}/final`,
               eventKind: 'run.ended',
+              // A Run's end is no call of the program's.
+              sourceLocation: undefined,
               label: 'final value',
               contextImpactBytes: '15',
             },
@@ -939,7 +1082,8 @@ export const FinalValueOnExec: Story = {
       detail: {
         kind: 'run',
         run: { ...execution, state: 'succeeded', requiresAction: false },
-        source: 'coral.emit({progress: "ready"}); return {invoices: 24};',
+        // The program that made the emission listed above and returned this value.
+        source: program,
         linkedFunctions: [],
         terminal: { kind: 'succeeded', finalValue: '{"invoices":24}' },
       },
@@ -1071,8 +1215,23 @@ export const EmissionAfterFailure: Story = {
           occurredAt: at,
           value: '{"invoices":24,"groupedBy":"owner"}',
         },
+        context: approvalContext,
       },
     },
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openDrawer(canvasElement, 'Activity details')
+    await expectAlignedHeaders(dialog)
+    // The emission names its call and record and shows its exact value; no technical details.
+    await expect(
+      within(dialog).getByRole('heading', { level: 2, name: 'coral.emit #7' }),
+    ).toBeVisible()
+    await expect(within(dialog).getByRole('region', { name: 'Emitted value' })).toHaveTextContent(
+      '"groupedBy"',
+    )
+    await expect(dialog).not.toHaveTextContent('Technical details')
+    // Beside it, the Run's program, at the line that emitted it.
+    await expectSourceLine(dialog, 3)
   },
 }
 const searched: DiscoveryContext = {
@@ -1129,21 +1288,39 @@ const openDetail = async (canvasElement: HTMLElement) =>
 export const HistoricalSearch: Story = {
   args: discovery(searched, stored.complete),
   play: async ({ canvasElement }) => {
+    await expectAlignedHeaders(await openDrawer(canvasElement))
     const opened = await openDetail(canvasElement)
-    // The intent and the query are different texts, each under its own label.
+    // The intent titles the panel; the query stays under its own label, once.
     await expect(
-      opened.getByText('Intent: Find the operation that merges a pull request'),
+      opened.getByRole('heading', {
+        level: 2,
+        name: 'Find the operation that merges a pull request',
+      }),
     ).toBeVisible()
+    await expect(opened.queryByText('Intent', { selector: 'dt' })).toBeNull()
     await expect(opened.getByText('Query').nextElementSibling).toHaveTextContent('“github pulls”')
-    // Every retriever searched, so the page states only that more results remain.
-    const coverage = opened.getByRole('group', { name: 'Search coverage' })
-    await expect(coverage).toHaveTextContent(/^More results were available after this page\.$/)
+    // One Results heading counts this page and leads its results; "+" says more remain.
+    await expect(opened.getByRole('region', { name: 'Results (5+)' })).toContainElement(
+      opened.getByRole('list', { name: 'Results in rank order' }),
+    )
+    // What the search asked comes first, under Search.
+    const asked = opened.getByRole('region', { name: 'Search' })
+    await expect(
+      within(asked)
+        .getAllByRole('term')
+        .map((term) => term.textContent),
+    ).toEqual(['Query', 'Provider', 'Page'])
+    // Every retriever searched, so the page states no coverage and no extra sentence.
+    await expect(opened.queryByRole('group', { name: 'Search coverage' })).toBeNull()
+    await expect(opened.queryByText(/after this page/)).toBeNull()
     const results = within(opened.getByRole('list', { name: 'Results in rank order' }))
     await expect(results.getAllByRole('listitem')).toHaveLength(5)
     // A hit names no title, so its path under the namespace heads it.
     await expect(results.getByText('pulls.updateBranch')).toBeVisible()
-    // The stored response stays available, closed, after the results.
-    await expect(opened.getByText('Raw response').closest('details')).not.toHaveAttribute('open')
+    // A search shows only its results: no raw response and no technical details.
+    const dialog = await openDrawer(canvasElement)
+    await expect(dialog).not.toHaveTextContent('Raw response')
+    await expect(dialog).not.toHaveTextContent('Technical details')
   },
 }
 /** A page retained before Coral trimmed Search Hits, with titles, full coverage, and paths. */
@@ -1151,13 +1328,18 @@ export const HistoricalSearchUntrimmed: Story = {
   args: discovery(searched, stored.untrimmed),
   play: async ({ canvasElement }) => {
     const opened = await openDetail(canvasElement)
+    // Each badge states the count; a "+" says more matched than Coral returned.
     const coverage = within(opened.getByRole('group', { name: 'Search coverage' }))
-    await expect(coverage.getByText('100 found')).toBeVisible()
-    await expect(coverage.getByText('1 of 1 providers searched, more available')).toBeVisible()
+    await expect(coverage.getByText('100+ found')).toBeVisible()
     await expect(coverage.getByText('none match')).toBeVisible()
+    await expect(coverage.queryByText(/searched|more available/)).toBeNull()
+    // The heading counts this page's results, not the kind's returned count.
+    await expect(opened.getByRole('heading', { name: 'Results (5+)' })).toBeVisible()
+    await expect(opened.queryByText(/after this page/)).toBeNull()
     const results = within(opened.getByRole('list', { name: 'Results in rank order' }))
     await expect(results.getByText('Update a pull request branch')).toBeVisible()
-    await expect(results.getByText('Matched declaration paths (1)')).toBeVisible()
+    // A retained page lists its matched declaration paths as a count on the compact row.
+    await expect(results.getByText('1 declaration path')).toBeVisible()
   },
 }
 export const HistoricalSearchPartialCoverage: Story = {
@@ -1183,20 +1365,58 @@ export const HistoricalSearchFailedCoverage: Story = {
 /** Both kinds of result, with flags and a guidance match. */
 export const HistoricalSearchMixedResults: Story = {
   args: discovery({ ...searched, query: 'github issues by label' }, stored.mixed),
-  play: async ({ canvasElement }) => {
+  play: async ({ canvasElement, userEvent }) => {
     const opened = await openDetail(canvasElement)
     const results = opened.getByRole('list', { name: 'Results in rank order' })
     const [savedFunction, merge] = within(results).getAllByRole('listitem')
     await expect(within(savedFunction).getByText('saved function')).toBeVisible()
-    await expect(
-      within(savedFunction).getByRole('link', { name: 'Open current function' }),
-    ).toBeVisible()
-    for (const flag of ['approval required', 'destructive', 'not idempotent', 'tag: pulls'])
+    // An icon beside the call path opens today's function, named with its path.
+    const current = within(savedFunction).getByRole('link', {
+      name: /^Open current function coral\.functions\./,
+    })
+    await expect(current).toBeVisible()
+    await expect(current.getAttribute('href')).toMatch(/\/functions\//)
+    // Approval shows as the Providers page's named hand; other flags keep their text.
+    await expect(within(merge).getByRole('img', { name: /^Needs approval/ })).toBeVisible()
+    for (const flag of ['destructive', 'not idempotent', 'tag: pulls'])
       await expect(within(merge).getByText(flag)).toBeVisible()
-    await expect(within(merge).getByText('Guidance: API method documentation')).toBeVisible()
+    await expect(within(results).queryByText(/Matched declaration paths/)).toBeNull()
+    // Each card folds its own retained guidance, description and signature into Details.
+    const detailsIn = (row: HTMLElement) =>
+      within(row).getByText('Details', { selector: 'summary' }).closest('details')!
+    const [functionDetails, mergeDetails] = [detailsIn(savedFunction), detailsIn(merge)]
+    const signature = within(mergeDetails).getByText(codeContaining('merge(input: { body?'), {
+      selector: 'pre',
+    })
+    const guidance = within(mergeDetails).getByText('API method documentation')
+    await expect(signature).not.toBeVisible()
+    await expect(guidance).not.toBeVisible()
+    await userEvent.click(within(merge).getByText('Details'))
+    await waitFor(() => expect(mergeDetails).toHaveAttribute('open'))
+    await expect(signature).toBeVisible()
+    await expect(guidance).toBeVisible()
+    await expect(within(mergeDetails).getByText(/^> \[!NOTE\]/)).toBeVisible()
+    // Opening one card leaves the others closed.
+    await expect(functionDetails).not.toHaveAttribute('open')
+    await expect(
+      within(functionDetails).getByText(/^Lists the open issues of one repository/),
+    ).not.toBeVisible()
+    await userEvent.click(within(savedFunction).getByText('Details'))
+    await waitFor(() => expect(functionDetails).toHaveAttribute('open'))
+    await expect(mergeDetails).toHaveAttribute('open')
+    await userEvent.click(within(merge).getByText('Details'))
+    await waitFor(() => expect(mergeDetails).not.toHaveAttribute('open'))
+    await expect(functionDetails).toHaveAttribute('open')
+    await expect(signature).not.toBeVisible()
+    // The link and the approval hand stay in the summary, outside Details.
+    await expect(mergeDetails).not.toContainElement(
+      within(merge).getByRole('img', { name: /^Needs approval/ }),
+    )
+    await expect(functionDetails).not.toContainElement(current)
     // Reef says what Coral stored in its own words. Only the raw response keeps Coral's.
-    for (const copy of [opened.getByRole('group', { name: 'Search coverage' }), results])
-      await expect(copy).not.toHaveTextContent(/retriever|saved_function|results_found/)
+    await expect(opened.getByRole('region', { name: 'Results (6+)' })).not.toHaveTextContent(
+      /retriever|saved_function|results_found/,
+    )
   },
 }
 /** A response from before Search Hits. Reef shows the stored text. */
@@ -1210,21 +1430,35 @@ export const HistoricalSearchEarlierShape: Story = {
     ).toBeVisible()
   },
 }
-/** The declaration is longer than the cap, so it scrolls inside its block. */
+/** The declaration is longer than the cap, so it scrolls inside its block once Details opens. */
 export const HistoricalDescribeOperation: Story = {
   args: discovery(
     { kind: 'describe', callPath: 'coral.providers.github.issues.create', types: [] },
     stored.describeOperation,
   ),
-  play: async ({ canvasElement }) => {
+  play: async ({ canvasElement, userEvent }) => {
     const opened = await openDetail(canvasElement)
-    await expect(opened.getByRole('heading', { name: 'Create an issue' })).toBeVisible()
-    // The raw response holds the same text, later in the detail.
-    const [declaration] = opened.getAllByText(codeContaining('namespace issues'), {
+    // A compact Result names the target; its documentation waits in a closed Details.
+    const result = within(opened.getByRole('region', { name: 'Result' }))
+    await expect(result.getByText('Create an issue')).toBeVisible()
+    const summary = opened.getByText('Details', { selector: 'summary' })
+    const details = summary.closest('details')!
+    await expect(details).not.toHaveAttribute('open')
+    await expect(within(details).getByRole('heading', { name: 'Declaration' })).not.toBeVisible()
+    await userEvent.click(summary)
+    await waitFor(() => expect(details).toHaveAttribute('open'))
+    const [declaration] = within(details).getAllByText(codeContaining('namespace issues'), {
       selector: 'pre',
     })
+    await expect(declaration).toBeVisible()
     // The block shows 20 of the 24 lines; the other lines scroll.
     await expect(declaration.scrollHeight - declaration.clientHeight).toBeGreaterThan(60)
+    // The native summary takes keyboard focus; closing folds the documentation away again.
+    summary.focus()
+    await expect(summary).toHaveFocus()
+    await userEvent.click(summary)
+    await waitFor(() => expect(details).not.toHaveAttribute('open'))
+    await expect(declaration).not.toBeVisible()
   },
 }
 export const HistoricalDescribeSavedFunction: Story = {
@@ -1236,7 +1470,7 @@ export const HistoricalDescribeSavedFunction: Story = {
     },
     stored.describeFunction,
   ),
-  play: async ({ canvasElement }) => {
+  play: async ({ canvasElement, userEvent }) => {
     const opened = await openDetail(canvasElement)
     // The request states the Call Path, under its label, as the search states its query.
     await expect(opened.getByText('Call path').nextElementSibling).toHaveTextContent(
@@ -1244,6 +1478,11 @@ export const HistoricalDescribeSavedFunction: Story = {
     )
     // The types the agent asked for, when it named any.
     await expect(opened.getByText('Types').nextElementSibling).toHaveTextContent('IssueLabel')
+    // The Result counts the diagnostics; Details holds the source and each diagnostic.
+    await expect(
+      within(opened.getByRole('region', { name: 'Result' })).getByText('1 error'),
+    ).toBeVisible()
+    await userEvent.click(opened.getByText('Details', { selector: 'summary' }))
     await expect(opened.getByRole('heading', { name: 'Source' })).toBeVisible()
     await expect(opened.getByText('error TS2304')).toBeVisible()
     await expect(opened.getByText("Cannot find name 'coral'.")).toBeVisible()
@@ -1288,33 +1527,88 @@ export const OutsideWorkspace: Story = {
     },
   },
 }
-export const PendingApproval: Story = {
-  args: {
-    page: {
-      ...page,
-      detail: {
-        ...detail,
-        context: approvalContext,
-        request: {
-          kind: 'approval',
-          actionable: true,
-          name: `${workspace}/approvals/mail`,
-          run,
-          invocation,
-          provider: call.provider,
-          callPath: call.callPath,
-          arguments: JSON.stringify({
-            recipient: 'owner@example.com',
-            lines: Array.from({ length: 80 }, (_, i) => `Invoice ${i + 1}`),
-          }),
-          state: 'pending',
-          deadline: at,
-          approver: '',
-          decidedAt: null,
-          comment: null,
-        },
-      },
+/** A call that waits for your approval, with `args` as its arguments. */
+const pendingApproval = (args: unknown): ActivityPage => ({
+  ...page,
+  detail: {
+    ...detail,
+    context: approvalContext,
+    request: {
+      kind: 'approval',
+      taskIntent: goal.intent,
+      actionable: true,
+      name: `${workspace}/approvals/mail`,
+      run,
+      invocation,
+      provider: call.provider,
+      providerLabel: 'Mail',
+      callPath: call.callPath,
+      arguments: JSON.stringify(args),
+      state: 'pending',
+      // A pending approval is still open, so its deadline is ahead of whoever views it.
+      deadline: new Date(Date.now() + 15 * 60_000).toISOString(),
+      approver: '',
+      decidedAt: null,
+      comment: null,
     },
+  },
+})
+export const PendingApproval: Story = {
+  beforeEach: freezeStoryClock,
+  args: {
+    page: pendingApproval({
+      recipient: 'owner@example.com',
+      lines: Array.from({ length: 80 }, (_, i) => `Invoice ${i + 1}`),
+    }),
+  },
+  globals: shortScreen,
+  play: async ({ canvasElement, userEvent }) => {
+    const dialog = await openDrawer(canvasElement, 'Review action')
+    await expectAlignedHeaders(dialog)
+    // The review decides this one call: no technical details, program body, history or Run
+    // cancel. When the call started closes the list, after who requested it.
+    for (const gone of ['Technical details', 'Program body', 'View in history', 'Cancel run'])
+      await expect(within(dialog).queryByText(gone)).toBeNull()
+    const list = within(dialog).getByText('Requested by', { selector: 'dt' }).closest('dl')!
+    await expect(
+      within(list)
+        .getAllByRole('term')
+        .map((term) => term.textContent),
+    ).toEqual(['Task intent', 'Run intent', 'Requested by', 'Call started'])
+    // The comment and the decision stay.
+    await userEvent.click(within(dialog).getByText('Add a comment', { selector: 'summary' }))
+    await expect(within(dialog).getByLabelText('Comment (optional)')).toBeVisible()
+    // The Run's source shares the drawer, so the decision pins to the selected record's pane.
+    const selected = within(dialog).getByRole('region', { name: 'Selected record' })
+    await expectPinnedFooter(selected, ['Deny this call', 'Approve this call'])
+    // Above the decision, a fade marks the evidence still below, until the reader reaches it.
+    const scroller = scrollerIn(selected)
+    scroller.scrollTop = 0
+    await waitFor(() => expect(fadeBelow(scroller)).toBeGreaterThan(0))
+    scroller.scrollTop = scroller.scrollHeight
+    await waitFor(() => expect(fadeBelow(scroller)).toBe(0))
+    await expect(within(dialog).getByRole('region', { name: 'Accepted source' })).toBeVisible()
+    // The review's own header holds the drawer's one close control; no Run header sits above it.
+    const close = within(dialog).getByRole('button', { name: 'Close details' })
+    await expect(within(selected).getAllByRole('button', { name: 'Close details' })).toEqual([
+      close,
+    ])
+    const header = within(selected).getByRole('heading', { name: 'mail.send' }).closest('header')
+    await expect(header).toContainElement(close)
+  },
+}
+/** Evidence that fits its pane leaves no fade, and the decision shows whole. */
+export const ShortPendingApproval: Story = {
+  args: { page: pendingApproval('owner@example.com') },
+  play: async ({ canvasElement }) => {
+    // Storybook's own UI cannot resize its viewport, so this play needs the test runner.
+    if (!(await resizeViewport(1440, 1800))) return
+    const dialog = await openDrawer(canvasElement, 'Review action')
+    const selected = within(dialog).getByRole('region', { name: 'Selected record' })
+    const scroller = scrollerIn(selected)
+    await waitFor(() => expect(scroller.scrollHeight).toBeLessThanOrEqual(scroller.clientHeight))
+    await waitFor(() => expect(fadeBelow(scroller)).toBe(0))
+    await expectDecisionBelowEvidence(selected, ['Deny this call', 'Approve this call'])
   },
 }
 export const ResolvedApproval: Story = {
@@ -1326,10 +1620,12 @@ export const ResolvedApproval: Story = {
         context: approvalContext,
         request: {
           kind: 'approval',
+          taskIntent: goal.intent,
           name: `${workspace}/approvals/mail`,
           run,
           invocation,
           provider: call.provider,
+          providerLabel: 'Mail',
           callPath: call.callPath,
           arguments: detail.arguments,
           state: 'approved',
@@ -1340,5 +1636,123 @@ export const ResolvedApproval: Story = {
         },
       },
     },
+  },
+}
+const connection = `${workspace}/accountConnections/linear`
+/** A Run that waits on your shared account connection, not on one call's approval. */
+export const PendingConnectionFooter: Story = {
+  beforeEach: freezeStoryClock,
+  globals: shortScreen,
+  parameters: { chromatic: { viewports: [390] } },
+  args: {
+    page: {
+      ...page,
+      selected: run,
+      selectedRow: execution,
+      detail: {
+        kind: 'run',
+        run: {
+          ...execution,
+          actionPage: {
+            total: '1',
+            next: '',
+            actions: [
+              {
+                kind: 'account_connection',
+                name: connection,
+                callPath: '',
+                providerLabel: 'Linear',
+                deadline: minutesAfterStoryNow(15),
+              },
+            ],
+          },
+        },
+        submission: execution.submission,
+        request: {
+          kind: 'account_connection',
+          name: connection,
+          provider: `${workspace}/providers/linear`,
+          state: 'pending',
+          expiresAt: minutesAfterStoryNow(15),
+        },
+        // The program whose call waits on this connection.
+        source: "return await coral.providers.linear.listIssues({ assignee: 'me' })",
+        linkedFunctions: [],
+        terminal: { kind: 'unavailable' },
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await expect(canvasElement.ownerDocument.defaultView!.innerHeight).toBeLessThanOrEqual(568)
+    const dialog = await openDrawer(canvasElement, 'Review action')
+    // The Run's header and the shared connection's own header align alike.
+    await expectAlignedHeaders(dialog)
+    // A Run panel keeps no long retained source: the decision shows whole in its footer.
+    const edge = dialog.getBoundingClientRect()
+    for (const name of ['Decline', 'Connect Linear']) {
+      const control = within(dialog).getByRole('button', { name })
+      await expect(control.closest('footer')).not.toBeNull()
+      const box = control.getBoundingClientRect()
+      await expect(box.top >= edge.top && box.bottom <= edge.bottom).toBe(true)
+    }
+  },
+}
+/** A call selected on its own, beside the evidence and source of the Run that made it. */
+export const InvocationWithRunEvidence: Story = {
+  args: {
+    page: {
+      ...page,
+      detail: {
+        ...detail,
+        invocation: {
+          ...call,
+          state: 'ended',
+          outcome: 'upstream_outcome',
+          endedAt: at,
+          dispatchedAt: at,
+          waitingNanos: '0',
+          requiresAction: false,
+        },
+        requests: [],
+        result: { kind: 'upstream_outcome', value: '{"metadata":{"status":202}}' },
+        context: {
+          ...approvalContext,
+          run: { ...execution, state: 'failed', endedAt: at, requiresAction: false },
+          linkedFunctions: [
+            {
+              savedFunction: 'old-function-id',
+              path: 'billing.remind',
+              source: 'export default () => "snapshot"',
+            },
+          ],
+          terminal: {
+            kind: 'failed',
+            code: 'program_execution_failed',
+            message: 'The program failed after this call returned.',
+            error: null,
+          },
+        },
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const drawer = within(
+      await within(canvasElement.ownerDocument.body).findByRole('dialog', {
+        name: 'Activity details',
+      }),
+    )
+    await expect(drawer.getByRole('heading', { level: 2, name: 'mail.send' })).toBeVisible()
+    await expectAlignedHeaders(await openDrawer(canvasElement, 'Activity details'))
+    // The call's provider response and the Run's failure each show in their own card.
+    const failure = drawer.getByRole('region', { name: 'Error' })
+    await expect(failure).toHaveTextContent('The program failed after this call returned.')
+    await expect(failure).toHaveTextContent('program_execution_failed')
+    await expect(drawer.getByRole('region', { name: 'Provider response' })).toBeVisible()
+    await expect(drawer.getByText('program run: failed')).toBeVisible()
+    // The call leads; the Run's source shows in its own pane below, not repeated in Details.
+    await expect(drawer.queryByText('Accepted program source', { selector: 'summary' })).toBeNull()
+    const source = drawer.getByRole('region', { name: 'Accepted source' })
+    await expect(source.querySelector('[data-line="1"]')).toBeVisible()
+    await expect(drawer.getByText('Details', { selector: 'summary' })).toBeVisible()
   },
 }

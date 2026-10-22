@@ -499,3 +499,78 @@ pub(crate) async fn test_modules() -> (TestDatabase, WorkspaceModule, TaskModule
     let tasks = TaskModule::new(database, workspaces.clone());
     (fixture, workspaces, tasks)
 }
+
+/// A conflict on the identifier writes nothing and reports `false`; a fresh
+/// identifier in the same transaction still inserts.
+#[tokio::test]
+async fn a_taken_task_identifier_is_reported_and_writes_nothing() {
+    let (_database, workspaces, tasks) = test_modules().await;
+    let user = organization_user(
+        tasks.database.clone(),
+        "user:task-identifier",
+        OrganizationRole::Member,
+    )
+    .await;
+    let workspace = workspaces
+        .create(
+            &change(user.clone(), 10, '1'),
+            WorkspaceDisplayName::parse("Identifiers").expect("display name"),
+        )
+        .await
+        .expect("create Workspace");
+    let principal = AuthenticatedPrincipal::user(user);
+    let task = |id: &str, intent: &str, started_at_unix_nanos: i64| {
+        crate::Task::new(
+            crate::TaskId::parse(id).expect("identifier"),
+            workspace.id().clone(),
+            principal.principal().clone(),
+            TaskIntent::parse(intent).expect("Task intent"),
+            None,
+            None,
+            started_at_unix_nanos,
+            None,
+        )
+    };
+    let taken = "random-big-business-store";
+    let first = task(taken, "Check identifiers", 10);
+
+    let mut transaction = tasks.database.begin().await.expect("transaction");
+    assert!(
+        crate::repository::insert(&mut transaction, &first)
+            .await
+            .expect("first insert")
+    );
+    // The conflicting Task differs in every column it can, so an insert that
+    // overwrote the row would show.
+    assert!(
+        !crate::repository::insert(
+            &mut transaction,
+            &task(taken, "Overwrite the first Task", 20)
+        )
+        .await
+        .expect("conflicting insert")
+    );
+    assert!(
+        crate::repository::insert(
+            &mut transaction,
+            &task("height-word-database-library", "Check identifiers", 30)
+        )
+        .await
+        .expect("fresh insert after the conflict")
+    );
+    transaction.commit().await.expect("commit");
+    let found = tasks
+        .get(
+            &principal,
+            workspace.id(),
+            &crate::TaskId::parse(taken).expect("identifier"),
+        )
+        .await
+        .expect("get Task");
+    assert_eq!(
+        found.intent(),
+        first.intent(),
+        "the conflict changed nothing"
+    );
+    assert_eq!(found.started_at_unix_nanos(), 10);
+}

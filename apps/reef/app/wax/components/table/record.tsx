@@ -56,9 +56,9 @@ export function Record({
       )}
       <div className={styles.content}>
         <div className={styles.label}>{children}</div>
+        {marker && <span className={styles.marker}>{marker}</span>}
         {metadata && <div className={styles.metadata}>{metadata}</div>}
       </div>
-      {marker && <span className={styles.marker}>{marker}</span>}
     </div>
   )
 }

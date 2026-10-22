@@ -778,6 +778,20 @@ pub struct ProviderSetup {
     /// Host deadline for a pre-ready Setup; absent once ready without material.
     #[prost(message, optional, tag = "15")]
     pub expire_time: ::core::option::Option<::prost_types::Timestamp>,
+    /// What a Program asked this Setup to publish; absent for a Setup a person started.
+    #[prost(message, optional, tag = "20")]
+    pub request: ::core::option::Option<ProviderSetupRequest>,
+}
+/// What a Program asked a Setup to publish when it called createProvider. The
+/// person who finishes the Setup can change either.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProviderSetupRequest {
+    /// The Provider Namespace the Program asked for.
+    #[prost(string, tag = "1")]
+    pub namespace: ::prost::alloc::string::String,
+    /// The Credential Route the Program asked for.
+    #[prost(message, optional, tag = "2")]
+    pub credential_route: ::core::option::Option<CredentialRoute>,
 }
 /// Starts the setup-scoped OAuth Authorization.
 #[derive(Clone, PartialEq, ::prost::Message)]

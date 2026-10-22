@@ -450,8 +450,9 @@ impl McpServer {
                 .await
             {
                 // The action ended or was resolved elsewhere while the User
-                // considered it. The reread update shows the current state.
-                Ok(()) | Err(coral_run::Error::ApprovalNotFound) => {}
+                // considered it, or its Run Owner stopped before answering:
+                // the reread update shows the recorded state.
+                Ok(()) | Err(coral_run::Error::ApprovalNotFound | coral_run::Error::OwnerLost) => {}
                 Err(error) => return Err(run_failure(error)),
             }
         }
@@ -672,10 +673,10 @@ fn task_failure(error: coral_task::Error) -> DispatchError {
             "snapshot_too_large",
             "Complete discovery snapshot exceeds its limit",
         ),
-        coral_task::Error::Clock => ToolFailure::internal(),
-        coral_task::Error::CorruptData(_) | coral_task::Error::Database(_) => {
-            ToolFailure::internal()
-        }
+        coral_task::Error::Clock
+        | coral_task::Error::IdentifierIssuance(_)
+        | coral_task::Error::CorruptData(_)
+        | coral_task::Error::Database(_) => ToolFailure::internal(),
     };
     DispatchError::Tool(failure)
 }
@@ -715,6 +716,14 @@ fn run_failure(error: coral_run::Error) -> DispatchError {
         coral_run::Error::RunNotFound => {
             ToolFailure::stable("run_not_found", "Program Run was not found")
         }
+        coral_run::Error::OwnerLost => ToolFailure::stable(
+            "run_owner_lost",
+            "Program Run outcome is unknown; read the Run again",
+        ),
+        coral_run::Error::OwnedElsewhere => ToolFailure::stable(
+            "run_owned_elsewhere",
+            "Program Run has no live owner in this process; retry",
+        ),
         coral_run::Error::Functions(error) => return functions_failure(error),
         coral_run::Error::ProgramValueTooLarge => ToolFailure::stable(
             "program_value_too_large",

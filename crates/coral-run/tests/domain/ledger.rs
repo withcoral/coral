@@ -2,7 +2,9 @@
 //! lines 1, 2, 4 and 5), on a Run no worker touches.
 use super::*;
 
-use crate::run_repository::{Chunk, NewEvent, commit_chunk, hold_run};
+use crate::run_repository::{
+    Chunk, NewEvent, commit_chunk, hold_run, release_unstarted_worker_claim, start_execution,
+};
 
 const LEASE_UNTIL: i64 = 1_000_000_000_000;
 
@@ -324,4 +326,41 @@ async fn no_chunk_lands_after_run_ended() {
         fixture.compatibility_counter(&workspace_id, &run_id).await,
         counter_ended
     );
+}
+
+/// The start mark lands only on the worker claim acceptance wrote: once
+/// recovery released that claim (expired before the start), the mark matches
+/// no row and changes nothing, instead of leaving a started Run unclaimed.
+#[tokio::test]
+async fn a_start_mark_on_a_released_worker_claim_is_refused() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let (workspace_id, run_id) = arranged_run(&fixture, "released-claim", None).await;
+    fixture
+        .inject_fault(&format!(
+            "UPDATE program_run_records SET worker_claim_id = 'claim-a', \
+             worker_claim_expires_at_unix_nanos = {LEASE_UNTIL} WHERE id = '{run_id}'"
+        ))
+        .await;
+    let mut transaction = fixture.database.begin().await.expect("begin");
+    let claimed = hold_run(&mut transaction, &workspace_id, &run_id)
+        .await
+        .expect("hold")
+        .expect("Run exists");
+    assert!(
+        release_unstarted_worker_claim(&mut transaction, &claimed)
+            .await
+            .expect("release")
+    );
+    transaction.commit().await.expect("commit");
+    let released = fixture.run_record(&workspace_id, &run_id).await;
+    assert_eq!(released.worker_claim_id, None);
+
+    let mut transaction = fixture.database.begin().await.expect("begin");
+    let refused = start_execution(&mut transaction, &claimed, "claim-a", 2_000, LEASE_UNTIL).await;
+    assert!(matches!(refused, Err(Error::ClaimMismatch)), "{refused:?}");
+    transaction
+        .commit()
+        .await
+        .expect("commit the refused write");
+    assert_eq!(fixture.run_record(&workspace_id, &run_id).await, released);
 }

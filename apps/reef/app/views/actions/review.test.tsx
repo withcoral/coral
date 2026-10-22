@@ -1,12 +1,12 @@
 /** @vitest-environment happy-dom */
 
-import { act, screen } from '@testing-library/react'
+import { act, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useEffect, useState } from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { renderRoute } from '@/test-support/route'
-import { approvalRequest as approval } from '../activity/fixtures'
+import { approvalContext, approvalRequest as approval } from '../activity/fixtures'
 import { ActivityArchivedContext } from '../activity/live'
 import { ActionReviewSession, ApprovalReview } from './review'
 
@@ -30,7 +30,11 @@ function renderReview() {
     }, [])
     return (
       <ActionReviewSession request={request}>
-        {request ? <ApprovalReview detail={request} /> : <p>Reconnecting to the exact review.</p>}
+        {request ? (
+          <ApprovalReview detail={request} context={approvalContext} />
+        ) : (
+          <p>Reconnecting to the exact review.</p>
+        )}
       </ActionReviewSession>
     )
   }
@@ -79,26 +83,48 @@ async function click(name: string) {
 }
 
 describe('exact approval review', () => {
-  // Catches: an inline OpenAPI document burying the createProvider arguments.
-  it('collapses an inline OpenAPI document below the arguments', () => {
-    const detail = {
-      ...approval,
-      callPath: 'coral.workspace.createProvider',
-      arguments: JSON.stringify({
-        namespace: 'weather',
-        source: { kind: 'openapi_document', document: 'openapi: 3.1.0' },
-        credentialRoute: 'none',
-      }),
-    }
+  // Catches: arguments re-serialized to set an inline document aside, which rounds a large
+  // integer, drops a duplicate key, and shows a placeholder as if the call had sent it. The
+  // text as sent is the one source: no second copy of the document.
+  it.each([
+    [
+      'a JSON object',
+      '{"namespace":"weather","source":{"kind":"openapi_document","document":"openapi: 3.1.0"},"credentialRoute":"none"}',
+      [
+        ['namespace', '"weather"'],
+        ['source', '"document": "openapi: 3.1.0"'],
+        ['credentialRoute', '"none"'],
+      ],
+    ],
+    [
+      'an integer beyond double precision and a duplicate key',
+      '{"namespace":"weather","source":{"kind":"openapi_document","document":"openapi: 3.1.0"},"limit":9007199254740993,"note":"first","note":"second"}',
+      [],
+    ],
+  ])('shows %s with an inline OpenAPI document as the call sent it', (_, sent, fields) => {
+    const detail = { ...approval, callPath: 'coral.workspace.createProvider', arguments: sent }
     renderRoute(
       <ActionReviewSession request={detail}>
-        <ApprovalReview detail={detail} />
+        <ApprovalReview detail={detail} context={approvalContext} />
       </ActionReviewSession>,
       { entry: '/activity', csrf: 'test-csrf' },
     )
-    const inline = screen.getByText('OpenAPI document').closest('details')
-    expect(inline).not.toHaveAttribute('open')
-    expect(inline).toHaveTextContent('openapi: 3.1.0')
+    const shown = screen.getByText(/^Arguments/, { selector: 'summary' }).closest('details')!
+    expect(shown).not.toHaveTextContent('shown below')
+    if (fields.length) {
+      for (const [key, value] of fields)
+        expect(
+          within(shown).getByText(key, { selector: 'dt' }).nextElementSibling,
+        ).toHaveTextContent(value)
+    } else {
+      // JSON that rows would change stays one block, exactly as sent.
+      expect(shown.querySelector('dl')).toBeNull()
+      const block = shown.querySelector('pre')!.textContent!
+      expect(block).toContain('9007199254740993')
+      expect(block).toContain('"first"')
+      expect(block).toContain('"second"')
+    }
+    expect(screen.queryByText('OpenAPI document', { selector: 'summary' })).toBeNull()
   })
 
   it.each([
@@ -288,19 +314,226 @@ describe('exact approval review', () => {
   })
 })
 
+/** The disclosure whose summary reads `title`. */
+function disclosure(title: string) {
+  const summary = screen.getByText(title, { selector: 'summary' })
+  return summary.closest('details')!
+}
+/** The review's first list: why the call runs. */
+function contextList() {
+  return screen.getByText('Requested by', { selector: 'dt' }).closest('dl') as HTMLElement
+}
+/** Label and value of each row in `scope`, in order. */
+function rows(scope: HTMLElement) {
+  const terms = within(scope).queryAllByRole('term')
+  const values = within(scope).queryAllByRole('definition')
+  return terms.map((term, index) => [term.textContent, values[index].textContent])
+}
+
+function renderStatic(detail: Approval) {
+  return renderRoute(
+    <ActionReviewSession request={detail}>
+      <ApprovalReview detail={detail} context={approvalContext} />
+    </ActionReviewSession>,
+    { entry: '/activity', csrf: 'test-csrf' },
+  )
+}
+
+describe('approval review layout', () => {
+  it('orients the reviewer before the exact arguments and keeps supporting detail collapsed', () => {
+    renderStatic({ ...approval, providerLabel: 'Mail', taskIntent: 'Chase overdue invoices' })
+    const review = screen.getByRole('region', { name: `Review ${approval.callPath}` })
+    expect(within(review).getByRole('heading', { name: approval.callPath })).toBeInTheDocument()
+    expect(within(review).getByText('approval request')).toBeInTheDocument()
+    expect(review).toHaveTextContent('Provider: Mail')
+    expect(review).toHaveTextContent('Approval required')
+    // Why the call runs, in one list without a heading.
+    expect(screen.queryByRole('heading', { name: 'Context' })).not.toBeInTheDocument()
+    expect(rows(contextList())).toEqual([
+      ['Task intent', 'Chase overdue invoices'],
+      ['Run intent', 'Send invoice reminders'],
+      ['Requested by', 'Collections agent · Finance'],
+    ])
+    expect(disclosure('Arguments (1)')).toHaveAttribute('open')
+    // No program body: the review decides this one call, not the program.
+    expect(review).not.toHaveTextContent('Program body')
+    expect(review).not.toHaveTextContent(approvalContext.source)
+    expect(disclosure('Add a comment')).not.toHaveAttribute('open')
+    // No technical details: the workspace, provider and request names are not for reading.
+    expect(review).not.toHaveTextContent('Technical details')
+    for (const id of [approvalContext.run.workspace, approval.provider, approval.name])
+      expect(review).not.toHaveTextContent(id)
+    expect(review).not.toHaveTextContent('Approval applies only to this call')
+    // The order a reviewer reads: why, what exactly, then how to decide.
+    const order = ['Task intent', 'Arguments (1)', 'Add a comment']
+    const positions = order.map((text) => review.textContent!.indexOf(text))
+    expect(positions).toEqual(positions.toSorted((a, b) => a - b))
+    expect(review.textContent!.indexOf('Add a comment')).toBeLessThan(
+      review.textContent!.indexOf('Approve this call'),
+    )
+  })
+
+  // Catches: a review dated by its Run or its deadline instead of its call.
+  it('states when its call started, after who requested it', () => {
+    renderRoute(
+      <ActionReviewSession request={approval}>
+        <ApprovalReview
+          detail={approval}
+          context={approvalContext}
+          callStartedAt="2026-09-22T09:00:05Z"
+        />
+      </ActionReviewSession>,
+      { entry: '/activity', csrf: 'test-csrf' },
+    )
+    const list = contextList()
+    expect(
+      rows(list)
+        .map(([term]) => term)
+        .slice(-2),
+    ).toEqual(['Requested by', 'Call started'])
+    expect(rows(list).at(-1)![1]).toBe('22 Sep 2026, 09:00:05 UTC')
+    expect(list.querySelector('time')).toHaveAttribute('dateTime', '2026-09-22T09:00:05Z')
+  })
+
+  // Catches: placeholders such as "Agent unavailable" or "Provider: unavailable" for labels Coral
+  // did not send, or a review that loses who asked for the call.
+  it.each([
+    ['an agent without a name', { actorLabel: undefined }, 'Unknown agent · Finance'],
+    ['a workspace without a name', { workspaceLabel: undefined }, 'Collections agent'],
+    [
+      'your own run without names',
+      { actorLabel: undefined, agent: '', workspaceLabel: undefined },
+      'You',
+    ],
+  ])('names who asked with %s, and no placeholder', (_, labels, requested) => {
+    renderRoute(
+      <ActionReviewSession request={approval}>
+        <ApprovalReview
+          detail={{ ...approval, providerLabel: undefined }}
+          context={{ ...approvalContext, run: { ...approvalContext.run, ...labels } }}
+        />
+      </ActionReviewSession>,
+      { entry: '/activity', csrf: 'test-csrf' },
+    )
+    const review = screen.getByRole('region', { name: `Review ${approval.callPath}` })
+    expect(rows(contextList()).at(-1)).toEqual(['Requested by', requested])
+    expect(review.textContent).not.toMatch(/unavailable|Provider:/)
+    expect(review).not.toHaveTextContent(approvalContext.run.agent)
+  })
+
+  // Catches: a decided review that drops the decision because the reviewer's name is missing.
+  it('keeps a decision whose reviewer has no name', () => {
+    renderStatic({
+      ...approval,
+      state: 'approved',
+      actionable: false,
+      approver: 'users/gone',
+      approverLabel: undefined,
+      decidedAt: '2026-09-22T09:01:00Z',
+      comment: null,
+    })
+    const decision = screen.getByText('Reviewed by', { selector: 'dt' }).closest('dl')!
+    expect(rows(decision as HTMLElement)[0]).toEqual(['Reviewed by', 'Previous reviewer'])
+  })
+
+  it('omits context it does not have instead of inventing it', () => {
+    renderStatic({ ...approval, taskIntent: undefined })
+    expect(rows(contextList())).toEqual([
+      ['Run intent', 'Send invoice reminders'],
+      ['Requested by', 'Collections agent · Finance'],
+    ])
+  })
+
+  it.each([
+    [
+      'an object as one row per field',
+      '{"to":"owner@example.com","cc":["a@example.com"],"limit":2,"draft":false}',
+      'Arguments (4)',
+      [
+        ['to', '"owner@example.com"'],
+        ['cc', '["a@example.com"]'],
+        ['limit', '2'],
+        ['draft', 'false'],
+      ],
+    ],
+    [
+      'strings apart from the values they spell',
+      '{"limit":"2","note":""}',
+      'Arguments (2)',
+      [
+        ['limit', '"2"'],
+        ['note', '""'],
+      ],
+    ],
+    ['an empty object without rows', '{}', 'Arguments (0)', []],
+    ['an array as exact JSON', '["owner@example.com",2]', 'Arguments', []],
+    ['a scalar as exact JSON', '"owner@example.com"', 'Arguments', []],
+    ['invalid JSON unchanged', '{"to":', 'Arguments', []],
+    // Parsing would round the number or drop the first key, so the rows would not be exact.
+    ['an imprecise number as exact JSON', '{"id":12345678901234567890}', 'Arguments', []],
+    ['a duplicate key as exact JSON', '{"to":"a","to":"b"}', 'Arguments', []],
+  ])('shows %s', (_label, value, title, expected) => {
+    renderStatic({ ...approval, arguments: value })
+    const section = disclosure(title)
+    expect(section).toHaveAttribute('open')
+    expect(rows(section)).toEqual(expected)
+    // The fallback formats whitespace only, so the original tokens remain.
+    if (value === '{}') expect(section).toHaveTextContent('This call has no arguments.')
+    else if (!expected.length)
+      expect(section.textContent!.replace(/\s/g, '')).toContain(value.replace(/\s/g, ''))
+  })
+
+  it.each([
+    ['approved', true, 'Approved'],
+    ['declined', true, 'Denied'],
+    ['expired', false, 'Expired'],
+    ['pending', false, 'Approval unavailable'],
+  ])('settles a %s review without decision controls', (state, decided, label) => {
+    renderStatic({
+      ...approval,
+      state,
+      actionable: false,
+      ...(decided && {
+        approver: 'owner',
+        approverLabel: 'You',
+        decidedAt: '2026-09-22T09:01:00Z',
+        comment: 'Checked the recipient.',
+      }),
+    })
+    expect(statuses()).toEqual([label])
+    expect(screen.queryByText('Approval required')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /this call/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('Add a comment')).not.toBeInTheDocument()
+    expect(screen.queryByText('Program body')).not.toBeInTheDocument()
+    // The decision reads in a list of its own, without a heading.
+    expect(screen.queryByRole('heading', { name: 'Decision' })).not.toBeInTheDocument()
+    const decision = screen.queryByText('Reviewed by', { selector: 'dt' })?.closest('dl')
+    if (decided) {
+      expect(rows(decision as HTMLElement)).toEqual([
+        ['Reviewed by', 'You'],
+        ['Decided', '22 Sep 2026, 09:01:00 UTC'],
+        ['Comment', 'Checked the recipient.'],
+      ])
+      expect(decision!.querySelector('time')).toHaveAttribute('dateTime', '2026-09-22T09:01:00Z')
+    } else expect(decision).toBeFalsy()
+  })
+})
+
 // Catches: an archived workspace offering a decision that Coral refuses.
 it('an archived workspace shows the arguments but tells you to restore it before you decide', () => {
   renderRoute(
     <ActivityArchivedContext value="member">
       <ActionReviewSession request={approval}>
-        <ApprovalReview detail={approval} />
+        <ApprovalReview detail={approval} context={approvalContext} />
       </ActionReviewSession>
     </ActivityArchivedContext>,
     { entry: '/activity?record=one&request=one', csrf: 'test-csrf' },
   )
-  expect(screen.getByRole('heading', { name: 'Arguments to review' })).toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: approval.callPath })).toBeInTheDocument()
+  expect(disclosure('Arguments (1)')).toHaveAttribute('open')
   expect(
     screen.getByText('Ask a workspace owner to restore this workspace. Then decide.'),
   ).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: /this call$/ })).toBeNull()
+  expect(screen.queryByText('Add a comment')).toBeNull()
 })

@@ -1898,7 +1898,8 @@ impl ChunkWork for EndBeforeSendWork {
         let unfinished = UnfinishedInvocation {
             id: self.admitted.id.clone(),
             state: InvocationState::Dispatching,
-            call_path: self.admitted.call_path.clone(),
+            generation: self.admitted.target.provider_generation_id().clone(),
+            operation: self.admitted.target.operation().key().clone(),
         };
         // A row that is no longer dispatching was settled by the termination
         // itself; nothing is left to end.

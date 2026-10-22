@@ -84,6 +84,19 @@ export function accountLabel(route: CredentialRoute | undefined): AccountLabel {
       return accountLabels.none
   }
 }
+/** The account setting a Credential Route names; null for one this Reef does not know. */
+export function routeChoice(route: CredentialRoute | undefined): AccountChoice | null {
+  switch (route?.kind) {
+    case CredentialRoute_Kind.NONE:
+      return 'none'
+    case CredentialRoute_Kind.FIXED:
+      return 'fixed'
+    case CredentialRoute_Kind.CALLER:
+      return 'caller'
+    default:
+      return null
+  }
+}
 export function routeFromLabel(value: string): CredentialRoute {
   switch (value) {
     case 'none':
@@ -290,14 +303,7 @@ export async function providerView(
 
 /** Whose account a provider's calls use, from its credential route. */
 export function accountChoice(route: CredentialRoute | undefined): AccountChoice {
-  switch (route?.kind) {
-    case CredentialRoute_Kind.FIXED:
-      return 'fixed'
-    case CredentialRoute_Kind.CALLER:
-      return 'caller'
-    default:
-      return 'none'
-  }
+  return routeChoice(route) ?? 'none'
 }
 
 /**

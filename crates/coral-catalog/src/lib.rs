@@ -15,8 +15,11 @@
 mod binding;
 mod builtin;
 pub use builtin::{
-    BUILTIN_PROVIDER_DISPLAY_NAME, BuiltinCatalog, BuiltinCatalogIdentity, BuiltinExecutionBinding,
-    BuiltinOperation,
+    ArgumentProblem, BUILTIN_PROVIDER_DISPLAY_NAME, BuiltinArguments, BuiltinCatalog,
+    BuiltinCatalogIdentity, BuiltinCredentialRoute, BuiltinExecutionBinding, BuiltinOperation,
+    ConfigurationChoices, CreateProviderArguments, CreateProviderResult, ListProvidersResult,
+    ListedProvider, ListedProviderState, ListedSetup, ListedSetupState, ProviderFacts,
+    ProviderSourceArgument,
 };
 mod configuration;
 pub use configuration::{
@@ -118,7 +121,9 @@ pub use openapi::{
     HttpRedirectPolicy, HttpRequestBodyBinding, HttpResponseBinding, HttpResponseStatus,
     OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument, SuccessSelection, validate_openapi_configuration,
 };
-pub use paths::{OperationPathAssignment, call_path_segment_is_reserved};
+pub use paths::{
+    OperationPathAssignment, call_path_segment_is_reserved, provider_namespace_is_valid,
+};
 pub use search::{DeclarationIndexEntry, PreparedDeclarationFields, StoredDeclarationFields};
 pub use types::{
     CatalogDiagnostic, CatalogDiagnosticSeverity, CatalogSearchTarget, MaterializationOutcome,

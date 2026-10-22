@@ -79,36 +79,56 @@ impl RunRecord {
         self.execution_started_at_unix_nanos.is_some()
     }
 
-    pub(crate) fn request_termination<'a>(
+    /// A termination intent no Principal asked for: the deadline, an
+    /// interruption, or the memory limit. A cancellation's intent is the Run
+    /// Owner's to apply.
+    pub(crate) fn request_termination(
         &self,
         kind: RunTerminationKind,
-        requester: Option<&'a Principal>,
         started_at_unix_nanos: i64,
-    ) -> Result<RequestedTermination<'a>, Error> {
+    ) -> Result<RequestedTermination, Error> {
+        RequestedTermination::new(kind, None, started_at_unix_nanos, self.shutdown_grace_nanos)
+    }
+}
+
+/// A termination intent as a writer records it: the termination and the
+/// Principal who asked for a cancellation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RequestedTermination {
+    pub(crate) termination: RunTermination,
+    pub(crate) requester: Option<Principal>,
+}
+
+impl RequestedTermination {
+    pub(crate) fn new(
+        kind: RunTerminationKind,
+        requester: Option<Principal>,
+        started_at_unix_nanos: i64,
+        shutdown_grace_nanos: i64,
+    ) -> Result<Self, Error> {
         if (kind == RunTerminationKind::Canceled) != requester.is_some() {
             return Err(Error::CorruptData(
                 "Run termination has inconsistent requester evidence".into(),
             ));
         }
         let deadline_at_unix_nanos = started_at_unix_nanos
-            .checked_add(self.shutdown_grace_nanos)
+            .checked_add(shutdown_grace_nanos)
             .ok_or_else(|| Error::CorruptData("Run termination deadline overflowed".into()))?;
-        Ok(RequestedTermination {
+        Ok(Self {
             termination: RunTermination {
                 kind,
                 started_at_unix_nanos,
                 deadline_at_unix_nanos,
             },
             requester,
-            release_worker_claim: kind == RunTerminationKind::Interrupted,
         })
     }
-}
 
-pub(crate) struct RequestedTermination<'a> {
-    pub(crate) termination: RunTermination,
-    pub(crate) requester: Option<&'a Principal>,
-    pub(crate) release_worker_claim: bool,
+    /// Whether recording this intent releases the worker claim: an
+    /// interruption does, the Run having no live owner.
+    pub(crate) fn releases_worker_claim(&self) -> bool {
+        self.termination.kind == RunTerminationKind::Interrupted
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

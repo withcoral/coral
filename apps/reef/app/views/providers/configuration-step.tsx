@@ -604,6 +604,7 @@ export function ConfigurationStep({
                   review.application
                 }
                 callbackUrl={callbackUrl}
+                clientConfigHintMarkdown={applied?.clientConfigHintMarkdown}
                 configuring
                 clientSecretInput={
                   <>

@@ -157,15 +157,15 @@
     "servers": {
       "type": "object",
       "propertyNames": {
-        "$ref": "#/$defs/__schema50"
+        "$ref": "#/$defs/__schema51"
       },
       "additionalProperties": {
         "anyOf": [
           {
-            "$ref": "#/$defs/__schema51"
+            "$ref": "#/$defs/__schema52"
           },
           {
-            "$ref": "#/$defs/__schema52"
+            "$ref": "#/$defs/__schema53"
           }
         ],
         "description": "The server for one servers declaration in the OpenAPI document: a base_url, or one of its declared URLs with values for its variables."
@@ -174,7 +174,7 @@
     "request_headers": {
       "type": "object",
       "propertyNames": {
-        "$ref": "#/$defs/__schema54"
+        "$ref": "#/$defs/__schema55"
       },
       "additionalProperties": {
         "$ref": "#/$defs/__schema13"
@@ -188,19 +188,19 @@
         "servers": {
           "type": "object",
           "propertyNames": {
-            "$ref": "#/$defs/__schema50"
+            "$ref": "#/$defs/__schema51"
           },
           "additionalProperties": {
             "type": "object",
             "properties": {
               "label": {
-                "$ref": "#/$defs/__schema55"
-              },
-              "description": {
                 "$ref": "#/$defs/__schema56"
               },
-              "documentation_url": {
+              "description": {
                 "$ref": "#/$defs/__schema57"
+              },
+              "documentation_url": {
+                "$ref": "#/$defs/__schema58"
               }
             },
             "additionalProperties": false,
@@ -617,6 +617,9 @@
             },
             "authorization_parameters": {
               "$ref": "#/$defs/__schema49"
+            },
+            "client_config_hint_generator": {
+              "$ref": "#/$defs/__schema50"
             }
           },
           "required": [
@@ -1042,10 +1045,17 @@
     },
     "__schema50": {
       "type": "string",
+      "enum": [
+        "slack_app_create_link"
+      ],
+      "description": "A Reef helper that writes help below the client ID field, such as a link that creates the OAuth application."
+    },
+    "__schema51": {
+      "type": "string",
       "maxLength": 1024,
       "pattern": "^#\\/(?:servers|(?:paths|components\\/pathItems)\\/.+\\/servers)$"
     },
-    "__schema51": {
+    "__schema52": {
       "type": "object",
       "properties": {
         "base_url": {
@@ -1057,7 +1067,7 @@
       ],
       "additionalProperties": false
     },
-    "__schema52": {
+    "__schema53": {
       "type": "object",
       "properties": {
         "declared_url": {
@@ -1093,7 +1103,7 @@
                     "$ref": "#/$defs/__schema0"
                   },
                   "values": {
-                    "$ref": "#/$defs/__schema53"
+                    "$ref": "#/$defs/__schema54"
                   }
                 },
                 "required": [
@@ -1112,7 +1122,7 @@
       ],
       "additionalProperties": false
     },
-    "__schema53": {
+    "__schema54": {
       "type": "object",
       "propertyNames": {
         "$ref": "#/$defs/__schema8"
@@ -1123,7 +1133,7 @@
       "minProperties": 1,
       "maxProperties": 100
     },
-    "__schema54": {
+    "__schema55": {
       "type": "string",
       "minLength": 1,
       "maxLength": 256,
@@ -1150,13 +1160,13 @@
       },
       "$ref": "#/$defs/__schema24"
     },
-    "__schema55": {
+    "__schema56": {
       "$ref": "#/$defs/__schema1"
     },
-    "__schema56": {
+    "__schema57": {
       "$ref": "#/$defs/__schema2"
     },
-    "__schema57": {
+    "__schema58": {
       "$ref": "#/$defs/__schema7"
     }
   },

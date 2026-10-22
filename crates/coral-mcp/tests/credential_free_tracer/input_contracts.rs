@@ -420,14 +420,29 @@ async fn check_identities(session: &RawSession, task: &str, tools: &[Value]) {
             let Some(schema) = tool.pointer(&format!("/inputSchema/properties/{field}")) else {
                 continue;
             };
-            assert_eq!(schema["format"], "uuid", "{name}.{field}");
+            assert_eq!(
+                schema["pattern"],
+                coral_identifier::SCHEMA_PATTERN,
+                "{name}.{field}"
+            );
             let validator = validator(schema);
-            assert!(validator.is_valid(&json!(canonical)));
-            // Standard UUID format permits uppercase; canonical lowercase is domain-owned.
-            assert!(validator.is_valid(&json!(canonical.to_uppercase())));
+            // Four or five words, the shapes Coral accepts, or the UUID of an
+            // identifier issued before Coral used words.
+            for valid in [
+                "height-word-database-library",
+                "small-title-work-image-power",
+                canonical,
+            ] {
+                assert!(validator.is_valid(&json!(valid)), "{name}.{field}: {valid}");
+            }
             assert!(!validator.is_valid(&Value::Null));
             for invalid in [
-                "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx".to_string(),
+                "height-word-database".to_string(),
+                "Height-word-database-library".to_string(),
+                "height-word-database-library-power-table".to_string(),
+                "abcdefghijklmnopqrstu-word-database-library".to_string(),
+                "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxx1".to_string(),
+                canonical.to_uppercase(),
                 canonical.replace('-', ""),
             ] {
                 assert!(

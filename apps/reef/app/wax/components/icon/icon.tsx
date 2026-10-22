@@ -4,7 +4,7 @@ import { icons } from 'lucide-react'
 import { customIcons, isCustomIcon } from '@/wax/components/icon/custom-icons/custom-icons'
 import type { CustomIconName } from '@/wax/components/icon/custom-icons/custom-icons'
 
-import { iconContainer } from './icon.css'
+import { iconContainer, plate } from './icon.css'
 import type { IconContainerVariants } from './icon.css'
 
 export type IconColor = NonNullable<IconContainerVariants>['color']
@@ -24,6 +24,17 @@ export function Icon({ className, color = 'primary', name, size = '20' }: IconPr
   return (
     <span className={classnames(iconContainer({ color, size }), className)}>
       <IconComponent color="currentColor" size={Number(size)} />
+    </span>
+  )
+}
+
+export type IconPlateTone = keyof typeof plate
+
+/** An icon on a tinted plate, coloured like the pill that names the same state. */
+export function IconPlate({ name, tone }: { name: IconName; tone: IconPlateTone }) {
+  return (
+    <span className={plate[tone]}>
+      <Icon name={name} color="inherit" size="18" />
     </span>
   )
 }

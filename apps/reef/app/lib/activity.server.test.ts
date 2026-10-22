@@ -11,6 +11,7 @@ import {
   ActivityRunState,
   ActivityInvocationState,
   ActivityInvocationOutcome,
+  ActivityLogLevel,
 } from '@/generated/coral/management/v1/activity_pb'
 import { AccountConnectionState } from '@/generated/coral/management/v1/account_pb'
 import { fakeManagement, type ManagementHandlers } from './management.test-support'
@@ -76,6 +77,21 @@ const operation = {
   callPath: 'mail.send',
   state: ActivityInvocationState.PENDING,
   requiresAction: true,
+}
+// A source location as Coral sends it on an operation, an emission or a log.
+type StoredLocation = {
+  document:
+    | { case: 'program'; value: Record<string, never> }
+    | { case: 'savedFunction'; value: string }
+    | { case: undefined; value?: undefined }
+  line: number
+  column: number
+}
+const linkedSnapshot = `${workspace}/savedFunctions/00000000-0000-4000-8000-000000000009`
+const inSnapshot: StoredLocation = {
+  document: { case: 'savedFunction', value: linkedSnapshot },
+  line: 2,
+  column: 11,
 }
 // Each builder serves one Coral read. A test composes the reads its load makes;
 // any other read fails as unimplemented.
@@ -189,7 +205,8 @@ function lostAuthority(): Handlers {
 function taskDetail(
   options: AgentOption & {
     feedback?: string
-    taskUnavailable?: boolean
+    /** Refuse the Task read, with this code or NotFound. */
+    taskUnavailable?: boolean | Code
     contextImpact?: boolean
     outOfWindow?: boolean
   } = {},
@@ -197,7 +214,11 @@ function taskDetail(
   return {
     activity: {
       inspectTask: (input) => {
-        if (options.taskUnavailable && input.name === task) refuse('task unavailable')
+        if (options.taskUnavailable && input.name === task)
+          refuse(
+            'task unavailable',
+            options.taskUnavailable === true ? Code.NotFound : options.taskUnavailable,
+          )
         if (options.agentRun && input.scope && input.scope.agent !== agent)
           refuse('outside Agent scope')
         return {
@@ -328,6 +349,7 @@ function runEntries(
     endedEvent?: boolean
     contextImpact?: boolean
     completedEntries?: boolean
+    location?: StoredLocation
   } = {},
 ): Handlers {
   return {
@@ -384,6 +406,7 @@ function runEntries(
                     value: {
                       ...operation,
                       contextImpactBytes: options.contextImpact ? -150000n : undefined,
+                      sourceLocation: options.location,
                     },
                   },
                 },
@@ -395,6 +418,7 @@ function runEntries(
                       kind: options.contextImpact ? 'run.ended' : 'program.emitted',
                       contextImpactBytes: options.contextImpact ? 2000n : undefined,
                       occurredAtUnixNanos: 3_000_000_000n,
+                      sourceLocation: options.location,
                     },
                   },
                 },
@@ -410,7 +434,7 @@ function runEntries(
 
 function runDetail(
   options: AgentOption & {
-    runDetailUnavailable?: boolean
+    runDetailUnavailable?: boolean | Code
     resolved?: boolean
     retainedConnection?: boolean
     noFinalValue?: boolean
@@ -419,7 +443,11 @@ function runDetail(
   return {
     activity: {
       inspectRun: (input) => {
-        if (options.runDetailUnavailable) refuse('run unavailable')
+        if (options.runDetailUnavailable)
+          refuse(
+            'run unavailable',
+            options.runDetailUnavailable === true ? Code.NotFound : options.runDetailUnavailable,
+          )
         return {
           run: {
             ...execution,
@@ -427,7 +455,8 @@ function runDetail(
             actionPage: {
               actions: options.resolved || input.actionAfter ? [] : execution.actionPage.actions,
               total: options.resolved ? 0n : 1n,
-              nextAction: options.resolved || input.actionAfter ? '' : 'action-cursor',
+              // One page holds up to 100 pending actions, so one action has no next page.
+              nextAction: '',
             },
           },
           accountConnection:
@@ -456,43 +485,81 @@ function runDetail(
   }
 }
 
-function runEvent(options: AgentOption & { endedEvent?: boolean } = {}): Handlers {
+function runEvent(
+  options: AgentOption & {
+    endedEvent?: boolean
+    logged?: boolean
+    location?: StoredLocation
+    eventUnavailable?: Code
+  } = {},
+): Handlers {
   return {
     activity: {
-      inspectRunEvent: (input) => ({
-        contextImpactBytes: options.endedEvent ? 4n : undefined,
-        run: { ...execution, agent: agentOf(options) },
-        event: {
-          sequence: input.sequence,
-          occurredAtUnixNanos: 3_000_000_000n,
-          payload: options.endedEvent
-            ? { case: 'ended', value: { state: ActivityRunState.SUCCEEDED } }
-            : { case: 'programEmitted', value: { valueJson: '{"invoices":24}' } },
-        },
-      }),
+      inspectRunEvent: (input) => {
+        if (options.eventUnavailable) refuse('event unavailable', options.eventUnavailable)
+        return {
+          contextImpactBytes: options.endedEvent ? 4n : undefined,
+          run: { ...execution, agent: agentOf(options) },
+          event: {
+            sequence: input.sequence,
+            occurredAtUnixNanos: 3_000_000_000n,
+            payload: options.endedEvent
+              ? { case: 'ended', value: { state: ActivityRunState.SUCCEEDED } }
+              : options.logged
+                ? {
+                    case: 'programLogged',
+                    value: { level: ActivityLogLevel.INFO, message: 'sent 24 reminders' },
+                  }
+                : { case: 'programEmitted', value: { valueJson: '{"invoices":24}' } },
+            sourceLocation: options.location,
+          },
+        }
+      },
     },
   }
 }
 
-function invocationDetail(options: AgentOption & { resolved?: boolean } = {}): Handlers {
+function invocationDetail(
+  options: AgentOption & {
+    resolved?: boolean
+    /** No pending approval: selecting it never triggers the initial-request lookup. */
+    ordinary?: boolean
+    /** Retains a shared account connection request instead of an approval. */
+    connection?: boolean
+    location?: StoredLocation
+    invocationUnavailable?: Code
+  } = {},
+): Handlers {
   return {
     activity: {
-      inspectInvocation: () => ({
-        invocation: {
-          ...operation,
-          agent: agentOf(options),
-          state: options.resolved ? ActivityInvocationState.ENDED : ActivityInvocationState.PENDING,
-          outcome: options.resolved ? ActivityInvocationOutcome.UPSTREAM_OUTCOME : undefined,
-        },
-        argumentsJson: '{"to":"private@example.com"}',
-        outcome: options.resolved
-          ? {
-              case: 'upstreamOutcomeJson',
-              value: '{"status":404,"data":null,"metadata":{"kind":"http"}}',
-            }
-          : undefined,
-        requests: [{ request: { case: 'approval', value: approval } }],
-      }),
+      inspectInvocation: () => {
+        if (options.invocationUnavailable)
+          refuse('operation unavailable', options.invocationUnavailable)
+        return {
+          invocation: {
+            ...operation,
+            agent: agentOf(options),
+            state: options.resolved
+              ? ActivityInvocationState.ENDED
+              : ActivityInvocationState.PENDING,
+            outcome: options.resolved ? ActivityInvocationOutcome.UPSTREAM_OUTCOME : undefined,
+            requiresAction: !options.ordinary,
+            sourceLocation: options.location,
+          },
+          argumentsJson: '{"to":"private@example.com"}',
+          outcome: options.resolved
+            ? {
+                case: 'upstreamOutcomeJson',
+                value: '{"status":404,"data":null,"metadata":{"kind":"http"}}',
+              }
+            : undefined,
+          requests: options.connection
+            ? [{ request: { case: 'accountConnection', value: connection } }]
+            : options.ordinary
+              ? []
+              : [{ request: { case: 'approval', value: approval } }],
+        }
+      },
     },
   }
 }
@@ -615,6 +682,7 @@ describe('hierarchical activity through the private server interface', () => {
       runEntries(),
       invocationDetail(),
       approvalDetail({ wrongApprovalInvocation: true }),
+      runDetail(),
     )
     const page = await loadActivity(request({ record: invocation, request: approval }), api, {
       scope,
@@ -713,20 +781,16 @@ describe('hierarchical activity through the private server interface', () => {
       )
     }
   })
-  it('continues the selected Run action window without discarding an independently authorized review', async () => {
+  it('opens an exact review beside the Run with one read of its first page of actions', async () => {
     const { api, calls } = coral(list(), ...reviewReads())
-    const page = await loadActivity(
-      request({ record: run, request: approval, actionsAfter: 'action-cursor' }),
-      api,
-      { scope },
-    )
-    expect(calls.find((call) => call.method === 'run')?.input).toMatchObject({
-      name: run,
-      actionAfter: 'action-cursor',
-    })
+    const page = await loadActivity(request({ record: run, request: approval }), api, { scope })
+    // Without a "More actions" cursor, the review reads the Run once, at its first page.
+    expect(calls.filter((call) => call.method === 'run').map((call) => call.input)).toEqual([
+      expect.objectContaining({ name: run, actionAfter: '' }),
+    ])
     expect(page.detail).toMatchObject({
       kind: 'invocation',
-      context: { run: { actionPage: { actions: [], total: '1', next: '' } } },
+      context: { run: { actionPage: { total: '1', next: '' } } },
       request: { name: approval, arguments: '{"to":"private@example.com"}' },
     })
   })
@@ -823,6 +887,7 @@ describe('hierarchical activity through the private server interface', () => {
         taskDetail(),
         runEntries({ endedEvent: true }),
         runEvent({ endedEvent: true }),
+        runDetail(),
       )
       const input = request({
         record: name,
@@ -929,7 +994,8 @@ describe('hierarchical activity through the private server interface', () => {
       after: '',
       anchor: task,
     })
-    expect(calls.find((call) => call.method === 'task')?.input).toMatchObject({
+    // The approval review also reads its Task once for the intent; the branch read is last.
+    expect(calls.findLast((call) => call.method === 'task')?.input).toMatchObject({
       viewport: { offset: 125n, anchor: interaction, preceding: 25 },
       pageSize: ACTIVITY_CHILD_WINDOW,
     })
@@ -1087,8 +1153,80 @@ describe('hierarchical activity through the private server interface', () => {
     await loadActivity(request({ expand: run, tree: '1' }), api, { scope })
     expect(loaded(calls, ...DETAIL_OR_CHILD)).toBe(0)
   })
+  it.each([
+    ['from its Run', run, false, goal.intent],
+    ['from its operation', invocation, false, goal.intent],
+    // An unavailable Task leaves the intent out, not the review.
+    ['from its operation, with its Task unavailable', invocation, true, undefined],
+  ])(
+    'reviews an approval selected %s with the intent of the Task that owns the Run',
+    async (_label, record, taskUnavailable, taskIntent) => {
+      const { api, calls } = coral(
+        list(),
+        runDetail(),
+        invocationDetail(),
+        approvalDetail(),
+        taskDetail({ taskUnavailable }),
+      )
+      const page = await loadActivity(request({ record, request: approval, tree: '1' }), api, {
+        scope,
+      })
+      expect(page.detail).toMatchObject({
+        kind: 'invocation',
+        requestUnavailable: false,
+        request: { name: approval },
+      })
+      const review = page.detail?.kind === 'invocation' ? page.detail.request : null
+      expect(review?.kind === 'approval' && review.taskIntent).toBe(taskIntent ?? undefined)
+      expect(calls.find((call) => call.method === 'task')?.input).toMatchObject({ name: task })
+    },
+  )
+  // Catches: an optional Task read that fails the whole approval on a passing fault, or that
+  // hides an expired session, a refused request or a cancelled load behind a readable review.
+  it.each([
+    { label: 'unavailable', code: Code.Unavailable, readable: true },
+    { label: 'failing inside Coral', code: Code.Internal, readable: true },
+    { label: 'refused for your session', code: Code.Unauthenticated, readable: false },
+    { label: 'refused as invalid', code: Code.InvalidArgument, readable: false },
+    // An aborted load reaches Reef as Canceled.
+    { label: 'cancelled with the load', code: Code.Canceled, readable: false },
+  ])(
+    'with its Task read $label, keeps the approval review readable: $readable',
+    async ({ code, readable }) => {
+      const { api } = coral(
+        list(),
+        runDetail(),
+        invocationDetail(),
+        approvalDetail(),
+        taskDetail({ taskUnavailable: code }),
+      )
+      const load = loadActivity(
+        request({ record: invocation, request: approval, tree: '1' }),
+        api,
+        { scope },
+      )
+      if (!readable) {
+        await expect(load).rejects.toMatchObject({ code })
+        return
+      }
+      const page = await load
+      expect(page.detail).toMatchObject({
+        kind: 'invocation',
+        requestUnavailable: false,
+        request: { kind: 'approval', name: approval, arguments: expect.any(String) },
+      })
+      const review = page.detail?.kind === 'invocation' ? page.detail.request : null
+      expect(review && 'taskIntent' in review).toBe(false)
+    },
+  )
   it('keeps exact operation detail selected outside the list and opens only its own approval', async () => {
-    const { api, calls } = coral(list(), runDetail(), invocationDetail(), approvalDetail())
+    const { api, calls } = coral(
+      list(),
+      runDetail(),
+      invocationDetail(),
+      approvalDetail(),
+      taskDetail(),
+    )
     const page = await loadActivity(request({ record: invocation, tree: '1' }), api, { scope })
     expect(page.detail).toMatchObject({
       kind: 'invocation',
@@ -1208,7 +1346,7 @@ describe('hierarchical activity through the private server interface', () => {
     })
   })
   it('direct output links reveal and seek both the task and execution ancestors', async () => {
-    const { api, calls } = coral(list(), taskDetail(), runEntries(), runEvent())
+    const { api, calls } = coral(list(), taskDetail(), runEntries(), runEvent(), runDetail())
     const page = await loadActivity(request({ record: `${run}/events/3` }), api, { scope })
     expect(page.expanded).toEqual([task, run])
     expect(page.branches[task].rows[0].name).toBe(run)
@@ -1229,23 +1367,227 @@ describe('hierarchical activity through the private server interface', () => {
         [`anchor.${task}`]: run,
         [`anchor.${run}`]: `${run}/events/3`,
       }),
-      coral(list(), taskDetail(), runEntries(), runEvent()).api,
+      coral(list(), taskDetail(), runEntries(), runEvent(), runDetail()).api,
       { scope },
     )
     expect(page.anchors).toEqual({ [task]: run, [run]: `${run}/events/3` })
   })
-  it('reads one exact emission without preloading other events or source', async () => {
-    const { api, calls } = coral(list(), runEvent())
+  it('reads one exact emission, with its parent Run’s authorized accepted-source context', async () => {
+    const { api, calls } = coral(list(), runEvent(), runDetail())
     const page = await loadActivity(request({ record: `${run}/events/3`, tree: '1' }), api, {
       scope,
     })
     expect(page.detail).toMatchObject({
       kind: 'output',
       event: { kind: 'program.emitted', value: '{"invoices":24}' },
+      context: { kind: 'run', source: 'return secretSource;' },
     })
     expect(loaded(calls, 'event')).toBe(1)
-    expect(loaded(calls, 'task', 'entries', 'run', 'operation')).toBe(0)
-    expect(JSON.stringify(page)).not.toContain('secretSource')
+    expect(loaded(calls, 'run')).toBe(1)
+    expect(loaded(calls, 'task', 'entries', 'operation')).toBe(0)
+  })
+  // Catches: a location Coral stored lost, or mistranslated, on one of the reads that carry it.
+  it.each<[string, Handlers[], Parameters<typeof request>[0], (page: ActivityPage) => unknown[]]>([
+    [
+      'a selected operation',
+      [invocationDetail({ resolved: true, ordinary: true, location: inSnapshot }), runDetail()],
+      { record: invocation },
+      (page) => [page.selectedRow, page.detail?.kind === 'invocation' && page.detail.invocation],
+    ],
+    [
+      'a selected emission',
+      [runEvent({ location: inSnapshot }), runDetail()],
+      { record: `${run}/events/3` },
+      (page) => [page.selectedRow],
+    ],
+    [
+      'an expanded Run’s operation and emission',
+      [taskDetail(), runEntries({ location: inSnapshot })],
+      { expand: [task, run] },
+      (page) => page.branches[run]!.rows,
+    ],
+  ])('keeps the source location Coral stored for %s', async (_, reads, query, records) => {
+    const { api } = coral(list(), ...reads)
+    const page = await loadActivity(request({ ...query, tree: '1' }), api, { scope })
+    const shown = records(page)
+    expect(shown.length).toBeGreaterThan(0)
+    for (const record of shown)
+      expect(record).toMatchObject({
+        sourceLocation: {
+          document: { kind: 'saved_function', savedFunction: linkedSnapshot },
+          line: 2,
+          column: 11,
+        },
+      })
+  })
+  // Catches: an unknown document kind or a record without a location gaining a guessed one.
+  it.each<[string, StoredLocation | undefined, unknown]>([
+    [
+      'the accepted program',
+      { document: { case: 'program', value: {} }, line: 3, column: 9 },
+      { document: { kind: 'program' }, line: 3, column: 9 },
+    ],
+    [
+      'a document kind this client does not know',
+      { document: { case: undefined }, line: 3, column: 9 },
+      undefined,
+    ],
+    ['no location', undefined, undefined],
+  ])('reads an operation located in %s', async (_, location, expected) => {
+    const { api } = coral(
+      list(),
+      invocationDetail({ resolved: true, ordinary: true, location }),
+      runDetail(),
+    )
+    const page = await loadActivity(request({ record: invocation, tree: '1' }), api, { scope })
+    expect(page.selectedRow?.kind === 'invocation' && page.selectedRow.sourceLocation).toEqual(
+      expected,
+    )
+  })
+  // Catches: an optional Run read that takes the selected record down on a passing fault, or
+  // that hides an expired session, a refused request or a cancelled load behind the record.
+  const selections = [
+    {
+      selected: 'an operation',
+      reads: (code?: Code) => [
+        invocationDetail({ resolved: true, ordinary: true, invocationUnavailable: code }),
+      ],
+      record: invocation,
+      shown: { kind: 'invocation', invocation: { name: invocation } },
+    },
+    {
+      selected: 'a log',
+      reads: (code?: Code) => [runEvent({ logged: true, eventUnavailable: code })],
+      record: `${run}/events/3`,
+      shown: { kind: 'output', event: { kind: 'program.logged', message: 'sent 24 reminders' } },
+    },
+    {
+      selected: 'an emission',
+      reads: (code?: Code) => [runEvent({ eventUnavailable: code })],
+      record: `${run}/events/3`,
+      shown: { kind: 'output', event: { kind: 'program.emitted', value: '{"invoices":24}' } },
+    },
+  ]
+  const outcomes = [
+    { label: 'unavailable', code: Code.Unavailable, readable: true },
+    { label: 'failing inside Coral', code: Code.Internal, readable: true },
+    { label: 'not found', code: Code.NotFound, readable: true },
+    { label: 'refused to you', code: Code.PermissionDenied, readable: true },
+    { label: 'refused for your session', code: Code.Unauthenticated, readable: false },
+    { label: 'refused as invalid', code: Code.InvalidArgument, readable: false },
+    // An aborted load reaches Reef as Canceled.
+    { label: 'cancelled with the load', code: Code.Canceled, readable: false },
+  ]
+  const withRunRead = (readable: boolean) =>
+    selections.flatMap((selection) =>
+      outcomes
+        .filter((outcome) => outcome.readable === readable)
+        .map((outcome) => ({ ...selection, ...outcome })),
+    )
+  it.each(withRunRead(true))(
+    'keeps $selected readable without its source when its Run read is $label',
+    async ({ reads, record, shown, code }) => {
+      const { api } = coral(list(), ...reads(), runDetail({ runDetailUnavailable: code }))
+      const page = await loadActivity(request({ record, tree: '1' }), api, { scope })
+      expect(page.unavailable).toBe(false)
+      expect(page.detail).toMatchObject(shown)
+      expect(page.detail).not.toHaveProperty('context')
+    },
+  )
+  it.each(withRunRead(false))(
+    'fails the load of $selected when its Run read is $label',
+    async ({ reads, record, code }) => {
+      const { api } = coral(list(), ...reads(), runDetail({ runDetailUnavailable: code }))
+      await expect(
+        loadActivity(request({ record, tree: '1' }), api, { scope }),
+      ).rejects.toMatchObject({ code })
+    },
+  )
+  // Catches: the Run's fallback swallowing a failure of the selected record's own read.
+  it.each(
+    selections.flatMap((selection) =>
+      [Code.Unavailable, Code.Internal, Code.Unauthenticated].map((code) => ({
+        ...selection,
+        code,
+      })),
+    ),
+  )(
+    'fails the load when $selected itself fails to load with code $code',
+    async ({ reads, record, code }) => {
+      const { api } = coral(list(), ...reads(code), runDetail())
+      await expect(
+        loadActivity(request({ record, tree: '1' }), api, { scope }),
+      ).rejects.toMatchObject({ code })
+    },
+  )
+  it('authorizes an ordinary operation selection’s parent Run source the same way, not only an approval review', async () => {
+    const { api, calls } = coral(
+      list(),
+      invocationDetail({ resolved: true, ordinary: true }),
+      runDetail(),
+    )
+    const page = await loadActivity(request({ record: invocation, tree: '1' }), api, { scope })
+    expect(page.detail).toMatchObject({
+      kind: 'invocation',
+      context: { kind: 'run', source: 'return secretSource;' },
+    })
+    expect(loaded(calls, 'run')).toBe(1)
+  })
+  // Catches: a request in the query skipping the Run's source, so the drawer lost it.
+  it.each<[string, Handlers[], string, Partial<ActivityPage['detail']>]>([
+    [
+      'an unknown request',
+      [invocationDetail({ resolved: true, ordinary: true })],
+      'bogus',
+      { requestUnavailable: true },
+    ],
+    [
+      'a concealed approval',
+      [invocationDetail(), approvalDetail({ hiddenRequest: true })],
+      approval,
+      { requestUnavailable: true },
+    ],
+    [
+      'an approval for another operation',
+      [invocationDetail(), approvalDetail({ wrongApprovalInvocation: true })],
+      approval,
+      { requestUnavailable: true },
+    ],
+    [
+      'an account connection',
+      [invocationDetail({ connection: true }), connectionRequest()],
+      connection,
+      { request: { kind: 'account_connection' } },
+    ],
+  ] as never)(
+    'keeps the parent Run’s source for an operation selected with %s',
+    async (_, handlers, selected, expected) => {
+      const { api, calls } = coral(list(), runDetail(), ...handlers)
+      const page = await loadActivity(
+        request({ record: invocation, request: selected, tree: '1' }),
+        api,
+        { scope },
+      )
+      expect(page.unavailable).toBe(false)
+      expect(page.detail).toMatchObject({
+        kind: 'invocation',
+        invocation: { name: invocation },
+        context: { kind: 'run', source: 'return secretSource;' },
+        ...expected,
+      })
+      expect(loaded(calls, 'run')).toBeGreaterThanOrEqual(1)
+    },
+  )
+  it('does not re-read the parent Run when the selection is already under approval review', async () => {
+    const { api, calls } = coral(
+      list(),
+      runDetail(),
+      invocationDetail(),
+      approvalDetail(),
+      taskDetail(),
+    )
+    await loadActivity(request({ record: invocation, tree: '1' }), api, { scope })
+    expect(loaded(calls, 'run')).toBe(1)
   })
   it('keeps the final value and original intent on the expanded exec row', async () => {
     const page = await loadActivity(
@@ -1295,6 +1637,7 @@ describe('hierarchical activity through the private server interface', () => {
         runDetail({ resolved: true }),
         invocationDetail({ resolved: true }),
         approvalDetail({ resolved: true }),
+        taskDetail(),
       ).api,
       { scope },
     )
@@ -1312,6 +1655,7 @@ describe('hierarchical activity through the private server interface', () => {
       runDetail({ resolved: true }),
       invocationDetail({ resolved: true }),
       approvalDetail({ resolved: true }),
+      taskDetail(),
     )
     const page = await loadActivity(
       request({ record: invocation, request: approval, tree: '1' }),
@@ -1327,7 +1671,7 @@ describe('hierarchical activity through the private server interface', () => {
   it('conceals an unavailable request without discarding authorized operation evidence', async () => {
     const page = await loadActivity(
       request({ record: invocation, request: approval, tree: '1' }),
-      coral(list(), invocationDetail(), approvalDetail({ hiddenRequest: true })).api,
+      coral(list(), invocationDetail(), approvalDetail({ hiddenRequest: true }), runDetail()).api,
       { scope },
     )
     expect(page.detail).toMatchObject({
@@ -1339,7 +1683,13 @@ describe('hierarchical activity through the private server interface', () => {
   it('independently authorizes exact detail when the list scope is unavailable', async () => {
     const page = await loadActivity(
       request({ record: invocation, tree: '1' }),
-      coral(list({ listConcealed: true }), runDetail(), invocationDetail(), approvalDetail()).api,
+      coral(
+        list({ listConcealed: true }),
+        runDetail(),
+        invocationDetail(),
+        approvalDetail(),
+        taskDetail(),
+      ).api,
       { scope: { workspace, agent } },
     )
     expect(page.listUnavailable).toBe(true)
@@ -1396,6 +1746,43 @@ describe('hierarchical activity through the private server interface', () => {
     })
     expect(other).toMatchObject({ detail: null, selectedRow: null, unavailable: true })
     expect(JSON.stringify(other)).not.toContain('private@example.com')
+  })
+  // A Run identifier is four or five words, or the UUID of a Run from before
+  // Coral named Runs with words. The stable link accepts both shapes.
+  it.each([
+    'height-word-database-library',
+    'small-title-work-image-power',
+    '00000000-0000-4000-8000-000000000099',
+  ])('asks Coral about the Run named %s', async (id) => {
+    const { api, calls } = coral(list(), runDetail())
+    await loadRunActivity(request({ record: task, tree: '1' }), api, {
+      workspace: workspace.split('/')[1],
+      run: id,
+    })
+    const asked = calls.some((call) =>
+      JSON.stringify(call.input, (_key, value: unknown) =>
+        typeof value === 'bigint' ? value.toString() : value,
+      ).includes(id),
+    )
+    expect(asked).toBe(true)
+  })
+  it.each([
+    'height-word-database',
+    'height-word-database-library-power-title',
+    'Height-word-database-library',
+    'height-word-database-librar1',
+    'abcdefghijklmnopqrstu-word-database-library',
+    '00000000-0000-4000-8000-00000000009',
+    '../runs/height-word-database-library',
+  ])('rejects the Run name %s before asking Coral', async (id) => {
+    const { api, calls } = coral(list(), runDetail())
+    expect(() =>
+      loadRunActivity(request({ record: task, tree: '1' }), api, {
+        workspace: workspace.split('/')[1],
+        run: id,
+      }),
+    ).toThrow(expect.objectContaining({ status: 404 }))
+    expect(calls).toEqual([])
   })
   it('reveals an authorized Agent Run from its stable link in Agent history, not personal history', async () => {
     const { api } = coral(
@@ -1511,5 +1898,252 @@ describe('links from before continuous loading', () => {
     const page = await loadActivity(request({ after: neighbor, load: 'page' }), api, { scope })
     expect(page.rows.map((row) => row.name)).toEqual([task, neighbor])
     expect(calls.find((call) => call.method === 'roots')?.input).toMatchObject({ after: neighbor })
+  })
+})
+
+// Pending actions as Coral pages them, for the selected Run.
+const approvalAt = (index: number) => ({
+  request: {
+    request: { case: 'approval' as const, value: `${workspace}/approvals/action-${index}` },
+  },
+  callPath: `coral.providers.mail.send${index}`,
+  providerLabel: 'Mail',
+  deadlineAtUnixNanos: 902_000_000_000n,
+})
+const connectionAt = (index: number) => ({
+  request: {
+    request: {
+      case: 'accountConnection' as const,
+      value: `${workspace}/accountConnections/action-${index}`,
+    },
+  },
+  callPath: '',
+  providerLabel: 'Linear',
+  deadlineAtUnixNanos: 902_000_000_000n,
+})
+const range = (from: number, to: number) =>
+  Array.from({ length: to - from }, (_, offset) => from + offset)
+/** Coral's action pages for the Run, keyed by the cursor that reads each; `fail` refuses one. */
+function pagedRun(
+  pages: Record<string, { actions: ReturnType<typeof approvalAt>[]; next: string }>,
+  total: bigint,
+  fail?: string,
+): Handlers {
+  return {
+    activity: {
+      inspectRun: (input) => {
+        if (input.actionAfter === fail) refuse('action page unavailable', Code.Unavailable)
+        const page = pages[input.actionAfter ?? '']
+        return {
+          run: {
+            ...execution,
+            actionPage: { actions: page.actions, total, nextAction: page.next },
+          },
+          submittedSource: 'return null;',
+          linkedFunctions: [],
+          events: [],
+        }
+      },
+    },
+  }
+}
+const names = (page: ActivityPage) =>
+  page.detail?.kind === 'run' ? page.detail.run.actionPage!.actions.map((item) => item.name) : []
+/** The action cursor and Event window of each Run read. */
+const runReads = (calls: { method: string; input: unknown }[]) =>
+  calls
+    .filter((call) => call.method === 'run')
+    .map((call) => {
+      const { actionAfter, pageSize } = call.input as { actionAfter: string; pageSize: number }
+      return { actionAfter, pageSize }
+    })
+describe('the pending actions of the selected Run', () => {
+  // Two full pages of 100, approvals and connections mixed, then a short one.
+  const pages = {
+    '': { actions: range(0, 100).map(approvalAt), next: 'cursor-1' },
+    'cursor-1': {
+      actions: range(100, 200).map((index) =>
+        index % 3 ? approvalAt(index) : connectionAt(index),
+      ),
+      next: 'cursor-2',
+    },
+    'cursor-2': { actions: [approvalAt(200), approvalAt(201)], next: '' },
+  } as Record<string, { actions: ReturnType<typeof approvalAt>[]; next: string }>
+
+  // Catches: a load that walks every page of a Run's actions.
+  it.each([
+    ['no action', 0],
+    ['one action', 1],
+    ['five actions', 5],
+    ['six actions', 6],
+    ['many actions', 202],
+  ])('reads only the first page for %s', async (_, total) => {
+    const first = total > 100 ? pages[''] : { actions: range(0, total).map(approvalAt), next: '' }
+    const { api, calls } = coral(list(), taskDetail(), pagedRun({ '': first }, BigInt(total)))
+    const page = await loadActivity(request({ record: run }), api, { scope })
+    // One read, at the first page, with the smallest Event window Coral accepts.
+    expect(runReads(calls)).toEqual([{ actionAfter: '', pageSize: 1 }])
+    expect(names(page)).toEqual(first.actions.map((item) => item.request.request.value))
+    expect(page.detail).toMatchObject({
+      kind: 'run',
+      run: { actionPage: { total: String(total), next: first.next } },
+    })
+    const actionPage = page.detail?.kind === 'run' ? page.detail.run.actionPage! : undefined
+    expect(actionPage?.incomplete).toBeFalsy()
+    expect(actionPage?.after).toBeUndefined()
+  })
+
+  // Catches: a "More actions" link that reads every later page, or none.
+  it('reads the one later page that an explicit "More actions" link asks for', async () => {
+    const { api, calls } = coral(list(), taskDetail(), pagedRun(pages, 202n))
+    const page = await loadActivity(request({ record: run, actionsAfter: 'cursor-1' }), api, {
+      scope,
+    })
+    expect(runReads(calls)).toEqual([
+      { actionAfter: '', pageSize: 1 },
+      { actionAfter: 'cursor-1', pageSize: 1 },
+    ])
+    expect(names(page)).toEqual(pages['cursor-1'].actions.map((item) => item.request.request.value))
+    expect(page.detail).toMatchObject({
+      kind: 'run',
+      run: { actionPage: { total: '202', next: 'cursor-2', after: 'cursor-1' } },
+    })
+    // A later page does not open its first connection for you.
+    expect(page.initialRequest).toBeUndefined()
+  })
+
+  // Catches: a failed later page that empties the list, or claims it is whole.
+  it('keeps the first page and says the list is incomplete when the later page fails', async () => {
+    const { api, calls } = coral(list(), taskDetail(), pagedRun(pages, 202n, 'cursor-1'))
+    const page = await loadActivity(request({ record: run, actionsAfter: 'cursor-1' }), api, {
+      scope,
+    })
+    expect(runReads(calls)).toHaveLength(2)
+    expect(names(page)).toEqual(pages[''].actions.map((item) => item.request.request.value))
+    expect(page.detail).toMatchObject({
+      kind: 'run',
+      run: { actionPage: { total: '202', next: 'cursor-1', incomplete: true } },
+    })
+  })
+})
+
+describe('a request reviewed from a later page of the Run actions', () => {
+  // The selected approval and connection wait on the Run's second page of actions.
+  const laterPages = {
+    '': { actions: range(0, 100).map(approvalAt), next: 'cursor-1' },
+    'cursor-1': {
+      actions: [
+        {
+          request: { request: { case: 'approval' as const, value: approval } },
+          callPath: 'coral.providers.mail.send',
+          providerLabel: 'Mail',
+          deadlineAtUnixNanos: 902_000_000_000n,
+        },
+        {
+          request: { request: { case: 'accountConnection' as const, value: connection } },
+          callPath: '',
+          providerLabel: 'Linear',
+          deadlineAtUnixNanos: 902_000_000_000n,
+        },
+      ],
+      next: '',
+    },
+  } as Record<string, { actions: ReturnType<typeof approvalAt>[]; next: string }>
+  const later = laterPages['cursor-1'].actions.map((item) => item.request.request.value)
+
+  // Catches: a review that drops the page it was opened from, so its Run lists the first page
+  // under it and a connection loses its provider's name.
+  it.each([
+    ['its Run', run],
+    ['its operation', invocation],
+  ])('keeps the page an approval opened from %s', async (_label, record) => {
+    const { api, calls } = coral(
+      list(),
+      taskDetail(),
+      runEntries(),
+      invocationDetail(),
+      approvalDetail(),
+      pagedRun(laterPages, 102n),
+    )
+    const page = await loadActivity(
+      request({ record, request: approval, actionsAfter: 'cursor-1', tree: '1' }),
+      api,
+      { scope },
+    )
+    // The Run and the first page once, then the one page the link names.
+    expect(runReads(calls)).toEqual([
+      { actionAfter: '', pageSize: 1 },
+      { actionAfter: 'cursor-1', pageSize: 1 },
+    ])
+    expect(calls.filter((call) => call.method === 'approval').map((call) => call.input)).toEqual([
+      expect.objectContaining({ name: approval }),
+    ])
+    expect(page.detail).toMatchObject({
+      kind: 'invocation',
+      requestUnavailable: false,
+      request: { kind: 'approval', name: approval, run },
+      context: {
+        run: { actionPage: { total: '102', next: '', after: 'cursor-1' } },
+      },
+    })
+    const context = page.detail?.kind === 'invocation' ? page.detail.context : undefined
+    expect(context?.run.actionPage?.actions.map((item) => item.name)).toEqual(later)
+  })
+
+  it('keeps the page a connection opened from, with its provider', async () => {
+    const { api, calls } = coral(
+      list(),
+      taskDetail(),
+      runEntries(),
+      connectionRequest(),
+      pagedRun(laterPages, 102n),
+    )
+    const page = await loadActivity(
+      request({ record: run, request: connection, actionsAfter: 'cursor-1' }),
+      api,
+      { scope },
+    )
+    expect(runReads(calls)).toEqual([
+      { actionAfter: '', pageSize: 1 },
+      { actionAfter: 'cursor-1', pageSize: 1 },
+    ])
+    expect(calls.filter((call) => call.method === 'connection').map((call) => call.input)).toEqual([
+      expect.objectContaining({ name: connection }),
+    ])
+    expect(page.detail).toMatchObject({
+      kind: 'run',
+      requestUnavailable: false,
+      request: { kind: 'account_connection', name: connection },
+      run: { actionPage: { after: 'cursor-1' } },
+    })
+    const actions = page.detail?.kind === 'run' ? page.detail.run.actionPage!.actions : []
+    expect(actions.find((item) => item.name === connection)).toMatchObject({
+      kind: 'account_connection',
+      providerLabel: 'Linear',
+    })
+    // A later page never swaps in another request for the one the link names.
+    expect(page.initialRequest).toBeUndefined()
+  })
+
+  // Catches: a failed page of context that takes the exact review down with it.
+  it('keeps the review readable on the first page when its later page fails', async () => {
+    const { api } = coral(
+      list(),
+      taskDetail(),
+      runEntries(),
+      invocationDetail(),
+      approvalDetail(),
+      pagedRun(laterPages, 102n, 'cursor-1'),
+    )
+    const page = await loadActivity(
+      request({ record: run, request: approval, actionsAfter: 'cursor-1' }),
+      api,
+      { scope },
+    )
+    expect(page.detail).toMatchObject({
+      kind: 'invocation',
+      request: { kind: 'approval', name: approval },
+      context: { run: { actionPage: { next: 'cursor-1', incomplete: true } } },
+    })
   })
 })

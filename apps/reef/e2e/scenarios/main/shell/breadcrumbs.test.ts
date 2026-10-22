@@ -96,12 +96,12 @@ test('Each page has one title, and breadcrumbs lead back from nested pages', asy
       await openProviderPolicy(page, providerPath)
       await crumbs.getByRole('link', { name: 'Providers', exact: true }).click()
       await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/providers`)
-      // The provider list's toolbar titles the page. Add provider sits at the
-      // foot of the providers rail, so every tab shows it.
+      // The provider list's toolbar titles the page. Add provider ends that
+      // toolbar, so every tab shows it.
       await page.getByRole('heading', { name: 'Providers', exact: true, level: 1 }).waitFor()
       await expect.poll(titles).toEqual(['Providers'])
       await page
-        .getByRole('complementary', { name: 'installed providers', exact: true })
+        .getByRole('main')
         .getByRole('button', { name: 'Add provider', exact: true })
         .waitFor()
       expect(await topBar.getByRole('button', { name: 'Add provider', exact: true }).count()).toBe(

@@ -1,5 +1,6 @@
 //! A Run Ledger chunk as the Run Owner builds it in memory: the Events it
-//! applied and the Run-scoped row work that rides the same commit.
+//! applied, the Run-scoped row work that rides the same commit, and the
+//! termination intent and outside requests the commit records.
 
 use std::fmt;
 
@@ -7,14 +8,14 @@ use async_trait::async_trait;
 use coral_db::Transaction;
 
 use crate::invocation::{FenceBatch, FenceRequest};
-use crate::lifecycle::RunRecord;
+use crate::lifecycle::{RequestedTermination, RunRecord};
 use crate::run_repository::OwnedEvent;
 use crate::{CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, Error};
 
-use super::handle::Reply;
+use super::handle::{DecisionAnswer, Reply, RequestKey, RequestReply};
 
 /// Row work items per chunk. Each one queries the database inside the
-/// commit, so this keeps a commit from holding the Run row for too long.
+/// commit, so this keeps a commit transaction short.
 pub(crate) const CHUNK_WORK_CAP: usize = 32;
 
 /// Invocations one chunk's Dispatch Fence decides at most; a batch this
@@ -39,9 +40,24 @@ pub(crate) trait ChunkWork: Send + fmt::Debug {
         now_unix_nanos: i64,
     ) -> Result<Vec<OwnedEvent>, Error>;
 
+    /// The outside request this work records and what it recorded for it,
+    /// once [`Self::run`] returned `Ok`. `None` for the Program's own work.
+    fn take_recorded_request(&mut self) -> Option<(RequestKey, DecisionAnswer)> {
+        None
+    }
+
     /// Delivers the outcome once the chunk is recorded, or the failure that
     /// lost it before it ran or before it committed.
     fn settle(self: Box<Self>, recorded: Result<(), Error>);
+}
+
+/// One outside request a chunk records: the entity it decides, who waits
+/// for the answer, and what the chunk's work wrote for it once reported.
+#[derive(Debug)]
+pub(crate) struct PendingRequest {
+    pub(crate) key: RequestKey,
+    pub(crate) reply: RequestReply,
+    pub(crate) answer: Option<DecisionAnswer>,
 }
 
 /// One entry of a chunk, in arrival order.
@@ -69,6 +85,17 @@ pub(crate) struct ChunkBuild {
     pub(crate) fence: Option<Box<FenceBatch>>,
     /// Program requests answered once this chunk is recorded.
     pub(crate) waiters: Vec<Reply>,
+    /// The Run Ledger head the chunk is built on, set as it goes in flight;
+    /// its commit asserts it.
+    pub(crate) head: u64,
+    /// The outside requests this chunk records, by the entity each decides:
+    /// a repeat of one waits for this chunk's answer, and each requester is
+    /// answered once the chunk is recorded.
+    pub(crate) requests: Vec<PendingRequest>,
+    /// The termination intent the owner applied into this chunk, written in
+    /// its head update beside the `cancellation.requested` Event among the
+    /// items.
+    pub(crate) termination: Option<RequestedTermination>,
     /// Events the owner counted at apply time; row work adds its own inside
     /// the transaction.
     pub(crate) events: usize,
@@ -80,7 +107,16 @@ pub(crate) struct ChunkBuild {
 
 impl ChunkBuild {
     pub(crate) fn is_empty(&self) -> bool {
-        self.items.is_empty() && self.fence.is_none() && self.waiters.is_empty()
+        self.items.is_empty()
+            && self.fence.is_none()
+            && self.waiters.is_empty()
+            && self.requests.is_empty()
+            && self.termination.is_none()
+    }
+
+    /// Whether this chunk records the request `key` names.
+    pub(crate) fn records(&self, key: &RequestKey) -> bool {
+        self.requests.iter().any(|request| request.key == *key)
     }
 
     /// Adds `request` to the chunk's fence batch, opening it as one row work
@@ -130,5 +166,32 @@ impl ChunkBuild {
         self.items.push(item);
         self.events = self.events.saturating_add(events);
         self.bytes = self.bytes.saturating_add(bytes);
+    }
+}
+
+/// What a test reads off a built chunk.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct ChunkBuildView {
+    pub(crate) events: usize,
+    pub(crate) works: usize,
+    /// Invocations in the fence batch.
+    pub(crate) fenced: usize,
+    pub(crate) termination: Option<RequestedTermination>,
+}
+
+#[cfg(test)]
+impl ChunkBuildView {
+    pub(crate) fn of(chunk: &ChunkBuild) -> Self {
+        Self {
+            events: chunk
+                .items
+                .iter()
+                .filter(|item| matches!(item, ChunkItem::Event(_)))
+                .count(),
+            works: chunk.works,
+            fenced: chunk.fence.as_ref().map_or(0, |batch| batch.len()),
+            termination: chunk.termination.clone(),
+        }
     }
 }

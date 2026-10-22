@@ -190,7 +190,8 @@ pub struct Rejection {
 }
 
 /// One argument to correct. Coral writes each reason; it never holds a
-/// submitted value, upstream content or a host diagnostic.
+/// submitted value, upstream content or a host diagnostic. A field or key name
+/// the Program wrote can appear, since it says what to correct.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InputProblem {
     field: String,
@@ -317,6 +318,9 @@ pub enum Error {
     /// The Run clock could not provide safe durable time evidence.
     #[error("Program Run clock failed: {0}")]
     Clock(String),
+    /// Coral could not issue an unused Run identifier.
+    #[error("Program Run identifier could not be issued: {0}")]
+    IdentifierIssuance(String),
     /// A Program Value or cumulative output crossed its accepted limit.
     #[error("Program output exceeds its accepted limit")]
     ProgramValueTooLarge,
@@ -351,6 +355,12 @@ pub enum Error {
     /// unknown: read the Run again.
     #[error("Program Run Owner stopped before recording the request")]
     OwnerLost,
+    /// The Run is nonterminal and no Run Owner for it lives in this process:
+    /// its lease is held by another process (a rolling update), or lapsed
+    /// and not yet swept. Nothing was written; the request may be retried,
+    /// and once the Run is terminal it is answered from the durable record.
+    #[error("Program Run has no live owner in this process")]
+    OwnedElsewhere,
     /// A fatal Program host failure stopped execution for recovery.
     #[error("Program host terminated execution")]
     ProgramHostTerminated,
@@ -500,6 +510,7 @@ mod tests {
         }
         assert!(!Error::RunNotFound.is_operational());
         assert!(!Error::ClaimMismatch.is_operational());
+        assert!(!Error::OwnedElsewhere.is_operational());
     }
 
     #[test]

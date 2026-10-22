@@ -229,12 +229,10 @@ const treeProps = {
 }
 
 export const TreeAddProviderLauncher: Story = {
-  // Another tab is current, and the rail still shows the Add button at its foot.
+  // Another tab is current, and the toolbar still ends with the Add button.
   render: () => <WorkspaceProvidersPage {...treeProps} selectedProvider="prov-weather" />,
   play: async ({ canvas }) => {
-    const add = within(
-      canvas.getByRole('complementary', { name: 'installed providers' }),
-    ).getByRole('button', { name: 'Add provider' })
+    const add = within(canvas.getByRole('main')).getByRole('button', { name: 'Add provider' })
     await expect(add).toBeVisible()
     await userEvent.click(add)
     const dialog = within(await screen.findByRole('dialog'))
@@ -675,6 +673,45 @@ export const ConfigurationOAuth: Story = {
     await expect(canvas.getByLabelText('Client secret', { exact: true })).toBeVisible()
     await expectLabelToFit('Use S256 PKCE')
     await expectLabelToFit('Disable PKCE for this service')
+  },
+}
+// A recipe's hint, such as Slack's app creation link, sits below the client ID.
+export const ConfigurationOAuthClientHint: Story = {
+  render: () => (
+    <StepperPage
+      {...stepperWorkspace}
+      recipeConfiguration={{
+        id: 'slack',
+        inputs: [],
+        suggestedMethods: ['oauth'],
+        values: {},
+        clientConfigHintMarkdown:
+          '[Create a Slack app](https://api.slack.com/apps?new_app=1&manifest_yaml=display_information%3A%0A), then copy its client ID and client secret here.',
+      }}
+      setup={{
+        ...configurationSetup,
+        configuration: {
+          ...configurationSetup.configuration!,
+          authenticationStatus: 'supported',
+          documentDisplayName: 'Slack',
+          values: {
+            ...configurationSetup.configuration!.values,
+            authentication: 'oauth',
+            authorizationUrl: 'https://slack.com/oauth/v2_user/authorize',
+            tokenUrl: 'https://slack.com/api/oauth.v2.user.access',
+            scopes: ['chat:write'],
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const link = within(canvasElement).getByRole('link', { name: 'Create a Slack app' })
+    await expect(link).toHaveAttribute('target', '_blank')
+    await expect(link).toHaveAttribute(
+      'href',
+      'https://api.slack.com/apps?new_app=1&manifest_yaml=display_information%3A%0A',
+    )
   },
 }
 export const ConfigurationOAuthFieldErrors: Story = {
@@ -1541,7 +1578,7 @@ export const StepAccountPersonalOAuthPending: Story = {
     <StepperPage
       {...stepperWorkspace}
       setup={{ ...setupOpenApiOAuth, authorization: pendingConsent('manual-client', 'manual') }}
-      attempt={{ ...stepperWorkspace.attempt, account: 'caller', accountReview: true }}
+      attempt={{ ...stepperWorkspace.attempt, account: 'caller', returnFromConnect: true }}
     />
   ),
   parameters: workspaceEntry,

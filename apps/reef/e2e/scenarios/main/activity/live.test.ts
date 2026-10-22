@@ -2,6 +2,7 @@ import { createServer } from 'node:http'
 import { expect, test } from 'vitest'
 import { withOwnerSession, createActors, mcpToken } from '../../../support/actors.ts'
 import { withBrowserSession } from '../../../support/browser-session.ts'
+import { shownArguments } from '../../../support/arguments.ts'
 import { joinAsOwner, managementClients } from '../../../support/management.ts'
 import {
   addProviderFromFile,
@@ -401,7 +402,8 @@ test('Current Run and operation actions settle live while exact review stays sel
         await page.goto(
           `${scope === 'personal' ? activityUrl : `/${issued.agent!.name.split('/').map(encodeURIComponent).join('/')}`}?${query}`,
         )
-        await page.locator('pre').filter({ hasText: 'live-logical-arguments' }).first().waitFor()
+        const logical = { marker: 'live-logical-arguments' }
+        expect(await shownArguments(page.getByRole('dialog'))).toEqual(logical)
         expect(await page.getByText('needs action', { exact: true }).count()).toBeGreaterThan(0)
         await page.locator('summary').filter({ hasText: 'Add a comment' }).click()
         await page.getByRole('textbox', { name: 'Comment (optional)' }).fill('Keep my review')
@@ -417,9 +419,7 @@ test('Current Run and operation actions settle live while exact review stays sel
           .toBe(0)
         expect(new URL(page.url()).searchParams.get('record')).toBe(selected)
         expect(await page.getByRole('dialog').count()).toBe(1)
-        expect(
-          await page.locator('pre').filter({ hasText: 'live-logical-arguments' }).count(),
-        ).toBeGreaterThan(0)
+        expect(await shownArguments(page.getByRole('dialog'))).toEqual(logical)
         expect(
           await page.getByRole('button', { name: 'Approve this call', exact: true }).count(),
         ).toBe(0)
@@ -551,8 +551,17 @@ test('Current Run and operation actions settle live while exact review stays sel
         expect(
           await page.getByRole('button', { name: 'Approve this call', exact: true }).count(),
         ).toBe(0)
-        await page.locator('pre').filter({ hasText: 'Reviewed once' }).waitFor()
-        expect(await page.locator('pre').filter({ hasText: 'Reviewed once' }).count()).toBe(1)
+        // The decision keeps the exact comment, once, as its Comment fact.
+        const decidedComment = page
+          .getByRole('dialog')
+          .locator('dl > div')
+          .filter({ has: page.locator('dt', { hasText: /^Comment$/ }) })
+          .locator('dd', { hasText: /^Reviewed once$/ })
+        await decidedComment.waitFor()
+        expect(await decidedComment.count()).toBe(1)
+        expect(
+          await page.getByRole('dialog').getByText('Reviewed once', { exact: true }).count(),
+        ).toBe(1)
         await page.setViewportSize({ width: 1440, height: 900 })
         // The decided request is settled, so the review lists what the Run waits on now.
         await page

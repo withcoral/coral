@@ -1,14 +1,14 @@
 //! Invocation completion and termination decisions. Every write joins the
 //! caller's transaction: the Invocation and Approval rows through their
 //! repositories, and the `invocation.ended` Events are returned for the
-//! caller's Run Ledger chunk, the owner's or an outside writer's own.
+//! caller's Run Ledger chunk, the owner's or the terminal chunk of a writer
+//! outside it (recovery, until slice 9).
 
 use crate::invocation::{AdmittedInvocation, InvocationCompletion};
 use crate::lifecycle::RunRecord;
-use crate::run_repository::{Chunk, OwnedEvent, OwnedEventKind};
+use crate::run_repository::{OwnedEvent, OwnedEventKind};
 use crate::{
     CoralFailure, Error, InvocationId, InvocationResultKind, approval, invocation_repository,
-    run_repository,
 };
 use coral_db::Transaction;
 
@@ -22,13 +22,16 @@ pub(crate) enum InvocationState {
 pub(crate) struct UnfinishedInvocation {
     pub(crate) id: InvocationId,
     pub(crate) state: InvocationState,
-    pub(crate) call_path: String,
+    /// The Generation and Operation the Invocation called.
+    pub(crate) generation: coral_catalog::ProviderGenerationId,
+    pub(crate) operation: coral_catalog::OperationKey,
 }
 
 impl UnfinishedInvocation {
     /// How the Invocation ends with its Run, and the Operation Result recovery
-    /// can still establish. A lost send is indeterminate. A lost
-    /// `createProvider` is not: Coral's own Publication shows what happened.
+    /// can still establish. A lost send is indeterminate. A lost Built-in
+    /// Operation may not be: a `createProvider`'s own Publication shows what
+    /// happened.
     async fn settle_for_termination(
         &self,
         transaction: &mut Transaction<'_>,
@@ -36,12 +39,15 @@ impl UnfinishedInvocation {
     ) -> Result<(InvocationResultKind, Option<String>), Error> {
         match self.state {
             InvocationState::Pending => Ok((InvocationResultKind::RunTerminated, None)),
-            InvocationState::Dispatching
-                if crate::builtin::names_create_provider(&self.call_path) =>
-            {
-                crate::builtin::recover_create_provider(transaction, run, &self.id).await
-            }
-            InvocationState::Dispatching => Ok((InvocationResultKind::Indeterminate, None)),
+            InvocationState::Dispatching => Ok(crate::builtin::recover(
+                transaction,
+                run,
+                &self.id,
+                &self.generation,
+                &self.operation,
+            )
+            .await?
+            .unwrap_or((InvocationResultKind::Indeterminate, None))),
             InvocationState::Ended => Err(Error::CorruptData(
                 "Invocation has invalid nonterminal state".into(),
             )),
@@ -117,40 +123,28 @@ pub(crate) async fn finish(
 }
 
 /// Ends a pending Invocation with `failure` from an approval decision and
-/// returns its `invocation.ended` for the caller's chunk.
+/// returns its `invocation.ended` for the caller's chunk. `None` when the
+/// Invocation is no longer pending: an earlier chunk ended it, and the
+/// decision's record stands on its own.
 pub(crate) async fn finish_approval_failure(
     tx: &mut Transaction<'_>,
     run: &RunRecord,
     invocation: &InvocationId,
     failure: CoralFailure,
     now: i64,
-) -> Result<OwnedEvent, Error> {
+) -> Result<Option<OwnedEvent>, Error> {
     if !invocation_repository::end_pending_with_failure(tx, run, invocation, failure, now).await? {
-        return Err(Error::InvocationPersistence(
-            "Approval lost its pending Invocation".into(),
-        ));
+        tracing::warn!(
+            run_id = %run.id,
+            invocation_id = %invocation,
+            "approval decision found its Invocation no longer pending"
+        );
+        return Ok(None);
     }
-    Ok(OwnedEvent::new(
+    Ok(Some(OwnedEvent::new(
         OwnedEventKind::InvocationEnded(invocation.clone(), InvocationResultKind::CoralFailure),
         now,
-    ))
-}
-
-/// Commits `events` as one chunk under the Run's claim, for the writers that
-/// still write outside the Run Owner (approval decisions).
-pub(crate) async fn commit_outside_owner(
-    tx: &mut Transaction<'_>,
-    run: &RunRecord,
-    events: &[OwnedEvent],
-) -> Result<(), Error> {
-    if events.is_empty() {
-        return Ok(());
-    }
-    let claim = run
-        .execution_claim_id
-        .as_deref()
-        .ok_or(Error::ProgramHostTerminated)?;
-    run_repository::commit_chunk(tx, Chunk::new(run, Some(claim)).owned_events(events)).await
+    )))
 }
 
 /// Ends every nonterminal Invocation of `run` for its termination: pending
@@ -159,6 +153,12 @@ pub(crate) async fn commit_outside_owner(
 /// Approval Requests closed. Returns their `invocation.ended` Events for the
 /// caller's terminal chunk, so the Invocation rows, the Approval rows, the
 /// Events and `run.ended` commit together.
+///
+/// # Errors
+///
+/// [`Error::HeadMismatch`] when another terminal writer ended one of the
+/// Invocations meanwhile: the caller reads the Run again, as it would after
+/// its own head update mismatched.
 pub(crate) async fn end_nonterminal_invocations(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
@@ -186,9 +186,11 @@ pub(crate) async fn end_nonterminal_invocations(
             ended_at_unix_nanos,
         )
         .await?
-        .ok_or_else(|| {
-            Error::InvocationPersistence("Operation Invocation termination lost its race".into())
-        })?;
+        // Another terminal writer ended this Invocation between the read and
+        // the write, and its terminal chunk moved the head with it: this
+        // writer's own head update would mismatch, so it stops here and reads
+        // the Run again.
+        .ok_or(Error::HeadMismatch)?;
         events.push(event);
     }
     Ok(events)

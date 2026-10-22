@@ -11,6 +11,12 @@
 //! - the Fan-out Limit: a ready Invocation above the owner's count of
 //!   dispatching ones waits in memory, in readiness order, for an earlier
 //!   one to end;
+//! - the outside requests, keyed by the entity they decide: the first rides
+//!   the next chunk, a repeat waits for its answer or reads it from memory;
+//! - the termination intent (a cancellation, the deadline): applied at
+//!   once, recorded by the next chunk's head update;
+//! - the Run Ledger head, which the owner tracks from its start mark and
+//!   every chunk commit asserts;
 //! - what a lost commit means;
 //! - the owner's liveness. After one lease without a successful commit the
 //!   owner is suspect and answers Program requests only once recorded.
@@ -18,40 +24,64 @@
 //!   chunk is written as soon as the database answers, recording
 //!   `Interrupted`, or `TimedOut` when the Run deadline has passed meanwhile.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
+use coral_workspace::Principal;
+
+use crate::approval::DecideWork;
 use crate::engine::{ExecutionCompletion, ProgramPackage};
 use crate::invocation::{FenceBatch, FenceRequest};
+use crate::lifecycle::{RequestedTermination, RunTerminationKind};
 use crate::run_repository::{OwnedEvent, OwnedEventKind};
 use crate::termination::ShutdownAction;
 use crate::{CoralFailure, Error};
 
-use super::chunk::{ChunkBuild, ChunkItem, ChunkWork};
-use super::handle::{CommitRejection, Message, Reply};
+use super::chunk::{ChunkBuild, ChunkItem, ChunkWork, PendingRequest};
+use super::handle::{
+    CommitRejection, DecisionAnswer, DecisionRequest, Message, Reply, RequestKey, RequestReply,
+    StartedExecution,
+};
 
 /// What the hosting task does for the owner.
 #[derive(Debug)]
 pub(crate) enum Effect {
     /// Answer one Program request.
     Reply(Reply, Result<(), Error>),
+    /// Answer one outside request: with what its chunk recorded for it, or
+    /// with its loss.
+    Answer(RequestReply, Result<DecisionAnswer, Error>),
     /// Commit the owner's first chunk: the execution-start mark.
     Start,
     /// Execute the accepted package.
     StartProgram(ProgramPackage),
-    /// Commit one chunk; `output_total` is the Run Output Budget total it records.
+    /// Commit one chunk, built on the head it carries; `output_total` is the
+    /// Run Output Budget total it records.
     Commit {
         chunk: ChunkBuild,
         output_total: usize,
     },
     /// Terminate the Program and wake every stop-aware wait.
     TerminateProgram,
+    /// Start the shutdown grace: once it is out, [`Message::GraceExpired`]
+    /// ends the Run even if the Program never reported its end.
+    GraceTimer { grace_nanos: i64 },
     /// Settle row work the owner will never commit.
     Abandon(Box<dyn ChunkWork>, Error),
-    /// Write the Run's terminal state for the Program's completion.
-    CompleteExecution(ExecutionCompletion),
-    /// Settle the recorded termination: end what is still nonterminal within
-    /// the shutdown grace. The owner keeps recording dispatch results meanwhile.
-    Settle(ShutdownAction),
+    /// Write the Run's terminal state for the Program's completion, with
+    /// the termination intent the owner applied but no chunk recorded.
+    CompleteExecution {
+        completion: ExecutionCompletion,
+        intent: Option<RequestedTermination>,
+    },
+    /// One attempt to settle the recorded termination: end every nonterminal
+    /// Invocation and the Run once no dispatch is in flight, or once the
+    /// shutdown grace is out. `again` means the previous attempt found a
+    /// dispatch in flight: the host waits a moment before this one. The owner
+    /// keeps recording dispatch results between attempts, never during one.
+    Settle {
+        shutdown: ShutdownAction,
+        again: bool,
+    },
     /// The owner became suspect: no commit succeeded for longer than the
     /// suspect bound. Program requests now answer only once recorded.
     Suspect { last_commit_age_nanos: i64 },
@@ -71,6 +101,9 @@ pub(crate) struct OwnerLimits {
     /// The Fan-out Limit: Invocations of the Run `dispatching` at once at most.
     pub(crate) fan_out_invocations: usize,
     pub(crate) deadline_at_unix_nanos: i64,
+    /// The shutdown grace a termination intent the owner applies gives the
+    /// Run's dispatches in flight.
+    pub(crate) shutdown_grace_nanos: i64,
     /// How long after its last successful commit the owner is suspect.
     pub(crate) suspect_after_nanos: i64,
     /// How long after its last successful commit the owner interrupts its Run.
@@ -103,19 +136,47 @@ pub(crate) enum Phase {
 struct InFlight {
     bytes: usize,
     waiters: Vec<Reply>,
+    /// The outside requests the chunk records, each with what its work
+    /// reported before the chunk's `Committed`.
+    requests: Vec<PendingRequest>,
+    /// The chunk carries the termination intent.
+    terminates: bool,
+}
+
+impl InFlight {
+    fn records(&self, key: &RequestKey) -> bool {
+        (self.terminates && *key == RequestKey::Termination)
+            || self.requests.iter().any(|request| request.key == *key)
+    }
 }
 
 /// One Run Owner's memory.
 pub(crate) struct OwnerState {
     phase: Phase,
     limits: OwnerLimits,
-    /// No more Program requests: an outside writer asked execution to stop.
+    /// No more Program requests: a stop, a termination intent, or the end of
+    /// the Program's execution.
     stop_requested: bool,
-    /// The recorded termination is settled: the Run is terminal, nothing more
-    /// commits, and the owner retires once the commit in flight has answered.
-    settled: bool,
+    /// A settle attempt of the recorded termination runs: no chunk commits
+    /// meanwhile.
+    settling: bool,
+    /// The recorded termination the owner settles, from its terminal write.
+    shutdown: Option<ShutdownAction>,
     /// The Program's completion, kept until its terminal write has answered.
     completion: Option<ExecutionCompletion>,
+    /// The termination intent the owner applied: a cancellation, or the
+    /// deadline. It rides a chunk's head update; the terminal write finds it
+    /// recorded, or records what it finds itself when no chunk landed.
+    termination: Option<RequestedTermination>,
+    /// The Run Ledger head: set by the start mark, moved by every chunk the
+    /// owner commits and by its own terminal write, asserted by every chunk.
+    head: u64,
+    /// Outside requests whose chunk is recorded: a repeat is answered from
+    /// here, with no chunk.
+    recorded_requests: HashSet<RequestKey>,
+    /// Outside requests (`Decide`, `Cancel`) waiting for the chunk in flight
+    /// or the terminal write, applied again once it has answered.
+    parked: Vec<Message>,
     /// The exact Run Output Budget total: recorded plus applied.
     output_total: usize,
     /// The total the last committed chunk recorded.
@@ -147,8 +208,13 @@ impl OwnerState {
             phase: Phase::Starting,
             limits,
             stop_requested: false,
-            settled: false,
+            settling: false,
+            shutdown: None,
             completion: None,
+            termination: None,
+            head: 0,
+            recorded_requests: HashSet::new(),
+            parked: Vec::new(),
             output_total: 0,
             recorded_total: 0,
             last_commit_at_unix_nanos: accepted_at_unix_nanos,
@@ -170,6 +236,24 @@ impl OwnerState {
     #[cfg(test)]
     pub(crate) const fn output_total(&self) -> usize {
         self.output_total
+    }
+
+    /// The Run Ledger head the owner tracks.
+    #[cfg(test)]
+    pub(crate) const fn head(&self) -> u64 {
+        self.head
+    }
+
+    /// The termination intent the owner applied.
+    #[cfg(test)]
+    pub(crate) const fn termination(&self) -> Option<&RequestedTermination> {
+        self.termination.as_ref()
+    }
+
+    /// Outside requests waiting for the chunk in flight or the terminal write.
+    #[cfg(test)]
+    pub(crate) fn parked_requests(&self) -> usize {
+        self.parked.len()
     }
 
     /// Output bytes applied but not yet recorded, the chunk in flight included.
@@ -243,6 +327,7 @@ impl OwnerState {
         let mut effects = self.stop_pending(|| Error::ProgramHostTerminated);
         self.completion = None;
         self.phase = Phase::Interrupting;
+        effects.extend(self.answer_parked(|| Err(Error::OwnerLost)));
         effects.push(Effect::Interrupt {
             last_commit_age_nanos,
         });
@@ -251,7 +336,8 @@ impl OwnerState {
 
     /// Stops the Program and settles everything it waits on with the error
     /// `lost` makes: the request on the chunk in flight, every pending
-    /// request and work item. The caller decides the phase that follows.
+    /// request and work item. An outside requester learns its outcome is
+    /// unknown. The caller decides the phase that follows.
     fn stop_pending(&mut self, lost: impl Fn() -> Error) -> Vec<Effect> {
         let mut effects = Vec::new();
         if let Some(flight) = self.in_flight.take() {
@@ -261,8 +347,14 @@ impl OwnerState {
                     .into_iter()
                     .map(|reply| Effect::Reply(reply, Err(lost()))),
             );
+            effects.extend(
+                flight
+                    .requests
+                    .into_iter()
+                    .map(|request| Effect::Answer(request.reply, Err(Error::OwnerLost))),
+            );
         }
-        effects.extend(self.abandon_pending(&lost));
+        effects.extend(self.abandon_pending(&lost, || Err(Error::OwnerLost)));
         self.stop_requested = true;
         effects.push(Effect::TerminateProgram);
         effects
@@ -281,11 +373,10 @@ impl OwnerState {
     /// once that write has answered: before the settle, or before the terminal
     /// write runs again when it refused a Run with a nonterminal Invocation.
     fn accepts_work(&self) -> bool {
-        !self.settled
-            && matches!(
-                self.phase,
-                Phase::Running | Phase::Ending | Phase::Completing | Phase::Settling
-            )
+        matches!(
+            self.phase,
+            Phase::Running | Phase::Ending | Phase::Completing | Phase::Settling
+        )
     }
 
     fn output_fits(&self, bytes: usize) -> bool {
@@ -294,13 +385,19 @@ impl OwnerState {
             .is_some_and(|total| total <= self.limits.run_output_bytes)
     }
 
-    fn push(&mut self, item: ChunkItem, events: usize, bytes: usize) {
+    /// Adds `item` to the open chunk, closing it before when the item does
+    /// not fit and after when it fills the chunk, and returns the chunk now
+    /// holding the item.
+    fn push(&mut self, item: ChunkItem, events: usize, bytes: usize) -> &mut ChunkBuild {
         if !self.open.fits(events, bytes) {
             self.close_open();
         }
         self.open.push(item, events, bytes);
         if self.open.is_full() {
             self.close_open();
+            self.closed.back_mut().expect("the chunk just closed")
+        } else {
+            &mut self.open
         }
     }
 
@@ -484,13 +581,22 @@ impl OwnerState {
         vec![Effect::Abandon(Box::new(batch), lost())]
     }
 
-    /// A stop reached the owner: every fence request not yet committed, and
-    /// every one waiting for a slot, is answered at once as terminated, so no
-    /// dispatch starts after it. A fence in flight returns on its own; the
-    /// pre-send check ends what it permitted.
+    /// A stop reached the owner, from an outside writer's recorded
+    /// termination or from the owner's own termination intent: every fence
+    /// request not yet committed, and every one waiting for a slot, is
+    /// answered at once as terminated, so no dispatch starts after it. A
+    /// fence in flight returns on its own; the pre-send check ends what it
+    /// permitted.
     fn stop(&mut self) -> Vec<Effect> {
-        self.stop_requested = true;
         let mut effects = Vec::new();
+        // The first stop arms the shutdown grace: the Program has that long
+        // to report its end before the owner ends the Run without it.
+        if !self.stop_requested {
+            self.stop_requested = true;
+            effects.push(Effect::GraceTimer {
+                grace_nanos: self.limits.shutdown_grace_nanos,
+            });
+        }
         for chunk in self
             .closed
             .iter_mut()
@@ -506,10 +612,253 @@ impl OwnerState {
         effects
     }
 
+    /// Whether an outside request's entity is recorded by a chunk not yet
+    /// answered: in flight, or built and waiting.
+    fn request_is_pending(&self, key: &RequestKey) -> bool {
+        self.in_flight
+            .as_ref()
+            .is_some_and(|flight| flight.records(key))
+            || self
+                .closed
+                .iter()
+                .chain(std::iter::once(&self.open))
+                .any(|chunk| chunk.records(key))
+    }
+
+    /// Whether the owner can no longer answer an outside request: nothing it
+    /// applies commits any more.
+    fn refuses_requests(&self) -> bool {
+        matches!(
+            self.phase,
+            Phase::Stopped(_) | Phase::Interrupting | Phase::Retired
+        )
+    }
+
+    /// Answers an outside request from memory when the owner cannot take it
+    /// on: its entity is recorded already, or the owner no longer takes
+    /// requests (its outcome stays unknown to the requester, who reads the
+    /// record). Otherwise hands the reply back for the request to go on.
+    fn answer_from_memory(
+        &self,
+        key: &RequestKey,
+        reply: RequestReply,
+    ) -> Result<Vec<Effect>, RequestReply> {
+        if self.recorded_requests.contains(key) {
+            return Ok(vec![Effect::Answer(reply, Ok(DecisionAnswer::FromRecord))]);
+        }
+        if self.refuses_requests() {
+            return Ok(vec![Effect::Answer(reply, Err(Error::OwnerLost))]);
+        }
+        Err(reply)
+    }
+
+    /// Whether an outside request waits for an answer in progress: the chunk
+    /// recording its entity, or the terminal write.
+    fn must_park(&self, key: &RequestKey) -> bool {
+        self.request_is_pending(key) || self.phase == Phase::Completing
+    }
+
+    /// A decision on one Approval Request: the first for the request rides
+    /// the next chunk, recording the decision while the Run accepts actions
+    /// and closing the request otherwise; a repeat waits for that chunk or
+    /// reads the recorded answer from memory.
+    fn decide(
+        &mut self,
+        request: DecisionRequest,
+        reply: RequestReply,
+        now_unix_nanos: i64,
+    ) -> Vec<Effect> {
+        let key = RequestKey::Approval(request.approval.clone());
+        let reply = match self.answer_from_memory(&key, reply) {
+            Ok(effects) => return effects,
+            Err(reply) => reply,
+        };
+        if self.must_park(&key) {
+            self.parked.push(Message::Decide { request, reply });
+            return Vec::new();
+        }
+        if !self.accepts_work() {
+            return vec![Effect::Answer(reply, Err(Error::OwnerLost))];
+        }
+        let decide = self.accepts_program_requests(now_unix_nanos);
+        let work = DecideWork::new(request, decide);
+        self.push(ChunkItem::Work(Box::new(work)), 1, 0)
+            .requests
+            .push(PendingRequest {
+                key,
+                reply,
+                answer: None,
+            });
+        Vec::new()
+    }
+
+    /// A cancellation: applied at once when no termination is recorded or in
+    /// flight (the Program is terminated, the intent rides the next chunk),
+    /// answered from memory once one is; past the Run deadline the Run times
+    /// out instead, as a cancel found on the record would.
+    fn cancel(
+        &mut self,
+        requester: Principal,
+        reply: RequestReply,
+        now_unix_nanos: i64,
+    ) -> Vec<Effect> {
+        let key = RequestKey::Termination;
+        let reply = match self.answer_from_memory(&key, reply) {
+            Ok(effects) => return effects,
+            Err(reply) => reply,
+        };
+        if self.must_park(&key) {
+            self.parked.push(Message::Cancel { requester, reply });
+            return Vec::new();
+        }
+        match self.phase {
+            // The terminal write recorded a termination of its own; this
+            // changes nothing.
+            Phase::Settling => vec![Effect::Answer(reply, Ok(DecisionAnswer::FromRecord))],
+            // Past the Run deadline the Run times out: no chunk commits any
+            // more, and the terminal write records the timeout; the request
+            // is answered once it has.
+            Phase::Starting | Phase::Running | Phase::Ending
+                if now_unix_nanos >= self.limits.deadline_at_unix_nanos =>
+            {
+                let effects = self.deadline(now_unix_nanos);
+                self.parked.push(Message::Cancel { requester, reply });
+                effects
+            }
+            Phase::Starting | Phase::Running | Phase::Ending => self.terminate(
+                RunTerminationKind::Canceled,
+                Some(requester),
+                Some(reply),
+                now_unix_nanos,
+            ),
+            Phase::Completing | Phase::Stopped(_) | Phase::Interrupting | Phase::Retired => {
+                vec![Effect::Answer(reply, Err(Error::OwnerLost))]
+            }
+        }
+    }
+
+    /// The Run deadline passed: the Program is terminated, and the timeout
+    /// is the intent the terminal write records (the Run row refuses chunks
+    /// past its deadline, so none carries it). Nothing more once a
+    /// termination is applied, or past the point where the terminal write
+    /// decides on its own.
+    fn deadline(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
+        if self.termination.is_some()
+            || !matches!(self.phase, Phase::Starting | Phase::Running | Phase::Ending)
+        {
+            return Vec::new();
+        }
+        let at = now_unix_nanos.max(self.limits.deadline_at_unix_nanos);
+        if let Ok(intent) = RequestedTermination::new(
+            RunTerminationKind::TimedOut,
+            None,
+            at,
+            self.limits.shutdown_grace_nanos,
+        ) {
+            self.termination = Some(intent);
+        }
+        if self.stop_requested {
+            return Vec::new();
+        }
+        self.stop()
+    }
+
+    /// The shutdown grace since the Program was stopped is out and the
+    /// Program has not reported its end (it ignores the stop, or waits on
+    /// something that does not): the owner ends the Run as if it had. A
+    /// Program that reports its end later changes nothing.
+    fn grace_expired(&mut self) -> Vec<Effect> {
+        if self.phase == Phase::Running && self.stop_requested {
+            return self.program_ended(ExecutionCompletion::ProgramHostTerminated);
+        }
+        Vec::new()
+    }
+
+    /// Applies a termination intent: it rides the next chunk's head update,
+    /// a cancellation's `cancellation.requested` Event among that chunk's
+    /// items in arrival order, and the Program is terminated at once. The
+    /// requester, if any, is answered once that chunk is recorded.
+    fn terminate(
+        &mut self,
+        kind: RunTerminationKind,
+        requester: Option<Principal>,
+        reply: Option<RequestReply>,
+        now_unix_nanos: i64,
+    ) -> Vec<Effect> {
+        let intent = match RequestedTermination::new(
+            kind,
+            requester,
+            now_unix_nanos,
+            self.limits.shutdown_grace_nanos,
+        ) {
+            Ok(intent) => intent,
+            Err(error) => {
+                return reply
+                    .map(|reply| Effect::Answer(reply, Err(error)))
+                    .into_iter()
+                    .collect();
+            }
+        };
+        self.termination = Some(intent.clone());
+        let chunk = match &intent.requester {
+            Some(requester) => self.push(
+                ChunkItem::Event(OwnedEvent::new(
+                    OwnedEventKind::CancellationRequested(requester.clone()),
+                    now_unix_nanos,
+                )),
+                1,
+                0,
+            ),
+            None => &mut self.open,
+        };
+        chunk.termination = Some(intent);
+        chunk.requests.extend(reply.map(|reply| PendingRequest {
+            key: RequestKey::Termination,
+            reply,
+            answer: None,
+        }));
+        self.stop()
+    }
+
+    /// Applies the parked outside requests again, now that the chunk or the
+    /// terminal write they waited for has answered.
+    fn unpark(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
+        std::mem::take(&mut self.parked)
+            .into_iter()
+            .flat_map(|message| apply_message(self, message, now_unix_nanos))
+            .collect()
+    }
+
+    /// Answers every parked outside request with `answer`.
+    fn answer_parked(&mut self, answer: impl Fn() -> Result<DecisionAnswer, Error>) -> Vec<Effect> {
+        std::mem::take(&mut self.parked)
+            .into_iter()
+            .map(|message| match message {
+                Message::Decide { reply, .. } | Message::Cancel { reply, .. } => {
+                    Effect::Answer(reply, answer())
+                }
+                _ => unreachable!("only outside requests are parked"),
+            })
+            .collect()
+    }
+
+    /// What an outside request's work recorded in the chunk in flight: its
+    /// requester receives it once the chunk is answered.
+    fn request_recorded(&mut self, key: &RequestKey, answer: DecisionAnswer) {
+        if let Some(request) = self
+            .in_flight
+            .iter_mut()
+            .flat_map(|flight| &mut flight.requests)
+            .find(|request| request.key == *key)
+        {
+            request.answer = Some(answer);
+        }
+    }
+
     /// Commit-when-free: the oldest pending chunk, once nothing is in flight.
     fn commit_when_free(&mut self) -> Vec<Effect> {
         if self.in_flight.is_some()
-            || self.settled
+            || self.settling
             || !matches!(self.phase, Phase::Running | Phase::Ending | Phase::Settling)
         {
             return Vec::new();
@@ -522,11 +871,40 @@ impl OwnerState {
         self.commit(chunk)
     }
 
+    /// Commits the pending chunks when free; with none left while a recorded
+    /// termination is being settled, attempts the settle.
+    fn commit_or_settle_when_free(&mut self) -> Vec<Effect> {
+        if self.pending_chunks() > 0 {
+            return self.commit_when_free();
+        }
+        self.settle_when_free(false)
+    }
+
+    /// One settle attempt, once nothing is in flight and no chunk is
+    /// pending: the owner records every dispatch result it holds before it
+    /// looks at what is still dispatching.
+    fn settle_when_free(&mut self, again: bool) -> Vec<Effect> {
+        if self.phase != Phase::Settling || self.settling || self.in_flight.is_some() {
+            return Vec::new();
+        }
+        if self.pending_chunks() > 0 {
+            return self.commit_when_free();
+        }
+        let Some(shutdown) = self.shutdown.clone() else {
+            return Vec::new();
+        };
+        self.settling = true;
+        vec![Effect::Settle { shutdown, again }]
+    }
+
     fn commit(&mut self, mut chunk: ChunkBuild) -> Vec<Effect> {
         let output_total = self.recorded_total.saturating_add(chunk.bytes);
+        chunk.head = self.head;
         self.in_flight = Some(InFlight {
             bytes: chunk.bytes,
             waiters: std::mem::take(&mut chunk.waiters),
+            requests: std::mem::take(&mut chunk.requests),
+            terminates: chunk.termination.is_some(),
         });
         vec![Effect::Commit {
             chunk,
@@ -536,6 +914,7 @@ impl OwnerState {
 
     fn committed(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
         self.commit_succeeded(now_unix_nanos);
+        self.head += 1;
         let mut effects = Vec::new();
         if let Some(flight) = self.in_flight.take() {
             self.recorded_total = self.recorded_total.saturating_add(flight.bytes);
@@ -545,10 +924,18 @@ impl OwnerState {
                     .into_iter()
                     .map(|reply| Effect::Reply(reply, Ok(()))),
             );
+            if flight.terminates {
+                self.recorded_requests.insert(RequestKey::Termination);
+            }
+            for request in flight.requests {
+                self.recorded_requests.insert(request.key);
+                let answer = request.answer.unwrap_or(DecisionAnswer::FromRecord);
+                effects.push(Effect::Answer(request.reply, Ok(answer)));
+            }
         }
+        effects.extend(self.unpark(now_unix_nanos));
         match self.phase {
-            Phase::Settling if self.settled => effects.extend(self.retire()),
-            Phase::Running | Phase::Settling => effects.extend(self.commit_when_free()),
+            Phase::Running | Phase::Settling => effects.extend(self.commit_or_settle_when_free()),
             Phase::Ending => effects.extend(self.advance_ending()),
             Phase::Starting
             | Phase::Completing
@@ -559,17 +946,33 @@ impl OwnerState {
         effects
     }
 
-    /// Retires the owner: whatever is still pending will never commit.
-    fn retire(&mut self) -> Vec<Effect> {
+    /// Retires the owner: whatever is still pending will never commit. An
+    /// outside requester still waiting is answered from the record when the
+    /// owner's own write `ended` the Run, and learns its outcome is unknown
+    /// otherwise.
+    fn retire(&mut self, ended: bool) -> Vec<Effect> {
         self.phase = Phase::Retired;
-        let mut effects = self.abandon_pending(|| Error::ProgramHostTerminated);
+        let answer = move || {
+            if ended {
+                Ok(DecisionAnswer::FromRecord)
+            } else {
+                Err(Error::OwnerLost)
+            }
+        };
+        let mut effects = self.abandon_pending(|| Error::ProgramHostTerminated, answer);
+        effects.extend(self.answer_parked(answer));
         effects.push(Effect::Retire);
         effects
     }
 
-    /// Settles every pending request and work item, and every Invocation
-    /// waiting for a slot, with the error `lost` makes.
-    fn abandon_pending(&mut self, lost: impl Fn() -> Error) -> Vec<Effect> {
+    /// Settles every pending request and work item with the error `lost`
+    /// makes, every Invocation waiting for a slot alike, and every outside
+    /// requester of a pending chunk with `requests`.
+    fn abandon_pending(
+        &mut self,
+        lost: impl Fn() -> Error,
+        requests: impl Fn() -> Result<DecisionAnswer, Error>,
+    ) -> Vec<Effect> {
         let mut effects = self.abandon_waiting(&lost);
         let pending = self
             .closed
@@ -590,6 +993,12 @@ impl OwnerState {
                     .into_iter()
                     .map(|reply| Effect::Reply(reply, Err(lost()))),
             );
+            effects.extend(
+                chunk
+                    .requests
+                    .into_iter()
+                    .map(|request| Effect::Answer(request.reply, requests())),
+            );
         }
         effects
     }
@@ -604,10 +1013,37 @@ impl OwnerState {
         }
         if let Some(completion) = &self.completion {
             self.phase = Phase::Completing;
-            vec![Effect::CompleteExecution(completion.clone())]
+            vec![Effect::CompleteExecution {
+                completion: completion.clone(),
+                intent: self.unrecorded_termination(),
+            }]
         } else {
-            self.retire()
+            self.retire(false)
         }
+    }
+
+    /// The termination intent the owner applied and no chunk recorded, for
+    /// the terminal write.
+    fn unrecorded_termination(&self) -> Option<RequestedTermination> {
+        if self.recorded_requests.contains(&RequestKey::Termination) {
+            return None;
+        }
+        self.termination.clone()
+    }
+
+    /// The owner's first chunk landed: the head it left is the owner's. A
+    /// stop or a termination that reached the owner meanwhile means the
+    /// Program never starts; the Run ends as the terminal write finds it.
+    fn started(&mut self, started: StartedExecution, now_unix_nanos: i64) -> Vec<Effect> {
+        self.head = started.head;
+        self.commit_succeeded(now_unix_nanos);
+        if self.stop_requested {
+            self.phase = Phase::Ending;
+            self.completion = Some(ExecutionCompletion::ProgramHostTerminated);
+            return self.advance_ending();
+        }
+        self.phase = Phase::Running;
+        vec![Effect::StartProgram(started.package)]
     }
 
     fn program_ended(&mut self, completion: ExecutionCompletion) -> Vec<Effect> {
@@ -628,13 +1064,16 @@ impl OwnerState {
             // nothing more written.
             Phase::Stopped(CommitRejection::Refused | CommitRejection::Failed) => {
                 self.phase = Phase::Completing;
-                vec![Effect::CompleteExecution(completion)]
+                vec![Effect::CompleteExecution {
+                    completion,
+                    intent: self.unrecorded_termination(),
+                }]
             }
             Phase::Stopped(
                 CommitRejection::ClaimMismatch
                 | CommitRejection::RunEnded
                 | CommitRejection::Corrupt,
-            ) => self.retire(),
+            ) => self.retire(false),
             Phase::Starting
             | Phase::Ending
             | Phase::Completing
@@ -644,10 +1083,22 @@ impl OwnerState {
         }
     }
 
+    /// The terminal write found or recorded a termination: the owner settles
+    /// it, recording the results of dispatches in flight between attempts.
+    fn settle_recorded(&mut self, shutdown: ShutdownAction, now_unix_nanos: i64) -> Vec<Effect> {
+        self.phase = Phase::Settling;
+        self.head = shutdown.head();
+        self.completion = None;
+        self.shutdown = Some(shutdown);
+        let mut effects = self.unpark(now_unix_nanos);
+        effects.extend(self.commit_or_settle_when_free());
+        effects
+    }
+
     /// A lost or refused commit stops the owner at once: the Program is
     /// terminated, nothing pending commits, and every waiting request learns
     /// its outcome is unknown.
-    fn rejected(&mut self, cause: CommitRejection) -> Vec<Effect> {
+    fn rejected(&mut self, cause: CommitRejection, now_unix_nanos: i64) -> Vec<Effect> {
         let mut effects = self.stop_pending(|| cause.lost());
         match self.phase {
             Phase::Running => self.phase = Phase::Stopped(cause),
@@ -656,20 +1107,24 @@ impl OwnerState {
                     (cause, &self.completion)
                 {
                     self.phase = Phase::Completing;
-                    effects.push(Effect::CompleteExecution(completion.clone()));
+                    effects.push(Effect::CompleteExecution {
+                        completion: completion.clone(),
+                        intent: self.unrecorded_termination(),
+                    });
                 } else {
-                    effects.extend(self.retire());
+                    effects.extend(self.retire(false));
                 }
             }
-            Phase::Settling if self.settled => effects.extend(self.retire()),
-            // The settle in progress ends the Run; the owner retires with it.
+            // The recorded termination still has to be settled; the owner
+            // records nothing else.
+            Phase::Settling => effects.extend(self.settle_when_free(false)),
             Phase::Starting
-            | Phase::Settling
             | Phase::Completing
             | Phase::Stopped(_)
             | Phase::Interrupting
             | Phase::Retired => {}
         }
+        effects.extend(self.unpark(now_unix_nanos));
         effects
     }
 
@@ -710,43 +1165,52 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         // While the owner interrupts its Run, the chunk and the start mark
         // still in flight may answer and the Program may end: none of it
         // changes what is written. The Interrupted record alone retires it.
-        Message::Interrupted(_) if state.phase == Phase::Interrupting => state.retire(),
+        Message::Interrupted(_) if state.phase == Phase::Interrupting => state.retire(false),
         Message::Started(_)
         | Message::ProgramEnded(_)
         | Message::Committed
+        | Message::RequestRecorded { .. }
         | Message::CommitRejected(_)
         | Message::Completed(_)
-        | Message::Settled
+        | Message::SettleAttempted(_)
+        | Message::GraceExpired
         | Message::Interrupted(_)
             if state.phase == Phase::Interrupting =>
         {
             Vec::new()
         }
         Message::Interrupted(_) => Vec::new(),
-        Message::Started(Ok(Some(package))) => {
-            state.phase = Phase::Running;
-            state.commit_succeeded(now_unix_nanos);
-            vec![Effect::StartProgram(package)]
-        }
+        Message::Started(Ok(Some(started))) => state.started(started, now_unix_nanos),
         // The terminal write refused a Run with a nonterminal Invocation (or
-        // failed). Work that arrived meanwhile may be that Invocation's end:
-        // record it and write the end again; otherwise retire and leave the
-        // Run to recovery.
-        Message::Completed(Err(_)) if state.pending_chunks() > 0 => {
+        // failed). Work that arrived meanwhile may be that Invocation's end,
+        // and a cancellation parked meanwhile ends it: record them and write
+        // the end again; otherwise retire and leave the Run to recovery.
+        Message::Completed(Err(_)) => {
             state.phase = Phase::Ending;
-            state.advance_ending()
-        }
-        Message::Started(Ok(None) | Err(_)) | Message::Completed(Ok(None) | Err(_)) => {
-            state.retire()
-        }
-        Message::Settled => {
-            state.settled = true;
-            if state.in_flight.is_some() {
-                // The chunk in flight answers its waiters first.
-                Vec::new()
+            let mut effects = state.unpark(now_unix_nanos);
+            if state.pending_chunks() > 0 {
+                effects.extend(state.advance_ending());
             } else {
-                state.retire()
+                effects.extend(state.retire(false));
             }
+            effects
+        }
+        Message::Started(Ok(None) | Err(_)) => state.retire(false),
+        Message::Completed(Ok(None)) => state.retire(true),
+        Message::Completed(Ok(Some(shutdown))) => state.settle_recorded(shutdown, now_unix_nanos),
+        Message::SettleAttempted(Ok(true)) => {
+            state.settling = false;
+            state.retire(true)
+        }
+        Message::SettleAttempted(Ok(false)) => {
+            state.settling = false;
+            state.settle_when_free(true)
+        }
+        // The settle gave a definite answer other than the Run's end: the
+        // recorded termination is the recovery source.
+        Message::SettleAttempted(Err(_)) => {
+            state.settling = false;
+            state.retire(false)
         }
         Message::Emit {
             value,
@@ -774,16 +1238,17 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         Message::Work(work) => state.work(work),
         Message::Fence(request) => state.fence(request, now_unix_nanos),
         Message::DispatchEnded => state.dispatch_ended(now_unix_nanos),
+        Message::Decide { request, reply } => state.decide(request, reply, now_unix_nanos),
+        Message::Cancel { requester, reply } => state.cancel(requester, reply, now_unix_nanos),
+        Message::Deadline => state.deadline(now_unix_nanos),
+        Message::GraceExpired => state.grace_expired(),
         Message::ProgramEnded(completion) => state.program_ended(completion),
         Message::Committed => state.committed(now_unix_nanos),
-        Message::CommitRejected(rejection) => state.rejected(rejection),
-        Message::Completed(Ok(Some(shutdown))) => {
-            state.phase = Phase::Settling;
-            state.completion = None;
-            let mut effects = vec![Effect::Settle(shutdown)];
-            effects.extend(state.commit_when_free());
-            effects
+        Message::RequestRecorded { key, answer } => {
+            state.request_recorded(&key, answer);
+            Vec::new()
         }
+        Message::CommitRejected(rejection) => state.rejected(rejection, now_unix_nanos),
         Message::Stop => state.stop(),
         Message::IdleTick => state.idle_tick(),
         Message::Drained => state.commit_when_free(),

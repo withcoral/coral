@@ -1,4 +1,4 @@
-import { style } from '@/wax/css'
+import { globalStyle, style } from '@/wax/css'
 import { theme } from '@/wax/theme/theme.css'
 
 export const stack = style({ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0 })
@@ -31,39 +31,6 @@ export const coverageError = style({
   borderColor: theme.content.error,
   background: theme.content.errorBackground,
 })
-export const coverageNote = style({ gridColumn: '3' })
-
-export const hits = style({
-  listStyle: 'none',
-  margin: 0,
-  padding: 0,
-  display: 'flex',
-  flexDirection: 'column',
-})
-export const hit = style({
-  display: 'grid',
-  gridTemplateColumns: '28px minmax(0, 1fr)',
-  columnGap: 10,
-  paddingBlock: 12,
-  borderTop: `1px solid ${theme.stroke.secondary}`,
-  selectors: { '&:first-child': { borderTop: 'none' } },
-})
-export const rank = style({
-  ...theme.typography.codeInline,
-  color: theme.content.tertiary,
-  textAlign: 'right',
-  paddingTop: 2,
-})
-export const hitBody = style({ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 })
-/** A snippet is cut Markdown shown as text: keep its line breaks, show three lines. */
-export const snippet = style({
-  display: '-webkit-box',
-  WebkitBoxOrient: 'vertical',
-  WebkitLineClamp: 3,
-  overflow: 'hidden',
-  whiteSpace: 'pre-wrap',
-  overflowWrap: 'anywhere',
-})
 
 export const facts = style({
   display: 'grid',
@@ -74,6 +41,8 @@ export const facts = style({
   margin: 0,
 })
 export const fact = style({ margin: 0, minWidth: 0 })
+/** A record name has no spaces, so it breaks anywhere rather than widen a narrow panel. */
+export const record = style({ overflowWrap: 'anywhere' })
 export const diagnostics = style({
   listStyle: 'none',
   margin: 0,
@@ -82,3 +51,13 @@ export const diagnostics = style({
   flexDirection: 'column',
   gap: 4,
 })
+
+// An icon-only policy marker sits on the title line like its pills.
+export const approval = style({ display: 'inline-flex', alignItems: 'center' })
+
+/** A result card that keeps its Details at its foot. */
+export const detailed = style({})
+// Details spans the card, so opening it grows the card instead of a narrow column.
+globalStyle(`${detailed} > details`, { alignSelf: 'stretch' })
+/** A retained description snippet keeps its line breaks and wraps long links. */
+export const snippet = style({ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' })

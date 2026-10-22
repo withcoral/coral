@@ -6,5 +6,6 @@ export {
   CatalogToolbar,
   FilterField,
   railItem,
+  toolbarActionLabel,
 } from './catalog'
 export type { CatalogFilterOption, CatalogFilterOptions } from './catalog'

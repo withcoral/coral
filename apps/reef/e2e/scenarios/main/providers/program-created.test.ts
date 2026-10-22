@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest'
 import { createActors, mcpToken, withOwnerSession } from '../../../support/actors.ts'
 import { withBrowserSession } from '../../../support/browser-session.ts'
+import { shownArguments } from '../../../support/arguments.ts'
 import { managementClients } from '../../../support/management.ts'
 import {
   acceptOperations,
@@ -129,8 +130,8 @@ test("A workspace owner's Program adds a provider with a shared account, and you
       link = data.url
       const url = new URL(link)
       expect(url.pathname).toBe(`/workspaces/${id}/providers/new`)
-      expect(url.searchParams.get('namespace')).toBe('weather')
-      expect(url.searchParams.get('account')).toBe('fixed')
+      // The Setup holds the namespace and route the Program asked for.
+      expect([...url.searchParams.keys()]).toEqual(['setup'])
     })
     await step('Review the operations, connect the account, and add the provider', async () => {
       await page.goto(link)
@@ -232,7 +233,12 @@ test("A workspace owner's Program prepares a confidential OAuth application, and
       query.append('expand', `${workspace.name}/tasks/${runner.taskId()}`)
       query.append('expand', run)
       await page.goto(`/${workspace.name}/activity?${query}`)
-      await page.locator('pre').filter({ hasText: '"credentialRoute"' }).first().waitFor()
+      // The exact call shows, field by field, and none of it is the secret.
+      expect(await shownArguments(page.getByRole('dialog'))).toMatchObject({
+        namespace: call.namespace,
+        credentialRoute: call.credentialRoute,
+        authentication: call.authentication,
+      })
       expect(await page.content()).not.toContain(secret)
       for (const body of await responses()) expect(body).not.toContain(secret)
     })

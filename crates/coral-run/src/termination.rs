@@ -1,31 +1,43 @@
-//! Run termination: durable cancellation, deadline and recovery intent, bounded
-//! child shutdown, and the terminal write that settles pending Invocations.
+//! Run termination: a cancellation as a request to the Run Owner, the settle
+//! of a recorded termination (the terminal chunk that ends every nonterminal
+//! Invocation and the Run), the Interrupted record, and recovery's explicit
+//! pass.
 
 use std::future::Future;
 use std::time::Duration;
 
 use coral_db::Transaction;
-use coral_workspace::{AuthenticatedPrincipal, Principal, WorkspaceId};
+use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use tokio::time::timeout;
 
-use crate::lifecycle::{RunRecord, RunTerminationKind};
+use crate::lifecycle::{RequestedTermination, RunRecord, RunTerminationKind};
 use crate::observation::validate_cursor;
-use crate::types::AcceptedRun;
 use crate::{
     Error, RunId, RunModule, RunObservation, RunState, RunUpdate, duration_until,
-    invocation_lifecycle, invocation_repository, run_repository,
+    invocation_lifecycle, invocation_repository, owner, run_repository,
 };
 
+/// How much longer than its shutdown grace a cancellation waits for the
+/// owner to end the Run before it shows the Run as it stands: the owner's
+/// last settle attempt and its terminal write.
+const SETTLE_MARGIN: Duration = Duration::from_secs(1);
+
 impl RunModule {
-    /// Durably requests cancellation and returns the first terminal winner.
+    /// Asks the Run's owner to cancel it, waits for the owner to end the Run
+    /// within the shutdown grace, and returns the Run as recorded.
     ///
-    /// Cancellation and completion serialize on the Run record. Cancellation
-    /// intent is durable before V8 termination and bounded child shutdown; a
-    /// completion that already won remains unchanged.
+    /// The cancellation is a Run Request identified by the Run: the first
+    /// termination wins, and a repeat receives the recorded answer. The owner
+    /// terminates the Program at once and records the intent, with
+    /// `cancellation.requested`, in its next chunk; the request is answered
+    /// once that chunk is recorded. A Run already terminal is shown as it is.
     ///
     /// # Errors
     ///
     /// Applies the same concealment and cursor rules as [`Self::observe`].
+    /// [`Error::OwnedElsewhere`] when the Run is nonterminal and no owner for
+    /// it lives in this process; [`Error::OwnerLost`] when the owner stopped
+    /// before it recorded the request (the outcome is unknown: read again).
     pub async fn cancel(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -34,11 +46,29 @@ impl RunModule {
         observation: &RunObservation,
     ) -> Result<RunUpdate, Error> {
         validate_cursor(run_id, observation)?;
-        let mut transaction = self.database.begin().await?;
-        let Some(_) = run_repository::hold_run(&mut transaction, workspace_id, run_id).await?
-        else {
-            return Err(Error::RunNotFound);
-        };
+        let run = self
+            .visible_run_snapshot(actor, workspace_id, run_id)
+            .await?;
+        if let Some(owner) =
+            owner::local_owner(&self.owners, &self.database, workspace_id, &run).await?
+        {
+            owner.cancel(actor.principal().clone()).await?;
+            // The recorded intent gives the dispatches in flight the shutdown
+            // grace; the owner ends the Run itself once it is out.
+            let grace = Duration::from_nanos(u64::try_from(run.shutdown_grace_nanos).unwrap_or(0));
+            let _ended_in_time = timeout(grace + SETTLE_MARGIN, owner.wait_stopped()).await;
+        }
+        self.observe(actor, workspace_id, run_id, observation).await
+    }
+
+    /// The Run as `actor` may see it, from a read snapshot.
+    async fn visible_run_snapshot(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        run_id: &RunId,
+    ) -> Result<RunRecord, Error> {
+        let mut transaction = self.database.begin_read_snapshot().await?;
         let include_workspace_agents = self
             .visibility_scope_in_transaction(&mut transaction, actor, workspace_id)
             .await?;
@@ -51,34 +81,8 @@ impl RunModule {
         )
         .await?
         .ok_or(Error::RunNotFound)?;
-        let shutdown = if run.state == RunState::Running {
-            let requested_at = self.now()?.max(run.accepted_at_unix_nanos);
-            let run = if run.termination.is_none() {
-                let (kind, requester) = if requested_at >= run.deadline_at_unix_nanos {
-                    (RunTerminationKind::TimedOut, None)
-                } else {
-                    (RunTerminationKind::Canceled, Some(actor.principal()))
-                };
-                self.request_termination(&mut transaction, &run, kind, requester, requested_at)
-                    .await?
-            } else {
-                run
-            };
-            if run.execution_started() {
-                Some(ShutdownAction::from_run(&run)?)
-            } else {
-                self.finish_termination_in_transaction(&mut transaction, &run, requested_at)
-                    .await?;
-                None
-            }
-        } else {
-            None
-        };
         transaction.commit().await?;
-        if let Some(shutdown) = shutdown {
-            self.complete_shutdown(shutdown).await?;
-        }
-        self.observe(actor, workspace_id, run_id, observation).await
+        Ok(run)
     }
 
     /// Recovers expired durable worker claims without replaying started JavaScript.
@@ -89,7 +93,10 @@ impl RunModule {
     /// does not schedule that work and does not install startup or polling
     /// behavior. Lost started executions have their claim revoked before pending
     /// children become Run-terminated, uncertain dispatches become indeterminate,
-    /// and the Run becomes interrupted.
+    /// and the Run becomes interrupted. Until the expired-lease sweep (slice 9)
+    /// replaces it, this is the one writer that touches a Run row from outside
+    /// its owner; a live owner sees its write as a released worker claim at
+    /// its next commit and stops.
     ///
     /// # Errors
     ///
@@ -108,7 +115,13 @@ impl RunModule {
         }
     }
 
-    async fn recover_run(&self, workspace_id: &WorkspaceId, run_id: &RunId) -> Result<(), Error> {
+    /// Recovery's pass over one Run, as the sweep and the deadline task of a
+    /// retired owner run it.
+    pub(crate) async fn recover_run(
+        &self,
+        workspace_id: &WorkspaceId,
+        run_id: &RunId,
+    ) -> Result<(), Error> {
         let mut transaction = self.database.begin().await?;
         let Some(mut run) =
             run_repository::hold_run(&mut transaction, workspace_id, run_id).await?
@@ -126,7 +139,6 @@ impl RunModule {
                     &mut transaction,
                     &run,
                     RunTerminationKind::TimedOut,
-                    None,
                     now_unix_nanos.max(run.accepted_at_unix_nanos),
                 )
                 .await?;
@@ -146,7 +158,6 @@ impl RunModule {
                     &mut transaction,
                     &run,
                     RunTerminationKind::Interrupted,
-                    None,
                     now_unix_nanos.max(run.accepted_at_unix_nanos),
                 )
                 .await?;
@@ -170,80 +181,30 @@ impl RunModule {
         self.complete_shutdown(shutdown).await
     }
 
-    pub(crate) async fn begin_deadline_shutdown(
-        &self,
-        accepted: &AcceptedRun,
-    ) -> Result<(), Error> {
-        let mut transaction = self.database.begin().await?;
-        let Some(run) =
-            run_repository::hold_run(&mut transaction, &accepted.workspace_id, &accepted.id)
-                .await?
-        else {
-            return Ok(());
-        };
-        if run.state != RunState::Running {
-            transaction.commit().await?;
-            return Ok(());
-        }
-        let now = self
-            .now()?
-            .max(run.accepted_at_unix_nanos)
-            .max(run.deadline_at_unix_nanos);
-        let run = if run.termination.is_none() {
-            self.request_termination(
-                &mut transaction,
-                &run,
-                RunTerminationKind::TimedOut,
-                None,
-                now,
-            )
-            .await?
-        } else {
-            run
-        };
-        let shutdown = if run.execution_started() {
-            Some(ShutdownAction::from_run(&run)?)
-        } else {
-            self.finish_termination_in_transaction(&mut transaction, &run, now)
-                .await?;
-            None
-        };
-        transaction.commit().await?;
-        if let Some(shutdown) = shutdown {
-            self.complete_shutdown(shutdown).await?;
-        }
-        Ok(())
-    }
-
-    /// Stops the Run's owner when this process holds it and settles the
-    /// recorded termination within the shutdown grace. Without a local owner
+    /// Recovery's settle of the termination it recorded: stops the Run's
+    /// owner when this process holds it and waits for the owner to retire,
+    /// then ends the Run within the shutdown grace. Without a local owner
     /// the Run is settled elsewhere; this waits for it, and ends the Run
     /// itself once the grace is out.
     pub(crate) async fn complete_shutdown(&self, shutdown: ShutdownAction) -> Result<(), Error> {
+        // A live owner here ends its Run itself, within its own shutdown
+        // grace, and recovery writes only once it retired: never beside it.
+        let owned_here = self.owners.find(&shutdown.run_id, &shutdown.claim_id);
+        if let Some(owner) = &owned_here {
+            owner.request_stop();
+            owner.wait_stopped().await;
+        }
         let now = self.now()?.max(shutdown.accepted_at_unix_nanos);
         let remaining = duration_until(shutdown.deadline_at_unix_nanos, now);
         let drain = async {
-            if let Some(owner) = self.owners.find(&shutdown.run_id, &shutdown.claim_id) {
-                owner.request_stop();
-                owner.wait_stopped().await;
+            if owned_here.is_some() {
+                self.settle_loop(&shutdown).await
             } else {
-                return self
-                    .wait_for_terminal_state(&shutdown.workspace_id, &shutdown.run_id)
-                    .await;
+                self.wait_for_terminal_state(&shutdown.workspace_id, &shutdown.run_id)
+                    .await
             }
-            self.settle_loop(&shutdown).await
         };
         self.settle_or_force(remaining, &shutdown, drain).await
-    }
-
-    /// Settles a recorded termination within what is left of the shutdown
-    /// grace, for the Run Owner that found it recorded: the owner keeps
-    /// recording the results of dispatches still in flight until the Run ends.
-    pub(crate) async fn settle_within_grace(&self, shutdown: ShutdownAction) -> Result<(), Error> {
-        let now = self.now()?.max(shutdown.accepted_at_unix_nanos);
-        let remaining = duration_until(shutdown.deadline_at_unix_nanos, now);
-        self.settle_or_force(remaining, &shutdown, self.settle_loop(&shutdown))
-            .await
     }
 
     async fn settle_or_force(
@@ -254,10 +215,14 @@ impl RunModule {
     ) -> Result<(), Error> {
         match timeout(remaining, drain).await {
             Ok(result) => result,
-            Err(_elapsed) => self
-                .settle_termination(&shutdown.workspace_id, &shutdown.run_id, true)
-                .await
-                .map(drop),
+            // Past the grace: end the Run now, reading it again after a head
+            // another writer moved.
+            Err(_elapsed) => {
+                while !self.settle_termination(shutdown, true).await? {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -266,10 +231,7 @@ impl RunModule {
     /// upstream result. An undispatched one can no longer write, so
     /// termination ends it without waiting.
     async fn settle_loop(&self, shutdown: &ShutdownAction) -> Result<(), Error> {
-        while !self
-            .settle_termination(&shutdown.workspace_id, &shutdown.run_id, false)
-            .await?
-        {
+        while !self.settle_termination(shutdown, false).await? {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         Ok(())
@@ -294,14 +256,25 @@ impl RunModule {
         }
     }
 
-    async fn settle_termination(
+    /// One settle attempt of a recorded termination: every nonterminal
+    /// Invocation and `run.ended` in one terminal chunk, once no dispatch is
+    /// in flight or `grace_expired` (judged by the caller on its own clock).
+    /// `Ok(true)` once the Run is terminal, by this write or another's;
+    /// `Ok(false)` while a dispatch is still in flight within the grace. The
+    /// Run row is read without a hold: the owner runs its writes one at a
+    /// time, and recovery's settle runs after the owner here retired; a head
+    /// another writer moved meanwhile, or an Invocation it ended first, makes
+    /// the next attempt read the row again.
+    pub(crate) async fn settle_termination(
         &self,
-        workspace_id: &WorkspaceId,
-        run_id: &RunId,
+        shutdown: &ShutdownAction,
         grace_expired: bool,
     ) -> Result<bool, Error> {
+        let (workspace_id, run_id) = (&shutdown.workspace_id, &shutdown.run_id);
         let mut transaction = self.database.begin().await?;
-        let Some(run) = run_repository::hold_run(&mut transaction, workspace_id, run_id).await?
+        let Some(run) =
+            run_repository::find_exact_in_transaction(&mut transaction, workspace_id, run_id)
+                .await?
         else {
             return Ok(true);
         };
@@ -326,8 +299,17 @@ impl RunModule {
                 .now()?
                 .max(run.accepted_at_unix_nanos)
                 .max(termination_started_at);
-            self.finish_termination_in_transaction(&mut transaction, &run, terminal_at)
-                .await?;
+            match self
+                .finish_termination_in_transaction(&mut transaction, &run, terminal_at)
+                .await
+            {
+                Ok(()) => {}
+                // Another writer ended the Run, or moved its head, between
+                // the read and the write: the next attempt reads it again.
+                Err(Error::RunEnded) => return Ok(true),
+                Err(Error::HeadMismatch) => return Ok(false),
+                Err(error) => return Err(error),
+            }
         }
         transaction.commit().await?;
         Ok(true)
@@ -338,11 +320,20 @@ impl RunModule {
         transaction: &mut Transaction<'_>,
         run: &RunRecord,
         kind: RunTerminationKind,
-        requester: Option<&Principal>,
         started_at_unix_nanos: i64,
     ) -> Result<RunRecord, Error> {
-        let request = run.request_termination(kind, requester, started_at_unix_nanos)?;
-        run_repository::request_termination(transaction, run, &request).await?;
+        let request = run.request_termination(kind, started_at_unix_nanos)?;
+        self.record_termination(transaction, run, &request).await
+    }
+
+    /// Records `intent` on the Run row and returns the row as recorded.
+    pub(crate) async fn record_termination(
+        &self,
+        transaction: &mut Transaction<'_>,
+        run: &RunRecord,
+        intent: &RequestedTermination,
+    ) -> Result<RunRecord, Error> {
+        run_repository::request_termination(transaction, run, intent).await?;
         run_repository::find_exact_in_transaction(transaction, &run.workspace_id, &run.id)
             .await?
             .ok_or(Error::RunNotFound)
@@ -379,18 +370,20 @@ impl RunModule {
     /// Interrupts the Run `claim_id` owns in one chunk: the Program's pending
     /// Invocations end `run_terminated`, dispatching ones `indeterminate`,
     /// their Approval Requests close, and the Run ends `interrupted` (or
-    /// `timed_out` past its deadline), or with the termination an outside
-    /// writer already recorded (a cancellation wins). The self-interrupt path of a Run Owner that cannot commit, and
-    /// of the supervisor that takes over a Run whose owner task ended without
-    /// retiring; `takeover_claim_id` is the claim the supervisor mints so that
-    /// nothing still in flight under `claim_id` can land afterwards.
+    /// `timed_out` past its deadline), or with the termination already
+    /// recorded (a cancellation wins). The self-interrupt path of a Run
+    /// Owner that cannot commit, and of the supervisor that takes over a Run
+    /// whose owner task ended without retiring; `takeover_claim_id` is the
+    /// claim the supervisor mints so that nothing still in flight under
+    /// `claim_id` can land afterwards. The Run row is read without a hold:
+    /// the write's predicate on the claim and the head fences it.
     ///
     /// # Errors
     ///
     /// [`Error::ClaimMismatch`] when the Run row no longer holds `claim_id`
     /// (another writer took the Run), [`Error::RunEnded`] when the Run is
     /// terminal already; neither writes anything. An operational error leaves
-    /// the outcome unknown, and the next attempt's hold reads which it was.
+    /// the outcome unknown, and the next attempt's read reads which it was.
     pub(crate) async fn interrupt_owned_run(
         &self,
         workspace_id: &WorkspaceId,
@@ -399,7 +392,7 @@ impl RunModule {
         takeover_claim_id: Option<&str>,
     ) -> Result<(), Error> {
         let mut transaction = self.database.begin().await?;
-        let run = run_repository::hold_run(&mut transaction, workspace_id, run_id)
+        let run = run_repository::find_exact_in_transaction(&mut transaction, workspace_id, run_id)
             .await?
             .ok_or(Error::ClaimMismatch)?;
         if run.state.is_terminal() {
@@ -421,7 +414,7 @@ impl RunModule {
         if held_claim != Some(claim_id) {
             return Err(Error::ClaimMismatch);
         }
-        // Never before a termination an outside writer already recorded.
+        // Never before a termination already recorded.
         let now = self.now()?.max(run.accepted_at_unix_nanos).max(
             run.termination
                 .map_or(run.accepted_at_unix_nanos, |termination| {
@@ -432,11 +425,11 @@ impl RunModule {
         let termination = match run.termination {
             Some(termination) => termination,
             None if now >= run.deadline_at_unix_nanos => {
-                run.request_termination(RunTerminationKind::TimedOut, None, now)?
+                run.request_termination(RunTerminationKind::TimedOut, now)?
                     .termination
             }
             None => {
-                run.request_termination(RunTerminationKind::Interrupted, None, now)?
+                run.request_termination(RunTerminationKind::Interrupted, now)?
                     .termination
             }
         };
@@ -458,7 +451,7 @@ impl RunModule {
     /// [`Self::interrupt_owned_run`] until it lands: the last write a Run
     /// gets, so every answer but a claim mismatch or an ended Run is followed
     /// by another attempt after a bounded backoff (a rejection included,
-    /// which a chunk commit would not retry), and the next hold reads whether
+    /// which a chunk commit would not retry), and the next read reads whether
     /// the previous one landed. Never ends on the clock.
     pub(crate) async fn record_interruption(
         &self,
@@ -481,13 +474,18 @@ impl RunModule {
     }
 }
 
-#[derive(Debug)]
+/// A recorded termination to settle: which Run, under which claim, and
+/// until when its dispatches in flight may still record their results.
+#[derive(Debug, Clone)]
 pub(crate) struct ShutdownAction {
     run_id: RunId,
     workspace_id: WorkspaceId,
     claim_id: String,
     accepted_at_unix_nanos: i64,
     deadline_at_unix_nanos: i64,
+    /// The Run Ledger head as the terminal write left it: the one the owner
+    /// goes on from while it settles.
+    head: u64,
 }
 
 impl ShutdownAction {
@@ -495,12 +493,13 @@ impl ShutdownAction {
     #[cfg(test)]
     pub(crate) fn for_apply_test() -> Self {
         Self {
-            run_id: RunId::generate(),
+            run_id: RunId::generate().expect("the random source is available"),
             workspace_id: WorkspaceId::parse(&uuid::Uuid::nil().to_string())
                 .expect("the nil UUID parses"),
             claim_id: "claim".to_string(),
             accepted_at_unix_nanos: 0,
             deadline_at_unix_nanos: i64::MAX,
+            head: 0,
         }
     }
 
@@ -517,6 +516,21 @@ impl ShutdownAction {
             claim_id,
             accepted_at_unix_nanos: run.accepted_at_unix_nanos,
             deadline_at_unix_nanos: termination.deadline_at_unix_nanos,
+            head: run.chunk_sequence,
         })
+    }
+
+    /// The Run Ledger head the terminal write left.
+    pub(crate) const fn head(&self) -> u64 {
+        self.head
+    }
+
+    pub(crate) const fn accepted_at_unix_nanos(&self) -> i64 {
+        self.accepted_at_unix_nanos
+    }
+
+    /// When the shutdown grace of the recorded termination ends.
+    pub(crate) const fn deadline_at_unix_nanos(&self) -> i64 {
+        self.deadline_at_unix_nanos
     }
 }

@@ -18,7 +18,13 @@ import { StatusDot } from '@/wax/components/status'
 import { InfoTip, Tooltip } from '@/wax/components/tooltip'
 import * as Table from '@/wax/components/table'
 import { CELL_HEIGHT_PX, groupHeadingHeightPx } from '@/wax/components/table'
-import { CatalogLayout, CatalogRail, CatalogRailItem, CatalogToolbar } from '@/components/catalog'
+import {
+  CatalogLayout,
+  CatalogRail,
+  CatalogRailItem,
+  CatalogToolbar,
+  toolbarActionLabel,
+} from '@/components/catalog'
 import { filterQuery, type FilterQuery } from '@/utils/filter-query'
 import { EmptyPage } from '@/components/empty-page'
 import {
@@ -233,7 +239,9 @@ function WorkspaceProvidersContent({
         </div>
       ) : (
         <ProvidersTableScreen
-          addButton={addButton}
+          addButton={
+            canChange && <AddProviderLauncher {...entry} labelClassName={toolbarActionLabel} />
+          }
           canChange={canChange}
           filteredProviders={filteredProviders}
           form={form}
@@ -412,7 +420,7 @@ function ProvidersTableScreen({
   selectedOperation,
   setRailFilter,
 }: {
-  /** The main action, at the foot of the rail so it shows on every tab. */
+  /** The main action, at the end of the toolbar so it shows on every tab. */
   addButton: ReactNode
   canChange: boolean
   filteredProviders: ProviderView[]
@@ -864,7 +872,6 @@ function ProvidersTableScreen({
           }}
           empty={filteredProviders.length === 0}
           emptyMessage="No providers match."
-          footer={addButton}
         >
           <CatalogRailItem
             to={providersPath}
@@ -913,6 +920,7 @@ function ProvidersTableScreen({
     >
       <CatalogToolbar
         title="Providers"
+        action={addButton}
         filter={{
           id: OPERATION_FILTER_ID,
           label: 'Filter operations',

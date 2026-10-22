@@ -21,6 +21,7 @@ flate2.workspace = true
 jsonschema.workspace = true
 mime.workspace = true
 sea-query.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_path_to_error.workspace = true

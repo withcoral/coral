@@ -11,7 +11,7 @@ import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
 import { Activity } from './activity'
 import { ActionReviewSession } from '../actions/review'
-import { activityPage, approvalRequest, run, workspace } from './fixtures'
+import { activityPage, approvalContext, approvalRequest, run, workspace } from './fixtures'
 import type { ActivityPage, ActivityRow } from './types'
 import { emulateReducedMotion, resizeViewport } from '../../../.storybook/browser'
 
@@ -50,7 +50,8 @@ function pageFor(record: string | null): ActivityPage {
               kind: 'run',
               run: selectedRow,
               request: approvalRequest,
-              source: 'return null;',
+              // The program that makes the call this review decides.
+              source: approvalContext.source,
               linkedFunctions: [],
               terminal: { kind: 'unavailable' },
             }
@@ -168,15 +169,15 @@ async function surface(canvasElement: HTMLElement) {
     row,
     address: () => canvas.getByLabelText('Address').textContent,
     rail: () => screen.queryByRole('dialog', { name: 'Activity details' }),
+    // A record heads the rail with its name; an approval review heads it with its call.
     heading: (rail: HTMLElement, name: string) =>
-      waitFor(() => expect(within(rail).getByRole('heading', { name, level: 2 })).toBeVisible()),
+      waitFor(() => expect(within(rail).getByRole('heading', { name })).toBeVisible()),
     /** Waits until the rail shows `name`. A rail that closed and reopened is a new element. */
     shows: (name: string) =>
       waitFor(() =>
         expect(
           within(screen.getByRole('dialog', { name: 'Activity details' })).getByRole('heading', {
             name,
-            level: 2,
           }),
         ).toBeVisible(),
       ),
@@ -478,7 +479,7 @@ export const PickWhileClosing: Story = {
 
     // With an unsent comment, the close starts once you discard it.
     await userEvent.click(link('Reminder run'))
-    await shows('Send invoice reminders')
+    await shows(approvalRequest.callPath)
     await quiet(canvasElement)
     await typeComment('Check the recipient')
     loads.hold()
@@ -487,11 +488,11 @@ export const PickWhileClosing: Story = {
       within(await discardPrompt()).getByRole('button', { name: 'Discard comment' }),
     )
     await loading()
-    await pickBackToList('Reminder run', 'Send invoice reminders')
+    await pickBackToList('Reminder run', approvalRequest.callPath)
 
     // Keep editing cancels the close; a later discarded close behaves the same.
     await userEvent.click(link('Reminder run'))
-    await shows('Send invoice reminders')
+    await shows(approvalRequest.callPath)
     await quiet(canvasElement)
     await typeComment('Check the amount')
     await userEvent.click(closeButton())
@@ -506,7 +507,7 @@ export const PickWhileClosing: Story = {
       within(await discardPrompt()).getByRole('button', { name: 'Discard comment' }),
     )
     await loading()
-    await pickBackToList('Reminder run', 'Send invoice reminders')
+    await pickBackToList('Reminder run', approvalRequest.callPath)
   },
 }
 
@@ -549,7 +550,7 @@ export const UnsentComment: Story = {
 
     // Closing asks too.
     await userEvent.click(link('Reminder run'))
-    await heading(review, 'Send invoice reminders')
+    await heading(review, approvalRequest.callPath)
     await userEvent.type(await comment(), 'Check the amount')
     const closeButton = within(review).getByRole('button', { name: 'Close details' })
     await userEvent.click(closeButton)

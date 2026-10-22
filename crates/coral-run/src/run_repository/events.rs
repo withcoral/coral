@@ -189,6 +189,8 @@ pub(crate) struct OwnedEvent {
 pub(crate) enum OwnedEventKind {
     InvocationStarted(InvocationId),
     InvocationEnded(InvocationId, InvocationResultKind),
+    /// A cancellation the Run Owner applied, by the Principal who asked.
+    CancellationRequested(Principal),
     /// A Program Emission as its encoded JSON: what the row stores, and all
     /// the owner keeps in memory until the chunk commits.
     Emitted(String, Option<SourceLocation>),
@@ -207,6 +209,9 @@ impl OwnedEvent {
         match &self.kind {
             OwnedEventKind::InvocationStarted(id) => NewEvent::InvocationStarted(id),
             OwnedEventKind::InvocationEnded(id, kind) => NewEvent::InvocationEnded(id, *kind),
+            OwnedEventKind::CancellationRequested(requester) => {
+                NewEvent::CancellationRequested(requester)
+            }
             OwnedEventKind::Emitted(value, location) => NewEvent::Emitted(value, location.as_ref()),
             OwnedEventKind::Logged(level, message, location) => {
                 NewEvent::Logged(*level, message, location.as_ref())

@@ -51,3 +51,16 @@ export const native = style({
   overflowWrap: 'anywhere',
   flexShrink: 0,
 })
+
+// A panel's own action, after its evidence, at the panel's end edge.
+// Apart like a card's decision controls, and wrapped on a narrow screen rather than overflowing.
+export const endActions = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 12,
+  justifyContent: 'flex-end',
+})
+
+/** A card that is a link: it reads as the card, not as underlined link text. */
+export const cardLink = style({ color: 'inherit', textDecoration: 'none' })
