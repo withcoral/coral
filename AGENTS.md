@@ -78,8 +78,9 @@
   when a decision, a cancel or the periodic precheck of parked waits applied
   before it finds the deadline passed),
   the owner's own writes read the
-  clock only for their own sample (the start mark and the terminal write
-  date a timeout they find passed; the Dispatch Fence judges an approved
+  clock only for their own sample (the start mark, the terminal write and a
+  recovered owner's one chunk date a timeout they find passed; the Dispatch
+  Fence judges an approved
   request's deadline at dispatch, contract line 3, and records no expiry),
   and no chunk commit is predicated on the clock (contract line 5). Nothing
   outside the owner compares `now` with those deadlines to write TimedOut
@@ -88,9 +89,11 @@
   module records its expiry when a holder reads it, and the owner's timer
   only wakes the Invocations parked on it. Do not open a transaction that
   holds the Run row from any of these paths, and do not write a nonterminal
-  Run's row from outside its owner. A Run that lost its owner gets one back
-  from the expired-lease sweep (the Recovery section of ADR 0018); retention
-  holds and deletes terminal Runs only.
+  Run's row from outside its owner. A Run whose owner retired or whose
+  process is gone without ending it gets its owner back from the
+  expired-lease sweep (the Recovery section of ADR 0018); a panicked owner
+  task's supervisor ends its Run at once instead. Retention holds and
+  deletes terminal Runs only.
   [ADR 0018](docs/adr/0018-run-owner-coordinates-each-run.md) has the
   request model (requests keyed by the entity they decide, the first wins).
 - A Run Owner's write ends on the database's answer, never on the clock: an
