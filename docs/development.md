@@ -125,7 +125,8 @@ This keeps Coral in the left pane and starts Reef on the right without changing
 focus. Each pane is independent: stop each with Ctrl-C. Restart with `./dev coral`
 or `./dev reef`. The same two commands work in ordinary separate terminals.
 
-For the same layout in Rex, start from the only pane in a fresh tab:
+For the same layout in Rex, start in **the only pane of a fresh tab**, an
+ordinary shell rather than a coding-agent pane:
 
 ```bash
 /path/to/checkout/dev run --rex

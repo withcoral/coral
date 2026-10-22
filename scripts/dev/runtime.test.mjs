@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createServer } from 'node:net'
@@ -238,7 +239,7 @@ test('Rex refuses outside/split contexts and uses returned IDs without stealing 
         ),
       /fresh tab/,
     )
-    assert.ok(!calls.some((args) => args[0] === 'split'))
+    assert.deepEqual(calls, [['session', 'inspect', 's:1', '--json']])
   }
   const calls = []
   configureRexPanes(
@@ -252,7 +253,8 @@ test('Rex refuses outside/split contexts and uses returned IDs without stealing 
     's:1',
     'b:left',
   )
-  assert.deepEqual(calls.slice(1), [
+  assert.deepEqual(calls, [
+    ['session', 'inspect', 's:1', '--json'],
     [
       'split',
       '-s',
@@ -272,4 +274,17 @@ test('Rex refuses outside/split contexts and uses returned IDs without stealing 
     ['send', '-s', 's:1', '-b', 'b:right', "'/repo with spaces/dev' reef"],
     ['send-key', '-s', 's:1', '-b', 'b:right', 'enter'],
   ])
+})
+
+test('./dev run --rex refuses outside Rex before any other check', () => {
+  const env = { ...process.env }
+  delete env.REX_SESSION
+  delete env.REX_BLOCK
+  const result = spawnSync(
+    process.execPath,
+    [join(import.meta.dirname, 'cli.mjs'), 'run', '--rex'],
+    { encoding: 'utf8', env },
+  )
+  assert.match(result.stderr, /Run --rex only inside a fresh Rex shell tab/)
+  assert.equal(result.status, 1)
 })
