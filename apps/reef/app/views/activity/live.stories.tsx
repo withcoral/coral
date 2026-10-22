@@ -871,7 +871,8 @@ export const AFailedOrUnfinishedDecisionHolds: Story = {
     // already names the next one.
     world.decision = 'held'
     await userEvent.click(approve())
-    await expect(await within(rail()).findByRole('button', { name: 'Approving…' })).toBeDisabled()
+    await waitFor(() => expect(approve()).toHaveAttribute('aria-busy', 'true'))
+    await expect(approve()).toHaveAttribute('aria-disabled', 'true')
     loads = world.loads
     await holds()
 
@@ -886,7 +887,8 @@ export const AFailedOrUnfinishedDecisionHolds: Story = {
     await idle()
     held = address().toString()
     await userEvent.click(approve())
-    await expect(await within(rail()).findByRole('button', { name: 'Approving…' })).toBeDisabled()
+    await waitFor(() => expect(approve()).toHaveAttribute('aria-busy', 'true'))
+    await expect(approve()).toHaveAttribute('aria-disabled', 'true')
     loads = world.loads
     await holds()
     world.release()
@@ -985,8 +987,10 @@ export const YourPickDuringADecisionStays: Story = {
     // You pick a record while your decision is under way. Once it saves, the review
     // does not take the selection back.
     world.decision = 'held'
-    await userEvent.click(within(rail()).getByRole('button', { name: 'Approve this call' }))
-    await within(rail()).findByRole('button', { name: 'Approving…' })
+    const approve = () => within(rail()).getByRole('button', { name: 'Approve this call' })
+    await userEvent.click(approve())
+    await waitFor(() => expect(approve()).toHaveAttribute('aria-busy', 'true'))
+    await expect(approve()).toHaveAttribute('aria-disabled', 'true')
     await userEvent.click(link('log #2'))
     await selects('console.info #2', 'log #2')
     world.release()
