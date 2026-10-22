@@ -46,8 +46,7 @@ pub use list_providers::{
 };
 pub use provider_input::{ConfigurationChoices, ProviderSourceArgument};
 pub use update_provider::{
-    EntryChange, EntryStatus, FieldChange, ProviderChanges, SavedProvider, SourceChange,
-    SourceRead, UpdateProviderArguments, UpdateProviderResult,
+    ConfigurationPatch, SourceChange, UpdateProviderArguments, UpdateProviderResult,
 };
 
 /// Safe display name of the Built-in Provider.

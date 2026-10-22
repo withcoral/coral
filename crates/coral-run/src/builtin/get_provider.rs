@@ -4,8 +4,8 @@ use coral_catalog::{
     ConfigurationOutput, GetProviderArguments, GetProviderResult, ProviderSetupInputKind,
     ProviderSourceOutput,
 };
+use coral_provider::ProviderWithConfiguration;
 use coral_provider::access::ProviderNamespace;
-use coral_provider::{ProviderSource, ProviderWithConfiguration};
 
 use super::{BuiltinHost, authority_error};
 use crate::{CoralFailure, Error, Rejection};
@@ -46,7 +46,19 @@ impl GetProvider {
     }
 
     fn result(&self, inspected: ProviderWithConfiguration) -> Result<GetProviderResult, Error> {
-        let source = source_output(inspected.source)?;
+        let source = match (inspected.source.kind, inspected.source.url) {
+            (ProviderSetupInputKind::OpenApi, None) => ProviderSourceOutput::OpenapiDocument,
+            (ProviderSetupInputKind::OpenApi, Some(url)) => {
+                ProviderSourceOutput::OpenapiUrl { url }
+            }
+            (ProviderSetupInputKind::Mcp, Some(url)) => ProviderSourceOutput::McpUrl { url },
+            (ProviderSetupInputKind::Mcp, None) => {
+                return Err(coral_provider::Error::CorruptData(
+                    "an MCP Provider has no source URL".into(),
+                )
+                .into());
+            }
+        };
         let provider = inspected.provider;
         Ok(GetProviderResult {
             namespace: self.namespace.as_str().to_owned(),
@@ -62,19 +74,4 @@ impl GetProvider {
             ),
         })
     }
-}
-
-/// Where Coral last read a Provider from, as a Program reads it.
-pub(super) fn source_output(source: ProviderSource) -> Result<ProviderSourceOutput, Error> {
-    Ok(match (source.kind, source.url) {
-        (ProviderSetupInputKind::OpenApi, None) => ProviderSourceOutput::OpenapiDocument,
-        (ProviderSetupInputKind::OpenApi, Some(url)) => ProviderSourceOutput::OpenapiUrl { url },
-        (ProviderSetupInputKind::Mcp, Some(url)) => ProviderSourceOutput::McpUrl { url },
-        (ProviderSetupInputKind::Mcp, None) => {
-            return Err(coral_provider::Error::CorruptData(
-                "an MCP Provider has no source URL".into(),
-            )
-            .into());
-        }
-    })
 }

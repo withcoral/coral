@@ -56,57 +56,6 @@ impl ProviderWithConfiguration {
     }
 }
 
-/// Reads the Provider Configuration of the Provider at `namespace`, in any
-/// state, in the caller's transaction; `None` when no Provider in the
-/// Workspace holds `namespace`. The caller checks authority.
-///
-/// # Errors
-/// Returns persistence or corrupt-evidence failures.
-pub async fn provider_configuration_in_transaction(
-    tx: &mut coral_db::Transaction<'_>,
-    workspace: &WorkspaceId,
-    namespace: &ProviderNamespace,
-) -> Result<Option<ProviderWithConfiguration>, Error> {
-    let Some(active) = repository::provider_by_call_root_in_transaction(
-        &mut *tx,
-        workspace,
-        &ProviderCallRoot::Owner(namespace.clone()),
-        coral_db::RowLock::None,
-    )
-    .await?
-    else {
-        return Ok(None);
-    };
-    let configuration =
-        crate::configuration::current_configuration_in_transaction(&mut *tx, &active).await?;
-    // Publication requires a confirmed method, so every Generation retains one.
-    let Some(ProviderConfiguration {
-        authentication: Some(authentication),
-        servers,
-        request_headers,
-        credential_fields,
-        ..
-    }) = configuration
-    else {
-        return Err(Error::CorruptData(
-            "a published Provider has no confirmed configuration".into(),
-        ));
-    };
-    let kind =
-        coral_catalog::setup_input_kind_in_transaction(&mut *tx, &active.generation_id).await?;
-    Ok(Some(ProviderWithConfiguration {
-        provider: active.provider,
-        source: ProviderSource {
-            url: active.source_url,
-            kind,
-        },
-        servers,
-        authentication,
-        request_headers,
-        credential_fields,
-    }))
-}
-
 impl ProviderModule {
     /// Reads the Provider Configuration of the Provider at `namespace`, in any
     /// state, under current Owner authority.
@@ -124,11 +73,43 @@ impl ProviderModule {
         let mut tx = self.database.begin_read_snapshot().await?;
         self.check_owner_inspection_in_transaction(&mut tx, actor, workspace)
             .await?;
-        let inspected = provider_configuration_in_transaction(&mut tx, workspace, namespace)
-            .await?
-            .ok_or(Error::ProviderNotFound)?;
+        let active = repository::provider_by_call_root_in_transaction(
+            &mut tx,
+            workspace,
+            &ProviderCallRoot::Owner(namespace.clone()),
+            coral_db::RowLock::None,
+        )
+        .await?
+        .ok_or(Error::ProviderNotFound)?;
+        let configuration =
+            crate::configuration::current_configuration_in_transaction(&mut tx, &active).await?;
+        // Publication requires a confirmed method, so every Generation retains one.
+        let Some(ProviderConfiguration {
+            authentication: Some(authentication),
+            servers,
+            request_headers,
+            credential_fields,
+            ..
+        }) = configuration
+        else {
+            return Err(Error::CorruptData(
+                "a published Provider has no confirmed configuration".into(),
+            ));
+        };
+        let kind =
+            coral_catalog::setup_input_kind_in_transaction(&mut tx, &active.generation_id).await?;
         tx.rollback().await?;
-        Ok(inspected)
+        Ok(ProviderWithConfiguration {
+            provider: active.provider,
+            source: ProviderSource {
+                url: active.source_url,
+                kind,
+            },
+            servers,
+            authentication,
+            request_headers,
+            credential_fields,
+        })
     }
 
     /// Inspects the saved source for one exact Provider under current Owner authority.

@@ -352,18 +352,12 @@ async fn private_document_server() -> MockServer {
 /// A server that serves `document` at `/openapi.json`.
 pub(super) async fn document_server(document: &'static str) -> MockServer {
     let server = MockServer::start().await;
-    serve(&server, document).await;
-    server
-}
-
-/// Makes `server` serve `document` at `/openapi.json` from now on.
-pub(super) async fn serve(server: &MockServer, document: &'static str) {
-    server.reset().await;
     Mock::given(method("GET"))
         .and(path("/openapi.json"))
         .respond_with(ResponseTemplate::new(200).set_body_string(document))
-        .mount(server)
+        .mount(&server)
         .await;
+    server
 }
 
 /// The `openapi_url` source for the document `server` serves.

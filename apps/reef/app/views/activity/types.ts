@@ -211,8 +211,6 @@ export type RequestDetail =
       approver: string
       decidedAt: string | null
       comment: string | null
-      /** What an updateProvider call changes, read when the review opens. */
-      providerChanges?: ProviderChanges
     }
   | {
       kind: 'account_connection'
@@ -221,34 +219,6 @@ export type RequestDetail =
       state: ConnectionState
       expiresAt: string | null
     }
-/** What an updateProvider call changes. Each sent field replaces its saved value whole, so the
- * saved side shows what the call removes. Coral works out each change; Reef only shows it. */
-export type ProviderChanges =
-  /** No provider has the call's namespace now, so the call fails. */
-  { kind: 'missing' } | { kind: 'fields'; fields: ProviderFieldChange[] }
-export type ProviderFieldChange =
-  /** A value the call replaces whole, each side as JSON text. */
-  | { kind: 'value'; field: string; saved: string; requested: string }
-  /** A map the call replaces whole, key by key. */
-  | { kind: 'entries'; field: string; entries: ProviderEntryChange[] }
-  /**
-   * Where the provider is read from. A null `requested` reads the saved source again;
-   * `unreadable` says that the saved source has no URL to read, so the call fails.
-   */
-  | { kind: 'source'; saved: ProviderSource; requested: ProviderSource | null; unreadable: boolean }
-export interface ProviderEntryChange {
-  key: string
-  status: 'added' | 'removed' | 'changed' | 'kept' | 'unknown'
-  /** JSON text; null for an added key. */
-  saved: string | null
-  /** JSON text; null for a removed key. */
-  requested: string | null
-}
-export interface ProviderSource {
-  kind: 'openapi_document' | 'openapi_url' | 'mcp_url' | 'unknown'
-  /** Empty for an uploaded document. */
-  url: string
-}
 export interface InvocationDetail {
   kind: 'invocation'
   /** Independently authorized containing Run, for concurrent actions and Program context.

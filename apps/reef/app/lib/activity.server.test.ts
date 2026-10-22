@@ -1,4 +1,3 @@
-import { create, type MessageInitShape } from '@bufbuild/protobuf'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { describe, expect, it } from 'vitest'
 import { createElement } from 'react'
@@ -13,12 +12,6 @@ import {
   ActivityInvocationState,
   ActivityInvocationOutcome,
   ActivityLogLevel,
-  ApprovalProviderChangesSchema,
-  ApprovalProviderEntriesChangeSchema,
-  ApprovalProviderEntryStatus,
-  ApprovalProviderSourceChangeSchema,
-  ApprovalProviderSourceKind,
-  ApprovalProviderValueChangeSchema,
 } from '@/generated/coral/management/v1/activity_pb'
 import { AccountConnectionState } from '@/generated/coral/management/v1/account_pb'
 import { fakeManagement, type ManagementHandlers } from './management.test-support'
@@ -572,12 +565,7 @@ function invocationDetail(
 }
 
 function approvalDetail(
-  options: {
-    hiddenRequest?: boolean
-    resolved?: boolean
-    wrongApprovalInvocation?: boolean
-    providerChanges?: MessageInitShape<typeof ApprovalProviderChangesSchema>
-  } = {},
+  options: { hiddenRequest?: boolean; resolved?: boolean; wrongApprovalInvocation?: boolean } = {},
 ): Handlers {
   return {
     activity: {
@@ -591,9 +579,6 @@ function approvalDetail(
           actionable: !options.resolved,
           argumentsJson: '{"to":"private@example.com"}',
           approver: options.resolved ? 'reviewer' : '',
-          ...(options.providerChanges !== undefined && {
-            providerChanges: options.providerChanges,
-          }),
         }
       },
     },
@@ -1234,104 +1219,6 @@ describe('hierarchical activity through the private server interface', () => {
       expect(review && 'taskIntent' in review).toBe(false)
     },
   )
-  // Catches: a review that drops what an updateProvider call changes, reads an entry's status as
-  // another, or shows a source change without the source the call reads.
-  it.each<{
-    label: string
-    changes?: MessageInitShape<typeof ApprovalProviderChangesSchema>
-    expected: unknown
-  }>([
-    { label: 'another operation', changes: undefined, expected: undefined },
-    {
-      label: 'a missing provider',
-      changes: { providerMissing: true },
-      expected: { kind: 'missing' },
-    },
-    {
-      label: 'each change kind',
-      changes: {
-        fields: [
-          {
-            field: 'displayName',
-            change: {
-              case: 'value',
-              value: create(ApprovalProviderValueChangeSchema, {
-                savedJson: '"Weather"',
-                requestedJson: '"Forecasts"',
-              }),
-            },
-          },
-          {
-            field: 'requestHeaders',
-            change: {
-              case: 'entries',
-              value: create(ApprovalProviderEntriesChangeSchema, {
-                entries: [
-                  { key: 'b', status: ApprovalProviderEntryStatus.REMOVED, savedJson: '"2"' },
-                  // A status this Reef does not know.
-                  {
-                    key: 'c',
-                    status: 99 as ApprovalProviderEntryStatus,
-                    savedJson: '"3"',
-                    requestedJson: '"4"',
-                  },
-                ],
-              }),
-            },
-          },
-          {
-            field: 'source',
-            change: {
-              case: 'source',
-              value: create(ApprovalProviderSourceChangeSchema, {
-                saved: { kind: ApprovalProviderSourceKind.OPENAPI_DOCUMENT, url: '' },
-                unreadable: true,
-              }),
-            },
-          },
-          // A change kind this Reef does not know.
-          { field: 'later', change: { case: undefined } },
-        ],
-      },
-      expected: {
-        kind: 'fields',
-        fields: [
-          { kind: 'value', field: 'displayName', saved: '"Weather"', requested: '"Forecasts"' },
-          {
-            kind: 'entries',
-            field: 'requestHeaders',
-            entries: [
-              { key: 'b', status: 'removed', saved: '"2"', requested: null },
-              { key: 'c', status: 'unknown', saved: '"3"', requested: '"4"' },
-            ],
-          },
-          {
-            kind: 'source',
-            saved: { kind: 'openapi_document', url: '' },
-            requested: null,
-            unreadable: true,
-          },
-        ],
-      },
-    },
-  ])('shows what an approval changes for $label', async ({ changes, expected }) => {
-    const { api } = coral(
-      list(),
-      runDetail(),
-      invocationDetail(),
-      approvalDetail({ providerChanges: changes }),
-      taskDetail(),
-    )
-    const page = await loadActivity(
-      request({ record: invocation, request: approval, tree: '1' }),
-      api,
-      {
-        scope,
-      },
-    )
-    const review = page.detail?.kind === 'invocation' ? page.detail.request : null
-    expect(review?.kind === 'approval' && review.providerChanges).toEqual(expected)
-  })
   it('keeps exact operation detail selected outside the list and opens only its own approval', async () => {
     const { api, calls } = coral(
       list(),

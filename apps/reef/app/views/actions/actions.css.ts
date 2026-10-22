@@ -14,5 +14,3 @@ export const action = style({
   minWidth: 0,
 })
 export const actionMeta = style({ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 })
-/** A map key beside what the call does to it. */
-export const entryKey = style({ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 })

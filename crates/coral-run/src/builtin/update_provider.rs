@@ -7,20 +7,6 @@
 //! the change only when nobody needs to act; otherwise the result is Reef's
 //! update page for the Setup, where the Owner confirms what Coral cannot.
 
-use async_trait::async_trait;
-use coral_catalog::{
-    ProviderChanges, SavedProvider, SourceChange, UpdateProviderArguments, UpdateProviderResult,
-};
-use coral_db::Transaction;
-use coral_provider::access::{CredentialRoute, ProviderNamespace};
-use coral_provider::{
-    Provider, ProviderPublicationOutcome, ProviderRegenerationPublication,
-    ProviderRegenerationRequest, ProviderSetup, ProviderSetupId, ProviderSetupInputKind,
-    ProviderSetupSource, ProviderWithConfiguration, PublishedProvider, WorkspaceProviderPublisher,
-};
-use coral_workspace::WorkspaceId;
-
-use super::get_provider::source_output;
 use super::setup_operation::{
     self, Publisher, SetupOperation, configuration_rejection, recover_published, request_id,
     setup_error,
@@ -28,6 +14,15 @@ use super::setup_operation::{
 use super::{BuiltinHost, provider_facts};
 use crate::lifecycle::RunRecord;
 use crate::{CoralFailure, Error, InvocationId, InvocationResultKind, Rejection};
+use async_trait::async_trait;
+use coral_catalog::{SourceChange, UpdateProviderArguments, UpdateProviderResult};
+use coral_db::Transaction;
+use coral_provider::access::{CredentialRoute, ProviderNamespace};
+use coral_provider::{
+    Provider, ProviderPublicationOutcome, ProviderRegenerationPublication,
+    ProviderRegenerationRequest, ProviderSetup, ProviderSetupId, ProviderSetupInputKind,
+    ProviderSetupSource, ProviderWithConfiguration, PublishedProvider, WorkspaceProviderPublisher,
+};
 
 /// `updateProvider`'s arguments in Coral's domain types.
 #[derive(Clone)]
@@ -90,14 +85,13 @@ impl UpdateProvider {
 
     /// Where the Update Setup reads the Provider from. A refresh reads the
     /// source URL saved when the call runs. An MCP server is discovered with
-    /// the sent non-secret headers, or else the saved ones.
+    /// the saved non-secret headers and the sent changes to them.
     fn source(&self, saved: &ProviderWithConfiguration) -> Result<ProviderSetupSource, Error> {
         let request_headers = || {
             self.arguments
                 .choices
+                .over(saved.configuration())
                 .request_headers
-                .clone()
-                .unwrap_or_else(|| saved.request_headers.clone())
         };
         Ok(match &self.arguments.source {
             SourceChange::Keep => ProviderSetupSource::Current,
@@ -329,38 +323,6 @@ pub(super) async fn recover(
         .filter(|publication| publication.outcome() == ProviderPublicationOutcome::Succeeded)
         .map(|publication| publication.request().provider_id());
     recover_published(transaction, run, provider, published_result).await
-}
-
-/// What an `updateProvider` call with `arguments` changes in the Provider as
-/// saved now, in the caller's snapshot, for the Owner who reviews the call.
-/// Arguments this version cannot read, as another Coral version could have
-/// stored them, show no changes.
-pub(super) async fn changes(
-    transaction: &mut Transaction<'_>,
-    workspace: &WorkspaceId,
-    arguments: &serde_json::Value,
-) -> Result<Option<ProviderChanges>, Error> {
-    let Ok(arguments) = UpdateProviderArguments::parse(arguments) else {
-        return Ok(None);
-    };
-    let Ok(namespace) = ProviderNamespace::parse(&arguments.namespace) else {
-        return Ok(None);
-    };
-    let saved =
-        coral_provider::provider_configuration_in_transaction(transaction, workspace, &namespace)
-            .await?
-            .map(saved_provider)
-            .transpose()?;
-    Ok(Some(arguments.changes(saved)))
-}
-
-/// A saved Provider, as the review of an update reads it.
-fn saved_provider(saved: ProviderWithConfiguration) -> Result<SavedProvider, Error> {
-    Ok(SavedProvider {
-        configuration: saved.configuration(),
-        credential_route: saved.provider.access().credential_route().into(),
-        source: source_output(saved.source)?,
-    })
 }
 
 /// The Operation Result for a change Coral published. It says what Coral

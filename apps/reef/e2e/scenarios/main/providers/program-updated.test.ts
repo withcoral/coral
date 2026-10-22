@@ -11,7 +11,6 @@ import {
   operationGroup,
   programRunner,
   programWorkspace,
-  type RunUpdate,
   saveConfirmedSettingsChange,
 } from '../../../support/providers.ts'
 import {
@@ -19,7 +18,6 @@ import {
   ProviderAccountState,
 } from '../../../generated/coral/management/v1/account_pb.ts'
 import { ProviderSetupInputKind } from '../../../generated/coral/management/v1/provider_pb.ts'
-import { openReview, pausedForApproval } from './program-approval.ts'
 
 type Session = Parameters<Parameters<typeof withOwnerSession>[1]>[0]
 
@@ -49,23 +47,11 @@ async function builtinCall(
 
 /**
  * A workspace with the credential-free `weather` provider that the owner's Program added from
- * `source`, and a runner for their Programs. Their Programs update providers without approval
- * unless `approveUpdates` is set.
+ * `source`, and a runner for their Programs, which update providers without approval.
  */
-async function weatherProvider(
-  { page, target, actor, step }: Session,
-  source: object,
-  {
-    requestHeaders,
-    approveUpdates = false,
-  }: { requestHeaders?: Record<string, string>; approveUpdates?: boolean } = {},
-) {
+async function weatherProvider({ page, target, actor, step }: Session, source: object) {
   const api = managementClients(actor.accessToken)
-  const workspace = await programWorkspace(
-    api,
-    step,
-    approveUpdates ? ['createProvider'] : ['createProvider', 'updateProvider'],
-  )
+  const workspace = await programWorkspace(api, step, ['createProvider', 'updateProvider'])
   const id = workspace.name.split('/')[1]
   const program = programRunner(page, target, id, {
     accessToken: await mcpToken(page, id),
@@ -76,7 +62,6 @@ async function weatherProvider(
       namespace: 'weather',
       source,
       credentialRoute: 'none',
-      ...(requestHeaders && { requestHeaders }),
     })
     expect(created.status).toBe('published')
   })
@@ -167,50 +152,6 @@ test("A workspace owner's Program moves a provider to a shared account, and you 
         scope: ProviderAccountScope.SHARED,
       })
       expect(account?.state).toBe(ProviderAccountState.READY)
-    })
-  })
-})
-
-test("A workspace owner reads the saved values their Program's change replaces, approves it, and Coral publishes it", async (context) => {
-  await withOwnerSession(context, async (session) => {
-    const { page, step } = session
-    const { api, program, provider } = await weatherProvider(
-      session,
-      credentialFree({ getForecast: {} }),
-      {
-        requestHeaders: { 'x-trace': 'on', 'x-tenant': 'acme' },
-        approveUpdates: true,
-      },
-    )
-    let paused!: RunUpdate
-    await step('The Run waits for you to approve updateProvider', async () => {
-      // The call sends one of the two saved headers, so it drops the other.
-      const call = {
-        namespace: 'weather',
-        displayName: 'Forecasts',
-        requestHeaders: { 'x-trace': 'on' },
-      }
-      paused = await pausedForApproval(
-        program,
-        await program.exec(`return await coral.workspace.updateProvider(${JSON.stringify(call)});`),
-      )
-    })
-    await step('Review the saved values the call replaces', async () => {
-      const review = await openReview(page, paused, 'coral.workspace.updateProvider')
-      const changes = review.locator('summary', { hasText: /^Changes \(2\)$/ }).locator('xpath=..')
-      await changes.getByText(JSON.stringify(provider.displayName), { exact: true }).waitFor()
-    })
-    await step('Approve the call, and Coral publishes the change', async () => {
-      await page.getByRole('button', { name: 'Approve this call', exact: true }).click()
-      await page.getByText('Approved', { exact: true }).waitFor()
-      const { update } = await observeRun(program, await program.wait(paused))
-      expect(update.final_value).toMatchObject({
-        value: { data: { status: 'published', displayName: 'Forecasts' } },
-      })
-      const published = await api.providers.getProvider({
-        name: provider.name,
-      })
-      expect(published.displayName).toBe('Forecasts')
     })
   })
 })

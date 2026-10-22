@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 use coral_catalog::{
     ArgumentProblem, BuiltinArguments, BuiltinOperation, ExecutionBinding, MaterializedOperation,
-    OperationKey, ProviderChanges, ProviderFacts, ProviderGenerationId,
+    OperationKey, ProviderFacts, ProviderGenerationId,
 };
 use coral_provider::account::AccountModule;
 use coral_provider::{
@@ -118,32 +118,6 @@ pub(crate) async fn recover(
                 .map(Some)
         }
         Some(BuiltinOperation::ListProviders | BuiltinOperation::GetProvider) | None => Ok(None),
-    }
-}
-
-/// What the Invocation of `operation` with `arguments` changes, for the Owner
-/// who reviews it: what an `updateProvider` call changes in the Provider
-/// as saved now, in the caller's snapshot. Every other Operation shows none.
-pub(crate) async fn approval_changes(
-    transaction: &mut coral_db::Transaction<'_>,
-    workspace: &WorkspaceId,
-    generation: &ProviderGenerationId,
-    operation: &OperationKey,
-    arguments: &serde_json::Value,
-) -> Result<Option<ProviderChanges>, Error> {
-    let materialized = coral_catalog::operation_in_transaction(transaction, generation, operation)
-        .await
-        .map_err(coral_provider::Error::from)?;
-    match materialized
-        .as_ref()
-        .map(MaterializedOperation::execution_binding)
-    {
-        Some(ExecutionBinding::Builtin(binding))
-            if binding.operation() == Some(BuiltinOperation::UpdateProvider) =>
-        {
-            update_provider::changes(transaction, workspace, arguments).await
-        }
-        _ => Ok(None),
     }
 }
 

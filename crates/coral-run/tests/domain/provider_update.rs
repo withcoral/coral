@@ -4,7 +4,7 @@
 //! returns Reef's update page, where a person finishes it.
 use super::provider_setup::{
     AdminScope, DOCUMENT, PRIVATE_DOCUMENT, StallingPublisher, document_server, document_source,
-    fetches, final_value, serve, url_source, workflow, workspace_call,
+    fetches, final_value, url_source, workflow, workspace_call,
 };
 use super::*;
 
@@ -221,9 +221,6 @@ enum Saved {
     Document,
     /// Created from the document with `getAlerts`.
     WithAlerts,
-    /// Created from a URL serving the document with `getAlerts`, which now
-    /// serves the document without it.
-    UrlDroppingAlerts,
     /// Published by the Owner from the document that takes a bearer token,
     /// which each caller gives. A Program cannot publish a Provider that
     /// needs a sign-in.
@@ -253,12 +250,6 @@ async fn a_change_that_needs_a_person_returns_the_update_page() {
         (
             Saved::WithAlerts,
             serde_json::json!({ "source": document_source() }),
-            "refresh",
-            "",
-        ),
-        (
-            Saved::UrlDroppingAlerts,
-            serde_json::json!({ "refresh": true }),
             "refresh",
             "",
         ),
@@ -296,11 +287,9 @@ async fn a_change_that_needs_a_person_returns_the_update_page() {
         ),
     ] {
         let scope = unattended("user:update-needs-person").await;
-        let server = document_server(WITH_ALERTS).await;
         let provider = match arranged {
             Saved::Document => create_weather(&scope, document_source()).await,
             Saved::WithAlerts => create_weather(&scope, openapi_document(WITH_ALERTS)).await,
-            Saved::UrlDroppingAlerts => create_weather(&scope, url_source(&server)).await,
             Saved::PerCaller => scope
                 .fixture
                 .providers
@@ -314,7 +303,6 @@ async fn a_change_that_needs_a_person_returns_the_update_page() {
                 .await
                 .unwrap(),
         };
-        serve(&server, DOCUMENT).await;
         let before_setups = scope.created_setups().await;
         let before = scope.lifecycle_events().await;
         let saved_before = saved(&scope, "weather").await;
@@ -418,50 +406,6 @@ async fn each_rejection_names_its_cause_and_changes_nothing() {
     }
 }
 
-// Catches: an argument problem that waits for an Owner's approval, or is
-// stored with an Invocation, before it fails.
-#[tokio::test]
-async fn an_argument_problem_fails_before_approval() {
-    let scope = AdminScope::new("user:update-arguments").await;
-    for (arguments, field) in [
-        (serde_json::json!({ "namespace": "weather" }), ""),
-        (
-            serde_json::json!({ "namespace": "weather", "refresh": true, "source": document_source() }),
-            "refresh",
-        ),
-    ] {
-        let run = scope.start(&scope.owner, update_provider(&arguments)).await;
-        let result = final_value(&scope.terminal(&scope.owner, &run).await);
-        assert_eq!(
-            result.get("code"),
-            Some(&serde_json::json!("invalid_input")),
-            "{arguments}"
-        );
-        let message = result
-            .get("message")
-            .and_then(serde_json::Value::as_str)
-            .unwrap();
-        assert!(
-            message.starts_with(&if field.is_empty() {
-                "Operation arguments are invalid:".to_owned()
-            } else {
-                format!("Operation arguments are invalid at `{field}`:")
-            }),
-            "{arguments}: {message}"
-        );
-        assert!(
-            scope
-                .fixture
-                .approvals()
-                .list_for_run(&scope.owner, &scope.workspace_id, &run)
-                .await
-                .unwrap()
-                .is_empty(),
-            "{arguments}: no approval request"
-        );
-    }
-}
-
 // Catches: a worker lost while Coral publishes an update leaving the call
 // indeterminate, when Coral's own Publication shows what happened, or a
 // Provider deleted since then failing the Run's termination.
@@ -544,139 +488,4 @@ async fn recovery_settles_a_lost_update_from_its_publication() {
         publisher.release.notify_one();
         wait_until(|| !scope.fixture.runs.has_owner(&run)).await;
     }
-}
-
-// Catches: a review that shows only what the call sends, so a header it drops
-// goes unnoticed; one that reads the saved values from when the call was
-// made rather than from when the Owner opens it; or one that names no change
-// when the Provider is gone.
-#[tokio::test]
-async fn the_review_shows_what_the_call_changes_when_it_opens() {
-    let scope = unattended("user:update-review").await;
-    let weather = scope.publish_weather().await;
-    call(
-        &scope,
-        "updateProvider",
-        &serde_json::json!({ "namespace": "weather", "requestHeaders": { "a": "1", "b": "2" } }),
-    )
-    .await;
-    scope
-        .set_access_to(
-            "coral.workspace.updateProvider",
-            OperationAccessState::ApprovalRequired,
-        )
-        .await;
-    let run = scope
-        .start(
-            &scope.owner,
-            update_provider(&serde_json::json!({
-                "namespace": "weather",
-                "displayName": "Forecasts",
-                "requestHeaders": { "a": "1" },
-            })),
-        )
-        .await;
-    let approvals = scope.fixture.approvals();
-    let request = wait_for_approval(&approvals, &scope.owner, &scope.workspace_id, &run).await;
-    let review = || async {
-        approvals
-            .get(&scope.owner, &scope.workspace_id, &request.id)
-            .await
-            .unwrap()
-            .provider_changes
-    };
-    assert_eq!(review().await, Some(header_changes("Weather")));
-
-    // An Owner renames the Provider while the call waits.
-    let renamed = scope
-        .fixture
-        .providers
-        .inspect_providers(&scope.owner_user(), &scope.workspace_id)
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|provider| provider.id() == weather.id())
-        .unwrap();
-    scope
-        .fixture
-        .providers
-        .update_provider(
-            &change(scope.owner_user(), 30, '7')
-                .with_etag(&renamed.etag())
-                .unwrap(),
-            &scope.workspace_id,
-            weather.id(),
-            coral_provider::ProviderDisplayName::parse("Weather service").unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(review().await, Some(header_changes("Weather service")));
-
-    scope
-        .fixture
-        .providers
-        .delete_provider(
-            &change(scope.owner_user(), 31, '8'),
-            &scope.workspace_id,
-            weather.id(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        review().await,
-        Some(coral_catalog::ProviderChanges::ProviderMissing)
-    );
-}
-
-/// The Changes of a call that renames the Provider from `saved_name` and keeps
-/// only header `a` of the saved `a` and `b`.
-fn header_changes(saved_name: &str) -> coral_catalog::ProviderChanges {
-    use coral_catalog::{EntryChange, EntryStatus, FieldChange, ProviderChanges};
-    ProviderChanges::Fields(vec![
-        FieldChange::Value {
-            field: "displayName",
-            saved: serde_json::json!(saved_name),
-            requested: serde_json::json!("Forecasts"),
-        },
-        FieldChange::Entries {
-            field: "requestHeaders",
-            entries: vec![
-                EntryChange {
-                    key: "a".to_owned(),
-                    status: EntryStatus::Kept,
-                    saved: Some(serde_json::json!("1")),
-                    requested: Some(serde_json::json!("1")),
-                },
-                EntryChange {
-                    key: "b".to_owned(),
-                    status: EntryStatus::Removed,
-                    saved: Some(serde_json::json!("2")),
-                    requested: None,
-                },
-            ],
-        },
-    ])
-}
-
-// Catches: a review of another Operation that shows Provider changes.
-#[tokio::test]
-async fn another_operations_review_shows_no_changes() {
-    let scope = AdminScope::new("user:create-review").await;
-    let approvals = scope.fixture.approvals();
-    let created = scope
-        .start(
-            &scope.owner,
-            workspace_call(
-                "createProvider",
-                &serde_json::json!({
-                    "namespace": "forecasts",
-                    "source": document_source(),
-                    "credentialRoute": "none",
-                })
-                .to_string(),
-            ),
-        )
-        .await;
-    let other = wait_for_approval(&approvals, &scope.owner, &scope.workspace_id, &created).await;
-    assert_eq!(other.provider_changes, None);
 }

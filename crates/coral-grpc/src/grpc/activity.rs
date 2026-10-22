@@ -1,5 +1,4 @@
 mod execution;
-mod provider_changes;
 mod tree;
 use super::{GrpcServices, management as wire, resource};
 use coral_auth::PrivateAudience;
@@ -492,7 +491,6 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
                 .unwrap_or_default(),
             decided_at_unix_nanos: value.decided_at_unix_nanos,
             comment: value.comment,
-            provider_changes: value.provider_changes.map(provider_changes::changes),
         }))
     }
     async fn inspect_run(

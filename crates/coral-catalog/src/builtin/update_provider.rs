@@ -1,8 +1,10 @@
 //! `coral.workspace.updateProvider`: the schemas a Program is typed from, the
 //! arguments Coral reads against the input schema, and the result it writes
 //! against the output schema. A call sends the namespace and only the fields
-//! it changes. Each sent field replaces its saved value whole, maps included;
-//! each omitted field keeps the value saved when the call runs.
+//! it changes. A sent value replaces its saved value. A sent map changes only
+//! the keys it names, and a key sent as `null` removes its entry, so the
+//! arguments show everything a call removes. Each omitted field keeps the
+//! value saved when the call runs.
 
 use std::collections::BTreeMap;
 
@@ -12,24 +14,20 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 
 use super::provider_input::{
-    self, AuthenticationInput, ConfigurationChoices, CredentialFieldInput, ProviderSourceArgument,
-    ProviderSourceInput, ServerInput,
+    AuthenticationInput, CredentialFieldInput, ProviderSourceArgument, ProviderSourceInput,
+    ServerInput,
 };
 use super::{
     ArgumentProblem, BuiltinCredentialRoute, BuiltinOperation, Definition, NAMESPACE_REASON,
     ProviderFacts, derived_schema, operation_result, present,
 };
 use crate::{
-    AuthenticationConfiguration, OperationHints, OperationPresentation, ProviderConfiguration,
+    AuthenticationConfiguration, CredentialField, OperationHints, OperationPresentation,
+    ProviderConfiguration, ServerSelection,
 };
 
-mod changes;
 #[cfg(test)]
 pub(super) mod tests;
-
-pub use changes::{
-    EntryChange, EntryStatus, FieldChange, ProviderChanges, SavedProvider, SourceRead,
-};
 
 pub(super) fn definition() -> Definition {
     Definition {
@@ -46,8 +44,9 @@ pub(super) fn definition() -> Definition {
             Some(
                 "Read the saved values with coral.workspace.getProvider first. Send namespace \
                  and only the fields to change. An omitted field keeps its saved value. A sent \
-                 field replaces its saved value whole, maps included: to drop a request \
-                 header, send requestHeaders without it. Remove authentication.issuer, \
+                 value replaces its saved value. A sent map changes only the keys it names: \
+                 to drop a request header, send requestHeaders with that header set to null. \
+                 Remove authentication.issuer, \
                  authentication.resource and authentication.client.registration from \
                  getProvider's result before you send authentication. An OAuth method you send \
                  without client keeps the saved application. Send source to read the \
@@ -107,28 +106,30 @@ struct Arguments {
     display_name: Option<String>,
     #[serde(default, deserialize_with = "present")]
     #[schemars(
-        with = "BTreeMap<String, ServerInput>",
-        description = "Server choice per server declaration, keyed by declaration pointer such \
-                       as #/servers. It replaces every saved choice."
+        with = "BTreeMap<String, Option<ServerInput>>",
+        description = "Server choices to change, keyed by declaration pointer such as \
+                       #/servers. null removes the saved choice. An unnamed declaration keeps \
+                       its saved choice."
     )]
-    servers: Option<BTreeMap<String, ServerInput>>,
+    servers: Option<BTreeMap<String, Option<ServerInput>>>,
     #[serde(default, deserialize_with = "present")]
     #[schemars(with = "AuthenticationInput")]
     authentication: Option<AuthenticationInput>,
     #[serde(default, deserialize_with = "present")]
     #[schemars(
-        with = "BTreeMap<String, String>",
-        description = "Non-secret headers sent with every request. It replaces every saved \
-                       header: to drop one, send the others without it."
+        with = "BTreeMap<String, Option<String>>",
+        description = "Non-secret headers to change, sent with every request. null removes the \
+                       saved header. An unnamed header keeps its saved value."
     )]
-    request_headers: Option<BTreeMap<String, String>>,
+    request_headers: Option<BTreeMap<String, Option<String>>>,
     #[serde(default, deserialize_with = "present")]
     #[schemars(
-        with = "BTreeMap<String, CredentialFieldInput>",
-        description = "The values a person enters when they sign in, keyed by field name, such \
-                       as token. It replaces every saved field. Never include a value."
+        with = "BTreeMap<String, Option<CredentialFieldInput>>",
+        description = "Values a person enters when they sign in, keyed by field name, such as \
+                       token. null removes the saved field. An unnamed field stays. Never \
+                       include a value."
     )]
-    credential_fields: Option<BTreeMap<String, CredentialFieldInput>>,
+    credential_fields: Option<BTreeMap<String, Option<CredentialFieldInput>>>,
 }
 
 /// A call must change something: the namespace alone changes nothing. The
@@ -179,7 +180,62 @@ pub struct UpdateProviderArguments {
     /// The Credential Route the Program asked for, if any.
     pub credential_route: Option<BuiltinCredentialRoute>,
     /// The configuration fields the Program sent, each over its saved value.
-    pub choices: ConfigurationChoices,
+    pub choices: ConfigurationPatch,
+}
+
+/// The configuration fields an update sends. A sent value replaces its saved
+/// value. A sent map changes only the keys it names: a key with a value sets
+/// that entry, and a key with `None` removes it.
+#[derive(Debug, Clone, Default)]
+pub struct ConfigurationPatch {
+    /// The Provider display name.
+    pub display_name: Option<String>,
+    /// The authentication method and its non-secret settings.
+    pub authentication: Option<AuthenticationConfiguration>,
+    /// Server choices to set or remove, by server declaration.
+    pub servers: BTreeMap<String, Option<ServerSelection>>,
+    /// Non-secret headers to set or remove.
+    pub request_headers: BTreeMap<String, Option<String>>,
+    /// Credential fields to set or remove.
+    pub credential_fields: BTreeMap<String, Option<CredentialField>>,
+}
+
+impl ConfigurationPatch {
+    /// Whether the call sends no configuration change.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.display_name.is_none()
+            && self.authentication.is_none()
+            && self.servers.is_empty()
+            && self.request_headers.is_empty()
+            && self.credential_fields.is_empty()
+    }
+
+    /// `saved` with each sent change applied.
+    #[must_use]
+    pub fn over(&self, saved: ProviderConfiguration) -> ProviderConfiguration {
+        ProviderConfiguration {
+            display_name: self.display_name.clone().unwrap_or(saved.display_name),
+            authentication: self.authentication.clone().or(saved.authentication),
+            servers: patched(saved.servers, &self.servers),
+            request_headers: patched(saved.request_headers, &self.request_headers),
+            credential_fields: patched(saved.credential_fields, &self.credential_fields),
+        }
+    }
+}
+
+/// `saved` with each key of `changes` set, or removed for `None`.
+fn patched<T: Clone>(
+    mut saved: BTreeMap<String, T>,
+    changes: &BTreeMap<String, Option<T>>,
+) -> BTreeMap<String, T> {
+    for (key, change) in changes {
+        match change {
+            Some(value) => saved.insert(key.clone(), value.clone()),
+            None => saved.remove(key),
+        };
+    }
+    saved
 }
 
 /// Where an update reads the Provider from.
@@ -207,14 +263,19 @@ impl UpdateProviderArguments {
         if !crate::provider_namespace_is_valid(&arguments.namespace) {
             problems.push(ArgumentProblem::new("namespace", NAMESPACE_REASON));
         }
-        let choices = provider_input::choices(
-            arguments.display_name,
-            arguments.servers,
-            arguments.authentication,
-            arguments.request_headers,
-            arguments.credential_fields,
-            &mut problems,
-        );
+        let choices = ConfigurationPatch {
+            display_name: arguments.display_name,
+            authentication: arguments
+                .authentication
+                .map(AuthenticationConfiguration::try_from)
+                .transpose()
+                .map_err(|problem| problems.push(problem))
+                .ok()
+                .flatten(),
+            servers: entries(arguments.servers),
+            request_headers: entries(arguments.request_headers),
+            credential_fields: entries(arguments.credential_fields),
+        };
         let refresh = arguments.refresh.is_some();
         let replaces_source = arguments.source.is_some();
         let source = arguments
@@ -255,6 +316,16 @@ impl UpdateProviderArguments {
             choices,
         })
     }
+}
+
+/// A sent map's changes in Coral's types; an unsent map changes nothing.
+fn entries<I, T: From<I>>(
+    sent: Option<BTreeMap<String, Option<I>>>,
+) -> BTreeMap<String, Option<T>> {
+    sent.into_iter()
+        .flatten()
+        .map(|(key, value)| (key, value.map(T::from)))
+        .collect()
 }
 
 impl UpdateProviderArguments {
