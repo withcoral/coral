@@ -13,7 +13,7 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 export const Submitted: Story = {
-  args: { busyStatus: 'Saving…', children: 'Save' },
+  args: { children: 'Save' },
   render: (args) => (
     <form aria-label="Example">
       <DocumentSubmitButton {...args} />
@@ -28,6 +28,5 @@ export const Submitted: Story = {
     await waitFor(() => expect(button).toHaveAttribute('aria-busy', 'true'))
     await expect(button).toHaveAttribute('aria-disabled', 'true')
     await expect(button).not.toBeDisabled()
-    await expect(canvas.getByRole('status')).toHaveTextContent('Saving…')
   },
 }

@@ -336,7 +336,7 @@ export function AccountStep({
                 >
                   Cancel
                 </Button.TextButton>
-                <DocumentSubmitButton form={secretFormId} busyStatus="Saving…" disabled={pending}>
+                <DocumentSubmitButton form={secretFormId} disabled={pending}>
                   {shared ? 'Save and share the account' : 'Save your account'}
                 </DocumentSubmitButton>
               </Dialog.Actions>
@@ -366,11 +366,7 @@ export function AccountStep({
                 </Button.TextButton>
                 {/* The step's own form is submitted from here; the portal
                         puts this button outside it, so it names the form. */}
-                <DocumentSubmitButton
-                  form={formId}
-                  busyStatus="Opening sign-in…"
-                  disabled={pending}
-                >
+                <DocumentSubmitButton form={formId} disabled={pending}>
                   {SIGN_IN_ACTION}
                 </DocumentSubmitButton>
               </Dialog.Actions>
@@ -378,11 +374,7 @@ export function AccountStep({
           </Dialog.Portal>
         </Dialog.Root>
       ) : (
-        <DocumentSubmitButton
-          form={formId}
-          busyStatus={signingIn && oauth ? 'Opening sign-in…' : 'Saving…'}
-          disabled={pending || unstartable}
-        >
+        <DocumentSubmitButton form={formId} disabled={pending || unstartable}>
           {signingIn && oauth ? signInLabel(setup) : 'Next'}
         </DocumentSubmitButton>
       )}

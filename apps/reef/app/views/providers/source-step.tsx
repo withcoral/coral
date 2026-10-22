@@ -224,7 +224,7 @@ export function SourceStep({
             type="submit"
             form={formId}
             disabled={reading}
-            busyStatus={reading && active ? (of === 'mcp' ? 'Connecting…' : 'Reading…') : undefined}
+            busy={reading && active}
             className={styles.readAction}
             onClick={() => readAs(of)}
           >

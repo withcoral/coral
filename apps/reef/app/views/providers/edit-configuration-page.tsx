@@ -184,11 +184,7 @@ export function EditConfigurationPage({
         ) : (
           <input type="hidden" name="source" value="current" />
         )}
-        <Button.TextButton
-          type="submit"
-          disabled={pending}
-          busyStatus={pending ? 'Starting…' : undefined}
-        >
+        <Button.TextButton type="submit" disabled={pending} busy={pending}>
           Start again
         </Button.TextButton>
       </Form>
@@ -202,7 +198,7 @@ export function EditConfigurationPage({
   const save = (
     <Button.TextButton
       disabled={saveDisabled}
-      busyStatus={pending ? 'Saving…' : undefined}
+      busy={pending}
       {...(needsConsent
         ? { onClick: () => setConfirming(true) }
         : { type: 'submit', form: publication.formId })}
@@ -242,11 +238,7 @@ export function EditConfigurationPage({
             >
               Cancel
             </Button.TextButton>
-            <DocumentSubmitButton
-              form={signInFormId}
-              busyStatus={oauth ? 'Opening sign-in…' : 'Saving…'}
-              disabled={pending}
-            >
+            <DocumentSubmitButton form={signInFormId} disabled={pending}>
               {oauth ? 'Sign in and share the account' : 'Save and share the account'}
             </DocumentSubmitButton>
           </Dialog.Actions>
@@ -456,7 +448,7 @@ export function EditConfigurationPage({
                   form={publication.formId}
                   variant={needsConsent ? 'destructive' : 'primary'}
                   disabled={saveDisabled}
-                  busyStatus={pending ? 'Saving…' : undefined}
+                  busy={pending}
                 >
                   Save
                 </Button.TextButton>

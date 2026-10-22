@@ -296,7 +296,7 @@ function AuthorizationStep({
         </Typography.BodySmall>
         <Dialog.Actions>
           {closeButton}
-          <DocumentSubmitButton busyStatus="Connecting…">Connect account</DocumentSubmitButton>
+          <DocumentSubmitButton>Connect account</DocumentSubmitButton>
         </Dialog.Actions>
       </form>
     )
@@ -324,9 +324,7 @@ function AuthorizationStep({
             <Button.Icon name="ExternalLink" />
           </Button.Container>
         ) : (
-          <DocumentSubmitButton form={formId} busyStatus="Opening sign-in…">
-            Continue to sign in
-          </DocumentSubmitButton>
+          <DocumentSubmitButton form={formId}>Continue to sign in</DocumentSubmitButton>
         )}
       </Dialog.Actions>
     </>

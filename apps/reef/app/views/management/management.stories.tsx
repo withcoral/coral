@@ -1189,7 +1189,7 @@ export const AddMemberPending: Story = {
     await userEvent.click(add)
     await waitFor(() => expect(add).toHaveAttribute('aria-busy', 'true'))
     await expect(add).toHaveAttribute('aria-disabled', 'true')
-    await expect(dialog.getByRole('status')).toHaveTextContent('Saving…')
+    await expect(add).toHaveAccessibleName('Add member')
   },
 }
 export const MembershipRoleSelection: Story = {

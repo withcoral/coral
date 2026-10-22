@@ -314,7 +314,7 @@ function ActionDialogBody({
             type="submit"
             variant={props.destructive ? 'destructive' : 'primary'}
             disabled={pending || props.disabled}
-            busyStatus={pending ? 'Saving…' : undefined}
+            busy={pending}
           >
             {props.submit ?? props.title}
           </Button.TextButton>

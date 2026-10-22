@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { createRoutesStub, Link } from 'react-router'
-import { expect, screen, spyOn, userEvent, waitFor } from 'storybook/test'
+import { expect, fn, screen, spyOn, userEvent, waitFor } from 'storybook/test'
 
 import { Button } from '@/wax/components'
 import { CopyButton as CopyButtonComponent } from '@/wax/components/button/copy-button'
@@ -326,16 +326,20 @@ export const Destructive: Story = {
   ),
 }
 
+// Catches: a busy button that runs its click handler, such as reopening a
+// confirmation or starting the same request again.
 export const Loading: Story = {
-  render: () => (
+  args: { onClick: fn() },
+  render: ({ onClick }) => (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {(['primary', 'secondary', 'bare', 'destructive'] as const).map((variant) => (
         <div key={variant} style={{ alignItems: 'center', display: 'flex', gap: 12 }}>
           {(['22', '32', '36'] as const).map((size) => (
             <Button.TextButton
               ariaLabel={`Save ${variant} ${size}`}
-              busyStatus="Saving…"
+              busy
               key={size}
+              onClick={onClick}
               size={size}
               variant={variant}
             >
@@ -346,12 +350,14 @@ export const Loading: Story = {
       ))}
     </div>
   ),
-  play: async ({ canvas }) => {
+  play: async ({ args, canvas }) => {
     const button = canvas.getByRole('button', { name: 'Save primary 32' })
     await expect(button).toHaveAttribute('aria-busy', 'true')
     await expect(button).toHaveAttribute('aria-disabled', 'true')
     await expect(button).not.toBeDisabled()
-    await expect(canvas.getAllByRole('status')[0]).toHaveTextContent('Saving…')
+    await userEvent.click(button)
+    await expect(args.onClick).not.toHaveBeenCalled()
+    await expect(canvas.getAllByRole('status')[1]).toHaveTextContent('Loading')
   },
 }
 

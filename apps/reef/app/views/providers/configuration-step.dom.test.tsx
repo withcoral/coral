@@ -210,7 +210,6 @@ it('shows progress as soon as Next submits the configuration', async () => {
   expect(next()).toHaveAttribute('aria-busy', 'true')
   expect(next()).toHaveAttribute('aria-disabled', 'true')
   expect(next()).not.toBeDisabled()
-  expect(document.querySelector('[role="status"]')).toHaveTextContent('Confirming…')
 })
 
 // Catches: a disabled Next that cannot say why, or that submits anyway. The

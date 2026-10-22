@@ -54,10 +54,7 @@ export function UpdateAuthorization({
             </CredentialFields>
           )}
           {!formId && (
-            <DocumentSubmitButton
-              busyStatus={oauth ? 'Opening sign-in…' : 'Authorizing…'}
-              disabled={pending}
-            >
+            <DocumentSubmitButton disabled={pending}>
               {oauth ? signInLabel(setup) : 'Authorize replacement'}
             </DocumentSubmitButton>
           )}

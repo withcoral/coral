@@ -278,7 +278,7 @@ export function ApprovalReview({
             value="decline"
             variant="destructive"
             disabled={pending || !connected || commentInvalid}
-            busyStatus={submitting === 'decline' ? 'Denying…' : undefined}
+            busy={submitting === 'decline'}
           >
             Deny this call
           </Button.TextButton>
@@ -288,7 +288,7 @@ export function ApprovalReview({
             name="intent"
             value="approve"
             disabled={pending || !connected || commentInvalid}
-            busyStatus={submitting === 'approve' ? 'Approving…' : undefined}
+            busy={submitting === 'approve'}
           >
             Approve this call
           </Button.TextButton>
@@ -330,7 +330,7 @@ export function QuickDecision({ name, label }: { name: string; label: string }) 
         variant="destructive"
         disabled={decided || !connected}
         ariaLabel={`Deny: ${label}`}
-        busyStatus={submitting === 'decline' ? 'Denying…' : undefined}
+        busy={submitting === 'decline'}
       >
         Deny
       </Button.TextButton>
@@ -340,7 +340,7 @@ export function QuickDecision({ name, label }: { name: string; label: string }) 
         value="approve"
         disabled={decided || !connected}
         ariaLabel={`Approve: ${label}`}
-        busyStatus={submitting === 'approve' ? 'Approving…' : undefined}
+        busy={submitting === 'approve'}
       >
         Approve
       </Button.TextButton>
@@ -368,7 +368,7 @@ export function CancelRun({
       <Button.TextButton
         variant={variant}
         disabled={!connected || fetcher.state !== 'idle'}
-        busyStatus={fetcher.state === 'idle' ? undefined : 'Requesting cancellation…'}
+        busy={fetcher.state !== 'idle'}
         onClick={() => setConfirming(true)}
       >
         Cancel run

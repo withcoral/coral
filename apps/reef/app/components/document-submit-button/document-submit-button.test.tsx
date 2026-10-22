@@ -20,10 +20,10 @@ function submit(form: HTMLFormElement, submitter: HTMLButtonElement) {
 it('shows progress only on the submitter and keeps its name and value successful', async () => {
   render(
     <form aria-label="Decision">
-      <DocumentSubmitButton name="intent" value="decline" busyStatus="Denying…">
+      <DocumentSubmitButton name="intent" value="decline">
         Deny
       </DocumentSubmitButton>
-      <DocumentSubmitButton name="intent" value="approve" busyStatus="Approving…">
+      <DocumentSubmitButton name="intent" value="approve">
         Approve
       </DocumentSubmitButton>
     </form>,
@@ -38,7 +38,6 @@ it('shows progress only on the submitter and keeps its name and value successful
   expect(approve).toHaveAttribute('aria-disabled', 'true')
   expect(approve).not.toBeDisabled()
   expect(deny).not.toHaveAttribute('aria-busy')
-  expect(screen.getByRole('status')).toHaveTextContent('Approving…')
   expect(new FormData(form, approve).get('intent')).toBe('approve')
   expect(submit(form, approve).defaultPrevented).toBe(true)
 })
@@ -50,9 +49,7 @@ it.each<[string, React.ComponentProps<'form'>, { formTarget?: string }]>([
 ])('ignores a submission that %s', async (_case, formProps, buttonProps) => {
   render(
     <form aria-label="Example" {...formProps}>
-      <DocumentSubmitButton busyStatus="Saving…" {...buttonProps}>
-        Save
-      </DocumentSubmitButton>
+      <DocumentSubmitButton {...buttonProps}>Save</DocumentSubmitButton>
     </form>,
   )
   const form = screen.getByRole('form', { name: 'Example' }) as HTMLFormElement
@@ -68,8 +65,8 @@ it('uses the browser-selected first submit button when Enter submits the form', 
   render(
     <form aria-label="Keyboard">
       <input aria-label="Name" />
-      <DocumentSubmitButton busyStatus="Saving first…">Save first</DocumentSubmitButton>
-      <DocumentSubmitButton busyStatus="Saving second…">Save second</DocumentSubmitButton>
+      <DocumentSubmitButton>Save first</DocumentSubmitButton>
+      <DocumentSubmitButton>Save second</DocumentSubmitButton>
     </form>,
   )
 
@@ -83,7 +80,7 @@ it('uses the browser-selected first submit button when Enter submits the form', 
 it('clears progress when the page returns from the back-forward cache', async () => {
   render(
     <form aria-label="Cached">
-      <DocumentSubmitButton busyStatus="Saving…">Save</DocumentSubmitButton>
+      <DocumentSubmitButton>Save</DocumentSubmitButton>
     </form>,
   )
   const form = screen.getByRole('form', { name: 'Cached' }) as HTMLFormElement

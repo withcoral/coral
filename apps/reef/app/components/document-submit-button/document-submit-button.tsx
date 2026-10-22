@@ -6,9 +6,7 @@ import type { TextButtonProps } from '@/wax/components/button/text-button'
 /** The submission each form is waiting on, so a second one cannot replace it. */
 const pendingForms = new WeakMap<HTMLFormElement, SubmitEvent>()
 
-export interface DocumentSubmitButtonProps extends Omit<TextButtonProps, 'busyStatus' | 'ref'> {
-  /** Announced while the document request is in progress. */
-  busyStatus: string
+export interface DocumentSubmitButtonProps extends Omit<TextButtonProps, 'busy' | 'ref'> {
   ref?: React.Ref<HTMLButtonElement>
 }
 
@@ -16,12 +14,7 @@ export interface DocumentSubmitButtonProps extends Omit<TextButtonProps, 'busySt
  * A submit button for a form that bypasses React Router. It reports the exact
  * submitter while the current document waits for its replacement.
  */
-export function DocumentSubmitButton({
-  busyStatus,
-  children,
-  ref,
-  ...props
-}: DocumentSubmitButtonProps) {
+export function DocumentSubmitButton({ children, ref, ...props }: DocumentSubmitButtonProps) {
   const buttonRef = useRef<HTMLButtonElement | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -72,12 +65,7 @@ export function DocumentSubmitButton({
   }
 
   return (
-    <Button.TextButton
-      {...props}
-      ref={setRef}
-      busyStatus={busy ? busyStatus : undefined}
-      type={props.type ?? 'submit'}
-    >
+    <Button.TextButton {...props} ref={setRef} busy={busy} type={props.type ?? 'submit'}>
       {children}
     </Button.TextButton>
   )

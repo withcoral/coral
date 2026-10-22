@@ -135,9 +135,7 @@ export function ContinueSignIn({
           triggerLabel="Continue sign-in"
         />
       ) : (
-        <DocumentSubmitButton busyStatus="Opening sign-in…" disabled={pending}>
-          Continue sign-in
-        </DocumentSubmitButton>
+        <DocumentSubmitButton disabled={pending}>Continue sign-in</DocumentSubmitButton>
       )}
     </Form>
   )
@@ -188,12 +186,7 @@ export function DiscoveryPrompt({
             <Form method="post">
               <Fields form={form} intent="oauth-retry" />
               <SetupFields setup={setup} />
-              <Button.TextButton
-                type="submit"
-                size="36"
-                disabled={pending}
-                busyStatus={pending ? 'Trying…' : undefined}
-              >
+              <Button.TextButton type="submit" size="36" disabled={pending} busy={pending}>
                 Try again
               </Button.TextButton>
             </Form>
@@ -288,11 +281,7 @@ export function DiscoveryPrompt({
                     >
                       Cancel
                     </Button.TextButton>
-                    <DocumentSubmitButton
-                      form={formId}
-                      busyStatus={bearer ? 'Reading…' : 'Opening sign-in…'}
-                      disabled={pending}
-                    >
+                    <DocumentSubmitButton form={formId} disabled={pending}>
                       {bearer ? 'List operations' : signInLabel(setup)}
                     </DocumentSubmitButton>
                   </Dialog.Actions>
@@ -368,12 +357,7 @@ export function DiscoveryStep({
               }
             />
             <SetupFields setup={setup} />
-            <Button.TextButton
-              type="submit"
-              size="36"
-              disabled={pending}
-              busyStatus={pending ? 'Trying…' : undefined}
-            >
+            <Button.TextButton type="submit" size="36" disabled={pending} busy={pending}>
               Try again
             </Button.TextButton>
           </Form>
@@ -438,7 +422,7 @@ export function DiscoveryStep({
           </Form>
           <div className={styles.stepActions}>
             {back}
-            <DocumentSubmitButton form={formId} size="36" busyStatus="Reading…" disabled={pending}>
+            <DocumentSubmitButton form={formId} size="36" disabled={pending}>
               List operations
             </DocumentSubmitButton>
           </div>
@@ -470,12 +454,7 @@ export function DiscoveryStep({
           {expiry}
           <div className={styles.stepActions}>
             {back}
-            <DocumentSubmitButton
-              form={formId}
-              size="36"
-              busyStatus="Opening sign-in…"
-              disabled={pending}
-            >
+            <DocumentSubmitButton form={formId} size="36" disabled={pending}>
               {signInLabel(setup)}
             </DocumentSubmitButton>
           </div>

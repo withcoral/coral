@@ -83,9 +83,7 @@ export function UpdatePage({
                     Replacement client secret
                   </Typography.BodySmallStrong>
                   <Inputs.CredentialInput id="replacement-client-secret" name="clientSecret" />
-                  <DocumentSubmitButton busyStatus="Replacing…">
-                    Replace secret
-                  </DocumentSubmitButton>
+                  <DocumentSubmitButton>Replace secret</DocumentSubmitButton>
                 </Form>
               </Disclosure>
             )}

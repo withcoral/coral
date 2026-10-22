@@ -70,9 +70,7 @@ export function AuthorizationPage({
                 triggerLabel="Continue to sign in"
               />
             ) : (
-              <DocumentSubmitButton busyStatus="Opening sign-in…">
-                Continue to sign in
-              </DocumentSubmitButton>
+              <DocumentSubmitButton>Continue to sign in</DocumentSubmitButton>
             )}
           </Form>
         ) : (
@@ -84,7 +82,7 @@ export function AuthorizationPage({
             <Typography.BodySmall as="p">
               Enter the credentials from {v.providerName}.
             </Typography.BodySmall>
-            <DocumentSubmitButton busyStatus="Connecting…">Connect account</DocumentSubmitButton>
+            <DocumentSubmitButton>Connect account</DocumentSubmitButton>
           </form>
         ))}
       {v.state === 'exchanging' && (

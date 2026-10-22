@@ -50,7 +50,7 @@ export function RestoreWorkspaceButton({
           size="22"
           variant="secondary"
           disabled={pending}
-          busyStatus={pending ? 'Restoring…' : undefined}
+          busy={pending}
         >
           Restore workspace
         </Button.TextButton>

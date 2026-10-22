@@ -90,7 +90,7 @@ export function usePublication({
           type="submit"
           form={formId}
           disabled={pending || disabled}
-          busyStatus={pending ? (updating ? 'Applying…' : 'Adding…') : undefined}
+          busy={pending}
         >
           {retrying ? 'Retry' : updating ? 'Apply changes' : 'Add provider'}
         </Button.TextButton>

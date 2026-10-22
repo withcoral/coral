@@ -282,7 +282,7 @@ describe('architecture', () => {
     }
     expect(
       violations,
-      'Pass progress to Button.TextButton busyStatus; it shows a spinner and keeps the label.',
+      'Pass progress to Button.TextButton busy; it shows a spinner and keeps the label.',
     ).toEqual([])
   })
 

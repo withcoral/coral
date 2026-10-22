@@ -7,8 +7,8 @@ import { SpinningButtonIcon } from './icon'
 import { Text } from './text'
 
 export interface TextButtonProps extends Omit<ButtonProps, 'children'> {
-  /** Keeps the label stable while announcing this progress status. */
-  busyStatus?: string
+  /** Shows a spinner beside the stable label and ignores clicks until the work ends. */
+  busy?: boolean
   children: React.ReactNode
   ref?: React.Ref<HTMLButtonElement>
 }
@@ -16,8 +16,7 @@ export interface TextButtonProps extends Omit<ButtonProps, 'children'> {
 /**
  * Convenience component for a button containing only text.
  */
-export function TextButton({ busyStatus, children, disabled, ref, ...rest }: TextButtonProps) {
-  const busy = busyStatus !== undefined
+export function TextButton({ busy, children, disabled, onClick, ref, ...rest }: TextButtonProps) {
   return (
     <>
       <Container
@@ -26,13 +25,16 @@ export function TextButton({ busyStatus, children, disabled, ref, ...rest }: Tex
         aria-busy={busy ? true : rest['aria-busy']}
         disabled={disabled || busy}
         focusableWhenDisabled={busy || rest.focusableWhenDisabled}
+        onClick={busy ? undefined : onClick}
       >
         {busy && <SpinningButtonIcon name="Loader" />}
         <Text>{children}</Text>
       </Container>
-      {busy && (
+      {/* A screen reader announces a live region's changes, not its first
+          content, so a button that can be busy keeps its region mounted. */}
+      {busy !== undefined && (
         <span className={visuallyHidden} role="status">
-          {busyStatus}
+          {busy ? 'Loading' : ''}
         </span>
       )}
     </>

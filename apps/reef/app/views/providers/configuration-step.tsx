@@ -349,7 +349,6 @@ export function ConfigurationStep({
     <DocumentSubmitButton
       type="submit"
       form={formId}
-      busyStatus={confirmLabel === 'Save' ? 'Saving…' : 'Confirming…'}
       disabled={pending || unchanged || blocked !== undefined}
       focusableWhenDisabled
       onClick={() => {

@@ -1228,7 +1228,9 @@ export const SourceOpenApiUpload: Story = {
       new File(['openapi: 3.1.0'], 'billing.yaml', { type: 'application/yaml' }),
     )
     // The zone reports what it holds through its own status region.
-    await expect(canvas.getByRole('status')).toHaveTextContent('billing.yaml')
+    await expect(
+      canvas.getByText('billing.yaml', { exact: false }).closest('[role="status"]'),
+    ).not.toBeNull()
   },
 }
 export const SourceMcpUrl: Story = {

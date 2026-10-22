@@ -249,7 +249,7 @@ function AddEnded({
         <Button.TextButton
           type="button"
           disabled={Boolean(reading)}
-          busyStatus={reading ? 'Starting…' : undefined}
+          busy={Boolean(reading)}
           onClick={() => read(source)}
         >
           Start again
