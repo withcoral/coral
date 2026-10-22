@@ -49,7 +49,7 @@ enum Command {
     /// Package, sign, and verify the staged Desktop build for one platform.
     ReleaseDesktopPackage(desktop_release::PackageArgs),
     /// Upload verified Desktop assets to a draft release in the v1 feed.
-    ReleaseDesktopPublish(desktop_release::FeedReleaseArgs),
+    ReleaseDesktopPublish(desktop_release::PublishArgs),
     /// Publish the complete draft, so updaters see it.
     ReleaseDesktopPromote(desktop_release::FeedReleaseArgs),
     /// Hydrate reachable external OpenAPI references into JSON.

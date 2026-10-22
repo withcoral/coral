@@ -267,10 +267,22 @@ pub(crate) struct FeedReleaseArgs {
     assets: PathBuf,
 }
 
+#[derive(Debug, clap::Args)]
+pub(crate) struct PublishArgs {
+    #[command(flatten)]
+    feed: FeedReleaseArgs,
+
+    /// Markdown release notes for the draft, read when the draft is created.
+    #[arg(long)]
+    notes_file: PathBuf,
+}
+
 /// Uploads every platform's verified assets to a draft release in the feed
 /// repository. Updaters ignore drafts, so none sees the release until
-/// `promote` publishes it whole. A rerun replaces the draft's assets.
-pub(crate) fn publish(args: &FeedReleaseArgs) -> Result<bool> {
+/// `promote` publishes it whole. A rerun replaces the draft's assets and
+/// keeps the notes it was created with.
+pub(crate) fn publish(publish_args: &PublishArgs) -> Result<bool> {
+    let args = &publish_args.feed;
     let verified = verified_assets(args)?;
     match release_state(&args.tag, &args.feed_repo)? {
         Some(ReleaseState {
@@ -291,7 +303,8 @@ pub(crate) fn publish(args: &FeedReleaseArgs) -> Result<bool> {
                     "--draft",
                 ])
                 .args(["--title", &format!("Coral {}", args.tag)])
-                .args(["--notes", &format!("Coral Desktop {}.", args.tag)]);
+                .arg("--notes-file")
+                .arg(&publish_args.notes_file);
             if is_prerelease(&args.tag) {
                 create.arg("--prerelease");
             }
