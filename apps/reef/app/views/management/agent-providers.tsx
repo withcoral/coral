@@ -38,7 +38,7 @@ export function AgentProviders({
   // A stable sort keeps the server's order within each half.
   const rows = (providers ?? []).toSorted((a, b) => Number(needsYou(b)) - Number(needsYou(a)))
   return (
-    <section className={styles.section} aria-labelledby={heading}>
+    <section className={styles.agentAccounts} aria-labelledby={heading}>
       <div className={styles.intro}>
         <Typography.HeadingSmall as="h2" id={heading}>
           Accounts
@@ -48,7 +48,7 @@ export function AgentProviders({
         ariaLabel="Provider accounts"
         layout="fixed"
         // A long list scrolls instead of stretching the dashboard row.
-        maxRows={3}
+        bounded
         staticRows
         variant="card"
         columns={[

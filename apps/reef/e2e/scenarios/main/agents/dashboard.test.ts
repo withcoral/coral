@@ -24,41 +24,40 @@ test("An agent's page lists its latest work live and opens the complete Activity
     const backToAgent = page.getByRole('link', { name: 'Back to agent', exact: true })
     for (const n of [1, 2, 3, 4]) await work(`Agent goal ${n}`)
 
-    await step('Recent activity lists only the three latest goals', async () => {
+    await step('Recent activity lists every goal of the first page', async () => {
       await page.goto(agentPath)
       // Hydration first: the live stream starts after it.
       await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
-      for (const n of [4, 3, 2])
+      for (const n of [4, 3, 2, 1])
         await recent.getByRole('link', { name: `Agent goal ${n}`, exact: true }).waitFor()
-      expect(await recent.getByRole('link', { name: 'Agent goal 1', exact: true }).count()).toBe(0)
+      // The whole first page shows, so no link leads to more.
+      expect(
+        await recent.getByRole('link', { name: 'View all activity', exact: true }).count(),
+      ).toBe(0)
     })
 
     let latest = ''
     await step('New agent work reaches Recent activity without a reload', async () => {
       latest = await work('Agent goal 5')
       await recent.getByRole('link', { name: 'Agent goal 5', exact: true }).waitFor()
-      await expect
-        .poll(() => recent.getByRole('link', { name: 'Agent goal 2', exact: true }).count())
-        .toBe(0)
+      // The first page has room for it, so the oldest goal stays.
+      await recent.getByRole('link', { name: 'Agent goal 1', exact: true }).waitFor()
     })
 
-    await step('View all activity opens every goal, and Back to agent returns', async () => {
-      await recent.getByRole('link', { name: 'View all activity', exact: true }).click()
-      await page.waitForURL((url) => url.searchParams.get('view') === 'activity')
-      await breadcrumb(page, 'Activity').waitFor()
-      await page.getByRole('link', { name: 'Agent goal 1', exact: true }).waitFor()
-      await backToAgent.click()
-      await page.waitForURL((url) => url.pathname === agentPath && !url.search)
-      await recent.waitFor()
-    })
-
-    await step('A goal opened from Recent activity stays on the complete Activity', async () => {
+    await step('A goal opened from Recent activity opens the complete Activity', async () => {
       await recent.getByRole('link', { name: 'Agent goal 5', exact: true }).click()
       await page.waitForURL((url) => url.searchParams.get('record') === latest)
+      await breadcrumb(page, 'Activity').waitFor()
       await page.getByRole('button', { name: 'Close details', exact: true }).click()
       await page.waitForURL((url) => !url.searchParams.has('record'))
       await backToAgent.waitFor()
       expect(await recent.count()).toBe(0)
+    })
+
+    await step('Back to agent returns to Recent activity', async () => {
+      await backToAgent.click()
+      await page.waitForURL((url) => url.pathname === agentPath && !url.search)
+      await recent.getByRole('link', { name: 'Agent goal 5', exact: true }).waitFor()
     })
   })
 })

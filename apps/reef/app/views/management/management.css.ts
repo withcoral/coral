@@ -1,4 +1,4 @@
-import { style } from '@vanilla-extract/css'
+import { createContainer, style } from '@vanilla-extract/css'
 
 import { breakpoints } from '@/styles/breakpoints'
 import { theme } from '@/wax/theme/theme.css'
@@ -50,33 +50,58 @@ export const section = style({ display: 'flex', flexDirection: 'column', gap: 16
 export const panel = style({ gap: 20, minWidth: 0 })
 export const quickStart = style({ gap: 16, minWidth: 0 })
 // An agent's setup leads; accounts and a short Activity reader share the row below it.
+// The dashboard is its own container: the stack point follows its width, not the viewport's.
+const agentDashboardContainer = createContainer()
+const STACKED_DASHBOARD = `${agentDashboardContainer} (max-width: 960px)`
+// The cards fill the page's height and scroll their rows. Below this, the page scrolls instead.
+const AGENT_CARD_MIN_HEIGHT = 360
 export const agentDashboard = style({
+  containerName: agentDashboardContainer,
+  containerType: 'inline-size',
   display: 'flex',
+  flex: '1 1 0',
   flexDirection: 'column',
   gap: 16,
   minWidth: 0,
 })
 export const agentDashboardGrid = style({
   display: 'grid',
+  flex: '1 1 0',
   gap: 16,
   gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+  gridTemplateRows: 'minmax(0, 1fr)',
+  minHeight: AGENT_CARD_MIN_HEIGHT,
   minWidth: 0,
-  '@media': {
-    [`screen and (max-width: ${breakpoints.mobile})`]: { gridTemplateColumns: 'minmax(0, 1fr)' },
+  '@container': {
+    // Activity goes below the accounts, and the page scrolls past both.
+    [STACKED_DASHBOARD]: {
+      flex: 'none',
+      gridTemplateColumns: 'minmax(0, 1fr)',
+      gridTemplateRows: 'auto',
+    },
   },
 })
 export const agentDashboardSingle = style([
   agentDashboardGrid,
   { gridTemplateColumns: 'minmax(0, 1fr)' },
 ])
+// A long list scrolls inside the card instead of stretching the dashboard row.
+export const agentAccounts = style([section, { minHeight: 0 }])
 export const agentRecentActivity = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 16,
+  minHeight: 0,
   minWidth: 0,
+  '@container': {
+    // Stacked, the page scrolls, so the reader takes a height of its own.
+    [STACKED_DASHBOARD]: { height: `clamp(${AGENT_CARD_MIN_HEIGHT}px, 70vh, 720px)` },
+  },
 })
 export const agentRecentActivityBody = style({
-  flex: '1 1 auto',
+  display: 'flex',
+  flex: '1 1 0',
+  flexDirection: 'column',
   minHeight: 0,
   minWidth: 0,
 })

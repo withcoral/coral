@@ -28,6 +28,7 @@ import { AgentActivityPage } from '@/views/management/agent-activity-page'
 import { trail } from '@/views/management/layout'
 import { loadActivity } from '@/lib/activity.server'
 import { loadActivityPage } from '@/lib/activity-page-fetch'
+import { ACTIVITY_PAGE_SIZE } from '@/lib/activity-list'
 
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 
@@ -201,7 +202,8 @@ export default function AgentRoute({ loaderData, params }: Route.ComponentProps)
           more={{
             to: `${loaderData.agent.path}?view=activity`,
             label: 'View all activity',
-            roots: 3,
+            // The card fills the page's height and scrolls, so it lists the whole first page.
+            roots: ACTIVITY_PAGE_SIZE,
           }}
         />
       }
