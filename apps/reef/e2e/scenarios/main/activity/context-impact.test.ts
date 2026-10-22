@@ -103,7 +103,7 @@ test('Activity and the Overview summary reconcile discovery costs and saved oper
       )
       await step('The Overview counts the same context as the Task', async () => {
         // Only an exact byte count tells the describe response apart from the Run's saving.
-        const saved = (-goal.task!.contextImpactBytes).toLocaleString('en-US')
+        const saved = (-goal.task!.contextImpactBytes!).toLocaleString('en-US')
         await page.goto(`/workspaces/${workspace}`)
         await page
           .getByRole('region', { name: 'Activity summary', exact: true })
