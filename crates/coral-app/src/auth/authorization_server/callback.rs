@@ -310,7 +310,6 @@ mod tests {
     use crate::auth::id_token::tests::{
         claims as id_token_claims, rsa_key, set_claim, token as id_token,
     };
-    use crate::auth::sealed_handshake::HandshakeKeys;
     use crate::auth::test_config::PROVIDER_SECRET;
     use coral_auth::authorization_codes::{AuthorizationCodes, CodeRedemption};
     use coral_db::Database;
@@ -539,62 +538,21 @@ mod tests {
         );
     }
 
-    /// A provider link forwarded to another browser carries the sign-in's
-    /// `state` but not its cookie. The callback stops before it contacts the
-    /// provider, so nothing is exchanged or issued for the wrong browser.
+    /// An identity provider link forwarded to another browser carries the
+    /// sign-in's `state` but not its cookie. The callback stops before it
+    /// contacts the identity provider, so nothing is exchanged or issued for the
+    /// wrong browser. Whether a cookie that is present opens is
+    /// `SignInSession`'s rule.
     #[tokio::test]
     async fn callback_needs_the_cookie_of_the_browser_that_started_sign_in() {
         let provider = MockServer::start().await;
         let auth_state = state(&provider.uri());
         let own = browser_cookie(&auth_state, OIDC_STATE, &session());
-        // Another sign-in's sealed session, presented under this sign-in's name.
-        let moved = {
-            let other = browser_cookie(&auth_state, "other-state", &session());
-            let sealed = other
-                .to_str()
-                .expect("ASCII")
-                .split_once('=')
-                .expect("pair")
-                .1;
-            let name = own
-                .to_str()
-                .expect("ASCII")
-                .split_once('=')
-                .expect("pair")
-                .0;
-            HeaderValue::from_str(&format!("{name}={sealed}")).expect("cookie")
-        };
-        let other_server_keys = {
-            let mut session = session();
-            session.client_id = "https://attacker.example.test/client.json".into();
-            let sealed = session
-                .seal(
-                    &HandshakeKeys::derive(b"another deployment").expect("keys"),
-                    OIDC_STATE,
-                    sign_in_cookie::now_unix_secs().expect("clock") + 300,
-                )
-                .expect("sealed");
-            let name = own
-                .to_str()
-                .expect("ASCII")
-                .split_once('=')
-                .expect("pair")
-                .0;
-            HeaderValue::from_str(&format!("{name}={sealed}")).expect("cookie")
-        };
         let mut shadowed = HeaderMap::new();
         shadowed.append(header::COOKIE, own.clone());
         shadowed.append(header::COOKIE, own);
         for (case, headers) in [
             ("no cookie", HeaderMap::new()),
-            (
-                "another sign-in's cookie",
-                HeaderMap::from_iter([(header::COOKIE, moved)]),
-            ),
-            (
-                "a cookie sealed under another key",
-                HeaderMap::from_iter([(header::COOKIE, other_server_keys)]),
-            ),
             ("a repeated cookie", shadowed),
         ] {
             let response = oidc_callback(

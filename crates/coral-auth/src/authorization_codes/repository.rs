@@ -1,7 +1,10 @@
 //! Deployment-level authorization code persistence. Codes are not Workspace data.
+//!
+//! Nothing observes these rows, so writes use `execute`, not `execute_change`:
+//! a code changing must not wake activity observers or Run waits.
 
-use coral_db::Transaction;
-use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query};
+use coral_db::{Database, Transaction};
+use sea_query::{Condition, Expr, ExprTrait as _, Iden, OnConflict, Query};
 
 use super::{AuthorizationCodeError, AuthorizationGrant, CodeRedemption};
 
@@ -89,6 +92,38 @@ struct GrantRow {
     resource: String,
 }
 
+/// The rows a redemption of `code_digest` with `redemption` may spend.
+fn spendable(code_digest: &str, redemption: CodeRedemption<'_>, now_unix_nanos: i64) -> Condition {
+    Condition::all()
+        .add(Expr::col(Codes::CodeDigest).eq(code_digest))
+        .add(Expr::col(Codes::RedeemedAtUnixNanos).is_null())
+        .add(Expr::col(Codes::ExpiresAtUnixNanos).gt(now_unix_nanos))
+        .add(Expr::col(Codes::ClientId).eq(redemption.client_id))
+        .add(Expr::col(Codes::RedirectUri).eq(redemption.redirect_uri))
+        .add(Expr::col(Codes::CodeChallenge).eq(redemption.code_challenge))
+        .add(Expr::col(Codes::Resource).eq(redemption.resource))
+}
+
+/// Whether a redemption would spend a code, read without holding a writer.
+pub(super) async fn is_spendable(
+    database: &Database,
+    code_digest: &str,
+    redemption: CodeRedemption<'_>,
+    now_unix_nanos: i64,
+) -> Result<bool, AuthorizationCodeError> {
+    let row: Option<(String,)> = database
+        .fetch_optional(
+            Query::select()
+                .column(Codes::CodeDigest)
+                .from(Codes::Table)
+                .cond_where(spendable(code_digest, redemption, now_unix_nanos))
+                .to_owned(),
+        )
+        .await
+        .map_err(|_error| AuthorizationCodeError::Unavailable)?;
+    Ok(row.is_some())
+}
+
 /// Marks an unspent, unexpired code spent when every binding matches.
 ///
 /// The bindings sit in the update's predicate, so a mismatched redemption
@@ -104,13 +139,7 @@ pub(super) async fn spend(
             Query::update()
                 .table(Codes::Table)
                 .value(Codes::RedeemedAtUnixNanos, now_unix_nanos)
-                .and_where(Expr::col(Codes::CodeDigest).eq(code_digest))
-                .and_where(Expr::col(Codes::RedeemedAtUnixNanos).is_null())
-                .and_where(Expr::col(Codes::ExpiresAtUnixNanos).gt(now_unix_nanos))
-                .and_where(Expr::col(Codes::ClientId).eq(redemption.client_id))
-                .and_where(Expr::col(Codes::RedirectUri).eq(redemption.redirect_uri))
-                .and_where(Expr::col(Codes::CodeChallenge).eq(redemption.code_challenge))
-                .and_where(Expr::col(Codes::Resource).eq(redemption.resource))
+                .cond_where(spendable(code_digest, redemption, now_unix_nanos))
                 .returning(Query::returning().columns([
                     Codes::UserId,
                     Codes::ClientId,

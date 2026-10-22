@@ -65,6 +65,40 @@ async fn a_code_issued_by_one_process_is_redeemed_once_by_any() {
     assert_eq!(granted, vec![grant()]);
 }
 
+/// Anyone can present a code. One that cannot be spent is answered from a
+/// read, so guessed codes never wait for, or hold, the database's writer.
+#[tokio::test]
+async fn an_unspendable_code_is_refused_without_the_writer() {
+    let (codes, fixture) = codes().await;
+    codes.issue("code", "sign-in", &grant(), NOW).await.unwrap();
+    let database = fixture.database();
+    let writer = database.begin().await.unwrap();
+    let issued = grant();
+    for (case, code, redemption) in [
+        ("an unknown code", "guess", redemption(&issued)),
+        (
+            "the wrong client",
+            "code",
+            CodeRedemption {
+                client_id: "other",
+                ..redemption(&issued)
+            },
+        ),
+    ] {
+        let answer = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            codes.redeem(code, redemption, NOW + 1),
+        )
+        .await;
+        assert_eq!(answer, Ok(Ok(None)), "{case}");
+    }
+    drop(writer);
+    assert_eq!(
+        codes.redeem("code", redemption(&issued), NOW + 1).await,
+        Ok(Some(grant()))
+    );
+}
+
 #[tokio::test]
 async fn a_redemption_must_repeat_every_binding_and_a_mismatch_spends_nothing() {
     let (codes, _fixture) = codes().await;

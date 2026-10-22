@@ -141,6 +141,15 @@ impl AuthorizationCodes {
         let Ok(code_digest) = digest(code) else {
             return Ok(None);
         };
+        // Anyone can present a code, and on SQLite every writer queues behind
+        // `BEGIN`. Only a code that can be spent opens a write transaction, so
+        // guessed codes never hold the writer that sign-ins need. The update
+        // below still decides single use if two redemptions pass this read.
+        if !repository::is_spendable(&self.database, &code_digest, redemption, now_unix_nanos)
+            .await?
+        {
+            return Ok(None);
+        }
         let mut tx = self.database.begin().await.map_err(unavailable)?;
         let grant = repository::spend(&mut tx, &code_digest, redemption, now_unix_nanos).await?;
         tx.commit().await.map_err(unavailable)?;

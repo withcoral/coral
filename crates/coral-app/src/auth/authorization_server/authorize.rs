@@ -909,9 +909,8 @@ mod tests {
     /// Submitting the form starts a sign-in that navigates through this server,
     /// the provider, any hop the provider adds, this server's callback, and
     /// finally the client's redirect URI. Browsers apply `form-action` to every
-    /// one of them, so any list short of all of them blocks the login — after
-    /// the POST has already consumed the approval, leaving the user on a page
-    /// where nothing happened and a retry reporting the approval as expired.
+    /// one of them, so any list short of all of them blocks the login, leaving
+    /// the user on a page where nothing visibly happened.
     /// A real sign-in through a hosted provider crossed five origins this way.
     /// The remaining directives still deny every fetch, base URI and framing.
     #[tokio::test]
@@ -1516,24 +1515,24 @@ mod tests {
         }
     }
 
-    /// Every sign-in cookie rides on each request to this host, so a new
-    /// sign-in expires the browser's oldest ones beyond three.
+    /// The response that starts a sign-in expires whatever the per-browser cap
+    /// evicts. Which cookies those are is `sign_in_cookie`'s rule.
     #[tokio::test]
-    async fn a_new_sign_in_expires_the_browsers_oldest_beyond_three() {
+    async fn a_new_sign_in_response_expires_what_the_cap_evicts() {
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
         let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
         let auth_state = state_with(&provider.uri(), &trusting(CLIENT_ID), resolver);
-        let held = [30, 10, 20].map(|started_at| {
-            sign_in_cookie::name(&format!("held-{started_at}"), started_at, true)
-        });
         let mut headers = browser_headers();
-        for name in &held {
+        for started_at in [30, 10, 20] {
+            let name = sign_in_cookie::name(&format!("held-{started_at}"), started_at, true);
             headers.append(
                 header::COOKIE,
                 HeaderValue::from_str(&format!("{name}=sealed")).expect("cookie"),
             );
         }
+        let evicted = sign_in_cookie::evicted_by_new_sign_in(&headers, true);
+        assert!(!evicted.is_empty(), "the setup must reach the cap");
         let response =
             oauth_authorize_get(State(auth_state), RawQuery(Some(encode(&pairs()))), headers).await;
         let set_cookies = response
@@ -1542,27 +1541,19 @@ mod tests {
             .iter()
             .map(|value| value.to_str().expect("ASCII").to_owned())
             .collect::<Vec<_>>();
-        let oldest = sign_in_cookie::name("held-10", 10, true);
-        assert!(
-            set_cookies
-                .iter()
-                .any(|cookie| cookie.starts_with(&format!("{oldest}=;"))
-                    && cookie.contains("Max-Age=0")),
-            "{set_cookies:?}"
-        );
-        assert_eq!(
-            set_cookies
-                .iter()
-                .filter(|cookie| cookie.contains("Max-Age=0"))
-                .count(),
-            1
-        );
+        let cleared = set_cookies
+            .iter()
+            .filter(|cookie| cookie.contains("Max-Age=0"))
+            .filter_map(|cookie| cookie.split_once('=').map(|(name, _)| name.to_owned()))
+            .collect::<Vec<_>>();
+        assert_eq!(cleared, evicted);
         assert_eq!(
             set_cookies
                 .iter()
                 .filter(|cookie| cookie.contains("Max-Age=300"))
                 .count(),
-            1
+            1,
+            "{set_cookies:?}"
         );
     }
 

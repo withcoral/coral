@@ -8,7 +8,8 @@
 //!
 //! The associated data binds each sealed value to what it belongs to: a
 //! pending approval to the browser's approval cookie, and a sign-in session to
-//! its OIDC `state`. A value moved to another browser or sign-in does not open. The PKCE verifier and the nonce Coral sends to the provider are
+//! its OIDC `state`. A value moved to another browser or sign-in does not open.
+//! The PKCE verifier and the nonce Coral sends to the identity provider are
 //! derived from the OIDC `state`, so they are never carried at all.
 //!
 //! Rotating the session signing key changes these keys too, so sign-ins in

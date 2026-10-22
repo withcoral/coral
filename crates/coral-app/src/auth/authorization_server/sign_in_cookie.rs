@@ -25,9 +25,10 @@ use super::cookies;
 pub(super) const MAX_AGE_SECONDS: u64 = 5 * 60;
 /// The most sign-in cookies one browser holds.
 ///
-/// Every cookie rides on each request to this host until it expires. Three
-/// full sign-in cookies stay under 7 KB, inside the 8 KB per-header limit of
-/// nginx's defaults with room for other cookies.
+/// Every cookie rides on each request to this host until it expires. With the
+/// app input budget and a resource of ordinary length, three sign-in cookies
+/// stay under 7 KB, inside the 8 KB per-header limit of nginx's defaults. A
+/// resource configured near the cookie limit can take three past it.
 const MAX_CONCURRENT_SIGN_INS: usize = 3;
 /// The most bytes of `client_id`, `redirect_uri` and `state` together that
 /// one sign-in carries. Real apps send a few hundred.

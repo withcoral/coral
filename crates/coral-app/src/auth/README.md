@@ -105,8 +105,8 @@ IDs continue to resolve at capacity. Invalid requests and failed transactions le
 no partial registration.
 
 Coral keeps no server state for a sign-in until the person signs in at the
-provider, so anonymous authorization requests cost no storage and have no shared
-budget to exhaust. The pending consent travels in the consent form and the sign-in
+identity provider, so anonymous authorization requests cost no storage and have
+no shared budget to exhaust. The pending consent travels in the consent form and the sign-in
 in a browser cookie. Both are sealed with AES-256-GCM under keys derived from the
 session signing key. Authorization codes are stored in the database for five
 minutes. Every Coral process that shares the signing key and the database can
@@ -315,18 +315,19 @@ not a configurable Principal claim. Discovery metadata is cached for five minute
 
 The browser that starts a sign-in receives a five-minute `coral_oauth_signin_*`
 cookie, with the `__Host-` prefix on HTTPS. The cookie carries the sealed sign-in,
-so only that browser can finish it. If the provider's sign-in link is opened in
-another browser, the callback fails with `invalid_request` before Coral contacts
-the provider. A proxy in front of Coral must pass this cookie through to the
+so only that browser can finish it. If the identity provider's sign-in link is
+opened in another browser, the callback fails with `invalid_request` before Coral
+contacts the identity provider. A proxy in front of Coral must pass this cookie through to the
 callback.
 
 - A client's `client_id`, `redirect_uri`, and `state` together may be at most
   1,536 bytes, so that the sign-in fits in one cookie. A longer request, or one
   whose sign-in does not fit for another reason such as a long resource, fails
   with `invalid_request` before the consent page.
-- A new sign-in ends the browser's oldest sign-ins beyond three. This keeps the
-  sign-in cookies under 7 KB, inside the 8 KB header limit of common proxies,
-  unless the browser holds other large cookies for this host. Sign-ins started at
+- A new sign-in ends the browser's oldest sign-ins beyond three. With resources
+  of ordinary length, this keeps the sign-in cookies under 7 KB, inside the 8 KB
+  header limit of common proxies, unless the browser holds other large cookies
+  for this host. Sign-ins started at
   the same moment can briefly exceed three until they finish or expire.
 - Each sign-in issues at most one authorization code. A replayed callback gets an
   error and no code.

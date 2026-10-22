@@ -786,7 +786,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authorization_request_uses_exact_discovery_and_fresh_pkce_secrets() {
+    async fn authorization_request_uses_exact_discovery_and_state_derived_pkce_secrets() {
         let server = MockServer::start().await;
         let issuer = format!("{}/tenant/", server.uri());
         mount_discovery(
