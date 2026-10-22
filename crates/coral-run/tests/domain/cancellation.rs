@@ -1819,10 +1819,7 @@ async fn the_sweep_leaves_a_run_alone_until_its_lease_lapses() {
 async fn shutdown_waits_for_an_admission_in_flight_and_interrupts_its_late_owner() {
     let engine = Arc::new(StopAwareEngine::default());
     let mut fixture = TestModules::new(engine.clone()).await;
-    fixture.runs = fixture
-        .runs
-        .clone()
-        .with_shutdown_drain(crate::ShutdownDrain::new(Duration::ZERO));
+    fixture.runs.shutdown_drain = crate::ShutdownDrain::new(Duration::ZERO);
     let (workspace_id, principal) = fixture
         .user_scope("user:drain-admission", "Drain an admission")
         .await;
@@ -1870,10 +1867,7 @@ async fn the_shutdown_drain_lets_live_runs_end_refuses_new_ones_and_interrupts_t
     for drain in [DRAIN, Duration::ZERO] {
         let engine = Arc::new(StopAwareEngine::default());
         let mut fixture = TestModules::new(engine.clone()).await;
-        fixture.runs = fixture
-            .runs
-            .clone()
-            .with_shutdown_drain(crate::ShutdownDrain::new(drain));
+        fixture.runs.shutdown_drain = crate::ShutdownDrain::new(drain);
         let (workspace_id, principal) = fixture
             .user_scope(&format!("user:drain-{}", drain.as_millis()), "Drain")
             .await;

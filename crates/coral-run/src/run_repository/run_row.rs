@@ -138,15 +138,15 @@ impl RunRow {
             ));
         }
         let termination = decode_termination(&self, state)?;
+        // An earlier release released the worker claim when it recorded an
+        // interruption; this one keeps it until the terminal chunk.
+        let released_on_interruption = self.worker_claim_id.is_none()
+            && termination
+                .is_some_and(|termination| termination.kind == RunTerminationKind::Interrupted);
         if state == RunState::Running
             && self.execution_claim_id.is_some()
-            && match termination {
-                Some(RunTermination {
-                    kind: RunTerminationKind::Interrupted,
-                    ..
-                }) => self.worker_claim_id.is_some(),
-                Some(_) | None => self.worker_claim_id != self.execution_claim_id,
-            }
+            && self.worker_claim_id != self.execution_claim_id
+            && !released_on_interruption
         {
             return Err(Error::CorruptData(
                 "running execution has no valid worker claim".to_string(),

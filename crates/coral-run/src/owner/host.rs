@@ -53,9 +53,13 @@ pub(crate) enum OwnerStart {
     /// and runs the Program as `actor`.
     Program(AuthenticatedPrincipal),
     /// The owner the expired-lease sweep recreated, its mailbox queued: it
-    /// takes the Run over from the claim `taken` the Run row held when the
-    /// sweep read it (`None`: no claim), and ends it.
-    Recovery { taken: Option<String> },
+    /// takes the Run over from the claim `taken` and the lease ending at
+    /// `lease_until` the Run row held when the sweep read it (`None`: none),
+    /// and ends it.
+    Recovery {
+        taken: Option<String>,
+        lease_until: Option<i64>,
+    },
 }
 
 /// Hosts the owner of `accepted` until it retires.
@@ -107,8 +111,9 @@ pub(crate) async fn host(
                     spawn_settle(&module, &accepted, &handle, shutdown, again, deadline);
                 }
                 Effect::Recover { expired } => {
-                    if let OwnerStart::Recovery { taken } = &start {
-                        spawn_recovery(&module, &accepted, &handle, taken.clone(), expired);
+                    if let OwnerStart::Recovery { taken, lease_until } = &start {
+                        let swept = (taken.clone(), *lease_until);
+                        spawn_recovery(&module, &accepted, &handle, swept, expired);
                     }
                 }
                 other => run_effect(&module, &accepted, &start, &handle, other),
@@ -554,7 +559,7 @@ fn spawn_recovery(
     module: &RunModule,
     accepted: &AcceptedRun,
     handle: &OwnerHandle,
-    taken: Option<String>,
+    (taken, lease_until): (Option<String>, Option<i64>),
     expired: Vec<crate::approval::ApprovalId>,
 ) {
     let module = module.clone();
@@ -565,6 +570,7 @@ fn spawn_recovery(
             workspace_id: &accepted.workspace_id,
             run_id: &accepted.id,
             taken: taken.as_deref(),
+            lease_until,
             takeover_claim_id: &accepted.claim_id,
             expired: &expired,
         };
@@ -887,10 +893,6 @@ async fn commit_once(
             lease_until = lease_until.saturating_add(1);
         }
         written.lease_until_unix_nanos = Some(lease_until);
-        debug_assert!(
-            termination.is_none_or(|intent| !intent.releases_worker_claim()),
-            "a Run Owner never releases its own worker claim in a chunk"
-        );
         run_repository::commit_chunk(
             &mut transaction,
             Chunk::new(&run, Some(claim_id))

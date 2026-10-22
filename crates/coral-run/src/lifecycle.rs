@@ -88,19 +88,6 @@ impl RunRecord {
             .or(self.worker_claim_id.as_deref())
     }
 
-    /// Whether no process owns the Run at `now_unix_nanos` (ADR 0018,
-    /// Recovery): its lease lapsed, or it has no claim and was accepted more
-    /// than one lease ago. The previous release claimed a moment after
-    /// acceptance, so a fresh Run with no claim belongs to the process that
-    /// accepted it and is not abandoned. The sweep's query,
-    /// `run_repository::lapsed_leases`, is the same predicate.
-    pub(crate) fn lease_lapsed(&self, now_unix_nanos: i64, lease_nanos: i64) -> bool {
-        match self.worker_claim_expires_at_unix_nanos {
-            Some(expires_at) => expires_at <= now_unix_nanos,
-            None => self.accepted_at_unix_nanos.saturating_add(lease_nanos) < now_unix_nanos,
-        }
-    }
-
     /// A termination intent no Principal asked for: the deadline, an
     /// interruption, or the memory limit. A cancellation's intent is the Run
     /// Owner's to apply.
@@ -144,12 +131,6 @@ impl RequestedTermination {
             },
             requester,
         })
-    }
-
-    /// Whether recording this intent releases the worker claim: an
-    /// interruption does, the Run having no live owner.
-    pub(crate) fn releases_worker_claim(&self) -> bool {
-        self.termination.kind == RunTerminationKind::Interrupted
     }
 }
 

@@ -135,6 +135,7 @@ impl RunModule {
             accepted,
             OwnerStart::Recovery {
                 taken: run.held_claim().map(str::to_owned),
+                lease_until: run.worker_claim_expires_at_unix_nanos,
             },
             handle,
             mailbox,
@@ -155,8 +156,8 @@ impl RunModule {
     }
 
     /// A recovered owner's one chunk ([`end_in_one_chunk`]): takes the Run
-    /// over from `taken`, the claim its row held when the sweep found its
-    /// lease lapsed, with `takeover_claim_id`, expires the `expired` Approval
+    /// over from `taken` and `lease_until`, the claim and lease its row held
+    /// when the sweep found the lease lapsed, with `takeover_claim_id`, expires the `expired` Approval
     /// Requests, and ends the Run with the termination its row records, else
     /// timed out past its deadline, else interrupted. A
     /// termination the row records since the sweep read it was applied
@@ -166,8 +167,8 @@ impl RunModule {
     ///
     /// # Errors
     ///
-    /// [`Error::ClaimMismatch`] when the row holds another claim, or its
-    /// lease is live again (the process that holds it renewed it, so the Run
+    /// [`Error::ClaimMismatch`] when the row holds another claim or lease
+    /// than the sweep read (the process that holds it renewed it, so the Run
     /// is that process's); [`Error::RunEnded`] when the Run is terminal: by
     /// another writer, or by an earlier attempt of this write on a Run that
     /// never started, whose row keeps no claim to recognize it by;
@@ -198,7 +199,7 @@ impl RunModule {
         // The lease is ownership: a Run whose holder renewed its lease since
         // the sweep read it is that process's again.
         if run.held_claim() != recovery.taken
-            || !run.lease_lapsed(now, self.execution_policy.claim_lease_nanos())
+            || run.worker_claim_expires_at_unix_nanos != recovery.lease_until
         {
             return Err(Error::ClaimMismatch);
         }
@@ -252,6 +253,8 @@ pub(crate) struct RecoveryWrite<'a> {
     pub(crate) run_id: &'a RunId,
     /// The claim the Run row held when the sweep read it.
     pub(crate) taken: Option<&'a str>,
+    /// The lease expiry the Run row held when the sweep read it.
+    pub(crate) lease_until: Option<i64>,
     pub(crate) takeover_claim_id: &'a str,
     pub(crate) expired: &'a [ApprovalId],
 }

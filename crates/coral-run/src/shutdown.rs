@@ -77,13 +77,6 @@ impl Drop for Admitted {
 }
 
 impl RunModule {
-    /// Replaces the Shutdown Drain on a built module.
-    #[cfg(test)]
-    pub(crate) const fn with_shutdown_drain(mut self, drain: crate::ShutdownDrain) -> Self {
-        self.shutdown_drain = drain;
-        self
-    }
-
     /// Shuts the Run module down gracefully. Every new Run is refused with
     /// [`Error::ShuttingDown`] from now on, while the live Run Owners keep
     /// working: their Runs end on their own and their requests are served.

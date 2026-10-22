@@ -200,10 +200,11 @@ async fn a_definite_database_rejection_stops_the_owner_without_a_retry() {
 }
 
 /// An owner whose settle of the interruption it recorded fails retires and
-/// leaves its Run `running` with the termination recorded and its worker
-/// claim released: no timer of its own fires after it retired, and nothing
-/// renews a lease. Once its lease lapsed, the expired-lease sweep recreates
-/// its owner, which ends the Run in one chunk.
+/// leaves its Run `running` with the termination recorded. Recording the
+/// interruption keeps the worker claim and its lease, so no other process
+/// takes the Run over while its owner settles; no timer of its own fires
+/// after it retired, and nothing renews the lease. Once it lapsed, the
+/// expired-lease sweep recreates the owner, which ends the Run in one chunk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_run_whose_owner_retired_on_a_failed_settle_is_ended_by_the_next_sweep() {
     let (engine, gates) = BurstEngine::new(vec!["\"one\"".to_string()]);
@@ -238,11 +239,21 @@ async fn a_run_whose_owner_retired_on_a_failed_settle_is_ended_by_the_next_sweep
         left.termination.map(|termination| termination.kind),
         Some(crate::lifecycle::RunTerminationKind::Interrupted)
     );
-    assert_eq!(left.worker_claim_id, None, "the interruption released it");
+    assert_eq!(
+        (
+            left.worker_claim_id.as_deref(),
+            left.worker_claim_expires_at_unix_nanos
+        ),
+        (
+            Some(claim_id.as_str()),
+            before.worker_claim_expires_at_unix_nanos
+        ),
+        "recording the interruption keeps the claim and its lease"
+    );
     fixture.inject_fault("DROP INDEX reject_run_events").await;
 
     fixture.clock.next.store(
-        before.accepted_at_unix_nanos + 2 * fixture.runs.execution_policy.claim_lease_nanos(),
+        left.worker_claim_expires_at_unix_nanos.expect("a lease"),
         Ordering::SeqCst,
     );
     assert_eq!(fixture.runs.sweep_expired_leases().await.unwrap(), 1);
