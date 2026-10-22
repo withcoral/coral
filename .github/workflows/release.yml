@@ -589,7 +589,7 @@ jobs:
           coral_web="$(build "$CORAL_WEB_IMAGE" --file docker/Dockerfile.reef \
             --build-arg "CORAL_WEB_VERSION=${version}" \
             --build-arg "CORAL_WEB_REVISION=${COMMIT_SHA}" \
-            --annotation "index:org.opencontainers.image.description=Coral Reef ${version}. ${notes}")"
+            --annotation "index:org.opencontainers.image.description=Coral Web ${version}. ${notes}")"
           {
             echo "version=${version}"
             echo "coral=${coral}"
