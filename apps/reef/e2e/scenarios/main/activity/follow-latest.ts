@@ -97,7 +97,7 @@ export async function followLatest(context: TestContext) {
       await expect.poll(selectedKey).toBe(record)
       await expect.poll(() => highlighted(page)).toEqual(source)
       expect(address().get('live')).toBe('1')
-      expect(await toggle.getAttribute('aria-pressed')).toBe('true')
+      await expect.poll(() => toggle.getAttribute('aria-pressed')).toBe('true')
       await selected
         .locator('header')
         .getByRole('button', { name: 'Follow latest record' })
@@ -144,7 +144,7 @@ export async function followLatest(context: TestContext) {
     await step('Turn live mode off from the record header', async () => {
       await toggle.click()
       await expect.poll(() => address().has('live')).toBe(false)
-      expect(await toggle.getAttribute('aria-pressed')).toBe('false')
+      await expect.poll(() => toggle.getAttribute('aria-pressed')).toBe('false')
       expect(address().get('record')).toBe(`${run}/final`)
     })
   })
