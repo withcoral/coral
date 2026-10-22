@@ -16,7 +16,20 @@ CREATE TABLE search_entities_fts_keys (
     CONSTRAINT search_entities_fts_keys_pk PRIMARY KEY (workspace_id, doc_id)
 ) WITHOUT ROWID;
 
--- The triggers of step 30 left one copy per row, so each key appears once.
+-- An `INSERT OR REPLACE` before this step leaves a second copy of its row,
+-- and the key table links only one. So the step copies each row again instead of
+-- trusting the copies already there. That rewrites each row's copy once.
+DELETE FROM search_entities_fts;
+
+INSERT INTO search_entities_fts (
+    workspace_id, doc_id, qualified_name, title, description, provider_name,
+    searchable_text
+)
+SELECT
+    workspace_id, doc_id, qualified_name, title, description,
+    replace(provider_name, '.', ' '), searchable_text
+FROM search_entities;
+
 INSERT INTO search_entities_fts_keys (workspace_id, doc_id, fts_rowid)
 SELECT workspace_id, doc_id, rowid FROM search_entities_fts;
 

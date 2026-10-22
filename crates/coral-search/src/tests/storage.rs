@@ -101,17 +101,16 @@ async fn sqlite_text_index_follows_a_saved_function_delete_cascade() {
 }
 
 #[tokio::test]
-async fn sqlite_key_step_links_rows_indexed_before_it() {
+async fn sqlite_key_step_keeps_one_copy_of_each_row_indexed_before_it() {
     coral_test_support::database_only!(Sqlite);
-    // Every step but 39, the one under test. No later step exists, so the
-    // plan's repositories need nothing it would add.
-    let before_keys = coral_test_support::edited_migration_plan(|migrations| {
+    // Every step but 39, the one under test, which reads only search tables.
+    let before_step = coral_test_support::edited_migration_plan(|migrations| {
         migrations
             .into_iter()
             .filter(|migration| migration.version != 39)
             .collect()
     });
-    let modules = TestModules::with_plan(&before_keys).await;
+    let modules = TestModules::with_plan(&before_step).await;
     let database = modules.search.database.clone();
     let user = organization_user(database.clone(), USER).await;
     let workspace = modules.create_workspace(&user).await;
@@ -126,6 +125,17 @@ async fn sqlite_key_step_links_rows_indexed_before_it() {
         text_index_docs(&database, &workspace).await,
         [create.clone(), comments.clone()]
     );
+    // An `INSERT OR REPLACE` leaves a second copy beside the row's own, and
+    // a copy can outlive its row. The step keeps one copy of each row.
+    modules
+        .fixture
+        .execute_fixture_sql(&format!(
+            "INSERT INTO search_entities_fts (workspace_id, doc_id, title) \
+             VALUES ('{workspace}', '{comments}', 'Read the stale notes'), \
+             ('{workspace}', '{generation}:gone', 'Read the gone notes')"
+        ))
+        .await
+        .expect("add a second copy and a copy without a row");
 
     database
         .migrate(coral_db::migration_plan())
@@ -146,17 +156,34 @@ async fn sqlite_key_step_links_rows_indexed_before_it() {
         text_matches(&database, &workspace, "zebras").await,
         std::slice::from_ref(&comments)
     );
+    assert!(
+        text_matches(&database, &workspace, "stale")
+            .await
+            .is_empty()
+    );
     assert_eq!(
         text_index_docs(&database, &workspace).await,
-        [create, comments],
+        [create.clone(), comments.clone()],
         "the update replaced the row's copy"
     );
 
-    modules.index.remove_provider(workspace.clone(), provider);
+    modules
+        .index
+        .remove_provider(workspace.clone(), provider.clone());
     modules.index.settled().await;
     assert!(
         text_index_docs(&database, &workspace).await.is_empty(),
         "the removal deleted every copy"
+    );
+
+    modules
+        .index
+        .index_active_generation(workspace.clone(), provider);
+    modules.index.settled().await;
+    assert_eq!(
+        text_index_docs(&database, &workspace).await,
+        [create, comments],
+        "the removal left no key to block the rows' return"
     );
 }
 
