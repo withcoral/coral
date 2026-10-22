@@ -21,8 +21,8 @@ export interface AgentProviderView {
 }
 
 const ACCOUNT_KIND = { none: 'None', shared: 'Shared', separate: 'Individual' } as const
-// Keep Accounts no taller than Recent activity beside it. The heading and three
-// provider rows stay visible; additional rows scroll inside the table.
+// The heading and three provider rows stay visible; additional rows scroll
+// inside the table, so a long list does not stretch the dashboard row.
 const MAX_TABLE_HEIGHT = 176
 
 /** The accounts this agent uses, one row per provider, those that need you first. */

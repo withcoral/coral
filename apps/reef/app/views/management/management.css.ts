@@ -73,7 +73,6 @@ export const agentRecentActivity = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 16,
-  height: 292,
   minWidth: 0,
 })
 export const agentRecentActivityBody = style({
