@@ -22,9 +22,10 @@ pub struct ProviderSource {
     pub kind: crate::ProviderSetupInputKind,
 }
 
-/// One Provider and its Provider Configuration, as an Owner reads it. It holds no
-/// secret: an OAuth application's secret and every credential value are
-/// stored apart.
+/// One Provider and its Provider Configuration, as an Owner reads it. An OAuth
+/// application's secret and every Provider Account's credentials are stored
+/// apart, so it holds neither. A fixed credential part keeps its value, which
+/// a result for a Program must leave out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderWithConfiguration {
     /// The Provider, with its state, display name and Credential Route.

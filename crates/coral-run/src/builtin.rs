@@ -1,6 +1,7 @@
 //! Built-in Provider Operations, which Coral performs itself with no upstream
 //! dispatch. Their input is validated before any other work, and their results
-//! never carry a secret or an OAuth sign-in URL.
+//! never carry a secret or the OAuth sign-in link Coral prepares for one
+//! person. A Provider's OAuth endpoints are configuration, not that link.
 //!
 //! coral-catalog owns each Operation's contract: its schemas, how its
 //! arguments are read, and the result it writes. Each module here performs
