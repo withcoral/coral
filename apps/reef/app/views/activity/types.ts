@@ -308,6 +308,11 @@ export interface ActivityPage {
    * follows that Run or a request review is open. Absent when it has none.
    */
   liveAction?: LiveAction
+  /**
+   * By Task, what page live mode needs past the Task's loaded window. Read only while
+   * it follows a Task with no Run that runs open.
+   */
+  liveTasks?: Record<string, LiveTask>
   selectedRow: ActivityRow | null
   listPath: string
 }
@@ -320,6 +325,19 @@ export interface LiveAction {
   run: string
   record: string
   request: string
+}
+
+/** What page live mode knows of a Task that its list and loaded window do not show. */
+export interface LiveTask {
+  /**
+   * The oldest action you can take in any Run of the Task, timed by when the operation
+   * that waits on it started, not by when the request was made.
+   */
+  action?: LiveAction
+  /** Its newest Run that runs, before its loaded window, while the window holds none. */
+  running?: string
+  /** The Task, when the list does not hold it. */
+  task?: TaskRow
 }
 
 /**

@@ -15,6 +15,7 @@ import {
   type ActivityRow,
   type LiveAction,
   type LiveScope,
+  type TaskRow,
 } from './types'
 
 export const ActivityNavigationContext = createContext<ReturnType<
@@ -327,9 +328,12 @@ export function liveRun(row: ActivityRow | null): { run: string; chain: string[]
 
 /** What live mode follows next in its scope, before the followed Run's own step. */
 export type LiveTarget =
-  /** Follow `run`; `liveStep` picks its record. `chain` must be expanded. */
-  | { kind: 'run'; run: string; chain: string[] }
-  /** Show `record`, a Task with no Run yet. */
+  /**
+   * Follow `run`; `liveStep` picks its record, or the record that reviews `action`.
+   * `chain` must be expanded.
+   */
+  | { kind: 'run'; run: string; chain: string[]; action?: LiveAction }
+  /** Show `record`: a Task's newest tool call, or the Task while it has no record. */
   | { kind: 'select'; record: string; chain: string[] }
   /** Expand `chain`, so its children load. */
   | { kind: 'expand'; chain: string[] }
@@ -343,78 +347,159 @@ export type LiveTarget =
 export const TAKS_MAX_AGE = 60 * 60 * 1000
 
 /**
- * The target of live mode in `scope`. It never moves off the Task or Run you have open:
- * a Run stays followed through its records and its end, whatever arrives.
+ * The target of live mode in `scope`. It never moves off a Run you have open while
+ * that Run runs, whatever arrives.
  * - `run`: the open record's Run.
- * - `latest`: the open record's Run, else the open Task's latest Run that has not
- *   ended. With nothing open, the newest top-level record in Coral's order that has not
- *   ended: a standalone Run itself, a Task through its latest Run that has not ended,
- *   or a Task that has not ended while it has none.
- *   Of those, it passes a Task that started more than `TAKS_MAX_AGE` before `now`.
- * - `task`: the open record's Run, else the open Task's first Run by submission that
- *   has not ended, else its last Run.
+ * - `latest`: the open record's Run until it ends. Then, and from a Task or its tool
+ *   call, the work of that Task until the Task ends (`taskWork`). A standalone Run, or
+ *   a Task once it ends, gives way to the newest top-level record that has not ended,
+ *   as with nothing open: a standalone Run itself, or a Task through its work. Of those,
+ *   it passes a Task that started more than `TAKS_MAX_AGE` before `now`. With none, it
+ *   rests on the ended Run. `actionable` is false where you cannot act, such as in an
+ *   archived workspace.
+ * - `task`: the open record's Run, ended or not, else the open Task's first Run by
+ *   submission that has not ended, else its last Run.
  */
-export function liveTarget(page: ActivityPage, scope: LiveScope, now = Date.now()): LiveTarget {
+export function liveTarget(
+  page: ActivityPage,
+  scope: LiveScope,
+  now = Date.now(),
+  actionable = true,
+): LiveTarget {
   const row = page.selectedRow
   const current = liveRun(row)
-  if (current) return { kind: 'run', ...current }
-  const task = row?.kind === 'task' ? row.name : row && 'task' in row ? (row.task ?? '') : ''
+  if (current && (scope !== 'latest' || liveHold(page))) return { kind: 'run', ...current }
+  const task = rowTask(row)
   if (scope === 'task' && task) return taskTarget(page, task)
-  if (scope === 'latest' && task) {
-    // The open Task can open its own Run, and nothing else.
+  if (scope !== 'latest') return { kind: 'wait' }
+  // The ended Run, while nothing else is to follow.
+  const rest: LiveTarget = current ? { kind: 'run', ...current } : { kind: 'wait' }
+  if (task) {
+    // Live mode stays in the Task until it ends, whatever runs elsewhere. A Task the list
+    // does not hold shows nothing to follow, so live mode rests until it ends.
     const root = page.rows.find((item) => item.name === task)
-    const target = root && rootTarget(page, root)
-    return target && target.kind !== 'select' ? target : { kind: 'wait' }
-  }
-  if (scope !== 'latest' || row) return { kind: 'wait' }
+    const shown = page.detail?.kind === 'task' ? page.detail.task : page.liveTasks?.[task]?.task
+    const target =
+      root?.kind === 'task'
+        ? taskWork(page, root, actionable)
+        : shown?.name === task && !taskOpen(shown)
+          ? null
+          : rest
+    if (target) return target
+  } else if (!current && row) return { kind: 'wait' }
+  const found = newestTarget(page, now, actionable)
+  return found.kind === 'wait' ? rest : found
+}
+
+/** What `latest` follows with nothing open: the newest top-level record that has not ended. */
+function newestTarget(page: ActivityPage, now: number, actionable: boolean): LiveTarget {
   if (page.hasBefore) return { kind: 'newest' }
   for (const root of page.rows) {
-    if (root.kind === 'task' && now - Date.parse(root.startedAt) > TAKS_MAX_AGE) continue
-    const target = rootTarget(page, root)
+    if (root.kind === 'run' && root.state === 'running')
+      return { kind: 'run', run: root.name, chain: [root.name] }
+    if (root.kind !== 'task' || !recentTask(root, now)) continue
+    const target = taskWork(page, root, actionable)
     if (target) return target
   }
   return { kind: 'wait' }
 }
 
-type RunRow = Extract<ActivityRow, { kind: 'run' }>
+/**
+ * The Run that holds page live mode: the selected record's Run, until any record of it
+ * on `page` says it ended. Undefined without one.
+ */
+export function liveHold(page: ActivityPage): string | undefined {
+  const run = liveRun(page.selectedRow)?.run
+  return run && !runEnded(page, run) ? run : undefined
+}
 
-/** What `latest` follows in `root`, or null when its work has ended. */
-function rootTarget(page: ActivityPage, root: ActivityRow): LiveTarget | null {
-  if (root.kind === 'run')
-    return root.state === 'running' ? { kind: 'run', run: root.name, chain: [root.name] } : null
-  if (root.kind !== 'task') return null
+/** The Task of `row`: the Task itself, or the Task its record belongs to. Empty without one. */
+export const rowTask = (row: ActivityRow | null) =>
+  row?.kind === 'task' ? row.name : row && 'task' in row ? (row.task ?? '') : ''
+
+/** Whether page live mode may open `task` with nothing open: it started `TAKS_MAX_AGE` ago or less. */
+export const recentTask = (task: Pick<TaskRow, 'startedAt'>, now: number) =>
+  now - Date.parse(task.startedAt) <= TAKS_MAX_AGE
+
+/** Whether a Task still has work underway: it has not ended, or a Run of it still runs. */
+export const taskOpen = (task: Pick<TaskRow, 'endedAt' | 'contextImpactPartial'>) =>
+  !task.endedAt || Boolean(task.contextImpactPartial)
+
+/**
+ * Whether `run` has ended, as any record of it on `page` says: its row in the list,
+ * the selected row, or the detail that shows it. Runs never start again once they end.
+ * False while nothing on the page says.
+ */
+export function runEnded(page: ActivityPage, run: string): boolean {
+  const detail = page.detail
+  const context =
+    detail?.kind === 'run'
+      ? detail
+      : detail?.kind === 'invocation' || detail?.kind === 'output'
+        ? detail.context
+        : undefined
+  const rows = [page.selectedRow, ...page.rows]
+  for (const branch of Object.values(page.branches)) rows.push(...branch.rows)
+  const states = [
+    ...rows.flatMap((row) => (row?.kind === 'run' && row.name === run ? [row.state] : [])),
+    ...(context?.run.name === run ? [context.run.state] : []),
+  ]
+  return states.some((state) => state !== 'running' && state !== 'unknown')
+}
+
+type RunRow = Extract<ActivityRow, { kind: 'run' }>
+export type TaskRecord = Extract<ActivityRow, { kind: 'task' }>
+
+/**
+ * What `latest` follows in a Task that has not ended, or null once it has. In order:
+ * the Run of the oldest action you can take in any of its Runs (`liveTasks`), else its
+ * newest Run by submission that has not ended, in its window or before it. `liveStep`
+ * then holds that Run until it ends. With neither, the Task's newest record: a Search,
+ * a Describe or another tool call, or a Run to its newest record. The Task itself only
+ * while it has no record.
+ */
+function taskWork(page: ActivityPage, root: TaskRecord, actionable: boolean): LiveTarget | null {
   // An ended Task can still hold a Run that has not ended; `contextImpactPartial` says so.
-  if (root.endedAt && !root.contextImpactPartial) return null
+  if (!taskOpen(root)) return null
   const task = root.name
   const loaded = taskRuns(page, task)
   if (loaded.kind !== 'runs') return loaded
-  // The latest Run may be past the window.
+  // The newest records may be past the window.
   if (loaded.end < loaded.total)
     return { kind: 'load', parent: task, offset: loaded.total, chain: [task] }
-  const latest = loaded.runs.findLast((row) => row.state === 'running')
-  if (latest) return { kind: 'run', run: latest.name, chain: [task, latest.name] }
+  const known = page.liveTasks?.[task]
+  const action = actionable ? known?.action : undefined
+  if (action && !runEnded(page, action.run))
+    return { kind: 'run', run: action.run, chain: [task, action.run], action }
+  // A row can lag its Run's end, which another record of the Run already says.
+  const latest =
+    loaded.runs.findLast((row) => row.state === 'running' && !runEnded(page, row.name))?.name ??
+    known?.running
+  if (latest && !runEnded(page, latest)) return { kind: 'run', run: latest, chain: [task, latest] }
   // An ended Task's Run that runs is past the loaded Runs. Passing it would collapse
   // the Task, then expand it again on the next step.
-  return root.endedAt ? { kind: 'wait' } : { kind: 'select', record: task, chain: [task] }
+  if (root.endedAt) return { kind: 'wait' }
+  const newest = loaded.newest
+  if (newest?.kind === 'run') return { kind: 'run', run: newest.name, chain: [task, newest.name] }
+  return { kind: 'select', record: newest?.name ?? task, chain: [task] }
 }
 
 /**
- * The loaded Runs of `task` by submission, where its window ends, and how many children
- * it has. Without them, the step that reads them.
+ * The loaded Runs of `task` by submission, its newest loaded child, where its window
+ * ends, and how many children it has. Without them, the step that reads them.
  */
 function taskRuns(
   page: ActivityPage,
   task: string,
-): LiveTarget | { kind: 'runs'; runs: RunRow[]; end: number; total: number } {
+): LiveTarget | { kind: 'runs'; runs: RunRow[]; newest?: ActivityRow; end: number; total: number } {
   if (!page.expanded.includes(task)) return { kind: 'expand', chain: [task] }
   const branch = page.branches[task]
   if (!branch || branch.unavailable) return { kind: 'wait' }
   const { items, total } = childWindow(branch)
-  const runs = items
-    .toSorted((a, b) => a.index - b.index)
-    .flatMap(({ row }) => (row.kind === 'run' ? [row] : []))
+  const ordered = items.toSorted((a, b) => a.index - b.index).map(({ row }) => row)
+  const runs = ordered.flatMap((row) => (row.kind === 'run' ? [row] : []))
   const end = Math.max(branch.offset ?? 0, ...items.map(({ index }) => index + 1))
-  return { kind: 'runs', runs, end, total }
+  return { kind: 'runs', runs, newest: ordered.at(-1), end, total }
 }
 
 /**
@@ -451,13 +536,22 @@ export type LiveStep =
   | { kind: 'wait' }
 
 /**
- * The oldest action you can take in `run`, as the loader names it, wins over newer
- * records. `actionable` is false where you cannot act, such as in an archived workspace.
- * Otherwise, the newest record of `run` on `page`. Children keep the order Coral gives
- * them: the highest position is the newest. Only this Run's own branch counts.
+ * The oldest action you can take in `run` wins over newer records: the one the loader
+ * names for the selected record's Run (`liveAction`), else the one the target names for
+ * its Task (`targeted`). `actionable` is false where you cannot
+ * act, such as in an archived workspace. Otherwise, the newest record of `run` on
+ * `page`. Children keep the order Coral gives them: the highest position is the newest.
+ * Only this Run's own branch counts.
  */
-export function liveStep(page: ActivityPage, run: string, actionable = true): LiveStep {
-  const action = actionable && page.liveAction?.run === run ? page.liveAction : undefined
+export function liveStep(
+  page: ActivityPage,
+  run: string,
+  actionable = true,
+  targeted?: LiveAction,
+): LiveStep {
+  const action = actionable
+    ? [page.liveAction, targeted].find((item) => item?.run === run)
+    : undefined
   if (action) {
     const row = page.branches[run]?.rows.find((item) => item.name === action.record)
     // A live update ended the wait first. The next read names the next action, if any.
