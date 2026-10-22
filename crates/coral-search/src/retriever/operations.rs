@@ -66,6 +66,13 @@ impl EntityRetriever for OperationRetriever {
             .map_err(coral_provider::Error::from)?;
             let provider = Arc::new(provider);
             for target in targets {
+                if !coral_provider::reaches(
+                    provider.provider().call_root(),
+                    target.key(),
+                    context.authority.effective_user_role(),
+                ) {
+                    continue;
+                }
                 if operation_approval(
                     &rules,
                     provider.provider().id(),
@@ -133,6 +140,24 @@ impl EntityRetriever for OperationRetriever {
                 .map_err(QueryError::retrieval)?;
         }
 
+        // Ranking leaves out what policy disables and what the caller does not reach.
+        let mut excluded = rules
+            .disabled()
+            .map(|(provider, key)| (provider.clone(), key.clone()))
+            .collect::<Vec<_>>();
+        for provider in searched.values() {
+            excluded.extend(
+                coral_provider::unreached_operations_in_transaction(
+                    transaction,
+                    provider,
+                    context.authority.effective_user_role(),
+                )
+                .await
+                .map_err(Error::from)?
+                .into_iter()
+                .map(|key| (provider.provider().id().clone(), key)),
+            );
+        }
         let ranked = if searched.is_empty() {
             repository::Ranking {
                 entities: Vec::new(),
@@ -149,7 +174,7 @@ impl EntityRetriever for OperationRetriever {
                 context.workspace_id,
                 &provider_ids,
                 &generation_ids,
-                &rules,
+                &excluded,
                 &plan,
                 request.window + 1,
             )
@@ -210,8 +235,12 @@ impl EntityRetriever for OperationRetriever {
             ) => return Ok(Hydrated::Unreadable),
             Err(error) => return Err(error.into()),
         };
-        let Some(description) =
-            describe_material(hydrated.material(), &operation.rules, &operation.call_path)?
+        let Some(description) = describe_material(
+            context,
+            hydrated.material(),
+            &operation.rules,
+            &operation.call_path,
+        )?
         else {
             return Ok(Hydrated::Dropped);
         };
@@ -318,7 +347,7 @@ pub(crate) async fn describe_operations(
         else {
             continue;
         };
-        descriptions.extend(describe_material(&material, &rules, call_path)?);
+        descriptions.extend(describe_material(context, &material, &rules, call_path)?);
     }
     Ok(descriptions)
 }
@@ -364,7 +393,8 @@ fn call_roots(providers: &[ActiveProvider]) -> Vec<ProviderCallRoot> {
 }
 
 /// The Workspace's Active Providers that are ready for the caller, cut to the
-/// Call Root filter. Reads no Operation catalog.
+/// Call Root filter. Reads no Operation catalog, apart from the Built-in
+/// Provider's Operation identities that reach is decided on.
 async fn visible_providers(
     transaction: &mut Transaction<'_>,
     context: RequestContext<'_>,
@@ -391,14 +421,23 @@ async fn visible_providers(
     Ok(visible)
 }
 
-/// The complete description of one current Operation, or `None` when policy
-/// disables it or its path is not the expected one.
+/// The complete description of one current Operation, or `None` when the
+/// caller does not reach it, policy disables it, or its path is not the
+/// expected one.
 fn describe_material(
+    context: RequestContext<'_>,
     material: &coral_provider::OperationAuthoringMaterial,
     rules: &ExactOperationRules,
     call_path: &CallPath,
 ) -> Result<Option<OperationAuthoringDescription>, Error> {
     if CallPath::operation(material.provider_call_root(), material.relative_path())? != *call_path {
+        return Ok(None);
+    }
+    if !coral_provider::reaches(
+        material.provider_call_root(),
+        material.operation_key(),
+        context.authority.effective_user_role(),
+    ) {
         return Ok(None);
     }
     let Some(approval) = operation_approval(

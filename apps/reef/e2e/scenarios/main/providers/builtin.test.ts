@@ -22,7 +22,7 @@ function mark(page: Page, provider: string) {
   return rail(page).locator(`a[href="/${provider}"] img`).filter({ visible: true })
 }
 
-test('Coral leads the providers page for owners, offers nothing to change, stops calls while disabled, and stays hidden from members', async (context) => {
+test('Coral leads the providers page, offers nothing to change, stops calls while disabled, and shows members only the operations they can call', async (context) => {
   const { alice, bob } = await createActors(context)
   const api = managementClients(alice.accessToken)
   const workspace = await api.workspaces.createWorkspace({
@@ -96,16 +96,13 @@ test('Coral leads the providers page for owners, offers nothing to change, stops
   await withBrowserSession(
     context,
     async ({ page, step }) => {
-      await step('A member does not see Coral in the rail', async () => {
+      await step('A member sees Coral with listProviders only', async () => {
         await page.goto(providersPage)
-        await rail(page).getByRole('link', { name: 'Alpha settings', exact: true }).waitFor()
-        expect(await rail(page).locator(`a[href="/${coral.name}"]`).count()).toBe(0)
-      })
-      await step("A member finds nothing at Coral's links", async () => {
-        for (const path of [`/${coral.name}`, `/${coral.name}/settings`]) {
-          await page.goto(path)
-          await page.getByText('This page does not exist.', { exact: true }).waitFor()
-        }
+        await waitForProviderStatus(page, 'Coral', 'Ready', { available: 1, total: 1 })
+        await page.getByRole('link', { name: 'listProviders', exact: true }).waitFor()
+        expect(await page.getByRole('link', { name: 'createProvider', exact: true }).count()).toBe(
+          0,
+        )
       })
     },
     { actor: bob.label, storageState: bob.storageState },

@@ -1,6 +1,7 @@
 //! `coral.workspace.listProviders`: the schemas a Program is typed from, and
 //! the result Coral writes against the output schema. It takes no arguments.
 
+use coral_workspace::WorkspaceAction;
 use schemars::JsonSchema;
 use schemars::generate::Contract;
 use serde::Serialize;
@@ -11,6 +12,9 @@ use super::{
     derived_schema, empty_object_schema, operation_result, words_schema,
 };
 use crate::{OperationHints, OperationPresentation};
+
+/// Any Principal that can inspect the Workspace lists its Providers.
+pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Inspect;
 
 pub(super) fn definition() -> Definition {
     Definition {

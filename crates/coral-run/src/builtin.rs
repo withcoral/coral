@@ -16,7 +16,7 @@ use coral_provider::{
     ManagementRequestId, ProviderModule, ProviderSetupId, PublishedProvider,
     ResolvedInvocationOperation, WorkspaceProviderPublisher,
 };
-use coral_workspace::{ChangeContext, Principal, WorkspaceId};
+use coral_workspace::{AuthenticatedPrincipal, ChangeContext, Principal, WorkspaceId};
 
 use crate::error::InputProblem;
 use crate::lifecycle::RunRecord;
@@ -118,15 +118,18 @@ pub(crate) trait InvokingRun: Send + Sync {
     fn setup_prepared(&self) {}
 }
 
-/// What a Built-in Operation acts through: the invoking User in the Run's
-/// Workspace, the workflow Reef publishes with, and the Reef origin its
+/// What a Built-in Operation acts through: the invoking Principal in the
+/// Run's Workspace, the workflow Reef publishes with, and the Reef origin its
 /// results link to.
 pub(crate) struct BuiltinHost<'a> {
     pub(crate) providers: &'a ProviderModule,
     /// Where people sign in; without it, nobody can.
     pub(crate) accounts: Option<&'a AccountModule>,
     pub(crate) publisher: Option<&'a dyn WorkspaceProviderPublisher>,
-    pub(crate) context: &'a ChangeContext,
+    pub(crate) actor: &'a AuthenticatedPrincipal,
+    /// The invoking User's change context; `None` for an Agent, which
+    /// reaches no Operation that changes the Workspace.
+    pub(crate) context: Option<&'a ChangeContext>,
     pub(crate) principal: &'a Principal,
     pub(crate) workspace_id: &'a WorkspaceId,
     pub(crate) human_interface: &'a HumanInterfaceUrl,
@@ -169,14 +172,17 @@ fn setup_url(host: &BuiltinHost<'_>, setup: &ProviderSetupId) -> String {
     ))
 }
 
-/// A User who lost Workspace authority since admission is a failure the
-/// Program can catch; anything else is a host defect.
+/// A Principal that lost Workspace authority since admission is a failure
+/// the Program can catch; anything else is a host defect.
 fn authority_error(error: coral_provider::Error) -> Error {
     match error {
         coral_provider::Error::Workspace(
             coral_workspace::Error::WorkspaceNotFound
             | coral_workspace::Error::PermissionDenied(_)
-            | coral_workspace::Error::WorkspaceArchived,
+            | coral_workspace::Error::WorkspaceArchived
+            | coral_workspace::Error::AgentNotFound
+            | coral_workspace::Error::AgentDisabled
+            | coral_workspace::Error::AgentRegistrationExpired,
         ) => Error::InvocationRejected(CoralFailure::AuthorityLost.into()),
         other => other.into(),
     }

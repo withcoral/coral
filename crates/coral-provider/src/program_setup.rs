@@ -2,7 +2,7 @@
 //! a Program: who can publish it, what the Program learns about the Provider it
 //! published, and how Coral ends a Setup that nobody will finish.
 use coral_db::Transaction;
-use coral_workspace::{AuthenticatedUser, WorkspaceId};
+use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceAction, WorkspaceId};
 
 use crate::{
     CredentialRoute, Error, Provider, ProviderModule, ProviderSetup, ProviderSetupId,
@@ -202,27 +202,39 @@ impl ProviderModule {
     /// The Setups that Programs prepared as `actor` and a person can still
     /// finish, oldest first. A Setup past its deadline is left out, though it
     /// expires only when it is next read, so the query reads none of them.
+    /// Acting on a Setup configures the Workspace, so a Principal that may not
+    /// configure it has none.
     ///
     /// # Errors
     ///
-    /// Requires current Workspace Owner authority. Returns a persistence or
-    /// corrupt-evidence failure.
+    /// Requires current Workspace inspection authority. Returns a persistence
+    /// or corrupt-evidence failure.
     pub async fn open_requested_setups(
         &self,
-        actor: &AuthenticatedUser,
+        actor: &AuthenticatedPrincipal,
         owner: &WorkspaceId,
         now: i64,
     ) -> Result<Vec<ProviderSetup>, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
-        self.check_owner_inspection_in_transaction(&mut tx, actor, owner)
-            .await?;
+        let role = self
+            .workspaces
+            .check_principal_inspection_in_snapshot(&mut tx, actor, owner, now)
+            .await?
+            .effective_user_role();
+        let Some(user) = actor
+            .authenticated_user()
+            .filter(|_user| WorkspaceAction::Configure.permitted_to(role))
+        else {
+            tx.rollback().await?;
+            return Ok(Vec::new());
+        };
         // Each Setup's deadline is a fixed time after it was created.
         let created_after =
             now.saturating_sub(crate::setup_credentials::SETUP_CREDENTIAL_LIFETIME_NANOS);
         let setups = crate::repository::requested_setups(
             &mut tx,
             owner,
-            actor.user_id(),
+            user.user_id(),
             created_after,
             &ProviderSetupState::OPEN,
         )

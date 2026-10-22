@@ -17,6 +17,7 @@ test-fixtures = []
 [dependencies]
 coral-outbound.workspace = true
 coral-db.workspace = true
+coral-workspace.workspace = true
 flate2.workspace = true
 jsonschema.workspace = true
 mime.workspace = true

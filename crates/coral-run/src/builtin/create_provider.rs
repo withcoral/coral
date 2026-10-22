@@ -12,6 +12,7 @@ use coral_provider::{
     ManagementRequestId, ProviderSetupId, ProviderSetupSource, PublishabilityRejection,
     PublishedProvider, SetupPublishability, SetupRequest, WorkspaceProviderPublicationRequest,
 };
+use coral_workspace::ChangeContext;
 
 use super::{BuiltinHost, authority_error, provider_facts, setup_url};
 use crate::error::InputProblem;
@@ -69,10 +70,16 @@ impl CreateProvider {
     /// when nobody needs to sign in; otherwise the result is the Reef page where
     /// a person finishes it. The call never waits for that person.
     pub(super) async fn perform(&self, host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
+        // Only a User reaches createProvider; an Agent changes no configuration.
+        let Some(context) = host.context else {
+            return Err(Error::InvocationRejected(
+                CoralFailure::AuthorityLost.into(),
+            ));
+        };
         // A taken namespace would fail the Publication; fail before any fetch or Setup.
         if host
             .providers
-            .namespace_in_use(host.context.actor(), host.workspace_id, &self.namespace)
+            .namespace_in_use(context.actor(), host.workspace_id, &self.namespace)
             .await
             .map_err(setup_error)?
         {
@@ -87,7 +94,7 @@ impl CreateProvider {
             biased;
             () = host.run.stopped() => return Err(Error::ProgramHostTerminated),
             setup = host.providers.prepare_requested_setup(
-                host.context,
+                context,
                 host.workspace_id,
                 self.source.clone(),
                 SetupRequest {
@@ -98,7 +105,7 @@ impl CreateProvider {
         };
         #[cfg(test)]
         host.run.setup_prepared();
-        let publisher = match self.configure(host, setup.id()).await {
+        let publisher = match self.configure(host, context, setup.id()).await {
             Ok(publisher) => publisher,
             Err(error) => {
                 // Nobody will finish a Setup whose configuration failed.
@@ -112,7 +119,7 @@ impl CreateProvider {
                 require_current_run(host, setup.id()).await?;
                 Ok(self.needs_sign_in(host, setup.id()))
             }
-            Publisher::Coral => self.publish(host, setup.id()).await,
+            Publisher::Coral => self.publish(host, context, setup.id()).await,
         }
     }
 
@@ -121,6 +128,7 @@ impl CreateProvider {
     async fn configure(
         &self,
         host: &BuiltinHost<'_>,
+        context: &ChangeContext,
         setup: &ProviderSetupId,
     ) -> Result<Publisher, Error> {
         let invalid = |field: &str, reason: &str| {
@@ -128,7 +136,7 @@ impl CreateProvider {
         };
         let review = host
             .providers
-            .review_setup_configuration(host.context.actor(), host.workspace_id, setup)
+            .review_setup_configuration(context.actor(), host.workspace_id, setup)
             .await
             .map_err(setup_error)?;
         let Some(document) = review.document else {
@@ -145,7 +153,7 @@ impl CreateProvider {
         let confirmed = host
             .providers
             .confirm_setup_configuration(
-                host.context,
+                context,
                 host.workspace_id,
                 setup,
                 review.revision,
@@ -158,14 +166,15 @@ impl CreateProvider {
         }
         match host
             .providers
-            .setup_publishability(host.context.actor(), host.workspace_id, setup, self.route)
+            .setup_publishability(context.actor(), host.workspace_id, setup, self.route)
             .await
             .map_err(setup_error)?
         {
             SetupPublishability::Coral => Ok(Publisher::Coral),
             // The person's sign-in could not start without an OAuth application.
             SetupPublishability::Person
-                if !has_oauth_application(host, setup, confirmed.confirmed.as_ref()).await? =>
+                if !has_oauth_application(host, context, setup, confirmed.confirmed.as_ref())
+                    .await? =>
             {
                 Err(invalid(
                     "authentication.client",
@@ -209,6 +218,7 @@ impl CreateProvider {
     async fn publish(
         &self,
         host: &BuiltinHost<'_>,
+        context: &ChangeContext,
         setup: &ProviderSetupId,
     ) -> Result<serde_json::Value, Error> {
         let Some(publisher) = host.publisher else {
@@ -223,7 +233,7 @@ impl CreateProvider {
         require_current_run(host, setup).await?;
         let publication = match publisher
             .publish_workspace_provider(
-                host.context,
+                context,
                 WorkspaceProviderPublicationRequest::new(
                     host.request_id.clone(),
                     host.workspace_id.clone(),
@@ -317,6 +327,7 @@ async fn require_current_run(host: &BuiltinHost<'_>, setup: &ProviderSetupId) ->
 /// Reef offers it. Without accounts, Coral sets none up.
 async fn has_oauth_application(
     host: &BuiltinHost<'_>,
+    context: &ChangeContext,
     setup: &ProviderSetupId,
     configuration: Option<&ProviderConfiguration>,
 ) -> Result<bool, Error> {
@@ -324,7 +335,7 @@ async fn has_oauth_application(
     match host.accounts {
         Some(accounts) => accounts
             .setup_oauth_application_available(
-                host.context.actor(),
+                context.actor(),
                 host.workspace_id,
                 setup,
                 authentication,

@@ -1,5 +1,6 @@
-//! The Built-in Provider: one per Workspace at `coral.workspace`, discoverable and
-//! callable only by Users with effective Workspace Owner authority.
+//! The Built-in Provider: one per Workspace at `coral.workspace`. Each of its
+//! Operations is discoverable and callable by the Principals whose authority
+//! permits the Workspace action it declares.
 use coral_workspace::{
     AgentDisplayName, AuthenticatedPrincipal, OrganizationRole, WorkspaceAction,
     WorkspaceDisplayName, WorkspaceRole,
@@ -19,8 +20,10 @@ use crate::{
     ProviderSetupSource, ProviderState,
 };
 
+// Catches: discovery and Invocation disagreeing on who reaches a Built-in
+// Operation, or one Operation's rule applying to the whole Call Root.
 #[tokio::test]
-async fn only_users_with_effective_owner_authority_discover_and_call_the_builtin_provider() {
+async fn each_builtin_operation_reaches_the_principals_its_workspace_action_permits() {
     let (fixture, workspaces, providers) = test_modules().await;
     let database = fixture.database();
     let owner = organization_user(database.clone(), "user:owner", OrganizationRole::Member).await;
@@ -54,10 +57,13 @@ async fn only_users_with_effective_owner_authority_discover_and_call_the_builtin
         .await
         .unwrap();
 
-    for (principal, reaches) in [
-        (AuthenticatedPrincipal::user(owner), true),
-        (AuthenticatedPrincipal::user(member), false),
-        (agent, false),
+    for (principal, reached) in [
+        (
+            AuthenticatedPrincipal::user(owner),
+            &["createProvider", "listProviders"][..],
+        ),
+        (AuthenticatedPrincipal::user(member), &["listProviders"][..]),
+        (agent, &["listProviders"][..]),
     ] {
         let mut transaction = database.begin_read_snapshot().await.unwrap();
         let authority = workspaces
@@ -70,7 +76,7 @@ async fn only_users_with_effective_owner_authority_discover_and_call_the_builtin
             .try_into()
             .expect("the Workspace has only its Built-in Provider");
         assert_eq!(builtin.provider().call_root(), &ProviderCallRoot::Builtin);
-        assert_eq!(
+        assert!(
             crate::account::discoverable_in_transaction(
                 &mut transaction,
                 &builtin,
@@ -79,22 +85,36 @@ async fn only_users_with_effective_owner_authority_discover_and_call_the_builtin
             )
             .await
             .unwrap(),
-            reaches,
             "discover as {principal:?}"
         );
-        transaction.rollback().await.unwrap();
-
-        let mut transaction = database.begin().await.unwrap();
-        let resolved = crate::resolve_invocation_operation_in_transaction(
+        let unreached = crate::unreached_operations_in_transaction(
             &mut transaction,
-            workspace.id(),
-            crate::InvocationCaller::new(&workspaces, &principal, 12),
-            "coral.workspace.createProvider",
+            &builtin,
+            authority.effective_user_role(),
         )
         .await
         .unwrap();
-        assert_eq!(resolved.is_some(), reaches, "call as {principal:?}");
         transaction.rollback().await.unwrap();
+
+        for key in ["createProvider", "listProviders"] {
+            let reaches = reached.contains(&key);
+            assert_eq!(
+                unreached.iter().all(|unreached| unreached.as_str() != key),
+                reaches,
+                "discover {key} as {principal:?}"
+            );
+            let mut transaction = database.begin().await.unwrap();
+            let resolved = crate::resolve_invocation_operation_in_transaction(
+                &mut transaction,
+                workspace.id(),
+                crate::InvocationCaller::new(&workspaces, &principal, 12),
+                &format!("coral.workspace.{key}"),
+            )
+            .await
+            .unwrap();
+            assert_eq!(resolved.is_some(), reaches, "call {key} as {principal:?}");
+            transaction.rollback().await.unwrap();
+        }
     }
 }
 
@@ -717,7 +737,11 @@ async fn published_providers_lists_every_provider_in_creation_order() {
 
     let listed = arranged
         .providers
-        .published_providers(&arranged.owner, workspace)
+        .published_providers(
+            &AuthenticatedPrincipal::user(arranged.owner.clone()),
+            workspace,
+            20,
+        )
         .await
         .unwrap();
 
@@ -759,10 +783,10 @@ async fn published_providers_lists_every_provider_in_creation_order() {
     );
 }
 
-// Catches: a management read showing a Member the Built-in Provider, which
-// discovery keeps from them: in the list, by its ID, or through its Operations.
+// Catches: a management read that disagrees with discovery on what a
+// Principal reaches: in the list, by its ID, or through its Operations.
 #[tokio::test]
-async fn only_an_owner_inspects_the_builtin_provider() {
+async fn management_reads_show_each_principal_the_builtin_operations_it_reaches() {
     let arranged = BuiltinWorkspace::new().await;
     let workspace = arranged.workspace.id();
     publish_provider(
@@ -775,6 +799,7 @@ async fn only_an_owner_inspects_the_builtin_provider() {
     )
     .await;
     let member = arranged.member("user:member").await;
+    let listed = ["coral.workspace", "coral.providers.added"];
     let roots = |providers: Vec<&crate::Provider>| {
         providers
             .into_iter()
@@ -782,30 +807,13 @@ async fn only_an_owner_inspects_the_builtin_provider() {
             .collect::<Vec<_>>()
     };
 
-    for (actor, listed) in [
-        (
-            &arranged.owner,
-            &["coral.workspace", "coral.providers.added"][..],
-        ),
-        (&member, &["coral.providers.added"][..]),
+    for (actor, reached) in [
+        (&arranged.owner, &["createProvider", "listProviders"][..]),
+        (&member, &["listProviders"][..]),
     ] {
         let providers = &arranged.providers;
         let inspected = providers.inspect_providers(actor, workspace).await.unwrap();
         assert_eq!(roots(inspected.iter().collect()), listed, "{actor:?}");
-        let published = providers
-            .published_providers(actor, workspace)
-            .await
-            .unwrap();
-        assert_eq!(
-            roots(
-                published
-                    .iter()
-                    .map(|published| &published.provider)
-                    .collect()
-            ),
-            listed,
-            "{actor:?}"
-        );
         let database = arranged.fixture.database();
         let mut tx = database.begin_read_snapshot().await.unwrap();
         let evidence = arranged
@@ -827,19 +835,72 @@ async fn only_an_owner_inspects_the_builtin_provider() {
 
         let builtin = arranged.builtin.id();
         let one = providers.inspect_provider(actor, workspace, builtin).await;
-        let operations = providers
-            .inspect_catalog_page(actor, workspace, builtin, None, 100)
-            .await;
-        if listed.contains(&"coral.workspace") {
-            assert_eq!(one.unwrap().id(), builtin);
-            assert!(!operations.unwrap().is_empty());
-        } else {
-            assert!(matches!(one, Err(Error::ProviderNotFound)), "{one:?}");
-            assert!(
-                matches!(operations, Err(Error::ProviderNotFound)),
-                "{operations:?}"
-            );
+        assert_eq!(one.unwrap().id(), builtin, "{actor:?}");
+        // One Operation a page: an Operation left out must not cost the
+        // page its lookahead row, nor add one.
+        for page_size in [1, 100] {
+            let operations = providers
+                .inspect_catalog_page(actor, workspace, builtin, None, page_size)
+                .await
+                .unwrap();
+            let keys = operations
+                .iter()
+                .map(|operation| operation.key.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(keys, reached, "{actor:?}, page of {page_size}");
         }
+    }
+}
+
+// Catches: listProviders refusing an Agent, or listing a Provider it does not reach.
+#[tokio::test]
+async fn published_providers_lists_what_each_principal_reaches() {
+    let arranged = BuiltinWorkspace::new().await;
+    let workspace = arranged.workspace.id();
+    publish_provider(
+        &arranged.providers,
+        &change_context(arranged.owner.clone(), 15, '2'),
+        workspace,
+        CREDENTIAL_FREE_OPENAPI,
+        "added",
+        CredentialRoute::None,
+    )
+    .await;
+    let member = arranged.member("user:member").await;
+    let issued = arranged
+        .workspaces
+        .create_agent(
+            &change_context(arranged.owner.clone(), 16, '3'),
+            workspace,
+            AgentDisplayName::parse("Worker").unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let agent = arranged
+        .workspaces
+        .authenticate_agent(workspace, issued.credential.expose(), 17)
+        .await
+        .unwrap();
+
+    for actor in [
+        AuthenticatedPrincipal::user(arranged.owner.clone()),
+        AuthenticatedPrincipal::user(member),
+        agent,
+    ] {
+        let published = arranged
+            .providers
+            .published_providers(&actor, workspace, 20)
+            .await
+            .unwrap();
+        assert_eq!(
+            published
+                .iter()
+                .map(|published| published.provider.call_root().as_str())
+                .collect::<Vec<_>>(),
+            ["coral.workspace", "coral.providers.added"],
+            "{actor:?}"
+        );
     }
 }
 

@@ -710,6 +710,7 @@ dependencies = [
  "coral-outbound",
  "coral-test-support",
  "coral-v8",
+ "coral-workspace",
  "flate2",
  "jsonschema",
  "mime",

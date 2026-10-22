@@ -173,7 +173,11 @@ async fn a_requested_setup_keeps_its_request_and_is_listed_while_open() {
         let (actor, owner) = (&actor, &owner);
         async move {
             providers
-                .open_requested_setups(actor, owner, now)
+                .open_requested_setups(
+                    &coral_workspace::AuthenticatedPrincipal::user(actor.clone()),
+                    owner,
+                    now,
+                )
                 .await
                 .unwrap()
                 .iter()

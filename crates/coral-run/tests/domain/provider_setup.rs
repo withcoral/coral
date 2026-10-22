@@ -1371,10 +1371,13 @@ async fn an_invalid_argument_names_what_to_correct() {
     }
 }
 
+// Catches: a Built-in Operation's reach that ignores the Workspace action it
+// declares, or a host that performs listProviders only for a User.
 #[tokio::test]
-async fn members_and_agents_cannot_reach_create_provider_and_change_nothing() {
+async fn members_and_agents_list_providers_but_cannot_reach_create_provider() {
     let scope = AdminScope::new("user:admin-owner").await;
     scope.set_access(OperationAccessState::Enabled).await;
+    scope.publish_weather().await;
     let member = organization_user(
         scope.fixture.database.clone(),
         "user:admin-member",
@@ -1395,14 +1398,36 @@ async fn members_and_agents_cannot_reach_create_provider_and_change_nothing() {
     let agent =
         registered_agent(&scope.fixture.workspaces, &scope.owner, &scope.workspace_id).await;
     let before = scope.lifecycle_events().await;
-    // Built-in Operations stay concealed from non-Owners.
     for principal in [AuthenticatedPrincipal::user(member), agent] {
         let run = scope
-            .start(&principal, create_provider(&serde_json::json!({ "namespace": "weather", "source": document_source(), "credentialRoute": "fixed" }), "error.code"))
+            .start(&principal, create_provider(&serde_json::json!({ "namespace": "other", "source": document_source(), "credentialRoute": "none" }), "error.code"))
             .await;
         assert_final_code(
             &scope.terminal(&principal, &run).await,
             "operation_not_found",
+        );
+
+        let run = scope.start(&principal, list_providers("{}")).await;
+        let listed = final_value(&scope.terminal(&principal, &run).await);
+        let namespaces = listed
+            .pointer("/data/providers")
+            .and_then(serde_json::Value::as_array)
+            .unwrap_or_else(|| panic!("{principal:?} lists providers: {listed}"))
+            .iter()
+            .map(|provider| provider.get("namespace").cloned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            namespaces,
+            [
+                Some(serde_json::Value::Null),
+                Some(serde_json::json!("weather"))
+            ],
+            "{principal:?}"
+        );
+        assert_eq!(
+            listed.pointer("/data/setups"),
+            Some(&serde_json::json!([])),
+            "{principal:?}"
         );
     }
     assert_eq!(scope.lifecycle_events().await, before);

@@ -10,7 +10,6 @@ use std::collections::HashSet;
 use coral_catalog::{OperationKey, ProviderGenerationId};
 use coral_db::{DatabaseSystem, Error, Transaction};
 use coral_functions::SavedFunctionId;
-use coral_policy::ExactOperationRules;
 use coral_provider::ProviderId;
 use coral_workspace::{Principal, WorkspaceId};
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
@@ -49,13 +48,14 @@ const COMPLETE: &str = "complete";
 /// The rows one kind's statement may rank, as its visibility step decided.
 enum Scope<'a> {
     /// Operations of the visible, ready Providers' active Generations, less
-    /// the Workspace's disabled Operations. coral-provider names each
-    /// Provider's active Generation; the statement does not read it again.
+    /// the Workspace's disabled Operations and those the caller does not
+    /// reach. coral-provider names each Provider's active Generation; the
+    /// statement does not read it again.
     Operations {
         workspace_id: &'a WorkspaceId,
         provider_ids: &'a [String],
         generation_ids: &'a [String],
-        disabled: &'a [(String, String)],
+        excluded: &'a [(String, String)],
     },
     /// The Principal's own Saved Functions.
     SavedFunctions {
@@ -80,18 +80,18 @@ impl Scope<'_> {
             Self::Operations {
                 provider_ids,
                 generation_ids,
-                disabled,
+                excluded,
                 ..
             } => {
                 let providers = binds.push(json(provider_ids));
                 let generations = binds.push(json(generation_ids));
-                let disabled = binds.push(json(disabled));
-                let (providers, generations, disabled) = match binds.system {
+                let excluded = binds.push(json(excluded));
+                let (providers, generations, excluded) = match binds.system {
                     DatabaseSystem::Postgres => (
                         format!("SELECT jsonb_array_elements_text({providers}::jsonb)"),
                         format!("SELECT jsonb_array_elements_text({generations}::jsonb)"),
                         format!(
-                            "SELECT 1 FROM jsonb_array_elements({disabled}::jsonb) AS x(v) \
+                            "SELECT 1 FROM jsonb_array_elements({excluded}::jsonb) AS x(v) \
                              WHERE x.v->>0 = d.provider_id AND x.v->>1 = d.operation_key"
                         ),
                     ),
@@ -99,7 +99,7 @@ impl Scope<'_> {
                         format!("SELECT value FROM json_each({providers})"),
                         format!("SELECT value FROM json_each({generations})"),
                         format!(
-                            "SELECT 1 FROM json_each({disabled}) AS x \
+                            "SELECT 1 FROM json_each({excluded}) AS x \
                              WHERE json_extract(x.value, '$[0]') = d.provider_id \
                              AND json_extract(x.value, '$[1]') = d.operation_key"
                         ),
@@ -114,7 +114,7 @@ impl Scope<'_> {
                     "d.workspace_id = {workspace} AND d.kind = '{OPERATION}' \
                      AND d.provider_id IN ({providers}) \
                      AND d.provider_generation_id IN ({generations}) \
-                     AND NOT EXISTS ({disabled})"
+                     AND NOT EXISTS ({excluded})"
                 )
             }
             Self::SavedFunctions { principal, .. } => {
@@ -162,13 +162,13 @@ pub(super) struct Ranking<T> {
 
 /// Ranks the Operations of `providers` for the plan, best first, at most
 /// `limit`. Only rows of `generations`, the Providers' active Generations,
-/// rank. Operations the rules disable are left out.
+/// rank. The `excluded` Operations are left out.
 pub(super) async fn rank_operations(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     providers: &[ProviderId],
     generations: &[ProviderGenerationId],
-    rules: &ExactOperationRules,
+    excluded: &[(ProviderId, OperationKey)],
     plan: &QueryPlan,
     limit: usize,
 ) -> Result<Ranking<RankedOperation>, RetrievalError> {
@@ -180,15 +180,15 @@ pub(super) async fn rank_operations(
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>();
-    let disabled = rules
-        .disabled()
+    let excluded = excluded
+        .iter()
         .map(|(provider, key)| (provider.to_string(), key.as_str().to_string()))
         .collect::<Vec<_>>();
     let scope = Scope::Operations {
         workspace_id,
         provider_ids: &provider_ids,
         generation_ids: &generation_ids,
-        disabled: &disabled,
+        excluded: &excluded,
     };
     let (rows, near_spellings) = rank(transaction, &scope, plan, limit).await?;
     let entities = rows

@@ -317,7 +317,11 @@ async fn provider_and_catalog_inspection_require_current_workspace_access() {
         );
         assert_eq!(
             providers
-                .published_providers(actor, workspace.id())
+                .published_providers(
+                    &coral_workspace::AuthenticatedPrincipal::user(actor.clone()),
+                    workspace.id(),
+                    20,
+                )
                 .await
                 .unwrap()
                 .into_iter()
@@ -345,7 +349,13 @@ async fn provider_and_catalog_inspection_require_current_workspace_access() {
             Err(Error::Workspace(coral_workspace::Error::WorkspaceNotFound))
         ));
         assert!(matches!(
-            providers.published_providers(actor, workspace.id()).await,
+            providers
+                .published_providers(
+                    &coral_workspace::AuthenticatedPrincipal::user(actor.clone()),
+                    workspace.id(),
+                    20,
+                )
+                .await,
             Err(Error::Workspace(coral_workspace::Error::WorkspaceNotFound))
         ));
     }

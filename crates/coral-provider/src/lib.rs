@@ -28,6 +28,8 @@ pub use management::ProviderSource;
 #[cfg(test)]
 mod management_tests;
 mod publication;
+mod reach;
+pub use reach::{reaches, unreached_operations_in_transaction};
 mod runtime;
 pub use configuration::{ConfigurationDifference, SetupConfigurationReview};
 #[cfg(test)]
@@ -731,43 +733,34 @@ impl<'a> InvocationCaller<'a> {
         }
     }
 
-    /// Applies [`account::reaches_call_root`], the rule discovery applies. Only
-    /// the Built-in Call Root reads Workspace authority, so other roots take no
-    /// Workspace hold.
-    async fn reaches(
+    /// The caller's current Workspace authority, holding it as the dispatch
+    /// fence does; `None` when the caller has none.
+    async fn authority(
         self,
         transaction: &mut coral_db::Transaction<'_>,
         workspace_id: &WorkspaceId,
-        call_root: &ProviderCallRoot,
-    ) -> Result<bool, Error> {
-        match call_root {
-            ProviderCallRoot::Owner(_) => Ok(true),
-            ProviderCallRoot::Builtin => match self
-                .workspaces
-                .check_dispatch_in_transaction(
-                    transaction,
-                    self.actor,
-                    workspace_id,
-                    self.now_unix_nanos,
-                    coral_db::RowLock::Shared,
-                )
-                .await
-            {
-                Ok(authority) => Ok(account::reaches_call_root(
-                    call_root,
-                    self.actor.principal(),
-                    &authority,
-                )),
-                Err(
-                    coral_workspace::Error::WorkspaceNotFound
-                    | coral_workspace::Error::PermissionDenied(_)
-                    | coral_workspace::Error::WorkspaceArchived
-                    | coral_workspace::Error::AgentNotFound
-                    | coral_workspace::Error::AgentDisabled
-                    | coral_workspace::Error::AgentRegistrationExpired,
-                ) => Ok(false),
-                Err(error) => Err(error.into()),
-            },
+    ) -> Result<Option<coral_workspace::PrincipalWorkspaceEvidence>, Error> {
+        match self
+            .workspaces
+            .check_dispatch_in_transaction(
+                transaction,
+                self.actor,
+                workspace_id,
+                self.now_unix_nanos,
+                coral_db::RowLock::Shared,
+            )
+            .await
+        {
+            Ok(authority) => Ok(Some(authority)),
+            Err(
+                coral_workspace::Error::WorkspaceNotFound
+                | coral_workspace::Error::PermissionDenied(_)
+                | coral_workspace::Error::WorkspaceArchived
+                | coral_workspace::Error::AgentNotFound
+                | coral_workspace::Error::AgentDisabled
+                | coral_workspace::Error::AgentRegistrationExpired,
+            ) => Ok(None),
+            Err(error) => Err(error.into()),
         }
     }
 }
@@ -777,7 +770,7 @@ impl<'a> InvocationCaller<'a> {
 /// The caller owns the transaction that creates the durable Invocation and its
 /// started Event. The Provider whose stored Call Root starts `call_path` owns
 /// it. `Ok(None)` means no current Provider Call Root or
-/// Operation-relative path matches, or `caller` cannot reach the Call Root, so
+/// Operation-relative path matches, or `caller` cannot reach the Operation, so
 /// no Invocation should be created. Both look the same, so a caller cannot
 /// learn of an Operation it cannot discover.
 ///
@@ -794,14 +787,21 @@ pub async fn resolve_invocation_operation_in_transaction(
     else {
         return Ok(None);
     };
-    // Hold Workspace authority before the Provider, the order the dispatch fence uses.
-    if !caller
-        .reaches(transaction, workspace_id, &call_root)
-        .await?
-    {
-        return Ok(None);
-    }
-    resolve_reached_operation(transaction, workspace_id, &call_root, relative_path).await
+    let role = match call_root {
+        // Every Principal reaches an Owner-added Provider's Operations, so
+        // admission reads no Workspace authority for it and takes no hold.
+        ProviderCallRoot::Owner(_) => None,
+        // Hold Workspace authority before the Provider, the order the dispatch fence uses.
+        ProviderCallRoot::Builtin => match caller.authority(transaction, workspace_id).await? {
+            Some(authority) => authority.effective_user_role(),
+            None => return Ok(None),
+        },
+    };
+    Ok(
+        resolve_reached_operation(transaction, workspace_id, &call_root, relative_path)
+            .await?
+            .filter(|resolved| reaches(&call_root, resolved.operation().key(), role)),
+    )
 }
 
 /// Resolves a Call Path under an Owner-added Provider's Call Root for test
@@ -938,13 +938,20 @@ fn require_owner(evidence: &WorkspaceEvidence) -> Result<(), Error> {
     }
 }
 
-/// Whether inspection under `evidence` shows `provider`. As in discovery, the
-/// Built-in Provider is absent to anyone without Workspace Owner authority.
-fn inspects(evidence: &WorkspaceEvidence, provider: &Provider) -> bool {
-    match provider.call_root() {
-        ProviderCallRoot::Owner(_) => true,
-        ProviderCallRoot::Builtin => evidence.effective_role() == WorkspaceRole::Owner,
-    }
+/// Whether inspection under `evidence` shows `stored`: as in discovery, only
+/// when the User reaches one of its Operations.
+async fn inspects(
+    transaction: &mut coral_db::Transaction<'_>,
+    evidence: &WorkspaceEvidence,
+    stored: &repository::ProviderWithActiveGeneration,
+) -> Result<bool, Error> {
+    reach::reaches_provider_in_transaction(
+        transaction,
+        stored.provider.call_root(),
+        &stored.generation_id,
+        Some(evidence.effective_role()),
+    )
+    .await
 }
 
 #[cfg(test)]

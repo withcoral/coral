@@ -849,15 +849,14 @@ fn authorize(
         (None, _) | (Some(_), None) => return Err(Error::WorkspaceNotFound),
     };
 
-    let requires_owner = matches!(
-        action,
-        AuthorityAction::Public(WorkspaceAction::Configure)
-            | AuthorityAction::Archive
-            | AuthorityAction::Restore
-            | AuthorityAction::GovernArchive
-            | AuthorityAction::GovernRestore
-            | AuthorityAction::Administer
-    );
+    let requires_owner = match action {
+        AuthorityAction::Public(action) => action.requires_owner(),
+        AuthorityAction::Archive
+        | AuthorityAction::Restore
+        | AuthorityAction::GovernArchive
+        | AuthorityAction::GovernRestore
+        | AuthorityAction::Administer => true,
+    };
     if requires_owner && effective_role != WorkspaceRole::Owner {
         return Err(Error::PermissionDenied(
             "Workspace Owner authority is required",

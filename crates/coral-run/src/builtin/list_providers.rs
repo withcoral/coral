@@ -9,19 +9,21 @@ use coral_provider::{ProviderSetup, ProviderSetupState, ProviderState, Published
 use super::{BuiltinHost, authority_error, provider_facts, setup_url};
 use crate::Error;
 
-/// Lists every Provider in the Workspace, with what each offers the invoking
-/// User, and the Setups its `createProvider` calls left for a person to finish.
+/// Lists every Provider in the Workspace that the invoking Principal reaches,
+/// with what each offers it, and the Setups its `createProvider` calls left
+/// for a person to finish.
 pub(super) async fn perform(host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
+    let now = host.run.now()?;
     // Setups first: one published between the two reads is then in both
     // lists, never in neither, which a Program would read as ended.
     let setups = host
         .providers
-        .open_requested_setups(host.context.actor(), host.workspace_id, host.run.now()?)
+        .open_requested_setups(host.actor, host.workspace_id, now)
         .await
         .map_err(authority_error)?;
     let providers = host
         .providers
-        .published_providers(host.context.actor(), host.workspace_id)
+        .published_providers(host.actor, host.workspace_id, now)
         .await
         .map_err(authority_error)?;
     Ok(ListProvidersResult {

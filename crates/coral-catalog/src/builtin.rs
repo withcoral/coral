@@ -14,6 +14,7 @@
 use std::fmt;
 use std::sync::Arc;
 
+use coral_workspace::WorkspaceAction;
 use schemars::generate::{Contract, SchemaSettings};
 use schemars::transform::{RecursiveTransform, RestrictFormats};
 use schemars::{JsonSchema, Schema};
@@ -107,10 +108,23 @@ impl BuiltinOperation {
         }
     }
 
-    fn from_key(key: &str) -> Option<Self> {
+    /// Returns the Built-in Operation under `key`, or `None` for one that
+    /// another Coral version defines.
+    #[must_use]
+    pub fn from_key(key: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
             .find(|operation| operation.key() == key)
+    }
+
+    /// Returns the Workspace action a Principal's authority must permit for
+    /// it to discover or call this Operation.
+    #[must_use]
+    pub const fn needs(self) -> WorkspaceAction {
+        match self {
+            Self::CreateProvider => create_provider::NEEDS,
+            Self::ListProviders => list_providers::NEEDS,
+        }
     }
 }
 

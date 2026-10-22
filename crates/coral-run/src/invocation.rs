@@ -616,7 +616,7 @@ impl OperationInvoker {
             .map(Dispatch::Upstream)
     }
 
-    /// Performs a Built-in Operation as the invoking User after the fence,
+    /// Performs a Built-in Operation as the invoking Principal after the fence,
     /// where an upstream send would run, and records its Operation Result as
     /// the Upstream Outcome. Nothing is sent upstream.
     async fn perform_builtin(
@@ -633,23 +633,22 @@ impl OperationInvoker {
                 .finish_failure(admitted, progress, CoralFailure::OperationUnavailable)
                 .await?);
         };
-        let Some(user) = self.actor.authenticated_user() else {
-            return Err(self
-                .finish_failure(admitted, progress, CoralFailure::AuthorityLost)
-                .await?);
+        let context = match self.actor.authenticated_user() {
+            Some(user) => Some(coral_workspace::ChangeContext::new(
+                user.clone(),
+                self.now()?,
+                coral_workspace::TraceId::current_or_new(),
+            )),
+            None => None,
         };
-        let context = coral_workspace::ChangeContext::new(
-            user.clone(),
-            self.now()?,
-            coral_workspace::TraceId::current_or_new(),
-        );
         let request_id = coral_provider::ManagementRequestId::parse(&admitted.id.to_string())
             .map_err(Error::from)?;
         let host = crate::builtin::BuiltinHost {
             providers: &self.providers,
             accounts: self.accounts.as_ref(),
             publisher: self.provider_publisher.as_deref(),
-            context: &context,
+            actor: &self.actor,
+            context: context.as_ref(),
             principal: &self.principal,
             workspace_id: &self.workspace_id,
             human_interface,

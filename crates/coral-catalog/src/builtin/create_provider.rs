@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use coral_workspace::WorkspaceAction;
 use schemars::JsonSchema;
 use schemars::generate::Contract;
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,10 @@ use crate::{
 mod input;
 #[cfg(test)]
 pub(super) mod tests;
+
+/// Adding a Provider changes the Workspace's configuration, which only an
+/// Owner does.
+pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Configure;
 
 pub(super) fn definition() -> Definition {
     Definition {
