@@ -1,0 +1,37 @@
+name: Sandbox deploy
+
+# Starts withcoral/coral-cloud's sandbox deploy on every push to main; a workflow
+# there cannot subscribe to this repository's pushes. coral-cloud deploys main's
+# head and skips a commit the sandbox already runs, so a repeated dispatch is
+# harmless.
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: sandbox-deploy
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    # Forks have neither the app nor coral-cloud.
+    if: github.repository == 'withcoral/coral'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 5
+    steps:
+      - name: Create GitHub App token
+        id: token
+        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+        with:
+          app-id: ${{ vars.SANDBOX_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.SANDBOX_DEPLOY_APP_PRIVATE_KEY }}
+          owner: withcoral
+          repositories: coral-cloud
+          permission-actions: write
+
+      - name: Dispatch the sandbox deploy
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: gh workflow run lagoon-autodeploy.yml -R withcoral/coral-cloud --ref main
