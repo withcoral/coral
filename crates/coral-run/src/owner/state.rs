@@ -1298,7 +1298,11 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         // While the owner interrupts its Run, the chunk and the start mark
         // still in flight may answer and the Program may end: none of it
         // changes what is written. The Interrupted record alone retires it.
-        Message::Interrupted(_) if state.phase == Phase::Interrupting => state.retire(false),
+        // The Interrupted record this owner wrote ended its Run; a record
+        // another writer made first did not.
+        Message::Interrupted(recorded) if state.phase == Phase::Interrupting => {
+            state.retire(recorded.is_ok())
+        }
         Message::Started(_)
         | Message::ProgramEnded(_)
         | Message::Committed
