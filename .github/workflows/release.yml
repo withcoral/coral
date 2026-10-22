@@ -568,6 +568,10 @@ jobs:
         run: |
           set -euo pipefail
           version="${TAG_NAME#v}"
+          notes="Release notes: https://github.com/withcoral/coral/releases/tag/${TAG_NAME}"
+          # --provenance pushes an index, and GHCR reads a package description
+          # only from the index's annotations, never from image labels. The
+          # annotation is set here because promote must tag the signed digest.
           build() {
             local image="$1"
             shift
@@ -580,10 +584,12 @@ jobs:
             --build-arg "CORAL_GIT_SHA=$(git rev-parse --short HEAD)" \
             --label "org.opencontainers.image.source=https://github.com/withcoral/coral" \
             --label "org.opencontainers.image.version=${version}" \
-            --label "org.opencontainers.image.revision=${COMMIT_SHA}")"
+            --label "org.opencontainers.image.revision=${COMMIT_SHA}" \
+            --annotation "index:org.opencontainers.image.description=Coral runtime ${version}. ${notes}")"
           coral_web="$(build "$CORAL_WEB_IMAGE" --file docker/Dockerfile.reef \
             --build-arg "CORAL_WEB_VERSION=${version}" \
-            --build-arg "CORAL_WEB_REVISION=${COMMIT_SHA}")"
+            --build-arg "CORAL_WEB_REVISION=${COMMIT_SHA}" \
+            --annotation "index:org.opencontainers.image.description=Coral Reef ${version}. ${notes}")"
           {
             echo "version=${version}"
             echo "coral=${coral}"
