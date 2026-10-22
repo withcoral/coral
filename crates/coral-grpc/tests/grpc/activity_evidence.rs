@@ -1379,10 +1379,11 @@ async fn activity_records_carry_their_authored_location_on_every_projection() {
     assert_eq!(row_locations, expected_rows);
 }
 
-/// A summary needs one Workspace, reports a rejected window as an invalid argument, and
-/// names its rows for Reef. `coral-run` owns which windows it accepts.
+/// A summary needs one Workspace, reports a rejected window as an invalid argument, hides
+/// a Workspace the caller cannot read, and names its rows for Reef. `coral-run` owns
+/// which windows it accepts.
 #[tokio::test]
-async fn activity_summary_wire_rejects_malformed_windows_and_labels_its_rows() {
+async fn activity_summary_wire_rejects_malformed_and_hidden_windows_and_labels_its_rows() {
     let f = Fixture::new().await;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1400,7 +1401,12 @@ async fn activity_summary_wire_rejects_malformed_windows_and_labels_its_rows() {
     let mut client = f.activity();
     let token = f.token(&f.member, "reef");
     let workspace = format!("workspaces/{}", f.workspace.id());
-    for (name, days) in [(String::new(), 7), (workspace.clone(), 0)] {
+    let absent = "workspaces/c0000000-0000-4000-8000-000000000001".to_owned();
+    for (name, days, code) in [
+        (String::new(), 7, tonic::Code::InvalidArgument),
+        (workspace.clone(), 0, tonic::Code::InvalidArgument),
+        (absent, 7, tonic::Code::NotFound),
+    ] {
         let denied = client
             .summarize_activity(request(
                 wire::SummarizeActivityRequest {
@@ -1412,11 +1418,7 @@ async fn activity_summary_wire_rejects_malformed_windows_and_labels_its_rows() {
             ))
             .await
             .unwrap_err();
-        assert_eq!(
-            denied.code(),
-            tonic::Code::InvalidArgument,
-            "{name:?} {days}"
-        );
+        assert_eq!(denied.code(), code, "{name:?} {days}");
     }
     let summary = client
         .summarize_activity(request(

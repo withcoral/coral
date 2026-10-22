@@ -225,10 +225,14 @@ async fn activity_summary_counts_context_as_the_task_total_does() {
             .map(|share| (share.bytes, share.agent_label.clone()))
     };
     assert_eq!(share(f.actor.principal()), Some((owner_total, None)));
-    let Some((agent_total, Some(label))) = share(agent.principal()) else {
-        panic!("the Agent's search is its own share: {:?}", summary.actors)
-    };
-    assert!(agent_total > 0 && label == "Worker");
+    let agent_total = task_read(&f, &agent_goal)
+        .await
+        .context_impact_bytes()
+        .unwrap();
+    assert_eq!(
+        share(agent.principal()),
+        Some((agent_total, Some("Worker".to_owned())))
+    );
     assert_eq!(summary.actors.len(), 2);
     assert_eq!(
         summary.context_impact_bytes,
@@ -442,8 +446,19 @@ async fn task_impact(f: &Fixture, goal: &Task) -> (Option<i64>, bool) {
     let ActivityRoot::Task(root) = roots.rows.first().unwrap() else {
         panic!("goal root")
     };
-    let page = f
-        .tasks
+    let task = task_read(f, goal).await;
+    let impact = (root.context_impact_bytes(), root.context_impact_partial());
+    assert_eq!(
+        (task.context_impact_bytes(), task.context_impact_partial()),
+        impact,
+        "Task reads disagree"
+    );
+    impact
+}
+
+/// The owner's read of one Task, as its interaction page carries it.
+async fn task_read(f: &Fixture, goal: &Task) -> Task {
+    f.tasks
         .activity_interactions(
             &f.runs,
             &f.actor,
@@ -456,17 +471,8 @@ async fn task_impact(f: &Fixture, goal: &Task) -> (Option<i64>, bool) {
             None,
         )
         .await
-        .unwrap();
-    let impact = (root.context_impact_bytes(), root.context_impact_partial());
-    assert_eq!(
-        (
-            page.task.context_impact_bytes(),
-            page.task.context_impact_partial()
-        ),
-        impact,
-        "Task reads disagree"
-    );
-    impact
+        .unwrap()
+        .task
 }
 
 /// Six goals with tied timestamps in two Workspaces, newest-first by qualified identity.
