@@ -809,10 +809,11 @@ pub(crate) async fn start_server(
         },
     );
 
-    // The expired-lease sweep's first pass runs before any listener binds,
-    // so a Run whose lease lapsed before boot has its owner back before the
-    // first request. A pass that fails is logged; the next one, a half lease
-    // later, reads again.
+    // The expired-lease sweep's first pass runs before any listener binds:
+    // when it succeeds, a Run whose lease lapsed before boot has its owner
+    // back before the first request. A pass that fails is logged, the
+    // listeners bind anyway, and the next pass, a half lease later, reads
+    // again.
     sweep_expired_leases(&runs).await;
     let listener = TcpListener::bind(mode.bind_addr()).await?;
     let local_addr = listener.local_addr()?;
