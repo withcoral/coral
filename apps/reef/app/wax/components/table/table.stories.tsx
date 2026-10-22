@@ -132,7 +132,7 @@ export const RowStatusMarkers: Story = {
   ),
 }
 
-// Both constrained-height arrangements. `maxHeight` keeps the table heading
+// Both constrained-height arrangements. `maxRows` keeps the table heading
 // outside its row scrollport; an ancestor scroll keeps the heading sticky.
 const SCROLL_COLUMNS: Column[] = [
   { label: 'Name', width: 'fill' },
@@ -156,17 +156,19 @@ function ManyRows({ label = 'row', start = 0 }: { label?: string; start?: number
 
 export const ScrollingRowsInsideTable: Story = {
   render: () => (
-    <Container
-      columns={SCROLL_COLUMNS}
-      density="compact"
-      layout="fixed"
-      maxHeight={180}
-      variant="card"
-    >
+    <Container columns={SCROLL_COLUMNS} density="compact" layout="fixed" maxRows={5} variant="card">
       <Head />
       <ManyRows />
     </Container>
   ),
+  // Catches: a row cap that cuts the last row or shows part of the next one.
+  play: async ({ canvas }) => {
+    const port = canvas.getByRole('cell', { name: 'row_0' }).closest('[role=rowgroup]')!
+    const bottom = port.getBoundingClientRect().bottom
+    const top = (name: string) => canvas.getByRole('cell', { name }).getBoundingClientRect().top
+    await expect(top('row_4') + CELL_HEIGHT_PX.compact).toBeCloseTo(bottom, 0)
+    await expect(top('row_5')).toBeGreaterThanOrEqual(bottom - 1)
+  },
 }
 
 function InspectorTable({ groupHeadings }: { groupHeadings?: TableGroupHeadings }) {
