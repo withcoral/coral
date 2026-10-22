@@ -196,6 +196,19 @@ async fn a_requested_setup_keeps_its_request_and_is_listed_while_open() {
         ),
     ];
     assert_eq!(listed(3).await, both);
+    // Acting on a Setup configures the Workspace: a User demoted to Member
+    // lists none, and their Setups stay open for when they are an Owner again.
+    for (role, expected) in [
+        (coral_workspace::WorkspaceRole::Member, &[][..]),
+        (coral_workspace::WorkspaceRole::Owner, &both[..]),
+    ] {
+        harness
+            .workspaces
+            .set_membership(&change_context(other.clone(), 3, '4'), &owner, &actor, role)
+            .await
+            .unwrap();
+        assert_eq!(listed(3).await, expected, "{role:?}");
+    }
     // Each Setup expires an hour after it was created.
     let deadline = |created| crate::setup_credentials::setup_deadline(created).unwrap();
     assert_eq!(listed(deadline(2) - 1).await, both);

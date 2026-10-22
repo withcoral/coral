@@ -176,14 +176,9 @@ fn setup_url(host: &BuiltinHost<'_>, setup: &ProviderSetupId) -> String {
 /// the Program can catch; anything else is a host defect.
 fn authority_error(error: coral_provider::Error) -> Error {
     match error {
-        coral_provider::Error::Workspace(
-            coral_workspace::Error::WorkspaceNotFound
-            | coral_workspace::Error::PermissionDenied(_)
-            | coral_workspace::Error::WorkspaceArchived
-            | coral_workspace::Error::AgentNotFound
-            | coral_workspace::Error::AgentDisabled
-            | coral_workspace::Error::AgentRegistrationExpired,
-        ) => Error::InvocationRejected(CoralFailure::AuthorityLost.into()),
+        coral_provider::Error::Workspace(error) if crate::fence::loses_authority(&error) => {
+            Error::InvocationRejected(CoralFailure::AuthorityLost.into())
+        }
         other => other.into(),
     }
 }

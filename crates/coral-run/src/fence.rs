@@ -400,13 +400,23 @@ async fn operation_fact(
 /// The known failure a Workspace authority error means (lost authority), or
 /// the error itself when it is not one.
 pub(crate) fn authority_failure(error: coral_workspace::Error) -> Result<CoralFailure, Error> {
-    match error {
-        coral_workspace::Error::WorkspaceNotFound
-        | coral_workspace::Error::PermissionDenied(_)
-        | coral_workspace::Error::WorkspaceArchived
-        | coral_workspace::Error::AgentNotFound
-        | coral_workspace::Error::AgentDisabled
-        | coral_workspace::Error::AgentRegistrationExpired => Ok(CoralFailure::AuthorityLost),
-        error => Err(error.into()),
+    if loses_authority(&error) {
+        Ok(CoralFailure::AuthorityLost)
+    } else {
+        Err(error.into())
     }
+}
+
+/// Whether a Workspace error means the Principal lost authority, rather than
+/// a host defect.
+pub(crate) const fn loses_authority(error: &coral_workspace::Error) -> bool {
+    matches!(
+        error,
+        coral_workspace::Error::WorkspaceNotFound
+            | coral_workspace::Error::PermissionDenied(_)
+            | coral_workspace::Error::WorkspaceArchived
+            | coral_workspace::Error::AgentNotFound
+            | coral_workspace::Error::AgentDisabled
+            | coral_workspace::Error::AgentRegistrationExpired
+    )
 }
