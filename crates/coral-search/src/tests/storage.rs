@@ -101,6 +101,66 @@ async fn sqlite_text_index_follows_a_saved_function_delete_cascade() {
 }
 
 #[tokio::test]
+async fn sqlite_key_step_links_rows_indexed_before_it() {
+    coral_test_support::database_only!(Sqlite);
+    // Every step but 39, the one under test. No later step exists, so the
+    // plan's repositories need nothing it would add.
+    let before_keys = coral_test_support::edited_migration_plan(|migrations| {
+        migrations
+            .into_iter()
+            .filter(|migration| migration.version != 39)
+            .collect()
+    });
+    let modules = TestModules::with_plan(&before_keys).await;
+    let database = modules.search.database.clone();
+    let user = organization_user(database.clone(), USER).await;
+    let workspace = modules.create_workspace(&user).await;
+    let provider = modules
+        .publish_openapi(&user, &workspace, NAMES, "tracker", 20)
+        .await;
+    modules.converge().await;
+    let generation = active_generation(&database, &provider).await;
+    let comments = format!("{generation}:listComments");
+    let create = format!("{generation}:create");
+    assert_eq!(
+        text_index_docs(&database, &workspace).await,
+        [create.clone(), comments.clone()]
+    );
+
+    database
+        .migrate(coral_db::migration_plan())
+        .await
+        .expect("apply the key step");
+
+    database
+        .execute(
+            Query::update()
+                .table(Alias::new("search_entities"))
+                .value(Alias::new("title"), "Read the zebras")
+                .and_where(Expr::col(Alias::new("doc_id")).eq(comments.clone()))
+                .to_owned(),
+        )
+        .await
+        .expect("update the row indexed before the step");
+    assert_eq!(
+        text_matches(&database, &workspace, "zebras").await,
+        std::slice::from_ref(&comments)
+    );
+    assert_eq!(
+        text_index_docs(&database, &workspace).await,
+        [create, comments],
+        "the update replaced the row's copy"
+    );
+
+    modules.index.remove_provider(workspace.clone(), provider);
+    modules.index.settled().await;
+    assert!(
+        text_index_docs(&database, &workspace).await.is_empty(),
+        "the removal deleted every copy"
+    );
+}
+
+#[tokio::test]
 async fn saved_function_rows_without_a_principal_kind_fail_their_check() {
     let upstream = MockServer::start().await;
     let tracer = Tracer::publish(&upstream).await;
@@ -548,6 +608,22 @@ async fn text_matches(database: &Database, workspace: &WorkspaceId, phrase: &str
         )
         .await
         .expect("query the FTS5 table");
+    rows.into_iter().map(|(doc,)| doc).collect()
+}
+
+/// The doc ID of each FTS5 copy in `workspace`, sorted, with repeats.
+async fn text_index_docs(database: &Database, workspace: &WorkspaceId) -> Vec<String> {
+    let rows: Vec<(String,)> = database
+        .fetch_all(
+            Query::select()
+                .column(Alias::new("doc_id"))
+                .from(Alias::new("search_entities_fts"))
+                .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace.to_string()))
+                .order_by(Alias::new("doc_id"), Order::Asc)
+                .to_owned(),
+        )
+        .await
+        .expect("read the FTS5 copies");
     rows.into_iter().map(|(doc,)| doc).collect()
 }
 
