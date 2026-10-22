@@ -44,6 +44,43 @@ fn device_recovery_sweeps() -> tokio::time::Interval {
     sweeps
 }
 
+/// How often bootstrap deletes the Provider Generations that nothing uses. A
+/// pass first marks a Generation unused and deletes it on a pass at least
+/// [`coral_provider::GENERATION_RETIREMENT_GRACE`] later, so an unused
+/// Generation goes within that grace plus this interval.
+const GENERATION_COLLECTION_INTERVAL: std::time::Duration = std::time::Duration::from_mins(5);
+
+/// Runs a Generation collection pass at once, then one each interval, until
+/// aborted. An Invocation of a running Run keeps its Generation.
+fn spawn_generation_collection(providers: coral_provider::ProviderModule) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut passes = tokio::time::interval(GENERATION_COLLECTION_INTERVAL);
+        passes.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            passes.tick().await;
+            let Some(now) = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
+            else {
+                tracing::warn!("Provider Generation collection skipped: the clock is unreadable");
+                continue;
+            };
+            match providers
+                .collect_generations(coral_run::history_repository::running_invocation_names, now)
+                .await
+            {
+                Ok(collection) => tracing::debug!(
+                    retired = collection.retired,
+                    deleted = collection.deleted,
+                    "Provider Generation collection pass"
+                ),
+                Err(error) => tracing::warn!(%error, "Provider Generation collection failed"),
+            }
+        }
+    })
+}
+
 #[derive(Clone)]
 enum ServerModeSelection {
     Explicit(ServerMode),
@@ -477,6 +514,7 @@ pub struct RunningServer {
     accounts: Option<coral_provider::account::AccountModule>,
     runs: coral_run::RunModule,
     device_recovery: Option<JoinHandle<()>>,
+    generation_collection: JoinHandle<()>,
     search_index: coral_search::SearchIndex,
     search_reconcile: JoinHandle<()>,
     mcp_origin: Arc<std::sync::OnceLock<String>>,
@@ -559,6 +597,7 @@ impl RunningServer {
         if let Some(worker) = &self.device_recovery {
             worker.abort();
         }
+        self.generation_collection.abort();
         self.search_reconcile.abort();
         if let Some(accounts) = &self.accounts
             && let Err(error) = accounts.stop_device_authorizations().await
@@ -636,6 +675,7 @@ impl Drop for RunningServer {
         if let Some(worker) = &self.device_recovery {
             worker.abort();
         }
+        self.generation_collection.abort();
         self.search_reconcile.abort();
         if let Some(accounts) = &self.accounts {
             accounts.abort_device_authorizations();
@@ -806,9 +846,11 @@ pub(crate) async fn start_server(
         })
     });
     let search_reconcile = search_index.spawn_reconcile_task();
+    let generation_collection = spawn_generation_collection(providers.clone());
     Ok(RunningServer {
         providers,
         device_recovery,
+        generation_collection,
         search_index,
         search_reconcile,
         accounts,

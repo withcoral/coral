@@ -22,6 +22,10 @@ mod change;
 #[cfg(test)]
 mod credential_lifecycle_tests;
 mod error;
+mod generation_collection;
+pub use generation_collection::{
+    GENERATION_RETIREMENT_GRACE, GenerationCollection, GenerationHold,
+};
 mod lifecycle;
 mod management;
 pub use management::ProviderSource;

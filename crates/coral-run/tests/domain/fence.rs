@@ -1712,3 +1712,105 @@ async fn a_refresh_wait_parked_by_the_fence_resumes_on_the_next_fence_and_never_
         );
     }
 }
+
+/// A Run that has admitted an Invocation keeps the Invocation's Generation
+/// past the retirement grace after its Provider moves on; once the Run ends,
+/// the Generation goes after the grace like any other unused one.
+#[tokio::test]
+async fn a_running_invocation_keeps_its_superseded_generation() {
+    let held = HeldApproval::new("user:held-generation").await;
+    let fixture = &held.fixture;
+    let operation = &held.operation;
+    let mut tx = fixture.database.begin().await.unwrap();
+    let retained = coral_provider::resolve_owner_operation_in_transaction(
+        &mut tx,
+        &operation.workspace_id,
+        &operation.call_path,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let replacement_document = serde_json::json!({
+        "openapi": "3.1.0",
+        "info": {"title": "Current Weather", "version": "2"},
+        "servers": [{"url": "https://replacement.example"}],
+        "security": [],
+        "paths": {"/current": {"get": {
+            "operationId": "getCurrentWeather",
+            "responses": {"200": {"description": "Current weather"}}
+        }}}
+    })
+    .to_string();
+    let setup = fixture
+        .providers
+        .prepare_openapi_fixture(
+            &change(operation.user.clone(), 100, 'e'),
+            &operation.workspace_id,
+            OpenApiDocument::parse(&replacement_document).unwrap(),
+        )
+        .await
+        .unwrap();
+    fixture
+        .providers
+        .regenerate_provider(
+            &change(operation.user.clone(), 101, 'f'),
+            ProviderRegenerationRequest::new(
+                ManagementRequestId::parse("00000000-0000-4000-8000-000000000059").unwrap(),
+                operation.workspace_id.clone(),
+                operation.provider_id.clone(),
+                setup.id().clone(),
+                1,
+            )
+            .with_incompatible_configuration_confirmation(),
+        )
+        .await
+        .unwrap();
+
+    let generation_exists = async || {
+        let mut tx = fixture.database.begin_read_snapshot().await.unwrap();
+        let exists = coral_catalog::operation_exists_in_transaction(
+            &mut tx,
+            retained.provider_generation_id(),
+            retained.operation().key(),
+        )
+        .await
+        .unwrap();
+        tx.rollback().await.unwrap();
+        exists
+    };
+    let grace = i64::try_from(coral_provider::GENERATION_RETIREMENT_GRACE.as_nanos()).unwrap();
+    let collect = async |now| {
+        fixture
+            .providers
+            .collect_generations(crate::history_repository::running_invocation_names, now)
+            .await
+            .unwrap();
+    };
+    collect(0).await;
+    collect(grace).await;
+    assert!(generation_exists().await, "the running Run holds it");
+
+    held.fixture
+        .runs
+        .cancel(
+            &held.actor,
+            &operation.workspace_id,
+            &held.run,
+            &immediate(None, 100),
+        )
+        .await
+        .unwrap();
+    wait_for_terminal(
+        &fixture.runs,
+        &held.actor,
+        &operation.workspace_id,
+        &held.run,
+    )
+    .await;
+    collect(2 * grace).await;
+    assert!(generation_exists().await, "unused for less than the grace");
+    collect(3 * grace).await;
+    assert!(!generation_exists().await, "unused for the grace");
+}

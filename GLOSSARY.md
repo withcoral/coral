@@ -222,9 +222,10 @@ _In Reef_: "Add provider" (in flight "Adding…", result "Added"); regeneration 
 **Provider Generation**: The private, immutable publication result that contains one Provider's exact Materialized
 Operation Catalog, executable Operation definitions, confirmed Provider Configuration, Provider Credential Contract, model-facing TypeScript view, and
 safe provenance. A Provider selects one active generation. A later Invocation selects the active generation, while an
-admitted Invocation retains its selected generation until it is terminal or past its deadline. A publication with no
-canonical change reuses the active generation. Coral exposes no generation list, selector, restore operation,
-comparison, or caller pin. _Avoid_: Operation revision, public catalog version, Program Run catalog snapshot
+admitted Invocation retains its selected generation until it is terminal or past its deadline. Coral deletes a
+generation that no Provider selects and no Invocation of a running Run retains, after a grace period. Run history keeps
+only the generation's id. A publication with no canonical change reuses the active generation. Coral exposes no
+generation list, selector, restore operation, comparison, or caller pin. _Avoid_: Operation revision, public catalog version, Program Run catalog snapshot
 
 **Provider**: One published, configured Operation catalog owned by exactly one Workspace, with one immutable resource
 identity and its own immutable, Workspace-unique Program namespace, authentication setting, Operation policy, and

@@ -3,8 +3,8 @@ use crate::{Error, InvocationStatus, InvocationSummary, RunSummary};
 use coral_db::{Transaction, col};
 use coral_workspace::{HistoryAuthority, WorkspaceId};
 use sea_query::{
-    Alias, Expr, ExprTrait as _, Func, IntoColumnRef as _, JoinType, Query, SelectStatement,
-    SimpleExpr,
+    Alias, ColumnRef, Expr, ExprTrait as _, Func, IntoColumnRef as _, JoinType, Query,
+    SelectStatement, SimpleExpr,
 };
 
 /// Authorized source-free Run positions for upper-owner grouping in the same snapshot.
@@ -86,6 +86,27 @@ pub(super) async fn invoking_authority_current(
         )
         .await?;
     Ok(row.is_some_and(|row| row.0))
+}
+/// Whether an Invocation of a running Run names the Generation at
+/// `generation`: the Run may still dispatch it, so the Generation stays.
+#[must_use]
+pub fn running_invocation_names(generation: ColumnRef) -> SimpleExpr {
+    Expr::exists(
+        Query::select()
+            .expr(Expr::val(1_i64))
+            .from_as(Alias::new("program_run_records"), Alias::new("held_run"))
+            .join_as(
+                JoinType::InnerJoin,
+                Alias::new("operation_invocations"),
+                Alias::new("held_invocation"),
+                col("held_invocation", "workspace_id")
+                    .eq(col("held_run", "workspace_id"))
+                    .and(col("held_invocation", "run_id").eq(col("held_run", "id"))),
+            )
+            .and_where(col("held_run", "state").eq(crate::RunState::Running.as_storage_str()))
+            .and_where(col("held_invocation", "provider_generation_id").eq(Expr::col(generation)))
+            .to_owned(),
+    )
 }
 pub(crate) fn running() -> SimpleExpr {
     col("r", "state").eq(crate::RunState::Running.as_storage_str())

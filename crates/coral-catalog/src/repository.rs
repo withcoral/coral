@@ -2,8 +2,11 @@ use coral_db::Transaction;
 use sea_query::{Expr, ExprTrait as _, Iden, Order, Query};
 use sqlx::FromRow;
 
+mod retirement;
 #[cfg(test)]
 mod tests;
+
+pub(super) use retirement::{delete_retired, due_retirements, retire_unused};
 
 use crate::{
     BuiltinCatalogIdentity, CatalogDiagnostic, Error, ExecutionBinding, HttpMethod,

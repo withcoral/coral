@@ -473,3 +473,49 @@ pub async fn operation_by_relative_path_in_transaction(
 ) -> Result<Option<MaterializedOperation>, Error> {
     repository::load_operation_by_relative_path(transaction, generation_id, relative_path).await
 }
+
+/// Marks every Generation that `in_use` does not hold as retired at `now`,
+/// unless an earlier pass marked it. `in_use` receives the Generation id
+/// column and returns the condition under which a caller still needs it.
+///
+/// # Errors
+///
+/// Returns a persistence failure.
+pub async fn retire_unused_generations_in_transaction(
+    transaction: &mut Transaction<'_>,
+    in_use: &(dyn Fn(sea_query::ColumnRef) -> sea_query::SimpleExpr + Sync),
+    now_unix_nanos: i64,
+) -> Result<u64, Error> {
+    repository::retire_unused(transaction, in_use, now_unix_nanos).await
+}
+
+/// Lists up to `limit` Generations retired at or before `retired_by` that
+/// `in_use` does not hold, earliest first.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-data failure.
+pub async fn retired_generations_in_transaction(
+    transaction: &mut Transaction<'_>,
+    in_use: &(dyn Fn(sea_query::ColumnRef) -> sea_query::SimpleExpr + Sync),
+    retired_by_unix_nanos: i64,
+    limit: u64,
+) -> Result<Vec<ProviderGenerationId>, Error> {
+    repository::due_retirements(transaction, in_use, retired_by_unix_nanos, limit).await
+}
+
+/// Deletes one retired Generation with its Operations, shared types and
+/// search rows, when it is still retired at or before `retired_by` and
+/// `in_use` still does not hold it. Returns whether it deleted the Generation.
+///
+/// # Errors
+///
+/// Returns a persistence failure.
+pub async fn delete_retired_generation_in_transaction(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+    in_use: &(dyn Fn(sea_query::ColumnRef) -> sea_query::SimpleExpr + Sync),
+    retired_by_unix_nanos: i64,
+) -> Result<bool, Error> {
+    repository::delete_retired(transaction, generation_id, in_use, retired_by_unix_nanos).await
+}

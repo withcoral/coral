@@ -1194,3 +1194,194 @@ async fn display_names_reject_control_and_format_characters() {
         events
     );
 }
+
+/// Holds no Generation beyond the Providers' active selections.
+fn no_hold(_generation: sea_query::ColumnRef) -> sea_query::SimpleExpr {
+    sea_query::Expr::val(false)
+}
+
+/// Holds every Generation.
+fn hold_all(_generation: sea_query::ColumnRef) -> sea_query::SimpleExpr {
+    sea_query::Expr::val(true)
+}
+
+fn retirement_grace_nanos() -> i64 {
+    i64::try_from(coral_provider::GENERATION_RETIREMENT_GRACE.as_nanos()).expect("grace fits")
+}
+
+async fn publish(
+    providers: &ProviderModule,
+    actor: &AuthenticatedUser,
+    workspace: &WorkspaceId,
+) -> coral_provider::Provider {
+    let setup = setup(providers, actor, workspace).await;
+    providers
+        .publish_workspace_provider(
+            &context(actor),
+            request(
+                workspace,
+                &setup,
+                "weather",
+                "87000000-0000-4000-8000-000000000001",
+            ),
+        )
+        .await
+        .expect("publish the Provider")
+        .published_provider()
+        .expect("published Provider")
+        .clone()
+}
+
+/// Replaces the Provider's active Generation with one that changes the
+/// Operation's summary, so publication cannot reuse it.
+async fn regenerate(
+    providers: &ProviderModule,
+    actor: &AuthenticatedUser,
+    workspace: &WorkspaceId,
+    provider: &coral_provider::Provider,
+) {
+    let current = providers
+        .inspect_provider(actor, workspace, provider.id())
+        .await
+        .expect("inspect the Provider");
+    let update = setup_from(
+        providers,
+        actor,
+        workspace,
+        &SOURCE.replace(
+            r#""operationId":"forecast""#,
+            r#""operationId":"forecast","summary":"Forecast""#,
+        ),
+    )
+    .await;
+    let revision = providers
+        .review_setup_configuration(actor, workspace, update.id())
+        .await
+        .expect("review the update configuration")
+        .revision;
+    providers
+        .regenerate_provider(
+            &context(actor)
+                .with_etag(&current.etag())
+                .expect("current etag"),
+            ProviderRegenerationRequest::new(
+                ManagementRequestId::parse("87000000-0000-4000-8000-000000000002")
+                    .expect("valid request fixture"),
+                workspace.clone(),
+                provider.id().clone(),
+                update.id().clone(),
+                revision,
+            ),
+        )
+        .await
+        .expect("regenerate the Provider");
+}
+
+async fn resolve_forecast(
+    database: &coral_db::Database,
+    workspace: &WorkspaceId,
+) -> coral_provider::ResolvedInvocationOperation {
+    let mut tx = database.begin().await.expect("begin admission read");
+    let resolved = coral_provider::resolve_owner_operation_in_transaction(
+        &mut tx,
+        workspace,
+        "coral.providers.weather.forecast",
+    )
+    .await
+    .expect("resolve the Operation")
+    .expect("the Operation exists");
+    tx.commit().await.expect("finish admission read");
+    resolved
+}
+
+/// Whether the retained Operation's Generation still exists.
+async fn generation_exists(
+    database: &coral_db::Database,
+    retained: &coral_provider::ResolvedInvocationOperation,
+) -> bool {
+    let mut tx = database
+        .begin_read_snapshot()
+        .await
+        .expect("begin catalog read");
+    let exists = coral_catalog::operation_exists_in_transaction(
+        &mut tx,
+        retained.provider_generation_id(),
+        retained.operation().key(),
+    )
+    .await
+    .expect("read the Operation");
+    tx.rollback().await.expect("finish catalog read");
+    exists
+}
+
+#[derive(Clone, Copy)]
+enum Release {
+    /// The Provider moves to a new Generation.
+    Superseded,
+    /// The Provider keeps its Generation.
+    Active,
+    /// The Provider is deleted.
+    Deleted,
+}
+
+#[tokio::test]
+async fn an_unused_generation_goes_once_unused_for_the_retirement_grace() {
+    for (case, release, held, kept) in [
+        (
+            "superseded",
+            Release::Superseded,
+            no_hold as coral_provider::GenerationHold,
+            false,
+        ),
+        ("superseded but held", Release::Superseded, hold_all, true),
+        ("active", Release::Active, no_hold, true),
+        ("Provider deleted", Release::Deleted, no_hold, false),
+    ] {
+        let (db, workspaces, providers, actor) = harness().await;
+        let database = db.database();
+        let workspace = workspaces
+            .create(
+                &context(&actor),
+                WorkspaceDisplayName::parse("Weather").unwrap(),
+            )
+            .await
+            .unwrap();
+        let provider = publish(&providers, &actor, workspace.id()).await;
+        let first = resolve_forecast(&database, workspace.id()).await;
+        match release {
+            Release::Superseded => {
+                regenerate(&providers, &actor, workspace.id(), &provider).await;
+            }
+            Release::Active => {}
+            Release::Deleted => {
+                let current = providers
+                    .inspect_provider(&actor, workspace.id(), provider.id())
+                    .await
+                    .unwrap();
+                providers
+                    .delete_provider(
+                        &context(&actor).with_etag(&current.etag()).unwrap(),
+                        workspace.id(),
+                        provider.id(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+
+        let found_unused = 1_000;
+        for now in [found_unused, found_unused + retirement_grace_nanos() - 1] {
+            providers.collect_generations(held, now).await.unwrap();
+            assert!(generation_exists(&database, &first).await, "{case}");
+        }
+        providers
+            .collect_generations(held, found_unused + retirement_grace_nanos())
+            .await
+            .unwrap();
+        assert_eq!(generation_exists(&database, &first).await, kept, "{case}");
+        if let Release::Superseded = release {
+            let active = resolve_forecast(&database, workspace.id()).await;
+            assert!(generation_exists(&database, &active).await, "{case}");
+        }
+    }
+}

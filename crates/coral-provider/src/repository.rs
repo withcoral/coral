@@ -1500,3 +1500,21 @@ pub(super) async fn update_display_name(
     }
     Ok(())
 }
+
+/// Whether a Provider selects the Generation at `generation` as active, or
+/// `held` holds it.
+pub(super) fn generation_in_use(
+    held: crate::GenerationHold,
+) -> impl Fn(sea_query::ColumnRef) -> sea_query::SimpleExpr + Sync {
+    move |generation| selects_generation(generation.clone()).or(held(generation))
+}
+
+fn selects_generation(generation: sea_query::ColumnRef) -> sea_query::SimpleExpr {
+    Expr::exists(
+        Query::select()
+            .expr(Expr::val(1_i32))
+            .from(ProviderRecords::Table)
+            .and_where(Expr::col(ProviderRecords::ActiveGenerationId).eq(Expr::col(generation)))
+            .to_owned(),
+    )
+}
