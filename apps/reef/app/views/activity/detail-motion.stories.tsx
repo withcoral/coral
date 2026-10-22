@@ -469,7 +469,7 @@ export const SlidesThroughLifecycleEvents: Story = {
   play: async (context) => {
     if (!(await inTestBrowser())) return
     const { rail, recorder, shows, select } = await surface(context)
-    const callEnded = 'Operation call ended: upstream outcome'
+    const callEnded = 'Operation call ended: completed'
     const cancelRequested = 'Cancellation requested'
     try {
       await shows('mail.send')
