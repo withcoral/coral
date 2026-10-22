@@ -1,7 +1,6 @@
 import { data, redirect, useLocation, useNavigate, useNavigation } from 'react-router'
 import type { Route } from './+types/workspace'
 import { ProviderState } from '@/generated/coral/management/v1/provider_pb'
-import { isBuiltinProvider } from '@/lib/call-root'
 import { DEFAULT_SUMMARY_DAYS, summaryDays, summarySearch } from '@/lib/activity-summary'
 import { glimpseActivitySummary } from '@/lib/activity-summary.server'
 import { useRevalidateWhileVisible } from '@/lib/use-revalidate-while-visible'
@@ -63,6 +62,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       displayName: provider.displayName,
       namespace: provider.namespace,
       callRoot: provider.callRoot,
+      builtin: provider.builtin,
       path: providerPath(w.path, provider.name),
       blockers: [
         ...(provider.state === ProviderState.DISABLED ? ['Disabled'] : []),
@@ -76,7 +76,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         agents: agents?.agents.map(agentView) ?? [],
         // The card shows the providers you add. Coral's Built-in Provider stays on
         // the providers page, so a new workspace still offers Add provider here.
-        providers: views.filter((provider) => !isBuiltinProvider(provider.callRoot)),
+        providers: views.filter((provider) => !provider.builtin),
         owners: owners?.owners.map(ownerView) ?? null,
         ownMembership: own ? membershipView(own) : null,
         form: formContext(context),

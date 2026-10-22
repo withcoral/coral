@@ -3,14 +3,6 @@
  * sends only the short namespace of a provider an owner adds.
  */
 
-/** The Built-in Provider's Call Root. Coral defines and manages that provider. */
-const BUILTIN_CALL_ROOT = 'coral.workspace'
-
-/** Whether the Call Root is the Built-in Provider's, which owners cannot change. */
-export function isBuiltinProvider(callRoot: string) {
-  return callRoot === BUILTIN_CALL_ROOT
-}
-
 /** The complete Call Path of one operation of a provider. */
 export function operationCallPath(callRoot: string, relativePath: string) {
   return `${callRoot}.${relativePath}`

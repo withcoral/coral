@@ -3,6 +3,7 @@
 use coral_catalog::{
     ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup, ListedSetupState,
 };
+use coral_policy::ExactOperationRules;
 use coral_provider::access::ProviderCallRoot;
 use coral_provider::{ProviderSetup, ProviderSetupState, ProviderState, PublishedProvider};
 
@@ -21,13 +22,21 @@ pub(super) async fn perform(host: &BuiltinHost<'_>) -> Result<serde_json::Value,
         .open_requested_setups(host.actor, host.workspace_id, now)
         .await
         .map_err(authority_error)?;
+    let mut snapshot = host.database.begin_read_snapshot().await?;
     let providers = host
         .providers
-        .published_providers(host.actor, host.workspace_id, now)
+        .published_providers_in_snapshot(&mut snapshot, host.actor, host.workspace_id, now)
         .await
         .map_err(authority_error)?;
+    let rules =
+        coral_policy::exact_operation_rules_in_transaction(&mut snapshot, host.workspace_id)
+            .await?;
+    snapshot.rollback().await?;
     Ok(ListProvidersResult {
-        providers: providers.iter().map(listed_provider).collect(),
+        providers: providers
+            .iter()
+            .map(|published| listed_provider(published, &rules))
+            .collect(),
         setups: setups
             .iter()
             .filter_map(|setup| listed_setup(host, setup))
@@ -36,20 +45,16 @@ pub(super) async fn perform(host: &BuiltinHost<'_>) -> Result<serde_json::Value,
     .into_operation_result())
 }
 
-/// One entry. The Built-in Provider has no namespace: its Operations are
-/// under `coral.workspace`.
-fn listed_provider(published: &PublishedProvider) -> ListedProvider {
+/// One entry, under the Call Root a Program calls it by.
+fn listed_provider(published: &PublishedProvider, rules: &ExactOperationRules) -> ListedProvider {
     let provider = &published.provider;
     ListedProvider {
-        namespace: match provider.call_root() {
-            ProviderCallRoot::Owner(namespace) => Some(namespace.as_str().to_owned()),
-            ProviderCallRoot::Builtin => None,
-        },
+        call_root: provider.call_root().as_str().to_owned(),
         state: match provider.state() {
             ProviderState::Active => ListedProviderState::Active,
             ProviderState::Disabled => ListedProviderState::Disabled,
         },
-        facts: provider_facts(published),
+        facts: provider_facts(published, rules),
     }
 }
 
@@ -67,7 +72,9 @@ fn listed_setup(host: &BuiltinHost<'_>, setup: &ProviderSetup) -> Option<ListedS
         | ProviderSetupState::Canceled => return None,
     };
     Some(ListedSetup {
-        namespace: request.namespace.as_str().to_owned(),
+        call_root: ProviderCallRoot::Owner(request.namespace.clone())
+            .as_str()
+            .to_owned(),
         credential_route: request.route.into(),
         state,
         url: setup_url(host, setup.id()),

@@ -92,14 +92,16 @@ pub struct PublishedProvider {
     pub provider: Provider,
     /// How its credentials are sent upstream.
     pub authentication: coral_catalog::AuthenticationKind,
-    /// The Operations a Principal can discover and call.
-    pub available_operations: usize,
+    /// The Operations the Principal reaches whose Operation Availability is
+    /// available, while the Provider is active; none while it is disabled.
+    /// Policy can still disable some.
+    pub operations: Vec<coral_catalog::CatalogSearchTarget>,
     /// Whether this Principal must still connect an Account before calling it.
     pub account_required: bool,
 }
 
-/// Reads what `provider`'s active Generation offers `principal`, in the
-/// caller's transaction.
+/// Reads what the active Generation of `provider`, which a Publication
+/// created, offers `principal`, in the caller's transaction.
 ///
 /// # Errors
 ///
@@ -115,26 +117,33 @@ pub async fn published_provider_in_transaction(
         crate::repository::provider_in_transaction(&mut *transaction, workspace_id, provider.id())
             .await?
             .ok_or(Error::ProviderNotFound)?;
-    published_active_provider_in_transaction(transaction, active, principal).await
+    // A Publication creates an Owner-added Provider, whose Operations every
+    // Principal reaches whatever its role.
+    published_active_provider_in_transaction(transaction, active, principal, None).await
 }
 
-/// Reads what `active`'s Generation offers `principal`, in the caller's transaction.
+/// Reads what `active`'s Generation offers `principal`, whose Workspace role
+/// is `role` (`None` for an Agent), in the caller's transaction.
 pub(crate) async fn published_active_provider_in_transaction(
     transaction: &mut Transaction<'_>,
     active: crate::repository::ProviderWithActiveGeneration,
     principal: &coral_workspace::Principal,
+    role: Option<coral_workspace::WorkspaceRole>,
 ) -> Result<PublishedProvider, Error> {
     let contract =
         coral_catalog::credential_contract_in_transaction(transaction, &active.generation_id)
             .await?;
-    let available_operations =
-        coral_catalog::operations_in_transaction(transaction, &active.generation_id)
-            .await?
-            .iter()
-            .filter(|operation| {
-                operation.availability() == coral_catalog::OperationAvailability::Available
-            })
-            .count();
+    let operations = match active.provider.state() {
+        crate::ProviderState::Active => coral_catalog::available_search_targets_in_transaction(
+            transaction,
+            &active.generation_id,
+        )
+        .await?
+        .into_iter()
+        .filter(|operation| crate::reaches(active.provider.call_root(), operation.key(), role))
+        .collect(),
+        crate::ProviderState::Disabled => Vec::new(),
+    };
     let authentication = contract.authentication().kind();
     let account_required = !crate::account::credentials_ready_in_transaction(
         transaction,
@@ -146,33 +155,12 @@ pub(crate) async fn published_active_provider_in_transaction(
     Ok(PublishedProvider {
         provider: active.provider,
         authentication,
-        available_operations,
+        operations,
         account_required,
     })
 }
 
 impl ProviderModule {
-    /// Reads what `provider`'s active Generation offers `principal`, from one
-    /// snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::ProviderNotFound`] for an absent Provider, or a persistence
-    /// or corrupt-evidence failure.
-    pub async fn published_provider(
-        &self,
-        workspace_id: &WorkspaceId,
-        provider: &Provider,
-        principal: &coral_workspace::Principal,
-    ) -> Result<PublishedProvider, Error> {
-        let mut transaction = self.database.begin_read_snapshot().await?;
-        let published =
-            published_provider_in_transaction(&mut transaction, workspace_id, provider, principal)
-                .await?;
-        transaction.rollback().await?;
-        Ok(published)
-    }
-
     /// Ends, as Coral, a Setup that a Built-in Invocation prepared but nobody
     /// will finish, so that it does not stay open until its deadline. One
     /// already past its deadline expires; an ended Setup stays as it is.

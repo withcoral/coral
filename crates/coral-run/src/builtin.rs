@@ -11,6 +11,7 @@ use coral_catalog::{
     ArgumentProblem, BuiltinArguments, BuiltinOperation, ExecutionBinding, MaterializedOperation,
     OperationKey, ProviderFacts, ProviderGenerationId,
 };
+use coral_policy::ExactOperationRules;
 use coral_provider::account::AccountModule;
 use coral_provider::{
     ManagementRequestId, ProviderModule, ProviderSetupId, PublishedProvider,
@@ -122,6 +123,7 @@ pub(crate) trait InvokingRun: Send + Sync {
 /// Run's Workspace, the workflow Reef publishes with, and the Reef origin its
 /// results link to.
 pub(crate) struct BuiltinHost<'a> {
+    pub(crate) database: &'a coral_db::Database,
     pub(crate) providers: &'a ProviderModule,
     /// Where people sign in; without it, nobody can.
     pub(crate) accounts: Option<&'a AccountModule>,
@@ -149,14 +151,19 @@ fn rejection(problems: &[ArgumentProblem]) -> Rejection {
 }
 
 /// What both Operations report about a Provider: how to call it and whether
-/// the Program needs a person first.
-fn provider_facts(published: &PublishedProvider) -> ProviderFacts {
+/// the Program needs a person first. It counts only the Operations that
+/// `rules`, read in the same snapshot as `published`, leave callable.
+fn provider_facts(published: &PublishedProvider, rules: &ExactOperationRules) -> ProviderFacts {
     let provider = &published.provider;
     ProviderFacts {
         display_name: provider.display_name().to_owned(),
         credential_route: provider.access().credential_route().into(),
         authentication: published.authentication,
-        operations: published.available_operations,
+        operations: published
+            .operations
+            .iter()
+            .filter(|operation| !rules.disables(provider.id(), operation))
+            .count(),
         account_required: published.account_required,
     }
 }

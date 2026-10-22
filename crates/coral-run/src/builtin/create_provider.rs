@@ -9,10 +9,10 @@ use coral_db::Transaction;
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::account::AccountModule;
 use coral_provider::{
-    ManagementRequestId, ProviderSetupId, ProviderSetupSource, PublishabilityRejection,
-    PublishedProvider, SetupPublishability, SetupRequest, WorkspaceProviderPublicationRequest,
+    ManagementRequestId, Provider, ProviderSetupId, ProviderSetupSource, PublishabilityRejection,
+    SetupPublishability, SetupRequest, WorkspaceProviderPublicationRequest,
 };
-use coral_workspace::ChangeContext;
+use coral_workspace::{ChangeContext, Principal, WorkspaceId};
 
 use super::{BuiltinHost, authority_error, provider_facts, setup_url};
 use crate::error::InputProblem;
@@ -261,11 +261,16 @@ impl CreateProvider {
                 .into(),
             ));
         };
-        let details = host
-            .providers
-            .published_provider(host.workspace_id, provider, host.principal)
-            .await?;
-        Ok(published_result(&details))
+        let mut snapshot = host.database.begin_read_snapshot().await?;
+        let result = published_result_in_transaction(
+            &mut snapshot,
+            host.workspace_id,
+            provider,
+            host.principal,
+        )
+        .await?;
+        snapshot.rollback().await?;
+        Ok(result)
     }
 }
 
@@ -292,7 +297,7 @@ pub(super) async fn recover(
     let Some(provider) = published else {
         return Ok((InvocationResultKind::RunTerminated, None));
     };
-    let published = match coral_provider::published_provider_in_transaction(
+    let result = match published_result_in_transaction(
         transaction,
         &run.workspace_id,
         &provider,
@@ -300,15 +305,14 @@ pub(super) async fn recover(
     )
     .await
     {
-        Ok(published) => published,
+        Ok(result) => result,
         // An Owner deleted the Provider since; no result can describe it now.
-        Err(coral_provider::Error::ProviderNotFound) => {
+        Err(Error::Provider(coral_provider::Error::ProviderNotFound)) => {
             return Ok((InvocationResultKind::RunTerminated, None));
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(error),
     };
-    let result =
-        serde_json::to_string(&published_result(&published)).map_err(Error::ProgramValueJson)?;
+    let result = serde_json::to_string(&result).map_err(Error::ProgramValueJson)?;
     Ok((InvocationResultKind::UpstreamOutcome, Some(result)))
 }
 
@@ -358,14 +362,29 @@ async fn end_setup(host: &BuiltinHost<'_>, setup: &ProviderSetupId) {
         .await;
 }
 
-/// The Operation Result for a Provider Coral published. It says what Coral
-/// resolved, so the Program need not guess whether its next call needs a person.
-fn published_result(published: &PublishedProvider) -> serde_json::Value {
-    CreateProviderResult::Published {
+/// The Operation Result for `provider`, which Coral published, read in the
+/// caller's transaction. It says what Coral resolved, so the Program need not
+/// guess whether its next call needs a person.
+async fn published_result_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    provider: &Provider,
+    principal: &Principal,
+) -> Result<serde_json::Value, Error> {
+    let published = coral_provider::published_provider_in_transaction(
+        transaction,
+        workspace_id,
+        provider,
+        principal,
+    )
+    .await?;
+    let rules =
+        coral_policy::exact_operation_rules_in_transaction(transaction, workspace_id).await?;
+    Ok(CreateProviderResult::Published {
         namespace: published.provider.call_root().name().to_owned(),
-        facts: provider_facts(published),
+        facts: provider_facts(&published, &rules),
     }
-    .into_operation_result()
+    .into_operation_result())
 }
 
 /// A Publication rejected because its Setup ended or changed, or its request

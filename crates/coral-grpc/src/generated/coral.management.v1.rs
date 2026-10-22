@@ -53,6 +53,10 @@ pub struct Provider {
     /// Immutable Workspace-unique Provider Call Root, such as coral.providers.github.
     #[prost(string, tag = "12")]
     pub call_root: ::prost::alloc::string::String,
+    /// Whether this is the Workspace's Built-in Provider, which Coral defines
+    /// and manages under coral.workspace.
+    #[prost(bool, tag = "13")]
+    pub builtin: bool,
 }
 /// Lists Providers owned by one authorized Workspace.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

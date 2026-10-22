@@ -209,8 +209,11 @@ fn each_result_meets_its_output_schema() {
             providers: facts()
                 .enumerate()
                 .map(|(index, facts)| ListedProvider {
-                    // Coral's own Provider has no namespace.
-                    namespace: (index > 0).then(|| format!("provider{index}")),
+                    call_root: if index == 0 {
+                        "coral.workspace".to_owned()
+                    } else {
+                        format!("coral.providers.provider{index}")
+                    },
                     state: if index.is_multiple_of(2) {
                         ListedProviderState::Active
                     } else {
@@ -236,7 +239,7 @@ fn each_result_meets_its_output_schema() {
             ]
             .into_iter()
             .map(|(credential_route, state)| ListedSetup {
-                namespace: "weather".to_owned(),
+                call_root: "coral.providers.weather".to_owned(),
                 credential_route,
                 state,
                 url: "https://coral.example/workspaces/w/providers/new?setup=s".to_owned(),

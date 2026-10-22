@@ -71,28 +71,28 @@ impl ProviderModule {
     }
 
     /// Lists every Workspace Provider that `actor` reaches, in any state and in
-    /// creation order, with what each offers `actor`, from one snapshot. The
-    /// Built-in Provider, created with the Workspace, comes first.
+    /// creation order, with what each offers `actor`, in the caller's read
+    /// snapshot. The Built-in Provider, created with the Workspace, comes first.
     ///
     /// # Errors
     /// Returns current Workspace authority, persistence, or corrupt-evidence failures.
-    pub async fn published_providers(
+    pub async fn published_providers_in_snapshot(
         &self,
+        tx: &mut coral_db::Transaction<'_>,
         actor: &coral_workspace::AuthenticatedPrincipal,
         workspace: &WorkspaceId,
         now: i64,
     ) -> Result<Vec<crate::PublishedProvider>, Error> {
-        let mut tx = self.database.begin_read_snapshot().await?;
         let role = self
             .workspaces
-            .check_principal_inspection_in_snapshot(&mut tx, actor, workspace, now)
+            .check_principal_inspection_in_snapshot(tx, actor, workspace, now)
             .await?
             .effective_user_role();
-        let providers = repository::management_providers(&mut tx, workspace, None).await?;
+        let providers = repository::management_providers(tx, workspace, None).await?;
         let mut published = Vec::with_capacity(providers.len());
         for active in providers {
             if !crate::reach::reaches_provider_in_transaction(
-                &mut tx,
+                tx,
                 active.provider.call_root(),
                 &active.generation_id,
                 role,
@@ -103,14 +103,14 @@ impl ProviderModule {
             }
             published.push(
                 crate::program_setup::published_active_provider_in_transaction(
-                    &mut tx,
+                    tx,
                     active,
                     actor.principal(),
+                    role,
                 )
                 .await?,
             );
         }
-        tx.rollback().await?;
         Ok(published)
     }
 

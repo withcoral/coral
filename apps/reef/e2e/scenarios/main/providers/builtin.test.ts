@@ -43,7 +43,7 @@ test('Coral leads the providers page, offers nothing to change, stops calls whil
     'alpha',
   )
   const coral = (await api.providers.listProviders({ parent: workspace.name })).providers.find(
-    (provider) => provider.callRoot === 'coral.workspace',
+    (provider) => provider.builtin,
   )!
   const providersPage = `/${workspace.name}/providers`
   await withBrowserSession(

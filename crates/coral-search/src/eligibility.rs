@@ -1,6 +1,7 @@
-//! The Operation eligibility rule that discovery and focused readiness share.
-//! Policy owns the exact access decision; an Operation it disables is neither
-//! listed, ranked, described, nor counted toward readiness.
+//! The approval an eligible Operation needs, for discovery to describe.
+//! Policy owns the exact access decision; an Operation it disables
+//! ([`ExactOperationRules::disables`]) is neither listed, ranked, described,
+//! nor counted toward readiness.
 
 use coral_catalog::{HttpMethod, OperationHints, OperationKey};
 use coral_policy::{ExactOperationRules, OperationAccessState};

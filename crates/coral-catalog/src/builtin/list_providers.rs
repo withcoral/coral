@@ -29,13 +29,13 @@ pub(super) fn definition() -> Definition {
             false,
             vec!["providers".to_string()],
             Some(
-                "Pass an empty object. A namespace in the list is taken, even when its \
-                 Provider is disabled. Call a Provider's Operations under \
-                 coral.providers.<namespace>. A Provider that createProvider asked a person to \
-                 finish is under setups until it is published, and then under providers. The \
-                 person can publish it under another namespace. When its namespace is in \
-                 neither list, the person renamed it, did not finish it in time, or canceled \
-                 it: ask the person before you call createProvider again."
+                "Pass an empty object. Call a Provider's Operations under its callRoot. A \
+                 namespace is taken when coral.providers.<namespace> is a callRoot under \
+                 providers, even when its Provider is disabled. A Provider that createProvider \
+                 asked a person to finish is under setups until it is published, and then \
+                 under providers. The person can publish it under another namespace. When its \
+                 callRoot is in neither list, the person renamed it, did not finish it in \
+                 time, or canceled it: ask the person before you call createProvider again."
                     .to_string(),
             ),
         ),
@@ -92,20 +92,19 @@ impl ListProvidersResult {
 
 /// One `listProviders` entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 #[schemars(rename = "Provider", deny_unknown_fields, description = "")]
 pub struct ListedProvider {
-    /// The Provider Namespace; `None` for the Built-in Provider, whose
-    /// Operations are under `coral.workspace`.
-    #[schemars(
-        description = "The Provider Namespace. Its Operations are called under \
-                       coral.providers.<namespace>. Null for Coral's own Provider, whose \
-                       Operations are called under coral.workspace."
-    )]
-    pub namespace: Option<String>,
+    /// The Call Root its Operations are called under, such as
+    /// `coral.providers.github`, or `coral.workspace` for the Built-in Provider.
+    #[schemars(description = "The path you call the Provider's Operations under: \
+                       coral.providers.<namespace> for a Provider a person added, or \
+                       coral.workspace for Coral's own.")]
+    pub call_root: String,
     /// Whether the Provider accepts calls.
     #[schemars(
         description = "Whether the Provider accepts calls. A disabled Provider still holds its \
-                       namespace."
+                       callRoot."
     )]
     pub state: ListedProviderState,
     /// What the caller needs to call it.
@@ -114,13 +113,13 @@ pub struct ListedProvider {
 }
 
 /// Whether a listed Provider accepts calls. A disabled one still holds its
-/// namespace.
+/// Call Root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ListedProviderState {
     /// It accepts calls.
     Active,
-    /// It holds its namespace but accepts no calls.
+    /// It holds its Call Root but accepts no calls.
     Disabled,
 }
 
@@ -143,11 +142,12 @@ impl JsonSchema for ListedProviderState {
 #[serde(rename_all = "camelCase")]
 #[schemars(rename = "ProviderSetup", deny_unknown_fields, description = "")]
 pub struct ListedSetup {
-    /// The Provider Namespace the call asked for.
+    /// The Call Root of the namespace the call asked for.
     #[schemars(
-        description = "The Provider Namespace createProvider asked for. The person can change it."
+        description = "coral.providers.<namespace>, with the namespace createProvider asked \
+                       for. The person can change it."
     )]
-    pub namespace: String,
+    pub call_root: String,
     /// The Credential Route the call asked for.
     #[schemars(description = "The credentialRoute createProvider asked for.")]
     pub credential_route: BuiltinCredentialRoute,

@@ -405,7 +405,7 @@ async fn create_provider_returns_the_reef_page_that_finishes_its_setup() {
         assert_eq!(
             final_value(&scope.terminal(&scope.owner, &listed).await).pointer("/data/setups"),
             Some(&serde_json::json!([{
-                "namespace": "weather",
+                "callRoot": "coral.providers.weather",
                 "credentialRoute": "fixed",
                 "state": "ready",
                 "url": url,
@@ -1410,18 +1410,18 @@ async fn members_and_agents_list_providers_but_cannot_reach_create_provider() {
 
         let run = scope.start(&principal, list_providers("{}")).await;
         let listed = final_value(&scope.terminal(&principal, &run).await);
-        let namespaces = listed
+        let call_roots = listed
             .pointer("/data/providers")
             .and_then(serde_json::Value::as_array)
             .unwrap_or_else(|| panic!("{principal:?} lists providers: {listed}"))
             .iter()
-            .map(|provider| provider.get("namespace").cloned())
+            .map(|provider| provider.get("callRoot").cloned())
             .collect::<Vec<_>>();
         assert_eq!(
-            namespaces,
+            call_roots,
             [
-                Some(serde_json::Value::Null),
-                Some(serde_json::json!("weather"))
+                Some(serde_json::json!("coral.workspace")),
+                Some(serde_json::json!("coral.providers.weather"))
             ],
             "{principal:?}"
         );
@@ -1500,13 +1500,14 @@ fn list_providers(arguments: &str) -> RunSubmission {
     )
 }
 
-// Catches: a result that misleads a Program about taken namespaces, such as
-// the Built-in Provider under a namespace an Owner can take or a disabled
-// Provider not marked disabled, a read that waits for approval, or an
-// argument the call silently ignores.
+// Catches: a result that misleads a Program about taken Call Roots, such as
+// a disabled Provider not marked disabled, an operations count that includes
+// an Operation the Provider's state or policy stops the caller calling, a read
+// that waits for approval, or an argument the call silently ignores.
 #[tokio::test]
 async fn list_providers_lists_every_provider_without_approval() {
     let scope = AdminScope::new("user:list-providers").await;
+    scope.set_access(OperationAccessState::Disabled).await;
     let weather = scope.publish_weather().await;
     scope
         .fixture
@@ -1525,21 +1526,22 @@ async fn list_providers_lists_every_provider_without_approval() {
         "data": {
             "providers": [
                 {
-                    "namespace": null,
+                    "callRoot": "coral.workspace",
                     "displayName": "Coral",
                     "state": "active",
                     "credentialRoute": "none",
                     "authentication": "none",
-                    "operations": builtin_operations,
+                    // Policy disables createProvider.
+                    "operations": builtin_operations - 1,
                     "accountRequired": false,
                 },
                 {
-                    "namespace": "weather",
+                    "callRoot": "coral.providers.weather",
                     "displayName": "Weather",
                     "state": "disabled",
                     "credentialRoute": "none",
                     "authentication": "none",
-                    "operations": 1,
+                    "operations": 0,
                     "accountRequired": false,
                 },
             ],

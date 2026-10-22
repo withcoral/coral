@@ -219,6 +219,21 @@ pub(crate) fn publication_request(
     )
 }
 
+/// What `listProviders` reads: every Provider `actor` reaches, with what each
+/// offers it, from one read snapshot.
+pub(crate) async fn published_providers(
+    providers: &ProviderModule,
+    actor: &coral_workspace::AuthenticatedPrincipal,
+    workspace: &coral_workspace::WorkspaceId,
+) -> Result<Vec<crate::PublishedProvider>, crate::Error> {
+    let mut tx = providers.database.begin_read_snapshot().await?;
+    let published = providers
+        .published_providers_in_snapshot(&mut tx, actor, workspace, 20)
+        .await;
+    tx.rollback().await?;
+    published
+}
+
 pub(crate) async fn test_modules() -> (TestDatabase, WorkspaceModule, ProviderModule) {
     let (fixture, database, workspaces) = test_foundation().await;
     let providers = ProviderModule::with_running_catalog(

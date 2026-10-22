@@ -695,7 +695,8 @@ async fn two_processes_that_boot_together_activate_one_generation() {
 }
 
 // Catches: a disabled Provider left out of the list though it still holds its
-// namespace, or a list whose order or account facts a Program cannot rely on.
+// namespace, one that still offers Operations to call, or a list whose order
+// or account facts a Program cannot rely on.
 #[tokio::test]
 async fn published_providers_lists_every_provider_in_creation_order() {
     let arranged = BuiltinWorkspace::new().await;
@@ -730,15 +731,13 @@ async fn published_providers_lists_every_provider_in_creation_order() {
         .await
         .unwrap();
 
-    let listed = arranged
-        .providers
-        .published_providers(
-            &AuthenticatedPrincipal::user(arranged.owner.clone()),
-            workspace,
-            20,
-        )
-        .await
-        .unwrap();
+    let listed = crate::tests::published_providers(
+        &arranged.providers,
+        &AuthenticatedPrincipal::user(arranged.owner.clone()),
+        workspace,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(
         listed
@@ -747,7 +746,7 @@ async fn published_providers_lists_every_provider_in_creation_order() {
                 published.provider.call_root().as_str(),
                 published.provider.state(),
                 published.authentication,
-                published.available_operations,
+                published.operations.len(),
                 published.account_required,
             ))
             .collect::<Vec<_>>(),
@@ -759,11 +758,12 @@ async fn published_providers_lists_every_provider_in_creation_order() {
                 arranged.keys().await.len(),
                 false,
             ),
+            // A disabled Provider offers no Operation to call.
             (
                 "coral.providers.weather",
                 ProviderState::Disabled,
                 AuthenticationKind::None,
-                1,
+                0,
                 false,
             ),
             // The Owner has not connected an Account yet.
@@ -813,8 +813,7 @@ async fn management_reads_show_each_principal_the_builtin_operations_it_reaches(
         (agent, &["listProviders"][..]),
     ] {
         let providers = &arranged.providers;
-        let published = providers
-            .published_providers(&principal, workspace, 20)
+        let published = crate::tests::published_providers(providers, &principal, workspace)
             .await
             .unwrap();
         assert_eq!(
@@ -827,6 +826,14 @@ async fn management_reads_show_each_principal_the_builtin_operations_it_reaches(
             listed,
             "{principal:?}"
         );
+        let builtin_keys = published
+            .first()
+            .expect("the Built-in Provider comes first")
+            .operations
+            .iter()
+            .map(|operation| operation.key().as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(builtin_keys, reached, "{principal:?}");
         // Only a User inspects the Workspace's Providers in Reef.
         let Some(actor) = principal.authenticated_user() else {
             continue;

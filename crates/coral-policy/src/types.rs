@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use coral_catalog::{HttpMethod, OperationHints, OperationKey};
+use coral_catalog::{CatalogSearchTarget, HttpMethod, OperationHints, OperationKey};
 use coral_provider::ProviderId;
 use coral_telemetry::TraceId;
 use coral_workspace::{AuthoritySource, UserId, WorkspaceId};
@@ -109,6 +109,19 @@ impl ExactOperationRules {
             .and_then(|operations| operations.get(operation_key))
             .copied()
             .unwrap_or_else(|| crate::default_access_state(hints, http_method))
+    }
+
+    /// Whether the Workspace disables `operation` of `provider_id`, so no
+    /// Principal can call it, discovery leaves it out, and no count includes
+    /// it.
+    #[must_use]
+    pub fn disables(&self, provider_id: &ProviderId, operation: &CatalogSearchTarget) -> bool {
+        self.access_state(
+            provider_id,
+            operation.key(),
+            operation.hints(),
+            operation.http_method(),
+        ) == OperationAccessState::Disabled
     }
 
     /// Returns every Operation that an exact rule disables. No default is

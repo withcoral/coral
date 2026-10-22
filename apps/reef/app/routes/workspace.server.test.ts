@@ -30,6 +30,7 @@ function fakeCoral(summaries: number[] = []) {
             name: `${parent}/providers/builtin`,
             displayName: 'Coral',
             callRoot: 'coral.workspace',
+            builtin: true,
             state: ProviderState.ACTIVE,
           },
           {

@@ -73,15 +73,7 @@ impl EntityRetriever for OperationRetriever {
                 ) {
                     continue;
                 }
-                if operation_approval(
-                    &rules,
-                    provider.provider().id(),
-                    target.key(),
-                    target.hints(),
-                    target.http_method(),
-                )
-                .is_none()
-                {
+                if rules.disables(provider.provider().id(), &target) {
                     continue;
                 }
                 listed.push(EntityRef::Operation(OperationRef {

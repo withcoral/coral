@@ -606,6 +606,7 @@ impl OperationInvoker {
         let request_id = coral_provider::ManagementRequestId::parse(&admitted.id.to_string())
             .map_err(Error::from)?;
         let host = crate::builtin::BuiltinHost {
+            database: &self.database,
             providers: &self.providers,
             accounts: self.accounts.as_ref(),
             publisher: self.provider_publisher.as_deref(),

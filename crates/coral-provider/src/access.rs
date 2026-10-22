@@ -114,6 +114,16 @@ impl ProviderCallRoot {
         }
     }
 
+    /// Returns the namespace an Owner gave the Provider; `None` for the
+    /// Built-in Provider, which has none.
+    #[must_use]
+    pub const fn namespace(&self) -> Option<&ProviderNamespace> {
+        match self {
+            Self::Owner(namespace) => Some(namespace),
+            Self::Builtin => None,
+        }
+    }
+
     /// Returns the Call Root's last segment, such as `github` or `workspace`, for
     /// search text and labels. No rule reads it.
     #[must_use]

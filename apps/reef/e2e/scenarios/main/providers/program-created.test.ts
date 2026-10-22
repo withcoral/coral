@@ -33,7 +33,7 @@ async function programWorkspace(
   })
   await step("Let the owner's Programs create providers without approval", async () => {
     const builtin = (await api.providers.listProviders({ parent: workspace.name })).providers.find(
-      (provider) => provider.callRoot === 'coral.workspace',
+      (provider) => provider.builtin,
     )!
     const catalog = await api.providers.listOperations({ parent: builtin.name })
     await api.policies.updateOperationPolicies({
