@@ -26,9 +26,9 @@ pub(super) const MAX_AGE_SECONDS: u64 = 5 * 60;
 /// The most sign-in cookies one browser holds.
 ///
 /// Every cookie rides on each request to this host until it expires. With the
-/// app input budget and a resource of ordinary length, three sign-in cookies
-/// stay under 7 KB, inside the 8 KB per-header limit of nginx's defaults. A
-/// resource configured near the cookie limit can take three past it.
+/// app input budget and a resource of at most 350 bytes, three sign-in cookies
+/// stay under the 8 KB per-header limit of nginx's defaults; a test holds this.
+/// A longer configured resource can take three past it.
 const MAX_CONCURRENT_SIGN_INS: usize = 3;
 /// The most bytes of `client_id`, `redirect_uri` and `state` together that
 /// one sign-in carries. Real apps send a few hundred.
@@ -220,6 +220,27 @@ mod tests {
         assert!(find(&browser(std::slice::from_ref(&other)), "state", true).is_none());
         let shadowed = browser(&[own, name("state", 12, true)]);
         assert!(find(&shadowed, "state", true).is_none());
+    }
+
+    /// The bound [`MAX_CONCURRENT_SIGN_INS`] documents: three sign-ins that
+    /// each use the whole app budget, with a 350-byte resource, fit one 8 KB
+    /// `Cookie` header.
+    #[test]
+    fn three_full_sign_ins_fit_an_8_kb_cookie_header() {
+        use crate::auth::sealed_handshake::SignInSession;
+
+        let session = SignInSession {
+            client_id: "c".repeat(MAX_APP_INPUT_BYTES - 2),
+            redirect_uri: "r".into(),
+            client_state: Some("s".into()),
+            code_challenge: "x".repeat(43),
+            resource: "u".repeat(350),
+        };
+        let pair = name("state", u64::from(u32::MAX), true).len()
+            + 1
+            + session.sealed_len().expect("sealed length");
+        let header = MAX_CONCURRENT_SIGN_INS * pair + 2 * (MAX_CONCURRENT_SIGN_INS - 1);
+        assert!(header < 8 * 1024, "{header} bytes");
     }
 
     #[test]

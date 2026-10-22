@@ -324,10 +324,9 @@ callback.
   1,536 bytes, so that the sign-in fits in one cookie. A longer request, or one
   whose sign-in does not fit for another reason such as a long resource, fails
   with `invalid_request` before the consent page.
-- A new sign-in ends the browser's oldest sign-ins beyond three. With resources
-  of ordinary length, this keeps the sign-in cookies under 7 KB, inside the 8 KB
-  header limit of common proxies, unless the browser holds other large cookies
-  for this host. Sign-ins started at
+- A new sign-in ends the browser's oldest sign-ins beyond three. For resources of
+  at most 350 bytes, this keeps the sign-in cookies inside the 8 KB header limit of
+  common proxies, unless the browser holds other large cookies for this host. Sign-ins started at
   the same moment can briefly exceed three until they finish or expire.
 - Each sign-in issues at most one authorization code. A replayed callback gets an
   error and no code.
