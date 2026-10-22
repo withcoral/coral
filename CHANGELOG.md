@@ -1,5 +1,92 @@
 # Changelog
 
+## [1.2.0](https://github.com/withcoral/coral/compare/v1.1.0...v1.2.0) (2026-10-22)
+
+
+### Features
+
+* **activity:** record authored source locations for calls and outputs ([#2535](https://github.com/withcoral/coral/issues/2535)) ([2d735ca](https://github.com/withcoral/coral/commit/2d735ca98eb3c0edc24f7c6ef3e09cdfc8e91e20))
+* **activity:** show persistent Program source beside selected records ([#2569](https://github.com/withcoral/coral/issues/2569)) ([f403819](https://github.com/withcoral/coral/commit/f403819a3de562511f6a4c7bae283f259db0594f))
+* add the Claude recipe and read gzipped OpenAPI documents ([#2513](https://github.com/withcoral/coral/issues/2513)) ([07c27a2](https://github.com/withcoral/coral/commit/07c27a29b961e5927174ff876da0c510dd160473))
+* **catalog:** share named TypeScript types across a Provider ([#2482](https://github.com/withcoral/coral/issues/2482)) ([256e37d](https://github.com/withcoral/coral/commit/256e37d892d6aef0a4a8518984e5f1748ba1fbad))
+* **desktop:** run the runtime on a Postgres database named in desktop.json ([#2485](https://github.com/withcoral/coral/issues/2485)) ([96465a0](https://github.com/withcoral/coral/commit/96465a0864a204d61819edcbbf58fa0373f9837f))
+* **functions:** type coral.providers, coral.workspace and coral.functions at Saved Function save ([#2526](https://github.com/withcoral/coral/issues/2526)) ([a465850](https://github.com/withcoral/coral/commit/a4658503d0e9eee8cbdb10476195509f410b3a81))
+* **provider:** create the Coral Built-in Provider at coral.workspace in every new Workspace ([#2349](https://github.com/withcoral/coral/issues/2349)) ([06e65ca](https://github.com/withcoral/coral/commit/06e65ca4d7b071a32c4767c0e6cc19c0c5290ece))
+* **provider:** store an agent's createProvider request on its Setup ([#2593](https://github.com/withcoral/coral/issues/2593)) ([92847d2](https://github.com/withcoral/coral/commit/92847d2a5304224b2d23a425d77cb838d19ce4fd))
+* **provider:** update every Workspace's Built-in Provider catalog at boot ([#2355](https://github.com/withcoral/coral/issues/2355)) ([24615d9](https://github.com/withcoral/coral/commit/24615d980f849b1c8fcd107e3dee79de7a312f1c))
+* **reef:** add NextDNS provider recipe ([#2509](https://github.com/withcoral/coral/issues/2509)) ([e44880e](https://github.com/withcoral/coral/commit/e44880e7782dc92703967a147451d5970f9e5c24))
+* **reef:** calmer providers table and a flush app shell ([#2462](https://github.com/withcoral/coral/issues/2462)) ([ffe279c](https://github.com/withcoral/coral/commit/ffe279c1be9070ed12b85102cb748c05a7d3e87a))
+* **reef:** improve the UI on small screens ([#2531](https://github.com/withcoral/coral/issues/2531)) ([75e020a](https://github.com/withcoral/coral/commit/75e020a2748b8b364845d1d59d4dde6fc183049b))
+* **reef:** make the providers rail vertical tabs with an All providers entry ([#2552](https://github.com/withcoral/coral/issues/2552)) ([08d007a](https://github.com/withcoral/coral/commit/08d007a57fbc45ab94f54835f47cb143af67e582))
+* **reef:** providers page UI tweaks ([#2562](https://github.com/withcoral/coral/issues/2562)) ([7ca218e](https://github.com/withcoral/coral/commit/7ca218ed615e0f48d07e060f672ce3b1d7a333e8))
+* **reef:** put the list pages' main action back in the top bar as a primary button ([#2546](https://github.com/withcoral/coral/issues/2546)) ([761ea6d](https://github.com/withcoral/coral/commit/761ea6d9b7906eca520bca37018dbac2abc1630a))
+* **reef:** read ^, $ and * in every filter field ([#2520](https://github.com/withcoral/coral/issues/2520)) ([d322356](https://github.com/withcoral/coral/commit/d322356a90f89de4608a07f05cb24ac253602727))
+* **reef:** refuse a provider display name another provider uses ([#2518](https://github.com/withcoral/coral/issues/2518)) ([fdcd473](https://github.com/withcoral/coral/commit/fdcd4731b416f78dd91b9c158af0bca8d93e2c0e))
+* **reef:** review provider configuration changes in a dialog ([#2579](https://github.com/withcoral/coral/issues/2579)) ([24417e9](https://github.com/withcoral/coral/commit/24417e91f7f2ddd1d16496a0dc4b32f2738bc595))
+* **reef:** show search indexing failures on a Provider and its Operations ([#2504](https://github.com/withcoral/coral/issues/2504)) ([6cffed0](https://github.com/withcoral/coral/commit/6cffed0da46a057c70e9eea13cba733c7f5aa6ef))
+* **reef:** show your recent activity summary on the workspace overview ([#2574](https://github.com/withcoral/coral/issues/2574)) ([0d1dba5](https://github.com/withcoral/coral/commit/0d1dba51ba3afc17476d8d2d7a7737b6b42d9e16))
+* **reef:** title list pages in their toolbar, with the main action beside it ([#2525](https://github.com/withcoral/coral/issues/2525)) ([fd44b72](https://github.com/withcoral/coral/commit/fd44b725871fa2044cac69d7eaadaa5d6f9db9cd))
+* **reef:** UI tweaks to provider's page ([#2566](https://github.com/withcoral/coral/issues/2566)) ([62204ca](https://github.com/withcoral/coral/commit/62204cadd7b9c94c8490b2c3848f9a92b154586d))
+* **reef:** unify Activity detail panels and action reviews ([#2544](https://github.com/withcoral/coral/issues/2544)) ([409d062](https://github.com/withcoral/coral/commit/409d062e2e448b5e4a361c626f2a41758dd523b6))
+* return only declared successes from Operation calls ([#2517](https://github.com/withcoral/coral/issues/2517)) ([0270bf1](https://github.com/withcoral/coral/commit/0270bf11c7c3ac9fec63072591229ebab6585894))
+* **run:** enforce the Fan-out Limit inside the Run Owner ([#2571](https://github.com/withcoral/coral/issues/2571)) ([cb53419](https://github.com/withcoral/coral/commit/cb53419ecc840162a4daff6753fdc8870533d796))
+* **run:** introduce the Run Owner for Program requests ([#2524](https://github.com/withcoral/coral/issues/2524)) ([245d19d](https://github.com/withcoral/coral/commit/245d19dd74f0801e9d9fcc876a8d8d4f3bd977cc))
+* **run:** let coral.workspace.createProvider configure and publish the Provider itself ([#2352](https://github.com/withcoral/coral/issues/2352)) ([088faaf](https://github.com/withcoral/coral/commit/088faaf18adb0b18bf41d33ea676a4a9f5f5697a))
+* **run:** let createProvider configure sign-in and link to Reef's sign-in step ([#2353](https://github.com/withcoral/coral/issues/2353)) ([8d5495c](https://github.com/withcoral/coral/commit/8d5495cb56c15693cec8713445f150b235c0966c))
+* **run:** list a workspace's providers with coral.workspace.listProviders ([#2374](https://github.com/withcoral/coral/issues/2374)) ([179c43a](https://github.com/withcoral/coral/commit/179c43ac822138ae9a4116510a55a919b0977e3f))
+* **run:** make the Run Owner survive uncertain commits and lost leases ([#2541](https://github.com/withcoral/coral/issues/2541)) ([3a1fad1](https://github.com/withcoral/coral/commit/3a1fad1ad6e654173a84d1a7a924daa32574f8ef))
+* **run:** name Tasks and Runs with four-word identifiers ([#2558](https://github.com/withcoral/coral/issues/2558)) ([c82259a](https://github.com/withcoral/coral/commit/c82259a32b6df5d9027853701f2a03b0be786d72))
+* **run:** prepare a Provider from a Program with coral.workspace.createProvider ([#2351](https://github.com/withcoral/coral/issues/2351)) ([e7e56fd](https://github.com/withcoral/coral/commit/e7e56fd59ef3d75a74c9c3d86ea46c2ce4164375))
+* **run:** reshape the Dispatch Fence into one batched check per chunk commit ([#2550](https://github.com/withcoral/coral/issues/2550)) ([120c9d3](https://github.com/withcoral/coral/commit/120c9d30f8ed1c2020132d9c9711aefc0421b372))
+* **run:** route approval decisions and cancellation through the Run Owner ([#2577](https://github.com/withcoral/coral/issues/2577)) ([77bcbf5](https://github.com/withcoral/coral/commit/77bcbf5811fada931c9f312f497aed84e85bc677))
+* **run:** summarize your recent activity in a Workspace ([#2573](https://github.com/withcoral/coral/issues/2573)) ([bf4c75e](https://github.com/withcoral/coral/commit/bf4c75e63941a13e730910a41ce6553bca409116))
+* **search:** show a Saved Function's result fields in its signature line ([#2522](https://github.com/withcoral/coral/issues/2522)) ([41365f6](https://github.com/withcoral/coral/commit/41365f6fe65b75da28f90c365c0ec04c84aa7c1e))
+* **search:** trace each reconcile pass and its steps ([#2456](https://github.com/withcoral/coral/issues/2456)) ([0594094](https://github.com/withcoral/coral/commit/05940948d06b774d33df89afe258996f9c302209))
+* **ui:** add option to create a correctly-configured Slack app during Slack provider setup ([#2585](https://github.com/withcoral/coral/issues/2585)) ([8c3a883](https://github.com/withcoral/coral/commit/8c3a8836dce307a953b50f73fda4394d3585dd35))
+* **ui:** move Add provider to the providers toolbar ([#2591](https://github.com/withcoral/coral/issues/2591)) ([e1ee4cb](https://github.com/withcoral/coral/commit/e1ee4cbe70ade525468a9404f04aacacafdcfe33))
+
+
+### Bug Fixes
+
+* **app:** sweep device authorization leases every 15 s ([#2452](https://github.com/withcoral/coral/issues/2452)) ([1a4e4ae](https://github.com/withcoral/coral/commit/1a4e4ae5d05e841862bd7d1910e54148c1b02cce))
+* **auth:** drop the unverified client name note from the approval page ([#2578](https://github.com/withcoral/coral/issues/2578)) ([ddf5aa4](https://github.com/withcoral/coral/commit/ddf5aa437ace28b16d0145ec0f8bf5bf205ab3e0))
+* **catalog:** derive each Built-in Operation's contract from the types Coral parses ([#2582](https://github.com/withcoral/coral/issues/2582)) ([534e636](https://github.com/withcoral/coral/commit/534e6367cbece73341c78bef2c7ebca7c9572108))
+* **catalog:** import OpenAPI Providers whose Operations request different OAuth scopes ([#2401](https://github.com/withcoral/coral/issues/2401)) ([3acfe55](https://github.com/withcoral/coral/commit/3acfe5538a34842a6a088ffdbee3808f8c79702b))
+* **catalog:** keep keyword names in Operation Call Paths ([#2506](https://github.com/withcoral/coral/issues/2506)) ([b20795b](https://github.com/withcoral/coral/commit/b20795b2a71e2b5c5ba6b9c617a568e524ffef96))
+* **catalog:** never make an Operation unavailable for search material ([#2465](https://github.com/withcoral/coral/issues/2465)) ([f83c909](https://github.com/withcoral/coral/commit/f83c909b667ff99cecb929006c11d768164a9922))
+* **catalog:** stop rejecting createProvider request headers by name ([#2589](https://github.com/withcoral/coral/issues/2589)) ([39e54b9](https://github.com/withcoral/coral/commit/39e54b99a99761ca56b076d340836537a3040688))
+* **provider:** ask for an OAuth client ID when Coral cannot register one ([#2580](https://github.com/withcoral/coral/issues/2580)) ([baefe9e](https://github.com/withcoral/coral/commit/baefe9ed7f04867fc96c27ee55814167e44274b6))
+* **provider:** bind each Setup to its starter and hide Coral from Members ([#2480](https://github.com/withcoral/coral/issues/2480)) ([6011a64](https://github.com/withcoral/coral/commit/6011a6457c4c836c9c90348a7453914aec24ff1e))
+* **reef:** align the catalog table with the first rail entry ([#2484](https://github.com/withcoral/coral/issues/2484)) ([fb59758](https://github.com/withcoral/coral/commit/fb597588cddac3bb246515b5f8efcf6546da83c4))
+* **reef:** calm the Activity badge and keep it while the stream reconnects ([#2468](https://github.com/withcoral/coral/issues/2468)) ([1b66639](https://github.com/withcoral/coral/commit/1b666397fd671439eac1e009e48c18aba567713d))
+* **reef:** frame the providers table again and lower the top bar ([#2472](https://github.com/withcoral/coral/issues/2472)) ([87e41ee](https://github.com/withcoral/coral/commit/87e41eedb5dd96084877ded39c1492d612dd04e5))
+* **reef:** pin third-party recipe OpenAPI documents to a commit ([#2510](https://github.com/withcoral/coral/issues/2510)) ([b4e9280](https://github.com/withcoral/coral/commit/b4e9280830590d56bdab4a8104acdc1edde0eab2))
+* **reef:** replace loose help text with info tips and banners ([#2461](https://github.com/withcoral/coral/issues/2461)) ([695500a](https://github.com/withcoral/coral/commit/695500a4e6207f1f2dd7cf18f774d276cfe98f49))
+* **reef:** round the page's corners beside the sidebar ([#2503](https://github.com/withcoral/coral/issues/2503)) ([a1fef64](https://github.com/withcoral/coral/commit/a1fef6498be0a35ce2493c237241ffa081876041))
+* **reef:** shorten OAuth scope chips that share a URL prefix ([#2455](https://github.com/withcoral/coral/issues/2455)) ([5ae67ec](https://github.com/withcoral/coral/commit/5ae67ec6294ac25f5b45b3b91d1c0c99d9878e9e))
+* **reef:** suggest a provider's namespace from its document name, not its host ([#2565](https://github.com/withcoral/coral/issues/2565)) ([8d77893](https://github.com/withcoral/coral/commit/8d778932bf1a6518f5fa51f5f9e337086f0c14e2))
+* **run:** name every argument to correct in an invalid_input failure ([#2354](https://github.com/withcoral/coral/issues/2354)) ([07bd727](https://github.com/withcoral/coral/commit/07bd727e5bb9ad8a63d93731ac22e8634a3ab09d))
+* **run:** reject a credential beside createProvider's bearer method and report unreachable sources as upstream_incomplete ([#2542](https://github.com/withcoral/coral/issues/2542)) ([590eab7](https://github.com/withcoral/coral/commit/590eab758efac10f36ab57444dc54e8052d158b5))
+* **run:** report an MCP JSON-RPC rejection as invalid_input or upstream_rejected ([#2402](https://github.com/withcoral/coral/issues/2402)) ([749770b](https://github.com/withcoral/coral/commit/749770b4ccb41d58d7cb9eb633f0035be94a26f7))
+* **search:** load each Generation's schema graph once per search ([#2448](https://github.com/withcoral/coral/issues/2448)) ([445d945](https://github.com/withcoral/coral/commit/445d94569105087c42586756c12be1019883c63e))
+* **search:** retry a failed Saved Function only after one interval ([#2460](https://github.com/withcoral/coral/issues/2460)) ([a61ab3a](https://github.com/withcoral/coral/commit/a61ab3aa0ed6073a810d46de33dd68ace382a546))
+* **search:** return no hits for a query without a letter or digit ([#2561](https://github.com/withcoral/coral/issues/2561)) ([bb0a4f0](https://github.com/withcoral/coral/commit/bb0a4f0e96599089a349f47e02f70760858d25ad))
+* **search:** start the write limit at the lock and build rows before the write ([#2575](https://github.com/withcoral/coral/issues/2575)) ([06ad55d](https://github.com/withcoral/coral/commit/06ad55df2bbe98814088ab8bad65c9e6b9593b8d))
+* **search:** stop a self-referential Promise result from overflowing the stack ([#2543](https://github.com/withcoral/coral/issues/2543)) ([1d4f257](https://github.com/withcoral/coral/commit/1d4f2573ac67caa3d0a17314984a09edd9dcd6a0))
+* **search:** stop retrying an index write that fails the same way every time ([#2548](https://github.com/withcoral/coral/issues/2548)) ([e3b6d15](https://github.com/withcoral/coral/commit/e3b6d15f708ead860083a541811f1491dc4a01bc))
+
+
+### Performance Improvements
+
+* **catalog:** dedup credential destinations once per build, not per Operation ([#2555](https://github.com/withcoral/coral/issues/2555)) ([0afbcf5](https://github.com/withcoral/coral/commit/0afbcf5742b9ea071482ef7e582beb9a38bd688d))
+* **catalog:** project each named TypeScript type once per Provider ([#2443](https://github.com/withcoral/coral/issues/2443)) ([153c273](https://github.com/withcoral/coral/commit/153c273c03cd90ab3daeb1f7e61cb3d2f1ddf7f0))
+* **search:** drop schema text from the phrase test ([#2559](https://github.com/withcoral/coral/issues/2559)) ([cfdbafa](https://github.com/withcoral/coral/commit/cfdbafacfd0ebb8d157ae63a303dc63ba15c8aa3))
+* **search:** index each word of schema text once ([#2547](https://github.com/withcoral/coral/issues/2547)) ([d1123fb](https://github.com/withcoral/coral/commit/d1123fb799bb43319ce026af83dccfbe78d5460c))
+* **search:** prepare search entries in the indexer after commit ([#2467](https://github.com/withcoral/coral/issues/2467)) ([1ab6765](https://github.com/withcoral/coral/commit/1ab67651d9c3d3dbefbd03d1f9c7cde31cffe1b4))
+* **search:** recount only Workspaces whose rows changed ([#2457](https://github.com/withcoral/coral/issues/2457)) ([777cfb3](https://github.com/withcoral/coral/commit/777cfb335a457ef1ae9306f1ae8d6c2f1dd667e4))
+* **search:** skip unchanged rows when an index write runs again ([#2459](https://github.com/withcoral/coral/issues/2459)) ([43b5188](https://github.com/withcoral/coral/commit/43b518821a3344e896e0c809d8b3632c896b935e))
+* **search:** write only the statistics rows that changed ([#2458](https://github.com/withcoral/coral/issues/2458)) ([8e2832c](https://github.com/withcoral/coral/commit/8e2832cc465a192035281ec20d12617dd0d6687d))
+
 ## [1.1.0](https://github.com/withcoral/coral/compare/v1.0.0...v1.1.0) (2026-10-15)
 
 

@@ -1,5 +1,5 @@
 pub(crate) mod activity;
-use sea_query::{Condition, Expr, ExprTrait as _, Iden, Order, Query};
+use sea_query::{Condition, Expr, ExprTrait as _, Iden, OnConflict, Order, Query};
 use sqlx::FromRow;
 
 use coral_db::{Database, QueryExecutor};
@@ -80,10 +80,12 @@ impl TaskRow {
     }
 }
 
+/// Inserts the Task row. `false` means a Task with this identifier already
+/// exists and nothing was written: the caller draws a new identifier.
 pub(super) async fn insert(
     database: &mut coral_db::Transaction<'_>,
     task: &Task,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let statement = Query::insert()
         .into_table(TaskRecords::Table)
         .columns([
@@ -108,9 +110,10 @@ pub(super) async fn insert(
             Expr::val(Option::<i64>::None),
             Expr::val(task.started_at_unix_nanos()),
         ])
+        .on_conflict(OnConflict::column(TaskRecords::Id).do_nothing().to_owned())
         .to_owned();
-    database.execute_change(statement).await?;
-    Ok(())
+    let rows = database.execute_change(statement).await?;
+    Ok(rows == 1)
 }
 
 pub(super) async fn find_visible(

@@ -90,7 +90,7 @@ pub use types::{
     AdministrativeLifecycleEvent, InvocationOperationVerification, LifecycleAction, LifecycleActor,
     LifecycleOutcome, ManagementRequestId, OperationAuthoringMaterial, Provider,
     ProviderDisplayName, ProviderId, ProviderSearchCatalog, ProviderSetup, ProviderSetupId,
-    ProviderSetupState, ProviderState, ResolvedInvocationOperation,
+    ProviderSetupState, ProviderState, ResolvedInvocationOperation, SetupRequest,
 };
 
 pub use access::{CredentialRoute, ProviderAccess, ProviderCallRoot, ProviderNamespace};
@@ -228,7 +228,7 @@ impl ProviderModule {
             &std::collections::BTreeMap::new(),
             None,
             None,
-            None,
+            input::SetupPurpose::Create(None),
         )
         .await
     }
@@ -247,7 +247,7 @@ impl ProviderModule {
         initial_request_headers: &std::collections::BTreeMap<String, String>,
         metadata: Option<setup_credentials::InspectedAuthorization>,
         input_url: Option<String>,
-        update_target: Option<&ProviderId>,
+        purpose: input::SetupPurpose<'_>,
     ) -> Result<ProviderSetup, Error> {
         self.workspaces
             .check(context.actor(), owner, WorkspaceAction::Configure)
@@ -274,13 +274,14 @@ impl ProviderModule {
             ProviderSetupState::AwaitingConfiguration,
             context.occurred_at_unix_nanos(),
         )
-        .with_source(input_url, expires_at);
+        .with_source(input_url, expires_at)
+        .with_request(purpose.request().cloned());
         let mut transaction = self.database.begin().await?;
         let authority_source = self
             .check_owner_configuration_in_transaction(&mut transaction, context.actor(), owner)
             .await?;
-        let update = if let Some(target) = update_target {
-            Some(
+        let update = match purpose.update_target() {
+            Some(target) => Some(
                 change::hold_for_change(
                     &mut transaction,
                     owner,
@@ -288,9 +289,8 @@ impl ProviderModule {
                     change::ProviderChange::Reconfigure,
                 )
                 .await?,
-            )
-        } else {
-            None
+            ),
+            None => None,
         };
         repository::insert_setup(
             &mut transaction,

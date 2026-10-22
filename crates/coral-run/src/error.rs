@@ -321,6 +321,9 @@ pub enum Error {
     /// The Run clock could not provide safe durable time evidence.
     #[error("Program Run clock failed: {0}")]
     Clock(String),
+    /// Coral could not issue an unused Run identifier.
+    #[error("Program Run identifier could not be issued: {0}")]
+    IdentifierIssuance(String),
     /// A Program Value or cumulative output crossed its accepted limit.
     #[error("Program output exceeds its accepted limit")]
     ProgramValueTooLarge,

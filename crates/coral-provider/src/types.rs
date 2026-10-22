@@ -131,8 +131,17 @@ impl ProviderSetupState {
         )
     }
 
+    /// Every state in which a Setup is open, for a query that selects them.
+    pub(crate) const OPEN: [Self; 4] = [
+        Self::AwaitingConfiguration,
+        Self::AwaitingAuthorization,
+        Self::AwaitingDiscovery,
+        Self::Ready,
+    ];
+
     /// Whether the Setup can still be published: not yet ready, or ready and
-    /// not consumed. Only an open Setup expires at its deadline.
+    /// not consumed; one of [`Self::OPEN`]. Only an open Setup expires at its
+    /// deadline.
     #[must_use]
     pub const fn is_open(&self) -> bool {
         self.is_pre_ready() || matches!(self, Self::Ready)
@@ -150,6 +159,17 @@ pub struct ProviderSetup {
     created_at_unix_nanos: i64,
     input_url: Option<String>,
     expires_at_unix_nanos: Option<i64>,
+    request: Option<SetupRequest>,
+}
+
+/// What a Program asked a Setup to publish when it called `createProvider`.
+/// The person who finishes the Setup can still change either.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetupRequest {
+    /// The Provider Namespace the Program asked for.
+    pub namespace: crate::ProviderNamespace,
+    /// The Credential Route the Program asked for.
+    pub route: crate::CredentialRoute,
 }
 
 impl ProviderSetup {
@@ -170,7 +190,19 @@ impl ProviderSetup {
             created_at_unix_nanos,
             input_url: None,
             expires_at_unix_nanos: None,
+            request: None,
         }
+    }
+
+    pub(crate) fn with_request(mut self, request: Option<SetupRequest>) -> Self {
+        self.request = request;
+        self
+    }
+
+    /// What a Program asked this Setup to publish; `None` for a Setup a person started.
+    #[must_use]
+    pub const fn request(&self) -> Option<&SetupRequest> {
+        self.request.as_ref()
     }
 
     pub(crate) fn with_source(
@@ -193,6 +225,13 @@ impl ProviderSetup {
     #[must_use]
     pub const fn expires_at_unix_nanos(&self) -> Option<i64> {
         self.expires_at_unix_nanos
+    }
+
+    /// Whether `now` is at or past the Setup's deadline.
+    #[must_use]
+    pub fn is_past_deadline(&self, now: i64) -> bool {
+        self.expires_at_unix_nanos
+            .is_some_and(|deadline| now >= deadline)
     }
 
     /// Returns the stable Setup identity.

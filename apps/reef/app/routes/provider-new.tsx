@@ -79,7 +79,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         recipes: setup ? [] : RECIPE_CHOICES,
         recipe,
         // The chosen recipe fills in a first configuration, checked against what Coral read.
-        recipeConfiguration: setup && chosen ? recipeConfiguration(chosen, setup) : null,
+        recipeConfiguration:
+          setup && chosen ? recipeConfiguration(chosen, setup, { callbackUrl }) : null,
         // Where to find the credentials the account step asks for.
         recipeDocumentationUrl:
           setup && chosen ? recipeDocumentationUrl(chosen, setup.credentialMethod) : null,

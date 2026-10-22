@@ -19,7 +19,8 @@ pub use builtin::{
     BuiltinCatalogIdentity, BuiltinCredentialRoute, BuiltinExecutionBinding, BuiltinOperation,
     ConfigurationChoices, ConfigurationOutput, CreateProviderArguments, CreateProviderResult,
     GetProviderArguments, GetProviderResult, ListProvidersResult, ListedProvider,
-    ListedProviderState, ProviderFacts, ProviderSourceArgument, ProviderSourceOutput,
+    ListedProviderState, ListedSetup, ListedSetupState, ProviderFacts, ProviderSourceArgument,
+    ProviderSourceOutput,
 };
 mod configuration;
 pub use configuration::{

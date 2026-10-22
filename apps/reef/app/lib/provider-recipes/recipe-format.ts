@@ -248,6 +248,14 @@ const authorizationParameters = withEntries(
   'Extra non-secret parameters for the authorization request, such as access_type: offline. Coral sets the OAuth protocol parameters itself.',
 )
 
+const clientConfigHintGenerator = z
+  .enum(['slack_app_create_link'])
+  .describe(
+    'A Reef helper that writes help below the client ID field, such as a link that creates the OAuth application.',
+  )
+
+export type ClientConfigHintGenerator = z.infer<typeof clientConfigHintGenerator>
+
 function isConfidentialClient(client: z.infer<typeof oauthClient>) {
   return (
     client.authentication === 'client_secret_basic' ||
@@ -338,6 +346,7 @@ const authenticationOption = z.discriminatedUnion('method', [
       scopes: scopes.optional(),
       scope_format: scopeFormat,
       authorization_parameters: authorizationParameters.optional(),
+      client_config_hint_generator: clientConfigHintGenerator.optional(),
     })
     .refine(
       (option) => option.flow !== 'device_code' || option.authorization_parameters === undefined,

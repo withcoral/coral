@@ -208,20 +208,21 @@ describe('exact approval review', () => {
   })
 
   it.each([
-    ['Approve this call', 'Approving…', 'Deny this call', 'approve'],
-    ['Deny this call', 'Denying…', 'Approve this call', 'decline'],
+    ['Approve this call', 'Deny this call', 'approve'],
+    ['Deny this call', 'Approve this call', 'decline'],
   ])(
     'prevents duplicate or opposite decisions while %s is pending',
-    async (label, pending, other, intent) => {
+    async (label, other, intent) => {
       const page = renderReview()
       await enterComment('Reviewed the exact arguments.')
       await click(label)
 
       expect(page.submissions).toHaveLength(1)
       expect(page.submissions[0].form.get('intent')).toBe(intent)
-      expect(button(pending)).toBeDisabled()
+      expect(button(label)).toHaveAttribute('aria-busy', 'true')
+      expect(button(label)).toHaveAttribute('aria-disabled', 'true')
       expect(button(other)).toBeDisabled()
-      await click(pending)
+      await click(label)
       await click(other)
       expect(page.submissions).toHaveLength(1)
       expect(comment()).toHaveValue('Reviewed the exact arguments.')

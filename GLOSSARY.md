@@ -150,6 +150,13 @@ visibility and retention; it is not a separate report or interaction.
 _Avoid_: Single call, synthetic Run wrapper, Principal-owned Task, Workspace-shared Task, using Episode or session as
 aliases for Task
 
+**Task identifier**: The name Coral gives a Task when it starts it: four words from Coral's word list, lowercase and
+joined by hyphens, such as `random-big-business-store`. Coral draws the words at random, inserts the Task with them as
+its primary key, and draws again when the name is already in use, so no two Tasks in one deployment share one. A Task
+started before Coral issued words keeps its UUID text. The identifier names the Task in MCP, in gRPC resource names, in
+Reef and in logs. It grants no authority: a Principal who guesses it sees nothing more than for a Task that does not
+exist. _Avoid_: task id, task key, task handle, task alias, short identifier, agent identifier
+
 **Task Interaction**: An individually identified, Workspace-owned child record in a Task's history of one authorized
 attempt to use Coral, retaining the participating Principal, separate per-call intent, timing, attempt outcome, and any
 search page or exact description as returned at that time. A User can inspect that User's interactions and a
@@ -197,7 +204,8 @@ Provider consumes the prepared setup; Coral does not fetch a different descripto
 or `canceled`. Only a
 ready Setup feeds Publication. Every open Setup has a host deadline one hour after it is created; a Setup still open
 then, ready or not, expires, and Publication refuses it. Expiry and explicit cancellation scrub setup-scoped credential
-material. _Avoid_: Provider Definition inspection, live Provider,
+material. A Setup that `coral.workspace.createProvider` prepares records the Provider Namespace and Credential Route the
+Program asked for; the person who finishes it can change either. _Avoid_: Provider Definition inspection, live Provider,
 implicit refresh
 _In Reef_: never named; preparation within "Add provider", "Refresh operations", "Edit configuration", and "Change account setting"
 
@@ -234,12 +242,13 @@ has no Provider Accounts. Its Operations create a Provider (`createProvider`), l
 (`getProvider`). When Coral boots, it updates every Workspace's Built-in Provider to the catalog it serves; a Workspace
 whose update fails keeps its catalog until the next boot. Coral itself publishes the Provider only from a ready Setup on
 the `none` route. A credential-requiring Setup, on the `fixed` or the `caller` route, always needs a person to sign in.
-If a person must finish the Setup and the Run is still current, the Operation returns the Reef page and does not wait;
-Coral ends a Setup it prepared that nobody will finish. Its Operations never return a secret, a fixed credential value,
-or the OAuth sign-in link Coral prepares for one person to the Program, and never take a secret from it: a person
-enters a confidential OAuth application's secret in Reef. A Provider's OAuth endpoints, such as its authorization URL,
-are configuration, not that link. A Reef link one returns may name a Provider Setup; that Setup's identity grants
-nothing, and only the User who started the Setup can publish it.
+If a person must finish the Setup and the Run is still current, the Operation returns the Reef page, which names only
+the Setup, and does not wait; `listProviders` reports the open Setups that the invoking User's `createProvider` calls
+prepared, until each is published, expires or is canceled. Coral ends a Setup it prepared that nobody will finish. Its
+Operations never return a secret, a fixed credential value, or the OAuth sign-in link Coral prepares for one person to
+the Program, and never take a secret from it: a person enters a confidential OAuth application's secret in Reef. A
+Provider's OAuth endpoints, such as its authorization URL, are configuration, not that link. A Reef link one returns may
+name a Provider Setup; that Setup's identity grants nothing, and only the User who started the Setup can publish it.
 _Avoid_: admin API, administrative calls, coral.admin surface, system provider
 _In Reef_: "Coral", with the Coral logo, listed first
 
@@ -732,6 +741,14 @@ Loss of Workspace access stops future reads but does not delete history. The Run
 request used to start or observe it. Caller disconnection does not end the Run; completion, explicit cancellation, or
 Coral policy does. A handled Operation Error does not fail the Run, while an unhandled one does, including one that
 carries an Upstream Outcome. _Avoid_: Program request, connection-scoped execution, Principal-owned Run
+
+**Run identifier**: The name Coral gives a Program Run when it accepts it: four words from Coral's word list, lowercase
+and joined by hyphens, such as `height-word-database-library`. Coral draws the words at random, inserts the Run with
+them as its primary key, and draws again when the name is already in use, so no two Runs in one deployment share one. A
+Run accepted before Coral issued words keeps its UUID text. The identifier names the Run in MCP, in gRPC resource
+names, in the Run Status Page URL and `run_status_url`, and in logs. It grants no authority: a Principal who guesses it
+sees nothing more than for a Run that does not exist. _Avoid_: run id, run key, run handle, run alias, short
+identifier, agent identifier
 
 **Program Run Event**: An immutable, sequenced observation recorded during a Coral Program Run for incremental
 consumption and audit. It describes Run execution, including cancellation and recovery effects, but does not duplicate

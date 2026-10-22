@@ -14,8 +14,8 @@ use coral_catalog::{
 };
 use coral_provider::account::AccountModule;
 use coral_provider::{
-    ManagementRequestId, ProviderModule, PublishedProvider, ResolvedInvocationOperation,
-    WorkspaceProviderPublisher,
+    ManagementRequestId, ProviderModule, ProviderSetupId, PublishedProvider,
+    ResolvedInvocationOperation, WorkspaceProviderPublisher,
 };
 use coral_workspace::{ChangeContext, Principal, WorkspaceId};
 
@@ -163,6 +163,17 @@ fn provider_facts(published: &PublishedProvider) -> ProviderFacts {
         operations: published.available_operations,
         account_required: published.account_required,
     }
+}
+
+/// Reef's new-provider stepper for one Setup. Reef reads the namespace and the
+/// Credential Route the Program asked for from the Setup itself, and opens on
+/// the Operations, so the person sees what the Provider can do before signing
+/// in and publishing. A Setup id needs no URL encoding.
+fn setup_url(host: &BuiltinHost<'_>, setup: &ProviderSetupId) -> String {
+    host.human_interface.page_url(&format!(
+        "/workspaces/{}/providers/new?setup={setup}",
+        host.workspace_id
+    ))
 }
 
 /// A User who lost Workspace authority since admission is a failure the

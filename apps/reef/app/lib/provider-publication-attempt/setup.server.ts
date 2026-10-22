@@ -38,7 +38,7 @@ import type {
 import { credentialFieldViews, credentialValuesFrom } from '../credential-fields.server'
 import { field, privateHeaders, type ManagementApi } from '../management.server'
 import { safeInternalPath } from '@/auth/safe-path.server'
-import { operationGroup, providerFailure, uuidOr404 } from '../providers.server'
+import { operationGroup, providerFailure, routeChoice, uuidOr404 } from '../providers.server'
 import { OPENAPI_DOCUMENT_MAX_BYTES, OPENAPI_DOCUMENT_SIZE_LABEL } from '../provider-input-limits'
 import { recipeDocument } from '../provider-recipes/library.server'
 import {
@@ -177,7 +177,18 @@ export function setupView(s: ProviderSetup): SetupView {
     sourceLabel: s.inputUrl || 'Uploaded document',
     sourceHost: s.inputUrl ? safeHost(s.inputUrl) : '',
     serverName: serviceHost(s),
+    ...setupRequest(s),
   }
+}
+
+/**
+ * What a Program asked the Setup to publish. A route this Reef does not know
+ * leaves the account question to the person, and the Setup is still the Program's.
+ */
+function setupRequest(s: ProviderSetup): Pick<SetupView, 'request'> {
+  return s.request
+    ? { request: { namespace: s.request.namespace, route: routeChoice(s.request.credentialRoute) } }
+    : {}
 }
 
 /**
@@ -904,7 +915,7 @@ export async function setupAction<Published = never>(
   if (draft.kind === 'workspace' && typeof namespace === 'string') draft.namespace = namespace
   const stepper = (
     account: AccountChoice | null,
-    review = draft.kind === 'workspace' && Boolean(draft.accountReview),
+    returning = draft.kind === 'workspace' && Boolean(draft.returnFromConnect),
   ) =>
     attemptPath(
       basePath,
@@ -913,7 +924,7 @@ export async function setupAction<Published = never>(
         : {
             ...draft,
             account,
-            accountReview: Boolean(account) && review,
+            returnFromConnect: Boolean(account) && returning,
           },
     )
   try {
@@ -972,11 +983,11 @@ export async function setupAction<Published = never>(
           if (savesDirectly(view, save.account))
             return save.publish(freezeAttempt(draft, view, field(form, 'requestId')))
         }
-        const reviewAccount =
+        const returning =
           draft.kind === 'workspace' &&
-          Boolean(draft.accountReview) &&
+          Boolean(draft.returnFromConnect) &&
           setup.credentialMethod !== CredentialMethod.NONE
-        return redirect(stepper(chosen, reviewAccount), { headers: privateHeaders })
+        return redirect(stepper(chosen, returning), { headers: privateHeaders })
       }
       case 'update-access':
       case 'review-update': {
@@ -1030,9 +1041,9 @@ export async function setupAction<Published = never>(
             submittedAccount && submittedAccount !== 'none' && setup.authorized
               ? setup.provisionalGrantId || undefined
               : undefined
-        const review =
-          !submittedAccount && draft.kind === 'workspace' && Boolean(draft.accountReview)
-        return redirect(stepper(chosen, review), { headers: privateHeaders })
+        const returning =
+          !submittedAccount && draft.kind === 'workspace' && Boolean(draft.returnFromConnect)
+        return redirect(stepper(chosen, returning), { headers: privateHeaders })
       }
       case 'oauth-start': {
         if (draft.kind === 'workspace') draft.accountGrant = undefined

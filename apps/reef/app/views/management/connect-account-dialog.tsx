@@ -7,6 +7,7 @@ import { addToast } from '@/wax/components/toast'
 import { oauthFailureMessage } from '@/views/accounts/oauth-failure'
 import type { AuthorizationView } from '@/views/accounts/types'
 import { DeviceCodePanel } from '@/views/accounts/device-code'
+import { DocumentSubmitButton } from '@/components/document-submit-button'
 import { CredentialFields } from './credential-fields'
 import { Fields } from './forms'
 import type { FormContext } from './types'
@@ -295,7 +296,7 @@ function AuthorizationStep({
         </Typography.BodySmall>
         <Dialog.Actions>
           {closeButton}
-          <Button.TextButton type="submit">Connect account</Button.TextButton>
+          <DocumentSubmitButton>Connect account</DocumentSubmitButton>
         </Dialog.Actions>
       </form>
     )
@@ -317,15 +318,14 @@ function AuthorizationStep({
       )}
       <Dialog.Actions>
         {closeButton}
-        <Button.Container
-          type="submit"
-          form={formId}
-          variant="primary"
-          disabled={device && !v.userCode}
-        >
-          <Button.Text>{device ? 'Open sign-in page' : 'Continue to sign in'}</Button.Text>
-          {device && <Button.Icon name="ExternalLink" />}
-        </Button.Container>
+        {device ? (
+          <Button.Container type="submit" form={formId} variant="primary" disabled={!v.userCode}>
+            <Button.Text>Open sign-in page</Button.Text>
+            <Button.Icon name="ExternalLink" />
+          </Button.Container>
+        ) : (
+          <DocumentSubmitButton form={formId}>Continue to sign in</DocumentSubmitButton>
+        )}
       </Dialog.Actions>
     </>
   )

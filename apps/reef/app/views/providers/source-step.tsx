@@ -224,10 +224,11 @@ export function SourceStep({
             type="submit"
             form={formId}
             disabled={reading}
+            busy={reading && active}
             className={styles.readAction}
             onClick={() => readAs(of)}
           >
-            {reading && active ? (of === 'mcp' ? 'Connecting…' : 'Reading…') : SOURCE_VERB[of]}
+            {SOURCE_VERB[of]}
           </Button.TextButton>
         </div>
         <Typography.BodySmall

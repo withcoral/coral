@@ -388,20 +388,31 @@ async fn create_provider_returns_the_reef_page_that_finishes_its_setup() {
         let [setup] = created.as_slice() else {
             panic!("{access:?}: one new Setup: {created:?}")
         };
+        // The Setup holds what the Program asked for, so the link names only the Setup.
+        let url = format!(
+            "{TEST_REEF}/workspaces/{}/providers/new?setup={setup}",
+            scope.workspace_id,
+        );
         assert_eq!(
             final_value(&terminal),
             serde_json::json!({
-                "data": {
-                    "status": "needs_sign_in",
-                    "url": format!(
-                        "{TEST_REEF}/workspaces/{}/providers/new?setup={setup}&namespace=weather\
-                         &account=fixed",
-                        scope.workspace_id,
-                    ),
-                    "namespace": "weather",
-                },
+                "data": { "status": "needs_sign_in", "url": url, "namespace": "weather" },
                 "metadata": { "kind": "builtin" },
             }),
+            "{access:?}"
+        );
+        // A Program can find the Setup again while a person finishes it.
+        let listed = scope
+            .start(&scope.owner, workspace_call("listProviders", "{}"))
+            .await;
+        assert_eq!(
+            final_value(&scope.terminal(&scope.owner, &listed).await).pointer("/data/setups"),
+            Some(&serde_json::json!([{
+                "namespace": "weather",
+                "credentialRoute": "fixed",
+                "state": "ready",
+                "url": url,
+            }])),
             "{access:?}"
         );
         assert_eq!(
@@ -1097,6 +1108,10 @@ async fn an_operation_this_version_does_not_perform_fails_before_approval() {
 // configuration step does, a link that opens the wrong account question, or
 // Coral publishing an application whose secret only a person can give.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table checks each sign-in method's configuration and the request it records"
+)]
 async fn the_program_configures_how_a_person_signs_in() {
     let scope = AdminScope::new("user:sign-in-configuration").await;
     scope.set_access(OperationAccessState::Enabled).await;
@@ -1123,23 +1138,19 @@ async fn the_program_configures_how_a_person_signs_in() {
             "authentication": "client_secret_post",
         },
     } });
-    for (index, (route, choices, question)) in [
-        ("fixed", bot, Some("&account=fixed")),
+    for (index, (route, choices, needs_sign_in)) in [
+        ("fixed", bot, true),
         // The source declares no field for the header to send.
         (
             "fixed",
             serde_json::json!({ "authentication": bot_header }),
-            None,
+            false,
         ),
         // Device code never uses PKCE, whatever the Program wrote.
-        ("fixed", device, Some("&account=fixed")),
+        ("fixed", device, true),
         // Each person's own Account needs a sign-in too, and only the person
         // can give a confidential application's secret.
-        (
-            "caller",
-            confidential,
-            Some("&account=caller&accountReview=1"),
-        ),
+        ("caller", confidential, true),
     ]
     .into_iter()
     .enumerate()
@@ -1157,21 +1168,38 @@ async fn the_program_configures_how_a_person_signs_in() {
             .start(&scope.owner, create_provider(&arguments, "error.code"))
             .await;
         let value = final_value(&scope.terminal(&scope.owner, &run).await);
-        let Some(question) = question else {
+        if !needs_sign_in {
             assert_eq!(value, serde_json::json!("invalid_input"), "{arguments}");
             continue;
-        };
+        }
         assert_eq!(
             value.pointer("/data/status"),
             Some(&serde_json::json!("needs_sign_in")),
             "{arguments}: {value}"
         );
-        let link = value
+        // Reef opens the account question from the route the Setup holds.
+        let setup = value
             .pointer("/data/url")
-            .and_then(serde_json::Value::as_str);
-        assert!(
-            link.is_some_and(|link| link.ends_with(question)),
-            "{arguments}: {value}"
+            .and_then(serde_json::Value::as_str)
+            .and_then(|link| link.split_once("?setup="))
+            .and_then(|(_page, setup)| ProviderSetupId::parse(setup).ok())
+            .unwrap_or_else(|| panic!("{arguments}: a link to one Setup: {value}"));
+        let request = scope
+            .fixture
+            .providers
+            .get_setup(&scope.owner_user(), &scope.workspace_id, &setup)
+            .await
+            .unwrap()
+            .request()
+            .cloned()
+            .expect("the Program's request");
+        assert_eq!(
+            (request.namespace.as_str(), request.route),
+            (
+                format!("weather{index}").as_str(),
+                CredentialRoute::from_storage_str(route).unwrap()
+            ),
+            "{arguments}"
         );
         let configuration = scope.last_confirmed_configuration().await;
         match configuration.authentication.expect("a method") {
@@ -1510,6 +1538,7 @@ async fn list_providers_lists_every_provider_without_approval() {
                     "accountRequired": false,
                 },
             ],
+            "setups": [],
         },
         "metadata": { "kind": "builtin" },
     });

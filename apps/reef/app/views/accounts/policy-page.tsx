@@ -81,8 +81,8 @@ export function PolicyPage({
                 </Radio.Item>
               ))}
             </Radio.Group>
-            <Button.TextButton type="submit" disabled={pending}>
-              {pending ? 'Saving…' : 'Save selected operations'}
+            <Button.TextButton type="submit" disabled={pending} busy={pending}>
+              Save selected operations
             </Button.TextButton>
           </>
         )}

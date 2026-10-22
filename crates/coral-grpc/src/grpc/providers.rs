@@ -40,16 +40,20 @@ pub(super) fn provider_name(provider: &domain::Provider) -> String {
     format!("{}/providers/{}", parent(provider.owner()), provider.id())
 }
 
+fn credential_route(route: CredentialRoute) -> wire::CredentialRoute {
+    let kind = match route {
+        CredentialRoute::None => wire::credential_route::Kind::None,
+        CredentialRoute::Caller => wire::credential_route::Kind::Caller,
+        CredentialRoute::Fixed => wire::credential_route::Kind::Fixed,
+    };
+    wire::CredentialRoute { kind: kind.into() }
+}
+
 pub(super) fn provider_view(
     provider: &domain::Provider,
     blockers: &[domain::access::ProviderBlocker],
     search_index: Option<coral_search::SearchIndexState>,
 ) -> wire::Provider {
-    let kind = match provider.credential_route() {
-        CredentialRoute::None => wire::credential_route::Kind::None,
-        CredentialRoute::Caller => wire::credential_route::Kind::Caller,
-        CredentialRoute::Fixed => wire::credential_route::Kind::Fixed,
-    };
     let namespace = match provider.call_root() {
         ProviderCallRoot::Owner(namespace) => namespace.as_str().into(),
         ProviderCallRoot::Builtin => String::new(),
@@ -65,7 +69,7 @@ pub(super) fn provider_view(
         etag: provider.etag(),
         namespace,
         call_root: provider.call_root().as_str().into(),
-        credential_route: Some(wire::CredentialRoute { kind: kind.into() }),
+        credential_route: Some(credential_route(provider.credential_route())),
         account_setting_version: provider.account_setting_version(),
         blockers: blockers
             .iter()
@@ -443,6 +447,10 @@ impl GrpcServices {
             }),
             expire_time: setup.expires_at_unix_nanos().map(timestamp),
             configuration: Some(review),
+            request: setup.request().map(|request| wire::ProviderSetupRequest {
+                namespace: request.namespace.as_str().to_owned(),
+                credential_route: Some(credential_route(request.route)),
+            }),
         }))
     }
 

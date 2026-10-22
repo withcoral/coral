@@ -673,10 +673,10 @@ fn task_failure(error: coral_task::Error) -> DispatchError {
             "snapshot_too_large",
             "Complete discovery snapshot exceeds its limit",
         ),
-        coral_task::Error::Clock => ToolFailure::internal(),
-        coral_task::Error::CorruptData(_) | coral_task::Error::Database(_) => {
-            ToolFailure::internal()
-        }
+        coral_task::Error::Clock
+        | coral_task::Error::IdentifierIssuance(_)
+        | coral_task::Error::CorruptData(_)
+        | coral_task::Error::Database(_) => ToolFailure::internal(),
     };
     DispatchError::Tool(failure)
 }

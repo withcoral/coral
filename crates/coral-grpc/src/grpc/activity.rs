@@ -39,6 +39,7 @@ fn error(error: coral_task::Error) -> Status {
         | coral_task::Error::Search(_)
         | coral_task::Error::Functions(_)
         | coral_task::Error::Clock
+        | coral_task::Error::IdentifierIssuance(_)
         | coral_task::Error::Workspace(_)
         | coral_task::Error::CorruptData(_)
         | coral_task::Error::Database(_) => Status::unavailable("history unavailable"),

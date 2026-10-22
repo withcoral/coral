@@ -13,6 +13,7 @@ import type {
   RecipeServerView,
   SetupView,
 } from '@/views/providers/types'
+import { CLIENT_CONFIG_HINT_GENERATORS, type ClientConfigHintContext } from './client-config-hints'
 import { inputReference } from './input-reference'
 import type { Recipe, RecipeAuthenticationOption } from './recipe-format'
 
@@ -26,6 +27,7 @@ type OAuthClient = {
 export function recipeConfiguration(
   recipe: Recipe,
   setup: SetupView,
+  hintContext: ClientConfigHintContext,
 ): RecipeConfigurationView | null {
   const review = setup.configuration
   if (!review || review.confirmed) return null
@@ -61,11 +63,16 @@ export function recipeConfiguration(
     console.warn(
       `Provider recipe ${recipe.id} does not fully fit this setup:\n  ${skipped.join('\n  ')}`,
     )
+  const generator =
+    option?.method === 'oauth_discovery' ? option.client_config_hint_generator : undefined
   return {
     id: recipe.id,
     inputs: inputsUsedBy(recipe, mapped),
     suggestedMethods: suggestedMethods(recipe, review),
     ...mapped,
+    ...(generator && {
+      clientConfigHintMarkdown: CLIENT_CONFIG_HINT_GENERATORS[generator](hintContext),
+    }),
   }
 }
 

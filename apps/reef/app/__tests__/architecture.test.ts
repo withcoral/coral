@@ -243,6 +243,49 @@ describe('architecture', () => {
     expect(violations).toEqual([])
   })
 
+  it('gives every reload-document form local submission feedback', () => {
+    const violations = filesUnder(viewsDir, isVisualTsx).flatMap((file) => {
+      const source = fs.readFileSync(file, 'utf8')
+      if (!/<Form\b[^>]*\breloadDocument\b/s.test(source)) return []
+      return importsFrom(source).includes('@/components/document-submit-button')
+        ? []
+        : [`${path.relative(appDir, file)}: use DocumentSubmitButton with reloadDocument`]
+    })
+
+    expect(violations).toEqual([])
+  })
+
+  it('keeps button labels stable while they submit', () => {
+    const violations: string[] = []
+    for (const file of [componentsDir, viewsDir].flatMap((dir) => filesUnder(dir, isVisualTsx))) {
+      const source = parseSync(fs.readFileSync(file, 'utf8'), {
+        babelrc: false,
+        configFile: false,
+        parserOpts: { plugins: ['typescript', 'jsx'] },
+      })!
+      traverse(source, {
+        JSXElement(element) {
+          const { name } = element.node.openingElement
+          if (name.type !== 'JSXMemberExpression' || name.object.type !== 'JSXIdentifier') return
+          if (name.object.name !== 'Button' || !['TextButton', 'Text'].includes(name.property.name))
+            return
+          element.traverse({
+            'JSXText|StringLiteral|TemplateElement'(text) {
+              const value =
+                text.node.type === 'TemplateElement' ? text.node.value.raw : text.node.value
+              if (value.includes('…') && !text.findParent((p) => p.isJSXAttribute()))
+                violations.push(`${path.relative(appDir, file)}:${text.node.loc?.start.line}`)
+            },
+          })
+        },
+      })
+    }
+    expect(
+      violations,
+      'Pass progress to Button.TextButton busy; it shows a spinner and keeps the label.',
+    ).toEqual([])
+  })
+
   it('keeps low-level UI libraries behind Wax', () => {
     const violations = filesUnder(appDir, (name) => /\.tsx?$/.test(name))
       .filter((file) => !file.startsWith(path.join(appDir, 'wax') + path.sep))

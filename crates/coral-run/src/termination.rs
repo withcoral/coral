@@ -493,7 +493,7 @@ impl ShutdownAction {
     #[cfg(test)]
     pub(crate) fn for_apply_test() -> Self {
         Self {
-            run_id: RunId::generate(),
+            run_id: RunId::generate().expect("the random source is available"),
             workspace_id: WorkspaceId::parse(&uuid::Uuid::nil().to_string())
                 .expect("the nil UUID parses"),
             claim_id: "claim".to_string(),

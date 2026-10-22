@@ -130,8 +130,8 @@ test("A workspace owner's Program adds a provider with a shared account, and you
       link = data.url
       const url = new URL(link)
       expect(url.pathname).toBe(`/workspaces/${id}/providers/new`)
-      expect(url.searchParams.get('namespace')).toBe('weather')
-      expect(url.searchParams.get('account')).toBe('fixed')
+      // The Setup holds the namespace and route the Program asked for.
+      expect([...url.searchParams.keys()]).toEqual(['setup'])
     })
     await step('Review the operations, connect the account, and add the provider', async () => {
       await page.goto(link)

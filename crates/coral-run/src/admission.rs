@@ -166,34 +166,48 @@ impl RunModule {
         // is ever unclaimed; the owner renews the lease with every chunk.
         let worker_claim_expires_at_unix_nanos =
             self.execution_policy.lease_until(accepted_at_unix_nanos)?;
-        let run = AcceptedRun {
-            id: RunId::generate(),
-            workspace_id: workspace_id.clone(),
-            principal: actor.principal().clone(),
-            accepted_at_unix_nanos,
-            deadline_at_unix_nanos,
-            shutdown_grace_nanos: self.execution_policy.shutdown_grace_nanos(),
-            value_limits: self.value_limits,
-            claim_id: Uuid::new_v4().hyphenated().to_string(),
-            worker_claim_expires_at_unix_nanos,
-            linked_snapshots: linked
-                .iter()
-                .map(|snapshot| {
-                    (
-                        snapshot.path().as_str().to_string(),
-                        snapshot.id().to_string(),
-                    )
-                })
-                .collect(),
+        // The primary key proves the identifier unused: a conflict writes
+        // nothing, and the next attempt draws fresh words.
+        let mut attempts = 0;
+        let run = loop {
+            let run = AcceptedRun {
+                id: RunId::generate()?,
+                workspace_id: workspace_id.clone(),
+                principal: actor.principal().clone(),
+                accepted_at_unix_nanos,
+                deadline_at_unix_nanos,
+                shutdown_grace_nanos: self.execution_policy.shutdown_grace_nanos(),
+                value_limits: self.value_limits,
+                claim_id: Uuid::new_v4().hyphenated().to_string(),
+                worker_claim_expires_at_unix_nanos,
+                linked_snapshots: linked
+                    .iter()
+                    .map(|snapshot| {
+                        (
+                            snapshot.path().as_str().to_string(),
+                            snapshot.id().to_string(),
+                        )
+                    })
+                    .collect(),
+            };
+            if run_repository::insert_acceptance(
+                transaction,
+                &run,
+                submission.source(),
+                &package,
+                &linked,
+            )
+            .await?
+            {
+                break run;
+            }
+            attempts += 1;
+            if attempts == coral_identifier::ISSUE_ATTEMPTS {
+                return Err(Error::IdentifierIssuance(format!(
+                    "{attempts} identifiers in a row were already in use"
+                )));
+            }
         };
-        run_repository::insert_acceptance(
-            transaction,
-            &run,
-            submission.source(),
-            &package,
-            &linked,
-        )
-        .await?;
         Ok(StagedRun {
             run,
             actor: actor.clone(),
@@ -373,7 +387,7 @@ fn accepted_update(run: &AcceptedRun) -> Result<RunUpdate, Error> {
         run.id.clone(),
         RunState::Running,
         Vec::new(),
-        RunCursor::new(run.id.clone(), 1, [0; 32]),
+        RunCursor::new(&run.id, 1, [0; 32]),
         false,
         None,
         run.value_limits,

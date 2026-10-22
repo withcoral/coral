@@ -1,6 +1,6 @@
 import { Form } from 'react-router'
-import { Button } from '@/wax/components'
 import type { ButtonSize } from '@/wax/components/button/button.css'
+import { DocumentSubmitButton } from '@/components/document-submit-button'
 
 /** One click to your own account: POSTs to the provider's connect route. */
 export function ConnectButton({
@@ -29,7 +29,7 @@ export function ConnectButton({
       <input type="hidden" name="csrf" value={csrf} />
       <input type="hidden" name="intent" value="connect" />
       {requestId && <input type="hidden" name="requestId" value={requestId} />}
-      <Button.TextButton
+      <DocumentSubmitButton
         type="submit"
         variant={primary ? 'primary' : 'secondary'}
         disabled={disabled}
@@ -37,7 +37,7 @@ export function ConnectButton({
         aria-label={ariaLabel}
       >
         {label}
-      </Button.TextButton>
+      </DocumentSubmitButton>
     </Form>
   )
 }

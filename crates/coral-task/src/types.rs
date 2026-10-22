@@ -1,7 +1,6 @@
 use std::fmt;
 
 use coral_workspace::{Principal, WorkspaceId};
-use uuid::Uuid;
 
 use crate::Error;
 
@@ -23,35 +22,42 @@ pub(crate) fn validate_feedback(value: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Stable Coral-generated Task identity.
+/// Stable Coral-generated Task identity: four words from Coral's word list,
+/// such as `random-big-business-store`, or the UUID of a Task started before
+/// Coral issued words. The text is the stored primary key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct TaskId(Uuid);
+pub struct TaskId(String);
 
 impl TaskId {
-    pub(crate) fn generate() -> Self {
-        Self(Uuid::new_v4())
+    /// Draws a fresh identifier. Only a successful insert proves it unused.
+    pub(crate) fn generate() -> Result<Self, Error> {
+        coral_identifier::generate()
+            .map(Self)
+            .map_err(|error| Error::IdentifierIssuance(error.to_string()))
     }
 
     /// Parses a Task identity at an Adapter boundary.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidInput`] when `value` is not a canonical UUID.
+    /// Returns [`Error::InvalidInput`] unless `value` is four or five lowercase
+    /// words joined by hyphens, or a canonical lowercase UUID.
     pub fn parse(value: &str) -> Result<Self, Error> {
-        let id = Uuid::parse_str(value)
-            .map_err(|_parse_error| Error::InvalidInput("task id must be a UUID".to_string()))?;
-        if id.hyphenated().to_string() != value {
-            return Err(Error::InvalidInput(
-                "task id must use canonical lowercase UUID form".to_string(),
-            ));
-        }
-        Ok(Self(id))
+        coral_identifier::validate(value)
+            .map_err(|error| Error::InvalidInput(format!("task id is invalid: {error}")))?;
+        Ok(Self(value.to_string()))
+    }
+
+    /// The identifier text, as stored and shown.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
 impl fmt::Display for TaskId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}", self.0.hyphenated())
+        formatter.write_str(&self.0)
     }
 }
 

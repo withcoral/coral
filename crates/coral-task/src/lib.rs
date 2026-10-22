@@ -125,17 +125,30 @@ impl TaskModule {
             )
             .await?
             .require_current_at(commands::now()?)?;
-        let task = Task::new(
-            TaskId::generate(),
-            workspace_id.clone(),
-            actor.principal().clone(),
-            intent,
-            None,
-            None,
-            started_at_unix_nanos,
-            None,
-        );
-        repository::insert(&mut transaction, &task).await?;
+        // The primary key proves the identifier unused: a conflict writes
+        // nothing, and the next attempt draws fresh words.
+        let mut attempts = 0;
+        let task = loop {
+            let task = Task::new(
+                TaskId::generate()?,
+                workspace_id.clone(),
+                actor.principal().clone(),
+                intent.clone(),
+                None,
+                None,
+                started_at_unix_nanos,
+                None,
+            );
+            if repository::insert(&mut transaction, &task).await? {
+                break task;
+            }
+            attempts += 1;
+            if attempts == coral_identifier::ISSUE_ATTEMPTS {
+                return Err(Error::IdentifierIssuance(format!(
+                    "{attempts} identifiers in a row were already in use"
+                )));
+            }
+        };
         transaction.commit().await?;
         Ok(task)
     }

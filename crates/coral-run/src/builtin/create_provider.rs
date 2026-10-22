@@ -10,11 +10,10 @@ use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::account::AccountModule;
 use coral_provider::{
     ManagementRequestId, ProviderSetupId, ProviderSetupSource, PublishabilityRejection,
-    PublishedProvider, SetupPublishability, WorkspaceProviderPublicationRequest,
+    PublishedProvider, SetupPublishability, SetupRequest, WorkspaceProviderPublicationRequest,
 };
-use coral_workspace::WorkspaceId;
 
-use super::{BuiltinHost, authority_error, provider_facts};
+use super::{BuiltinHost, authority_error, provider_facts, setup_url};
 use crate::error::InputProblem;
 use crate::lifecycle::RunRecord;
 use crate::{CoralFailure, Error, InvocationId, InvocationResultKind, Rejection};
@@ -87,11 +86,14 @@ impl CreateProvider {
         let setup = tokio::select! {
             biased;
             () = host.run.stopped() => return Err(Error::ProgramHostTerminated),
-            setup = host.providers.prepare_setup(
+            setup = host.providers.prepare_requested_setup(
                 host.context,
                 host.workspace_id,
                 self.source.clone(),
-                None,
+                SetupRequest {
+                    namespace: self.namespace.clone(),
+                    route: self.route,
+                },
             ) => setup.map_err(setup_error)?,
         };
         #[cfg(test)]
@@ -195,14 +197,8 @@ impl CreateProvider {
 
     /// The Reef page where a person finishes the Setup.
     fn needs_sign_in(&self, host: &BuiltinHost<'_>, setup: &ProviderSetupId) -> serde_json::Value {
-        let url = host.human_interface.page_url(&setup_path(
-            host.workspace_id,
-            setup,
-            &self.namespace,
-            self.route,
-        ));
         CreateProviderResult::NeedsSignIn {
-            url,
+            url: setup_url(host, setup),
             namespace: self.namespace.as_str().to_owned(),
         }
         .into_operation_result()
@@ -359,33 +355,6 @@ fn published_result(published: &PublishedProvider) -> serde_json::Value {
         facts: provider_facts(published),
     }
     .into_operation_result()
-}
-
-/// Reef's new-provider stepper for one Setup. The namespace and the Credential
-/// Route are already chosen. The link opens on the Operations, so the person
-/// sees what the Program's Provider can do before signing in and publishing.
-/// A valid namespace, a Setup id and a route need no URL encoding.
-fn setup_path(
-    workspace: &WorkspaceId,
-    setup: &ProviderSetupId,
-    namespace: &ProviderNamespace,
-    route: CredentialRoute,
-) -> String {
-    let path = format!(
-        "/workspaces/{workspace}/providers/new?setup={setup}&namespace={}",
-        namespace.as_str()
-    );
-    // Reef asks the account question only for a route that has an Account.
-    // `accountReview` would also let a sign-in in hand add the Provider without
-    // a click, so the link carries it only where the question needs it.
-    match route {
-        CredentialRoute::None => path,
-        CredentialRoute::Fixed => format!("{path}&account=fixed"),
-        // It opens the question on Connect now. A confidential application
-        // takes its secret only at that sign-in, so Connect later could not
-        // publish.
-        CredentialRoute::Caller => format!("{path}&account=caller&accountReview=1"),
-    }
 }
 
 /// A Publication rejected because its Setup ended or changed, or its request

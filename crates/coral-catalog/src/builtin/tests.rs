@@ -8,7 +8,8 @@ use serde_json::{Value, json};
 use super::{
     AUTHENTICATION_KINDS, BuiltinArguments, BuiltinCredentialRoute, BuiltinOperation,
     ConfigurationOutput, CreateProviderResult, GetProviderResult, ListProvidersResult,
-    ListedProvider, ListedProviderState, ProviderFacts, ProviderSourceOutput, definition,
+    ListedProvider, ListedProviderState, ListedSetup, ListedSetupState, ProviderFacts,
+    ProviderSourceOutput, definition,
 };
 use crate::{CredentialField, ServerSelection};
 
@@ -278,6 +279,29 @@ fn each_result_meets_its_output_schema() {
                     facts,
                 })
                 .collect(),
+            setups: [
+                (BuiltinCredentialRoute::Fixed, ListedSetupState::Ready),
+                (
+                    BuiltinCredentialRoute::Caller,
+                    ListedSetupState::AwaitingSignIn,
+                ),
+                (
+                    BuiltinCredentialRoute::None,
+                    ListedSetupState::AwaitingConfiguration,
+                ),
+                (
+                    BuiltinCredentialRoute::Caller,
+                    ListedSetupState::AwaitingDiscovery,
+                ),
+            ]
+            .into_iter()
+            .map(|(credential_route, state)| ListedSetup {
+                namespace: "weather".to_owned(),
+                credential_route,
+                state,
+                url: "https://coral.example/workspaces/w/providers/new?setup=s".to_owned(),
+            })
+            .collect(),
         }
         .into_operation_result(),
     ));
@@ -285,6 +309,7 @@ fn each_result_meets_its_output_schema() {
         BuiltinOperation::ListProviders,
         ListProvidersResult {
             providers: Vec::new(),
+            setups: Vec::new(),
         }
         .into_operation_result(),
     ));
