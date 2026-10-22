@@ -14,6 +14,7 @@ import {
   ActivityLogLevel,
 } from '@/generated/coral/management/v1/activity_pb'
 import { AccountConnectionState } from '@/generated/coral/management/v1/account_pb'
+import { WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
 import { fakeManagement, type ManagementHandlers } from './management.test-support'
 import { ACTIVITY_CHILD_WINDOW } from './activity-live-types'
 import { loadActivity, loadRunActivity } from './activity.server'
@@ -1915,9 +1916,22 @@ const target = (wait: Wait) => ({ run, record: waitName(wait.id), request: reque
  * come in two action pages: the first holds the last wait, the second all the others.
  */
 function waitingRun(waits: Wait[]): Handlers {
-  const current = [...new Set(waits.filter(waiting).map(requestName))]
-  const pages = Math.max(1, ...waits.map((wait) => (wait.page ?? 0) + 1))
-  const byName = (name: string) => waits.find((wait) => requestName(wait) === name)
+  return waitingRuns({ [run]: waits })
+}
+/** Several Runs, each read by its name, as `waitingRun` reads one. */
+function waitingRuns(runs: Record<string, Wait[]>): Handlers {
+  const all = Object.values(runs).flat()
+  const ownerOf = (wait?: Wait) =>
+    Object.keys(runs).find((name) => wait && runs[name]!.includes(wait)) ?? run
+  const byName = (name: string) => all.find((wait) => requestName(wait) === name)
+  const of = (name: string) => {
+    const waits = runs[name] ?? []
+    return {
+      waits,
+      current: [...new Set(waits.filter(waiting).map(requestName))],
+      pages: Math.max(1, ...waits.map((wait) => (wait.page ?? 0) + 1)),
+    }
+  }
   return {
     accounts: {
       getAccountConnectionRequest: (input) => ({
@@ -1930,23 +1944,28 @@ function waitingRun(waits: Wait[]): Handlers {
       }),
     },
     activity: {
-      inspectRun: (input) => ({
-        run: {
-          ...execution,
-          actionPage: {
-            actions: (input.actionAfter ? current.slice(0, -1) : current.slice(-1)).map(summary),
-            total: BigInt(current.length),
-            nextAction: input.actionAfter || current.length < 2 ? '' : 'older-actions',
+      inspectRun: (input) => {
+        const { current } = of(input.name)
+        return {
+          run: {
+            ...execution,
+            name: input.name,
+            actionPage: {
+              actions: (input.actionAfter ? current.slice(0, -1) : current.slice(-1)).map(summary),
+              total: BigInt(current.length),
+              nextAction: input.actionAfter || current.length < 2 ? '' : 'older-actions',
+            },
+            requiresAction: current.length > 0,
           },
-          requiresAction: current.length > 0,
-        },
-        submittedSource: 'return secretSource;',
-        terminal: { case: 'succeeded', value: { finalValueJson: 'null' } },
-      }),
+          submittedSource: 'return secretSource;',
+          terminal: { case: 'succeeded', value: { finalValueJson: 'null' } },
+        }
+      },
       browseRunEntries: (input) => {
+        const { waits, pages } = of(input.name)
         const page = Number(input.after) / 100
         return {
-          run: execution,
+          run: { ...execution, name: input.name },
           offset: input.after,
           total: BigInt(pages * 100),
           entries: [
@@ -1975,10 +1994,11 @@ function waitingRun(waits: Wait[]): Handlers {
         }
       },
       inspectInvocation: (input) => {
-        const wait = waits.find((item) => waitName(item.id) === input.name)
+        const wait = all.find((item) => waitName(item.id) === input.name)
         return {
           invocation: {
             ...operation,
+            run: ownerOf(wait),
             name: input.name,
             startedAtUnixNanos: wait?.startedAt,
             requiresAction: waiting(wait),
@@ -1990,7 +2010,7 @@ function waitingRun(waits: Wait[]): Handlers {
         const wait = byName(input.name)
         return {
           name: input.name,
-          run,
+          run: ownerOf(wait),
           invocation: wait ? waitName(wait.id) : '',
           state: wait?.decided ? 'approved' : 'pending',
           actionable: !wait?.decided && wait?.actionable !== false,
@@ -2126,6 +2146,271 @@ describe("Live's oldest action in the followed Run", () => {
     const query2 = { ...query, request: `${workspace}/approvals/approval-a` }
     expect((await loadActivity(request(query2), pending.api, { scope })).liveAction).toBeUndefined()
     expect(loaded(pending.calls, 'entries')).toBe(0)
+  })
+})
+
+const runOf = (id: string) => `${workspace}/runs/${id}`
+interface TaskRun {
+  id: string
+  ended?: boolean
+  waits?: Wait[]
+}
+/**
+ * `task`, whose interactions accepted `runs` in this order. `over` ends it, `partial`
+ * says a Run of it runs, `listed: false` keeps it off the list, and `archived` archives
+ * its Workspace. Coral lists each Run that waits on you in your queue.
+ */
+function taskOf(
+  runs: TaskRun[],
+  options: { over?: boolean; partial?: boolean; listed?: boolean; archived?: boolean } = {},
+) {
+  const asks = (item: TaskRun) => !item.ended && (item.waits ?? []).some(waiting)
+  const reads = waitingRuns(
+    Object.fromEntries(runs.map((item) => [runOf(item.id), item.waits ?? []])),
+  )
+  const value = {
+    ...goal,
+    endedAtUnixNanos: options.over ? 9n : undefined,
+    contextImpactBytes: 1n,
+    contextImpactPartial: options.partial ?? false,
+  }
+  const runView = (item: TaskRun) => ({
+    ...execution,
+    name: runOf(item.id),
+    task,
+    state: item.ended ? ActivityRunState.SUCCEEDED : ActivityRunState.RUNNING,
+    requiresAction: asks(item),
+    actionPage: undefined,
+  })
+  const queue = runs.flatMap((item) =>
+    asks(item)
+      ? (item.waits ?? [])
+          .filter(waiting)
+          .map((wait) => ({ action: summary(requestName(wait)), run: runView(item) }))
+      : [],
+  )
+  return {
+    ...reads,
+    workspaces: {
+      getWorkspace: (input: { name: string }) => ({
+        name: input.name,
+        state: options.archived ? WorkspaceState.ARCHIVED : WorkspaceState.ACTIVE,
+      }),
+    },
+    activity: {
+      ...reads.activity,
+      browseRequiredActions: () => ({ actions: queue, actionCount: BigInt(queue.length) }),
+      browseActivityRoots: () => ({
+        roots: options.listed === false ? [] : [{ record: { case: 'task' as const, value } }],
+      }),
+      inspectTask: (input: { name: string; pageSize: number; viewport?: { offset: bigint } }) => {
+        const from = Number(input.viewport?.offset ?? 0)
+        return {
+          task: { ...value, name: input.name },
+          offset: BigInt(from),
+          total: BigInt(runs.length),
+          interactions: runs.slice(from, from + input.pageSize).map((item) => ({
+            name: `${task}/interactions/${item.id}`,
+            kind: 'submit',
+            intent: item.id,
+            outcome: 'succeeded',
+            acceptedRun: runOf(item.id),
+            run: runView(item),
+          })),
+          nextAfter: '',
+        }
+      },
+    },
+  } as Handlers
+}
+/** The Task expanded while page live mode follows it, with `record` open. */
+const onTask = (values: Record<string, string> = {}) =>
+  request({ record: task, tree: '1', expand: task, live: 'latest', ...values })
+/** The Task's children read from `offset`, the newest `ACTIVITY_CHILD_WINDOW` of them. */
+const windowFrom = (offset: number) => ({
+  [`offset.${task}`]: String(offset),
+  [`preceding.${task}`]: '0',
+})
+/** `count` Runs that ended, before the newer Runs the window holds. */
+const endedRuns = (count: number) =>
+  Array.from({ length: count }, (_, index) => ({ id: `old-${index}`, ended: true }))
+const nameOf = (call: { input: unknown }) => (call.input as { name?: string }).name ?? ''
+const actionOf = (id: string, wait: Wait) => ({
+  run: runOf(id),
+  record: wait.request.kind === 'approval' ? waitName(wait.id) : runOf(id),
+  request: requestName(wait),
+})
+
+describe("Live's oldest action across a Task's Runs", () => {
+  const later = approvalWait('later', 9n)
+  const first = approvalWait('first', 2n)
+  const low = approvalWait('m-low', 5n)
+  const linked = connectionWait('x', 3n, { page: 1 })
+  // Only the aggregate across Runs is this rule's own: `older` times each request.
+  it.each([
+    {
+      name: 'the operation that started waiting first',
+      runs: [
+        { id: 'a', waits: [later] },
+        { id: 'b', waits: [first] },
+        { id: 'quiet' },
+        { id: 'over', ended: true, waits: [approvalWait('over', 1n)] },
+      ],
+      chosen: { id: 'b', wait: first },
+      read: ['a', 'b'],
+    },
+    {
+      name: 'the lower operation identity at an equal start',
+      runs: [
+        { id: 'a', waits: [approvalWait('z-high', 5n)] },
+        { id: 'b', waits: [low] },
+      ],
+      chosen: { id: 'b', wait: low },
+      read: ['a', 'b'],
+    },
+    {
+      name: 'a connection that started waiting first',
+      runs: [
+        { id: 'a', waits: [linked] },
+        { id: 'b', waits: [approvalWait('y', 4n)] },
+      ],
+      chosen: { id: 'a', wait: linked },
+      read: ['a', 'b'],
+    },
+  ])('names $name, and reads only Runs that wait', async ({ runs, chosen, read }) => {
+    const { api, calls } = coral(list(), taskOf(runs))
+    const page = await loadActivity(onTask(), api, { scope })
+    expect(page.liveTasks?.[task]?.action).toEqual(actionOf(chosen.id, chosen.wait))
+    // One action page of each Run that waits, and no other Run.
+    expect(calls.filter((call) => call.method === 'run').map(nameOf)).toEqual(read.map(runOf))
+    // Only a pending connection reads history, and only its own Run's.
+    const history = calls.filter((call) => call.method === 'entries').map(nameOf)
+    const own = chosen.wait.request.kind === 'approval' ? [] : [runOf(chosen.id)]
+    expect(new Set(history)).toEqual(new Set(own))
+    // The window holds every child, so your queue is not read.
+    expect(loaded(calls, 'actions')).toBe(1)
+  })
+  it('names a Run that waits before the window, from your queue', async () => {
+    const older = approvalWait('older', 1n)
+    const runs = [{ id: 'a', waits: [older] }, ...endedRuns(150), { id: 'b' }]
+    const { api, calls } = coral(list(), taskOf(runs))
+    const page = await loadActivity(onTask(windowFrom(52)), api, { scope })
+    expect(page.branches[task]?.rows.some((row) => row.name === runOf('a'))).toBe(false)
+    expect(page.liveTasks?.[task]?.action).toEqual(actionOf('a', older))
+    expect(calls.filter((call) => call.method === 'run').map(nameOf)).toEqual([runOf('a')])
+  })
+  it.each([
+    { name: 'says a Run of it runs', partial: true, running: runOf('a') },
+    { name: 'says none runs', partial: false, running: undefined },
+  ])('names a Run before the window that runs, while the Task $name', async (item) => {
+    const runs = [{ id: 'a' }, ...endedRuns(250), { id: 'b', ended: true }]
+    const { api, calls } = coral(list(), taskOf(runs, { partial: item.partial }))
+    const page = await loadActivity(onTask(windowFrom(152)), api, { scope })
+    expect(page.liveTasks?.[task]?.running).toBe(item.running)
+    // It reads back one window at a time, and only while the Task says a Run runs.
+    const back = calls
+      .filter((call) => call.method === 'task')
+      .map((call) => (call.input as { viewport?: { offset: bigint } }).viewport?.offset)
+      .filter((offset) => offset !== undefined && offset < 152n)
+    expect(back).toEqual(item.partial ? [52n, 0n] : [])
+  })
+  // The Run you have a record of open has ended.
+  const endedRun: Handlers = {
+    activity: {
+      inspectRun: () => ({
+        run: { ...execution, name: runOf('a'), state: ActivityRunState.SUCCEEDED },
+        submittedSource: '',
+        terminal: { case: 'succeeded', value: { finalValueJson: 'null' } },
+      }),
+    },
+  }
+  it('reads the Task once the Run you have a record of open fails', async () => {
+    const waits = approvalWait('b', 2n)
+    // The Task's row for `a` still says it runs; its detail says it failed.
+    const reads = taskOf([{ id: 'a' }, { id: 'b', waits: [waits] }])
+    const inspectRun = reads.activity!.inspectRun as (input: { name: string }) => {
+      run: object
+    }
+    const failed: Handlers = {
+      activity: {
+        inspectRun: (input) => {
+          const value = inspectRun(input)
+          if (input.name !== runOf('a')) return value
+          return { ...value, run: { ...value.run, state: ActivityRunState.FAILED } }
+        },
+      },
+    }
+    const { api } = coral(list(), runEvent(), reads, failed)
+    const query = onTask({ record: `${runOf('a')}/events/3` })
+    const page = await loadActivity(query, api, { scope })
+    expect(page.liveTasks?.[task]?.action).toEqual(actionOf('b', waits))
+  })
+  it('rests in a Task the list does not hold when Reef cannot read it', async () => {
+    const hidden = taskOf([{ id: 'a', ended: true }], { listed: false })
+    const refused: Handlers = { activity: { inspectTask: () => refuse('task unavailable') } }
+    const { api } = coral(list(), runEvent(), hidden, endedRun, refused)
+    const query = onTask({ record: `${runOf('a')}/events/3` })
+    const page = await loadActivity(query, api, { scope })
+    expect(page.liveTasks).toBeUndefined()
+  })
+  it('reads the Task you have a record of open when the list does not hold it', async () => {
+    const ended: Handlers = {
+      activity: {
+        inspectRun: () => ({
+          run: { ...execution, name: runOf('a'), state: ActivityRunState.SUCCEEDED },
+          submittedSource: '',
+          terminal: { case: 'succeeded', value: { finalValueJson: 'null' } },
+        }),
+      },
+    }
+    const { api } = coral(
+      list(),
+      runEvent(),
+      taskOf([{ id: 'a', ended: true }], { over: true, listed: false }),
+      ended,
+    )
+    const page = await loadActivity(onTask({ record: `${runOf('a')}/events/3` }), api, { scope })
+    expect(page.liveTasks?.[task]?.task).toMatchObject({ name: task, endedAt: expect.any(String) })
+  })
+  it.each<{
+    name: string
+    query: Record<string, string>
+    options: Parameters<typeof taskOf>[1]
+  }>([
+    { name: 'live mode follows a Task', query: { live: 'task' }, options: {} },
+    { name: 'live mode is off', query: { live: '' }, options: {} },
+    { name: 'the Task has ended', query: {}, options: { over: true } },
+    { name: 'the workspace is archived', query: {}, options: { archived: true } },
+    // The fixtures' Task started in 1970, long past the hour live mode opens a Task in.
+    {
+      name: 'nothing is open and the Task is over an hour old',
+      query: { record: '' },
+      options: {},
+    },
+    {
+      name: 'you have a Run that runs open',
+      query: { record: `${runOf('a')}/events/3` },
+      options: {},
+    },
+  ])('reads no action when $name', async ({ query, options }) => {
+    const { api, calls } = coral(
+      list(),
+      runEvent(),
+      taskOf(
+        [
+          { id: 'a', waits: [approvalWait('a', 1n)] },
+          ...endedRuns(150),
+          { id: 'b', waits: [approvalWait('b', 2n)] },
+        ],
+        options,
+      ),
+    )
+    const page = await loadActivity(onTask({ ...windowFrom(52), ...query }), api, { scope })
+    expect(page.liveTasks?.[task]?.action).toBeUndefined()
+    const others = [runOf('b'), requestName(approvalWait('b', 2n))]
+    expect(calls.filter((call) => others.includes(nameOf(call)))).toEqual([])
+    // Only the pending panel reads your queue.
+    expect(loaded(calls, 'actions')).toBe(1)
   })
 })
 

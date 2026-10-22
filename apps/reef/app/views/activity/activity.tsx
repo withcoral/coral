@@ -268,7 +268,11 @@ const railToken = (state: unknown) =>
   typeof state === 'object' && state && 'activityRail' in state ? state.activityRail : undefined
 /** The Task and Run that lead to `row` in the table, which live mode keeps expanded. */
 const liveChain = (row: ActivityRow | null) =>
-  row?.kind === 'task' ? [row.name] : (liveRun(row)?.chain ?? [])
+  row?.kind === 'task'
+    ? [row.name]
+    : row?.kind === 'tool'
+      ? [row.task]
+      : (liveRun(row)?.chain ?? [])
 /** The advance a navigation's state says it read for, if any. */
 const advanceMark = (state: unknown) =>
   typeof state === 'object' && state && 'activityAdvance' in state
@@ -548,7 +552,7 @@ function liveFollow(
   // The records that lead to the selected one stay open until the selection moves.
   const selectedChain = liveChain(page.selectedRow)
   // An advance follows the reviewed Run with live mode off.
-  const target = liveTarget(page, scope ?? 'run')
+  const target = liveTarget(page, scope ?? 'run', Date.now(), actionable)
   if (target.kind === 'wait') return null
   if (target.kind === 'newest')
     return { key: 'newest', href: nav.href({ anchor: null, before: null, after: null }) }
@@ -566,11 +570,13 @@ function liveFollow(
           last: true,
         }
   if (target.kind === 'run') {
-    const step = liveStep(page, target.run, actionable)
+    const step = liveStep(page, target.run, actionable, target.action)
     if (step.kind === 'wait') return null
     if (step.kind === 'select') {
       if (step.record === shownRecord && (!step.request || step.request === reviewed)) return 'done'
-      const action = step.request ? page.liveAction : undefined
+      const action = step.request
+        ? { run: target.run, record: step.record, request: step.request }
+        : undefined
       return {
         key: `select ${step.record} ${step.request ?? ''}`,
         // An advance keeps live mode as it was, and ends here.
