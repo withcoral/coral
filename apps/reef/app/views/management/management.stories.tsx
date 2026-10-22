@@ -99,6 +99,11 @@ const activityPage = (
   />
 )
 const emptyAgentActivity = activityPage([], agent.name)
+const emptyAgentGlimpse = activityPage([], agent.name, {
+  to: `${agent.path}?view=activity`,
+  label: 'View all activity',
+  roots: 3,
+})
 const overview: WorkspaceOverviewProps = {
   workspace,
   agents: [agent, blockedAgent],
@@ -508,16 +513,7 @@ export const AgentActivityShortViewport: Story = {
   },
 }
 export const AgentFullActivity: Story = {
-  render: () => (
-    <AgentActivityPage
-      workspace={workspace}
-      agent={agent}
-      providers={agentProviders}
-      form={form}
-      activity={busyAgentActivity}
-      recentActivity={agentActivityGlimpse}
-    />
-  ),
+  ...AgentActivity,
   parameters: { initialEntry: `${agent.path}?view=activity` },
   // The app shell bounds the split page; the story needs the same height so
   // Activity scrolls its records instead of growing with them.
@@ -572,6 +568,7 @@ export const NewAgentActivity: Story = {
       providers={agentProviders}
       form={form}
       activity={emptyAgentActivity}
+      recentActivity={emptyAgentGlimpse}
       idle
     />
   ),
@@ -630,6 +627,7 @@ export const AgentAccountsUnavailable: Story = {
       providers={null}
       form={form}
       activity={emptyAgentActivity}
+      recentActivity={emptyAgentGlimpse}
       idle
     />
   ),
@@ -652,6 +650,7 @@ export const ArchivedAgentActivity: Story = {
       providers={agentProviders}
       form={form}
       activity={emptyAgentActivity}
+      recentActivity={emptyAgentGlimpse}
       idle
     />
   ),
@@ -662,6 +661,14 @@ export const ArchivedAgentActivity: Story = {
     await expect(
       accounts.queryByRole('button', { name: /^(Connect|Reconnect) account for/ }),
     ).toBeNull()
+  },
+}
+// Catches: the complete Activity of an archived workspace's agent hiding the archive.
+export const ArchivedAgentFullActivity: Story = {
+  ...ArchivedAgentActivity,
+  parameters: { initialEntry: `${agent.path}?view=activity` },
+  play: async ({ canvas }) => {
+    await expect(canvas.getByText('This workspace is archived')).toBeVisible()
   },
 }
 export const AgentSettings: Story = {

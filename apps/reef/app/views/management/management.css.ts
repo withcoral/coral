@@ -65,7 +65,10 @@ export const agentDashboardGrid = style({
     [`screen and (max-width: ${breakpoints.mobile})`]: { gridTemplateColumns: 'minmax(0, 1fr)' },
   },
 })
-export const agentDashboardSingle = style([agentDashboardGrid, { gridTemplateColumns: '1fr' }])
+export const agentDashboardSingle = style([
+  agentDashboardGrid,
+  { gridTemplateColumns: 'minmax(0, 1fr)' },
+])
 export const agentRecentActivity = style({
   display: 'flex',
   flexDirection: 'column',

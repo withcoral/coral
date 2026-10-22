@@ -18,8 +18,8 @@ export interface AgentActivityPageProps {
   form: FormContext
   /** The complete Activity reader, used on the dedicated Activity page. */
   activity: ReactNode
-  /** The latest records for the agent dashboard. Defaults to the complete reader. */
-  recentActivity?: ReactNode
+  /** The latest records, shown on the agent's page. */
+  recentActivity: ReactNode
   /** The agent has called nothing yet, so the page shows how to connect it. */
   idle?: boolean
 }
@@ -34,7 +34,7 @@ export function AgentActivityPage({
   providers,
   form,
   activity,
-  recentActivity = activity,
+  recentActivity,
   idle = false,
 }: AgentActivityPageProps) {
   const [search] = useSearchParams()
@@ -42,6 +42,11 @@ export function AgentActivityPage({
   const active = w.state === 'active'
   // A record opened from Recent activity keeps its list position after it closes.
   const fullActivity = search.get('view') === 'activity' || readsActivity(search)
+  const archivedBanner = !active && (
+    <ArchivedBanner workspace={w}>
+      Restore the workspace before you start new agent work.
+    </ArchivedBanner>
+  )
   if (fullActivity)
     return (
       <PageLayout
@@ -58,6 +63,7 @@ export function AgentActivityPage({
             Back to agent
           </Button.InternalLink>
         }
+        header={archivedBanner}
       >
         {activity}
       </PageLayout>
@@ -79,11 +85,7 @@ export function AgentActivityPage({
             <Typography.HeadingLarge as="h2">{a.displayName}</Typography.HeadingLarge>
             <Status blockers={a.accessBlockers} />
           </div>
-          {!active && (
-            <ArchivedBanner workspace={w}>
-              Restore the workspace before you start new agent work.
-            </ArchivedBanner>
-          )}
+          {archivedBanner}
         </>
       }
     >
