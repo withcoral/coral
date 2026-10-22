@@ -24,7 +24,9 @@ mod credential_lifecycle_tests;
 mod error;
 mod lifecycle;
 mod management;
-pub use management::{ProviderSource, ProviderWithConfiguration};
+pub use management::{
+    ProviderSource, ProviderWithConfiguration, provider_configuration_in_transaction,
+};
 #[cfg(test)]
 mod management_tests;
 mod publication;
@@ -84,7 +86,7 @@ pub use publication::{
     ProviderPublicationId, ProviderPublicationOutcome, ProviderRegenerationPublication,
     ProviderRegenerationRequest, PublicationEvidence, Published,
     WorkspaceProviderPublicationRequest, WorkspaceProviderPublisher,
-    publication_for_request_in_transaction,
+    publication_for_request_in_transaction, regeneration_for_request_in_transaction,
 };
 pub use types::{
     AdministrativeLifecycleEvent, InvocationOperationVerification, LifecycleAction, LifecycleActor,

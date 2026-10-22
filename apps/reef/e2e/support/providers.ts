@@ -12,6 +12,7 @@ import {
   type ProviderConfiguration,
   type ProviderSetup,
 } from '../generated/coral/management/v1/provider_pb.ts'
+import { OperationAccessState } from '../generated/coral/management/v1/policy_pb.ts'
 import type { Target } from './config.ts'
 import { managementClients } from './management.ts'
 import { mcpToken } from './actors.ts'
@@ -456,6 +457,14 @@ export async function enableOperation(page: Page, name: string) {
   await setOperationPolicy(page, name, 'Always allow')
 }
 
+/** The operations an update lists under `group`, such as New or Removed. An open group's
+ * toggle names it. */
+export function operationGroup(page: Page, group: string) {
+  return page
+    .getByRole('treeitem')
+    .filter({ has: page.getByRole('button', { name: `Collapse ${group}`, exact: true }) })
+}
+
 /**
  * Accepts the listed operations. Every creation attempt shows them between
  * Configuration and the account question; Next is a link, not a submission.
@@ -694,6 +703,40 @@ interface ToolResult<T = unknown> {
   /** MCP content blocks; rich Program values arrive here, referenced by index. */
   content?: { type: string; text?: string; data?: string; mimeType?: string }[]
   isError?: boolean
+}
+
+/**
+ * Creates a workspace where the owner's Programs call each Built-in Operation in `unattended`,
+ * such as createProvider, without approval. Every other one keeps its default.
+ */
+export async function programWorkspace(
+  api: ReturnType<typeof managementClients>,
+  step: (name: string, act: () => Promise<void>) => Promise<void>,
+  unattended: string[],
+) {
+  const workspace = await api.workspaces.createWorkspace({
+    displayName: 'Program provider',
+    requestId: crypto.randomUUID(),
+  })
+  await step(
+    `Let the owner's Programs call ${unattended.join(' and ')} without approval`,
+    async () => {
+      const builtin = (
+        await api.providers.listProviders({ parent: workspace.name })
+      ).providers.find((provider) => provider.callRoot === 'coral.workspace')!
+      const catalog = await api.providers.listOperations({ parent: builtin.name })
+      await api.policies.updateOperationPolicies({
+        parent: builtin.name,
+        policies: catalog.operations
+          .filter((operation) => unattended.includes(operation.relativePath))
+          .map((operation) => ({
+            operation: operation.name,
+            accessState: OperationAccessState.ENABLED,
+          })),
+      })
+    },
+  )
+  return workspace
 }
 
 /**

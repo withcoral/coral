@@ -7,6 +7,8 @@ import {
   ActivityLogLevel,
   ActivityPrincipalKind,
   ActivityRunFailureCode,
+  ApprovalProviderEntryStatus,
+  ApprovalProviderSourceKind,
 } from '@/generated/coral/management/v1/activity_pb'
 import type {
   ActivityTask,
@@ -21,6 +23,8 @@ import type {
   ActivityRequestReference,
   ActivityRunEvent,
   ActivitySourceLocation,
+  ApprovalProviderChanges,
+  ApprovalProviderSource,
   InspectRunResponse,
 } from '@/generated/coral/management/v1/activity_pb'
 import type {
@@ -42,6 +46,10 @@ import type {
   InvocationOutcome,
   RequestReference,
   RequestDetail,
+  ProviderChanges,
+  ProviderEntryChange,
+  ProviderFieldChange,
+  ProviderSource,
   RunEvent,
   RunTerminal,
   RunFailureCode,
@@ -98,6 +106,17 @@ const invocationOutcomes = {
 function enumLabel<T extends string>(values: Record<T, number>, value: number): T | 'unknown' {
   return (Object.keys(values) as T[]).find((key) => values[key] === value) ?? 'unknown'
 }
+const entryStatuses = {
+  added: ApprovalProviderEntryStatus.ADDED,
+  removed: ApprovalProviderEntryStatus.REMOVED,
+  changed: ApprovalProviderEntryStatus.CHANGED,
+  kept: ApprovalProviderEntryStatus.KEPT,
+} satisfies Record<Exclude<ProviderEntryChange['status'], 'unknown'>, ApprovalProviderEntryStatus>
+const sourceKinds = {
+  openapi_document: ApprovalProviderSourceKind.OPENAPI_DOCUMENT,
+  openapi_url: ApprovalProviderSourceKind.OPENAPI_URL,
+  mcp_url: ApprovalProviderSourceKind.MCP_URL,
+} satisfies Record<Exclude<ProviderSource['kind'], 'unknown'>, ApprovalProviderSourceKind>
 const timestamp = (value: bigint) => new Date(Number(value / 1_000_000n)).toISOString()
 function taskView(task: ActivityTask): TaskRow {
   return {
@@ -517,6 +536,59 @@ function invocationResultView({ outcome }: InspectInvocationResponse): Invocatio
       return { kind: 'unknown' }
   }
 }
+function providerSourceView(source: ApprovalProviderSource): ProviderSource {
+  return { kind: enumLabel(sourceKinds, source.kind), url: source.url }
+}
+
+/** What an updateProvider call changes, as Coral worked it out. */
+function providerChangesView(value: ApprovalProviderChanges): ProviderChanges {
+  if (value.providerMissing) return { kind: 'missing' }
+  return {
+    kind: 'fields',
+    fields: value.fields.flatMap(({ field, change }): ProviderFieldChange[] => {
+      switch (change.case) {
+        case 'value':
+          return [
+            {
+              kind: 'value',
+              field,
+              saved: change.value.savedJson,
+              requested: change.value.requestedJson,
+            },
+          ]
+        case 'entries':
+          return [
+            {
+              kind: 'entries',
+              field,
+              entries: change.value.entries.map((entry) => ({
+                key: entry.key,
+                status: enumLabel(entryStatuses, entry.status),
+                // JSON text is never empty, so empty means absent.
+                saved: entry.savedJson || null,
+                requested: entry.requestedJson || null,
+              })),
+            },
+          ]
+        case 'source':
+          // A source change always names the saved source.
+          if (!change.value.saved) return []
+          return [
+            {
+              kind: 'source',
+              saved: providerSourceView(change.value.saved),
+              requested: change.value.requested ? providerSourceView(change.value.requested) : null,
+              unreadable: change.value.unreadable,
+            },
+          ]
+        default:
+          // A change kind this Reef does not know.
+          return []
+      }
+    }),
+  }
+}
+
 function requestReferenceView({ request }: ActivityRequestReference): RequestReference {
   switch (request.case) {
     case 'approval':
@@ -814,6 +886,9 @@ async function selectedDetail(
                 ? null
                 : timestamp(request.decidedAtUnixNanos),
             comment: request.comment ?? null,
+            ...(request.providerChanges && {
+              providerChanges: providerChangesView(request.providerChanges),
+            }),
           }
           if (detail.kind === 'run') {
             // Approval belongs to this exact operation, not its containing Run.

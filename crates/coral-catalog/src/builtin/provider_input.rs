@@ -1,7 +1,8 @@
-//! The `createProvider` configuration as a Program writes it: the contract the
-//! catalog schema documents, converted explicitly into Coral's configuration
-//! types. Coral's stored configuration encoding never becomes the Program
-//! contract, and no input carries a credential value.
+//! A Provider's source and configuration as a Program writes them for
+//! `createProvider` and `updateProvider`: the contract the catalog schema
+//! documents, converted explicitly into Coral's configuration types. Coral's
+//! stored configuration encoding never becomes the Program contract, and no
+//! input carries a credential value.
 
 use std::collections::BTreeMap;
 
@@ -12,8 +13,156 @@ use crate::builtin::ArgumentProblem;
 use crate::{
     AuthenticationConfiguration, CredentialField, CredentialSource, HeaderBinding,
     OAuthClientAuthenticationMethod, OAuthClientBootstrap, OAuthClientPolicy, OAuthPkcePolicy,
-    OAuthScopeFormat, ServerSelection,
+    OAuthScopeFormat, OpenApiDocument, ProviderConfiguration, ServerSelection,
 };
+
+#[cfg(test)]
+mod tests;
+
+/// Where Coral reads a Provider from.
+#[derive(Debug, Clone)]
+pub enum ProviderSourceArgument {
+    /// A complete OpenAPI document.
+    OpenApiDocument(OpenApiDocument),
+    /// An OpenAPI document's web URL.
+    OpenApiUrl(String),
+    /// A Streamable HTTP MCP server's web URL.
+    McpUrl(String),
+}
+
+/// The configuration fields the Program chose, each over the source's
+/// suggestion.
+#[derive(Debug, Clone)]
+pub struct ConfigurationChoices {
+    /// The Provider display name.
+    pub display_name: Option<String>,
+    /// A server per server declaration.
+    pub servers: Option<BTreeMap<String, ServerSelection>>,
+    /// The authentication method and its non-secret settings.
+    pub authentication: Option<AuthenticationConfiguration>,
+    /// Non-secret headers sent with every request.
+    pub request_headers: Option<BTreeMap<String, String>>,
+    /// The values a person enters when they sign in.
+    pub credential_fields: Option<BTreeMap<String, CredentialField>>,
+}
+
+impl ConfigurationChoices {
+    /// Whether the Program chose no field.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.display_name.is_none()
+            && self.servers.is_none()
+            && self.authentication.is_none()
+            && self.request_headers.is_none()
+            && self.credential_fields.is_none()
+    }
+
+    /// The configuration to confirm: each chosen field over `suggested`.
+    #[must_use]
+    pub fn over(&self, suggested: ProviderConfiguration) -> ProviderConfiguration {
+        ProviderConfiguration {
+            display_name: self.display_name.clone().unwrap_or(suggested.display_name),
+            servers: self.servers.clone().unwrap_or(suggested.servers),
+            authentication: self.authentication.clone().or(suggested.authentication),
+            request_headers: self
+                .request_headers
+                .clone()
+                .unwrap_or(suggested.request_headers),
+            credential_fields: self
+                .credential_fields
+                .clone()
+                .unwrap_or(suggested.credential_fields),
+        }
+    }
+
+    /// The argument a Program corrects for a configuration field that Coral
+    /// reports when it reads or confirms the configuration, such as
+    /// `requestHeaders.Host` for `request_headers.Host`.
+    #[must_use]
+    pub fn argument_for(configuration_field: &str) -> String {
+        // A server declaration is a JSON pointer that keys `servers`.
+        if configuration_field.starts_with("#/") {
+            return format!("servers.{configuration_field}");
+        }
+        for (stored, argument) in [
+            ("display_name", "displayName"),
+            ("request_headers", "requestHeaders"),
+            ("credential_fields", "credentialFields"),
+            ("authentication.fields", "credentialFields"),
+            ("application", "authentication.client"),
+            ("server", "servers"),
+        ] {
+            if configuration_field == stored {
+                return argument.to_owned();
+            }
+            if let Some(rest) = configuration_field
+                .strip_prefix(stored)
+                .and_then(|rest| rest.strip_prefix('.'))
+            {
+                return format!("{argument}.{rest}");
+            }
+        }
+        configuration_field.to_owned()
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "ProviderSource")]
+pub(super) enum ProviderSourceInput {
+    OpenapiDocument {
+        #[schemars(description = "A complete OpenAPI document, as JSON or YAML text.")]
+        document: String,
+    },
+    OpenapiUrl {
+        #[schemars(description = "The URL of an OpenAPI document.")]
+        url: String,
+    },
+    McpUrl {
+        #[schemars(description = "The URL of a Streamable HTTP MCP server.")]
+        url: String,
+    },
+}
+
+impl ProviderSourceInput {
+    pub(super) fn into_source(self) -> Result<ProviderSourceArgument, ArgumentProblem> {
+        match self {
+            Self::OpenapiDocument { document } => OpenApiDocument::parse(&document)
+                .map(ProviderSourceArgument::OpenApiDocument)
+                .map_err(|_error| {
+                    ArgumentProblem::new(
+                        "source.document",
+                        "Coral cannot read this as an OpenAPI document",
+                    )
+                }),
+            Self::OpenapiUrl { url } => web_url(url).map(ProviderSourceArgument::OpenApiUrl),
+            Self::McpUrl { url } => web_url(url).map(ProviderSourceArgument::McpUrl),
+        }
+    }
+}
+
+/// A source URL must be an http or https URL with a host, and no credentials
+/// or fragment, as the Setup requires. Whether Coral may fetch it is the
+/// destination policy's to decide, when the Setup is prepared.
+fn web_url(url: String) -> Result<String, ArgumentProblem> {
+    let problem = || {
+        ArgumentProblem::new(
+            "source.url",
+            "use an absolute `http` or `https` URL without credentials or a fragment",
+        )
+    };
+    let parsed = url::Url::parse(&url).map_err(|_error| problem())?;
+    if matches!(parsed.scheme(), "http" | "https")
+        && parsed.host_str().is_some()
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.fragment().is_none()
+    {
+        Ok(url)
+    } else {
+        Err(problem())
+    }
+}
 
 /// What a credential part or header names.
 const FIELD_DESCRIPTION: &str = "A field from credentialFields.";
@@ -24,6 +173,41 @@ const CLIENT_AUTHENTICATION_DESCRIPTION: &str = "How the application authenticat
 /// What every OAuth endpoint must be, so it cannot carry a credential.
 const ENDPOINT_REASON: &str = "use an absolute `http` or `https` URL without credentials, a \
      fragment or an OAuth parameter that Coral sets, such as `client_secret`";
+
+/// The configuration fields a Program sent, in Coral's configuration types.
+/// A problem with `authentication` joins `problems`, so the Program learns it
+/// beside every other.
+pub(super) fn choices(
+    display_name: Option<String>,
+    servers: Option<BTreeMap<String, ServerInput>>,
+    authentication: Option<AuthenticationInput>,
+    request_headers: Option<BTreeMap<String, String>>,
+    credential_fields: Option<BTreeMap<String, CredentialFieldInput>>,
+    problems: &mut Vec<ArgumentProblem>,
+) -> ConfigurationChoices {
+    ConfigurationChoices {
+        display_name,
+        servers: servers.map(|servers| {
+            servers
+                .into_iter()
+                .map(|(declaration, server)| (declaration, server.into()))
+                .collect()
+        }),
+        authentication: authentication
+            .map(AuthenticationConfiguration::try_from)
+            .transpose()
+            .map_err(|problem| problems.push(problem))
+            .ok()
+            .flatten(),
+        request_headers,
+        credential_fields: credential_fields.map(|fields| {
+            fields
+                .into_iter()
+                .map(|(name, field)| (name, field.into()))
+                .collect()
+        }),
+    }
+}
 
 /// One server choice per server declaration.
 #[derive(Deserialize, JsonSchema)]

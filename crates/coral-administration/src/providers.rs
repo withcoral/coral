@@ -273,4 +273,12 @@ impl WorkspaceProviderPublisher for ProviderWorkflow {
     ) -> Result<ProviderPublication, Error> {
         Self::publish_workspace_provider(self, context, request).await
     }
+
+    async fn regenerate_workspace_provider(
+        &self,
+        context: &ChangeContext,
+        request: ProviderRegenerationRequest,
+    ) -> Result<ProviderRegenerationPublication, Error> {
+        Self::regenerate_provider(self, context, request).await
+    }
 }

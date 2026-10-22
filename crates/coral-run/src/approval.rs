@@ -156,6 +156,9 @@ pub struct ApprovalRequest {
     pub decided_at_unix_nanos: Option<i64>,
     /// Optional human comment, excluded from lifecycle evidence and telemetry.
     pub comment: Option<String>,
+    /// What an `updateProvider` call changes in the Provider as saved when
+    /// this request is read; absent for every other Operation.
+    pub provider_changes: Option<coral_catalog::ProviderChanges>,
 }
 
 /// Safe immutable evidence of a first terminal approval transition.
@@ -518,6 +521,15 @@ async fn view(
         && decision_required(tx, workspaces, run, &target, now).await?;
     let (provider_label, agent_label) =
         crate::inspection_repository::approval_labels(tx, workspace, &row.invocation_id).await?;
+    // Read now, so the Owner reviews the configuration the call will change.
+    let provider_changes = crate::builtin::approval_changes(
+        tx,
+        workspace,
+        &target.generation,
+        &target.operation,
+        &target.arguments,
+    )
+    .await?;
     let approver_name = match &row.approver {
         Some(approver) => approver_name(tx, workspaces, actor, workspace, approver).await?,
         None => None,
@@ -542,6 +554,7 @@ async fn view(
         approver: row.approver,
         decided_at_unix_nanos: row.decided_at_unix_nanos,
         comment: row.comment,
+        provider_changes,
     })
 }
 

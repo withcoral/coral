@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 use coral_catalog::{
     ArgumentProblem, BuiltinArguments, BuiltinOperation, ExecutionBinding, MaterializedOperation,
-    OperationKey, ProviderFacts, ProviderGenerationId,
+    OperationKey, ProviderChanges, ProviderFacts, ProviderGenerationId,
 };
 use coral_provider::account::AccountModule;
 use coral_provider::{
@@ -28,6 +28,8 @@ use crate::{
 mod create_provider;
 mod get_provider;
 mod list_providers;
+mod setup_operation;
+mod update_provider;
 
 /// One admitted Built-in Operation with its validated input.
 #[derive(Clone)]
@@ -35,6 +37,7 @@ pub(crate) enum BuiltinCall {
     CreateProvider(Box<create_provider::CreateProvider>),
     ListProviders,
     GetProvider(get_provider::GetProvider),
+    UpdateProvider(Box<update_provider::UpdateProvider>),
 }
 
 impl BuiltinCall {
@@ -63,6 +66,10 @@ impl BuiltinCall {
                     BuiltinArguments::GetProvider(arguments) => {
                         get_provider::GetProvider::new(&arguments).map(Self::GetProvider)
                     }
+                    BuiltinArguments::UpdateProvider(arguments) => {
+                        update_provider::UpdateProvider::new(*arguments)
+                            .map(|call| Self::UpdateProvider(Box::new(call)))
+                    }
                 }),
         )
     }
@@ -73,6 +80,7 @@ impl BuiltinCall {
             Self::CreateProvider(call) => call.perform(host).await,
             Self::ListProviders => list_providers::perform(host).await,
             Self::GetProvider(call) => call.perform(host).await,
+            Self::UpdateProvider(call) => call.perform(host).await,
         }
     }
 }
@@ -104,7 +112,38 @@ pub(crate) async fn recover(
         }
         // A read leaves nothing behind, and this version cannot read an
         // Operation it does not perform.
+        Some(BuiltinOperation::UpdateProvider) => {
+            update_provider::recover(transaction, run, invocation)
+                .await
+                .map(Some)
+        }
         Some(BuiltinOperation::ListProviders | BuiltinOperation::GetProvider) | None => Ok(None),
+    }
+}
+
+/// What the Invocation of `operation` with `arguments` changes, for the Owner
+/// who reviews it: what an `updateProvider` call changes in the Provider
+/// as saved now, in the caller's snapshot. Every other Operation shows none.
+pub(crate) async fn approval_changes(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace: &WorkspaceId,
+    generation: &ProviderGenerationId,
+    operation: &OperationKey,
+    arguments: &serde_json::Value,
+) -> Result<Option<ProviderChanges>, Error> {
+    let materialized = coral_catalog::operation_in_transaction(transaction, generation, operation)
+        .await
+        .map_err(coral_provider::Error::from)?;
+    match materialized
+        .as_ref()
+        .map(MaterializedOperation::execution_binding)
+    {
+        Some(ExecutionBinding::Builtin(binding))
+            if binding.operation() == Some(BuiltinOperation::UpdateProvider) =>
+        {
+            update_provider::changes(transaction, workspace, arguments).await
+        }
+        _ => Ok(None),
     }
 }
 
@@ -152,8 +191,8 @@ fn rejection(problems: &[ArgumentProblem]) -> Rejection {
     )
 }
 
-/// What both Operations report about a Provider: how to call it and whether
-/// the Program needs a person first.
+/// What `createProvider`, `updateProvider` and `listProviders` report about a
+/// Provider: how to call it and whether the Program needs a person first.
 fn provider_facts(published: &PublishedProvider) -> ProviderFacts {
     let provider = &published.provider;
     ProviderFacts {

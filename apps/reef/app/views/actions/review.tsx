@@ -22,6 +22,7 @@ import { settledApproval } from './approval-state'
 import { PanelFooter, PanelHeader, usePanelLabel } from '../activity/panel'
 import { requestedBy } from '../activity/labels'
 import { Arguments } from './arguments'
+import { ProviderChanges } from './provider-changes'
 import { useShellCsrf } from '@/lib/use-shell-csrf'
 import type { action } from '@/routes/activity-resolve'
 import * as styles from './actions.css'
@@ -217,6 +218,7 @@ export function ApprovalReview({
         )}
       </DescriptionList.List>
       <Arguments source={detail.arguments} />
+      {detail.providerChanges && <ProviderChanges changes={detail.providerChanges} />}
       {!deciding && (detail.approver || detail.decidedAt || detail.comment !== null) && (
         <DescriptionList.List>
           {detail.approver && (

@@ -205,7 +205,9 @@ or `canceled`. Only a
 ready Setup feeds Publication. Every open Setup has a host deadline one hour after it is created; a Setup still open
 then, ready or not, expires, and Publication refuses it. Expiry and explicit cancellation scrub setup-scoped credential
 material. A Setup that `coral.workspace.createProvider` prepares records the Provider Namespace and Credential Route the
-Program asked for; the person who finishes it can change either. _Avoid_: Provider Definition inspection, live Provider,
+Program asked for; the person who finishes it can change either. A Setup that regenerates a Provider starts from its
+saved Provider Configuration, including one that `coral.workspace.updateProvider` prepares; a source of the other kind,
+an MCP server for an OpenAPI document or the reverse, brings its own servers. _Avoid_: Provider Definition inspection, live Provider,
 implicit refresh
 _In Reef_: never named; preparation within "Add provider", "Refresh operations", "Edit configuration", and "Change account setting"
 
@@ -233,17 +235,20 @@ _Avoid_: Source, Upstream Service, Provider Definition, provider account
 _In Reef_: "provider"; revoke and restore are "Disable" and "Enable"; hard deletion is "Remove"
 
 **Built-in Provider**: The one Provider in every Workspace whose Operation catalog Coral itself defines and whose
-Operations Coral itself performs, with no upstream dispatch. Its Call Root is `coral.workspace`. It shares search, describe,
-Operation Access State, Approval Requests, and Operation Invocation records with every other Provider. Only a User with
-effective Workspace Owner authority can discover or invoke its Operations; members and Agent Principals cannot. An
-Owner can disable and enable it and set its Operation policy, but nobody can rename, reconfigure, or remove it, and it
-has no Provider Accounts. Its Operations create a Provider (`createProvider`), list the Workspace's Providers
-(`listProviders`), and read one Owner-created Provider's Provider Configuration in the shapes `createProvider` takes
-(`getProvider`). When Coral boots, it updates every Workspace's Built-in Provider to the catalog it serves; a Workspace
-whose update fails keeps its catalog until the next boot. Coral itself publishes the Provider only from a ready Setup on
-the `none` route. A credential-requiring Setup, on the `fixed` or the `caller` route, always needs a person to sign in.
-If a person must finish the Setup and the Run is still current, the Operation returns the Reef page, which names only
-the Setup, and does not wait; `listProviders` reports the open Setups that the invoking User's `createProvider` calls
+Operations Coral itself performs, with no upstream dispatch. Its Call Root is `coral.workspace`. It shares search,
+describe, Operation Access State, Approval Requests, and Operation Invocation records with every other Provider. Only a
+User with effective Workspace Owner authority can discover or invoke its Operations; members and Agent Principals
+cannot. An Owner can disable and enable it and set its Operation policy, but nobody can rename, reconfigure, or remove
+it, and it has no Provider Accounts. Its Operations create a Provider (`createProvider`), list the Workspace's Providers
+(`listProviders`), read one Owner-created Provider's Provider Configuration in the shapes `createProvider` takes
+(`getProvider`), and change one Owner-created Provider's configuration or source (`updateProvider`). When Coral boots,
+it updates every Workspace's Built-in Provider to the catalog it serves; a Workspace whose update fails keeps its
+catalog until the next boot. Coral itself publishes a new Provider only from a ready Setup on the `none` route. A
+credential-requiring Setup, on the `fixed` or the `caller` route, always needs a person to sign in. Coral itself
+publishes an update only from a ready Setup that keeps the Provider's Credential Route, its credential contract, and
+every Operation Key of its active Generation; any other update needs a person to confirm it. If a person must finish the
+Setup and the Run is still current, the Operation returns the Reef page, which names the Setup and, for an update, the
+Provider, and does not wait; `listProviders` reports the open Setups that the invoking User's `createProvider` calls
 prepared, until each is published, expires or is canceled. Coral ends a Setup it prepared that nobody will finish. Its
 Operations never return a secret, a fixed credential value, or the OAuth sign-in link Coral prepares for one person to
 the Program, and never take a secret from it: a person enters a confidential OAuth application's secret in Reef. A
@@ -320,7 +325,8 @@ _Avoid_: credential input, secret (a field need not be sensitive), credential pa
 shared Provider Account (`fixed`), or the invoking Principal's exact Provider Account (`caller`). A Program cannot
 choose the route or account for an Invocation, and Coral never falls back to another route or credential. A route is
 Provider configuration: an Owner chooses it in Reef, or an Owner's Program chooses it for the Provider that
-`coral.workspace.createProvider` creates. A User's missing,
+`coral.workspace.createProvider` creates. A Program can ask `coral.workspace.updateProvider` for a new route, which a
+person confirms in Reef. A User's missing,
 disconnected, expired, or incompatible `caller` Account does not hide Operations from discovery. The User connects a
 missing or disconnected Account during Invocation, before approval and dispatch, and reconnects an expired or
 incompatible one the same way; Coral never replaces a connected Account's credentials on its own. Before discovery, a

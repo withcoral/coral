@@ -145,13 +145,13 @@ fn oauth(extra: Value) -> Value {
     authenticated(authentication)
 }
 
-const LITERAL_REASON: &str = "a literal credential value must be empty; use a `field` source so \
-     a person enters the value when they sign in";
+pub(in crate::builtin) const LITERAL_REASON: &str = "a literal credential value must be empty; use \
+     a `field` source so a person enters the value when they sign in";
 const ENDPOINT_REASON: &str = "use an absolute `http` or `https` URL without credentials, a \
      fragment or an OAuth parameter that Coral sets, such as `client_secret`";
-const NAMESPACE_REASON: &str =
+pub(in crate::builtin) const NAMESPACE_REASON: &str =
     "use a JavaScript identifier of at most 128 bytes, such as `weather`";
-const SOURCE_URL_REASON: &str =
+pub(in crate::builtin) const SOURCE_URL_REASON: &str =
     "use an absolute `http` or `https` URL without credentials or a fragment";
 
 // Catches: a credential, or a value Coral cannot use, accepted into arguments
@@ -352,30 +352,6 @@ fn each_rejected_argument_names_what_to_correct() {
                 .iter()
                 .all(|problem| !problem.reason().contains(CANARY)),
             "{arguments}: a reason repeats a submitted value"
-        );
-    }
-}
-
-// Catches: a configuration problem Coral finds in the source naming a field
-// the Program never wrote, so it cannot tell what to correct.
-#[test]
-fn a_configuration_field_names_the_argument_to_correct() {
-    for (configuration_field, argument) in [
-        ("#/servers", "servers.#/servers"),
-        ("display_name", "displayName"),
-        ("request_headers.Host", "requestHeaders.Host"),
-        ("credential_fields.token", "credentialFields.token"),
-        ("authentication.fields.token", "credentialFields.token"),
-        ("application", "authentication.client"),
-        ("server", "servers"),
-        ("authentication", "authentication"),
-        // Only a whole segment is renamed.
-        ("servers_extra", "servers_extra"),
-    ] {
-        assert_eq!(
-            CreateProviderArguments::argument_for(configuration_field),
-            argument,
-            "{configuration_field}"
         );
     }
 }

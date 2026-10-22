@@ -51,6 +51,7 @@ import type {
   InvocationDetail,
   InvocationOutcome,
   InvocationState,
+  ProviderChanges,
   RunDetail,
   RunEvent,
   RunFailureCode,
@@ -2277,6 +2278,129 @@ export const ApprovalArgumentsString = argumentStory('string at the top level')
 export const ApprovalArgumentsEmpty = argumentStory('empty object')
 export const ApprovalArgumentsLargeIntegers = argumentStory('integers beyond JavaScript precision')
 export const ApprovalArgumentsUnicode = argumentStory('unicode and escapes')
+
+// updateProvider changes -----------------------------------------------------
+
+/** An updateProvider call. Each sent field replaces its saved value, so Coral sends what the call
+ * changes beside its arguments. */
+const providerUpdate = (providerChanges: ProviderChanges, args: Record<string, unknown>) =>
+  approvalPage(
+    approval({
+      provider: `${workspace}/providers/coral`,
+      providerLabel: 'Coral',
+      callPath: 'coral.workspace.updateProvider',
+      arguments: JSON.stringify({ namespace: 'weather', ...args }),
+      providerChanges,
+    }),
+    { source: 'await coral.workspace.updateProvider(changes)' },
+  )
+/** The arguments send one header. The Changes show the saved header the call drops as removed,
+ * with its saved value, which the arguments alone hide. */
+export const ApprovalProviderChangesRemovedHeader: Story = {
+  ...panel(
+    'Approval · updateProvider, a removed header',
+    providerUpdate(
+      {
+        kind: 'fields',
+        fields: [
+          {
+            kind: 'value',
+            field: 'displayName',
+            saved: '"Weather"',
+            requested: '"Forecasts"',
+          },
+          {
+            kind: 'entries',
+            field: 'requestHeaders',
+            entries: [
+              { key: 'x-trace', status: 'kept', saved: '"on"', requested: '"on"' },
+              { key: 'x-tenant', status: 'removed', saved: '"acme"', requested: null },
+              { key: 'x-region', status: 'added', saved: null, requested: '"eu"' },
+            ],
+          },
+        ],
+      },
+      { displayName: 'Forecasts', requestHeaders: { 'x-trace': 'on', 'x-region': 'eu' } },
+    ),
+    { evidence: ['Changes (2)', 'Each field replaces its saved value.'] },
+  ),
+  play: async (context) => {
+    await meta.play(context)
+    const body = within(context.canvasElement.ownerDocument.body)
+    const changes = within((await body.findByText('Changes (2)')).closest('details')!)
+    const entry = (key: string) => within(changes.getByText(key).closest('li')!)
+    // A status reads as a word beside its color.
+    await expect(entry('x-tenant').getByText('Removed')).toBeVisible()
+    await expect(entry('x-tenant').getByText('"acme"')).toBeVisible()
+    await expect(entry('x-region').getByText('Added')).toBeVisible()
+    await expect(entry('x-trace').getByText('Kept')).toBeVisible()
+  },
+}
+export const ApprovalProviderChangesSource = panel(
+  'Approval · updateProvider, a refresh and a new source',
+  providerUpdate(
+    {
+      kind: 'fields',
+      fields: [
+        {
+          kind: 'source',
+          saved: { kind: 'openapi_document', url: '' },
+          requested: { kind: 'mcp_url', url: 'https://weather.example/mcp' },
+          unreadable: false,
+        },
+      ],
+    },
+    { source: { kind: 'mcp_url', url: 'https://weather.example/mcp' } },
+  ),
+  { evidence: ['Uploaded document', 'https://weather.example/mcp'] },
+)
+export const ApprovalProviderChangesRefresh = panel(
+  'Approval · updateProvider, a refresh',
+  providerUpdate(
+    {
+      kind: 'fields',
+      fields: [
+        {
+          kind: 'source',
+          saved: { kind: 'openapi_url', url: 'https://weather.example/openapi.json' },
+          requested: null,
+          unreadable: false,
+        },
+      ],
+    },
+    { refresh: true },
+  ),
+  { evidence: ['https://weather.example/openapi.json', 'The call reads the saved URL again.'] },
+)
+/** Coral reports that an uploaded document has no URL to read, so the review says the call fails. */
+export const ApprovalProviderChangesRefreshUpload = panel(
+  'Approval · updateProvider, a refresh of an uploaded document',
+  providerUpdate(
+    {
+      kind: 'fields',
+      fields: [
+        {
+          kind: 'source',
+          saved: { kind: 'openapi_document', url: '' },
+          requested: null,
+          unreadable: true,
+        },
+      ],
+    },
+    { refresh: true },
+  ),
+  {
+    evidence: [
+      'Uploaded document',
+      'This call fails. An uploaded document has no URL to read again.',
+    ],
+  },
+)
+export const ApprovalProviderChangesMissing = panel(
+  'Approval · updateProvider, the provider no longer exists',
+  providerUpdate({ kind: 'missing' }, { displayName: 'Forecasts' }),
+  { evidence: 'The provider no longer exists. This call fails.' },
+)
 
 // Account connections --------------------------------------------------------
 

@@ -6,9 +6,9 @@
 use super::*;
 use coral_provider::{ProviderSetupId, ProviderSetupState};
 
-const DOCUMENT: &str = r#"{"openapi":"3.1.0","info":{"title":"Weather","version":"1"},"security":[],"servers":[{"url":"https://weather.example"}],"paths":{"/forecast":{"get":{"operationId":"getForecast","responses":{"200":{"description":"OK"}}}}}}"#;
+pub(super) const DOCUMENT: &str = r#"{"openapi":"3.1.0","info":{"title":"Weather","version":"1"},"security":[],"servers":[{"url":"https://weather.example"}],"paths":{"/forecast":{"get":{"operationId":"getForecast","responses":{"200":{"description":"OK"}}}}}}"#;
 /// The same service behind a bearer token, which a person enters.
-const PRIVATE_DOCUMENT: &str = r#"{"openapi":"3.1.0","info":{"title":"Weather","version":"1"},"security":[{"bearer":[]}],"components":{"securitySchemes":{"bearer":{"type":"http","scheme":"bearer"}}},"servers":[{"url":"https://weather.example"}],"paths":{"/forecast":{"get":{"operationId":"getForecast","responses":{"200":{"description":"OK"}}}}}}"#;
+pub(super) const PRIVATE_DOCUMENT: &str = r#"{"openapi":"3.1.0","info":{"title":"Weather","version":"1"},"security":[{"bearer":[]}],"components":{"securitySchemes":{"bearer":{"type":"http","scheme":"bearer"}}},"servers":[{"url":"https://weather.example"}],"paths":{"/forecast":{"get":{"operationId":"getForecast","responses":{"200":{"description":"OK"}}}}}}"#;
 
 /// A Program that calls `createProvider` with exactly `arguments` and returns
 /// its Operation Result, or the JavaScript expression `caught` for the Coral
@@ -43,13 +43,13 @@ fn valid_with(extra: serde_json::Value) -> serde_json::Value {
     arguments
 }
 
-fn document_source() -> serde_json::Value {
+pub(super) fn document_source() -> serde_json::Value {
     serde_json::json!({ "kind": "openapi_document", "document": DOCUMENT })
 }
 
 /// The workflow Reef publishes with, Universal Search included, that Coral
 /// publishes through too.
-fn workflow(fixture: &TestModules) -> coral_administration::ProviderWorkflow {
+pub(super) fn workflow(fixture: &TestModules) -> coral_administration::ProviderWorkflow {
     coral_administration::ProviderWorkflow::new(
         fixture.database.clone(),
         fixture.providers.clone(),
@@ -58,16 +58,16 @@ fn workflow(fixture: &TestModules) -> coral_administration::ProviderWorkflow {
 }
 
 /// A Workspace whose Owner installed the Built-in Provider, over the real V8 engine.
-struct AdminScope {
-    fixture: TestModules,
-    upstream: Arc<ScriptedUpstream>,
-    workspace_id: coral_workspace::WorkspaceId,
-    owner: AuthenticatedPrincipal,
+pub(super) struct AdminScope {
+    pub(super) fixture: TestModules,
+    pub(super) upstream: Arc<ScriptedUpstream>,
+    pub(super) workspace_id: coral_workspace::WorkspaceId,
+    pub(super) owner: AuthenticatedPrincipal,
     _vault: tempfile::TempDir,
 }
 
 impl AdminScope {
-    async fn new(user: &str) -> Self {
+    pub(super) async fn new(user: &str) -> Self {
         let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
         let fixture = TestModules::with_upstream(
             Arc::new(
@@ -106,38 +106,53 @@ impl AdminScope {
         }
     }
 
-    fn owner_user(&self) -> AuthenticatedUser {
+    pub(super) fn owner_user(&self) -> AuthenticatedUser {
         self.owner.authenticated_user().unwrap().clone()
     }
 
     async fn set_access(&self, state: OperationAccessState) {
+        self.set_access_to("coral.workspace.createProvider", state)
+            .await;
+    }
+
+    /// Sets the Operation Access State of the Operation at `call_path`.
+    pub(super) async fn set_access_to(&self, call_path: &str, state: OperationAccessState) {
+        self.fixture
+            .policies
+            .set_access_state(
+                &change(self.owner_user(), 12, '3'),
+                self.policy_target(call_path).await,
+                state,
+            )
+            .await
+            .expect("set the Operation Access State");
+    }
+
+    /// The policy target of the Operation at `call_path`.
+    pub(super) async fn policy_target(&self, call_path: &str) -> OperationPolicyTarget {
         let mut transaction = self.fixture.database.begin().await.unwrap();
         let target = coral_provider::resolve_invocation_operation_in_transaction(
             &mut transaction,
             &self.workspace_id,
             coral_provider::InvocationCaller::new(&self.fixture.workspaces, &self.owner, 12),
-            "coral.workspace.createProvider",
+            call_path,
         )
         .await
         .unwrap()
-        .expect("the Built-in Operation resolves");
+        .expect("the Operation resolves");
         transaction.rollback().await.unwrap();
-        self.fixture
-            .policies
-            .set_access_state(
-                &change(self.owner_user(), 12, '3'),
-                OperationPolicyTarget::new(
-                    self.workspace_id.clone(),
-                    target.provider_access().id().clone(),
-                    target.operation().key().clone(),
-                ),
-                state,
-            )
-            .await
-            .expect("set createProvider access");
+        OperationPolicyTarget::new(
+            self.workspace_id.clone(),
+            target.provider_access().id().clone(),
+            target.operation().key().clone(),
+        )
     }
 
-    async fn start(&self, actor: &AuthenticatedPrincipal, run: RunSubmission) -> crate::RunId {
+    pub(super) async fn start(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        run: RunSubmission,
+    ) -> crate::RunId {
         self.fixture
             .runs
             .start(actor, &self.workspace_id, run)
@@ -147,7 +162,7 @@ impl AdminScope {
             .clone()
     }
 
-    async fn terminal(
+    pub(super) async fn terminal(
         &self,
         actor: &AuthenticatedPrincipal,
         run: &crate::RunId,
@@ -155,8 +170,14 @@ impl AdminScope {
         wait_for_terminal(&self.fixture.runs, actor, &self.workspace_id, run).await
     }
 
+    /// Runs `run` as the Owner and returns its Final Value.
+    pub(super) async fn outcome(&self, run: RunSubmission) -> serde_json::Value {
+        let run = self.start(&self.owner, run).await;
+        final_value(&self.terminal(&self.owner, &run).await)
+    }
+
     /// The Owner approves the Run's one pending Invocation.
-    async fn approve(&self, run: &crate::RunId) {
+    pub(super) async fn approve(&self, run: &crate::RunId) {
         let approvals = self.fixture.approvals();
         let request = wait_for_approval(&approvals, &self.owner, &self.workspace_id, run).await;
         approvals
@@ -173,7 +194,9 @@ impl AdminScope {
     }
 
     /// Provider-domain lifecycle events: Setups, Publications and Providers.
-    async fn lifecycle_events(&self) -> Vec<coral_provider::AdministrativeLifecycleEvent> {
+    pub(super) async fn lifecycle_events(
+        &self,
+    ) -> Vec<coral_provider::AdministrativeLifecycleEvent> {
         self.fixture
             .providers
             .list_lifecycle_events(&self.owner_user(), &self.workspace_id)
@@ -213,7 +236,7 @@ impl AdminScope {
     }
 
     /// Every Setup created so far, from its creation evidence.
-    async fn created_setups(&self) -> Vec<ProviderSetupId> {
+    pub(super) async fn created_setups(&self) -> Vec<ProviderSetupId> {
         self.lifecycle_events()
             .await
             .iter()
@@ -223,7 +246,10 @@ impl AdminScope {
     }
 
     /// The Setups created since `before` was read.
-    async fn setups_created_since(&self, before: &[ProviderSetupId]) -> Vec<ProviderSetupId> {
+    pub(super) async fn setups_created_since(
+        &self,
+        before: &[ProviderSetupId],
+    ) -> Vec<ProviderSetupId> {
         let mut created = self.created_setups().await;
         created.retain(|setup| !before.contains(setup));
         created
@@ -231,7 +257,7 @@ impl AdminScope {
 
     /// Asserts that a denied call changed nothing since `before` was read: it
     /// published nothing, and every Setup it prepared has ended.
-    async fn assert_denial_changed_nothing(
+    pub(super) async fn assert_denial_changed_nothing(
         &self,
         before: &[coral_provider::AdministrativeLifecycleEvent],
         case: &str,
@@ -261,7 +287,7 @@ impl AdminScope {
 
     /// Publishes the credential-free Weather document under `weather`, as an
     /// Owner does in Reef.
-    async fn publish_weather(&self) -> coral_provider::Provider {
+    pub(super) async fn publish_weather(&self) -> coral_provider::Provider {
         let context = change(self.owner_user(), 20, '5');
         let setup = self
             .fixture
@@ -320,28 +346,39 @@ impl AdminScope {
 
 /// The bearer-protected OpenAPI document served at `/openapi.json`.
 async fn private_document_server() -> MockServer {
+    document_server(PRIVATE_DOCUMENT).await
+}
+
+/// A server that serves `document` at `/openapi.json`.
+pub(super) async fn document_server(document: &'static str) -> MockServer {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/openapi.json"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(PRIVATE_DOCUMENT))
-        .mount(&server)
-        .await;
+    serve(&server, document).await;
     server
 }
 
+/// Makes `server` serve `document` at `/openapi.json` from now on.
+pub(super) async fn serve(server: &MockServer, document: &'static str) {
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/openapi.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(document))
+        .mount(server)
+        .await;
+}
+
 /// The `openapi_url` source for the document `server` serves.
-fn url_source(server: &MockServer) -> serde_json::Value {
+pub(super) fn url_source(server: &MockServer) -> serde_json::Value {
     serde_json::json!({
         "kind": "openapi_url",
         "url": format!("{}/openapi.json", server.uri()),
     })
 }
 
-async fn fetches(server: &MockServer) -> usize {
+pub(super) async fn fetches(server: &MockServer) -> usize {
     server.received_requests().await.unwrap_or_default().len()
 }
 
-fn final_value(update: &crate::RunUpdate) -> serde_json::Value {
+pub(super) fn final_value(update: &crate::RunUpdate) -> serde_json::Value {
     let Some(RunTerminalOutcome::Succeeded {
         final_value: FinalValue::Present(value),
     }) = update.terminal_outcome()
@@ -503,6 +540,13 @@ impl coral_provider::WorkspaceProviderPublisher for FailingPublisher {
             )
             .await
     }
+    async fn regenerate_workspace_provider(
+        &self,
+        context: &coral_workspace::ChangeContext,
+        request: ProviderRegenerationRequest,
+    ) -> Result<coral_provider::ProviderRegenerationPublication, coral_provider::Error> {
+        self.0.regenerate_provider(context, request).await
+    }
 }
 
 /// Cancels the Setup, as an Owner in Reef would, then forwards the request to
@@ -526,6 +570,13 @@ impl coral_provider::WorkspaceProviderPublisher for SetupCanceledFirst {
         self.workflow
             .publish_workspace_provider(context, request)
             .await
+    }
+    async fn regenerate_workspace_provider(
+        &self,
+        context: &coral_workspace::ChangeContext,
+        request: ProviderRegenerationRequest,
+    ) -> Result<coral_provider::ProviderRegenerationPublication, coral_provider::Error> {
+        self.workflow.regenerate_provider(context, request).await
     }
 }
 
@@ -752,6 +803,13 @@ impl coral_provider::WorkspaceProviderPublisher for NamespaceTakenFirst {
             .await?;
         self.0.publish_workspace_provider(context, request).await
     }
+    async fn regenerate_workspace_provider(
+        &self,
+        context: &coral_workspace::ChangeContext,
+        request: ProviderRegenerationRequest,
+    ) -> Result<coral_provider::ProviderRegenerationPublication, coral_provider::Error> {
+        self.0.regenerate_provider(context, request).await
+    }
 }
 
 // Catches: a namespace taken while Coral publishes failing the call as an
@@ -862,11 +920,28 @@ async fn a_run_ends_before_the_call_returns(route: &str, document: &str) {
 
 /// Publishes through the real workflow, but stalls before or after the
 /// Publication until released, as a worker that dies there would.
-struct StallingPublisher {
-    workflow: coral_administration::ProviderWorkflow,
-    publishes_first: bool,
-    entered: AtomicBool,
-    release: tokio::sync::Notify,
+pub(super) struct StallingPublisher {
+    pub(super) workflow: coral_administration::ProviderWorkflow,
+    pub(super) publishes_first: bool,
+    pub(super) entered: AtomicBool,
+    pub(super) release: tokio::sync::Notify,
+}
+
+impl StallingPublisher {
+    /// Runs `attempt` before or after the stall, as `publishes_first` says.
+    async fn stalled<T, F: Future<Output = T>>(&self, attempt: impl Fn() -> F) -> T {
+        let first = if self.publishes_first {
+            Some(attempt().await)
+        } else {
+            None
+        };
+        self.entered.store(true, Ordering::SeqCst);
+        self.release.notified().await;
+        match first {
+            Some(result) => result,
+            None => attempt().await,
+        }
+    }
 }
 
 #[async_trait]
@@ -876,25 +951,20 @@ impl coral_provider::WorkspaceProviderPublisher for StallingPublisher {
         context: &ChangeContext,
         request: WorkspaceProviderPublicationRequest,
     ) -> Result<coral_provider::ProviderPublication, coral_provider::Error> {
-        let publication = if self.publishes_first {
-            Some(
-                self.workflow
-                    .publish_workspace_provider(context, request.clone())
-                    .await,
-            )
-        } else {
-            None
-        };
-        self.entered.store(true, Ordering::SeqCst);
-        self.release.notified().await;
-        match publication {
-            Some(publication) => publication,
-            None => {
-                self.workflow
-                    .publish_workspace_provider(context, request)
-                    .await
-            }
-        }
+        self.stalled(|| {
+            self.workflow
+                .publish_workspace_provider(context, request.clone())
+        })
+        .await
+    }
+
+    async fn regenerate_workspace_provider(
+        &self,
+        context: &ChangeContext,
+        request: ProviderRegenerationRequest,
+    ) -> Result<coral_provider::ProviderRegenerationPublication, coral_provider::Error> {
+        self.stalled(|| self.workflow.regenerate_provider(context, request.clone()))
+            .await
     }
 }
 
@@ -1480,7 +1550,7 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
 /// A Program that calls the Built-in `operation` with `arguments`, the
 /// JavaScript argument list, and returns its Operation Result or the failure
 /// it catches.
-fn workspace_call(operation: &str, arguments: &str) -> RunSubmission {
+pub(super) fn workspace_call(operation: &str, arguments: &str) -> RunSubmission {
     submission(
         &"
         try {

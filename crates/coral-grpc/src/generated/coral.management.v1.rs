@@ -5912,7 +5912,7 @@ pub struct InspectApprovalRequest {
     pub name: ::prost::alloc::string::String,
 }
 /// One approval request in full.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct InspectApprovalResponse {
     /// workspaces/{workspace}/approvals/{approval}.
     #[prost(string, tag = "1")]
@@ -5960,6 +5960,106 @@ pub struct InspectApprovalResponse {
     /// Label for who started the Run: "You", the Agent's name, or "Unavailable agent".
     #[prost(string, tag = "15")]
     pub actor_label: ::prost::alloc::string::String,
+    /// What an updateProvider call changes in the Provider as saved when this
+    /// response is read. Absent for every other Operation.
+    #[prost(message, optional, tag = "16")]
+    pub provider_changes: ::core::option::Option<ApprovalProviderChanges>,
+}
+/// What an updateProvider call changes. Each sent field replaces its saved
+/// value whole, so a field's saved value shows what the call removes. Neither
+/// side holds a secret or a fixed credential value.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ApprovalProviderChanges {
+    /// True when no Provider holds the call's namespace. The call then fails.
+    #[prost(bool, tag = "1")]
+    pub provider_missing: bool,
+    /// Each field the call sends, in the order of its arguments.
+    #[prost(message, repeated, tag = "2")]
+    pub fields: ::prost::alloc::vec::Vec<ApprovalProviderFieldChange>,
+}
+/// One field the call sends, with its saved value beside the requested one.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ApprovalProviderFieldChange {
+    /// The argument, such as requestHeaders, or source for where Coral reads the
+    /// Provider from.
+    #[prost(string, tag = "1")]
+    pub field: ::prost::alloc::string::String,
+    /// How the call changes the field.
+    #[prost(oneof = "approval_provider_field_change::Change", tags = "2, 3, 4")]
+    pub change: ::core::option::Option<approval_provider_field_change::Change>,
+}
+/// Nested message and enum types in `ApprovalProviderFieldChange`.
+pub mod approval_provider_field_change {
+    /// How the call changes the field.
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Change {
+        /// A value the call replaces whole.
+        #[prost(message, tag = "2")]
+        Value(super::ApprovalProviderValueChange),
+        /// A map the call replaces whole, entry by entry in key order.
+        #[prost(message, tag = "3")]
+        Entries(super::ApprovalProviderEntriesChange),
+        /// Where Coral reads the Provider from.
+        #[prost(message, tag = "4")]
+        Source(super::ApprovalProviderSourceChange),
+    }
+}
+/// A value the call replaces whole, as JSON in getProvider's shapes.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApprovalProviderValueChange {
+    /// The saved value.
+    #[prost(string, tag = "1")]
+    pub saved_json: ::prost::alloc::string::String,
+    /// The value the call saves.
+    #[prost(string, tag = "2")]
+    pub requested_json: ::prost::alloc::string::String,
+}
+/// A map the call replaces whole.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ApprovalProviderEntriesChange {
+    /// Every key either side holds.
+    #[prost(message, repeated, tag = "1")]
+    pub entries: ::prost::alloc::vec::Vec<ApprovalProviderEntryChange>,
+}
+/// One key of a map the call replaces, with values as JSON in getProvider's shapes.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApprovalProviderEntryChange {
+    /// The key, such as a header name.
+    #[prost(string, tag = "1")]
+    pub key: ::prost::alloc::string::String,
+    /// What the call does to the key.
+    #[prost(enumeration = "ApprovalProviderEntryStatus", tag = "2")]
+    pub status: i32,
+    /// The saved value. Empty for an added key.
+    #[prost(string, tag = "3")]
+    pub saved_json: ::prost::alloc::string::String,
+    /// The value the call saves. Empty for a removed key.
+    #[prost(string, tag = "4")]
+    pub requested_json: ::prost::alloc::string::String,
+}
+/// Where Coral reads the Provider from: the saved source, and the one the call reads.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApprovalProviderSourceChange {
+    /// The saved source.
+    #[prost(message, optional, tag = "1")]
+    pub saved: ::core::option::Option<ApprovalProviderSource>,
+    /// The new source. Absent when the call reads the saved source again.
+    #[prost(message, optional, tag = "2")]
+    pub requested: ::core::option::Option<ApprovalProviderSource>,
+    /// True when the call reads the saved source again, but it is an uploaded
+    /// document with no URL to read: the call fails and changes nothing.
+    #[prost(bool, tag = "3")]
+    pub unreadable: bool,
+}
+/// A Provider's source. An uploaded document has no URL, and its content is not shown.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApprovalProviderSource {
+    /// What Coral reads.
+    #[prost(enumeration = "ApprovalProviderSourceKind", tag = "1")]
+    pub kind: i32,
+    /// The source URL. Empty for an uploaded document.
+    #[prost(string, tag = "2")]
+    pub url: ::prost::alloc::string::String,
 }
 /// Selects which pending requests to count.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -6744,6 +6844,86 @@ impl ActivityRunFailureCode {
             "ACTIVITY_RUN_FAILURE_CODE_RUN_AUTHORITY_LOST" => {
                 Some(Self::RunAuthorityLost)
             }
+            _ => None,
+        }
+    }
+}
+/// What a call does to one key of a map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApprovalProviderEntryStatus {
+    /// A status unknown to this client.
+    Unspecified = 0,
+    /// The call adds the key.
+    Added = 1,
+    /// The call removes the key.
+    Removed = 2,
+    /// The call gives the key another value.
+    Changed = 3,
+    /// The call sends the key with its saved value.
+    Kept = 4,
+}
+impl ApprovalProviderEntryStatus {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPROVAL_PROVIDER_ENTRY_STATUS_UNSPECIFIED",
+            Self::Added => "APPROVAL_PROVIDER_ENTRY_STATUS_ADDED",
+            Self::Removed => "APPROVAL_PROVIDER_ENTRY_STATUS_REMOVED",
+            Self::Changed => "APPROVAL_PROVIDER_ENTRY_STATUS_CHANGED",
+            Self::Kept => "APPROVAL_PROVIDER_ENTRY_STATUS_KEPT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPROVAL_PROVIDER_ENTRY_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPROVAL_PROVIDER_ENTRY_STATUS_ADDED" => Some(Self::Added),
+            "APPROVAL_PROVIDER_ENTRY_STATUS_REMOVED" => Some(Self::Removed),
+            "APPROVAL_PROVIDER_ENTRY_STATUS_CHANGED" => Some(Self::Changed),
+            "APPROVAL_PROVIDER_ENTRY_STATUS_KEPT" => Some(Self::Kept),
+            _ => None,
+        }
+    }
+}
+/// What a Provider's source is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApprovalProviderSourceKind {
+    /// A kind unknown to this client.
+    Unspecified = 0,
+    /// An uploaded OpenAPI document.
+    OpenapiDocument = 1,
+    /// An OpenAPI document's URL.
+    OpenapiUrl = 2,
+    /// A Streamable HTTP MCP server's URL.
+    McpUrl = 3,
+}
+impl ApprovalProviderSourceKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPROVAL_PROVIDER_SOURCE_KIND_UNSPECIFIED",
+            Self::OpenapiDocument => "APPROVAL_PROVIDER_SOURCE_KIND_OPENAPI_DOCUMENT",
+            Self::OpenapiUrl => "APPROVAL_PROVIDER_SOURCE_KIND_OPENAPI_URL",
+            Self::McpUrl => "APPROVAL_PROVIDER_SOURCE_KIND_MCP_URL",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPROVAL_PROVIDER_SOURCE_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPROVAL_PROVIDER_SOURCE_KIND_OPENAPI_DOCUMENT" => {
+                Some(Self::OpenapiDocument)
+            }
+            "APPROVAL_PROVIDER_SOURCE_KIND_OPENAPI_URL" => Some(Self::OpenapiUrl),
+            "APPROVAL_PROVIDER_SOURCE_KIND_MCP_URL" => Some(Self::McpUrl),
             _ => None,
         }
     }
