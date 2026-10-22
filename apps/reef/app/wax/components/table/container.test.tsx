@@ -1,11 +1,13 @@
 /** @vitest-environment happy-dom */
 import { render, screen } from '@testing-library/react'
-import { expect, it, vi } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 
 import { Body } from './body'
 import { Cell } from './cell'
 import { Container } from './container'
 import { Row } from './row'
+
+afterEach(() => vi.restoreAllMocks())
 
 const renderCapped = (maxRows: number) =>
   render(
