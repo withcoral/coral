@@ -12,7 +12,7 @@ import {
   programRunner,
 } from '../../../support/providers.ts'
 
-test('Activity reconciles discovery costs and saved operation results without loading payloads into the table', async (context) => {
+test('Activity and the Overview summary reconcile discovery costs and saved operation results without loading payloads into the table', async (context) => {
   const actor = await loginActor(context, authenticatedTarget().authentication.owner)
   const api = managementClients(actor.accessToken)
   const upstream = await listen(
@@ -101,6 +101,18 @@ test('Activity reconciles discovery costs and saved operation results without lo
           await page.waitForURL((url) => !url.searchParams.has('record'))
         },
       )
+      await step('The Overview counts the same context as the Task', async () => {
+        // Only an exact byte count tells the describe response apart from the Run's saving.
+        const saved = (-goal.task!.contextImpactBytes).toLocaleString('en-US')
+        await page.goto(`/workspaces/${workspace}`)
+        await page
+          .getByRole('region', { name: 'Activity summary', exact: true })
+          .getByRole('region', { name: 'Context by caller', exact: true })
+          .getByRole('listitem')
+          .filter({ hasText: 'You' })
+          .locator(`[title^="${saved} bytes saved."]`)
+          .waitFor()
+      })
     },
     { actor: actor.label, storageState: actor.storageState },
   )

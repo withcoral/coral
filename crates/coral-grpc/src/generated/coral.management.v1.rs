@@ -6001,8 +6001,9 @@ pub struct SummarizeActivityResponse {
     /// Approval requests decided in the window.
     #[prost(message, optional, tag = "4")]
     pub approvals: ::core::option::Option<ActivityApprovalDecisions>,
-    /// Net context bytes of Runs that ended in the window. Negative means saved.
-    /// Absent when no Run in the window has a measured total.
+    /// Net context bytes of the work that ended in the window, as Activity counts
+    /// it: each search and describe response, and each Run. Negative means saved.
+    /// Absent when no work in the window has a measured total.
     #[prost(int64, optional, tag = "5")]
     pub context_impact_bytes: ::core::option::Option<i64>,
     /// True while a Run in scope is running, or when a Run that ended in the window
