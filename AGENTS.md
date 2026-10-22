@@ -58,11 +58,10 @@
   `ON CONFLICT DO NOTHING` and reread, since no shared hold serializes its
   creators.
 - A waiting Invocation parks with its Run Owner and never polls or
-  subscribes itself. The owner wakes it on what it records (a decision, an
-  expiry), subscribes to the change signal only while a connection wait is
-  parked, and finds the rest with a periodic read-snapshot precheck through
-  the fence's loader and evaluator. A wake-up is a hint; the held recheck
-  decides.
+  subscribes to the change signal itself; the owner wakes it (the
+  Wake-ups bullet of
+  [ADR 0018](docs/adr/0018-run-owner-coordinates-each-run.md)). A
+  wake-up is a hint; the held recheck decides.
 - A nonterminal Run's row and Events are written only through its Run
   Owner: the Program paths (Emissions, Logs, Invocation admission, held
   rechecks, the Dispatch Fence, Invocation completion), the outside
@@ -76,7 +75,8 @@
   owner's mailbox, so the clock never decides state outside the owner (ADR
   0018): a Run's timeout and an Approval Request's expiry are decided in the
   owner's pure `apply`, in mailbox order (when the timer fires, or first
-  when a decision or a cancel applied before it finds the deadline passed),
+  when a decision, a cancel or the periodic precheck of parked waits applied
+  before it finds the deadline passed),
   the owner's own writes read the
   clock only for their own sample (the start mark and the terminal write
   date a timeout they find passed; the Dispatch Fence judges an approved

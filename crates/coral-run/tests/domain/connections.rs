@@ -1248,8 +1248,9 @@ async fn a_completed_connection_wakes_exactly_its_parked_run_within_the_gap_afte
         .await
         .chunk_sequence;
 
-    let connected_at = tokio::time::Instant::now();
     connect_caller(&accounts, &first, "first-canary").await;
+    // The completion committed before this instant.
+    let connected_at = tokio::time::Instant::now();
     let terminal = wait_for_terminal(
         &runs,
         &first.principal,
@@ -1257,12 +1258,16 @@ async fn a_completed_connection_wakes_exactly_its_parked_run_within_the_gap_afte
         first_run.run_id(),
     )
     .await;
-    let elapsed = connected_at.elapsed();
 
     assert_eq!(terminal.state(), RunState::Succeeded);
+    let found_at = probe
+        .first_found(crate::owner::Check::Connections)
+        .expect("a connection check found the request ended");
+    // At most one gap after the ring, plus the read itself.
+    let found_after = found_at.saturating_duration_since(connected_at);
     assert!(
-        elapsed < wake_gap + Duration::from_secs(2),
-        "woken within the gap, not by the precheck: {elapsed:?}"
+        found_after <= wake_gap + Duration::from_millis(500),
+        "found within the gap: {found_after:?}"
     );
     assert_eq!(probe.fences(), 1, "one fence");
     let prechecks = probe.prechecks();

@@ -383,7 +383,9 @@ pub(crate) struct WaitProbe {
     held: watch::Sender<usize>,
     parked: watch::Sender<usize>,
     fences: ObservedFences,
-    prechecks: Mutex<Vec<(crate::owner::Check, usize)>>,
+    /// Each check of the parked waits: its kind, what it found, and when it
+    /// finished.
+    prechecks: Mutex<Vec<(crate::owner::Check, usize, tokio::time::Instant)>>,
 }
 
 impl WaitProbe {
@@ -413,7 +415,23 @@ impl WaitProbe {
     /// The owner's checks of its parked waits, in order, each with how many
     /// waits it found ended or moot.
     pub(crate) fn prechecks(&self) -> Vec<(crate::owner::Check, usize)> {
-        self.prechecks.lock().unwrap().clone()
+        self.prechecks
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(check, found, _)| (*check, *found))
+            .collect()
+    }
+
+    /// When the first check of `check`'s kind that found a wait ended or
+    /// moot finished.
+    pub(crate) fn first_found(&self, check: crate::owner::Check) -> Option<tokio::time::Instant> {
+        self.prechecks
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(kind, found, _)| *kind == check && *found > 0)
+            .map(|(_, _, at)| *at)
     }
 
     /// Returns once the wait has parked `count` times in total.
@@ -446,7 +464,10 @@ impl InvocationObserver for WaitProbe {
 #[async_trait]
 impl ExecutionObserver for WaitProbe {
     fn precheck_finished(&self, check: crate::owner::Check, found: usize) {
-        self.prechecks.lock().unwrap().push((check, found));
+        self.prechecks
+            .lock()
+            .unwrap()
+            .push((check, found, tokio::time::Instant::now()));
     }
 }
 
