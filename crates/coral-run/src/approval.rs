@@ -636,19 +636,6 @@ pub(super) async fn gate(
     }
 }
 
-/// This Invocation's Approval Request as a read snapshot shows it, for the
-/// parked-wait precheck.
-pub(super) async fn fact_in_snapshot(
-    tx: &mut Transaction<'_>,
-    admitted: &AdmittedInvocation,
-) -> Result<ApprovalFact, Error> {
-    let row =
-        approval_repository::find_for_invocation(tx, &admitted.workspace_id, &admitted.id).await?;
-    Ok(row
-        .as_ref()
-        .map_or(ApprovalFact::NotRequested, approval_fact))
-}
-
 /// The request's recorded decision as the fence decides on it.
 fn approval_fact(row: &StoredApproval) -> ApprovalFact {
     match row.state {

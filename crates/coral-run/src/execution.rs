@@ -17,10 +17,21 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 /// How long an Approval Request waits for a decision at most; the Run
 /// deadline bounds it further.
 const APPROVAL_WAIT: Duration = Duration::from_mins(15);
+/// How often a Run Owner with parked Invocations prechecks their waits in a
+/// read snapshot: the ceiling on noticing a wait that ended or became moot
+/// without a wake-up.
+const PARKED_PRECHECK_INTERVAL: Duration = Duration::from_secs(15);
+/// The shortest gap between two reads a Run Owner makes of its pending
+/// connection requests after the change signal rang.
+const CHANGE_WAKE_GAP: Duration = Duration::from_secs(1);
 /// The lease of a test that advances its clock to an Approval Request's
 /// deadline: long enough that the jump is not a lost lease.
 #[cfg(test)]
 const TEST_APPROVAL_LEASE: Duration = Duration::from_secs(60);
+#[cfg(test)]
+const TEST_PRECHECK_INTERVAL: Duration = Duration::from_millis(200);
+#[cfg(test)]
+const TEST_WAKE_GAP: Duration = Duration::from_millis(50);
 /// The backoff between attempts when the database gives no answer: a reread
 /// after an uncertain commit, a recommit, or the Interrupted record. Attempts
 /// end on an answer, never on the clock.
@@ -123,6 +134,10 @@ pub(crate) trait ExecutionObserver: Send + Sync {
     /// The owner armed `timer` to fire after `after_nanos` on the host clock.
     fn timer_armed(&self, _timer: &crate::owner::Timer, _after_nanos: i64) {}
 
+    /// The owner's `check` of its parked waits read its snapshot and found
+    /// `found` waits ended or moot.
+    fn precheck_finished(&self, _check: crate::owner::Check, _found: usize) {}
+
     fn execution_attempt_finished(&self) {}
 }
 
@@ -138,6 +153,8 @@ pub(crate) struct ExecutionPolicy {
     claim_lease: Duration,
     shutdown_grace: Duration,
     approval_wait: Duration,
+    precheck_interval: Duration,
+    wake_gap: Duration,
 }
 
 impl ExecutionPolicy {
@@ -146,6 +163,8 @@ impl ExecutionPolicy {
             claim_lease: CLAIM_LEASE,
             shutdown_grace: SHUTDOWN_GRACE,
             approval_wait: APPROVAL_WAIT,
+            precheck_interval: PARKED_PRECHECK_INTERVAL,
+            wake_gap: CHANGE_WAKE_GAP,
         }
     }
 
@@ -155,7 +174,31 @@ impl ExecutionPolicy {
             claim_lease: Duration::from_secs(1),
             shutdown_grace: Duration::from_millis(100),
             approval_wait: APPROVAL_WAIT,
+            precheck_interval: TEST_PRECHECK_INTERVAL,
+            wake_gap: TEST_WAKE_GAP,
         }
+    }
+
+    /// Keeps everything else while a test chooses how often parked waits
+    /// are prechecked and the gap between reads after a change.
+    #[cfg(test)]
+    pub(crate) const fn with_wakeups(
+        self,
+        precheck_interval: Duration,
+        wake_gap: Duration,
+    ) -> Self {
+        Self {
+            precheck_interval,
+            wake_gap,
+            ..self
+        }
+    }
+
+    /// The test wake-ups: a parked wait that became moot is found well
+    /// within a test's wait for the Run's end.
+    #[cfg(test)]
+    pub(crate) const fn with_test_wakeups(self) -> Self {
+        self.with_wakeups(TEST_PRECHECK_INTERVAL, TEST_WAKE_GAP)
     }
 
     /// Expires Approval Requests after `approval_wait`, so a test sees the
@@ -227,6 +270,20 @@ impl ExecutionPolicy {
 
     pub(crate) fn shutdown_grace_nanos(self) -> i64 {
         duration_nanos(self.shutdown_grace)
+    }
+
+    /// How often a Run Owner with parked Invocations prechecks their waits.
+    pub(crate) fn precheck_interval_nanos(self) -> i64 {
+        duration_nanos(self.precheck_interval)
+    }
+
+    /// The shortest gap between two connection reads after change wake-ups.
+    pub(crate) const fn wake_gap(self) -> Duration {
+        self.wake_gap
+    }
+
+    pub(crate) fn wake_gap_nanos(self) -> i64 {
+        duration_nanos(self.wake_gap)
     }
 }
 

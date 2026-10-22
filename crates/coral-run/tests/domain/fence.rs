@@ -1359,7 +1359,6 @@ async fn the_precheck_and_the_fence_reach_the_same_decision_on_the_same_facts() 
         held.rollback().await.unwrap();
         let facts = InvocationFacts {
             target,
-            committed_failure: None,
             connection_pending_until_unix_nanos: None,
             approval,
         };
@@ -1547,7 +1546,6 @@ async fn a_batch_verifies_each_retained_provider_access_not_one_per_operation() 
                 &run_facts,
                 &InvocationFacts {
                     target,
-                    committed_failure: None,
                     connection_pending_until_unix_nanos: None,
                     approval: ApprovalFact::NotRequested,
                 },

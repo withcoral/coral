@@ -22,6 +22,12 @@
 //!   applied decides. A passed Run deadline times the Run out; a passed
 //!   Approval deadline expires the request and ends its Invocation; a
 //!   passed connection deadline wakes the Invocations parked on it;
+//! - the parked Invocations: which to wake (a decision or an expiry the
+//!   owner recorded, a connection deadline, what a snapshot check found),
+//!   when to hold the change subscription (while a connection wait is
+//!   parked), when to read the connection requests after the signal rang
+//!   (coalesced, at most once per wake gap), and when the periodic precheck
+//!   reads every parked wait;
 //! - the Run Ledger head, which the owner tracks from its start mark and
 //!   every chunk commit asserts;
 //! - what a lost commit means;
@@ -31,13 +37,13 @@
 //!   chunk is written as soon as the database answers, recording
 //!   `Interrupted`, or `TimedOut` when the Run deadline has passed meanwhile.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
 use coral_workspace::Principal;
 
 use crate::approval::{ApprovalId, DecideWork};
 use crate::engine::{ExecutionCompletion, ProgramPackage};
-use crate::invocation::{FenceBatch, FenceRequest};
+use crate::invocation::{FenceBatch, FenceRequest, ParkedInvocation, PrecheckBatch};
 use crate::lifecycle::{RequestedTermination, RunTerminationKind};
 use crate::run_repository::{OwnedEvent, OwnedEventKind};
 use crate::termination::ShutdownAction;
@@ -45,8 +51,8 @@ use crate::{CoralFailure, Error};
 
 use super::chunk::{ChunkBuild, ChunkItem, ChunkWork, PendingRequest};
 use super::handle::{
-    CommitRejection, DecisionAnswer, DecisionRequest, Message, Reply, RequestKey, RequestReply,
-    StartedExecution, Timer,
+    Check, CommitRejection, DecisionAnswer, DecisionRequest, Message, ParkedWait, Reply,
+    RequestKey, RequestReply, StartedExecution, Timer,
 };
 
 /// What the hosting task does for the owner.
@@ -72,9 +78,17 @@ pub(crate) enum Effect {
     /// Arm `timer` to fire as [`Message::Timer`] into the mailbox after
     /// `after_nanos`, replacing the same timer armed before.
     ArmTimer { timer: Timer, after_nanos: i64 },
-    /// Wake every Invocation parked on a connection request, so each one
-    /// rechecks its wait.
-    WakeParked,
+    /// Send one parked Invocation back to its held recheck: its wait ended,
+    /// or a snapshot says it did.
+    Wake(Box<ParkedInvocation>),
+    /// Subscribe to the change signal, which rings as [`Message::Changed`]:
+    /// a connection wait is parked.
+    Subscribe,
+    /// Drop the change subscription: no connection wait is parked.
+    Unsubscribe,
+    /// Read the batch's parked waits in one snapshot, holding nothing; the
+    /// findings come back as [`Message::Prechecked`].
+    Precheck(PrecheckBatch),
     /// Settle row work the owner will never commit.
     Abandon(Box<dyn ChunkWork>, Error),
     /// Write the Run's terminal state for the Program's completion, with
@@ -122,6 +136,51 @@ pub(crate) struct OwnerLimits {
     pub(crate) suspect_after_nanos: i64,
     /// How long after its last successful commit the owner interrupts its Run.
     pub(crate) self_interrupt_after_nanos: i64,
+    /// How often the owner prechecks its parked waits while it has any.
+    pub(crate) precheck_interval_nanos: i64,
+    /// The shortest gap between two reads of the parked connection requests
+    /// after the change signal rang.
+    pub(crate) wake_gap_nanos: i64,
+}
+
+/// The owner's change subscription and its snapshot checks of the parked
+/// waits.
+#[derive(Debug, Default)]
+struct Wakeups {
+    signal: Signal,
+    /// The reads of the parked connection requests after the signal rang:
+    /// one at a time, a wake gap apart.
+    connections: ConnectionChecks,
+    precheck: Precheck,
+}
+
+/// The change subscription, held while a connection wait is parked.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Signal {
+    #[default]
+    Unsubscribed,
+    /// Nothing rang since the last connection check started.
+    Quiet,
+    /// The signal rang since the last connection check started.
+    Rang,
+}
+
+#[derive(Debug, Default)]
+struct ConnectionChecks {
+    /// A connection check runs.
+    running: bool,
+    /// The wake gap since the last connection check started is not out.
+    in_gap: bool,
+}
+
+/// The periodic precheck of every parked wait.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Precheck {
+    /// Nothing is parked, or the timer fired with nothing to read.
+    #[default]
+    Unarmed,
+    Armed,
+    Running,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +268,13 @@ pub(crate) struct OwnerState {
     /// mailbox arrival order). Each one stays `pending`, with no Event, and
     /// joins a fence batch when an earlier dispatch ends.
     waiting: VecDeque<Box<FenceRequest>>,
+    /// Invocations parked on a wait, holding nothing, by the serial the owner
+    /// gave each park. Owner memory only: nothing is registered again after
+    /// a restart, since a recovered owner runs no Program.
+    parked_waits: BTreeMap<u64, Box<ParkedInvocation>>,
+    /// The serial of the last park.
+    last_park: u64,
+    wakeups: Wakeups,
     open: ChunkBuild,
     closed: VecDeque<ChunkBuild>,
     in_flight: Option<InFlight>,
@@ -235,6 +301,9 @@ impl OwnerState {
             suspect: false,
             slots_held: 0,
             waiting: VecDeque::new(),
+            parked_waits: BTreeMap::new(),
+            last_park: 0,
+            wakeups: Wakeups::default(),
             open: ChunkBuild::default(),
             closed: VecDeque::new(),
             in_flight: None,
@@ -300,6 +369,12 @@ impl OwnerState {
     #[cfg(test)]
     pub(crate) fn waiting_for_a_slot(&self) -> usize {
         self.waiting.len()
+    }
+
+    /// Invocations parked on a wait.
+    #[cfg(test)]
+    pub(crate) fn parked_invocations(&self) -> usize {
+        self.parked_waits.len()
     }
 
     /// The owner's own liveness, decided on every message: past the suspect
@@ -573,7 +648,7 @@ impl OwnerState {
         // whose request the owner batched, so the count is exact.
         self.slots_held = self.slots_held.saturating_sub(1);
         if !self.accepts_program_requests(now_unix_nanos) {
-            return self.abandon_waiting(|| Error::ProgramHostTerminated);
+            return self.release_waiting(|| Error::ProgramHostTerminated);
         }
         match self.waiting.pop_front() {
             Some(request) => self.fence(request, now_unix_nanos),
@@ -581,19 +656,179 @@ impl OwnerState {
         }
     }
 
-    /// Answers every Invocation waiting for a slot, as one batch, with the
-    /// error `lost` makes: no dispatch of theirs ever starts. The slots the
-    /// abandoned batches held stay counted: the Run takes no more requests.
-    fn abandon_waiting(&mut self, lost: impl Fn() -> Error) -> Vec<Effect> {
+    /// The Run takes no more Program requests: every Invocation waiting for
+    /// a slot is answered, as one batch, with the error `lost` makes (no
+    /// dispatch of theirs ever starts; the slots the abandoned batches held
+    /// stay counted), and every parked one is let go with the change
+    /// subscription: its dropped wake tells it the Run ends.
+    fn release_waiting(&mut self, lost: impl Fn() -> Error) -> Vec<Effect> {
+        self.parked_waits.clear();
+        let mut effects: Vec<Effect> = self.unsubscribe_when_idle().into_iter().collect();
         let mut waiting = self.waiting.drain(..);
         let Some(first) = waiting.next() else {
-            return Vec::new();
+            return effects;
         };
         let mut batch = FenceBatch::new(*first);
         for request in waiting {
             batch.push(*request);
         }
-        vec![Effect::Abandon(Box::new(batch), lost())]
+        effects.push(Effect::Abandon(Box::new(batch), lost()));
+        effects
+    }
+
+    /// A chunk that landed parked an Invocation: the owner keeps it until
+    /// its wait ends and arms the wait's deadline, the periodic precheck
+    /// unless it is armed, and the change subscription for a connection
+    /// wait, whose first ring reads the request. Under a subscription already
+    /// held, the park counts as a ring: the request may have ended between
+    /// the held recheck's read and this message, and a ring that came first
+    /// read a batch without it. A Run that takes no more Program requests
+    /// keeps nothing: the dropped wake tells the Invocation the Run ends. An
+    /// Approval Request decided first sends the Invocation back to its held
+    /// recheck at once.
+    fn park(&mut self, parked: Box<ParkedInvocation>, now_unix_nanos: i64) -> Vec<Effect> {
+        if !self.accepts_program_requests(now_unix_nanos) {
+            return Vec::new();
+        }
+        if let ParkedWait::Approval { approval, .. } = parked.wait()
+            && self
+                .recorded_requests
+                .contains(&RequestKey::Approval(approval.clone()))
+        {
+            return vec![Effect::Wake(parked)];
+        }
+        let (timer, at) = parked.wait().deadline();
+        let mut effects = vec![arm_at(timer, at, now_unix_nanos)];
+        let on_connection = parked.wait().on_connection();
+        self.last_park += 1;
+        self.parked_waits.insert(self.last_park, parked);
+        if on_connection {
+            if self.wakeups.signal == Signal::Unsubscribed {
+                self.wakeups.signal = Signal::Quiet;
+                effects.push(Effect::Subscribe);
+            } else {
+                self.wakeups.signal = Signal::Rang;
+                effects.extend(self.check_connections());
+            }
+        }
+        effects.extend(self.arm_precheck());
+        effects
+    }
+
+    /// Arms the periodic precheck while waits are parked, unless it is
+    /// armed or running.
+    fn arm_precheck(&mut self) -> Option<Effect> {
+        if self.parked_waits.is_empty() || self.wakeups.precheck != Precheck::Unarmed {
+            return None;
+        }
+        self.wakeups.precheck = Precheck::Armed;
+        Some(Effect::ArmTimer {
+            timer: Timer::Precheck,
+            after_nanos: self.limits.precheck_interval_nanos,
+        })
+    }
+
+    /// Sends the parked Invocations `woken` selects, by serial and wait,
+    /// back to their held rechecks, and drops the change subscription once
+    /// no connection wait is left.
+    fn wake(&mut self, woken: impl Fn(u64, &ParkedWait) -> bool) -> Vec<Effect> {
+        let mut effects: Vec<Effect> = self
+            .parked_waits
+            .extract_if(.., |serial, parked| woken(*serial, parked.wait()))
+            .map(|(_, parked)| Effect::Wake(parked))
+            .collect();
+        effects.extend(self.unsubscribe_when_idle());
+        effects
+    }
+
+    fn unsubscribe_when_idle(&mut self) -> Option<Effect> {
+        if self.wakeups.signal == Signal::Unsubscribed
+            || self
+                .parked_waits
+                .values()
+                .any(|parked| parked.wait().on_connection())
+        {
+            return None;
+        }
+        self.wakeups.signal = Signal::Unsubscribed;
+        Some(Effect::Unsubscribe)
+    }
+
+    /// The change signal rang: a hint that a connection request may have
+    /// ended. A ring from a subscription since dropped changes nothing.
+    fn changed(&mut self) -> Vec<Effect> {
+        if self.wakeups.signal == Signal::Unsubscribed {
+            return Vec::new();
+        }
+        self.wakeups.signal = Signal::Rang;
+        self.check_connections()
+    }
+
+    /// Reads the requests of the parked connection waits once the signal
+    /// rang since the last check, no check runs, and the wake gap since the
+    /// last one is out: every ring meanwhile is coalesced into this one read.
+    fn check_connections(&mut self) -> Vec<Effect> {
+        if self.wakeups.signal != Signal::Rang
+            || self.wakeups.connections.running
+            || self.wakeups.connections.in_gap
+        {
+            return Vec::new();
+        }
+        self.wakeups.signal = Signal::Quiet;
+        let Some(batch) = PrecheckBatch::of(
+            Check::Connections,
+            self.parked_waits
+                .iter()
+                .filter(|(_, parked)| parked.wait().on_connection()),
+        ) else {
+            return Vec::new();
+        };
+        self.wakeups.connections.running = true;
+        self.wakeups.connections.in_gap = true;
+        vec![
+            Effect::Precheck(batch),
+            Effect::ArmTimer {
+                timer: Timer::WakeGap,
+                after_nanos: self.limits.wake_gap_nanos,
+            },
+        ]
+    }
+
+    /// The periodic precheck is due: every parked wait is read in one
+    /// snapshot against the Dispatch Fence's facts. Past the Run deadline on
+    /// the owner's clock, the deadline is applied instead, as its timer
+    /// would have been first.
+    fn precheck_due(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
+        self.wakeups.precheck = Precheck::Unarmed;
+        if now_unix_nanos >= self.limits.deadline_at_unix_nanos {
+            return self.deadline(now_unix_nanos);
+        }
+        if !self.accepts_program_requests(now_unix_nanos) {
+            return Vec::new();
+        }
+        let Some(batch) = PrecheckBatch::of(Check::Periodic, self.parked_waits.iter()) else {
+            return Vec::new();
+        };
+        self.wakeups.precheck = Precheck::Running;
+        vec![Effect::Precheck(batch)]
+    }
+
+    /// A check read its snapshot: the parks it found ended or moot, while
+    /// still parked under the serial it read, go back to their held
+    /// rechecks. A check that failed found nothing: a precheck is a hint, and
+    /// the next one reads again.
+    fn prechecked(&mut self, check: Check, found: Result<Vec<u64>, Error>) -> Vec<Effect> {
+        match check {
+            Check::Connections => self.wakeups.connections.running = false,
+            Check::Periodic => self.wakeups.precheck = Precheck::Unarmed,
+        }
+        let found: BTreeSet<u64> = found.unwrap_or_default().into_iter().collect();
+        let mut effects = self.wake(|serial, _| found.contains(&serial));
+        match check {
+            Check::Connections => effects.extend(self.check_connections()),
+            Check::Periodic => effects.extend(self.arm_precheck()),
+        }
+        effects
     }
 
     /// A stop reached the owner, from an outside writer's recorded
@@ -623,7 +858,7 @@ impl OwnerState {
             }
         }
         self.closed.retain(|chunk| !chunk.is_empty());
-        effects.extend(self.abandon_waiting(|| Error::ProgramHostTerminated));
+        effects.extend(self.release_waiting(|| Error::ProgramHostTerminated));
         effects.push(Effect::TerminateProgram);
         effects
     }
@@ -740,28 +975,6 @@ impl OwnerState {
         Vec::new()
     }
 
-    /// A chunk that landed recorded a deadline: the owner arms its timer
-    /// (again, when a recheck reports it again: the host replaces the
-    /// sleep), unless the request is decided or the Run takes no more
-    /// Program requests.
-    fn deadline_recorded(
-        &mut self,
-        timer: Timer,
-        at_unix_nanos: i64,
-        now_unix_nanos: i64,
-    ) -> Vec<Effect> {
-        let decided = match &timer {
-            Timer::Approval(approval) => self
-                .recorded_requests
-                .contains(&RequestKey::Approval(approval.clone())),
-            _ => false,
-        };
-        if decided || !self.accepts_program_requests(now_unix_nanos) {
-            return Vec::new();
-        }
-        vec![arm_at(timer, at_unix_nanos, now_unix_nanos)]
-    }
-
     /// A timer fired: applied here, in order with every other message.
     fn timer(&mut self, timer: Timer, now_unix_nanos: i64) -> Vec<Effect> {
         match timer {
@@ -769,14 +982,20 @@ impl OwnerState {
             Timer::Grace => self.grace_expired(),
             Timer::IdleTick => self.idle_tick(),
             Timer::Approval(approval) => self.expire_approval(&approval, now_unix_nanos),
-            // The wait itself rechecks the request: the held recheck records
-            // its expiry, inside the owner's chunk.
-            Timer::Connection(_) => {
-                if self.accepts_program_requests(now_unix_nanos) {
-                    vec![Effect::WakeParked]
-                } else {
-                    Vec::new()
+            // The Invocations parked on the request go back to their held
+            // recheck, which records its expiry inside the owner's chunk.
+            Timer::Connection(expired) => {
+                if !self.accepts_program_requests(now_unix_nanos) {
+                    return Vec::new();
                 }
+                self.wake(|_, wait| {
+                    matches!(wait, ParkedWait::Connection { request, .. } if *request == expired)
+                })
+            }
+            Timer::Precheck => self.precheck_due(now_unix_nanos),
+            Timer::WakeGap => {
+                self.wakeups.connections.in_gap = false;
+                self.check_connections()
             }
         }
     }
@@ -1020,12 +1239,23 @@ impl OwnerState {
             if flight.terminates {
                 self.recorded_requests.insert(RequestKey::Termination);
             }
+            let mut decided = Vec::new();
             for request in flight.requests {
+                if let RequestKey::Approval(approval) = &request.key {
+                    decided.push(approval.clone());
+                }
                 self.recorded_requests.insert(request.key);
                 let answer = request.answer.unwrap_or(DecisionAnswer::FromRecord);
                 if let Some(reply) = request.reply {
                     effects.push(Effect::Answer(reply, Ok(answer)));
                 }
+            }
+            // The chunk recorded these requests' decisions, expiries or
+            // closes: the Invocations parked on them learn it with no read.
+            if !decided.is_empty() {
+                effects.extend(self.wake(|_, wait| {
+                    matches!(wait, ParkedWait::Approval { approval, .. } if decided.contains(approval))
+                }));
             }
         }
         effects.extend(self.unpark(now_unix_nanos));
@@ -1068,7 +1298,7 @@ impl OwnerState {
         lost: impl Fn() -> Error,
         requests: impl Fn() -> Result<DecisionAnswer, Error>,
     ) -> Vec<Effect> {
-        let mut effects = self.abandon_waiting(&lost);
+        let mut effects = self.release_waiting(&lost);
         let pending = self
             .closed
             .drain(..)
@@ -1158,7 +1388,7 @@ impl OwnerState {
                 // Wake every detached Invocation wait, as execution's end does;
                 // an Invocation still waiting for a slot never dispatches.
                 let mut effects = vec![Effect::TerminateProgram];
-                effects.extend(self.abandon_waiting(|| Error::ProgramHostTerminated));
+                effects.extend(self.release_waiting(|| Error::ProgramHostTerminated));
                 effects.extend(self.advance_ending());
                 effects
             }
@@ -1277,6 +1507,10 @@ pub(crate) fn apply(state: &mut OwnerState, message: Message, now_unix_nanos: i6
     effects
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per message, each a call into the owner's state"
+)]
 fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) -> Vec<Effect> {
     match message {
         // The idle tick is armed from the launch, not the start mark: a
@@ -1311,7 +1545,9 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         | Message::Completed(_)
         | Message::SettleAttempted(_)
         | Message::Timer(_)
-        | Message::DeadlineRecorded { .. }
+        | Message::Parked(_)
+        | Message::Changed
+        | Message::Prechecked { .. }
         | Message::Interrupted(_)
             if state.phase == Phase::Interrupting =>
         {
@@ -1379,10 +1615,9 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         Message::Decide { request, reply } => state.decide(request, reply, now_unix_nanos),
         Message::Cancel { requester, reply } => state.cancel(requester, reply, now_unix_nanos),
         Message::Timer(timer) => state.timer(timer, now_unix_nanos),
-        Message::DeadlineRecorded {
-            timer,
-            at_unix_nanos,
-        } => state.deadline_recorded(timer, at_unix_nanos, now_unix_nanos),
+        Message::Parked(parked) => state.park(parked, now_unix_nanos),
+        Message::Changed => state.changed(),
+        Message::Prechecked { check, found } => state.prechecked(check, found),
         Message::ProgramEnded(completion) => state.program_ended(completion),
         Message::Committed => state.committed(now_unix_nanos),
         Message::RequestRecorded { key, answer } => {

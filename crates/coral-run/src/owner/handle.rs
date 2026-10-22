@@ -7,12 +7,12 @@ use std::sync::{Arc, Mutex};
 
 use coral_provider::account::ConnectionRequestId;
 use coral_workspace::{Principal, TraceId};
-use tokio::sync::{Notify, mpsc, oneshot, watch};
+use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::approval::{ApprovalDecision, ApprovalId, ApprovalState};
 use crate::engine::{ExecutionCompletion, ProgramPackage};
 use crate::execution::ExecutionStop;
-use crate::invocation::FenceRequest;
+use crate::invocation::{FenceRequest, ParkedInvocation};
 use crate::termination::ShutdownAction;
 use crate::{Error, ProgramLogLevel, ProgramValue, RunId, SourceLocation};
 
@@ -61,6 +61,56 @@ pub(crate) enum Timer {
     IdleTick,
     /// The shutdown grace since the Program was stopped is out.
     Grace,
+    /// The periodic precheck of the parked waits is due.
+    Precheck,
+    /// The gap since the last connection check after a change is out.
+    WakeGap,
+}
+
+/// What a parked Invocation waits for, as the owner keeps it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ParkedWait {
+    /// A decision on its Approval Request, which expires at the deadline.
+    Approval {
+        approval: ApprovalId,
+        deadline_at_unix_nanos: i64,
+    },
+    /// Its User's connection request to end, which expires at the deadline.
+    Connection {
+        request: ConnectionRequestId,
+        expires_at_unix_nanos: i64,
+    },
+}
+
+impl ParkedWait {
+    /// The owner's timer for the wait's deadline, and the deadline.
+    pub(crate) fn deadline(&self) -> (Timer, i64) {
+        match self {
+            Self::Approval {
+                approval,
+                deadline_at_unix_nanos,
+            } => (Timer::Approval(approval.clone()), *deadline_at_unix_nanos),
+            Self::Connection {
+                request,
+                expires_at_unix_nanos,
+            } => (Timer::Connection(*request), *expires_at_unix_nanos),
+        }
+    }
+
+    pub(crate) const fn on_connection(&self) -> bool {
+        matches!(self, Self::Connection { .. })
+    }
+}
+
+/// One read of the parked waits in a snapshot, held nowhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Check {
+    /// After the change signal rang: the connection requests the parked
+    /// waits are on, and nothing else.
+    Connections,
+    /// The periodic precheck: every parked wait against the Dispatch Fence's
+    /// facts, for a wait that ended or became moot without a wake-up.
+    Periodic,
 }
 
 /// What the owner's first chunk started: the package to execute, and the
@@ -155,13 +205,22 @@ pub(crate) enum Message {
         reply: RequestReply,
     },
     /// A timer the owner armed fired: the Run deadline, an Approval
-    /// Request's or a connection request's deadline, the idle tick, or the
-    /// shutdown grace.
+    /// Request's or a connection request's deadline, the idle tick, the
+    /// shutdown grace, the periodic precheck, or the end of the wake gap.
     Timer(Timer),
-    /// A chunk that landed recorded a deadline the owner keeps: an Approval
-    /// Request it created, a connection request it parked an Invocation on.
-    /// Reaches the owner before that chunk's `Committed`.
-    DeadlineRecorded { timer: Timer, at_unix_nanos: i64 },
+    /// A chunk that landed parked an Invocation: its held recheck found it
+    /// waiting on an Approval Request or a connection request. Reaches the
+    /// owner before that chunk's `Committed`.
+    Parked(Box<ParkedInvocation>),
+    /// The content-free change signal rang while the owner is subscribed: a
+    /// hint that a connection request may have ended.
+    Changed,
+    /// A check of the parked waits read its snapshot: the parks (by the
+    /// serial the owner gave each) whose wait it found ended or moot.
+    Prechecked {
+        check: Check,
+        found: Result<Vec<u64>, Error>,
+    },
     /// The Program's execution ended.
     ProgramEnded(ExecutionCompletion),
     /// The chunk in flight landed.
@@ -229,13 +288,12 @@ impl fmt::Debug for Message {
                 .field("requester", requester)
                 .finish(),
             Self::Timer(timer) => formatter.debug_tuple("Timer").field(timer).finish(),
-            Self::DeadlineRecorded {
-                timer,
-                at_unix_nanos,
-            } => formatter
-                .debug_struct("DeadlineRecorded")
-                .field("timer", timer)
-                .field("at_unix_nanos", at_unix_nanos)
+            Self::Parked(parked) => formatter.debug_tuple("Parked").field(parked).finish(),
+            Self::Changed => formatter.write_str("Changed"),
+            Self::Prechecked { check, found } => formatter
+                .debug_struct("Prechecked")
+                .field("check", check)
+                .field("found", found)
                 .finish(),
             Self::ProgramEnded(completion) => formatter
                 .debug_tuple("ProgramEnded")
@@ -336,9 +394,6 @@ struct Shared {
     stop: Arc<ExecutionStop>,
     stopped: AtomicBool,
     stopped_notification: Notify,
-    /// A content-free wake-up for the Invocations parked on a connection
-    /// request, sent when a connection request's timer fires.
-    parked_wakes: watch::Sender<()>,
 }
 
 /// A handle on one live Run Owner: the Program host and the Invocation tasks
@@ -360,7 +415,6 @@ impl OwnerHandle {
                 stop: Arc::new(ExecutionStop::new()),
                 stopped: AtomicBool::new(false),
                 stopped_notification: Notify::new(),
-                parked_wakes: watch::channel(()).0,
             }),
         };
         (handle, mailbox)
@@ -506,17 +560,6 @@ impl OwnerHandle {
         self.ask(|reply| Message::Cancel { requester, reply })
             .await
             .map(drop)
-    }
-
-    /// Wakes every Invocation parked on a connection request: a wake-up is a
-    /// hint, and each one rechecks its own wait.
-    pub(crate) fn wake_parked(&self) {
-        self.shared.parked_wakes.send_replace(());
-    }
-
-    /// The wake-ups of [`Self::wake_parked`], from now on.
-    pub(crate) fn parked_wakes(&self) -> watch::Receiver<()> {
-        self.shared.parked_wakes.subscribe()
     }
 
     /// Sends one request and waits for its answer; a retired owner, or one

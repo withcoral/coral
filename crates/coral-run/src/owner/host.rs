@@ -3,7 +3,11 @@
 //! execution, the terminal write, the settle of a recorded termination and
 //! the timers the owner arms, each a sleep on this process's clock that
 //! fires its [`Message::Timer`] into the mailbox (the idle tick, re-armed by
-//! every commit, is one sleep reset in place and fires into the loop).
+//! every commit, is one sleep reset in place and fires into the loop). It
+//! also holds the change subscription the owner asks for while a connection
+//! wait is parked, ringing [`Message::Changed`] into the mailbox, and runs the
+//! snapshot checks of the parked waits, whose findings come back as
+//! [`Message::Prechecked`].
 //!
 //! Every write the owner starts ends on an answer, never on the clock. A
 //! chunk commit the database does not answer is resolved by rereading the Run
@@ -26,7 +30,7 @@ use tokio::time::Instant;
 use coral_workspace::AuthenticatedPrincipal;
 
 use crate::execution::{Backoff, until_answered};
-use crate::invocation::{FenceBatch, OperationInvoker};
+use crate::invocation::{FenceBatch, OperationInvoker, PrecheckBatch};
 use crate::lifecycle::RunRecord;
 use crate::owner::ChunkWork as _;
 use crate::program_output::ProgramOutputWriter;
@@ -64,10 +68,13 @@ pub(crate) async fn host(
             idle_tick_nanos: module.execution_policy.idle_tick_nanos(),
             suspect_after_nanos: module.execution_policy.suspect_after_nanos(),
             self_interrupt_after_nanos: module.execution_policy.self_interrupt_after_nanos(),
+            precheck_interval_nanos: module.execution_policy.precheck_interval_nanos(),
+            wake_gap_nanos: module.execution_policy.wake_gap_nanos(),
         },
         accepted.accepted_at_unix_nanos,
     );
     let mut timers = Timers::default();
+    let mut subscription = Subscription::default();
     let idle = tokio::time::sleep_until(unarmed());
     tokio::pin!(idle);
     // The shutdown grace of a recorded termination, on this process's clock:
@@ -93,15 +100,8 @@ pub(crate) async fn host(
                         timers.arm(&handle, timer, after_nanos);
                     }
                 }
-                Effect::WakeParked => handle.wake_parked(),
-                Effect::Suspect {
-                    last_commit_age_nanos,
-                } => tracing::warn!(
-                    run_id = %accepted.id,
-                    last_commit_age_ms = last_commit_age_nanos / 1_000_000,
-                    "Run Owner is suspect: no commit succeeded within a lease; \
-                     Program requests answer once recorded"
-                ),
+                Effect::Subscribe => subscription.subscribe(&module, &handle),
+                Effect::Unsubscribe => subscription.unsubscribe(),
                 Effect::Interrupt {
                     last_commit_age_nanos,
                 } => interrupt(&module, &accepted, &handle, last_commit_age_nanos),
@@ -154,8 +154,79 @@ pub(crate) async fn host(
         effects.extend(apply(&mut state, Message::Drained, now));
     };
     drop(timers);
+    drop(subscription);
     drop(registration);
     ended
+}
+
+/// The change subscription the owner holds while a connection wait is
+/// parked: a task that rings [`Message::Changed`] into the mailbox once
+/// subscribed (so a request that ended before then is read too) and after
+/// changes, at most once per wake gap: the owner reads no more often, and
+/// the signal keeps a change that came meanwhile. During a notification
+/// outage it rings nothing and subscribes again once the signal is back, a
+/// wake gap apart; the periodic precheck covers the outage.
+#[derive(Default)]
+struct Subscription(Option<tokio::task::JoinHandle<()>>);
+
+impl Subscription {
+    fn subscribe(&mut self, module: &RunModule, handle: &OwnerHandle) {
+        self.unsubscribe();
+        let database = module.database.clone();
+        let gap = module.execution_policy.wake_gap();
+        let handle = handle.clone();
+        self.0 = Some(tokio::spawn(async move {
+            loop {
+                if let Ok(mut changes) = database.subscribe_changes() {
+                    loop {
+                        handle.send(Message::Changed);
+                        tokio::time::sleep(gap).await;
+                        if changes.changed().await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                tokio::time::sleep(gap).await;
+            }
+        }));
+    }
+
+    fn unsubscribe(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        self.unsubscribe();
+    }
+}
+
+/// Runs one snapshot check of parked waits; its findings reach the owner as
+/// [`Message::Prechecked`].
+fn spawn_precheck(
+    handle: &OwnerHandle,
+    batch: PrecheckBatch,
+    #[cfg(test)] observer: std::sync::Arc<dyn crate::execution::ExecutionObserver>,
+) {
+    let handle = handle.clone();
+    tokio::spawn(async move {
+        let check = batch.check();
+        let found = batch.run().await;
+        if let Err(error) = &found {
+            tracing::debug!(
+                run_id = %handle.run_id(),
+                ?check,
+                %error,
+                "Run Owner's check of its parked waits found nothing: the next one reads again"
+            );
+        }
+        #[cfg(test)]
+        observer.precheck_finished(check, found.as_ref().map_or(0, Vec::len));
+        handle.send(Message::Prechecked { check, found });
+    });
 }
 
 /// The owner gives its Run up: the Program and its dispatches stop, and the
@@ -233,8 +304,9 @@ impl Drop for Timers {
 }
 
 /// Runs every effect but the commit, the settle, the interruption, the
-/// timers and the retirement, which the loop owns. A write retried past the
-/// owner's retirement answers a mailbox nobody reads.
+/// timers, the change subscription and the retirement, which the loop owns.
+/// A write retried past the owner's retirement answers a mailbox nobody
+/// reads.
 fn run_effect(
     module: &RunModule,
     accepted: &AcceptedRun,
@@ -251,6 +323,20 @@ fn run_effect(
         Effect::Answer(reply, recorded) => {
             let _delivered = reply.send(recorded);
         }
+        Effect::Suspect {
+            last_commit_age_nanos,
+        } => tracing::warn!(
+            run_id = %accepted.id,
+            last_commit_age_ms = last_commit_age_nanos / 1_000_000,
+            "Run Owner is suspect: no commit succeeded within a lease; \
+             Program requests answer once recorded"
+        ),
+        Effect::Precheck(batch) => spawn_precheck(
+            handle,
+            batch,
+            #[cfg(test)]
+            module.execution_observer.clone(),
+        ),
         Effect::Start => {
             let module = module.clone();
             let accepted = accepted.clone();
@@ -272,44 +358,9 @@ fn run_effect(
                 handle.send(Message::Started(started));
             });
         }
-        Effect::StartProgram(package) => {
-            let invoker = OperationInvoker::new(
-                module.accounts.clone(),
-                module.providers.clone(),
-                module.provider_publisher.clone(),
-                module.human_interface.clone(),
-                module.database.clone(),
-                module.workspaces.clone(),
-                actor.clone(),
-                accepted,
-                module.execution_policy.approval_wait_nanos(),
-                handle.clone(),
-                module.upstream.clone(),
-                module.clock.clone(),
-                #[cfg(test)]
-                module.invocation_observer.clone(),
-            );
-            let output = ProgramOutputWriter::new(handle.clone(), accepted.value_limits);
-            let engine = module.engine.clone();
-            let linked_snapshots = accepted.linked_snapshots.clone();
-            let limits = accepted.value_limits;
-            let stop = handle.stop();
-            let handle = handle.clone();
-            tokio::spawn(async move {
-                let completion = engine::execute(
-                    engine,
-                    package,
-                    linked_snapshots,
-                    invoker,
-                    output,
-                    limits,
-                    stop,
-                )
-                .await;
-                handle.send(Message::ProgramEnded(completion));
-            });
-        }
+        Effect::StartProgram(package) => start_program(module, accepted, actor, handle, package),
         Effect::TerminateProgram => handle.stop().request(),
+        Effect::Wake(parked) => parked.wake(),
         Effect::Abandon(work, error) => work.settle(Err(error)),
         Effect::CompleteExecution { completion, intent } => {
             let module = module.clone();
@@ -328,17 +379,63 @@ fn run_effect(
         }
         Effect::Commit { .. }
         | Effect::Settle { .. }
-        | Effect::Suspect { .. }
         | Effect::Interrupt { .. }
         | Effect::ArmTimer { .. }
-        | Effect::WakeParked
+        | Effect::Subscribe
+        | Effect::Unsubscribe
         | Effect::Retire { .. } => {
             debug_assert!(
                 false,
-                "the host loop runs commits, liveness transitions, timers and retirement itself"
+                "the host loop runs commits, the interruption, timers, the subscription and retirement itself"
             );
         }
     }
+}
+
+/// Executes the accepted package with the Run's invoker and output, and
+/// reports its end into the mailbox.
+fn start_program(
+    module: &RunModule,
+    accepted: &AcceptedRun,
+    actor: &AuthenticatedPrincipal,
+    handle: &OwnerHandle,
+    package: engine::ProgramPackage,
+) {
+    let invoker = OperationInvoker::new(
+        module.accounts.clone(),
+        module.providers.clone(),
+        module.provider_publisher.clone(),
+        module.human_interface.clone(),
+        module.database.clone(),
+        module.workspaces.clone(),
+        actor.clone(),
+        accepted,
+        module.execution_policy.approval_wait_nanos(),
+        handle.clone(),
+        module.upstream.clone(),
+        module.clock.clone(),
+        #[cfg(test)]
+        module.invocation_observer.clone(),
+    );
+    let output = ProgramOutputWriter::new(handle.clone(), accepted.value_limits);
+    let engine = module.engine.clone();
+    let linked_snapshots = accepted.linked_snapshots.clone();
+    let limits = accepted.value_limits;
+    let stop = handle.stop();
+    let handle = handle.clone();
+    tokio::spawn(async move {
+        let completion = engine::execute(
+            engine,
+            package,
+            linked_snapshots,
+            invoker,
+            output,
+            limits,
+            stop,
+        )
+        .await;
+        handle.send(Message::ProgramEnded(completion));
+    });
 }
 
 /// The end of a recorded termination's shutdown grace on this process's
@@ -544,11 +641,8 @@ async fn commit_until_answered(
     if outcome.is_ok() {
         for item in &mut items {
             if let ChunkItem::Work(work) = item {
-                if let Some((timer, at_unix_nanos)) = work.take_recorded_deadline() {
-                    handle.send(Message::DeadlineRecorded {
-                        timer,
-                        at_unix_nanos,
-                    });
+                if let Some(parked) = work.take_parked() {
+                    handle.send(Message::Parked(parked));
                 }
                 if let Some((key, answer)) = work.take_recorded_request() {
                     handle.send(Message::RequestRecorded { key, answer });

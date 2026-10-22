@@ -5,8 +5,8 @@
 use super::*;
 
 use crate::owner::{
-    CHUNK_WORK_CAP, CommitRejection, DecisionAnswer, Effect, Message, OwnerLimits, OwnerState,
-    Phase, StartedExecution, Timer,
+    CHUNK_WORK_CAP, Check, CommitRejection, DecisionAnswer, Effect, Message, OwnerLimits,
+    OwnerState, ParkedWait, Phase, StartedExecution, Timer,
 };
 
 /// [`crate::owner::apply`] without the idle tick's re-arming, which every
@@ -372,6 +372,10 @@ fn deliver(effects: Vec<Effect>) -> Vec<Effect> {
                 let _delivered = reply.send(recorded);
                 None
             }
+            Effect::Wake(parked) => {
+                parked.wake();
+                None
+            }
             other => Some(other),
         })
         .collect()
@@ -445,7 +449,13 @@ const LIMITS: OwnerLimits = OwnerLimits {
     idle_tick_nanos: LEASE / 2,
     suspect_after_nanos: LEASE,
     self_interrupt_after_nanos: 3 * LEASE,
+    precheck_interval_nanos: PRECHECK,
+    wake_gap_nanos: WAKE_GAP,
 };
+
+/// The apply table's periodic precheck interval and wake gap.
+const PRECHECK: i64 = 15_000;
+const WAKE_GAP: i64 = 1_000;
 
 /// [`LIMITS`] under a Fan-out Limit of two.
 const LIMITED: OwnerLimits = OwnerLimits {
@@ -1667,6 +1677,65 @@ fn cancel(state: &mut OwnerState, now: i64) -> (Vec<Effect>, Decided) {
     )
 }
 
+/// What a parked Invocation reads once its owner wakes it (`Ok`) or lets
+/// it go (`Err`).
+type Woken = tokio::sync::oneshot::Receiver<()>;
+
+/// Parks `admitted` on `wait`, as a landed held recheck reports it.
+fn park(
+    state: &mut OwnerState,
+    invoker: &crate::invocation::OperationInvoker,
+    admitted: &Arc<crate::invocation::AdmittedInvocation>,
+    wait: ParkedWait,
+    now: i64,
+) -> (Vec<Effect>, Woken) {
+    let (wake, woken) = tokio::sync::oneshot::channel();
+    let parked = crate::invocation::ParkedInvocation::for_apply_test(invoker, admitted, wait, wake);
+    (
+        apply_without_tick(state, Message::Parked(Box::new(parked)), now),
+        woken,
+    )
+}
+
+fn approval_wait(approval: &crate::approval::ApprovalId) -> ParkedWait {
+    ParkedWait::Approval {
+        approval: approval.clone(),
+        deadline_at_unix_nanos: APPROVAL_DEADLINE,
+    }
+}
+
+fn connection_wait(
+    request: coral_provider::account::ConnectionRequestId,
+    expires_at_unix_nanos: i64,
+) -> ParkedWait {
+    ParkedWait::Connection {
+        request,
+        expires_at_unix_nanos,
+    }
+}
+
+fn connection_request() -> coral_provider::account::ConnectionRequestId {
+    coral_provider::account::ConnectionRequestId::parse(&uuid::Uuid::new_v4().to_string())
+        .expect("a request id")
+}
+
+/// Whether `effects` are exactly one check of the parks `parks` reads.
+fn prechecks(effects: &[Effect], check: Check, parks: &[u64]) -> bool {
+    match effects {
+        [Effect::Precheck(batch)] => {
+            check == Check::Periodic && batch.check() == check && batch.parks() == parks
+        }
+        [
+            Effect::Precheck(batch),
+            Effect::ArmTimer {
+                timer: Timer::WakeGap,
+                after_nanos: WAKE_GAP,
+            },
+        ] => check == Check::Connections && batch.check() == check && batch.parks() == parks,
+        _ => false,
+    }
+}
+
 /// The one pending chunk a commit effect carries.
 fn committed_chunk(effects: Vec<Effect>) -> crate::owner::ChunkBuildView {
     let effects = deliver(effects);
@@ -2186,30 +2255,30 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         );
     }
 
-    // An Approval Request's deadline: the chunk that created the request
-    // reports it and the owner arms its timer (a recheck reports it again,
-    // and the host replaces the sleep). The timer first: the expiry rides
-    // the next chunk with no requester; a decision applied after it waits
-    // parked and reads the recorded Expired, joining no chunk.
+    // An Approval Request's deadline: the chunk whose gate parked the
+    // Invocation on the request reports the park, and the owner arms the
+    // request's timer and the periodic precheck. The timer first: the expiry
+    // rides the next chunk with no requester, and once it is recorded the
+    // parked Invocation goes back to its held recheck with no read; a
+    // decision applied after the timer waits parked and reads the recorded
+    // Expired, joining no chunk. A park on a request already decided goes
+    // back at once and arms nothing.
     {
         let mut state = started(LIMITS);
         let approval = approval_id();
         let timer = Timer::Approval(approval.clone());
-        let recorded = |at_unix_nanos: i64| Message::DeadlineRecorded {
-            timer: Timer::Approval(approval.clone()),
-            at_unix_nanos,
-        };
-        let armed = |effects: &[Effect], after: i64| {
+        let (effects, mut woken) =
+            park(&mut state, &invoker, &admitted, approval_wait(&approval), 3);
+        assert!(
             matches!(
-                effects,
-                [Effect::ArmTimer { timer: Timer::Approval(id), after_nanos }]
-                    if *id == approval && *after_nanos == after
-            )
-        };
-        let effects = apply_without_tick(&mut state, recorded(APPROVAL_DEADLINE), 3);
-        assert!(armed(&effects, 97), "{effects:?}");
-        let effects = apply_without_tick(&mut state, recorded(APPROVAL_DEADLINE), 4);
-        assert!(armed(&effects, 96), "a recheck arms it again: {effects:?}");
+                effects.as_slice(),
+                [
+                    Effect::ArmTimer { timer: Timer::Approval(id), after_nanos: 97 },
+                    Effect::ArmTimer { timer: Timer::Precheck, after_nanos: PRECHECK },
+                ] if *id == approval
+            ),
+            "an approval wait subscribes to nothing: {effects:?}"
+        );
         assert!(
             apply_without_tick(&mut state, Message::Timer(timer.clone()), APPROVAL_DEADLINE)
                 .is_empty()
@@ -2231,33 +2300,41 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
             },
             103,
         );
+        woken.try_recv().expect_err("parked until the expiry lands");
         let effects = deliver(apply_without_tick(&mut state, Message::Committed, 104));
         assert!(effects.is_empty(), "{effects:?}");
+        woken.try_recv().expect("the recorded expiry wakes it");
+        assert_eq!(state.parked_invocations(), 0);
         assert!(matches!(
             decided(&mut late),
             Some(Ok(DecisionAnswer::FromRecord))
         ));
         assert_eq!(state.pending_chunks(), 0, "the decision joins no chunk");
+        let (effects, mut again) = park(
+            &mut state,
+            &invoker,
+            &admitted,
+            approval_wait(&approval),
+            105,
+        );
         assert!(
-            apply_without_tick(&mut state, recorded(APPROVAL_DEADLINE), 105).is_empty(),
+            deliver(effects).is_empty(),
             "a decided request arms no timer"
         );
+        again.try_recv().expect("and goes back at once");
+        assert_eq!(state.parked_invocations(), 0);
     }
 
-    // The decision first: it rides the chunk, and the timer that fires
-    // after it builds no expiry.
+    // The decision first: it rides the chunk and wakes the parked
+    // Invocation once recorded, and the timer that fires after it builds no
+    // expiry.
     {
         let mut state = started(LIMITS);
         let approval = approval_id();
         let timer = Timer::Approval(approval.clone());
-        deliver(apply_without_tick(
-            &mut state,
-            Message::DeadlineRecorded {
-                timer: timer.clone(),
-                at_unix_nanos: 100,
-            },
-            3,
-        ));
+        let (effects, mut woken) =
+            park(&mut state, &invoker, &admitted, approval_wait(&approval), 3);
+        assert_eq!(effects.len(), 2, "{effects:?}");
         let (effects, mut first) = decide(&mut state, &approval, 4);
         assert!(deliver(effects).is_empty());
         assert!(apply_without_tick(&mut state, Message::Timer(timer.clone()), 100).is_empty());
@@ -2275,6 +2352,7 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
             102,
         );
         deliver(apply_without_tick(&mut state, Message::Committed, 103));
+        woken.try_recv().expect("woken");
         assert!(matches!(
             decided(&mut first),
             Some(Ok(DecisionAnswer::Recorded {
@@ -2295,14 +2373,9 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
     {
         let mut state = started(LIMITS);
         let approval = approval_id();
-        deliver(apply_without_tick(
-            &mut state,
-            Message::DeadlineRecorded {
-                timer: Timer::Approval(approval.clone()),
-                at_unix_nanos: 100,
-            },
-            3,
-        ));
+        let (effects, mut woken) =
+            park(&mut state, &invoker, &admitted, approval_wait(&approval), 3);
+        assert_eq!(effects.len(), 2, "{effects:?}");
         let (effects, mut late) = decide(&mut state, &approval, 100);
         assert!(deliver(effects).is_empty());
         assert_eq!(state.parked_requests(), 1);
@@ -2320,6 +2393,7 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
             102,
         );
         deliver(apply_without_tick(&mut state, Message::Committed, 103));
+        woken.try_recv().expect("woken");
         assert!(matches!(
             decided(&mut late),
             Some(Ok(DecisionAnswer::FromRecord))
@@ -2327,37 +2401,417 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         assert_eq!(state.pending_chunks(), 0);
     }
 
-    // A connection request's deadline wakes the Invocations parked on it
-    // while the Run takes Program requests, and nothing once it stops.
+    // A connection request's deadline wakes the Invocations parked on that
+    // request alone while the Run takes Program requests, and nothing once
+    // it stops; the stop lets every parked Invocation go.
     {
         let mut state = started(LIMITS);
-        let request =
-            coral_provider::account::ConnectionRequestId::parse(&uuid::Uuid::new_v4().to_string())
-                .expect("a request id");
+        let request = connection_request();
+        let other = connection_request();
         let timer = Timer::Connection(request);
-        let effects = apply_without_tick(
+        let (effects, mut woken) = park(
             &mut state,
-            Message::DeadlineRecorded {
-                timer: timer.clone(),
-                at_unix_nanos: 50,
-            },
+            &invoker,
+            &admitted,
+            connection_wait(request, 50),
             3,
         );
         assert!(
             matches!(
                 effects.as_slice(),
-                [Effect::ArmTimer {
-                    after_nanos: 47,
-                    ..
-                }]
+                [
+                    Effect::ArmTimer {
+                        timer: Timer::Connection(_),
+                        after_nanos: 47
+                    },
+                    Effect::Subscribe,
+                    Effect::ArmTimer {
+                        timer: Timer::Precheck,
+                        ..
+                    },
+                ]
             ),
             "{effects:?}"
         );
-        assert!(matches!(
-            apply_without_tick(&mut state, Message::Timer(timer.clone()), 50).as_slice(),
-            [Effect::WakeParked]
+        let (effects, mut bystander) = park(
+            &mut state,
+            &invoker,
+            &admitted,
+            connection_wait(other, 70),
+            4,
+        );
+        let [
+            Effect::ArmTimer {
+                timer: Timer::Connection(_),
+                after_nanos: 66,
+            },
+            read @ ..,
+        ] = effects.as_slice()
+        else {
+            panic!("{effects:?}");
+        };
+        assert!(
+            prechecks(read, Check::Connections, &[1, 2]),
+            "one subscription and one precheck timer; the park under the held \
+             subscription reads the requests: {effects:?}"
+        );
+        let effects = deliver(apply_without_tick(
+            &mut state,
+            Message::Timer(timer.clone()),
+            50,
         ));
-        deliver(apply_without_tick(&mut state, Message::Stop, 51));
-        assert!(apply_without_tick(&mut state, Message::Timer(timer), 52).is_empty());
+        assert!(effects.is_empty(), "{effects:?}");
+        woken.try_recv().expect("woken");
+        bystander
+            .try_recv()
+            .expect_err("another request's wait stays parked");
+        let (_, mut again) = park(
+            &mut state,
+            &invoker,
+            &admitted,
+            connection_wait(request, 50),
+            51,
+        );
+        let effects = deliver(apply_without_tick(&mut state, Message::Stop, 52));
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [
+                    Effect::ArmTimer {
+                        timer: Timer::Grace,
+                        ..
+                    },
+                    Effect::Unsubscribe,
+                    Effect::TerminateProgram,
+                ]
+            ),
+            "{effects:?}"
+        );
+        assert!(
+            matches!(
+                again.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+            ),
+            "a stop lets the parked Invocations go"
+        );
+        assert!(matches!(
+            bystander.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
+        assert!(apply_without_tick(&mut state, Message::Timer(timer), 53).is_empty());
+        let (effects, mut late) = park(
+            &mut state,
+            &invoker,
+            &admitted,
+            connection_wait(request, 90),
+            54,
+        );
+        assert!(
+            effects.is_empty(),
+            "a stopped Run parks nothing: {effects:?}"
+        );
+        assert!(matches!(
+            late.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
+    }
+}
+
+/// The owner's wake-ups and prechecks of its parked Invocations, in mailbox
+/// order: an approval wait subscribes to nothing, so a change rings nothing
+/// and reads nothing; a connection wait holds the one subscription, and the
+/// rings it brings are coalesced into one read of the connection requests
+/// per wake gap; the periodic precheck reads every parked wait, wakes only
+/// the parks it found still parked under the serial it read, and is armed
+/// again while waits remain; a failed check finds nothing.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of wake-up and precheck message orders, each case a block"
+)]
+async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_rest() {
+    let (engine, _release) = BlockingEngine::new();
+    let fixture = TestModules::new(Arc::new(engine)).await;
+    let operation = fixture
+        .user_operation("user:apply-wakeups", "Parked waits")
+        .await;
+    let run = fixture
+        .runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission("return 1;"),
+        )
+        .await
+        .unwrap();
+    wait_until_started(&fixture, &operation.workspace_id, run.run_id()).await;
+    let record = fixture
+        .run_record(&operation.workspace_id, run.run_id())
+        .await;
+    let admitted = admitted_invocation(&fixture, &operation, run.run_id()).await;
+    let invoker = test_invoker(&fixture, &operation, &record);
+
+    // An approval wait, then a connection wait: the first arms the periodic
+    // precheck, the second the subscription. A ring before the subscription
+    // reads nothing; once subscribed, a ring reads the connection requests
+    // and starts the wake gap, rings meanwhile coalesce, and the next read
+    // starts when the gap is out. A read that finds the request ended wakes
+    // its Invocation and drops the subscription.
+    {
+        let mut state = started(LIMITS);
+        let approval = approval_id();
+        let request = connection_request();
+        let (effects, mut approval_woken) =
+            park(&mut state, &invoker, &admitted, approval_wait(&approval), 3);
+        assert_eq!(effects.len(), 2, "{effects:?}");
+        assert!(
+            apply_without_tick(&mut state, Message::Changed, 4).is_empty(),
+            "no subscription: an unrelated commit reads nothing"
+        );
+        let (effects, mut connection_woken) = park(
+            &mut state,
+            &invoker,
+            &admitted,
+            connection_wait(request, 500),
+            5,
+        );
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [
+                    Effect::ArmTimer {
+                        timer: Timer::Connection(_),
+                        ..
+                    },
+                    Effect::Subscribe
+                ]
+            ),
+            "{effects:?}"
+        );
+        let effects = apply_without_tick(&mut state, Message::Changed, 6);
+        assert!(prechecks(&effects, Check::Connections, &[2]), "{effects:?}");
+        assert!(apply_without_tick(&mut state, Message::Changed, 7).is_empty());
+        let effects = apply_without_tick(
+            &mut state,
+            Message::Prechecked {
+                check: Check::Connections,
+                found: Ok(Vec::new()),
+            },
+            8,
+        );
+        assert!(effects.is_empty(), "the gap is not out: {effects:?}");
+        assert!(apply_without_tick(&mut state, Message::Changed, 9).is_empty());
+        let effects = apply_without_tick(&mut state, Message::Timer(Timer::WakeGap), 10);
+        assert!(
+            prechecks(&effects, Check::Connections, &[2]),
+            "the rings coalesce into one read: {effects:?}"
+        );
+        let effects = apply_without_tick(&mut state, Message::Timer(Timer::WakeGap), 11);
+        assert!(effects.is_empty(), "nothing rang since: {effects:?}");
+        let effects = deliver(apply_without_tick(
+            &mut state,
+            Message::Prechecked {
+                check: Check::Connections,
+                found: Ok(vec![2]),
+            },
+            12,
+        ));
+        assert!(
+            matches!(effects.as_slice(), [Effect::Unsubscribe]),
+            "{effects:?}"
+        );
+        connection_woken.try_recv().expect("woken");
+        approval_woken.try_recv().expect_err("still parked");
+        assert!(apply_without_tick(&mut state, Message::Changed, 13).is_empty());
+        assert_eq!(state.parked_invocations(), 1);
+    }
+
+    // A connection wait that parks under a subscription already held counts
+    // as a ring: a ring that came before its message read a batch without
+    // it, and its request may have ended since its held recheck read it.
+    // Inside the wake gap the read waits for the gap, and then reads both.
+    {
+        let mut state = started(LIMITS);
+        let (effects, _first) = park(
+            &mut state,
+            &invoker,
+            &admitted,
+            connection_wait(connection_request(), 500),
+            3,
+        );
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Subscribe))
+        );
+        let effects = apply_without_tick(&mut state, Message::Changed, 4);
+        assert!(prechecks(&effects, Check::Connections, &[1]), "{effects:?}");
+        let (effects, _second) = park(
+            &mut state,
+            &invoker,
+            &admitted,
+            connection_wait(connection_request(), 500),
+            5,
+        );
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::ArmTimer {
+                    timer: Timer::Connection(_),
+                    ..
+                }]
+            ),
+            "the first read still runs: {effects:?}"
+        );
+        assert!(
+            apply_without_tick(
+                &mut state,
+                Message::Prechecked {
+                    check: Check::Connections,
+                    found: Ok(Vec::new()),
+                },
+                6,
+            )
+            .is_empty(),
+            "the gap is not out"
+        );
+        let effects = apply_without_tick(&mut state, Message::Timer(Timer::WakeGap), 7);
+        assert!(
+            prechecks(&effects, Check::Connections, &[1, 2]),
+            "the second park is read without a ring of its own: {effects:?}"
+        );
+    }
+
+    // The periodic precheck reads every parked wait. A finding wakes the
+    // parks it names; a park woken meanwhile by the owner's own record is
+    // not woken twice; the precheck is armed again while waits remain and
+    // not once none does. A failed precheck wakes nothing.
+    {
+        let mut state = started(LIMITS);
+        let approval = approval_id();
+        let request = connection_request();
+        let (_, mut approval_woken) =
+            park(&mut state, &invoker, &admitted, approval_wait(&approval), 3);
+        let (_, mut connection_woken) = park(
+            &mut state,
+            &invoker,
+            &admitted,
+            connection_wait(request, 500),
+            4,
+        );
+        let effects = apply_without_tick(&mut state, Message::Timer(Timer::Precheck), 5);
+        assert!(prechecks(&effects, Check::Periodic, &[1, 2]), "{effects:?}");
+        let effects = apply_without_tick(
+            &mut state,
+            Message::Prechecked {
+                check: Check::Periodic,
+                found: Err(Error::OwnerLost),
+            },
+            6,
+        );
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::ArmTimer {
+                    timer: Timer::Precheck,
+                    after_nanos: PRECHECK
+                }]
+            ),
+            "a failed precheck wakes nothing and is read again: {effects:?}"
+        );
+        let effects = apply_without_tick(&mut state, Message::Timer(Timer::Precheck), 7);
+        assert!(prechecks(&effects, Check::Periodic, &[1, 2]), "{effects:?}");
+        let effects = deliver(apply_without_tick(
+            &mut state,
+            Message::Prechecked {
+                check: Check::Periodic,
+                found: Ok(vec![2]),
+            },
+            8,
+        ));
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [
+                    Effect::Unsubscribe,
+                    Effect::ArmTimer {
+                        timer: Timer::Precheck,
+                        ..
+                    },
+                ]
+            ),
+            "{effects:?}"
+        );
+        connection_woken.try_recv().expect("woken");
+        approval_woken.try_recv().expect_err("still parked");
+        let effects = apply_without_tick(&mut state, Message::Timer(Timer::Precheck), 9);
+        assert!(prechecks(&effects, Check::Periodic, &[1]), "{effects:?}");
+        // The decision lands before the precheck answers: the owner's
+        // record wakes the Invocation, and the finding finds it gone.
+        let (effects, _decided) = decide(&mut state, &approval, 10);
+        assert!(deliver(effects).is_empty());
+        committed_chunk(apply_without_tick(&mut state, Message::Drained, 11));
+        deliver(apply_without_tick(&mut state, Message::Committed, 12));
+        approval_woken.try_recv().expect("woken");
+        let effects = apply_without_tick(
+            &mut state,
+            Message::Prechecked {
+                check: Check::Periodic,
+                found: Ok(vec![1]),
+            },
+            13,
+        );
+        assert!(
+            effects.is_empty(),
+            "a stale finding wakes nothing and nothing is left to precheck: {effects:?}"
+        );
+        assert_eq!(state.parked_invocations(), 0);
+        let effects = apply_without_tick(&mut state, Message::Timer(Timer::Precheck), 14);
+        assert!(effects.is_empty(), "{effects:?}");
+    }
+
+    // A precheck due past the Run deadline on the owner's clock, before the
+    // deadline's timer arrived: the timeout is applied first, as the timer
+    // would have been, the parked Invocation is let go, and nothing is read.
+    {
+        let mut state = started(LIMITS);
+        let (_, mut woken) = park(
+            &mut state,
+            &invoker,
+            &admitted,
+            approval_wait(&approval_id()),
+            3,
+        );
+        let effects = deliver(apply_without_tick(
+            &mut state,
+            Message::Timer(Timer::Precheck),
+            LIMITS.deadline_at_unix_nanos,
+        ));
+        assert!(stops(&effects), "{effects:?}");
+        assert_eq!(
+            state.termination().map(|intent| intent.termination.kind),
+            Some(crate::lifecycle::RunTerminationKind::TimedOut)
+        );
+        assert!(matches!(
+            woken.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
+    }
+
+    // A precheck due once the Run takes no more Program requests reads
+    // nothing, and its timer is not armed again.
+    {
+        let mut state = started(LIMITS);
+        let (_, _woken) = park(
+            &mut state,
+            &invoker,
+            &admitted,
+            approval_wait(&approval_id()),
+            3,
+        );
+        deliver(apply_without_tick(&mut state, Message::Stop, 4));
+        assert_eq!(state.parked_invocations(), 0);
+        let effects = apply_without_tick(&mut state, Message::Timer(Timer::Precheck), 5);
+        assert!(effects.is_empty(), "{effects:?}");
     }
 }

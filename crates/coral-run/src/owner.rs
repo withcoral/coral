@@ -8,12 +8,25 @@
 //! Events and row work fill chunks, the outside requests (a decision on an
 //! Approval Request, a cancellation), the timers it arms (the Run deadline,
 //! each Approval Request's and connection request's deadline, the idle tick,
-//! the shutdown grace), and what a lost commit means. The hosting task in
-//! [`host`] drains the mailbox in arrival order, calls `apply`, and runs the
-//! effects: it holds the chunk commit, the Program execution, the terminal
-//! write, the settle of a recorded termination and the timers, one write at
-//! a time. A timer fires back into the mailbox, so a passed deadline is
-//! applied in order with the cancel or the decision that races it.
+//! the shutdown grace), which parked Invocations to wake and when to read
+//! their waits, and what a lost commit means. The hosting task in [`host`]
+//! drains the mailbox in arrival order, calls `apply`, and runs the effects:
+//! it holds the chunk commit, the Program execution, the terminal write, the
+//! settle of a recorded termination, the timers, the change subscription and
+//! the snapshot checks of the parked waits, one write at a time. A timer
+//! fires back into the mailbox, so a passed deadline is applied in order with
+//! the cancel or the decision that races it.
+//!
+//! A parked Invocation holds nothing while it waits: the owner keeps it and
+//! wakes it when its wait ends, back to its held recheck. A decision or an
+//! expiry the owner records itself wakes the Invocation it ends. A connection
+//! request ends outside the owner, so while one is waited on the owner
+//! subscribes to the content-free change signal and, per coalesced ring and
+//! at most once per wake gap, reads just its pending connection requests in a
+//! snapshot. A periodic snapshot precheck of every parked wait against the
+//! Dispatch Fence's facts finds the waits that ended or became moot without
+//! a wake-up. A wake-up and a precheck are hints; the held recheck and the
+//! fence decide.
 //!
 //! Row work that must join a chunk (an Invocation's admission, its held
 //! rechecks, the Dispatch Fence, its completion, a decision) implements
@@ -41,11 +54,12 @@ use crate::{Error, run_repository};
 pub(crate) use chunk::ChunkWork;
 #[cfg(test)]
 pub(crate) use chunk::{CHUNK_WORK_CAP, ChunkBuildView, FENCE_BATCH_CAP};
-#[cfg(test)]
-pub(crate) use handle::{CommitRejection, Message, Reply};
 pub(crate) use handle::{
-    DecisionAnswer, DecisionRequest, OwnerHandle, Owners, RequestKey, StartedExecution, Timer,
+    Check, DecisionAnswer, DecisionRequest, OwnerHandle, Owners, ParkedWait, RequestKey,
+    StartedExecution,
 };
+#[cfg(test)]
+pub(crate) use handle::{CommitRejection, Message, Reply, Timer};
 pub(crate) use host::host;
 #[cfg(test)]
 pub(crate) use state::{Effect, OwnerLimits, OwnerState, Phase, apply};

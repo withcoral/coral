@@ -160,9 +160,11 @@ impl TestModules {
     }
 
     /// A production-wired Run Module (real V8 and upstream) over this fixture's
-    /// database, optionally resolving caller and shared Accounts.
+    /// database, optionally resolving caller and shared Accounts. Its owners
+    /// precheck their parked waits on the test cadence, so a wait that became
+    /// moot is found within a test's wait for the Run's end.
     pub(crate) fn live_runs(&self, accounts: Option<AccountModule>) -> RunModule {
-        let runs = RunModule::new(
+        let mut runs = RunModule::new(
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             self.database.clone(),
             self.workspaces.clone(),
@@ -171,6 +173,7 @@ impl TestModules {
         )
         .expect("start the real Program runtime")
         .with_human_interface(test_reef());
+        runs.execution_policy = runs.execution_policy.with_test_wakeups();
         match accounts {
             Some(accounts) => runs.with_accounts(accounts),
             None => runs,
@@ -896,6 +899,54 @@ pub(crate) async fn configure_user_caller(
         .await
         .unwrap();
     fixture.accounts()
+}
+
+/// Connects the fixture User's caller Account with `secret` through their
+/// own connect flow, which completes every compatible pending connection
+/// request of theirs.
+pub(crate) async fn connect_caller(
+    accounts: &coral_provider::account::AccountModule,
+    operation: &OperationFixture,
+    secret: &str,
+) {
+    let context = change(operation.user.clone(), 40, '4');
+    let authorization = accounts
+        .start_user_authorization(
+            &context,
+            &operation.workspace_id,
+            &operation.provider_id,
+            ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    accounts
+        .submit_secret(
+            &context,
+            &operation.workspace_id,
+            authorization.id,
+            coral_credentials::CredentialValues::token(
+                coral_credentials::Secret::new(secret.into()).unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+}
+
+/// One forecast the upstream answers once, for `secret` alone.
+pub(crate) async fn forecast_once(server: &MockServer, secret: &str) {
+    Mock::given(method("GET"))
+        .and(path("/forecast"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            format!("Bearer {secret}").as_str(),
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"temperature": 18})),
+        )
+        .expect(1)
+        .mount(server)
+        .await;
 }
 
 pub(crate) async fn assert_connection_completion_event(

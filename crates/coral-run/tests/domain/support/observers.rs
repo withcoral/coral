@@ -332,7 +332,7 @@ impl FenceLatch {
     }
 
     /// Like [`Self::until_arrived`] for an arrival that may take `within` of
-    /// waiting, such as one behind a parked wait's fallback poll.
+    /// waiting, such as one behind a parked wait's wake-up.
     pub(crate) async fn until_arrived_within(&self, count: usize, within: Duration) {
         wait_until_async_within(within, async || {
             self.arrived.load(Ordering::SeqCst) >= count
@@ -376,39 +376,44 @@ impl InvocationObserver for FenceLatch {
     }
 }
 
-/// Counts held approval rechecks and the times a waiting Invocation parks
-/// until a commit, an expiry, or the fallback poll.
-pub(crate) struct ApprovalWaitProbe {
-    gate: Option<Arc<FenceGate>>,
+/// Watches parked waits from both sides: counts the held rechecks, the
+/// times an Invocation parks, its Dispatch Fence attempts, and the owner's
+/// snapshot checks of its parked waits with what each found.
+pub(crate) struct WaitProbe {
     held: watch::Sender<usize>,
     parked: watch::Sender<usize>,
+    fences: ObservedFences,
+    prechecks: Mutex<Vec<(crate::owner::Check, usize)>>,
 }
 
-impl ApprovalWaitProbe {
+impl WaitProbe {
     pub(crate) fn new() -> Arc<Self> {
-        Self::with_gate(None)
-    }
-
-    /// Holds the first approval wait before its first snapshot until the sender fires.
-    pub(crate) fn gated() -> (Arc<Self>, oneshot::Sender<()>) {
-        let (gate, release) = FenceGate::blocking();
-        (Self::with_gate(Some(gate)), release)
-    }
-
-    fn with_gate(gate: Option<Arc<FenceGate>>) -> Arc<Self> {
         Arc::new(Self {
-            gate,
             held: watch::channel(0).0,
             parked: watch::channel(0).0,
+            fences: ObservedFences::default(),
+            prechecks: Mutex::new(Vec::new()),
         })
     }
 
+    /// Held rechecks: the approval gate's and the credential selection's.
     pub(crate) fn held(&self) -> usize {
         *self.held.borrow()
     }
 
     pub(crate) fn parked(&self) -> usize {
         *self.parked.borrow()
+    }
+
+    /// Dispatch Fence attempts that returned.
+    pub(crate) fn fences(&self) -> usize {
+        self.fences.len()
+    }
+
+    /// The owner's checks of its parked waits, in order, each with how many
+    /// waits it found ended or moot.
+    pub(crate) fn prechecks(&self) -> Vec<(crate::owner::Check, usize)> {
+        self.prechecks.lock().unwrap().clone()
     }
 
     /// Returns once the wait has parked `count` times in total.
@@ -424,20 +429,24 @@ impl ApprovalWaitProbe {
 }
 
 #[async_trait]
-impl InvocationObserver for ApprovalWaitProbe {
+impl InvocationObserver for WaitProbe {
     fn approval_authority_checked(&self) {
         self.held.send_modify(|held| *held += 1);
     }
 
-    async fn approval_waiting(&self) -> Result<(), Error> {
-        match &self.gate {
-            Some(gate) => gate.before_fence().await,
-            None => Ok(()),
-        }
+    fn wait_parked(&self) {
+        self.parked.send_modify(|parked| *parked += 1);
     }
 
-    fn change_wait_started(&self) {
-        self.parked.send_modify(|parked| *parked += 1);
+    fn fence_attempt_finished(&self, permit: bool, durable_start: bool) {
+        self.fences.record(permit, durable_start);
+    }
+}
+
+#[async_trait]
+impl ExecutionObserver for WaitProbe {
+    fn precheck_finished(&self, check: crate::owner::Check, found: usize) {
+        self.prechecks.lock().unwrap().push((check, found));
     }
 }
 

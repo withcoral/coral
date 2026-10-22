@@ -7,12 +7,12 @@ use std::fmt;
 use async_trait::async_trait;
 use coral_db::Transaction;
 
-use crate::invocation::{FenceBatch, FenceRequest};
+use crate::invocation::{FenceBatch, FenceRequest, ParkedInvocation};
 use crate::lifecycle::{RequestedTermination, RunRecord};
 use crate::run_repository::OwnedEvent;
 use crate::{CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, Error};
 
-use super::handle::{DecisionAnswer, Reply, RequestKey, RequestReply, Timer};
+use super::handle::{DecisionAnswer, Reply, RequestKey, RequestReply};
 
 /// Row work items per chunk. Each one queries the database inside the
 /// commit, so this keeps a commit transaction short.
@@ -46,10 +46,11 @@ pub(crate) trait ChunkWork: Send + fmt::Debug {
         None
     }
 
-    /// The deadline this work recorded, once [`Self::run`] returned `Ok`:
-    /// the owner arms its timer once the chunk has landed. `None` for work
-    /// that records none.
-    fn take_recorded_deadline(&mut self) -> Option<(Timer, i64)> {
+    /// The Invocation this work parked on a wait, once [`Self::run`]
+    /// returned `Ok`: the owner keeps it, arms the wait's deadline, and wakes
+    /// it once the chunk has landed and the wait ended. `None` for work that
+    /// parks nothing.
+    fn take_parked(&mut self) -> Option<Box<ParkedInvocation>> {
         None
     }
 

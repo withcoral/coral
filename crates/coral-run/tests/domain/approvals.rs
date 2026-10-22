@@ -1944,13 +1944,19 @@ async fn first_durable_decision_wins_against_policy_changes_before_the_worker_ob
     }
 }
 
+/// While an Approval Request is pending, its Invocation is parked with its
+/// Run Owner and holds nothing. Commits elsewhere ring the content-free
+/// change signal, but an owner subscribes only for a connection wait, so
+/// they wake nothing, read nothing and fence nothing: the decision comes
+/// through the owner, and the periodic precheck (15 s away here) is the
+/// ceiling for everything else. Polling a snapshot per parked wait on every
+/// commit used to starve the pool.
 #[tokio::test]
-async fn a_pending_approval_takes_no_held_recheck_for_unrelated_commits() {
-    let probe = ApprovalWaitProbe::new();
-    let fixture = TestModules::with_invocation_adapters(
-        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
-        Arc::new(RejectingUpstream),
-        probe.clone(),
+async fn an_unrelated_commit_while_an_approval_is_pending_causes_no_fence_and_no_read() {
+    let wake_gap = Duration::from_secs(1);
+    let (fixture, probe) = probed_fixture(
+        crate::execution::ExecutionPolicy::testing()
+            .with_wakeups(Duration::from_secs(15), wake_gap),
     )
     .await;
     let operation = fixture
@@ -1969,24 +1975,19 @@ async fn a_pending_approval_takes_no_held_recheck_for_unrelated_commits() {
         )
         .await
         .unwrap();
-    // The first held recheck requests the approval before the wait parks.
+    // The held gate requests the approval and parks the Invocation.
     probe.until_parked(1).await;
-    let before = probe.held();
-    // Every commit wakes every waiter. Only the snapshot precheck keeps these
-    // wake-ups from becoming held rechecks.
+    let (held, fences) = (probe.held(), probe.fences());
     for at in 0..3 {
-        let parked = probe.parked();
         commit_elsewhere(&fixture, &bystander, at).await;
-        probe.until_parked(parked + 1).await;
     }
+    // Past the wake gap: a subscribed owner would have read by now.
+    tokio::time::sleep(wake_gap + Duration::from_millis(500)).await;
 
-    // Each held recheck locks the Run, Workspace, User, Provider, policy and
-    // Account rows. Polling them on a short timer starved the connection pool.
-    assert_eq!(
-        probe.held() - before,
-        0,
-        "held rechecks while only another Workspace changed"
-    );
+    assert_eq!(probe.held() - held, 0, "held rechecks");
+    assert_eq!(probe.fences() - fences, 0, "fences");
+    assert_eq!(probe.parked(), 1, "the Invocation stays parked");
+    assert_eq!(probe.prechecks(), Vec::new(), "snapshot reads");
     fixture
         .runs
         .cancel(
@@ -1999,24 +2000,102 @@ async fn a_pending_approval_takes_no_held_recheck_for_unrelated_commits() {
         .unwrap();
 }
 
-/// A parked approval wait ends when the owner's timer records the expiry:
-/// the chunk that records it ends the Invocation and wakes the wait, which
-/// finds the end in its snapshot and delivers it, well before the wait's
-/// 5 s fallback poll. The wait itself sleeps until nothing.
+/// A wait that became moot with no wake-up (the Workspace archived while a
+/// decision is pending) is found by the periodic precheck alone: its
+/// snapshot finds the authority lost, and the Invocation goes back to its
+/// held gate, which refuses it under the fence's shared holds and closes the
+/// request. No fence ever runs. The owner's timers run on the host clock, so
+/// the test shortens the precheck's period instead of advancing a clock 15 s.
 #[tokio::test]
-async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
-    let (probe, release) = ApprovalWaitProbe::gated();
-    let mut fixture = TestModules::with_invocation_adapters(
-        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
-        Arc::new(RejectingUpstream),
-        probe.clone(),
+async fn a_wait_that_became_moot_is_found_by_the_periodic_precheck_and_its_request_closed() {
+    let (fixture, probe) = probed_fixture(
+        crate::execution::ExecutionPolicy::testing_with_claim_lease(Duration::from_secs(60))
+            .with_wakeups(Duration::from_millis(300), Duration::from_secs(1)),
     )
     .await;
+    let operation = fixture
+        .user_operation("user:moot-wait", "A wait that became moot")
+        .await;
+    fixture.require_approval(&operation).await;
+    let approvals = fixture.approvals();
+    let run = fixture
+        .runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission(
+                "try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }",
+            ),
+        )
+        .await
+        .unwrap();
+    let request = wait_for_approval(
+        &approvals,
+        &operation.principal,
+        &operation.workspace_id,
+        run.run_id(),
+    )
+    .await;
+    probe.until_parked(1).await;
+    let held = probe.held();
+    fixture
+        .workspaces
+        .archive(
+            &change(operation.user.clone(), 50, '5'),
+            &operation.workspace_id,
+        )
+        .await
+        .unwrap();
+
+    let terminal = wait_for_terminal(
+        &fixture.runs,
+        &operation.principal,
+        &operation.workspace_id,
+        run.run_id(),
+    )
+    .await;
+    assert_final_code(&terminal, "dispatch_authority_lost");
+    let prechecks = probe.prechecks();
+    assert!(
+        prechecks
+            .iter()
+            .all(|(check, _)| *check == crate::owner::Check::Periodic),
+        "no change wake-up reads an approval wait: {prechecks:?}"
+    );
+    assert_eq!(
+        prechecks.last(),
+        Some(&(crate::owner::Check::Periodic, 1)),
+        "the periodic precheck found the moot wait: {prechecks:?}"
+    );
+    assert_eq!(
+        probe.held() - held,
+        1,
+        "one held recheck, after the finding"
+    );
+    assert_eq!(probe.fences(), 0, "no fence");
+    assert_eq!(
+        approvals
+            .get(&operation.principal, &operation.workspace_id, &request.id)
+            .await
+            .unwrap()
+            .state,
+        ApprovalState::Closed
+    );
+}
+
+/// A parked approval wait ends when the owner's timer records the expiry:
+/// the chunk that records it ends the Invocation and wakes the parked wait,
+/// with no read, long before the periodic precheck. The wait parks once.
+#[tokio::test]
+async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
     // Isolate approval expiry from the capped Run deadline and worker-claim
-    // expiry: the request expires two seconds after its creation, past the
-    // wait's second park below and before its 5 s fallback poll.
-    fixture.runs.execution_policy =
-        crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(2));
+    // expiry: the request expires two seconds after its creation, long
+    // before the periodic precheck.
+    let (fixture, probe) = probed_fixture(
+        crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(2))
+            .with_wakeups(Duration::from_secs(15), Duration::from_secs(1)),
+    )
+    .await;
     let operation = fixture
         .user_operation("user:quiet-expiry", "Expire by the timer")
         .await;
@@ -2032,13 +2111,9 @@ async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
         run.run_id(),
     )
     .await;
-    // The gate keeps the wait from taking its first snapshot until released.
-    release.send(()).unwrap();
-    // The approval request's own commit wakes the wait once. After that round,
-    // only the owner's expiry chunk or the fallback poll wakes it.
-    probe.until_parked(2).await;
+    probe.until_parked(1).await;
 
-    // Without the timer's chunk, the wait would sleep until its 5 s fallback poll.
+    // Without the timer's chunk, the wait would sleep until the precheck.
     wait_until_async_within(Duration::from_secs(3), async || {
         fixture
             .run_record(&operation.workspace_id, run.run_id())
@@ -2063,9 +2138,29 @@ async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
             .state,
         ApprovalState::Expired
     );
+    assert_eq!(probe.parked(), 1, "parked once, woken once");
+    assert_eq!(probe.prechecks(), Vec::new(), "no read woke it");
 }
 
-/// Commits a policy change in another Workspace. Each commit wakes every
+/// A fixture under `policy` whose Invocations and Run Owners one
+/// [`WaitProbe`] watches; approval-gated calls go to an upstream that
+/// rejects them.
+async fn probed_fixture(
+    policy: crate::execution::ExecutionPolicy,
+) -> (TestModules, Arc<WaitProbe>) {
+    let probe = WaitProbe::new();
+    let mut fixture = TestModules::with_execution_adapters(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        Arc::new(RejectingUpstream),
+        probe.clone(),
+        probe.clone(),
+    )
+    .await;
+    fixture.runs.execution_policy = policy;
+    (fixture, probe)
+}
+
+/// Commits a policy change in another Workspace. Each commit rings every
 /// change subscriber, as a busy deployment does.
 async fn commit_elsewhere(fixture: &TestModules, bystander: &OperationFixture, at: i64) {
     fixture

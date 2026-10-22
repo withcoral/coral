@@ -28,7 +28,6 @@ use coral_workspace::{AuthenticatedPrincipal, Principal};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
 use tokio::sync::oneshot;
 
-use crate::approval::ApprovalId;
 use crate::engine::Clock;
 use crate::execution::ExecutionStop;
 use crate::fence::{
@@ -37,7 +36,7 @@ use crate::fence::{
 };
 use crate::invocation_lifecycle::{FinishOutcome, InvocationState, UnfinishedInvocation};
 use crate::lifecycle::RunRecord;
-use crate::owner::{ChunkWork, OwnerHandle, Timer};
+use crate::owner::{Check, ChunkWork, OwnerHandle, ParkedWait};
 use crate::run_repository::{OwnedEvent, OwnedEventKind};
 use crate::types::AcceptedRun;
 use crate::{
@@ -134,7 +133,7 @@ pub(crate) trait InvocationObserver: Send + Sync {
         Ok(())
     }
 
-    fn change_wait_started(&self) {}
+    fn wait_parked(&self) {}
 
     async fn before_fence(&self) -> Result<(), Error> {
         Ok(())
@@ -207,43 +206,6 @@ pub(crate) struct OperationInvoker {
     clock: Arc<dyn Clock>,
     #[cfg(test)]
     observer: Arc<dyn InvocationObserver>,
-}
-
-/// Longest a waiting Invocation goes without a snapshot recheck.
-const WAIT_FALLBACK_POLL: std::time::Duration = std::time::Duration::from_secs(5);
-/// Shortest gap between rechecks of one waiting Invocation.
-const WAIT_MIN_RECHECK_GAP: std::time::Duration = std::time::Duration::from_millis(500);
-/// Longest a waiting Invocation goes without a held recheck, for anything a
-/// snapshot cannot see.
-const WAIT_HELD_RECHECK: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// What a waiting Invocation waits for between held rechecks.
-#[derive(Clone, Copy)]
-enum PendingWait {
-    Connection,
-    Approval,
-}
-
-async fn next_change(
-    changes: &mut Option<coral_db::ChangeSubscription>,
-) -> Result<(), coral_db::Error> {
-    match changes {
-        Some(subscription) => subscription.changed().await,
-        None => std::future::pending().await,
-    }
-}
-
-/// The owner's next wake-up for a parked connection wait; a wait with none
-/// is never woken this way.
-async fn next_wake(wakes: Option<&mut tokio::sync::watch::Receiver<()>>) {
-    match wakes {
-        // A closed channel (the owner gone) is a wake like any other: the
-        // recheck finds the owner lost.
-        Some(wakes) => {
-            let _closed = wakes.changed().await;
-        }
-        None => std::future::pending().await,
-    }
 }
 
 impl OperationInvoker {
@@ -728,14 +690,12 @@ impl OperationInvoker {
         admitted: &Arc<AdmittedInvocation>,
         progress: &mut InvocationProgress,
     ) -> Result<(), Error> {
-        // Subscribe before the first check so a commit during it still wakes this wait.
-        // A wake-up is only a hint: the held recheck reads everything again.
-        let mut changes = self.database.subscribe_changes().ok();
-        // The owner wakes the waits parked on a connection request when the
-        // request's timer fires; a hint like a commit.
-        let mut wakes = self.owner.parked_wakes();
         loop {
-            match self.select_credentials(admitted, progress.clone()).await? {
+            let (wake, woken) = oneshot::channel();
+            match self
+                .select_credentials(admitted, progress.clone(), wake)
+                .await?
+            {
                 SelectionOutcome::Ready(selected) => {
                     *progress = selected;
                     break;
@@ -744,14 +704,7 @@ impl OperationInvoker {
                     progress: selected, ..
                 } => {
                     *progress = selected;
-                    self.wait_until_changed(
-                        &mut changes,
-                        Some(&mut wakes),
-                        admitted,
-                        progress,
-                        PendingWait::Connection,
-                    )
-                    .await?;
+                    self.parked(woken).await?;
                 }
                 SelectionOutcome::Rejected(failure) => {
                     return Err(Error::InvocationRejected(failure));
@@ -760,23 +713,17 @@ impl OperationInvoker {
             }
         }
         loop {
-            match self.approval_ready(admitted, progress).await? {
+            let (wake, woken) = oneshot::channel();
+            match self.approval_ready(admitted, progress, wake).await? {
                 GateOutcome::Ready(approval) => {
                     progress.approval = approval;
                     break;
                 }
-                GateOutcome::Waiting { .. } => {
+                GateOutcome::Waiting(_) => {
                     #[cfg(test)]
                     self.observer.approval_waiting().await?;
                     // No transaction or credential material is held while a human decides.
-                    self.wait_until_changed(
-                        &mut changes,
-                        None,
-                        admitted,
-                        progress,
-                        PendingWait::Approval,
-                    )
-                    .await?;
+                    self.parked(woken).await?;
                 }
                 GateOutcome::Rejected(failure) => return Err(Error::InvocationRejected(failure)),
                 GateOutcome::RunNotCurrent => return Err(Error::ProgramHostTerminated),
@@ -785,162 +732,19 @@ impl OperationInvoker {
         self.prepare_credentials(admitted, progress).await
     }
 
-    /// Waits until a read snapshot shows that a held recheck could change this wait.
-    ///
-    /// A held recheck runs inside the owner's chunk commit and holds the
-    /// Workspace, User, Provider, policy and Account rows shared, so waiting
-    /// Invocations must not repeat it while nothing changed. Snapshots take no
-    /// locks. A held recheck still runs at least every [`WAIT_HELD_RECHECK`]
-    /// for anything a snapshot cannot see; the Dispatch Fence rechecks
-    /// authority and approval regardless.
-    async fn wait_until_changed(
-        &self,
-        changes: &mut Option<coral_db::ChangeSubscription>,
-        mut wakes: Option<&mut tokio::sync::watch::Receiver<()>>,
-        admitted: &AdmittedInvocation,
-        progress: &InvocationProgress,
-        wait: PendingWait,
-    ) -> Result<(), Error> {
-        let held_at = tokio::time::Instant::now();
-        // The held recheck just ran, so this snapshot only finds the next expiry.
-        // A snapshot that disagrees with it still waits before the next held recheck.
-        let mut until = self.pending_until(admitted, progress, wait).await;
-        loop {
-            self.wait_for_recheck(changes, wakes.as_deref_mut(), until)
-                .await?;
-            if held_at.elapsed() >= WAIT_HELD_RECHECK {
-                return Ok(());
-            }
-            until = self.pending_until(admitted, progress, wait).await;
-            if until.is_none() {
-                return Ok(());
-            }
-        }
-    }
-
-    /// Returns when a read snapshot shows this wait unchanged: the earliest time
-    /// it expires without a commit. Any other answer, including a failure, leaves
-    /// the outcome to the held recheck.
-    async fn pending_until(
-        &self,
-        admitted: &AdmittedInvocation,
-        progress: &InvocationProgress,
-        wait: PendingWait,
-    ) -> Option<i64> {
-        self.pending_until_in_snapshot(admitted, progress, wait)
-            .await
-            .ok()
-            .flatten()
-    }
-
-    /// The parked-wait precheck: the fence's facts from a read snapshot with
-    /// no hold, the wait's own row beside them, and the fence's evaluator.
-    /// Only a decision to keep waiting answers; anything else is for the
-    /// held recheck to decide.
-    async fn pending_until_in_snapshot(
-        &self,
-        admitted: &AdmittedInvocation,
-        progress: &InvocationProgress,
-        wait: PendingWait,
-    ) -> Result<Option<i64>, Error> {
-        let now = self.now()?;
-        let mut tx = self.database.begin_read_snapshot().await?;
-        let Some(run) = crate::run_repository::find_exact_in_transaction(
-            &mut tx,
-            &self.workspace_id,
-            &self.run_id,
-        )
-        .await?
-        else {
-            return Ok(None);
-        };
-        let committed_failure = crate::approval::committed_failure(&mut tx, admitted).await?;
-        let target = FenceTarget {
-            admitted,
-            credential_evidence: progress.credential_evidence.as_ref(),
-        };
-        let shared = SharedFacts::load(
-            &mut tx,
-            coral_db::RowLock::None,
-            &self.fence_scope(),
-            now,
-            std::slice::from_ref(&target),
-        )
-        .await?;
-        let (connection_pending_until_unix_nanos, approval) = match wait {
-            PendingWait::Connection => {
-                let Some(request) = progress.connection_request else {
-                    return Ok(None);
-                };
-                let Some(until) = coral_provider::account::connection_pending_until_in_snapshot(
-                    &mut tx,
-                    &admitted.target,
-                    &self.principal,
-                    request,
-                    now,
-                )
-                .await?
-                else {
-                    return Ok(None);
-                };
-                (Some(until), ApprovalFact::NotRequested)
-            }
-            PendingWait::Approval => (
-                None,
-                crate::approval::fact_in_snapshot(&mut tx, admitted).await?,
-            ),
-        };
-        tx.commit().await?;
-        let now = self.now()?;
-        let decision = fence::decide(
-            &shared,
-            &self.run_facts(&run),
-            &InvocationFacts {
-                target,
-                committed_failure,
-                connection_pending_until_unix_nanos,
-                approval,
-            },
-            now,
-        );
-        Ok(match decision {
-            Decision::Wait { until_unix_nanos } => Some(until_unix_nanos),
-            Decision::Dispatch
-            | Decision::Deny(_)
-            | Decision::RefreshRequired
-            | Decision::RunTerminated => None,
-        })
-    }
-
-    /// Waits for a committed change, the owner's wake-up (a connection
-    /// request's timer; the approval wait has none), the expiry `until`,
-    /// the fallback poll, or a stop request, at most once per
-    /// [`WAIT_MIN_RECHECK_GAP`].
-    async fn wait_for_recheck(
-        &self,
-        changes: &mut Option<coral_db::ChangeSubscription>,
-        wakes: Option<&mut tokio::sync::watch::Receiver<()>>,
-        until: Option<i64>,
-    ) -> Result<(), Error> {
+    /// Waits, holding nothing, until the Run Owner sends this parked
+    /// Invocation back to its held recheck: the owner recorded a decision or
+    /// an expiry of its Approval Request, its connection request's deadline
+    /// passed, or a snapshot check found its wait ended or moot. The held
+    /// recheck decides; a wake is a hint. The owner drops the wake once its
+    /// Run takes no more Program requests.
+    async fn parked(&self, woken: oneshot::Receiver<()>) -> Result<(), Error> {
         #[cfg(test)]
-        self.observer.change_wait_started();
-        let checked_at = tokio::time::Instant::now();
-        // Expiry changes the wait without a commit.
-        let now = self.now()?;
-        let wake = checked_at
-            + until.map_or(WAIT_FALLBACK_POLL, |until| {
-                crate::duration_until(until, now).min(WAIT_FALLBACK_POLL)
-            });
+        self.observer.wait_parked();
         tokio::select! {
-            () = self.stop.requested() => return Err(Error::ProgramHostTerminated),
-            result = next_change(changes) => if result.is_err() { *changes = None },
-            () = next_wake(wakes) => {}
-            () = tokio::time::sleep_until(wake) => {}
-        }
-        // Commits elsewhere wake every waiter. Coalesce bursts into bounded rechecks.
-        tokio::select! {
+            biased;
             () = self.stop.requested() => Err(Error::ProgramHostTerminated),
-            () = tokio::time::sleep_until(checked_at + WAIT_MIN_RECHECK_GAP) => Ok(()),
+            woken = woken => woken.map_err(|_dropped| Error::ProgramHostTerminated),
         }
     }
 
@@ -981,10 +785,13 @@ impl OperationInvoker {
         receiver.await.map_err(|_lost| Error::OwnerLost)?
     }
 
+    /// The held credential selection; `wake` is how the owner sends the
+    /// Invocation back here if this parks it on a connection request.
     async fn select_credentials(
         &self,
         admitted: &Arc<AdmittedInvocation>,
         progress: InvocationProgress,
+        wake: oneshot::Sender<()>,
     ) -> Result<SelectionOutcome, Error> {
         self.ask(|reply| {
             Box::new(SelectCredentialsWork {
@@ -992,7 +799,7 @@ impl OperationInvoker {
                 admitted: admitted.clone(),
                 progress,
                 reply,
-                deadline: None,
+                wake: Some(wake),
             })
         })
         .await
@@ -1067,7 +874,10 @@ impl OperationInvoker {
                 progress.connection_request = Some(request);
                 Ok(SelectionOutcome::Waiting {
                     progress,
-                    expires_at_unix_nanos,
+                    wait: ParkedWait::Connection {
+                        request,
+                        expires_at_unix_nanos,
+                    },
                 })
             }
             ConnectionResolution::Ready(evidence) => {
@@ -1086,10 +896,13 @@ impl OperationInvoker {
         }
     }
 
+    /// The held approval gate; `wake` is how the owner sends the Invocation
+    /// back here if this parks it on its Approval Request.
     async fn approval_ready(
         &self,
         admitted: &Arc<AdmittedInvocation>,
         progress: &InvocationProgress,
+        wake: oneshot::Sender<()>,
     ) -> Result<GateOutcome, Error> {
         self.ask(|reply| {
             Box::new(ApprovalReadyWork {
@@ -1097,7 +910,7 @@ impl OperationInvoker {
                 admitted: admitted.clone(),
                 progress: progress.clone(),
                 reply,
-                deadline: None,
+                wake: Some(wake),
             })
         })
         .await
@@ -1159,10 +972,10 @@ impl OperationInvoker {
             crate::approval::Gate::Pending {
                 id,
                 deadline_at_unix_nanos,
-            } => GateOutcome::Waiting {
+            } => GateOutcome::Waiting(ParkedWait::Approval {
                 approval: id,
                 deadline_at_unix_nanos,
-            },
+            }),
         })
     }
 
@@ -1465,11 +1278,11 @@ impl InvocationCompletion {
 }
 
 enum SelectionOutcome {
-    /// The Invocation is parked on a connection request, which expires at
-    /// `expires_at_unix_nanos`: the owner's timer for it.
+    /// The Invocation parks on its User's connection request until the
+    /// request ends or expires.
     Waiting {
         progress: InvocationProgress,
-        expires_at_unix_nanos: i64,
+        wait: ParkedWait,
     },
     Ready(InvocationProgress),
     Rejected(Rejection),
@@ -1477,12 +1290,9 @@ enum SelectionOutcome {
 }
 
 enum GateOutcome {
-    /// A decision is pending on `approval`, which expires at
-    /// `deadline_at_unix_nanos`: the owner's timer for it.
-    Waiting {
-        approval: ApprovalId,
-        deadline_at_unix_nanos: i64,
-    },
+    /// The Invocation parks on its Approval Request until it is decided or
+    /// expires.
+    Waiting(ParkedWait),
     Ready(ApprovalFact),
     Rejected(Rejection),
     RunNotCurrent,
@@ -1570,9 +1380,9 @@ struct SelectCredentialsWork {
     admitted: Arc<AdmittedInvocation>,
     progress: InvocationProgress,
     reply: Replier<SelectionOutcome>,
-    /// The connection request's deadline, when this parked the Invocation
-    /// on one.
-    deadline: Option<(Timer, i64)>,
+    /// How the owner sends the Invocation back here once the connection
+    /// request the selection parks it on ends.
+    wake: Option<oneshot::Sender<()>>,
 }
 
 impl fmt::Debug for SelectCredentialsWork {
@@ -1602,20 +1412,23 @@ impl ChunkWork for SelectCredentialsWork {
                 self.progress.clone(),
             )
             .await?;
-        if let SelectionOutcome::Waiting {
-            progress,
-            expires_at_unix_nanos,
-        } = &outcome
-            && let Some(request) = progress.connection_request
-        {
-            self.deadline = Some((Timer::Connection(request), *expires_at_unix_nanos));
-        }
         self.reply.record(outcome);
         Ok(Vec::new())
     }
 
-    fn take_recorded_deadline(&mut self) -> Option<(Timer, i64)> {
-        self.deadline.take()
+    /// The last attempt's outcome decides: a recommit runs the work again.
+    fn take_parked(&mut self) -> Option<Box<ParkedInvocation>> {
+        let Some(SelectionOutcome::Waiting { wait, .. }) = &self.reply.outcome else {
+            return None;
+        };
+        let wake = self.wake.take()?;
+        Some(Box::new(ParkedInvocation::new(
+            &self.invoker,
+            &self.admitted,
+            &self.progress,
+            wait.clone(),
+            wake,
+        )))
     }
 
     fn settle(self: Box<Self>, recorded: Result<(), Error>) {
@@ -1628,8 +1441,9 @@ struct ApprovalReadyWork {
     admitted: Arc<AdmittedInvocation>,
     progress: InvocationProgress,
     reply: Replier<GateOutcome>,
-    /// The Approval Request's deadline, when a decision is still pending.
-    deadline: Option<(Timer, i64)>,
+    /// How the owner sends the Invocation back here once the Approval
+    /// Request the gate parks it on is decided or expires.
+    wake: Option<oneshot::Sender<()>>,
 }
 
 impl fmt::Debug for ApprovalReadyWork {
@@ -1661,23 +1475,264 @@ impl ChunkWork for ApprovalReadyWork {
                 &mut events,
             )
             .await?;
-        if let GateOutcome::Waiting {
-            approval,
-            deadline_at_unix_nanos,
-        } = &outcome
-        {
-            self.deadline = Some((Timer::Approval(approval.clone()), *deadline_at_unix_nanos));
-        }
         self.reply.record(outcome);
         Ok(events)
     }
 
-    fn take_recorded_deadline(&mut self) -> Option<(Timer, i64)> {
-        self.deadline.take()
+    /// The last attempt's outcome decides: a recommit runs the work again.
+    fn take_parked(&mut self) -> Option<Box<ParkedInvocation>> {
+        let Some(GateOutcome::Waiting(wait)) = &self.reply.outcome else {
+            return None;
+        };
+        let wake = self.wake.take()?;
+        Some(Box::new(ParkedInvocation::new(
+            &self.invoker,
+            &self.admitted,
+            &self.progress,
+            wait.clone(),
+            wake,
+        )))
     }
 
     fn settle(self: Box<Self>, recorded: Result<(), Error>) {
         self.reply.settle(recorded);
+    }
+}
+
+/// One Invocation parked on a wait, as its Run Owner keeps it until the
+/// wait ends: what a snapshot check reads for it, and the wake that sends
+/// it back to its held recheck. Dropping it lets the Invocation go: it reads
+/// that its Run takes no more Program work.
+pub(crate) struct ParkedInvocation {
+    target: Arc<ParkedTarget>,
+    wake: oneshot::Sender<()>,
+}
+
+/// What a snapshot check reads one parked wait against: the Invocation's
+/// retained target, its selected credentials, and the wait.
+struct ParkedTarget {
+    invoker: OperationInvoker,
+    admitted: Arc<AdmittedInvocation>,
+    credential_evidence: Option<coral_provider::account::CredentialEvidence>,
+    wait: ParkedWait,
+}
+
+impl ParkedTarget {
+    fn target(&self) -> FenceTarget<'_> {
+        FenceTarget {
+            admitted: &self.admitted,
+            credential_evidence: self.credential_evidence.as_ref(),
+        }
+    }
+}
+
+impl ParkedInvocation {
+    /// The Invocation a held recheck parked on `wait`, for its owner.
+    fn new(
+        invoker: &OperationInvoker,
+        admitted: &Arc<AdmittedInvocation>,
+        progress: &InvocationProgress,
+        wait: ParkedWait,
+        wake: oneshot::Sender<()>,
+    ) -> Self {
+        Self {
+            target: Arc::new(ParkedTarget {
+                invoker: invoker.clone(),
+                admitted: admitted.clone(),
+                credential_evidence: progress.credential_evidence.clone(),
+                wait,
+            }),
+            wake,
+        }
+    }
+
+    pub(crate) fn wait(&self) -> &ParkedWait {
+        &self.target.wait
+    }
+
+    /// Sends the Invocation back to its held recheck.
+    pub(crate) fn wake(self) {
+        // The Invocation may have stopped waiting: its Run is ending.
+        let _waiting = self.wake.send(());
+    }
+
+    /// A parked Invocation for the owner's in-memory tests, which never
+    /// check it.
+    #[cfg(test)]
+    pub(crate) fn for_apply_test(
+        invoker: &OperationInvoker,
+        admitted: &Arc<AdmittedInvocation>,
+        wait: ParkedWait,
+        wake: oneshot::Sender<()>,
+    ) -> Self {
+        Self::new(
+            invoker,
+            admitted,
+            &InvocationProgress::default(),
+            wait,
+            wake,
+        )
+    }
+}
+
+impl fmt::Debug for ParkedInvocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ParkedInvocation")
+            .field("invocation", &self.target.admitted.id)
+            .field("wait", &self.target.wait)
+            .finish_non_exhaustive()
+    }
+}
+
+/// One snapshot check of parked waits, holding nothing: each wait with the
+/// serial its owner gave the park, so a finding reaches only the park it
+/// read. Every wait is one Run's, so any wait's invoker reads for all.
+pub(crate) struct PrecheckBatch {
+    check: Check,
+    waits: Vec<(u64, Arc<ParkedTarget>)>,
+}
+
+impl fmt::Debug for PrecheckBatch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PrecheckBatch")
+            .field("check", &self.check)
+            .field(
+                "parks",
+                &self
+                    .waits
+                    .iter()
+                    .map(|(serial, _)| serial)
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+impl PrecheckBatch {
+    /// The `check` of the `parked` waits by serial; `None` when none is.
+    pub(crate) fn of<'a>(
+        check: Check,
+        parked: impl IntoIterator<Item = (&'a u64, &'a Box<ParkedInvocation>)>,
+    ) -> Option<Self> {
+        let waits: Vec<_> = parked
+            .into_iter()
+            .map(|(serial, parked)| (*serial, parked.target.clone()))
+            .collect();
+        (!waits.is_empty()).then_some(Self { check, waits })
+    }
+
+    pub(crate) const fn check(&self) -> Check {
+        self.check
+    }
+
+    /// The parks this check reads, by serial.
+    #[cfg(test)]
+    pub(crate) fn parks(&self) -> Vec<u64> {
+        self.waits.iter().map(|(serial, _)| *serial).collect()
+    }
+
+    /// Reads the waits in one read snapshot with no hold and returns the
+    /// serials of the parks it found ended or moot. A connection check reads
+    /// each connection request once and finds the ones no longer pending. The
+    /// periodic precheck also reads the Dispatch Fence's facts with the
+    /// shared loader and decides each wait with the shared evaluator: a wait
+    /// it would not keep waiting is found. The Approval Requests and the
+    /// Invocation rows are the owner's own (an outside writer touches none
+    /// while the Run is nonterminal), so what the owner keeps of them stands:
+    /// a request still pending, no failure recorded.
+    pub(crate) async fn run(&self) -> Result<Vec<u64>, Error> {
+        let Some((_, first)) = self.waits.first() else {
+            return Ok(Vec::new());
+        };
+        let invoker = &first.invoker;
+        let now = invoker.now()?;
+        let mut tx = invoker.database.begin_read_snapshot().await?;
+        let mut pending_until = std::collections::HashMap::new();
+        for (_, target) in &self.waits {
+            if let ParkedWait::Connection { request, .. } = target.wait
+                && !pending_until.contains_key(&request)
+            {
+                let until = coral_provider::account::connection_pending_until_in_snapshot(
+                    &mut tx,
+                    &target.admitted.target,
+                    &invoker.principal,
+                    request,
+                    now,
+                )
+                .await?;
+                pending_until.insert(request, until);
+            }
+        }
+        let connection_pending = |wait: &ParkedWait| match wait {
+            ParkedWait::Connection { request, .. } => pending_until.get(request).copied().flatten(),
+            ParkedWait::Approval { .. } => None,
+        };
+        if self.check == Check::Connections {
+            tx.commit().await?;
+            return Ok(self
+                .waits
+                .iter()
+                .filter(|(_, target)| {
+                    target.wait.on_connection() && connection_pending(&target.wait).is_none()
+                })
+                .map(|(serial, _)| *serial)
+                .collect());
+        }
+        let run = run_repository::find_exact_in_transaction(
+            &mut tx,
+            &invoker.workspace_id,
+            &invoker.run_id,
+        )
+        .await?;
+        let targets: Vec<FenceTarget<'_>> = self
+            .waits
+            .iter()
+            .map(|(_, parked)| parked.target())
+            .collect();
+        let shared = SharedFacts::load(
+            &mut tx,
+            coral_db::RowLock::None,
+            &invoker.fence_scope(),
+            now,
+            &targets,
+        )
+        .await?;
+        tx.commit().await?;
+        let Some(run) = run else {
+            return Ok(self.waits.iter().map(|(serial, _)| *serial).collect());
+        };
+        let now = invoker.now()?;
+        let run_facts = invoker.run_facts(&run);
+        Ok(self
+            .waits
+            .iter()
+            .zip(&targets)
+            .filter(|((_, parked), target)| {
+                let approval = match &parked.wait {
+                    ParkedWait::Approval {
+                        deadline_at_unix_nanos,
+                        ..
+                    } => ApprovalFact::Pending {
+                        deadline_at_unix_nanos: *deadline_at_unix_nanos,
+                    },
+                    ParkedWait::Connection { .. } => ApprovalFact::NotRequested,
+                };
+                let decision = fence::decide(
+                    &shared,
+                    &run_facts,
+                    &InvocationFacts {
+                        target: **target,
+                        connection_pending_until_unix_nanos: connection_pending(&parked.wait),
+                        approval,
+                    },
+                    now,
+                );
+                !matches!(decision, Decision::Wait { .. })
+            })
+            .map(|((serial, _), _)| *serial)
+            .collect())
     }
 }
 
@@ -1817,7 +1872,6 @@ impl ChunkWork for FenceBatch {
                     &run_facts,
                     &InvocationFacts {
                         target: *target,
-                        committed_failure: None,
                         connection_pending_until_unix_nanos: None,
                         approval: fenced.progress.approval,
                     },

@@ -60,10 +60,11 @@ impl RunFacts<'_> {
     }
 }
 
-/// An Invocation's Approval Request as the decision sees it: in the fence,
-/// what the held approval gate recorded in owner memory (a request is never
-/// needed again once approved, and an approval never changes); in the
-/// precheck, the request row as read in the snapshot.
+/// An Invocation's Approval Request as the decision sees it, from owner
+/// memory: in the fence, what the held approval gate recorded (a request is
+/// never needed again once approved, and an approval never changes); in the
+/// parked-wait precheck, the pending request the Invocation is parked on
+/// (only its owner decides it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum ApprovalFact {
     /// No request exists, or none was needed when the gate ran.
@@ -83,10 +84,6 @@ pub(crate) enum ApprovalFact {
 /// The Invocation-scoped facts beside the shared ones.
 pub(crate) struct InvocationFacts<'a> {
     pub(crate) target: FenceTarget<'a>,
-    /// A failure an outside writer recorded on the Invocation that prevents
-    /// its continuation (a declined or expired approval). The fence reads
-    /// none: its row write is predicated on the row still being `pending`.
-    pub(crate) committed_failure: Option<CoralFailure>,
     /// Set while the Invocation is parked on a connection request that is
     /// still pending: when that request expires.
     pub(crate) connection_pending_until_unix_nanos: Option<i64>,
@@ -318,9 +315,6 @@ pub(crate) fn decide(
         Ok(checked) => checked,
         Err(refusal) => return refusal.into(),
     };
-    if let Some(failure) = invocation.committed_failure {
-        return Decision::Deny(failure);
-    }
     if let Some(expires_at) = invocation.connection_pending_until_unix_nanos {
         return Decision::Wait {
             until_unix_nanos: expires_at.min(checked.until_unix_nanos),
