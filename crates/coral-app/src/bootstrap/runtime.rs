@@ -251,7 +251,13 @@ impl RunningRuntime {
         self.grpc.wait_for_exit().await;
     }
 
-    /// Stops every listener.
+    /// Shuts the runtime down gracefully, then stops every listener.
+    ///
+    /// Readiness reports not serving at once and new Runs are refused, while
+    /// every listener keeps serving the live Runs for the Shutdown Drain
+    /// (`[runtime] shutdown_drain_seconds`); Runs still live then are
+    /// interrupted within the commit grace. An orchestrator's termination
+    /// grace must exceed both.
     ///
     /// # Errors
     ///
@@ -263,6 +269,7 @@ impl RunningRuntime {
             mcp_http,
             grpc_authentication_enabled: _,
         } = self;
+        grpc.drain_runs().await;
         shutdown_components(grpc, auth_support, Some(mcp_http))
             .await
             .map_err(|failures| ServeError(Box::new(ServeErrorKind::Shutdown(failures))).into())
@@ -319,7 +326,7 @@ async fn start_inner(builder: PreparedServerBuilder) -> Result<RunningRuntime, S
     let auth_support = match start_auth_support(
         authorization_server,
         auth_bind_addr,
-        grpc.database(),
+        grpc.readiness(),
         grpc.provider_accounts(),
     )
     .await
@@ -368,26 +375,23 @@ async fn start_inner(builder: PreparedServerBuilder) -> Result<RunningRuntime, S
 async fn start_auth_support(
     authorization_server: Option<CoralAuthorizationServer>,
     bind_addr: SocketAddr,
-    database: Arc<Database>,
+    readiness: ListenerReadiness,
     accounts: Option<coral_provider::account::AccountModule>,
 ) -> Result<Option<RunningCoralAuthorizationServer>, AuthServerError> {
     match authorization_server {
         Some(server) => server.start().await.map(Some),
         None if accounts.is_some() => CoralAuthorizationServer::start_local_with_provider_oauth(
             bind_addr,
-            ListenerReadiness::from_database(database),
+            readiness,
             accounts.ok_or_else(|| {
                 AuthServerError::Config("Provider authorization is unavailable".into())
             })?,
         )
         .await
         .map(Some),
-        None => CoralAuthorizationServer::start_local(
-            bind_addr,
-            ListenerReadiness::from_database(database),
-        )
-        .await
-        .map(Some),
+        None => CoralAuthorizationServer::start_local(bind_addr, readiness)
+            .await
+            .map(Some),
     }
 }
 
@@ -417,7 +421,7 @@ async fn start_mcp_http(
     runtime_limits: RuntimeLimits,
     human_interface: coral_mcp::HumanInterfaceUrl,
 ) -> Result<RunningMcpHttpServer, McpStartError> {
-    let readiness = ListenerReadiness::from_database(grpc.database()).probe();
+    let readiness = grpc.readiness().probe();
     let modules = mcp_modules(
         grpc.database(),
         grpc.search_index(),

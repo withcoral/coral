@@ -1,8 +1,8 @@
 //! Invocation completion and termination decisions. Every write joins the
 //! caller's transaction: the Invocation and Approval rows through their
 //! repositories, and the `invocation.ended` Events are returned for the
-//! caller's Run Ledger chunk, the owner's or the terminal chunk of a writer
-//! outside it (recovery, until slice 9).
+//! caller's Run Ledger chunk: the owner's, its terminal chunk, or a
+//! recovered owner's one chunk.
 
 use crate::invocation::{AdmittedInvocation, InvocationCompletion};
 use crate::lifecycle::RunRecord;

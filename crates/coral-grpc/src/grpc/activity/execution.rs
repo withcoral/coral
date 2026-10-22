@@ -28,6 +28,9 @@ pub(super) fn run_error(error: coral_run::Error) -> Status {
         coral_run::Error::OwnedElsewhere => {
             Status::unavailable("run has no live owner in this process; retry")
         }
+        // The process is shutting down and accepts no new Run; another
+        // process takes the request.
+        coral_run::Error::ShuttingDown => Status::unavailable("server is shutting down; retry"),
         // Name every remaining variant so a new domain error needs an explicit wire decision.
         coral_run::Error::ProgramAdmission(_)
         | coral_run::Error::Functions(_)

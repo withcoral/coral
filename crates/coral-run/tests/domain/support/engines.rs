@@ -345,11 +345,15 @@ impl ProgramEngine for CompletionAttemptingEngine {
     }
 }
 
+/// A Program that runs until the owner stops it. A Program whose source is
+/// `until-released` also ends on its own, with no Final Value, once the test
+/// sets `released`.
 #[derive(Clone, Default)]
 pub(crate) struct StopAwareEngine {
     pub(crate) started: Arc<AtomicBool>,
     pub(crate) stopped: Arc<AtomicBool>,
     pub(crate) executions: Arc<AtomicUsize>,
+    pub(crate) released: Arc<AtomicBool>,
 }
 
 impl ProgramEngine for StopAwareEngine {
@@ -363,13 +367,17 @@ impl ProgramEngine for StopAwareEngine {
 
     fn execute(
         &self,
-        _package: ProgramPackage,
+        package: ProgramPackage,
         _host: Arc<dyn coral_v8::ProgramHost>,
         stop: Arc<ExecutionStop>,
     ) -> ExecutionCompletion {
         self.executions.fetch_add(1, Ordering::SeqCst);
         self.started.store(true, Ordering::SeqCst);
+        let until_released = package.javascript == "until-released";
         while !stop.is_requested() {
+            if until_released && self.released.load(Ordering::SeqCst) {
+                return ExecutionCompletion::Succeeded(FinalValue::Absent);
+            }
             std::thread::sleep(Duration::from_millis(1));
         }
         self.stopped.store(true, Ordering::SeqCst);

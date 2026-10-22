@@ -19,9 +19,9 @@ pub(crate) struct RunRecord {
     pub(crate) shutdown_grace_nanos: i64,
     /// The Run Ledger head: the number of chunk commits since acceptance.
     pub(crate) chunk_sequence: u64,
-    /// The last Event sequence on the Run as of a read snapshot, `0` before
-    /// `run.started`. `None` on a Run read under `hold_run`, which does not
-    /// read the Event rows: the chunk commit numbers its Events itself.
+    /// The last Event sequence on the Run as of the read, `0` before
+    /// `run.started`. Read beside the row; the chunk commit numbers its
+    /// Events itself and never from this.
     pub(crate) last_event_sequence: Option<u64>,
     pub(crate) accumulated_output_bytes: usize,
     pub(crate) terminal_outcome: Option<RunTerminalOutcome>,
@@ -78,6 +78,27 @@ impl RunRecord {
 
     pub(crate) const fn execution_started(&self) -> bool {
         self.execution_started_at_unix_nanos.is_some()
+    }
+
+    /// The claim the Run row holds: its execution claim, or the worker claim
+    /// of a Run that has not started; `None` for a Run with no claim.
+    pub(crate) fn held_claim(&self) -> Option<&str> {
+        self.execution_claim_id
+            .as_deref()
+            .or(self.worker_claim_id.as_deref())
+    }
+
+    /// Whether no process owns the Run at `now_unix_nanos` (ADR 0018,
+    /// Recovery): its lease lapsed, or it has no claim and was accepted more
+    /// than one lease ago. The previous release claimed a moment after
+    /// acceptance, so a fresh Run with no claim belongs to the process that
+    /// accepted it and is not abandoned. The sweep's query,
+    /// `run_repository::lapsed_leases`, is the same predicate.
+    pub(crate) fn lease_lapsed(&self, now_unix_nanos: i64, lease_nanos: i64) -> bool {
+        match self.worker_claim_expires_at_unix_nanos {
+            Some(expires_at) => expires_at <= now_unix_nanos,
+            None => self.accepted_at_unix_nanos.saturating_add(lease_nanos) < now_unix_nanos,
+        }
     }
 
     /// A termination intent no Principal asked for: the deadline, an

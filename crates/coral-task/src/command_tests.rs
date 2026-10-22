@@ -969,7 +969,8 @@ async fn a_begun_attempt_can_accept_after_closure_and_lost_handoff_keeps_the_run
             .unwrap()
     );
     // The lost handoff left the Run with no owner: a cancel is refused
-    // without a write, and recovery ends the Run at its deadline. Identified
+    // without a write, and once its lease lapsed the expired-lease sweep
+    // ends it, timed out past its deadline. Identified
     // Run access needs no live or open Task and grants no replay permission.
     let refused = fixture
         .runs
@@ -1779,9 +1780,12 @@ async fn concurrent_run_termination_protects_its_group_from_stale_cleanup() {
         panic!("accepted Run association")
     };
     let stale_cutoff = entry.completed_at_unix_nanos.unwrap();
-    // The lost handoff left the Run with no owner: recovery ends it at its
-    // deadline, contending with cleanup for the Run row the blocker holds.
-    fixture.move_deadline_into_the_past(&run).await;
+    // The lost handoff left the Run with no owner: once its lease lapsed the
+    // expired-lease sweep ends it, timed out past its deadline, while a
+    // cleanup that read it running holds its group. Retention reads a
+    // running Run without holding it; the blocker's transaction still
+    // orders the writers on SQLite.
+    fixture.lapse_lease_and_deadline(&run).await;
     let mut blocker = fixture.tasks.database.begin().await.unwrap();
     coral_run::retention::hold_in_transaction(&mut blocker, &fixture.workspace, &run)
         .await
@@ -1796,22 +1800,12 @@ async fn concurrent_run_termination_protects_its_group_from_stale_cleanup() {
             .await
     });
     let runs = fixture.runs.clone();
-    let termination = tokio::spawn(async move { runs.recover().await });
+    let termination = tokio::spawn(async move { runs.sweep_expired_leases().await });
     tokio::task::yield_now().await;
     blocker.commit().await.unwrap();
-    termination.await.unwrap().unwrap();
+    assert_eq!(termination.await.unwrap().unwrap(), 1);
     assert_eq!(
-        fixture
-            .runs
-            .observe(
-                &fixture.actor,
-                &fixture.workspace,
-                &run,
-                &coral_run::RunObservation::immediate(None, 100).unwrap(),
-            )
-            .await
-            .unwrap()
-            .state(),
+        fixture.wait_for_terminal(&run).await.state(),
         coral_run::RunState::TimedOut
     );
     assert!(!cleanup.await.unwrap().unwrap());
@@ -2096,32 +2090,25 @@ async fn repeated_empty_searches_are_distinct_complete_attempts_and_closure_reje
 }
 
 impl Fixture {
-    /// Moves the Run deadline into the past, as the host's clock would find
-    /// it once the deadline has passed.
-    async fn move_deadline_into_the_past(&self, run: &coral_run::RunId) {
+    /// Moves the Run's lease and deadline into the past, as the host's clock
+    /// would find them once both have passed with no owner renewing the lease.
+    async fn lapse_lease_and_deadline(&self, run: &coral_run::RunId) {
         self.test_database
             .execute_fixture_sql(&format!(
                 "UPDATE program_run_records \
-                 SET deadline_at_unix_nanos = accepted_at_unix_nanos + 1 \
+                 SET deadline_at_unix_nanos = accepted_at_unix_nanos + 1, \
+                 worker_claim_expires_at_unix_nanos = accepted_at_unix_nanos + 1 \
                  WHERE id = '{run}'"
             ))
             .await
-            .expect("move the Run deadline");
+            .expect("lapse the Run's lease and deadline");
     }
 
-    /// Recovery's answer to a Run with no owner once its deadline passed: the
-    /// Run as recorded after the pass.
+    /// The expired-lease sweep's answer to a Run with no owner once its lease
+    /// lapsed and its deadline passed: the Run as its recovered owner ended it.
     async fn recover_at_deadline(&self, run: &coral_run::RunId) -> coral_run::RunUpdate {
-        self.move_deadline_into_the_past(run).await;
-        self.runs.recover().await.expect("recover the Run");
-        self.runs
-            .observe(
-                &self.actor,
-                &self.workspace,
-                run,
-                &coral_run::RunObservation::immediate(None, 100).unwrap(),
-            )
-            .await
-            .expect("observe the recovered Run")
+        self.lapse_lease_and_deadline(run).await;
+        assert_eq!(self.runs.sweep_expired_leases().await.expect("sweep"), 1);
+        self.wait_for_terminal(run).await
     }
 }

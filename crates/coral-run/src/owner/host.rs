@@ -34,6 +34,7 @@ use crate::invocation::{FenceBatch, OperationInvoker, PrecheckBatch};
 use crate::lifecycle::RunRecord;
 use crate::owner::ChunkWork as _;
 use crate::program_output::ProgramOutputWriter;
+use crate::recovery::RecoveryWrite;
 use crate::run_repository::{self, Chunk, OwnedEvent};
 use crate::types::AcceptedRun;
 use crate::{Error, RunModule, engine, nanos_duration};
@@ -46,33 +47,32 @@ use super::state::{Effect, OwnerLimits, OwnerState, apply};
 /// within the shutdown grace.
 const SETTLE_RETRY: Duration = Duration::from_millis(10);
 
-/// Hosts the owner of `accepted` until it retires; `true` when the owner's
-/// own write ended its Run.
+/// How many times a recovered owner reads the Run again after another writer
+/// moved its head between the read and the write.
+const RECOVERY_HEAD_RETRIES: u32 = 3;
+
+/// How an owner begins.
+pub(crate) enum OwnerStart {
+    /// The owner of a Run this process accepted: it commits the start mark
+    /// and runs the Program as `actor`.
+    Program(AuthenticatedPrincipal),
+    /// The owner the expired-lease sweep recreated, its mailbox queued: it
+    /// takes the Run over from the claim its handle names, and ends it.
+    Recovery,
+}
+
+/// Hosts the owner of `accepted` until it retires.
 pub(crate) async fn host(
     module: RunModule,
     accepted: AcceptedRun,
-    actor: AuthenticatedPrincipal,
+    start: OwnerStart,
     handle: OwnerHandle,
     mut mailbox: Mailbox,
     registration: OwnerRegistration,
-) -> bool {
+) {
     #[cfg(test)]
     let _attempt = ExecutionAttemptObservation(module.execution_observer.clone());
-    let mut state = OwnerState::new(
-        OwnerLimits {
-            run_output_bytes: accepted.value_limits.run_output_bytes(),
-            applied_cap_bytes: module.applied_output_cap.bytes(),
-            fan_out_invocations: module.fan_out_limit.invocations(),
-            deadline_at_unix_nanos: accepted.deadline_at_unix_nanos,
-            shutdown_grace_nanos: accepted.shutdown_grace_nanos,
-            idle_tick_nanos: module.execution_policy.idle_tick_nanos(),
-            suspect_after_nanos: module.execution_policy.suspect_after_nanos(),
-            self_interrupt_after_nanos: module.execution_policy.self_interrupt_after_nanos(),
-            precheck_interval_nanos: module.execution_policy.precheck_interval_nanos(),
-            wake_gap_nanos: module.execution_policy.wake_gap_nanos(),
-        },
-        accepted.accepted_at_unix_nanos,
-    );
+    let (mut state, mut effects) = begin(&module, &accepted, &start);
     let mut timers = Timers::default();
     let mut subscription = Subscription::default();
     let idle = tokio::time::sleep_until(unarmed());
@@ -80,12 +80,11 @@ pub(crate) async fn host(
     // The shutdown grace of a recorded termination, on this process's clock:
     // set by the first settle attempt, read by every later one.
     let mut settle_deadline: Option<Instant> = None;
-    let mut effects = apply(&mut state, Message::Launch, launched_at(&module, &accepted));
-    let ended = loop {
-        let mut retired = None;
+    loop {
+        let mut retired = false;
         for effect in effects.drain(..) {
             match effect {
-                Effect::Retire { ended } => retired = Some(ended),
+                Effect::Retire => retired = true,
                 Effect::Commit {
                     chunk,
                     output_total,
@@ -110,11 +109,18 @@ pub(crate) async fn host(
                         *settle_deadline.get_or_insert_with(|| grace_deadline(&module, &shutdown));
                     spawn_settle(&module, &accepted, &handle, shutdown, again, deadline);
                 }
-                other => run_effect(&module, &accepted, &actor, &handle, other),
+                Effect::Recover { expired, intent } => {
+                    let Some(taken) = handle.takes_over() else {
+                        debug_assert!(false, "only a recovered owner writes a recovery");
+                        continue;
+                    };
+                    spawn_recovery(&module, &accepted, &handle, taken.clone(), expired, intent);
+                }
+                other => run_effect(&module, &accepted, &start, &handle, other),
             }
         }
-        if let Some(ended) = retired {
-            break ended;
+        if retired {
+            break;
         }
         // The handle outlives the loop, so the mailbox never closes first.
         let message = tokio::select! {
@@ -152,11 +158,42 @@ pub(crate) async fn host(
             effects.extend(apply(&mut state, next, now));
         }
         effects.extend(apply(&mut state, Message::Drained, now));
-    };
+    }
     drop(timers);
     drop(subscription);
     drop(registration);
-    ended
+}
+
+/// The owner's memory as it begins, and its first effects: a Program owner
+/// is launched; a recovered owner applies the mailbox the sweep queued.
+fn begin(
+    module: &RunModule,
+    accepted: &AcceptedRun,
+    start: &OwnerStart,
+) -> (OwnerState, Vec<Effect>) {
+    let limits = OwnerLimits {
+        run_output_bytes: accepted.value_limits.run_output_bytes(),
+        applied_cap_bytes: module.applied_output_cap.bytes(),
+        fan_out_invocations: module.fan_out_limit.invocations(),
+        deadline_at_unix_nanos: accepted.deadline_at_unix_nanos,
+        shutdown_grace_nanos: accepted.shutdown_grace_nanos,
+        idle_tick_nanos: module.execution_policy.idle_tick_nanos(),
+        suspect_after_nanos: module.execution_policy.suspect_after_nanos(),
+        self_interrupt_after_nanos: module.execution_policy.self_interrupt_after_nanos(),
+        precheck_interval_nanos: module.execution_policy.precheck_interval_nanos(),
+        wake_gap_nanos: module.execution_policy.wake_gap_nanos(),
+    };
+    match start {
+        OwnerStart::Program(_) => {
+            let mut state = OwnerState::new(limits, accepted.accepted_at_unix_nanos);
+            let effects = apply(&mut state, Message::Launch, launched_at(module, accepted));
+            (state, effects)
+        }
+        OwnerStart::Recovery => (
+            OwnerState::recovered(limits, accepted.accepted_at_unix_nanos),
+            Vec::new(),
+        ),
+    }
 }
 
 /// The change subscription the owner holds while a connection wait is
@@ -310,7 +347,7 @@ impl Drop for Timers {
 fn run_effect(
     module: &RunModule,
     accepted: &AcceptedRun,
-    actor: &AuthenticatedPrincipal,
+    start: &OwnerStart,
     handle: &OwnerHandle,
     effect: Effect,
 ) {
@@ -337,7 +374,14 @@ fn run_effect(
             #[cfg(test)]
             module.execution_observer.clone(),
         ),
+        // A recovered owner starts no Program: its `apply` never asks.
+        Effect::Start | Effect::StartProgram(_) if matches!(start, OwnerStart::Recovery) => {
+            debug_assert!(false, "a recovered owner starts no Program");
+        }
         Effect::Start => {
+            let OwnerStart::Program(actor) = start else {
+                return;
+            };
             let module = module.clone();
             let accepted = accepted.clone();
             let actor = actor.clone();
@@ -358,7 +402,11 @@ fn run_effect(
                 handle.send(Message::Started(started));
             });
         }
-        Effect::StartProgram(package) => start_program(module, accepted, actor, handle, package),
+        Effect::StartProgram(package) => {
+            if let OwnerStart::Program(actor) = start {
+                start_program(module, accepted, actor, handle, package);
+            }
+        }
         Effect::TerminateProgram => handle.stop().request(),
         Effect::Wake(parked) => parked.wake(),
         Effect::Abandon(work, error) => work.settle(Err(error)),
@@ -380,10 +428,11 @@ fn run_effect(
         Effect::Commit { .. }
         | Effect::Settle { .. }
         | Effect::Interrupt { .. }
+        | Effect::Recover { .. }
         | Effect::ArmTimer { .. }
         | Effect::Subscribe
         | Effect::Unsubscribe
-        | Effect::Retire { .. } => {
+        | Effect::Retire => {
             debug_assert!(
                 false,
                 "the host loop runs commits, the interruption, timers, the subscription and retirement itself"
@@ -504,6 +553,72 @@ fn spawn_interruption(module: &RunModule, accepted: &AcceptedRun, handle: &Owner
             ),
         }
         handle.send(Message::Interrupted(recorded));
+    });
+}
+
+/// The recovered owner's one chunk, written until the database answers; a
+/// head another writer moved between the read and the write reads the row
+/// again. Its outcome reaches the owner as [`Message::Interrupted`]: a
+/// definite failure leaves the Run to the next sweep.
+fn spawn_recovery(
+    module: &RunModule,
+    accepted: &AcceptedRun,
+    handle: &OwnerHandle,
+    taken: super::handle::TakenClaim,
+    expired: Vec<crate::approval::ApprovalId>,
+    intent: Option<crate::lifecycle::RequestedTermination>,
+) {
+    let module = module.clone();
+    let accepted = accepted.clone();
+    let handle = handle.clone();
+    tokio::spawn(async move {
+        let write = RecoveryWrite {
+            workspace_id: &accepted.workspace_id,
+            run_id: &accepted.id,
+            taken: taken.as_deref(),
+            takeover_claim_id: &accepted.claim_id,
+            expired: &expired,
+            intent: intent.as_ref(),
+        };
+        // A head another writer moved between the read and the write is read
+        // again after a backoff, a few times; after that the next sweep
+        // tries afresh.
+        // A mass recovery writes a few chunks at a time; the owners exist and
+        // hold their requests meanwhile.
+        let _permit = module.recovery_writes.acquire().await;
+        let mut moved = Backoff::new(&accepted.id, "recovery after a moved head");
+        let mut attempts = 0;
+        let recorded = loop {
+            match until_answered(
+                &accepted.id,
+                "recovery",
+                || !handle.is_retired(),
+                || module.record_recovery(&write),
+            )
+            .await
+            {
+                Err(error @ Error::HeadMismatch) if attempts < RECOVERY_HEAD_RETRIES => {
+                    attempts += 1;
+                    moved.wait(&error).await;
+                }
+                answered => break answered,
+            }
+        };
+        match &recorded {
+            Ok(()) => tracing::info!(run_id = %accepted.id, "recovered Run Owner ended its Run"),
+            Err(Error::RunEnded) => tracing::info!(
+                run_id = %accepted.id,
+                "recovered Run Owner found its Run ended"
+            ),
+            Err(error) => tracing::warn!(
+                run_id = %accepted.id,
+                %error,
+                "recovered Run Owner wrote nothing: the Run is not its own, or the next sweep tries again"
+            ),
+        }
+        handle.send(Message::Interrupted(
+            recorded.map_err(CommitRejection::from),
+        ));
     });
 }
 

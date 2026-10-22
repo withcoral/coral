@@ -9,7 +9,7 @@
 //! Ledger on every path the Program takes, in chunks, and runs the Run-bound
 //! Operation Invocation and dispatch-fence choreography inside its commits. A
 //! Run accepted in a caller's transaction and never launched keeps its claim
-//! for recovery.
+//! until the expired-lease sweep ends it.
 //!
 //! # Interface
 //!
@@ -40,9 +40,14 @@
 //!   authorize exact retained source, bounded Events, logical arguments, native outcomes,
 //!   and historical request references. These reads never renew retention. Retained
 //!   Account references survive active waiter detachment and grant no request authority.
-//! - [`RunModule::recover`] performs one explicit host-maintenance pass that
-//!   releases expired unstarted claims and interrupts lost started execution; it
-//!   neither schedules released work nor installs startup or polling behavior.
+//! - [`RunModule::sweep_expired_leases`] is one pass of the expired-lease sweep:
+//!   every `running` Run that no process owns (its lease lapsed, or it has no
+//!   claim and was accepted more than a lease ago) gets its Run Owner back,
+//!   which records the timers that passed and the Run's end in one chunk.
+//!   Bootstrap runs it before any listener binds and then every
+//!   [`RunModule::sweep_interval`]. Coral never resumes a Run.
+//! - [`RunModule::shutdown`] refuses new Runs, lets the live ones end for the
+//!   Shutdown Drain, then interrupts the rest within the commit grace.
 //! - [`RunModule::action_prompts`] and [`RunModule::answer_action_prompt`] let an
 //!   interactive client ask the invoking User about each current action of their
 //!   own Run. An approval answer decides through the same Approval rules as Reef;
@@ -99,22 +104,26 @@
 //! answers waiting requests `OwnerLost`. A Run cannot complete while any child
 //! Invocation is nonterminal.
 //! While a Run is nonterminal its owner is the only writer of its row and its
-//! Events, recovery's explicit pass excepted: approval decisions and
-//! cancellation reach the owner as requests, and the Run and Approval
-//! Request deadlines are its own timers, applied in mailbox order with them
-//! (see [`owner`]); a request for a nonterminal Run with no owner in this
-//! process is answered `OwnedElsewhere`. The clock decides a Run's timeout
-//! and an Approval Request's expiry only inside the owner (its `apply`, and
-//! its own writes' clock sample), and in recovery's pass for a Run past its
-//! deadline whose owner is gone. A connection request is Account-owned: the
+//! Events: approval decisions and cancellation reach the owner as requests,
+//! and the Run and Approval Request deadlines are its own timers, applied in
+//! mailbox order with them (see [`owner`]); a request for a nonterminal Run
+//! with no owner in this process is answered `OwnedElsewhere`. The worker
+//! lease is ownership between processes: a Run whose lease lapsed with no
+//! owner here is the expired-lease sweep's, which recreates its owner with
+//! the timers that passed queued, and a Run whose live lease another process
+//! holds is never touched. The clock decides a Run's timeout and an Approval
+//! Request's expiry only inside the owner (its `apply`, and its own writes'
+//! clock sample), whose timers the host, or the sweep for a recovered owner,
+//! fires on its clock. A connection request is Account-owned: the
 //! Account module records its expiry when a holder reads it, and the
 //! owner's timer at its deadline only wakes the Invocations parked on it.
 //! Readers show the recorded state beside a deadline and never derive an
 //! expiry or a timeout from `now`.
 //! Cancellation and deadline intent stop new Program work, request uncatchable V8
 //! termination, and preserve complete child outcomes that beat bounded cleanup.
-//! Recovery revokes a stale started claim before settling its children and Run.
-//! The first terminal transaction wins. User work remains private; Workspace
+//! A recovered owner takes the Run over with a new claim in the same chunk that
+//! ends its children and the Run, so nothing still in flight under the old
+//! claim lands. The first terminal transaction wins. User work remains private; Workspace
 //! Owners can observe and cancel Workspace-owned Agent
 //! Runs, while an Agent can address only that same Agent's Run in its fixed
 //! Workspace. Run identifiers and cursors grant no authority.
@@ -151,10 +160,12 @@ mod lifecycle;
 mod observation;
 mod owner;
 mod program_output;
+mod recovery;
 mod required_actions;
 mod required_actions_repository;
 pub mod retention;
 mod run_repository;
+mod shutdown;
 mod source_location_repository;
 mod summary;
 mod summary_repository;
@@ -196,7 +207,7 @@ pub use types::{
     PROGRAM_SOURCE_MAX_BYTES, ProgramLogLevel, ProgramSource, ProgramValue, RUN_EVENT_PAGE_MAX,
     RUN_TIMEOUT_MAX_MS, RunCursor, RunEvent, RunEventKind, RunFailure, RunFailureCode, RunId,
     RunObservation, RunState, RunSubmission, RunTerminalOutcome, RunTimeout, RunUpdate,
-    RuntimeLimits, SOURCE_MAP_MAX_BYTES, SourceDocument, SourceLocation,
+    RuntimeLimits, SOURCE_MAP_MAX_BYTES, ShutdownDrain, SourceDocument, SourceLocation,
 };
 
 #[cfg(test)]
@@ -231,7 +242,12 @@ pub struct RunModule {
     value_limits: coral_value::ValueLimits,
     applied_output_cap: AppliedOutputCap,
     fan_out_limit: FanOutLimit,
+    shutdown_drain: ShutdownDrain,
     owners: Owners,
+    admission: shutdown::Admission,
+    /// Bounds the recovered owners' writes at once, so a mass recovery after
+    /// a crash queues here instead of on the pool.
+    recovery_writes: Arc<tokio::sync::Semaphore>,
     #[cfg(test)]
     invocation_observer: Arc<dyn InvocationObserver>,
     #[cfg(test)]
@@ -265,7 +281,10 @@ impl RunModule {
             value_limits: coral_value::ValueLimits::default(),
             applied_output_cap: limits.applied_output_cap(),
             fan_out_limit: limits.fan_out_limit(),
+            shutdown_drain: limits.shutdown_drain(),
             owners: Owners::default(),
+            admission: shutdown::Admission::default(),
+            recovery_writes: recovery::write_permits(),
             #[cfg(test)]
             invocation_observer: Arc::new(NoopInvocationObserver),
             #[cfg(test)]
@@ -297,7 +316,10 @@ impl RunModule {
             value_limits: coral_value::ValueLimits::default(),
             applied_output_cap: AppliedOutputCap::default(),
             fan_out_limit: FanOutLimit::default(),
+            shutdown_drain: ShutdownDrain::default(),
             owners: Owners::default(),
+            admission: shutdown::Admission::default(),
+            recovery_writes: recovery::write_permits(),
             invocation_observer: observers.invocation,
             execution_observer: observers.execution,
         }

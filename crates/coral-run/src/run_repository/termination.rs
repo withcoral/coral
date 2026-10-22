@@ -9,9 +9,9 @@ use crate::lifecycle::{RequestedTermination, RunRecord, RunTermination};
 use crate::{Error, FinalValue, RunTerminalOutcome};
 
 /// Records termination intent, and `cancellation.requested` when a Principal
-/// asked for it, as one chunk built on `run` as the writer read it: the
-/// writers outside the Run Owner (recovery, a Run that times out before it
-/// starts, the terminal write of a Program that ended without one).
+/// asked for it, as one chunk built on `run` as the writer read it: the Run
+/// Owner's own writes outside its chunk commits (a Run that times out before
+/// it starts, the terminal write of a Program that ended without one).
 ///
 /// # Errors
 ///

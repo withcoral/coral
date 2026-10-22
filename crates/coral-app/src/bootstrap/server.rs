@@ -35,11 +35,11 @@ const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 128 * 1024;
 /// per replica against a table that is empty whenever no flow is mid-flight.
 const DEVICE_RECOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// The sweep schedule: a fixed cadence anchored at startup, so a slow pass does
+/// A sweep schedule: a fixed cadence anchored at startup, so a slow pass does
 /// not push every later sweep back, and ticks a slow pass ran through are
-/// skipped rather than replayed back to back.
-fn device_recovery_sweeps() -> tokio::time::Interval {
-    let mut sweeps = tokio::time::interval(DEVICE_RECOVERY_INTERVAL);
+/// skipped rather than replayed back to back. The first tick is at once.
+fn fixed_cadence(period: std::time::Duration) -> tokio::time::Interval {
+    let mut sweeps = tokio::time::interval(period);
     sweeps.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     sweeps
 }
@@ -356,8 +356,13 @@ impl PreparedServerBuilder {
             .and_then(|auth| auth.web_public_url())
             .map(|origin| format!("{origin}/.well-known/oauth-client"));
         let client_bootstrap_policy = deployment_config.mcp_oauth_client_bootstrap()?;
+        // One readiness for every listener, so shutdown takes them all out of
+        // rotation at once.
+        let readiness = EngineReadiness::from_database(Arc::clone(&coral_db));
         let authorization_server = session_auth
-            .map(|session_auth| build_authorization_server(*session_auth, &coral_db, policy))
+            .map(|session_auth| {
+                build_authorization_server(*session_auth, &coral_db, policy, readiness.clone())
+            })
             .transpose()?;
         let reconcile_interval = deployment_config.search_reconcile_interval()?;
         init_server_telemetry(deployment_config.raw())?;
@@ -371,6 +376,7 @@ impl PreparedServerBuilder {
             policy,
             runtime_limits,
             reconcile_interval,
+            readiness,
             state_lock,
         )
         .await?;
@@ -389,6 +395,7 @@ fn build_authorization_server(
     session_auth: SessionAuthSettings,
     coral_db: &Arc<Database>,
     policy: coral_outbound::DestinationPolicy,
+    readiness: EngineReadiness,
 ) -> Result<Box<CoralAuthorizationServer>, AppError> {
     let mut directory = UserDirectory::new(Arc::clone(coral_db));
     if let Some((issuer, subject)) = session_auth.settings.bootstrap_owner() {
@@ -399,7 +406,7 @@ fn build_authorization_server(
             .into_authorization_server(policy)?
             .with_user_directory(directory)
             .with_client_database(coral_db.clone())
-            .with_readiness(EngineReadiness::from_database(coral_db.clone())),
+            .with_readiness(readiness),
     ))
 }
 
@@ -476,6 +483,8 @@ pub struct RunningServer {
     providers: coral_provider::ProviderModule,
     accounts: Option<coral_provider::account::AccountModule>,
     runs: coral_run::RunModule,
+    readiness: EngineReadiness,
+    run_recovery: JoinHandle<()>,
     device_recovery: Option<JoinHandle<()>>,
     search_index: coral_search::SearchIndex,
     search_reconcile: JoinHandle<()>,
@@ -555,7 +564,20 @@ impl RunningServer {
         self.shutdown_inner().await
     }
 
+    /// Begins a graceful shutdown while every listener still serves:
+    /// readiness reports not serving, the expired-lease sweep stops, new
+    /// Runs are refused, and the live Runs get the Shutdown Drain to end on
+    /// their own before the rest are interrupted within the commit grace.
+    /// Returns once that is done; stop the listeners after it. Only the
+    /// first call drains.
+    pub async fn drain_runs(&self) {
+        self.readiness.stop_serving();
+        self.run_recovery.abort();
+        self.runs.shutdown().await;
+    }
+
     async fn shutdown_inner(&self) -> Result<(), AppError> {
+        self.drain_runs().await;
         if let Some(worker) = &self.device_recovery {
             worker.abort();
         }
@@ -612,6 +634,13 @@ impl RunningServer {
         self.search_index.clone()
     }
 
+    /// The readiness every listener of this process reports: database
+    /// reachability, and not serving once shutdown begins.
+    #[must_use]
+    pub fn readiness(&self) -> EngineReadiness {
+        self.readiness.clone()
+    }
+
     /// Shares the process's one Run module with companion runtime composition,
     /// so a cancel or decision from any surface reaches the Run Owner that
     /// another surface's Run registered.
@@ -633,6 +662,7 @@ impl RunningServer {
 
 impl Drop for RunningServer {
     fn drop(&mut self) {
+        self.run_recovery.abort();
         if let Some(worker) = &self.device_recovery {
             worker.abort();
         }
@@ -673,9 +703,9 @@ pub(crate) async fn start_server(
     policy: coral_outbound::DestinationPolicy,
     runtime_limits: coral_run::RuntimeLimits,
     reconcile_interval: std::time::Duration,
+    readiness: EngineReadiness,
     state_lock: StateLock,
 ) -> Result<RunningServer, AppError> {
-    let readiness = EngineReadiness::from_database(Arc::clone(&database));
     let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
     let tasks = coral_task::TaskModule::new(database.clone(), workspaces.clone());
     let builtin_catalog = coral_catalog::BuiltinCatalog::running()
@@ -778,6 +808,11 @@ pub(crate) async fn start_server(
         },
     );
 
+    // The expired-lease sweep's first pass runs before any listener binds:
+    // a request for a Run whose lease lapsed before boot then reaches its
+    // recovered owner and waits behind its chunk. A pass that fails is
+    // logged; the next one, a half lease later, reads again.
+    sweep_expired_leases(&runs).await;
     let listener = TcpListener::bind(mode.bind_addr()).await?;
     let local_addr = listener.local_addr()?;
     let endpoint_uri = format!("http://{local_addr}");
@@ -790,9 +825,21 @@ pub(crate) async fn start_server(
         }
     };
 
+    let run_recovery = {
+        let runs = runs.clone();
+        tokio::spawn(async move {
+            let mut sweeps = fixed_cadence(runs.sweep_interval());
+            // The first tick is at once, and the boot pass above ran it.
+            sweeps.tick().await;
+            loop {
+                sweeps.tick().await;
+                sweep_expired_leases(&runs).await;
+            }
+        })
+    };
     let device_recovery = accounts.clone().map(|accounts| {
         tokio::spawn(async move {
-            let mut sweeps = device_recovery_sweeps();
+            let mut sweeps = fixed_cadence(DEVICE_RECOVERY_INTERVAL);
             loop {
                 sweeps.tick().await;
                 if let Ok(elapsed) =
@@ -808,6 +855,8 @@ pub(crate) async fn start_server(
     let search_reconcile = search_index.spawn_reconcile_task();
     Ok(RunningServer {
         providers,
+        readiness,
+        run_recovery,
         device_recovery,
         search_index,
         search_reconcile,
@@ -824,6 +873,16 @@ pub(crate) async fn start_server(
         task: Mutex::new(Some(task)),
         _state_lock: state_lock,
     })
+}
+
+/// One pass of the expired-lease sweep; a failed pass is logged, and the next
+/// one reads again.
+async fn sweep_expired_leases(runs: &coral_run::RunModule) {
+    match runs.sweep_expired_leases().await {
+        Ok(0) => {}
+        Ok(recovered) => tracing::info!(recovered, "expired-lease sweep recovered Runs"),
+        Err(error) => tracing::warn!(%error, "expired-lease sweep failed; the next pass retries"),
+    }
 }
 
 fn start_grpc_server(
@@ -851,12 +910,12 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{DEVICE_RECOVERY_INTERVAL, ServerBuilder, device_recovery_sweeps};
+    use super::{DEVICE_RECOVERY_INTERVAL, ServerBuilder, fixed_cadence};
 
     #[tokio::test(start_paused = true)]
-    async fn device_recovery_sweeps_keep_a_fixed_cadence() {
+    async fn recovery_sweeps_keep_a_fixed_cadence() {
         let start = tokio::time::Instant::now();
-        let mut sweeps = device_recovery_sweeps();
+        let mut sweeps = fixed_cadence(DEVICE_RECOVERY_INTERVAL);
         sweeps.tick().await;
         assert_eq!(
             start.elapsed(),

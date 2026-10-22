@@ -286,6 +286,38 @@ pub(super) async fn pending_for_run(
         .collect()
 }
 
+/// The Run's undecided Approval Requests whose deadline is at or before
+/// `by_unix_nanos`, with their deadlines, in deadline order.
+pub(super) async fn undecided_by(
+    tx: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    run: &RunId,
+    by_unix_nanos: i64,
+) -> Result<Vec<(ApprovalId, i64)>, Error> {
+    let rows: Vec<(String, i64)> = tx
+        .fetch_all(
+            Query::select()
+                .columns([
+                    InvocationApprovals::Id,
+                    InvocationApprovals::DeadlineAtUnixNanos,
+                ])
+                .from(InvocationApprovals::Table)
+                .and_where(Expr::col(InvocationApprovals::WorkspaceId).eq(workspace.to_string()))
+                .and_where(Expr::col(InvocationApprovals::RunId).eq(run.to_string()))
+                .and_where(
+                    Expr::col(InvocationApprovals::State).eq(ApprovalState::Pending.storage()),
+                )
+                .and_where(Expr::col(InvocationApprovals::DeadlineAtUnixNanos).lte(by_unix_nanos))
+                .order_by(InvocationApprovals::DeadlineAtUnixNanos, Order::Asc)
+                .order_by(InvocationApprovals::Id, Order::Asc)
+                .to_owned(),
+        )
+        .await?;
+    rows.into_iter()
+        .map(|(id, deadline)| Ok((ApprovalId::parse(&id)?, deadline)))
+        .collect()
+}
+
 pub(super) async fn insert_pending(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,

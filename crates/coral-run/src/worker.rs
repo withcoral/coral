@@ -6,107 +6,49 @@
 //! terminal write here, the Interrupted record and the settle beside them)
 //! read the Run row without holding it: the owner runs one write at a time,
 //! nothing writes a nonterminal Run's row from outside it while it lives
-//! (recovery's pass writes once it retired), and every write is predicated
-//! on the claim and the head the row showed.
+//! (a Run whose owner retired without ending it is the expired-lease sweep's
+//! once its lease lapses), and every write is predicated on the claim and
+//! the head the row showed.
 
 use coral_workspace::AuthenticatedPrincipal;
 
 use crate::engine::ExecutionCompletion;
 use crate::lifecycle::{RequestedTermination, RunRecord, RunTerminationKind};
-use crate::owner::{self, OwnerHandle, StartedExecution};
+use crate::owner::{self, OwnerHandle, OwnerStart, StartedExecution};
 use crate::termination::ShutdownAction;
 use crate::types::AcceptedRun;
 use crate::{
     Error, FinalValue, RunFailure, RunFailureCode, RunModule, RunState, RunTerminalOutcome,
-    duration_until, invocation_repository, run_repository,
+    invocation_repository, run_repository,
 };
 
 impl RunModule {
     /// Creates the Run Owner for a durably accepted Run. The owner is
     /// registered before its task starts, so a stop that arrives first still
-    /// finds it; the Run deadline is the owner's own timer, and an owner that
-    /// retires without ending its Run leaves it to its supervisor's recovery
-    /// pass at the deadline.
+    /// finds it; the Run deadline is the owner's own timer. An owner that
+    /// retires without ending its Run (a write it could not land, a claim it
+    /// lost) renews nothing more, and the expired-lease sweep ends the Run
+    /// once its lease lapses, unless another process took it.
     pub(crate) fn schedule_execution(&self, run: AcceptedRun, actor: AuthenticatedPrincipal) {
         let (handle, mailbox) = OwnerHandle::new(run.id.clone(), run.claim_id.clone());
         let registration = self.owners.register(handle.clone());
         let supervised = run.clone();
-        // The Run deadline on this process's clock, anchored now, at the
-        // launch: a clock that fails here reads as acceptance, a moment ago.
-        let now = self
-            .now()
-            .unwrap_or(run.accepted_at_unix_nanos)
-            .max(run.accepted_at_unix_nanos);
-        let deadline =
-            tokio::time::Instant::now() + duration_until(run.deadline_at_unix_nanos, now);
         let owner_task = tokio::spawn(owner::host(
             self.clone(),
             run,
-            actor,
-            handle.clone(),
+            OwnerStart::Program(actor),
+            handle,
             mailbox,
             registration,
         ));
         let supervisor = self.clone();
         let _supervisor_task = tokio::spawn(async move {
-            match owner_task.await {
-                Err(ended) => {
-                    supervisor
-                        .recover_from_owner_failure(&supervised, &ended)
-                        .await;
-                }
-                // The owner's own write ended its Run.
-                Ok(true) => {}
-                Ok(false) => {
-                    supervisor
-                        .recover_after_retirement(&supervised, deadline)
-                        .await;
-                }
+            if let Err(ended) = owner_task.await {
+                supervisor
+                    .recover_from_owner_failure(&supervised, &ended)
+                    .await;
             }
         });
-    }
-
-    /// The supervisor's pass once the owner retired without ending its Run
-    /// (a write it could not land, a claim it lost): at the Run deadline,
-    /// recovery's pass ends a Run still held under the owner's claim, as the
-    /// expired-lease sweep of slice 9 will on its own. Never beside a live
-    /// owner: this process's is gone, and a Run another process's owner took
-    /// is that owner's. An answer the database does not give is retried; a
-    /// definite failure is logged and left to the next recovery pass.
-    async fn recover_after_retirement(&self, run: &AcceptedRun, deadline: tokio::time::Instant) {
-        tokio::time::sleep_until(deadline).await;
-        let recovered = crate::execution::until_answered(
-            &run.id,
-            "recovery after the Run Owner retired",
-            || true,
-            || self.recover_retired_run(run),
-        )
-        .await;
-        if let Err(error) = recovered {
-            tracing::warn!(
-                run_id = %run.id,
-                ?error,
-                "recovery after the Run Owner retired failed; the next recovery pass retries"
-            );
-        }
-    }
-
-    /// Recovery's pass for the Run `run`'s retired owner left, unless the Run
-    /// ended meanwhile or another claim holds it.
-    async fn recover_retired_run(&self, run: &AcceptedRun) -> Result<(), Error> {
-        let Some(current) =
-            run_repository::find_exact(&self.database, &run.workspace_id, &run.id).await?
-        else {
-            return Ok(());
-        };
-        let held = current
-            .execution_claim_id
-            .as_deref()
-            .or(current.worker_claim_id.as_deref());
-        if current.state.is_terminal() || held != Some(run.claim_id.as_str()) {
-            return Ok(());
-        }
-        self.recover_run(&run.workspace_id, &run.id).await
     }
 
     /// The supervisor's answer to an owner task that ended without retiring

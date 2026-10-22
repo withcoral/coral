@@ -35,7 +35,13 @@
 //!   owner is suspect and answers Program requests only once recorded.
 //!   After three it gives its Run up: the Program ends, and one terminal
 //!   chunk is written as soon as the database answers, recording
-//!   `Interrupted`, or `TimedOut` when the Run deadline has passed meanwhile.
+//!   `Interrupted`, or `TimedOut` when the Run deadline has passed meanwhile;
+//! - a recovered owner's one chunk: the expired-lease sweep recreates the
+//!   owner of a Run whose process is gone with its mailbox queued (every
+//!   timer that passed, in deadline order, then the end), and the owner
+//!   records the expiries, the timeout or the interruption, or the
+//!   termination already recorded, in one chunk, then retires. An outside
+//!   request waits behind that chunk and is answered from the record.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
@@ -51,8 +57,8 @@ use crate::{CoralFailure, Error};
 
 use super::chunk::{ChunkBuild, ChunkItem, ChunkWork, PendingRequest};
 use super::handle::{
-    Check, CommitRejection, DecisionAnswer, DecisionRequest, Message, ParkedWait, Reply,
-    RequestKey, RequestReply, StartedExecution, Timer,
+    Check, CommitRejection, DecisionAnswer, DecisionRequest, Message, ParkedWait, RecoveryEnd,
+    Reply, RequestKey, RequestReply, StartedExecution, Timer,
 };
 
 /// What the hosting task does for the owner.
@@ -113,9 +119,18 @@ pub(crate) enum Effect {
     /// self-interrupt bound. The Program is terminated with its dispatches,
     /// and the Interrupted chunk is written as soon as the database answers.
     Interrupt { last_commit_age_nanos: i64 },
-    /// The owner is done; `ended` when its own write ended the Run, so
-    /// nothing is left for recovery.
-    Retire { ended: bool },
+    /// A recovered owner's one chunk, written until the database answers:
+    /// the `expired` Approval Requests expire, every nonterminal Invocation
+    /// ends, and the Run ends with the termination its row records, else
+    /// `intent` (a passed deadline's timeout), else interrupted. The Run is
+    /// taken over with the owner's new claim.
+    Recover {
+        expired: Vec<ApprovalId>,
+        intent: Option<RequestedTermination>,
+    },
+    /// The owner is done. A Run it leaves running renews no lease any more,
+    /// and the expired-lease sweep ends it once the lease lapses.
+    Retire,
 }
 
 /// The limits one owner decides against.
@@ -203,7 +218,19 @@ pub(crate) enum Phase {
     /// pending commits, and the Interrupted chunk is being written until the
     /// database answers or another writer has the Run.
     Interrupting,
+    /// A recovered owner: no Program runs here. It applies the timers the
+    /// sweep queued, then writes its one chunk; outside requests wait behind
+    /// it.
+    Recovering,
     Retired,
+}
+
+/// A recovered owner's memory: the Approval Requests whose passed timers it
+/// applied, and whether its one chunk is being written.
+#[derive(Debug, Default)]
+struct Recovery {
+    expired: Vec<ApprovalId>,
+    writing: bool,
 }
 
 struct InFlight {
@@ -278,6 +305,7 @@ pub(crate) struct OwnerState {
     open: ChunkBuild,
     closed: VecDeque<ChunkBuild>,
     in_flight: Option<InFlight>,
+    recovery: Recovery,
 }
 
 impl OwnerState {
@@ -307,6 +335,17 @@ impl OwnerState {
             open: ChunkBuild::default(),
             closed: VecDeque::new(),
             in_flight: None,
+            recovery: Recovery::default(),
+        }
+    }
+
+    /// The owner the expired-lease sweep recreates for a Run accepted at
+    /// `accepted_at_unix_nanos` whose process is gone: it starts no Program
+    /// and applies the mailbox the sweep queued.
+    pub(crate) fn recovered(limits: OwnerLimits, accepted_at_unix_nanos: i64) -> Self {
+        Self {
+            phase: Phase::Recovering,
+            ..Self::new(limits, accepted_at_unix_nanos)
         }
     }
 
@@ -1044,9 +1083,11 @@ impl OwnerState {
                     now_unix_nanos,
                 )
             }
-            Phase::Completing | Phase::Stopped(_) | Phase::Interrupting | Phase::Retired => {
-                vec![Effect::Answer(reply, Err(Error::OwnerLost))]
-            }
+            Phase::Completing
+            | Phase::Stopped(_)
+            | Phase::Interrupting
+            | Phase::Recovering
+            | Phase::Retired => vec![Effect::Answer(reply, Err(Error::OwnerLost))],
         }
     }
 
@@ -1266,6 +1307,7 @@ impl OwnerState {
             | Phase::Completing
             | Phase::Stopped(_)
             | Phase::Interrupting
+            | Phase::Recovering
             | Phase::Retired => {}
         }
         effects
@@ -1286,7 +1328,7 @@ impl OwnerState {
         };
         let mut effects = self.abandon_pending(|| Error::ProgramHostTerminated, answer);
         effects.extend(self.answer_parked(answer));
-        effects.push(Effect::Retire { ended });
+        effects.push(Effect::Retire);
         effects
     }
 
@@ -1413,6 +1455,7 @@ impl OwnerState {
             | Phase::Completing
             | Phase::Settling
             | Phase::Interrupting
+            | Phase::Recovering
             | Phase::Retired => Vec::new(),
         }
     }
@@ -1456,6 +1499,7 @@ impl OwnerState {
             | Phase::Completing
             | Phase::Stopped(_)
             | Phase::Interrupting
+            | Phase::Recovering
             | Phase::Retired => {}
         }
         effects.extend(self.unpark(now_unix_nanos));
@@ -1479,6 +1523,65 @@ impl OwnerState {
             return vec![self.arm_idle_tick()];
         }
         self.commit(ChunkBuild::default())
+    }
+
+    /// A recovered owner applies one message (ADR 0018, Recovery). The sweep
+    /// queued every timer that passed, in deadline order, then
+    /// [`Message::Recover`]: an Approval Request whose timer fired expires,
+    /// a passed Run deadline times the Run out, and the end finishes the
+    /// termination the row records or interrupts the Run, in one chunk. A
+    /// timer applied after a termination changes nothing, as in a live
+    /// owner: the termination closes the request. An outside request waits
+    /// behind the chunk; once it lands, or the Run is found ended, the record
+    /// answers. No Program runs here, so nothing else reaches the owner.
+    fn recovering(&mut self, message: Message, now_unix_nanos: i64) -> Vec<Effect> {
+        let writing = self.recovery.writing;
+        match message {
+            Message::Timer(Timer::Approval(approval)) if !writing && self.termination.is_none() => {
+                self.recovery.expired.push(approval);
+                Vec::new()
+            }
+            Message::Timer(Timer::RunDeadline) if !writing && self.termination.is_none() => {
+                let at = now_unix_nanos.max(self.limits.deadline_at_unix_nanos);
+                self.termination = self.intent(RunTerminationKind::TimedOut, at);
+                Vec::new()
+            }
+            Message::Recover(end) if !writing => {
+                // A deadline that passed since the sweep read the Run times
+                // it out, as its timer would have first.
+                if end == RecoveryEnd::Interrupt && self.termination.is_none() {
+                    let kind = if now_unix_nanos >= self.limits.deadline_at_unix_nanos {
+                        RunTerminationKind::TimedOut
+                    } else {
+                        RunTerminationKind::Interrupted
+                    };
+                    self.termination = self.intent(kind, now_unix_nanos);
+                }
+                self.recovery.writing = true;
+                vec![Effect::Recover {
+                    expired: std::mem::take(&mut self.recovery.expired),
+                    intent: self.termination.clone(),
+                }]
+            }
+            Message::Decide { .. } | Message::Cancel { .. } => {
+                self.parked.push(message);
+                Vec::new()
+            }
+            // Another writer ending the Run first leaves a record that
+            // answers too; another process taking it leaves the outcome
+            // unknown.
+            Message::Interrupted(recorded) if writing => {
+                self.retire(matches!(recorded, Ok(()) | Err(CommitRejection::RunEnded)))
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// A termination intent no Principal asked for, at `at_unix_nanos`;
+    /// `None` when the row could not hold it, and the recovered owner's chunk
+    /// then records what it finds.
+    fn intent(&self, kind: RunTerminationKind, at_unix_nanos: i64) -> Option<RequestedTermination> {
+        RequestedTermination::new(kind, None, at_unix_nanos, self.limits.shutdown_grace_nanos).ok()
     }
 }
 
@@ -1512,6 +1615,9 @@ pub(crate) fn apply(state: &mut OwnerState, message: Message, now_unix_nanos: i6
     reason = "one arm per message, each a call into the owner's state"
 )]
 fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) -> Vec<Effect> {
+    if state.phase == Phase::Recovering {
+        return state.recovering(message, now_unix_nanos);
+    }
     match message {
         // The idle tick is armed from the launch, not the start mark: a
         // start mark the database keeps not answering is judged by the
@@ -1553,7 +1659,8 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         {
             Vec::new()
         }
-        Message::Interrupted(_) => Vec::new(),
+        // Only a recovered owner ends its Run on a queued end.
+        Message::Interrupted(_) | Message::Recover(_) => Vec::new(),
         Message::Started(Ok(Some(started))) => state.started(started, now_unix_nanos),
         // The terminal write refused a Run with a nonterminal Invocation (or
         // failed). Work that arrived meanwhile may be that Invocation's end,

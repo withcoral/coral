@@ -131,6 +131,10 @@ pub(crate) trait ExecutionObserver: Send + Sync {
     /// The owner's task dequeued one message; a test may panic here.
     fn owner_message_dequeued(&self) {}
 
+    /// A recovered owner is about to write its one chunk; a test may hold
+    /// it here.
+    async fn before_recovery_write(&self) {}
+
     /// The owner armed `timer` to fire after `after_nanos` on the host clock.
     fn timer_armed(&self, _timer: &crate::owner::Timer, _after_nanos: i64) {}
 
@@ -249,6 +253,18 @@ impl ExecutionPolicy {
     /// lease with an empty chunk: half a lease.
     pub(crate) fn idle_tick_nanos(self) -> i64 {
         duration_nanos(self.claim_lease / 2)
+    }
+
+    /// How often the expired-lease sweep runs: half a lease.
+    pub(crate) fn sweep_interval(self) -> Duration {
+        self.claim_lease / 2
+    }
+
+    /// How long the end of the Shutdown Drain waits for the owners it
+    /// interrupts to record that: the shutdown grace their dispatches in
+    /// flight get, and the settle's last attempt.
+    pub(crate) fn commit_grace(self) -> Duration {
+        self.shutdown_grace + crate::termination::SETTLE_MARGIN
     }
 
     /// How long an Approval Request waits for a decision at most.

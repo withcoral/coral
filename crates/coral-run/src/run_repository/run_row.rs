@@ -38,7 +38,7 @@ pub(super) struct RunRow {
     value_limits_json: String,
     accumulated_output_bytes: i64,
     chunk_sequence: i64,
-    /// Read beside the row in a read snapshot; absent under `hold_run`.
+    /// Read beside the row; absent under retention's hold of a terminal Run.
     #[sqlx(default)]
     last_event_sequence: Option<i64>,
 }

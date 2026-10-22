@@ -361,6 +361,11 @@ pub enum Error {
     /// and once the Run is terminal it is answered from the durable record.
     #[error("Program Run has no live owner in this process")]
     OwnedElsewhere,
+    /// The process is shutting down and accepts no new Run: its Shutdown
+    /// Drain lets the live ones end. Nothing was written; another process
+    /// takes the request.
+    #[error("the server is shutting down and accepts no new Program Run; retry")]
+    ShuttingDown,
     /// A fatal Program host failure stopped execution for recovery.
     #[error("Program host terminated execution")]
     ProgramHostTerminated,
@@ -455,6 +460,7 @@ impl Error {
             Self::PackageTooLarge { .. } => "program_package_too_large",
             Self::Functions(error) => return error.safe_rejection(),
             Self::PermissionDenied(_) => "permission_denied",
+            Self::ShuttingDown => "shutting_down",
             _ => return None,
         };
         Some((

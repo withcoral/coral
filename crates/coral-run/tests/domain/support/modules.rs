@@ -180,6 +180,59 @@ impl TestModules {
         }
     }
 
+    /// Another process over this fixture's database, clock and execution
+    /// policy, with none of this process's Run Owners: the process a rolling
+    /// update starts beside this one, or the one that boots after it died.
+    pub(crate) fn next_process(&self) -> RunModule {
+        self.next_process_observed(Arc::new(NoopExecutionObserver))
+    }
+
+    /// [`Self::next_process`], with `observer` on its Run Owners.
+    pub(crate) fn next_process_observed(&self, observer: Arc<dyn ExecutionObserver>) -> RunModule {
+        let mut runs = RunModule::with_adapters(
+            self.database.clone(),
+            self.workspaces.clone(),
+            self.providers.clone(),
+            Arc::new(ImmediateEngine::default()),
+            self.upstream.clone(),
+            self.clock.clone(),
+            crate::TestObservers::new(Arc::new(NoopInvocationObserver), observer),
+        )
+        .with_human_interface(test_reef());
+        runs.execution_policy = self.runs.execution_policy;
+        runs
+    }
+
+    /// Hands the Run to `holder`, a process that is not this fixture: the
+    /// Run row's claim becomes `holder`'s (its execution claim too once the
+    /// Run started), its lease ending at `lease_until_unix_nanos`, or at the
+    /// Run's acceptance, long lapsed, for `None`: a holder that died. An
+    /// owner of this fixture still live for the Run loses it at its next
+    /// commit and writes nothing more. Returns the Run row as handed over.
+    pub(crate) async fn hand_to(
+        &self,
+        workspace_id: &coral_workspace::WorkspaceId,
+        run_id: &crate::RunId,
+        holder: &str,
+        lease_until_unix_nanos: Option<i64>,
+    ) -> crate::lifecycle::RunRecord {
+        let lease = lease_until_unix_nanos
+            .map_or_else(|| "accepted_at_unix_nanos".to_string(), |at| at.to_string());
+        let running = RunState::Running.as_storage_str();
+        assert_eq!(
+            self.inject_fault(&format!(
+                "UPDATE program_run_records SET \
+                 execution_claim_id = CASE WHEN execution_claim_id IS NULL THEN NULL \
+                 ELSE '{holder}' END, \
+                 worker_claim_id = '{holder}', worker_claim_expires_at_unix_nanos = {lease} \
+                 WHERE id = '{run_id}' AND state = '{running}'"
+            ))
+            .await,
+            1
+        );
+        self.run_record(workspace_id, run_id).await
+    }
+
     /// Accounts over a filesystem vault in a fresh directory, never the OS
     /// keychain. Keep the directory while the accounts are in use.
     pub(crate) fn accounts(&self) -> (tempfile::TempDir, AccountModule) {
@@ -567,10 +620,14 @@ impl TestModules {
         lease_until_unix_nanos: i64,
     ) {
         let mut transaction = self.database.begin().await.expect("begin claim");
-        let run = crate::run_repository::hold_run(&mut transaction, workspace_id, run_id)
-            .await
-            .expect("hold the Run")
-            .expect("staged Run exists");
+        let run = crate::run_repository::find_exact_in_transaction(
+            &mut transaction,
+            workspace_id,
+            run_id,
+        )
+        .await
+        .expect("read the Run")
+        .expect("staged Run exists");
         let now = self.clock.now_unix_nanos().expect("clock");
         crate::run_repository::claim_for_test(
             &mut transaction,
@@ -605,6 +662,40 @@ impl TestModules {
         .expect("Run exists");
         transaction.commit().await.expect("end read snapshot");
         run
+    }
+
+    /// Releases the Run's worker claim and its lease, as the previous
+    /// release's recovery left an unstarted Run, and returns the Run row.
+    pub(crate) async fn release_worker_claim(
+        &self,
+        workspace_id: &coral_workspace::WorkspaceId,
+        run_id: &crate::RunId,
+    ) -> crate::lifecycle::RunRecord {
+        assert_eq!(
+            self.inject_fault(&format!(
+                "UPDATE program_run_records SET worker_claim_id = NULL, \
+                 worker_claim_expires_at_unix_nanos = NULL WHERE id = '{run_id}'"
+            ))
+            .await,
+            1
+        );
+        self.run_record(workspace_id, run_id).await
+    }
+
+    /// The Run row once it is terminal, within a few seconds.
+    pub(crate) async fn terminal_record(
+        &self,
+        workspace_id: &coral_workspace::WorkspaceId,
+        run_id: &crate::RunId,
+    ) -> crate::lifecycle::RunRecord {
+        wait_until_async_within(Duration::from_secs(5), async || {
+            self.run_record(workspace_id, run_id)
+                .await
+                .state
+                .is_terminal()
+        })
+        .await;
+        self.run_record(workspace_id, run_id).await
     }
 
     /// The previous release's Event counter on the Run row.
@@ -645,6 +736,9 @@ impl TestModules {
         events
     }
 
+    /// Lapses the lease of this process's own holder of the Run, which keeps
+    /// its claim: an owner that stopped renewing (hung) while its process
+    /// lives. The next process's sweep takes the Run over from that claim.
     pub(crate) async fn expire_worker_claim(
         &self,
         workspace_id: &coral_workspace::WorkspaceId,

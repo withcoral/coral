@@ -1,9 +1,11 @@
 //! Application-owned readiness: database reachability with a bounded, cached,
-//! single-flight probe shared with listener composition. Transport modules only
-//! project its boolean answer. Workspace catalog readiness is a domain concern.
+//! single-flight probe shared with listener composition, and the process's
+//! shutdown, from which on it is never ready. Transport modules only project
+//! its boolean answer. Workspace catalog readiness is a domain concern.
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -50,6 +52,9 @@ pub struct EngineReadiness {
     /// database work. Occupying this slot for the length of one probe is what
     /// collapses that burst into a single round trip.
     in_flight: Arc<Mutex<Option<watch::Receiver<Option<bool>>>>>,
+    /// The process is shutting down: its Shutdown Drain lets the live Runs
+    /// end while the orchestrator routes new traffic elsewhere.
+    stopping: Arc<AtomicBool>,
 }
 
 impl EngineReadiness {
@@ -58,7 +63,14 @@ impl EngineReadiness {
             probe,
             cached: Arc::new(Mutex::new(None)),
             in_flight: Arc::new(Mutex::new(None)),
+            stopping: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Reports not ready from now on, on every listener that shares this
+    /// readiness: the process is shutting down.
+    pub(crate) fn stop_serving(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
     }
 
     /// Reports readiness from one round trip to the database this server serves
@@ -106,6 +118,9 @@ impl EngineReadiness {
     /// from nothing every time, and a database slower than the deadline could
     /// never report ready at all.
     pub async fn is_ready(&self) -> bool {
+        if self.stopping.load(Ordering::SeqCst) {
+            return false;
+        }
         if let Some(ready) = self.fresh_answer() {
             return ready;
         }
@@ -230,6 +245,20 @@ mod tests {
             !fixture.readiness.is_ready().await,
             "a server that cannot reach its database is not ready to serve"
         );
+    }
+
+    /// Once shutdown begins the instance leaves the rotation at once, on
+    /// every listener sharing the readiness, whatever the cached answer says.
+    #[tokio::test]
+    async fn a_stopping_instance_reports_unready_despite_a_cached_ready_answer() {
+        let fixture = readiness_fixture().await;
+        let shared = fixture.readiness.clone();
+        assert!(fixture.readiness.is_ready().await);
+
+        fixture.readiness.stop_serving();
+
+        assert!(!fixture.readiness.is_ready().await);
+        assert!(!shared.is_ready().await, "clones share the shutdown");
     }
 
     #[tokio::test]

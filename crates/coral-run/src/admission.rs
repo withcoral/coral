@@ -74,7 +74,8 @@ impl RunModule {
     /// # Errors
     ///
     /// Returns input, authority, compilation, package-limit, clock, worker, or
-    /// persistence errors. Preparation and transactional rejection create no Run.
+    /// persistence errors, and [`Error::ShuttingDown`] once the process is
+    /// shutting down. Preparation and transactional rejection create no Run.
     /// A commit or post-commit launch error does not prove acceptance was undone.
     pub async fn start(
         &self,
@@ -94,13 +95,15 @@ impl RunModule {
     /// Compiles outside the final acceptance transaction, without executing code.
     ///
     /// # Errors
-    /// Returns current authority or bounded admission failure; creates no Run.
+    /// Returns current authority or bounded admission failure, or
+    /// [`Error::ShuttingDown`] once the process is shutting down; creates no Run.
     pub async fn prepare(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         submission: RunSubmission,
     ) -> Result<PreparedRun, Error> {
+        self.admission.check()?;
         self.workspaces
             .check_run_admission(actor, workspace_id, self.now()?)
             .await?;
@@ -120,12 +123,14 @@ impl RunModule {
     /// Stages acceptance in the caller's transaction. This is not proof of commit.
     ///
     /// # Errors
-    /// Rechecks current authority, source selections, and persistence invariants.
+    /// Rechecks current authority, source selections, and persistence
+    /// invariants; [`Error::ShuttingDown`] once the process is shutting down.
     pub async fn accept_in_transaction(
         &self,
         transaction: &mut Transaction<'_>,
         prepared: PreparedRun,
     ) -> Result<StagedRun, Error> {
+        self.admission.check()?;
         let PreparedRun {
             actor,
             workspace_id,

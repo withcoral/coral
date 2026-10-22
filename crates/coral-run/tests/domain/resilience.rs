@@ -164,7 +164,7 @@ async fn a_definite_database_rejection_stops_the_owner_without_a_retry() {
     let owner = fixture
         .runs
         .owners
-        .find(&run_id, &claim_id)
+        .find(&run_id, Some(&claim_id))
         .expect("the owner is live");
     let commits_before = probe.commits();
     // The Run has its one `run.started` Event: the next Event insert is
@@ -200,45 +200,23 @@ async fn a_definite_database_rejection_stops_the_owner_without_a_retry() {
 }
 
 /// An owner whose settle of the interruption it recorded fails retires and
-/// leaves its Run `running` with the termination recorded: no timer of its
-/// own fires after it retired, and its supervisor runs recovery's pass at
-/// the Run deadline, so the Run still ends there with no explicit pass
-/// (slice 9's expired-lease sweep takes that over).
+/// leaves its Run `running` with the termination recorded and its worker
+/// claim released: no timer of its own fires after it retired, and nothing
+/// renews a lease. The expired-lease sweep leaves that Run alone for one
+/// lease after acceptance, then recreates its owner, which finishes the
+/// recorded interruption rather than replacing it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_run_whose_owner_retired_on_a_failed_settle_is_ended_by_its_deadline() {
+async fn a_run_whose_owner_retired_on_a_failed_settle_is_ended_by_the_next_sweep() {
     let (engine, gates) = BurstEngine::new(vec!["\"one\"".to_string()]);
     let probe = CommitProbe::new();
     let fixture = quiet_fixture(engine.clone(), probe.clone()).await;
-    let (workspace_id, principal) = fixture
-        .user_scope("user:deadline-after-retire", "Survive the database")
-        .await;
-    // The supervisor sleeps this long on the host clock from the launch; the
-    // owner must have retired, and the fault be gone, well before it fires.
-    let run_timeout = Duration::from_secs(3);
-    let accepted = fixture
-        .runs
-        .start(
-            &principal,
-            &workspace_id,
-            crate::RunSubmission::new(
-                crate::ProgramSource::parse("deadline").unwrap(),
-                crate::RunTimeout::from_millis(run_timeout.as_millis().try_into().unwrap())
-                    .unwrap(),
-            ),
-        )
-        .await
-        .expect("accept the Program");
-    // The launch, which anchors the supervisor's sleep, happened inside
-    // `start`; admission before it does not count against the window.
-    let scheduled = std::time::Instant::now();
-    let run_id = accepted.run_id().clone();
-    wait_until_started(&fixture, &workspace_id, &run_id).await;
+    let (workspace_id, principal, run_id) = started_run(&fixture, "sweep-after-retire").await;
     let before = fixture.run_record(&workspace_id, &run_id).await;
     let claim_id = before.execution_claim_id.clone().expect("started Run");
     let owner = fixture
         .runs
         .owners
-        .find(&run_id, &claim_id)
+        .find(&run_id, Some(&claim_id))
         .expect("the owner is live");
     // Every Event insert after `run.started` is rejected: the Emission's
     // chunk stops the owner, its terminal write records the interruption
@@ -261,32 +239,27 @@ async fn a_run_whose_owner_retired_on_a_failed_settle_is_ended_by_its_deadline()
         left.termination.map(|termination| termination.kind),
         Some(crate::lifecycle::RunTerminationKind::Interrupted)
     );
-
+    assert_eq!(left.worker_claim_id, None, "the interruption released it");
     fixture.inject_fault("DROP INDEX reject_run_events").await;
-    fixture
-        .clock
-        .next
-        .store(before.deadline_at_unix_nanos + 1, Ordering::SeqCst);
-    assert!(
-        scheduled.elapsed() < run_timeout / 2,
-        "the fault must be gone before the supervisor's pass runs; this host took {:?}",
-        scheduled.elapsed()
+
+    // Within one lease of acceptance a Run with no claim is not abandoned.
+    assert_eq!(fixture.runs.sweep_expired_leases().await.unwrap(), 0);
+    assert_eq!(fixture.run_record(&workspace_id, &run_id).await, left);
+
+    fixture.clock.next.store(
+        before.accepted_at_unix_nanos + 2 * fixture.runs.execution_policy.claim_lease_nanos(),
+        Ordering::SeqCst,
     );
-    wait_until_async_within(run_timeout + Duration::from_secs(3), async || {
-        fixture
-            .run_record(&workspace_id, &run_id)
-            .await
-            .state
-            .is_terminal()
-    })
-    .await;
+    assert_eq!(fixture.runs.sweep_expired_leases().await.unwrap(), 1);
     let terminal = wait_for_terminal(&fixture.runs, &principal, &workspace_id, &run_id).await;
     assert_eq!(
         terminal.state(),
         RunState::Interrupted,
-        "the recorded interruption is settled, not replaced by a timeout"
+        "the recorded interruption is finished, not replaced"
     );
-    assert!(!fixture.runs.has_owner(&run_id));
+    let after = fixture.run_record(&workspace_id, &run_id).await;
+    assert_eq!(after.chunk_sequence, left.chunk_sequence + 1, "one chunk");
+    wait_until(|| !fixture.runs.has_owner(&run_id)).await;
 }
 
 /// The row read before a chunk's write is judged the same way as a reread:
@@ -306,7 +279,7 @@ async fn a_foreign_head_read_before_the_write_stops_the_owner_without_a_write() 
     let owner = fixture
         .runs
         .owners
-        .find(&run_id, &claim_id)
+        .find(&run_id, Some(&claim_id))
         .expect("the owner is live");
     let commits_before = probe.commits();
 
@@ -366,7 +339,7 @@ async fn a_reread_that_shows_a_foreign_head_fails_loudly_and_changes_nothing() {
     let owner = fixture
         .runs
         .owners
-        .find(&run_id, &claim_id)
+        .find(&run_id, Some(&claim_id))
         .expect("the owner is live");
 
     let release_answer = probe.lose_next_answer();

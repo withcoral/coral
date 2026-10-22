@@ -177,10 +177,6 @@ async fn a_cancel_for_a_run_owned_elsewhere_is_refused_without_a_write() {
 /// recorded, every Invocation the fence permitted ends `run_terminated`
 /// instead of sending, and `run.ended` follows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one journey: the cancel applied under a held fence, then the recorded order"
-)]
 async fn a_cancel_during_an_in_flight_fence_is_applied_at_once_and_run_ended_follows_the_fence() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
     let latch = FenceLatch::holding_both();
@@ -222,10 +218,7 @@ async fn a_cancel_during_an_in_flight_fence_is_applied_at_once_and_run_ended_fol
     let owner = fixture
         .runs
         .owners
-        .find(
-            run.run_id(),
-            before.execution_claim_id.as_deref().expect("started"),
-        )
+        .find(run.run_id(), before.execution_claim_id.as_deref())
         .expect("the owner is live");
     wait_until(|| owner.is_stopping()).await;
     assert_eq!(
@@ -514,7 +507,7 @@ async fn a_cancel_and_the_run_deadline_record_the_first_applied_kind() {
         let owner = fixture
             .runs
             .owners
-            .find(&run_id, &claim_id)
+            .find(&run_id, Some(&claim_id))
             .expect("the owner is live");
         if deadline_first {
             // The deadline's timer stops the Program; the clock stays
@@ -678,28 +671,30 @@ impl Termination {
         run: &crate::RunId,
     ) -> crate::RunUpdate {
         let workspace = &operation.workspace_id;
-        if let Self::Cancel(_) = self {
-            return fixture
+        match self {
+            Self::Cancel(_) => fixture
                 .runs
                 .cancel(principal, workspace, run, &immediate(None, 100))
                 .await
-                .expect("cancel in-flight work");
+                .expect("cancel in-flight work"),
+            // The owner's own timer applies the deadline on the host clock.
+            Self::Deadline => {
+                wait_until_async_within(Duration::from_secs(5), async || {
+                    fixture.run_record(workspace, run).await.state.is_terminal()
+                })
+                .await;
+                wait_for_terminal(&fixture.runs, principal, workspace, run).await
+            }
         }
-        let accepted_at = retained_events(&fixture.runs, &operation.principal, workspace, run)
-            .await
-            .first()
-            .expect("run.started")
-            .occurred_at_unix_nanos();
-        fixture
-            .clock
-            .next
-            .store(accepted_at + 6_000_000_000, Ordering::SeqCst);
-        fixture
-            .runs
-            .recover()
-            .await
-            .expect("apply the Run deadline");
-        wait_for_terminal(&fixture.runs, principal, workspace, run).await
+    }
+
+    /// The Run timeout: the deadline's is short enough to wait out.
+    fn timeout(self) -> RunTimeout {
+        let millis = match self {
+            Self::Cancel(_) => 5_000,
+            Self::Deadline => 1_000,
+        };
+        RunTimeout::from_millis(millis).expect("Run timeout")
     }
 }
 
@@ -819,7 +814,7 @@ async fn termination_ends_waiting_invocations_and_marks_unfinished_dispatches_in
                     RunSubmission::new(
                         ProgramSource::parse("await coral.providers.weather.getForecast();")
                             .unwrap(),
-                        RunTimeout::from_millis(5_000).unwrap(),
+                        termination.timeout(),
                     ),
                 )
                 .await
@@ -1071,17 +1066,22 @@ async fn recovery_revokes_a_started_claim_before_late_program_work() {
         .next
         .store(accepted_at + 2_000_000_000, Ordering::SeqCst);
 
-    fixture.runs.recover().await.expect("recover stale claim");
-    let interrupted = fixture
-        .runs
-        .observe(
-            &operation.principal,
-            &operation.workspace_id,
-            accepted.run_id(),
-            &immediate(None, 100),
-        )
-        .await
-        .expect("observe interrupted Run");
+    // The process that boots next sweeps the Run this one stopped renewing.
+    assert_eq!(
+        fixture
+            .next_process()
+            .sweep_expired_leases()
+            .await
+            .expect("sweep the lapsed lease"),
+        1
+    );
+    let interrupted = wait_for_terminal(
+        &fixture.runs,
+        &operation.principal,
+        &operation.workspace_id,
+        accepted.run_id(),
+    )
+    .await;
     assert_eq!(interrupted.state(), RunState::Interrupted);
     assert!(matches!(
         interrupted.terminal_outcome(),
@@ -1167,17 +1167,21 @@ async fn recovery_ends_a_pending_invocation_without_dispatch() {
         .next
         .store(accepted_at + 2_000_000_000, Ordering::SeqCst);
 
-    fixture.runs.recover().await.expect("recover pending work");
-    let interrupted = fixture
-        .runs
-        .observe(
-            &operation.principal,
-            &operation.workspace_id,
-            accepted.run_id(),
-            &immediate(None, 100),
-        )
-        .await
-        .expect("observe interrupted Run");
+    assert_eq!(
+        fixture
+            .next_process()
+            .sweep_expired_leases()
+            .await
+            .expect("sweep the lapsed lease"),
+        1
+    );
+    let interrupted = wait_for_terminal(
+        &fixture.runs,
+        &operation.principal,
+        &operation.workspace_id,
+        accepted.run_id(),
+    )
+    .await;
     assert_eq!(interrupted.state(), RunState::Interrupted);
     assert!(
         retained_events(
@@ -1256,21 +1260,21 @@ async fn recovery_marks_an_uncertain_dispatch_indeterminate_without_replay() {
         .next
         .store(accepted_at + 2_000_000_000, Ordering::SeqCst);
 
-    fixture
-        .runs
-        .recover()
-        .await
-        .expect("recover uncertain dispatch");
-    let interrupted = fixture
-        .runs
-        .observe(
-            &operation.principal,
-            &operation.workspace_id,
-            accepted.run_id(),
-            &immediate(None, 100),
-        )
-        .await
-        .expect("observe interrupted Run");
+    assert_eq!(
+        fixture
+            .next_process()
+            .sweep_expired_leases()
+            .await
+            .expect("sweep the lapsed lease"),
+        1
+    );
+    let interrupted = wait_for_terminal(
+        &fixture.runs,
+        &operation.principal,
+        &operation.workspace_id,
+        accepted.run_id(),
+    )
+    .await;
     assert_eq!(interrupted.state(), RunState::Interrupted);
     assert!(
         retained_events(
@@ -1478,5 +1482,546 @@ async fn durable_cancellation_wins_completion_and_preserves_principal_confidenti
             member_run.run_id(),
         )
         .await;
+    }
+}
+
+/// What a Run whose holder died carries into the expired-lease sweep.
+#[derive(Debug, Clone, Copy)]
+enum Abandoned {
+    /// No deadline passed: the Run is interrupted.
+    Nothing,
+    /// Its Approval Request's deadline passed: the request expires first.
+    ApprovalDeadline,
+    /// Its Run deadline passed too: the Run times out.
+    RunDeadline,
+    /// Its owner recorded a cancellation and died before it settled.
+    RecordedCancel,
+}
+
+/// The expired-lease sweep recreates the owner of a Run whose holder died,
+/// with the timers that passed queued in deadline order, and that owner ends
+/// the Run in one chunk. An Approval Request whose deadline passed expires,
+/// dated at its deadline, and its Invocation fails `approval_expired` before
+/// the Run ends; a passed Run deadline records `timed_out`, not
+/// `interrupted`; a recorded termination is finished as recorded; otherwise
+/// the Run is interrupted, its waiting Invocation ends `run_terminated` and
+/// its request closes. The Run is taken over with a new claim.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of abandoned Runs, each arranged and checked against its one chunk"
+)]
+async fn the_sweep_ends_an_abandoned_run_by_its_passed_timers_or_its_recorded_termination() {
+    use crate::InvocationResultKind::{CoralFailure, RunTerminated};
+    use crate::approval::ApprovalState;
+    // (what passed, the Run's end, its request's end, the Invocation's end)
+    let cases = [
+        (
+            Abandoned::Nothing,
+            RunState::Interrupted,
+            ApprovalState::Closed,
+            RunTerminated,
+        ),
+        (
+            Abandoned::ApprovalDeadline,
+            RunState::Interrupted,
+            ApprovalState::Expired,
+            CoralFailure,
+        ),
+        (
+            Abandoned::RunDeadline,
+            RunState::TimedOut,
+            ApprovalState::Expired,
+            CoralFailure,
+        ),
+        (
+            Abandoned::RecordedCancel,
+            RunState::Canceled,
+            ApprovalState::Closed,
+            RunTerminated,
+        ),
+    ];
+    for (case, run_end, request_end, invocation_end) in cases {
+        // The request waits 20 s at most, well inside the Run's 60 s.
+        let held =
+            HeldApproval::expiring(&format!("user:abandoned-{case:?}"), Duration::from_secs(20))
+                .await;
+        let (fixture, workspace_id, run_id) =
+            (&held.fixture, &held.operation.workspace_id, &held.run);
+        let request = held
+            .approvals
+            .list_for_run(&held.actor, workspace_id, run_id)
+            .await
+            .unwrap()
+            .remove(0);
+        let mut handed = fixture
+            .hand_to(workspace_id, run_id, "dead-holder", None)
+            .await;
+        match case {
+            Abandoned::Nothing => {}
+            Abandoned::ApprovalDeadline => fixture
+                .clock
+                .next
+                .store(request.deadline_at_unix_nanos, Ordering::SeqCst),
+            Abandoned::RunDeadline => fixture
+                .clock
+                .next
+                .store(handed.deadline_at_unix_nanos, Ordering::SeqCst),
+            Abandoned::RecordedCancel => {
+                fixture
+                    .inject_fault(&format!(
+                        "UPDATE program_run_records SET termination_kind = 'canceled', \
+                         termination_started_at_unix_nanos = accepted_at_unix_nanos + 1, \
+                         termination_deadline_at_unix_nanos = \
+                         accepted_at_unix_nanos + 1 + shutdown_grace_nanos, \
+                         cancellation_requested_at_unix_nanos = accepted_at_unix_nanos + 1, \
+                         cancellation_principal_id = principal_id, \
+                         cancellation_principal_kind = principal_kind \
+                         WHERE id = '{run_id}'"
+                    ))
+                    .await;
+                handed = fixture.run_record(workspace_id, run_id).await;
+            }
+        }
+
+        let swept = fixture.next_process().sweep_expired_leases().await;
+        assert_eq!(swept.unwrap(), 1, "{case:?}");
+        let ended = fixture.terminal_record(workspace_id, run_id).await;
+
+        assert_eq!(ended.state, run_end, "{case:?}");
+        assert_eq!(
+            ended.chunk_sequence,
+            handed.chunk_sequence + 1,
+            "{case:?}: one chunk"
+        );
+        assert_eq!(ended.worker_claim_id, None, "{case:?}");
+        assert!(
+            ended
+                .execution_claim_id
+                .as_deref()
+                .is_some_and(|claim| claim != "dead-holder"),
+            "{case:?}: taken over with a new claim"
+        );
+        let events = fixture
+            .events_after(workspace_id, run_id, last_sequence(&handed))
+            .await;
+        assert!(
+            matches!(
+                events.iter().map(RunEvent::kind).collect::<Vec<_>>().as_slice(),
+                [
+                    RunEventKind::InvocationEnded { result_kind, .. },
+                    RunEventKind::Ended { state, .. },
+                ] if *result_kind == invocation_end && *state == run_end
+            ),
+            "{case:?}: {events:?}"
+        );
+        let request_after = held
+            .approvals
+            .get(&held.actor, workspace_id, &request.id)
+            .await
+            .unwrap();
+        assert_eq!(request_after.state, request_end, "{case:?}");
+        if request_end == ApprovalState::Expired {
+            assert_eq!(
+                request_after.decided_at_unix_nanos,
+                Some(request.deadline_at_unix_nanos),
+                "{case:?}: dated at its deadline"
+            );
+            let rows = fixture.invocation_rows(workspace_id, run_id).await;
+            assert!(
+                matches!(rows.as_slice(), [row] if row.failure_code.as_deref() == Some("approval_expired")),
+                "{case:?}"
+            );
+        }
+    }
+}
+
+/// A Run whose holder died with one Invocation dispatching and another
+/// waiting on its approval ends in one chunk: the dispatching one ends
+/// `indeterminate`, the waiting one `run_terminated` with its Approval
+/// Request closed, then `run.ended`; the head moves once. The dead holder's
+/// late upstream result changes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey: two Invocations brought to dispatching and waiting, then one chunk"
+)]
+async fn an_abandoned_runs_dispatching_and_waiting_invocations_end_in_one_chunk() {
+    use crate::InvocationResultKind::{Indeterminate, RunTerminated};
+    use crate::approval::ApprovalState;
+    let (engine, calls) = ScriptedCallsEngine::new();
+    let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
+        200,
+        serde_json::json!({"temperature": 21}),
+    )));
+    let fixture = TestModules::with_upstream(Arc::new(engine), upstream.clone()).await;
+    let operation = fixture
+        .user_operation("user:abandoned-in-flight", "Recover in-flight work")
+        .await;
+    fixture.require_approval(&operation).await;
+    let workspace_id = &operation.workspace_id;
+    let approvals = fixture.approvals();
+    let accepted = fixture
+        .runs
+        .start(&operation.principal, workspace_id, submission("calls"))
+        .await
+        .unwrap();
+    let run_id = accepted.run_id();
+    calls.invoke(&operation.call_path);
+    calls.invoke(&operation.call_path);
+    wait_for_actions(
+        &fixture.runs,
+        &operation.principal,
+        workspace_id,
+        run_id,
+        2,
+        2,
+    )
+    .await;
+    let requests = approvals
+        .list_for_run(&operation.principal, workspace_id, run_id)
+        .await
+        .unwrap();
+    let [approved, waiting] = requests.as_slice() else {
+        panic!("two Approval Requests: {requests:?}");
+    };
+    approvals
+        .decide(
+            &operation.principal,
+            workspace_id,
+            &approved.id,
+            crate::approval::ApprovalDecision::Approve,
+            None,
+            &TraceId::parse(&"d".repeat(32)).unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_until(|| upstream.entered.load(Ordering::SeqCst)).await;
+    let handed = fixture
+        .hand_to(workspace_id, run_id, "dead-holder", None)
+        .await;
+
+    assert_eq!(
+        fixture.next_process().sweep_expired_leases().await.unwrap(),
+        1
+    );
+    let ended = fixture.terminal_record(workspace_id, run_id).await;
+
+    assert_eq!(ended.state, RunState::Interrupted);
+    assert_eq!(ended.chunk_sequence, handed.chunk_sequence + 1, "one chunk");
+    let events = fixture
+        .events_after(workspace_id, run_id, last_sequence(&handed))
+        .await;
+    let mut ends: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event.kind() {
+            RunEventKind::InvocationEnded { result_kind, .. } => Some(result_kind.as_storage_str()),
+            _ => None,
+        })
+        .collect();
+    ends.sort_unstable();
+    assert_eq!(
+        ends,
+        [
+            Indeterminate.as_storage_str(),
+            RunTerminated.as_storage_str()
+        ]
+    );
+    assert!(
+        matches!(
+            events.last().map(RunEvent::kind),
+            Some(RunEventKind::Ended {
+                state: RunState::Interrupted,
+                ..
+            })
+        ),
+        "{events:?}"
+    );
+    let states: Vec<_> = approvals
+        .list_for_run(&operation.principal, workspace_id, run_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|request| (request.id, request.state))
+        .collect();
+    assert!(states.contains(&(approved.id.clone(), ApprovalState::Approved)));
+    assert!(states.contains(&(waiting.id.clone(), ApprovalState::Closed)));
+
+    upstream.release.store(true, Ordering::SeqCst);
+    wait_until(|| upstream.exited.load(Ordering::SeqCst)).await;
+    wait_until(|| !fixture.runs.has_owner(run_id)).await;
+    assert_eq!(
+        fixture.run_record(workspace_id, run_id).await,
+        ended,
+        "the dead holder's late result changes nothing"
+    );
+}
+
+/// A request that reaches a recovered owner before its chunk lands waits
+/// behind it and is answered from the record: the cancel shows the Run
+/// interrupted, the decision shows its request closed. Neither is
+/// `OwnerLost` or `OwnedElsewhere`, and the cancel records nothing of its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_that_reaches_a_recovered_owner_first_waits_for_its_recorded_answer() {
+    use crate::approval::{ApprovalDecision, ApprovalState};
+    let held = HeldApproval::new("user:recovered-request").await;
+    let (fixture, workspace_id, run_id) = (&held.fixture, &held.operation.workspace_id, &held.run);
+    let request = held
+        .approvals
+        .list_for_run(&held.actor, workspace_id, run_id)
+        .await
+        .unwrap()
+        .remove(0);
+    let handed = fixture
+        .hand_to(workspace_id, run_id, "dead-holder", None)
+        .await;
+    let (gate, release) = RecoveryGate::blocking();
+    let next = fixture.next_process_observed(gate.clone());
+    assert_eq!(next.sweep_expired_leases().await.unwrap(), 1);
+    wait_until(|| gate.entered()).await;
+
+    let cancel = tokio::spawn({
+        let (next, actor, workspace_id, run_id) = (
+            next.clone(),
+            held.actor.clone(),
+            workspace_id.clone(),
+            run_id.clone(),
+        );
+        async move {
+            next.cancel(&actor, &workspace_id, &run_id, &immediate(None, 100))
+                .await
+        }
+    });
+    let decision = tokio::spawn({
+        let (approvals, actor, workspace_id, id) = (
+            next.approvals(),
+            held.operation.principal.clone(),
+            workspace_id.clone(),
+            request.id.clone(),
+        );
+        async move {
+            approvals
+                .decide(
+                    &actor,
+                    &workspace_id,
+                    &id,
+                    ApprovalDecision::Approve,
+                    None,
+                    &TraceId::parse(&"d".repeat(32)).unwrap(),
+                )
+                .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !cancel.is_finished() && !decision.is_finished(),
+        "both requests wait behind the recovered owner's chunk"
+    );
+    assert_eq!(fixture.run_record(workspace_id, run_id).await, handed);
+
+    release
+        .send(())
+        .expect("release the recovered owner's chunk");
+    let canceled = cancel
+        .await
+        .unwrap()
+        .expect("the record answers the cancel");
+    assert_eq!(canceled.state(), RunState::Interrupted);
+    let decided = decision
+        .await
+        .unwrap()
+        .expect("the record answers the decision");
+    assert_eq!(decided.state, ApprovalState::Closed);
+    let ended = fixture.run_record(workspace_id, run_id).await;
+    assert_eq!(ended.chunk_sequence, handed.chunk_sequence + 1, "one chunk");
+    assert!(
+        fixture
+            .events_after(workspace_id, run_id, last_sequence(&handed))
+            .await
+            .iter()
+            .all(|event| !matches!(event.kind(), RunEventKind::CancellationRequested { .. })),
+        "the cancel recorded nothing of its own"
+    );
+}
+
+/// A `running` Run with no claim, as the previous release left one between
+/// acceptance and its claim, belongs to the process that accepted it for one
+/// lease: the sweep leaves it alone, then interrupts it, unstarted, in one
+/// chunk.
+#[tokio::test]
+async fn the_sweep_leaves_a_run_with_no_claim_alone_for_one_lease_after_acceptance() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let (workspace_id, principal) = fixture
+        .user_scope("user:no-claim", "Recover an unclaimed Run")
+        .await;
+    let run_id = fixture
+        .staged_run(&principal, &workspace_id, "no-claim")
+        .await;
+    let unclaimed = fixture.release_worker_claim(&workspace_id, &run_id).await;
+
+    assert_eq!(fixture.runs.sweep_expired_leases().await.unwrap(), 0);
+    assert_eq!(
+        fixture.run_record(&workspace_id, &run_id).await,
+        unclaimed,
+        "within one lease of acceptance the Run is the accepting process's"
+    );
+
+    fixture.clock.next.store(
+        unclaimed.accepted_at_unix_nanos + fixture.runs.execution_policy.claim_lease_nanos() + 1,
+        Ordering::SeqCst,
+    );
+    assert_eq!(fixture.runs.sweep_expired_leases().await.unwrap(), 1);
+    let ended = fixture.terminal_record(&workspace_id, &run_id).await;
+    assert_eq!(ended.state, RunState::Interrupted);
+    assert_eq!(
+        ended.chunk_sequence,
+        unclaimed.chunk_sequence + 1,
+        "one chunk"
+    );
+    assert_eq!(ended.execution_started_at_unix_nanos, None, "never started");
+    assert!(matches!(
+        fixture
+            .events_after(&workspace_id, &run_id, last_sequence(&unclaimed))
+            .await
+            .iter()
+            .map(RunEvent::kind)
+            .collect::<Vec<_>>()
+            .as_slice(),
+        [RunEventKind::Ended {
+            state: RunState::Interrupted,
+            ..
+        }]
+    ));
+}
+
+/// A Run whose live lease another process holds is that process's: the
+/// sweep leaves it alone, and a cancel here answers `OwnedElsewhere` with
+/// nothing written. Once the lease lapses, the next sweep ends the Run and
+/// the retried cancel is answered from the record.
+#[tokio::test]
+async fn a_run_with_a_live_foreign_lease_is_left_alone_until_the_lease_lapses() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let (workspace_id, principal) = fixture
+        .user_scope("user:foreign-lease", "Leave a foreign Run alone")
+        .await;
+    let run_id = fixture
+        .staged_run(&principal, &workspace_id, "foreign-lease")
+        .await;
+    let staged = fixture.run_record(&workspace_id, &run_id).await;
+    let lease_until =
+        staged.accepted_at_unix_nanos + 3 * fixture.runs.execution_policy.claim_lease_nanos();
+    let foreign = fixture
+        .hand_to(&workspace_id, &run_id, "foreign-process", Some(lease_until))
+        .await;
+
+    assert_eq!(fixture.runs.sweep_expired_leases().await.unwrap(), 0);
+    let refused = fixture
+        .runs
+        .cancel(&principal, &workspace_id, &run_id, &immediate(None, 100))
+        .await;
+    assert!(matches!(refused, Err(Error::OwnedElsewhere)), "{refused:?}");
+    assert_eq!(
+        fixture.run_record(&workspace_id, &run_id).await,
+        foreign,
+        "neither the sweep nor the cancel writes"
+    );
+
+    fixture.clock.next.store(lease_until, Ordering::SeqCst);
+    assert_eq!(fixture.runs.sweep_expired_leases().await.unwrap(), 1);
+    let retried = fixture
+        .runs
+        .cancel(&principal, &workspace_id, &run_id, &immediate(None, 100))
+        .await
+        .expect("the record answers the retried cancel");
+    assert_eq!(retried.state(), RunState::Interrupted);
+    assert!(
+        fixture
+            .events_after(&workspace_id, &run_id, last_sequence(&foreign))
+            .await
+            .iter()
+            .all(|event| !matches!(event.kind(), RunEventKind::CancellationRequested { .. }))
+    );
+}
+
+/// During the Shutdown Drain a new Run is refused with `ShuttingDown` and
+/// nothing is written, a live Run that ends on its own keeps its outcome,
+/// and the drain waits for the rest; once it is out, the Runs still live are
+/// interrupted. A zero drain interrupts every live Run at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_shutdown_drain_lets_live_runs_end_refuses_new_ones_and_interrupts_the_rest() {
+    const DRAIN: Duration = Duration::from_secs(1);
+    for drain in [DRAIN, Duration::ZERO] {
+        let engine = Arc::new(StopAwareEngine::default());
+        let mut fixture = TestModules::new(engine.clone()).await;
+        fixture.runs = fixture
+            .runs
+            .clone()
+            .with_shutdown_drain(crate::ShutdownDrain::new(drain));
+        let (workspace_id, principal) = fixture
+            .user_scope(&format!("user:drain-{}", drain.as_millis()), "Drain")
+            .await;
+        let finishing = fixture
+            .runs
+            .start(&principal, &workspace_id, submission("until-released"))
+            .await
+            .unwrap();
+        let lingering = fixture
+            .runs
+            .start(&principal, &workspace_id, submission("lingering"))
+            .await
+            .unwrap();
+        wait_until_started(&fixture, &workspace_id, finishing.run_id()).await;
+        wait_until_started(&fixture, &workspace_id, lingering.run_id()).await;
+
+        let started = std::time::Instant::now();
+        let shutdown = tokio::spawn({
+            let runs = fixture.runs.clone();
+            async move { runs.shutdown().await }
+        });
+        wait_until(|| fixture.runs.admission.check().is_err()).await;
+        let before = fixture.runs.count_runs().await.unwrap();
+        let refused = fixture
+            .runs
+            .start(&principal, &workspace_id, submission("refused"))
+            .await;
+        assert!(matches!(refused, Err(Error::ShuttingDown)), "{refused:?}");
+        assert_eq!(fixture.runs.count_runs().await.unwrap(), before);
+        if !drain.is_zero() {
+            engine.released.store(true, Ordering::SeqCst);
+            let finished =
+                wait_for_terminal(&fixture.runs, &principal, &workspace_id, finishing.run_id())
+                    .await;
+            assert_eq!(finished.state(), RunState::Succeeded, "its own outcome");
+            assert!(!shutdown.is_finished(), "the drain waits for the live Run");
+        }
+        shutdown.await.unwrap();
+        let elapsed = started.elapsed();
+
+        if drain.is_zero() {
+            assert_eq!(
+                fixture
+                    .run_record(&workspace_id, finishing.run_id())
+                    .await
+                    .state,
+                RunState::Interrupted
+            );
+        }
+        assert_eq!(
+            fixture
+                .run_record(&workspace_id, lingering.run_id())
+                .await
+                .state,
+            RunState::Interrupted,
+            "drain {drain:?}"
+        );
+        if drain.is_zero() {
+            assert!(
+                elapsed < DRAIN,
+                "a zero drain interrupts at once: {elapsed:?}"
+            );
+        } else {
+            assert!(elapsed >= DRAIN, "the drain is waited out: {elapsed:?}");
+        }
+        assert!(!fixture.runs.has_owner(lingering.run_id()));
     }
 }

@@ -51,6 +51,16 @@ To start Coral 1.0:
 
 To go back, stop Coral 1.0 and start the old version on the copy you kept.
 
+## Restarts and upgrades
+
+When Coral stops, it reports itself not ready and refuses new runs. Runs that are already running get the shutdown drain to finish: 30 seconds by default, set with `shutdown_drain_seconds` in the [`[runtime]` section](/reference/configuration#runtime). Coral then interrupts the runs that are still running and waits up to 6 seconds for them to record it. Set your orchestrator's termination grace period longer than both together, such as 45 seconds with the default drain. The guides below set it.
+
+A rolling update can run the old Coral and the new Coral side by side until traffic moves to the new one, and you don't need to drain traffic first. Each run belongs to the Coral process that started it. The new process leaves the old one's runs alone, and asks clients to retry a cancel or an approval for one of them. Run one Coral process per database outside an update: more than one at a time is not supported.
+
+With SQLite, one Coral process at a time owns the state volume, so an update replaces the process instead, as the Kubernetes guide's `Recreate` strategy does.
+
+If a Coral process stops without shutting down, for example when it is killed, its runs end as interrupted about 45 seconds after it stopped, once a Coral process runs again. Coral never resumes a run.
+
 ## Detailed guides
 
 <CardGroup cols={2}>

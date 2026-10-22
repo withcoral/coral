@@ -172,7 +172,7 @@ async fn a_claim_mismatch_on_commit_stops_the_owner_ends_v8_and_changes_nothing_
     let owner = fixture
         .runs
         .owners
-        .find(&run_id, &claim_id)
+        .find(&run_id, Some(&claim_id))
         .expect("the owner is live");
 
     // Another holder takes the Run: both claim columns name a new claim id.
@@ -719,7 +719,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
             39,
         );
         assert!(
-            matches!(effects.as_slice(), [Effect::Retire { ended: false }]),
+            matches!(effects.as_slice(), [Effect::Retire]),
             "{effects:?}"
         );
         assert_eq!(state.phase(), Phase::Retired);
@@ -840,7 +840,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert_eq!(state.phase(), Phase::Completing);
         assert!(matches!(
             apply_without_tick(&mut state, Message::Completed(Ok(None)), 63).as_slice(),
-            [Effect::Retire { ended: true }]
+            [Effect::Retire]
         ));
     }
 
@@ -902,7 +902,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert!(late_work.lock().expect("settle").is_none());
         assert!(matches!(
             apply_without_tick(&mut state, refused(), 84).as_slice(),
-            [Effect::Retire { ended: false }]
+            [Effect::Retire]
         ));
         assert_eq!(state.phase(), Phase::Retired);
     }
@@ -964,7 +964,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         );
         assert!(matches!(
             apply_without_tick(&mut state, Message::SettleAttempted(Ok(true)), 99).as_slice(),
-            [Effect::Retire { ended: true }]
+            [Effect::Retire]
         ));
         assert_eq!(state.phase(), Phase::Retired);
         let (effects, mut refused, refused_work) = result(&mut state, 10, 100);
@@ -1100,7 +1100,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         ));
         assert!(matches!(
             apply_without_tick(&mut state, Message::Interrupted(Ok(())), now + 4).as_slice(),
-            [Effect::Retire { ended: true }]
+            [Effect::Retire]
         ));
         assert_eq!(state.phase(), Phase::Retired);
     }
@@ -1171,7 +1171,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
             304,
         );
         assert!(
-            matches!(effects.as_slice(), [Effect::Retire { ended: false }]),
+            matches!(effects.as_slice(), [Effect::Retire]),
             "{effects:?}"
         );
     }
@@ -2126,10 +2126,7 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
             Message::Completed(Ok(None)),
             5,
         ));
-        assert!(matches!(
-            effects.as_slice(),
-            [Effect::Retire { ended: true }]
-        ));
+        assert!(matches!(effects.as_slice(), [Effect::Retire]));
         assert!(matches!(
             decided(&mut during),
             Some(Ok(DecisionAnswer::FromRecord))
@@ -2813,5 +2810,144 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
         assert_eq!(state.parked_invocations(), 0);
         let effects = apply_without_tick(&mut state, Message::Timer(Timer::Precheck), 5);
         assert!(effects.is_empty(), "{effects:?}");
+    }
+}
+
+/// A recovered owner applies the mailbox the sweep queued, in order, and
+/// ends its Run in one chunk: a passed Approval Request timer expires the
+/// request, a passed Run deadline times the Run out, and the end carries
+/// the expiries and the intent (none for a termination the row records, the
+/// interruption otherwise, or the timeout once the deadline passed since the
+/// sweep read the Run). A timer applied after a termination changes
+/// nothing, as the termination closes the request.
+#[test]
+fn a_recovered_owner_applies_its_queued_timers_then_ends_its_run_in_one_chunk() {
+    use crate::lifecycle::RunTerminationKind::{Interrupted, TimedOut};
+    use crate::owner::RecoveryEnd::{FinishRecorded, Interrupt};
+    let (first, second) = (approval_id(), approval_id());
+    let (before, past) = (APPROVAL_DEADLINE + 1, LIMITS.deadline_at_unix_nanos + 10);
+    // (when the owner applies its mailbox, the queue, the expiries and the
+    // intent its one chunk carries)
+    let cases = [
+        (
+            before,
+            vec![Message::Recover(Interrupt)],
+            vec![],
+            Some(Interrupted),
+        ),
+        (
+            before,
+            vec![
+                Message::Timer(Timer::Approval(first.clone())),
+                Message::Recover(Interrupt),
+            ],
+            vec![first.clone()],
+            Some(Interrupted),
+        ),
+        (
+            past,
+            vec![
+                Message::Timer(Timer::Approval(first.clone())),
+                Message::Timer(Timer::RunDeadline),
+                Message::Timer(Timer::Approval(second.clone())),
+                Message::Recover(Interrupt),
+            ],
+            vec![first.clone()],
+            Some(TimedOut),
+        ),
+        // The deadline passed after the sweep read the Run: no timer was
+        // queued for it, and the end times the Run out all the same.
+        (
+            past,
+            vec![Message::Recover(Interrupt)],
+            vec![],
+            Some(TimedOut),
+        ),
+        (past, vec![Message::Recover(FinishRecorded)], vec![], None),
+    ];
+    for (index, (now, queue, expected_expired, expected_kind)) in cases.into_iter().enumerate() {
+        let mut state = OwnerState::recovered(LIMITS, 1);
+        let mut effects = Vec::new();
+        for message in queue {
+            effects.extend(crate::owner::apply(&mut state, message, now));
+        }
+        assert_eq!(state.phase(), Phase::Recovering, "case {index}");
+        let [Effect::Recover { expired, intent }] = effects.as_slice() else {
+            panic!("case {index}: one chunk, nothing else: {effects:?}");
+        };
+        assert_eq!(expired, &expected_expired, "case {index}");
+        assert_eq!(
+            intent.as_ref().map(|intent| intent.termination.kind),
+            expected_kind,
+            "case {index}"
+        );
+        if let Some(intent) = intent {
+            assert_eq!(
+                intent.termination.started_at_unix_nanos, now,
+                "case {index}: dated when applied"
+            );
+        }
+    }
+}
+
+/// An outside request reaching a recovered owner waits behind its one
+/// chunk; anything else (a stop, a timer, a second end) changes nothing
+/// once the chunk is being written. The record answers the request once the
+/// chunk lands or the Run is found ended by another writer; another process
+/// taking the Run leaves the outcome unknown.
+#[test]
+fn a_recovered_owner_answers_requests_from_the_record_once_its_chunk_answers() {
+    for (outcome, answer) in [
+        (Ok(()), Ok(DecisionAnswer::FromRecord)),
+        (
+            Err(CommitRejection::RunEnded),
+            Ok(DecisionAnswer::FromRecord),
+        ),
+        (Err(CommitRejection::ClaimMismatch), Err(Error::OwnerLost)),
+    ] {
+        let mut state = OwnerState::recovered(LIMITS, 1);
+        let (effects, mut canceled) = cancel(&mut state, 2);
+        assert!(effects.is_empty(), "{outcome:?}: the cancel waits");
+        let (effects, mut decision) = decide(&mut state, &approval_id(), 2);
+        assert!(effects.is_empty(), "{outcome:?}: the decision waits");
+        let effects = apply_without_tick(
+            &mut state,
+            Message::Recover(crate::owner::RecoveryEnd::Interrupt),
+            3,
+        );
+        assert!(matches!(effects.as_slice(), [Effect::Recover { .. }]));
+        for ignored in [
+            Message::Stop,
+            Message::Timer(Timer::RunDeadline),
+            Message::Recover(crate::owner::RecoveryEnd::Interrupt),
+            Message::Drained,
+        ] {
+            assert!(
+                apply_without_tick(&mut state, ignored, 4).is_empty(),
+                "{outcome:?}"
+            );
+        }
+        assert!(decided(&mut canceled).is_none() && decided(&mut decision).is_none());
+
+        let rest = deliver(apply_without_tick(
+            &mut state,
+            Message::Interrupted(outcome),
+            5,
+        ));
+        assert!(
+            matches!(rest.as_slice(), [Effect::Retire]),
+            "{outcome:?}: {rest:?}"
+        );
+        assert_eq!(state.phase(), Phase::Retired);
+        for receiver in [&mut canceled, &mut decision] {
+            let answered = decided(receiver).expect("answered");
+            match (&answered, &answer) {
+                (Ok(got), Ok(expected)) => assert_eq!(got, expected, "{outcome:?}"),
+                (Err(got), Err(expected)) => {
+                    assert_eq!(got.to_string(), expected.to_string(), "{outcome:?}");
+                }
+                _ => panic!("{outcome:?}: {answered:?}"),
+            }
+        }
     }
 }

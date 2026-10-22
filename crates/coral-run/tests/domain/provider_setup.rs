@@ -970,10 +970,11 @@ async fn recovery_settles_a_lost_publication_from_its_publication() {
             .store(accepted_at + 2_000_000_000, Ordering::SeqCst);
         scope
             .fixture
-            .runs
-            .recover()
+            .next_process()
+            .sweep_expired_leases()
             .await
-            .expect("recover the lost worker");
+            .expect("sweep the lost worker's lapsed lease");
+        wait_for_terminal(&scope.fixture.runs, &scope.owner, &scope.workspace_id, &run).await;
         let ended: Vec<_> =
             retained_events(&scope.fixture.runs, &scope.owner, &scope.workspace_id, &run)
                 .await

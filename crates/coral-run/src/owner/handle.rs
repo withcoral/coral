@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use coral_provider::account::ConnectionRequestId;
 use coral_workspace::{Principal, TraceId};
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
 
 use crate::approval::{ApprovalDecision, ApprovalId, ApprovalState};
 use crate::engine::{ExecutionCompletion, ProgramPackage};
@@ -242,10 +242,14 @@ pub(crate) enum Message {
     /// Run is terminal; `Ok(false)` a dispatch is still in flight within the
     /// shutdown grace, and the owner tries again.
     SettleAttempted(Result<bool, Error>),
-    /// The self-interrupt's one chunk is recorded, or another writer ended or
-    /// took the Run first.
+    /// The self-interrupt's one chunk, or a recovered owner's, is recorded,
+    /// or another writer ended or took the Run first.
     Interrupted(Result<(), CommitRejection>),
-    /// An outside writer recorded a termination and wants execution to stop.
+    /// A recovered owner has applied every timer that passed: end the Run in
+    /// one chunk. The sweep queues it last.
+    Recover(RecoveryEnd),
+    /// The process interrupts the Run: its Shutdown Drain is out, or another
+    /// owner registered for the Run.
     Stop,
     /// The mailbox is empty: commit when free.
     Drained,
@@ -321,6 +325,7 @@ impl fmt::Debug for Message {
             Self::Interrupted(result) => {
                 formatter.debug_tuple("Interrupted").field(result).finish()
             }
+            Self::Recover(end) => formatter.debug_tuple("Recover").field(end).finish(),
             Self::Stop => formatter.write_str("Stop"),
             Self::Drained => formatter.write_str("Drained"),
         }
@@ -391,15 +396,49 @@ pub(crate) type Mailbox = mpsc::UnboundedReceiver<Message>;
 struct Shared {
     run_id: RunId,
     claim_id: String,
+    /// A recovered owner's: the claim the Run row holds until its one chunk
+    /// takes the Run over (`None` for a Run with no claim).
+    takes_over: Option<TakenClaim>,
     sender: mpsc::UnboundedSender<Message>,
     stop: Arc<ExecutionStop>,
     stopped: AtomicBool,
     stopped_notification: Notify,
 }
 
+/// The claim a recovered owner takes over, as the sweep read the Run row: its
+/// execution claim, or its worker claim before the start mark, or none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TakenClaim {
+    Claim(String),
+    Claimless,
+}
+
+impl TakenClaim {
+    pub(crate) fn of(held: Option<&str>) -> Self {
+        held.map_or(Self::Claimless, |claim| Self::Claim(claim.to_owned()))
+    }
+
+    pub(crate) fn as_deref(&self) -> Option<&str> {
+        match self {
+            Self::Claim(claim) => Some(claim),
+            Self::Claimless => None,
+        }
+    }
+}
+
+/// How a recovered owner ends its Run, after the timers that passed: the
+/// sweep queues it last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecoveryEnd {
+    /// The Run row records a termination: finish it as recorded.
+    FinishRecorded,
+    /// Interrupt the Run, unless a passed Run deadline timed it out first.
+    Interrupt,
+}
+
 /// A handle on one live Run Owner: the Program host and the Invocation tasks
 /// send it Program requests, outside requesters their decisions and
-/// cancellations; recovery asks it to stop.
+/// cancellations; the Shutdown Drain asks it to stop.
 #[derive(Clone)]
 pub(crate) struct OwnerHandle {
     shared: Arc<Shared>,
@@ -407,11 +446,31 @@ pub(crate) struct OwnerHandle {
 
 impl OwnerHandle {
     pub(crate) fn new(run_id: RunId, claim_id: String) -> (Self, Mailbox) {
+        Self::with_takeover(run_id, claim_id, None)
+    }
+
+    /// The handle of an owner the expired-lease sweep recreates: it answers
+    /// for the claim `taken` the Run row holds until its chunk lands, so a
+    /// request arriving first waits behind that chunk.
+    pub(crate) fn recovering(
+        run_id: RunId,
+        claim_id: String,
+        taken: TakenClaim,
+    ) -> (Self, Mailbox) {
+        Self::with_takeover(run_id, claim_id, Some(taken))
+    }
+
+    fn with_takeover(
+        run_id: RunId,
+        claim_id: String,
+        takes_over: Option<TakenClaim>,
+    ) -> (Self, Mailbox) {
         let (sender, mailbox) = mpsc::unbounded_channel();
         let handle = Self {
             shared: Arc::new(Shared {
                 run_id,
                 claim_id,
+                takes_over,
                 sender,
                 stop: Arc::new(ExecutionStop::new()),
                 stopped: AtomicBool::new(false),
@@ -427,6 +486,20 @@ impl OwnerHandle {
 
     pub(crate) fn claim_id(&self) -> &str {
         &self.shared.claim_id
+    }
+
+    /// The claim a recovered owner takes over; `None` for any other owner.
+    pub(crate) fn takes_over(&self) -> Option<&TakenClaim> {
+        self.shared.takes_over.as_ref()
+    }
+
+    /// Whether this owner answers for a Run row holding `claim_id`: its own
+    /// claim, or the claim a recovered owner is taking over.
+    fn answers_for(&self, claim_id: Option<&str>) -> bool {
+        claim_id == Some(self.claim_id())
+            || self
+                .takes_over()
+                .is_some_and(|taken| taken.as_deref() == claim_id)
     }
 
     /// The stop shared with the Program and its dispatches.
@@ -579,56 +652,99 @@ impl OwnerHandle {
 }
 
 /// The live Run Owners of this process, by Run.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct Owners {
     owners: Arc<Mutex<HashMap<RunId, OwnerHandle>>>,
+    /// How many owners are live, for the Shutdown Drain to wait on.
+    live: Arc<watch::Sender<usize>>,
+}
+
+impl Default for Owners {
+    fn default() -> Self {
+        Self {
+            owners: Arc::default(),
+            live: Arc::new(watch::Sender::new(0)),
+        }
+    }
 }
 
 impl Owners {
-    /// Registers `handle` as its Run's owner for the registration's lifetime.
-    pub(crate) fn register(&self, handle: OwnerHandle) -> OwnerRegistration {
-        let replaced = self
-            .owners
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<RunId, OwnerHandle>> {
+        self.owners
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(handle.run_id().clone(), handle.clone());
+    }
+
+    /// Registers `handle` as its Run's owner for the registration's lifetime.
+    pub(crate) fn register(&self, handle: OwnerHandle) -> OwnerRegistration {
+        let (registration, replaced) = self.insert(&mut self.lock(), handle);
         if let Some(replaced) = replaced {
             replaced.request_stop();
         }
-        OwnerRegistration {
-            owners: self.clone(),
-            handle,
-        }
+        registration
     }
 
-    /// The owner holding `claim_id` for `run_id`, when one is live here.
-    pub(crate) fn find(&self, run_id: &RunId, claim_id: &str) -> Option<OwnerHandle> {
-        self.owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    /// Registers a recovered owner, unless an owner for its Run is live here
+    /// already: a local owner is never swept, it continues while its commits
+    /// find its claim.
+    pub(crate) fn register_recovered(&self, handle: OwnerHandle) -> Option<OwnerRegistration> {
+        let mut owners = self.lock();
+        if owners.contains_key(handle.run_id()) {
+            return None;
+        }
+        Some(self.insert(&mut owners, handle).0)
+    }
+
+    fn insert(
+        &self,
+        owners: &mut HashMap<RunId, OwnerHandle>,
+        handle: OwnerHandle,
+    ) -> (OwnerRegistration, Option<OwnerHandle>) {
+        let replaced = owners.insert(handle.run_id().clone(), handle.clone());
+        self.live.send_replace(owners.len());
+        (
+            OwnerRegistration {
+                owners: self.clone(),
+                handle,
+            },
+            replaced,
+        )
+    }
+
+    /// The owner live here for a Run row holding `claim_id` for `run_id`:
+    /// the owner holding that claim, or the recovered owner taking it over.
+    pub(crate) fn find(&self, run_id: &RunId, claim_id: Option<&str>) -> Option<OwnerHandle> {
+        self.lock()
             .get(run_id)
-            .filter(|handle| handle.claim_id() == claim_id)
+            .filter(|handle| handle.answers_for(claim_id))
             .cloned()
     }
 
-    #[cfg(test)]
+    /// Whether an owner for `run_id` is live here, whatever its claim.
     pub(crate) fn contains(&self, run_id: &RunId) -> bool {
-        self.owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(run_id)
+        self.lock().contains_key(run_id)
+    }
+
+    /// Every owner live here now.
+    pub(crate) fn live(&self) -> Vec<OwnerHandle> {
+        self.lock().values().cloned().collect()
+    }
+
+    /// Returns once no owner is live here.
+    pub(crate) async fn retired(&self) {
+        let mut live = self.live.subscribe();
+        // The sender lives as long as `self`.
+        let _none_live = live.wait_for(|count| *count == 0).await;
     }
 
     fn remove(&self, handle: &OwnerHandle) {
-        let mut owners = self
-            .owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owners = self.lock();
         if owners
             .get(handle.run_id())
             .is_some_and(|registered| registered.claim_id() == handle.claim_id())
         {
             owners.remove(handle.run_id());
+            self.live.send_replace(owners.len());
         }
     }
 }

@@ -545,6 +545,17 @@ async fn view(
     })
 }
 
+/// The Run's Approval Requests still undecided whose deadline passed by
+/// `by_unix_nanos`, each with its deadline: the expired-lease sweep queues
+/// their timers for the Run's recovered owner.
+pub(crate) async fn undecided_by(
+    tx: &mut Transaction<'_>,
+    run: &RunRecord,
+    by_unix_nanos: i64,
+) -> Result<Vec<(ApprovalId, i64)>, Error> {
+    approval_repository::undecided_by(tx, &run.workspace_id, &run.id, by_unix_nanos).await
+}
+
 // Safe summary only: Agents observing their own Runs must not load approval detail.
 pub(super) async fn pending_for_run(
     tx: &mut Transaction<'_>,

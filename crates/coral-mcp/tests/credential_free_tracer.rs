@@ -1298,8 +1298,9 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     assert_ne!(observed_after_closure.is_error, Some(true));
 }
 
-/// A worker runtime disappeared after durable authored output. Recovery and
-/// both wire adapters must expose an interrupted Run, not an MCP tool error.
+/// A worker runtime disappeared after durable authored output. The
+/// expired-lease sweep and both wire adapters must expose an interrupted Run,
+/// not an MCP tool error.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lost_worker_run_is_interrupted_not_a_tool_error() {
     let tracer = Tracer::start().await;
@@ -1316,7 +1317,11 @@ async fn a_lost_worker_run_is_interrupted_not_a_tool_error() {
         // This test waits out the whole lease, so allow ample margin under load.
         let interrupted = tokio::time::timeout(Duration::from_secs(90), async {
             loop {
-                tracer.runs.recover().await.expect("recover lost worker");
+                tracer
+                    .runs
+                    .sweep_expired_leases()
+                    .await
+                    .expect("sweep the lost worker's lapsed lease");
                 // Recovery interrupts the Run under load; a transient server
                 // failure on one poll is retried within the same deadline.
                 let Some(result) = session

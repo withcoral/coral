@@ -4,8 +4,38 @@ use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
 use sea_query::{Expr, ExprTrait as _, Query};
 
-use super::ProgramRunRecords;
-use crate::{Error, RunId};
+use super::run_row::RunRow;
+use super::{ProgramRunRecords, RUN_COLUMNS};
+use crate::lifecycle::RunRecord;
+use crate::{Error, RunId, RunState};
+
+/// Holds a terminal Run's row for the rest of `transaction` (a no-op update
+/// of its state, which an ended Run never changes again) and returns the Run
+/// as held, in one round trip; `None` when no terminal Run has that identity.
+/// A nonterminal Run's row is its Run Owner's alone: this matches nothing for
+/// it and writes nothing.
+///
+/// The held Run carries no `last_event_sequence`: the statement reads no
+/// Event rows.
+pub(crate) async fn hold_terminal_run(
+    transaction: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    run: &RunId,
+) -> Result<Option<RunRecord>, Error> {
+    let statement = Query::update()
+        .table(ProgramRunRecords::Table)
+        .value(
+            ProgramRunRecords::State,
+            Expr::col(ProgramRunRecords::State),
+        )
+        .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(workspace.to_string()))
+        .and_where(Expr::col(ProgramRunRecords::Id).eq(run.to_string()))
+        .and_where(Expr::col(ProgramRunRecords::State).ne(RunState::Running.as_storage_str()))
+        .returning(Query::returning().columns(RUN_COLUMNS))
+        .to_owned();
+    let row: Option<RunRow> = transaction.fetch_optional_returning(statement).await?;
+    row.map(RunRow::decode).transpose()
+}
 
 pub(crate) async fn retention_activity(
     transaction: &mut Transaction<'_>,

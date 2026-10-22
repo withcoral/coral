@@ -86,6 +86,27 @@ impl BlockingGate {
     }
 }
 
+/// Holds a recovered owner's one chunk until released.
+pub(crate) struct RecoveryGate(BlockingGate);
+
+impl RecoveryGate {
+    pub(crate) fn blocking() -> (Arc<Self>, oneshot::Sender<()>) {
+        let (gate, release) = BlockingGate::new();
+        (Arc::new(Self(gate)), release)
+    }
+
+    pub(crate) fn entered(&self) -> bool {
+        self.0.entered.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl ExecutionObserver for RecoveryGate {
+    async fn before_recovery_write(&self) {
+        let _released = self.0.hold().await;
+    }
+}
+
 /// Holds the Run Owner's first chunk commit (after its start mark) until
 /// released; every later commit passes.
 pub(crate) struct CommitGate(BlockingGate);
