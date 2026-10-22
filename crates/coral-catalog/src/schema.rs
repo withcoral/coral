@@ -870,6 +870,16 @@ impl TypeScriptNames {
     fn keep_render(&self, key: ProjectionKey, render: NamedRender) {
         self.renders.borrow_mut().insert(key, Arc::new(render));
     }
+
+    /// PROTOTYPE (#2538 entry size spike): empties the render cache.
+    pub(crate) fn prototype_clear_renders(&self) {
+        self.renders.borrow_mut().clear();
+    }
+
+    /// PROTOTYPE (#2538 entry size spike): counts the kept renders.
+    pub(crate) fn prototype_render_count(&self) -> usize {
+        self.renders.borrow().len()
+    }
 }
 
 pub(super) struct TypeScriptProjector<'a> {

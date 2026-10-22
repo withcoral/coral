@@ -496,7 +496,7 @@ impl SchemaGraph {
         Ok(graph)
     }
 
-    fn validate(&self) -> Result<(), Error> {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
         let indexed_ids = self.source_index.values().collect::<HashSet<_>>();
         if self.is_empty()
             || self.source_index.iter().any(|(source, schema_id)| {

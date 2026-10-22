@@ -39,3 +39,5 @@ coral-catalog = { workspace = true, features = ["test-fixtures"] }
 coral-test-support.workspace = true
 coral-v8.workspace = true
 tokio.workspace = true
+# PROTOTYPE (#2538 entry size spike): counts live heap bytes.
+cap = "=0.1.2"

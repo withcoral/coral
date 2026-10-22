@@ -97,6 +97,8 @@ pub mod history_repository;
 mod repository;
 mod schema;
 mod search;
+#[doc(hidden)]
+pub mod prototype_2538;
 mod types;
 
 use coral_db::Transaction;
