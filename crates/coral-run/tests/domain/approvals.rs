@@ -832,20 +832,12 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
     );
     // The timer fires on the host clock; the test clock stays before the
     // deadline, so nothing but the owner's record can show the expiry.
-    let expired = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let current = approvals
-                .get(&operation.principal, &operation.workspace_id, &request.id)
-                .await
-                .unwrap();
-            if current.state != ApprovalState::Pending {
-                return current;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    let read = || approvals.get(&operation.principal, &operation.workspace_id, &request.id);
+    wait_until_async_within(Duration::from_secs(5), async || {
+        read().await.unwrap().state != ApprovalState::Pending
     })
-    .await
-    .expect("the owner's timer expires the request");
+    .await;
+    let expired = read().await.unwrap();
     assert_eq!(expired.state, ApprovalState::Expired);
     assert_eq!(expired.approver, None);
     assert!(!expired.actionable);

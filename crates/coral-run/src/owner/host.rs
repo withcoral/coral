@@ -667,7 +667,7 @@ async fn commit_once(
         if let Some(rejection) = refusal(&run, claim_id, written.head_before) {
             return Err(CommitFailure::Rejected(rejection));
         }
-        if !run.accepts_owner_chunk(claim_id, now) {
+        if !run.accepts_owner_chunk(claim_id) {
             return Err(CommitFailure::Rejected(CommitRejection::Refused));
         }
         // Row work runs in arrival order; its Events take the work's place

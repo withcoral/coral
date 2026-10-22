@@ -453,6 +453,10 @@ pub(crate) struct CommitProbe {
     lose: Mutex<Option<oneshot::Receiver<()>>>,
     lost: AtomicBool,
     panic_on_next_message: AtomicBool,
+    /// Blocks the owner's task on its next dequeued message until released:
+    /// everything sent meanwhile is applied in one mailbox drain after it.
+    hold_message: Mutex<Option<mpsc::Receiver<()>>>,
+    message_held: AtomicBool,
 }
 
 impl CommitProbe {
@@ -465,6 +469,8 @@ impl CommitProbe {
             lose: Mutex::new(None),
             lost: AtomicBool::new(false),
             panic_on_next_message: AtomicBool::new(false),
+            hold_message: Mutex::new(None),
+            message_held: AtomicBool::new(false),
         })
     }
 
@@ -510,6 +516,20 @@ impl CommitProbe {
     pub(crate) fn panic_on_next_message(&self) {
         self.panic_on_next_message.store(true, Ordering::SeqCst);
     }
+
+    /// Holds the owner's task at its next dequeued message until the sender
+    /// fires (or is dropped): the messages that arrive meanwhile are applied
+    /// in one mailbox drain with it, in arrival order.
+    pub(crate) fn hold_next_message(&self) -> mpsc::Sender<()> {
+        let (release, receiver) = mpsc::channel();
+        self.message_held.store(false, Ordering::SeqCst);
+        *self.hold_message.lock().expect("hold lock") = Some(receiver);
+        release
+    }
+
+    pub(crate) fn message_held(&self) -> bool {
+        self.message_held.load(Ordering::SeqCst)
+    }
 }
 
 #[async_trait]
@@ -548,5 +568,12 @@ impl ExecutionObserver for CommitProbe {
             !self.panic_on_next_message.swap(false, Ordering::SeqCst),
             "scripted Run Owner task panic"
         );
+        let release = self.hold_message.lock().expect("hold lock").take();
+        if let Some(release) = release {
+            self.message_held.store(true, Ordering::SeqCst);
+            // Blocks the owner's thread on purpose; the test runs on more
+            // than one worker thread.
+            let _released = release.recv();
+        }
     }
 }

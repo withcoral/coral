@@ -18,13 +18,14 @@ use crate::termination::ShutdownAction;
 use crate::types::AcceptedRun;
 use crate::{
     Error, FinalValue, RunFailure, RunFailureCode, RunModule, RunState, RunTerminalOutcome,
-    invocation_repository, run_repository,
+    duration_until, invocation_repository, run_repository,
 };
 
 impl RunModule {
     /// Creates the Run Owner for a durably accepted Run. The owner is
     /// registered before its task starts, so a stop that arrives first still
-    /// finds it; the Run deadline is the owner's own timer.
+    /// finds it; the Run deadline is the owner's own timer, and once the
+    /// owner is gone its supervisor leaves the Run to recovery.
     pub(crate) fn schedule_execution(&self, run: AcceptedRun, actor: AuthenticatedPrincipal) {
         let (handle, mailbox) = OwnerHandle::new(run.id.clone(), run.claim_id.clone());
         let registration = self.owners.register(handle.clone());
@@ -39,12 +40,44 @@ impl RunModule {
         ));
         let supervisor = self.clone();
         let _supervisor_task = tokio::spawn(async move {
-            if let Err(ended) = owner_task.await {
-                supervisor
-                    .recover_from_owner_failure(&supervised, &ended)
-                    .await;
+            match owner_task.await {
+                Err(ended) => {
+                    supervisor
+                        .recover_from_owner_failure(&supervised, &ended)
+                        .await;
+                }
+                Ok(()) => supervisor.recover_after_retirement(&supervised).await,
             }
         });
+    }
+
+    /// The supervisor's pass once the owner retired on its own: a Run the
+    /// owner left nonterminal (a write it could not land, a claim it lost)
+    /// is recovery's, run explicitly at the Run deadline, so no Run outlives
+    /// its deadline with its approvals still actionable. No writer beside a
+    /// live owner of this process: the owner is gone. Until slice 9's
+    /// expired-lease sweep runs recovery on its own; another process's owner
+    /// of the same Run (a rolling update) times it out at the same deadline,
+    /// and the loser's pass finds it ended.
+    async fn recover_after_retirement(&self, run: &AcceptedRun) {
+        let ended = run_repository::find_exact(&self.database, &run.workspace_id, &run.id)
+            .await
+            .is_ok_and(|record| record.is_none_or(|record| record.state.is_terminal()));
+        if ended {
+            return;
+        }
+        let now = self
+            .now()
+            .unwrap_or(run.accepted_at_unix_nanos)
+            .max(run.accepted_at_unix_nanos);
+        tokio::time::sleep(duration_until(run.deadline_at_unix_nanos, now)).await;
+        if let Err(error) = self.recover_run(&run.workspace_id, &run.id).await {
+            tracing::warn!(
+                run_id = %run.id,
+                ?error,
+                "recovery after the Run Owner retired failed; the next recovery pass retries"
+            );
+        }
     }
 
     /// The supervisor's answer to an owner task that ended without retiring

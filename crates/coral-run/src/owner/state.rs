@@ -810,9 +810,9 @@ impl OwnerState {
                 if now_unix_nanos >= self.limits.deadline_at_unix_nanos {
                     effects = self.deadline(now_unix_nanos);
                 }
-                // A timeout applied first decides the kind: no chunk carries
-                // it, the terminal write records it, and the request is
-                // answered once it has.
+                // A timeout applied first decides the kind: the request is
+                // answered from the record once the chunk carrying it, or
+                // the terminal write, has recorded it.
                 if self.termination.is_some() {
                     self.parked.push(Message::Cancel { requester, reply });
                     return effects;
@@ -830,11 +830,12 @@ impl OwnerState {
         }
     }
 
-    /// The Run deadline passed: the Program is terminated, and the timeout
-    /// is the intent the terminal write records (the Run row refuses chunks
-    /// past its deadline, so none carries it). Nothing more once a
-    /// termination is applied (a cancel applied first decides the kind), or
-    /// past the point where the terminal write decides on its own.
+    /// The Run deadline passed: the timeout is applied like a cancellation
+    /// (the intent rides the next chunk's head update, with no Event, and
+    /// the Program is terminated at once), dated at the deadline. Nothing
+    /// more once a termination is applied (a cancel applied first decides
+    /// the kind), or past the point where the terminal write decides on its
+    /// own.
     fn deadline(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
         if self.termination.is_some()
             || !matches!(self.phase, Phase::Starting | Phase::Running | Phase::Ending)
@@ -842,18 +843,7 @@ impl OwnerState {
             return Vec::new();
         }
         let at = now_unix_nanos.max(self.limits.deadline_at_unix_nanos);
-        if let Ok(intent) = RequestedTermination::new(
-            RunTerminationKind::TimedOut,
-            None,
-            at,
-            self.limits.shutdown_grace_nanos,
-        ) {
-            self.termination = Some(intent);
-        }
-        if self.stop_requested {
-            return Vec::new();
-        }
-        self.stop()
+        self.terminate(RunTerminationKind::TimedOut, None, None, at)
     }
 
     /// The shutdown grace since the Program was stopped is out and the

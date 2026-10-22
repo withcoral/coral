@@ -335,7 +335,9 @@ async fn ask_in_band(
             return answer;
         }
         () = &mut withdrawn => "The action no longer needs an answer.",
-        () = tokio::time::sleep(remaining) => "The action expired.",
+        // The prompt's own countdown ends at the deadline; what the action
+        // became is the Run's record, not the prompt's judgement.
+        () = tokio::time::sleep(remaining) => "The action's deadline passed.",
     };
     // Best effort: an unreachable client keeps a stale prompt that decides nothing.
     let _cancelled = handle.cancel(Some(reason.to_owned())).await;

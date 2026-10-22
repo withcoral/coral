@@ -103,9 +103,10 @@
 //! cancellation reach the owner as requests, and the Run, Approval Request
 //! and connection-request deadlines are its own timers, applied in mailbox
 //! order with them (see [`owner`]); a request for a nonterminal Run with no
-//! owner in this process is answered `OwnedElsewhere`. Readers show the
-//! recorded state beside a deadline and never derive an expiry or a timeout
-//! from the clock.
+//! owner in this process is answered `OwnedElsewhere`. The clock decides
+//! state only inside the owner (its `apply`, and its own writes' clock
+//! sample); readers show the recorded state beside a deadline and never
+//! derive an expiry or a timeout from `now`.
 //! Cancellation and deadline intent stop new Program work, request uncatchable V8
 //! termination, and preserve complete child outcomes that beat bounded cleanup.
 //! Recovery revokes a stale started claim before settling its children and Run.

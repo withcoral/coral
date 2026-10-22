@@ -562,6 +562,105 @@ async fn a_cancel_and_the_run_deadline_record_the_first_applied_kind() {
     }
 }
 
+/// A cancel and the Run deadline in one mailbox drain, against the
+/// database: the owner is held at the message it dequeues next while the
+/// deadline's timer fires and the cancel arrives, in the order the arm
+/// chooses, and then applies both in one drain with it. The first in the
+/// mailbox decides the kind, and the record shows exactly one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_and_the_run_deadline_in_one_mailbox_drain_record_the_first_applied_kind() {
+    for deadline_first in [false, true] {
+        let (engine, gates) = BurstEngine::new(vec!["\"one\"".to_string()]);
+        let probe = CommitProbe::new();
+        let fixture = TestModules::with_execution_adapters(
+            engine.clone(),
+            Arc::new(RejectingUpstream),
+            Arc::new(NoopInvocationObserver),
+            probe.clone(),
+        )
+        .await;
+        let (workspace_id, principal) = fixture
+            .user_scope("user:one-drain", "Cancel and deadline in one drain")
+            .await;
+        let run_timeout = Duration::from_millis(300);
+        let accepted = fixture
+            .runs
+            .start(
+                &principal,
+                &workspace_id,
+                RunSubmission::new(
+                    ProgramSource::parse("one-drain").expect("Program source"),
+                    RunTimeout::from_millis(run_timeout.as_millis().try_into().unwrap())
+                        .expect("Run timeout"),
+                ),
+            )
+            .await
+            .expect("accept the Program");
+        let run_id = accepted.run_id().clone();
+        wait_until_started(&fixture, &workspace_id, &run_id).await;
+        // The owner is held at the next message it dequeues (the Emission,
+        // or its start if that is still queued); the deadline's timer and
+        // the cancel reach the mailbox while it is held.
+        let release = probe.hold_next_message();
+        gates.go.send(()).expect("start the burst");
+        wait_until(|| probe.message_held()).await;
+        let cancel = {
+            let runs = fixture.runs.clone();
+            let (principal, workspace_id, run_id) =
+                (principal.clone(), workspace_id.clone(), run_id.clone());
+            move || async move {
+                runs.cancel(&principal, &workspace_id, &run_id, &immediate(None, 100))
+                    .await
+            }
+        };
+        // Twice the timeout on the host clock: the timer has fired into the
+        // held mailbox by then.
+        let cancelling = if deadline_first {
+            tokio::time::sleep(run_timeout * 2).await;
+            tokio::spawn(cancel())
+        } else {
+            let cancelling = tokio::spawn(cancel());
+            tokio::time::sleep(run_timeout * 2).await;
+            cancelling
+        };
+        release.send(()).expect("release the owner");
+        gates.release.send(()).expect("release the Program");
+        let terminal = cancelling.await.expect("the cancel task").expect("cancel");
+        let terminal = if terminal.state().is_terminal() {
+            terminal
+        } else {
+            wait_for_terminal(&fixture.runs, &principal, &workspace_id, &run_id).await
+        };
+        let expected = if deadline_first {
+            RunState::TimedOut
+        } else {
+            RunState::Canceled
+        };
+        assert_eq!(
+            terminal.state(),
+            expected,
+            "deadline first: {deadline_first}"
+        );
+        let events = retained_events(&fixture.runs, &principal, &workspace_id, &run_id).await;
+        let ended: Vec<_> = events
+            .iter()
+            .filter(|event| matches!(event.kind(), RunEventKind::Ended { .. }))
+            .collect();
+        assert!(
+            matches!(ended.as_slice(), [ended] if ended.kind() == &RunEventKind::Ended { state: expected }),
+            "exactly one terminal kind: {events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event.kind(), RunEventKind::CancellationRequested { .. }))
+                .count(),
+            usize::from(!deadline_first),
+            "a cancel applied after the timeout writes no Event: {events:?}"
+        );
+    }
+}
+
 /// What ends the Run while its Invocation is in flight.
 #[derive(Debug, Clone, Copy)]
 enum Termination {

@@ -201,19 +201,21 @@ async fn a_definite_database_rejection_stops_the_owner_without_a_retry() {
 
 /// An owner whose settle of the interruption it recorded fails retires and
 /// leaves its Run `running` with the termination recorded: no timer of its
-/// own fires after it retired, and recovery's explicit pass settles what it
-/// recorded (the expired-lease sweep of slice 9 runs that pass on its own).
+/// own fires after it retired, and its supervisor runs recovery's pass at
+/// the Run deadline, so the Run still ends there with no explicit pass
+/// (slice 9's expired-lease sweep takes that over).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_run_whose_owner_retired_on_a_failed_settle_is_left_to_recovery() {
+async fn a_run_whose_owner_retired_on_a_failed_settle_is_ended_by_its_deadline() {
     let (engine, gates) = BurstEngine::new(vec!["\"one\"".to_string()]);
     let probe = CommitProbe::new();
     let fixture = quiet_fixture(engine.clone(), probe.clone()).await;
     let (workspace_id, principal) = fixture
         .user_scope("user:deadline-after-retire", "Survive the database")
         .await;
-    // Short enough that the deadline task this slice removed would have run
-    // its recovery pass well within the wait below.
-    let run_timeout = Duration::from_millis(500);
+    // The supervisor sleeps this long on the host clock; the owner must
+    // have retired, and the fault be gone, well before it fires.
+    let run_timeout = Duration::from_secs(3);
+    let scheduled = std::time::Instant::now();
     let accepted = fixture
         .runs
         .start(
@@ -258,18 +260,24 @@ async fn a_run_whose_owner_retired_on_a_failed_settle_is_left_to_recovery() {
         Some(crate::lifecycle::RunTerminationKind::Interrupted)
     );
 
-    // Past the Run deadline, on the clock and on the host, the Run is still
-    // as the owner left it: its timers retired with it, and nothing outside
-    // an owner writes on the clock.
     fixture.inject_fault("DROP INDEX reject_run_events").await;
     fixture
         .clock
         .next
         .store(before.deadline_at_unix_nanos + 1, Ordering::SeqCst);
-    tokio::time::sleep(run_timeout * 3).await;
-    assert_eq!(fixture.run_record(&workspace_id, &run_id).await, left);
-
-    fixture.runs.recover().await.expect("recovery's pass");
+    assert!(
+        scheduled.elapsed() < run_timeout / 2,
+        "the fault must be gone before the supervisor's pass runs; this host took {:?}",
+        scheduled.elapsed()
+    );
+    wait_until_async_within(run_timeout + Duration::from_secs(3), async || {
+        fixture
+            .run_record(&workspace_id, &run_id)
+            .await
+            .state
+            .is_terminal()
+    })
+    .await;
     let terminal = wait_for_terminal(&fixture.runs, &principal, &workspace_id, &run_id).await;
     assert_eq!(
         terminal.state(),
