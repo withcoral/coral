@@ -75,9 +75,15 @@ interface ContainerFixedBaseProps extends ContainerBaseProps {
 type ContainerFixedLayoutProps = ContainerFixedBaseProps &
   (
     | {
-        /** Shows at most this many rows beneath the heading; the rest scroll there. */
-        maxRows?: number
+        maxRows?: never
         bounded?: false
+      }
+    | {
+        /** Shows at most this many rows beneath the heading; the rest scroll there. */
+        maxRows: number
+        bounded?: false
+        /** A prominent heading stands taller than a row, so it would cut the last row. */
+        groupHeadings?: 'plain'
       }
     | {
         /** A bounded table takes its height from its flex parent, not a fixed cap. */
