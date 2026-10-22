@@ -486,14 +486,13 @@ async fn cancel_over_grpc(
         .map(tonic::Response::into_inner)
 }
 
-/// The expired-lease sweep's first pass runs before any listener binds. A
-/// Run left running by a process that died (its Run Owner gone, its lease
-/// lapsed) has its owner recreated by the next process before that process
-/// serves, so a cancel sent the moment the listeners bind waits behind the
-/// recovered owner's chunk and is answered from the record: interrupted,
-/// never `unavailable` for a Run with no live owner.
+/// The expired-lease sweep's boot pass ends a Run left running by a process
+/// that died (its Run Owner gone, its lease lapsed): the Run is `interrupted`
+/// within seconds of the next process starting, well before the sweep's
+/// first cadence tick a half lease later, and a cancel then reads that
+/// record.
 #[test]
-fn the_first_expired_lease_sweep_runs_before_the_listeners_bind() {
+fn the_boot_sweep_ends_a_run_whose_process_died() {
     use coral_grpc::coral::management::v1::ActivityRunState;
     let temp = TempDir::new().expect("temporary state root");
     std::fs::write(temp.path().join("config.toml"), WEB).unwrap();
@@ -531,10 +530,17 @@ fn the_first_expired_lease_sweep_runs_before_the_listeners_bind() {
         let server = start(ServerBuilder::new().with_config_dir(temp.path()))
             .await
             .expect("start the next process");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while recorded_run_state(temp.path(), &run_id).await != "interrupted" {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the boot pass ends the dead process's Run");
 
         let cancelled = cancel_over_grpc(server.endpoint_uri(), &workspace, &run_id)
             .await
-            .expect("the recovered owner answers from the record");
+            .expect("the record answers the cancel");
         assert_eq!(cancelled.state(), ActivityRunState::Interrupted);
         server.shutdown().await.expect("stop the next process");
     });
@@ -550,7 +556,7 @@ async fn readiness_reports_not_serving_once_shutdown_begins() {
         HealthCheckRequest, health_check_response::ServingStatus, health_client::HealthClient,
     };
     let (temp, server, _workspace, client) =
-        runtime_with_mcp_client(&format!("{WEB}[runtime]\nshutdown_drain_seconds = 1\n")).await;
+        runtime_with_mcp_client(&format!("{WEB}[runtime]\nshutdown_drain_seconds = 3\n")).await;
     let run_id = spin_a_run(&client).await;
     client.cancel().await.expect("close MCP client");
     let mcp = format!("http://{}", server.mcp_http_addr());

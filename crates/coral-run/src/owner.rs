@@ -56,7 +56,7 @@ pub(crate) use chunk::ChunkWork;
 pub(crate) use chunk::{CHUNK_WORK_CAP, ChunkBuildView, FENCE_BATCH_CAP};
 pub(crate) use handle::{
     Check, DecisionAnswer, DecisionRequest, Message, OwnerHandle, Owners, ParkedWait, RecoveryEnd,
-    RequestKey, StartedExecution, TakenClaim, Timer,
+    RequestKey, StartedExecution, Timer,
 };
 #[cfg(test)]
 pub(crate) use handle::{CommitRejection, Reply};
@@ -66,15 +66,15 @@ pub(crate) use state::{Effect, OwnerLimits, OwnerState, Phase, apply};
 
 /// The owner of `run` in this process, for an outside request: `None` when
 /// the Run is terminal (the request is answered from the record), the
-/// owner holding the Run's claim when one is live here, or the recovered
-/// owner taking that claim over (the request waits behind its chunk).
+/// owner holding the Run's claim when one is live here.
 ///
 /// # Errors
 ///
 /// [`Error::OwnedElsewhere`] for a nonterminal Run with no live owner here:
 /// its lease is held by another process, or lapsed and not yet swept (the
-/// sweep ends it within one lease and one sweep). The Run is read again
-/// first, since an owner retires once its Run is terminal.
+/// sweep ends it within one lease and one sweep), or a recovered owner here
+/// is ending it and its chunk has not landed. The Run is read again first,
+/// since an owner retires once its Run is terminal.
 pub(crate) async fn local_owner(
     owners: &Owners,
     database: &Database,
@@ -84,7 +84,10 @@ pub(crate) async fn local_owner(
     if run.state.is_terminal() {
         return Ok(None);
     }
-    if let Some(owner) = owners.find(&run.id, run.held_claim()) {
+    if let Some(owner) = run
+        .held_claim()
+        .and_then(|claim_id| owners.find(&run.id, claim_id))
+    {
         return Ok(Some(owner));
     }
     let current = run_repository::find_exact(database, workspace_id, &run.id).await?;

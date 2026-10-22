@@ -137,7 +137,9 @@ impl EngineReadiness {
                 }
             }
         });
-        settled.await.unwrap_or(false)
+        // Shutdown may have begun while the probe ran: a draining instance
+        // never answers ready.
+        settled.await.unwrap_or(false) && !self.stopping.load(Ordering::SeqCst)
     }
 
     /// Subscribes to the running probe, starting one if none is running.

@@ -177,6 +177,10 @@ async fn a_cancel_for_a_run_owned_elsewhere_is_refused_without_a_write() {
 /// recorded, every Invocation the fence permitted ends `run_terminated`
 /// instead of sending, and `run.ended` follows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey: the cancel applied under a held fence, then the recorded order"
+)]
 async fn a_cancel_during_an_in_flight_fence_is_applied_at_once_and_run_ended_follows_the_fence() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
     let latch = FenceLatch::holding_both();
@@ -218,7 +222,10 @@ async fn a_cancel_during_an_in_flight_fence_is_applied_at_once_and_run_ended_fol
     let owner = fixture
         .runs
         .owners
-        .find(run.run_id(), before.execution_claim_id.as_deref())
+        .find(
+            run.run_id(),
+            before.execution_claim_id.as_deref().expect("started"),
+        )
         .expect("the owner is live");
     wait_until(|| owner.is_stopping()).await;
     assert_eq!(
@@ -507,7 +514,7 @@ async fn a_cancel_and_the_run_deadline_record_the_first_applied_kind() {
         let owner = fixture
             .runs
             .owners
-            .find(&run_id, Some(&claim_id))
+            .find(&run_id, &claim_id)
             .expect("the owner is live");
         if deadline_first {
             // The deadline's timer stops the Program; the clock stays
@@ -1026,6 +1033,30 @@ async fn deadline_terminates_noncooperative_javascript_without_replay() {
     );
 }
 
+/// The process that boots next sweeps the Run this one stopped renewing:
+/// one Run recovered, and the Run as it ended.
+async fn swept_by_the_next_process(
+    fixture: &TestModules,
+    operation: &OperationFixture,
+    run_id: &crate::RunId,
+) -> crate::RunUpdate {
+    assert_eq!(
+        fixture
+            .next_process()
+            .sweep_expired_leases()
+            .await
+            .expect("sweep the lapsed lease"),
+        1
+    );
+    wait_for_terminal(
+        &fixture.runs,
+        &operation.principal,
+        &operation.workspace_id,
+        run_id,
+    )
+    .await
+}
+
 #[tokio::test]
 async fn recovery_revokes_a_started_claim_before_late_program_work() {
     let (engine, release) = StaleClaimEngine::new("coral.providers.weather.getForecast");
@@ -1066,22 +1097,7 @@ async fn recovery_revokes_a_started_claim_before_late_program_work() {
         .next
         .store(accepted_at + 2_000_000_000, Ordering::SeqCst);
 
-    // The process that boots next sweeps the Run this one stopped renewing.
-    assert_eq!(
-        fixture
-            .next_process()
-            .sweep_expired_leases()
-            .await
-            .expect("sweep the lapsed lease"),
-        1
-    );
-    let interrupted = wait_for_terminal(
-        &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
-        accepted.run_id(),
-    )
-    .await;
+    let interrupted = swept_by_the_next_process(&fixture, &operation, accepted.run_id()).await;
     assert_eq!(interrupted.state(), RunState::Interrupted);
     assert!(matches!(
         interrupted.terminal_outcome(),
@@ -1167,21 +1183,7 @@ async fn recovery_ends_a_pending_invocation_without_dispatch() {
         .next
         .store(accepted_at + 2_000_000_000, Ordering::SeqCst);
 
-    assert_eq!(
-        fixture
-            .next_process()
-            .sweep_expired_leases()
-            .await
-            .expect("sweep the lapsed lease"),
-        1
-    );
-    let interrupted = wait_for_terminal(
-        &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
-        accepted.run_id(),
-    )
-    .await;
+    let interrupted = swept_by_the_next_process(&fixture, &operation, accepted.run_id()).await;
     assert_eq!(interrupted.state(), RunState::Interrupted);
     assert!(
         retained_events(
@@ -1260,21 +1262,7 @@ async fn recovery_marks_an_uncertain_dispatch_indeterminate_without_replay() {
         .next
         .store(accepted_at + 2_000_000_000, Ordering::SeqCst);
 
-    assert_eq!(
-        fixture
-            .next_process()
-            .sweep_expired_leases()
-            .await
-            .expect("sweep the lapsed lease"),
-        1
-    );
-    let interrupted = wait_for_terminal(
-        &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
-        accepted.run_id(),
-    )
-    .await;
+    let interrupted = swept_by_the_next_process(&fixture, &operation, accepted.run_id()).await;
     assert_eq!(interrupted.state(), RunState::Interrupted);
     assert!(
         retained_events(
@@ -1757,12 +1745,12 @@ async fn an_abandoned_runs_dispatching_and_waiting_invocations_end_in_one_chunk(
     );
 }
 
-/// A request that reaches a recovered owner before its chunk lands waits
-/// behind it and is answered from the record: the cancel shows the Run
-/// interrupted, the decision shows its request closed. Neither is
-/// `OwnerLost` or `OwnedElsewhere`, and the cancel records nothing of its own.
+/// A recovered owner takes no outside request: until its chunk lands, a
+/// cancel and a decision for the Run are answered `OwnedElsewhere`, as for
+/// any Run with no owner here, and write nothing. Once the chunk landed, the
+/// retried requests are answered from the record.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_request_that_reaches_a_recovered_owner_first_waits_for_its_recorded_answer() {
+async fn a_request_for_a_run_being_recovered_is_owned_elsewhere_until_its_chunk_lands() {
     use crate::approval::{ApprovalDecision, ApprovalState};
     let held = HeldApproval::new("user:recovered-request").await;
     let (fixture, workspace_id, run_id) = (&held.fixture, &held.operation.workspace_id, &held.run);
@@ -1779,61 +1767,46 @@ async fn a_request_that_reaches_a_recovered_owner_first_waits_for_its_recorded_a
     let next = fixture.next_process_observed(gate.clone());
     assert_eq!(next.sweep_expired_leases().await.unwrap(), 1);
     wait_until(|| gate.entered()).await;
+    let cancel = async || {
+        next.cancel(&held.actor, workspace_id, run_id, &immediate(None, 100))
+            .await
+    };
+    let decide = async || {
+        next.approvals()
+            .decide(
+                &held.operation.principal,
+                workspace_id,
+                &request.id,
+                ApprovalDecision::Approve,
+                None,
+                &TraceId::parse(&"d".repeat(32)).unwrap(),
+            )
+            .await
+    };
 
-    let cancel = tokio::spawn({
-        let (next, actor, workspace_id, run_id) = (
-            next.clone(),
-            held.actor.clone(),
-            workspace_id.clone(),
-            run_id.clone(),
-        );
-        async move {
-            next.cancel(&actor, &workspace_id, &run_id, &immediate(None, 100))
-                .await
-        }
-    });
-    let decision = tokio::spawn({
-        let (approvals, actor, workspace_id, id) = (
-            next.approvals(),
-            held.operation.principal.clone(),
-            workspace_id.clone(),
-            request.id.clone(),
-        );
-        async move {
-            approvals
-                .decide(
-                    &actor,
-                    &workspace_id,
-                    &id,
-                    ApprovalDecision::Approve,
-                    None,
-                    &TraceId::parse(&"d".repeat(32)).unwrap(),
-                )
-                .await
-        }
-    });
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        !cancel.is_finished() && !decision.is_finished(),
-        "both requests wait behind the recovered owner's chunk"
+    let refused = cancel().await;
+    assert!(matches!(refused, Err(Error::OwnedElsewhere)), "{refused:?}");
+    let refused = decide().await;
+    assert!(matches!(refused, Err(Error::OwnedElsewhere)), "{refused:?}");
+    assert_eq!(
+        fixture.run_record(workspace_id, run_id).await,
+        handed,
+        "a refused request writes nothing"
     );
-    assert_eq!(fixture.run_record(workspace_id, run_id).await, handed);
 
     release
         .send(())
         .expect("release the recovered owner's chunk");
-    let canceled = cancel
-        .await
-        .unwrap()
-        .expect("the record answers the cancel");
-    assert_eq!(canceled.state(), RunState::Interrupted);
-    let decided = decision
-        .await
-        .unwrap()
-        .expect("the record answers the decision");
-    assert_eq!(decided.state, ApprovalState::Closed);
-    let ended = fixture.run_record(workspace_id, run_id).await;
+    let ended = fixture.terminal_record(workspace_id, run_id).await;
     assert_eq!(ended.chunk_sequence, handed.chunk_sequence + 1, "one chunk");
+    let canceled = cancel()
+        .await
+        .expect("the record answers the retried cancel");
+    assert_eq!(canceled.state(), RunState::Interrupted);
+    let decided = decide()
+        .await
+        .expect("the record answers the retried decision");
+    assert_eq!(decided.state, ApprovalState::Closed);
     assert!(
         fixture
             .events_after(workspace_id, run_id, last_sequence(&handed))
@@ -1928,6 +1901,7 @@ async fn a_run_with_a_live_foreign_lease_is_left_alone_until_the_lease_lapses() 
 
     fixture.clock.next.store(lease_until, Ordering::SeqCst);
     assert_eq!(fixture.runs.sweep_expired_leases().await.unwrap(), 1);
+    fixture.terminal_record(&workspace_id, &run_id).await;
     let retried = fixture
         .runs
         .cancel(&principal, &workspace_id, &run_id, &immediate(None, 100))
@@ -1941,6 +1915,54 @@ async fn a_run_with_a_live_foreign_lease_is_left_alone_until_the_lease_lapses() 
             .iter()
             .all(|event| !matches!(event.kind(), RunEventKind::CancellationRequested { .. }))
     );
+}
+
+/// A Run accepted before shutdown began and launched only after it is not
+/// lost by the drain: shutdown waits for that admission, and the owner it
+/// registers late is interrupted with the rest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_waits_for_an_admission_in_flight_and_interrupts_its_late_owner() {
+    let engine = Arc::new(StopAwareEngine::default());
+    let mut fixture = TestModules::new(engine.clone()).await;
+    fixture.runs = fixture
+        .runs
+        .clone()
+        .with_shutdown_drain(crate::ShutdownDrain::new(Duration::ZERO));
+    let (workspace_id, principal) = fixture
+        .user_scope("user:drain-admission", "Drain an admission")
+        .await;
+    let prepared = fixture
+        .runs
+        .prepare(&principal, &workspace_id, submission("late-launch"))
+        .await
+        .unwrap();
+    let mut transaction = fixture.database.begin().await.unwrap();
+    let staged = fixture
+        .runs
+        .accept_in_transaction(&mut transaction, prepared)
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    let run_id = staged.run_id().clone();
+
+    let shutdown = tokio::spawn({
+        let runs = fixture.runs.clone();
+        async move { runs.shutdown().await }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !shutdown.is_finished(),
+        "shutdown waits for the admission in flight"
+    );
+    fixture.runs.launch(staged).await.unwrap();
+    shutdown.await.unwrap();
+
+    assert_eq!(
+        fixture.run_record(&workspace_id, &run_id).await.state,
+        RunState::Interrupted,
+        "the late owner is interrupted with the rest"
+    );
+    assert!(!fixture.runs.has_owner(&run_id));
 }
 
 /// During the Shutdown Drain a new Run is refused with `ShuttingDown` and

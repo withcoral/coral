@@ -11,6 +11,7 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::engine::{ProgramPackage, SavedFunctionReference};
+use crate::shutdown::Admitted;
 use crate::types::AcceptedRun;
 use crate::{
     COMBINED_TYPESCRIPT_MAX_BYTES, COMPILATION_TIMEOUT, Error, LINKED_SAVED_FUNCTION_MAX_COUNT,
@@ -41,6 +42,9 @@ pub struct PreparedRun {
 pub struct StagedRun {
     run: AcceptedRun,
     actor: AuthenticatedPrincipal,
+    /// Holds the admission until `launch` registers the Run's owner, or the
+    /// staged Run is dropped: a shutdown waits for it.
+    admitted: Admitted,
 }
 
 impl StagedRun {
@@ -130,7 +134,7 @@ impl RunModule {
         transaction: &mut Transaction<'_>,
         prepared: PreparedRun,
     ) -> Result<StagedRun, Error> {
-        self.admission.check()?;
+        let admitted = self.admission.admit()?;
         let PreparedRun {
             actor,
             workspace_id,
@@ -216,6 +220,7 @@ impl RunModule {
         Ok(StagedRun {
             run,
             actor: actor.clone(),
+            admitted,
         })
     }
 
@@ -236,7 +241,14 @@ impl RunModule {
         .ok_or(Error::RunNotFound)?;
         transaction.commit().await?;
         let update = accepted_update(&staged.run)?;
-        self.schedule_execution(staged.run, staged.actor);
+        let StagedRun {
+            run,
+            actor,
+            admitted,
+        } = staged;
+        self.schedule_execution(run, actor);
+        // The owner is registered: shutdown counts it from here.
+        drop(admitted);
         Ok(update)
     }
 

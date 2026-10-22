@@ -662,6 +662,7 @@ impl RunningServer {
 
 impl Drop for RunningServer {
     fn drop(&mut self) {
+        self.readiness.stop_serving();
         self.run_recovery.abort();
         if let Some(worker) = &self.device_recovery {
             worker.abort();
@@ -808,10 +809,10 @@ pub(crate) async fn start_server(
         },
     );
 
-    // The expired-lease sweep's first pass runs before any listener binds:
-    // a request for a Run whose lease lapsed before boot then reaches its
-    // recovered owner and waits behind its chunk. A pass that fails is
-    // logged; the next one, a half lease later, reads again.
+    // The expired-lease sweep's first pass runs before any listener binds,
+    // so a Run whose lease lapsed before boot has its owner back before the
+    // first request. A pass that fails is logged; the next one, a half lease
+    // later, reads again.
     sweep_expired_leases(&runs).await;
     let listener = TcpListener::bind(mode.bind_addr()).await?;
     let local_addr = listener.local_addr()?;

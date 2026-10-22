@@ -7,28 +7,80 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use tokio::sync::watch;
 use tokio::time::timeout;
 
 use crate::{Error, RunModule, ShutdownDrain};
 
-/// Whether the process still accepts new Runs; shared by every clone of one
-/// Run module.
-#[derive(Clone, Default)]
-pub(crate) struct Admission(Arc<AtomicBool>);
+/// Whether the process still accepts new owners, and how many it admitted
+/// that have not registered yet; shared by every clone of one Run module.
+#[derive(Clone)]
+pub(crate) struct Admission(Arc<AdmissionState>);
+
+struct AdmissionState {
+    closed: AtomicBool,
+    /// Admissions between their check and their owner's registration (or
+    /// their failure): a Run being accepted and launched, or a recovered
+    /// owner being registered.
+    in_flight: watch::Sender<usize>,
+}
+
+impl Default for Admission {
+    fn default() -> Self {
+        Self(Arc::new(AdmissionState {
+            closed: AtomicBool::new(false),
+            in_flight: watch::Sender::new(0),
+        }))
+    }
+}
 
 impl Admission {
-    /// Refuses new Runs from now on; `false` when they were refused already.
+    /// Refuses new owners from now on; `false` when they were refused already.
     fn close(&self) -> bool {
-        !self.0.swap(true, Ordering::SeqCst)
+        !self.0.closed.swap(true, Ordering::SeqCst)
     }
 
     /// Refuses a new Run once the process is shutting down.
     pub(crate) fn check(&self) -> Result<(), Error> {
-        if self.0.load(Ordering::SeqCst) {
+        if self.0.closed.load(Ordering::SeqCst) {
             Err(Error::ShuttingDown)
         } else {
             Ok(())
         }
+    }
+
+    /// Admits one owner to come, held until it is registered or given up:
+    /// [`RunModule::shutdown`] waits for every admission it let through
+    /// before it counts the live owners. Refused once shutting down.
+    pub(crate) fn admit(&self) -> Result<Admitted, Error> {
+        self.0.in_flight.send_modify(|count| *count += 1);
+        let admitted = Admitted(self.clone());
+        // Counted before the check: a shutdown that closed admission first
+        // refuses this one, and one that closes later waits for it.
+        self.check()?;
+        Ok(admitted)
+    }
+
+    /// Ends one admission in flight.
+    fn release(&self) {
+        self.0.in_flight.send_modify(|count| *count -= 1);
+    }
+
+    /// Returns once no admission is in flight.
+    async fn settled(&self) {
+        let mut in_flight = self.0.in_flight.subscribe();
+        // The sender lives as long as `self`.
+        let _settled = in_flight.wait_for(|count| *count == 0).await;
+    }
+}
+
+/// One admission in flight; dropping it, once the owner is registered or
+/// the admission failed, lets shutdown count the live owners.
+pub(crate) struct Admitted(Admission);
+
+impl Drop for Admitted {
+    fn drop(&mut self) {
+        self.0.release();
     }
 }
 
@@ -62,23 +114,36 @@ impl RunModule {
         if !self.admission.close() {
             return;
         }
+        // An admission let through before the close ends registered or
+        // refused before the owners are counted.
         let drain = self.shutdown_drain.duration();
-        if timeout(drain, self.owners.retired()).await.is_ok() {
+        let drained = timeout(drain, async {
+            self.admission.settled().await;
+            self.owners.retired().await;
+        })
+        .await;
+        if drained.is_ok() {
             return;
         }
-        let live = self.owners.live();
         tracing::warn!(
-            live = live.len(),
+            live = self.owners.live().len(),
             drain_ms = drain.as_millis(),
             "the Shutdown Drain is out: interrupting the Runs still live"
         );
-        for owner in &live {
-            owner.request_stop();
-        }
-        if timeout(self.execution_policy.commit_grace(), self.owners.retired())
-            .await
-            .is_err()
-        {
+        let interrupt_live = || {
+            for owner in self.owners.live() {
+                owner.request_stop();
+            }
+        };
+        interrupt_live();
+        let committed = timeout(self.execution_policy.commit_grace(), async {
+            // An owner registered by a late admission is interrupted too.
+            self.admission.settled().await;
+            interrupt_live();
+            self.owners.retired().await;
+        })
+        .await;
+        if committed.is_err() {
             tracing::warn!(
                 live = self.owners.live().len(),
                 "Runs still live after the commit grace keep their lease; \

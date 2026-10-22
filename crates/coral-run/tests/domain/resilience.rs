@@ -164,7 +164,7 @@ async fn a_definite_database_rejection_stops_the_owner_without_a_retry() {
     let owner = fixture
         .runs
         .owners
-        .find(&run_id, Some(&claim_id))
+        .find(&run_id, &claim_id)
         .expect("the owner is live");
     let commits_before = probe.commits();
     // The Run has its one `run.started` Event: the next Event insert is
@@ -216,7 +216,7 @@ async fn a_run_whose_owner_retired_on_a_failed_settle_is_ended_by_the_next_sweep
     let owner = fixture
         .runs
         .owners
-        .find(&run_id, Some(&claim_id))
+        .find(&run_id, &claim_id)
         .expect("the owner is live");
     // Every Event insert after `run.started` is rejected: the Emission's
     // chunk stops the owner, its terminal write records the interruption
@@ -279,7 +279,7 @@ async fn a_foreign_head_read_before_the_write_stops_the_owner_without_a_write() 
     let owner = fixture
         .runs
         .owners
-        .find(&run_id, Some(&claim_id))
+        .find(&run_id, &claim_id)
         .expect("the owner is live");
     let commits_before = probe.commits();
 
@@ -339,7 +339,7 @@ async fn a_reread_that_shows_a_foreign_head_fails_loudly_and_changes_nothing() {
     let owner = fixture
         .runs
         .owners
-        .find(&run_id, Some(&claim_id))
+        .find(&run_id, &claim_id)
         .expect("the owner is live");
 
     let release_answer = probe.lose_next_answer();

@@ -172,7 +172,7 @@ async fn a_claim_mismatch_on_commit_stops_the_owner_ends_v8_and_changes_nothing_
     let owner = fixture
         .runs
         .owners
-        .find(&run_id, Some(&claim_id))
+        .find(&run_id, &claim_id)
         .expect("the owner is live");
 
     // Another holder takes the Run: both claim columns name a new claim id.
@@ -2890,26 +2890,18 @@ fn a_recovered_owner_applies_its_queued_timers_then_ends_its_run_in_one_chunk() 
     }
 }
 
-/// An outside request reaching a recovered owner waits behind its one
-/// chunk; anything else (a stop, a timer, a second end) changes nothing
-/// once the chunk is being written. The record answers the request once the
-/// chunk lands or the Run is found ended by another writer; another process
-/// taking the Run leaves the outcome unknown.
+/// A recovered owner writes its one chunk once: once it is being written, a
+/// timer or a second end changes nothing, and the write's answer retires the
+/// owner, whatever it is. A stop (the Shutdown Drain is out) retires it
+/// whether its chunk is queued or in flight.
 #[test]
-fn a_recovered_owner_answers_requests_from_the_record_once_its_chunk_answers() {
-    for (outcome, answer) in [
-        (Ok(()), Ok(DecisionAnswer::FromRecord)),
-        (
-            Err(CommitRejection::RunEnded),
-            Ok(DecisionAnswer::FromRecord),
-        ),
-        (Err(CommitRejection::ClaimMismatch), Err(Error::OwnerLost)),
+fn a_recovered_owner_writes_once_and_retires_on_the_writes_answer() {
+    for outcome in [
+        Ok(()),
+        Err(CommitRejection::RunEnded),
+        Err(CommitRejection::ClaimMismatch),
     ] {
         let mut state = OwnerState::recovered(LIMITS, 1);
-        let (effects, mut canceled) = cancel(&mut state, 2);
-        assert!(effects.is_empty(), "{outcome:?}: the cancel waits");
-        let (effects, mut decision) = decide(&mut state, &approval_id(), 2);
-        assert!(effects.is_empty(), "{outcome:?}: the decision waits");
         let effects = apply_without_tick(
             &mut state,
             Message::Recover(crate::owner::RecoveryEnd::Interrupt),
@@ -2917,7 +2909,6 @@ fn a_recovered_owner_answers_requests_from_the_record_once_its_chunk_answers() {
         );
         assert!(matches!(effects.as_slice(), [Effect::Recover { .. }]));
         for ignored in [
-            Message::Stop,
             Message::Timer(Timer::RunDeadline),
             Message::Recover(crate::owner::RecoveryEnd::Interrupt),
             Message::Drained,
@@ -2927,27 +2918,27 @@ fn a_recovered_owner_answers_requests_from_the_record_once_its_chunk_answers() {
                 "{outcome:?}"
             );
         }
-        assert!(decided(&mut canceled).is_none() && decided(&mut decision).is_none());
-
-        let rest = deliver(apply_without_tick(
-            &mut state,
-            Message::Interrupted(outcome),
-            5,
-        ));
+        let effects = apply_without_tick(&mut state, Message::Interrupted(outcome), 5);
         assert!(
-            matches!(rest.as_slice(), [Effect::Retire]),
-            "{outcome:?}: {rest:?}"
+            matches!(effects.as_slice(), [Effect::Retire]),
+            "{outcome:?}: {effects:?}"
         );
         assert_eq!(state.phase(), Phase::Retired);
-        for receiver in [&mut canceled, &mut decision] {
-            let answered = decided(receiver).expect("answered");
-            match (&answered, &answer) {
-                (Ok(got), Ok(expected)) => assert_eq!(got, expected, "{outcome:?}"),
-                (Err(got), Err(expected)) => {
-                    assert_eq!(got.to_string(), expected.to_string(), "{outcome:?}");
-                }
-                _ => panic!("{outcome:?}: {answered:?}"),
-            }
+    }
+    for writing in [false, true] {
+        let mut state = OwnerState::recovered(LIMITS, 1);
+        if writing {
+            apply_without_tick(
+                &mut state,
+                Message::Recover(crate::owner::RecoveryEnd::Interrupt),
+                3,
+            );
         }
+        let effects = apply_without_tick(&mut state, Message::Stop, 4);
+        assert!(
+            matches!(effects.as_slice(), [Effect::Retire]),
+            "writing {writing}: {effects:?}"
+        );
+        assert_eq!(state.phase(), Phase::Retired);
     }
 }

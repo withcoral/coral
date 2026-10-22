@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use crate::approval::ApprovalId;
 use crate::lifecycle::{RequestedTermination, RunRecord, RunTerminationKind};
-use crate::owner::{self, Message, OwnerHandle, OwnerStart, RecoveryEnd, TakenClaim, Timer};
+use crate::owner::{self, Message, OwnerHandle, OwnerStart, RecoveryEnd, Timer};
 use crate::termination::end_in_one_chunk;
 use crate::types::AcceptedRun;
 use crate::{Error, RunId, RunModule, approval, run_repository};
@@ -46,8 +46,9 @@ impl RunModule {
     /// acceptance, every `running` Run with no owner in this process whose
     /// lease lapsed, or with no claim and accepted more than one lease ago,
     /// and recreates its Run Owner. Returns once those owners exist, with how
-    /// many it recreated; each ends its Run in one chunk of its own, and a
-    /// request that reaches one before that chunk waits behind it.
+    /// many it recreated; each ends its Run in one chunk of its own. Until
+    /// that chunk lands a request for the Run is answered `OwnedElsewhere`,
+    /// and a retry reads the record.
     ///
     /// Bootstrap runs the first pass before any listener binds, then on a
     /// fixed cadence of [`Self::sweep_interval`].
@@ -89,18 +90,16 @@ impl RunModule {
     /// Recreates the owner of `run`, with a new claim, its mailbox queued
     /// with `timers` and then the end: finish the termination the row
     /// records, else interrupt. `false` when an owner for the Run became live
-    /// here meanwhile, or the process began shutting down. The owner is registered before its task starts, so a
-    /// request that arrives first waits in its mailbox behind the queue.
+    /// here meanwhile, or the process began shutting down. The owner is
+    /// registered, so the next sweep leaves the Run to it and the Shutdown
+    /// Drain waits for it.
     fn schedule_recovery(&self, run: &RunRecord, timers: Vec<Timer>) -> bool {
-        if self.admission.check().is_err() {
+        // Held until the owner is registered, so a shutdown counts it.
+        let Ok(_admitted) = self.admission.admit() else {
             return false;
-        }
+        };
         let claim_id = Uuid::new_v4().hyphenated().to_string();
-        let (handle, mailbox) = OwnerHandle::recovering(
-            run.id.clone(),
-            claim_id.clone(),
-            TakenClaim::of(run.held_claim()),
-        );
+        let (handle, mailbox) = OwnerHandle::new(run.id.clone(), claim_id.clone());
         for timer in timers {
             handle.send(Message::Timer(timer));
         }
@@ -137,7 +136,9 @@ impl RunModule {
         let owner_task = tokio::spawn(owner::host(
             self.clone(),
             accepted,
-            OwnerStart::Recovery,
+            OwnerStart::Recovery {
+                taken: run.held_claim().map(str::to_owned),
+            },
             handle,
             mailbox,
             registration,
@@ -160,8 +161,11 @@ impl RunModule {
     /// over from `taken`, the claim its row held when the sweep found its
     /// lease lapsed, with `takeover_claim_id`, expires the `expired` Approval
     /// Requests, and ends the Run with the termination its row records, else
-    /// `intent`, else interrupted. The row is read without a hold; the write
-    /// is predicated on the claim and the head the row showed.
+    /// `intent`, else timed out past its deadline or interrupted. A
+    /// termination the row records since the sweep read it was applied
+    /// first: only the queued expiries whose deadline came before it still
+    /// apply. The row is read without a hold; the write is predicated on the
+    /// claim and the head the row showed.
     ///
     /// # Errors
     ///
@@ -201,7 +205,26 @@ impl RunModule {
         {
             return Err(Error::ClaimMismatch);
         }
-        // A termination the row records stands: it was applied first.
+        // A termination the row records stands: it was applied first, and
+        // closes every request whose deadline had not passed by then: only
+        // a deadline strictly before its start keeps its expiry.
+        let expired = match run.termination {
+            Some(recorded) if !recovery.expired.is_empty() => {
+                let before_it = approval::undecided_by(
+                    &mut transaction,
+                    &run,
+                    recorded.started_at_unix_nanos.saturating_sub(1),
+                )
+                .await?;
+                recovery
+                    .expired
+                    .iter()
+                    .filter(|approval| before_it.iter().any(|(id, _)| id == *approval))
+                    .cloned()
+                    .collect()
+            }
+            _ => recovery.expired.to_vec(),
+        };
         let termination = match (run.termination, recovery.intent) {
             (Some(recorded), _) => recorded,
             (None, Some(intent)) => intent.termination,
@@ -218,7 +241,7 @@ impl RunModule {
             &mut transaction,
             &run,
             &termination,
-            recovery.expired,
+            &expired,
             Some(recovery.takeover_claim_id),
             now.max(termination.started_at_unix_nanos),
         )

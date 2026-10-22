@@ -396,34 +396,10 @@ pub(crate) type Mailbox = mpsc::UnboundedReceiver<Message>;
 struct Shared {
     run_id: RunId,
     claim_id: String,
-    /// A recovered owner's: the claim the Run row holds until its one chunk
-    /// takes the Run over (`None` for a Run with no claim).
-    takes_over: Option<TakenClaim>,
     sender: mpsc::UnboundedSender<Message>,
     stop: Arc<ExecutionStop>,
     stopped: AtomicBool,
     stopped_notification: Notify,
-}
-
-/// The claim a recovered owner takes over, as the sweep read the Run row: its
-/// execution claim, or its worker claim before the start mark, or none.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum TakenClaim {
-    Claim(String),
-    Claimless,
-}
-
-impl TakenClaim {
-    pub(crate) fn of(held: Option<&str>) -> Self {
-        held.map_or(Self::Claimless, |claim| Self::Claim(claim.to_owned()))
-    }
-
-    pub(crate) fn as_deref(&self) -> Option<&str> {
-        match self {
-            Self::Claim(claim) => Some(claim),
-            Self::Claimless => None,
-        }
-    }
 }
 
 /// How a recovered owner ends its Run, after the timers that passed: the
@@ -446,31 +422,11 @@ pub(crate) struct OwnerHandle {
 
 impl OwnerHandle {
     pub(crate) fn new(run_id: RunId, claim_id: String) -> (Self, Mailbox) {
-        Self::with_takeover(run_id, claim_id, None)
-    }
-
-    /// The handle of an owner the expired-lease sweep recreates: it answers
-    /// for the claim `taken` the Run row holds until its chunk lands, so a
-    /// request arriving first waits behind that chunk.
-    pub(crate) fn recovering(
-        run_id: RunId,
-        claim_id: String,
-        taken: TakenClaim,
-    ) -> (Self, Mailbox) {
-        Self::with_takeover(run_id, claim_id, Some(taken))
-    }
-
-    fn with_takeover(
-        run_id: RunId,
-        claim_id: String,
-        takes_over: Option<TakenClaim>,
-    ) -> (Self, Mailbox) {
         let (sender, mailbox) = mpsc::unbounded_channel();
         let handle = Self {
             shared: Arc::new(Shared {
                 run_id,
                 claim_id,
-                takes_over,
                 sender,
                 stop: Arc::new(ExecutionStop::new()),
                 stopped: AtomicBool::new(false),
@@ -486,20 +442,6 @@ impl OwnerHandle {
 
     pub(crate) fn claim_id(&self) -> &str {
         &self.shared.claim_id
-    }
-
-    /// The claim a recovered owner takes over; `None` for any other owner.
-    pub(crate) fn takes_over(&self) -> Option<&TakenClaim> {
-        self.shared.takes_over.as_ref()
-    }
-
-    /// Whether this owner answers for a Run row holding `claim_id`: its own
-    /// claim, or the claim a recovered owner is taking over.
-    fn answers_for(&self, claim_id: Option<&str>) -> bool {
-        claim_id == Some(self.claim_id())
-            || self
-                .takes_over()
-                .is_some_and(|taken| taken.as_deref() == claim_id)
     }
 
     /// The stop shared with the Program and its dispatches.
@@ -711,12 +653,11 @@ impl Owners {
         )
     }
 
-    /// The owner live here for a Run row holding `claim_id` for `run_id`:
-    /// the owner holding that claim, or the recovered owner taking it over.
-    pub(crate) fn find(&self, run_id: &RunId, claim_id: Option<&str>) -> Option<OwnerHandle> {
+    /// The owner holding `claim_id` for `run_id`, when one is live here.
+    pub(crate) fn find(&self, run_id: &RunId, claim_id: &str) -> Option<OwnerHandle> {
         self.lock()
             .get(run_id)
-            .filter(|handle| handle.answers_for(claim_id))
+            .filter(|handle| handle.claim_id() == claim_id)
             .cloned()
     }
 

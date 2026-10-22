@@ -57,8 +57,9 @@ pub(crate) enum OwnerStart {
     /// and runs the Program as `actor`.
     Program(AuthenticatedPrincipal),
     /// The owner the expired-lease sweep recreated, its mailbox queued: it
-    /// takes the Run over from the claim its handle names, and ends it.
-    Recovery,
+    /// takes the Run over from the claim `taken` the Run row held when the
+    /// sweep read it (`None`: no claim), and ends it.
+    Recovery { taken: Option<String> },
 }
 
 /// Hosts the owner of `accepted` until it retires.
@@ -110,7 +111,7 @@ pub(crate) async fn host(
                     spawn_settle(&module, &accepted, &handle, shutdown, again, deadline);
                 }
                 Effect::Recover { expired, intent } => {
-                    let Some(taken) = handle.takes_over() else {
+                    let OwnerStart::Recovery { taken } = &start else {
                         debug_assert!(false, "only a recovered owner writes a recovery");
                         continue;
                     };
@@ -189,7 +190,7 @@ fn begin(
             let effects = apply(&mut state, Message::Launch, launched_at(module, accepted));
             (state, effects)
         }
-        OwnerStart::Recovery => (
+        OwnerStart::Recovery { .. } => (
             OwnerState::recovered(limits, accepted.accepted_at_unix_nanos),
             Vec::new(),
         ),
@@ -375,7 +376,7 @@ fn run_effect(
             module.execution_observer.clone(),
         ),
         // A recovered owner starts no Program: its `apply` never asks.
-        Effect::Start | Effect::StartProgram(_) if matches!(start, OwnerStart::Recovery) => {
+        Effect::Start | Effect::StartProgram(_) if matches!(start, OwnerStart::Recovery { .. }) => {
             debug_assert!(false, "a recovered owner starts no Program");
         }
         Effect::Start => {
@@ -564,7 +565,7 @@ fn spawn_recovery(
     module: &RunModule,
     accepted: &AcceptedRun,
     handle: &OwnerHandle,
-    taken: super::handle::TakenClaim,
+    taken: Option<String>,
     expired: Vec<crate::approval::ApprovalId>,
     intent: Option<crate::lifecycle::RequestedTermination>,
 ) {
@@ -583,9 +584,13 @@ fn spawn_recovery(
         // A head another writer moved between the read and the write is read
         // again after a backoff, a few times; after that the next sweep
         // tries afresh.
-        // A mass recovery writes a few chunks at a time; the owners exist and
-        // hold their requests meanwhile.
+        // A mass recovery writes a few chunks at a time.
         let _permit = module.recovery_writes.acquire().await;
+        // A stop retired the owner while it waited: the Run is left to the
+        // next sweep.
+        if handle.is_retired() {
+            return;
+        }
         let mut moved = Backoff::new(&accepted.id, "recovery after a moved head");
         let mut attempts = 0;
         let recorded = loop {

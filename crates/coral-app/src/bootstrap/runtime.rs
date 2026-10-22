@@ -255,9 +255,11 @@ impl RunningRuntime {
     ///
     /// Readiness reports not serving at once and new Runs are refused, while
     /// every listener keeps serving the live Runs for the Shutdown Drain
-    /// (`[runtime] shutdown_drain_seconds`); Runs still live then are
-    /// interrupted within the commit grace. An orchestrator's termination
-    /// grace must exceed both.
+    /// (`[runtime] shutdown_drain_seconds`). Runs still live then are asked to
+    /// stop and get the commit grace to record their interruption; one that
+    /// records nothing keeps its lease, and the next process's expired-lease
+    /// sweep ends it. The drain and the commit grace run one after the
+    /// other, so an orchestrator's termination grace must exceed their sum.
     ///
     /// # Errors
     ///

@@ -40,8 +40,9 @@
 //!   owner of a Run whose process is gone with its mailbox queued (every
 //!   timer that passed, in deadline order, then the end), and the owner
 //!   records the expiries, the timeout or the interruption, or the
-//!   termination already recorded, in one chunk, then retires. An outside
-//!   request waits behind that chunk and is answered from the record.
+//!   termination already recorded, in one chunk, then retires. No outside
+//!   request reaches it: until the chunk lands a request for the Run is
+//!   answered `OwnedElsewhere`, and a retry reads the record.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
@@ -219,8 +220,7 @@ pub(crate) enum Phase {
     /// database answers or another writer has the Run.
     Interrupting,
     /// A recovered owner: no Program runs here. It applies the timers the
-    /// sweep queued, then writes its one chunk; outside requests wait behind
-    /// it.
+    /// sweep queued, then writes its one chunk.
     Recovering,
     Retired,
 }
@@ -1531,9 +1531,10 @@ impl OwnerState {
     /// a passed Run deadline times the Run out, and the end finishes the
     /// termination the row records or interrupts the Run, in one chunk. A
     /// timer applied after a termination changes nothing, as in a live
-    /// owner: the termination closes the request. An outside request waits
-    /// behind the chunk; once it lands, or the Run is found ended, the record
-    /// answers. No Program runs here, so nothing else reaches the owner.
+    /// owner: the termination closes the request. A stop (the Shutdown
+    /// Drain is out) retires the owner, its chunk unwritten or in flight. No
+    /// Program runs here and no outside request finds the owner, so nothing
+    /// else reaches it.
     fn recovering(&mut self, message: Message, now_unix_nanos: i64) -> Vec<Effect> {
         let writing = self.recovery.writing;
         match message {
@@ -1563,16 +1564,10 @@ impl OwnerState {
                     intent: self.termination.clone(),
                 }]
             }
-            Message::Decide { .. } | Message::Cancel { .. } => {
-                self.parked.push(message);
-                Vec::new()
-            }
-            // Another writer ending the Run first leaves a record that
-            // answers too; another process taking it leaves the outcome
-            // unknown.
-            Message::Interrupted(recorded) if writing => {
-                self.retire(matches!(recorded, Ok(()) | Err(CommitRejection::RunEnded)))
-            }
+            Message::Interrupted(recorded) if writing => self.retire(recorded.is_ok()),
+            // The process is shutting down: the owner gives the Run up
+            // unwritten, and the next process's sweep recovers it.
+            Message::Stop => self.retire(false),
             _ => Vec::new(),
         }
     }

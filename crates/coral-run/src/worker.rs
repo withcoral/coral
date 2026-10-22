@@ -6,9 +6,9 @@
 //! terminal write here, the Interrupted record and the settle beside them)
 //! read the Run row without holding it: the owner runs one write at a time,
 //! nothing writes a nonterminal Run's row from outside it while it lives
-//! (a Run whose owner retired without ending it is the expired-lease sweep's
-//! once its lease lapses), and every write is predicated on the claim and
-//! the head the row showed.
+//! (the expired-lease sweep recovers a Run whose owner retired without
+//! ending it, once its lease lapses), and every write is predicated on the
+//! claim and the head the row showed.
 
 use coral_workspace::AuthenticatedPrincipal;
 

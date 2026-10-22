@@ -362,8 +362,9 @@ pub enum Error {
     #[error("Program Run has no live owner in this process")]
     OwnedElsewhere,
     /// The process is shutting down and accepts no new Run: its Shutdown
-    /// Drain lets the live ones end. Nothing was written; another process
-    /// takes the request.
+    /// Drain lets the live ones end. Nothing was written; the caller may
+    /// retry, and during a rolling update the retry may reach the process
+    /// that replaces this one.
     #[error("the server is shutting down and accepts no new Program Run; retry")]
     ShuttingDown,
     /// A fatal Program host failure stopped execution for recovery.
