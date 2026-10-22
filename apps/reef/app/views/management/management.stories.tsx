@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from '@storybook/react-vite'
+import type { Decorator, Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
 import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { AgentActivityPage } from './agent-activity-page'
@@ -16,6 +16,12 @@ import { resizeViewport } from '../../../.storybook/browser'
 import { WorkspaceOverview, type WorkspaceOverviewProps } from './workspace-overview'
 
 const form = { csrf: 'storybook-csrf', requestId: 'storybook-request' }
+// The app shell bounds a page's height; a story that scrolls inside it needs the same bound.
+const viewportHeight: Decorator = (Story) => (
+  <div style={{ height: '100vh' }}>
+    <Story />
+  </div>
+)
 const jordan = {
   user: 'users/jordan',
   name: 'Jordan Lee',
@@ -361,14 +367,7 @@ export const ManyAgents: Story = {
     const [name] = within(rows[0]).getAllByRole('cell')
     await expect(name).toHaveAttribute('title', expect.stringContaining('reconciliation queue'))
   },
-  // The app shell bounds the page's height; the story needs a bound of its own.
-  decorators: [
-    (Story) => (
-      <div style={{ height: '100vh' }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: [viewportHeight],
 }
 /** The table keeps its shape with no agents, and offers to create one. */
 export const NoAgents: Story = {
@@ -495,13 +494,7 @@ export const AgentActivity: Story = {
   ),
   parameters: { initialEntry: agent.path },
   // The app shell bounds the page; the cards fill its height and scroll their rows.
-  decorators: [
-    (Story) => (
-      <div style={{ height: '100vh' }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: [viewportHeight],
   play: async ({ canvas }) => {
     await expect(canvas.getByRole('link', { name: 'Settings' })).toHaveAttribute(
       'href',
@@ -547,13 +540,7 @@ export const AgentFullActivity: Story = {
   parameters: { initialEntry: `${agent.path}?view=activity` },
   // The app shell bounds the split page; the story needs the same height so
   // Activity scrolls its records instead of growing with them.
-  decorators: [
-    (Story) => (
-      <div style={{ height: '100vh' }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: [viewportHeight],
   play: async ({ canvas }) => {
     await expect(canvas.getByRole('heading', { name: 'Activity' })).toBeVisible()
     await expect(canvas.getByRole('link', { name: 'Back to agent' })).toHaveAttribute(
