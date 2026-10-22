@@ -42,7 +42,8 @@ use super::state::{Effect, OwnerLimits, OwnerState, apply};
 /// within the shutdown grace.
 const SETTLE_RETRY: Duration = Duration::from_millis(10);
 
-/// Hosts the owner of `accepted` until it retires.
+/// Hosts the owner of `accepted` until it retires; `true` when the owner's
+/// own write ended its Run.
 pub(crate) async fn host(
     module: RunModule,
     accepted: AcceptedRun,
@@ -50,7 +51,7 @@ pub(crate) async fn host(
     handle: OwnerHandle,
     mut mailbox: Mailbox,
     registration: OwnerRegistration,
-) {
+) -> bool {
     #[cfg(test)]
     let _attempt = ExecutionAttemptObservation(module.execution_observer.clone());
     let mut state = OwnerState::new(
@@ -73,11 +74,11 @@ pub(crate) async fn host(
     // set by the first settle attempt, read by every later one.
     let mut settle_deadline: Option<Instant> = None;
     let mut effects = apply(&mut state, Message::Launch, launched_at(&module, &accepted));
-    loop {
-        let mut retired = false;
+    let ended = loop {
+        let mut retired = None;
         for effect in effects.drain(..) {
             match effect {
-                Effect::Retire => retired = true,
+                Effect::Retire { ended } => retired = Some(ended),
                 Effect::Commit {
                     chunk,
                     output_total,
@@ -112,8 +113,8 @@ pub(crate) async fn host(
                 other => run_effect(&module, &accepted, &actor, &handle, other),
             }
         }
-        if retired {
-            break;
+        if let Some(ended) = retired {
+            break ended;
         }
         // The handle outlives the loop, so the mailbox never closes first.
         let message = tokio::select! {
@@ -151,9 +152,10 @@ pub(crate) async fn host(
             effects.extend(apply(&mut state, next, now));
         }
         effects.extend(apply(&mut state, Message::Drained, now));
-    }
+    };
     drop(timers);
     drop(registration);
+    ended
 }
 
 /// The owner gives its Run up: the Program and its dispatches stop, and the
@@ -330,7 +332,7 @@ fn run_effect(
         | Effect::Interrupt { .. }
         | Effect::ArmTimer { .. }
         | Effect::WakeParked
-        | Effect::Retire => {
+        | Effect::Retire { .. } => {
             debug_assert!(
                 false,
                 "the host loop runs commits, liveness transitions, timers and retirement itself"

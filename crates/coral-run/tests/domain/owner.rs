@@ -709,7 +709,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
             39,
         );
         assert!(
-            matches!(effects.as_slice(), [Effect::Retire]),
+            matches!(effects.as_slice(), [Effect::Retire { .. }]),
             "{effects:?}"
         );
         assert_eq!(state.phase(), Phase::Retired);
@@ -830,7 +830,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert_eq!(state.phase(), Phase::Completing);
         assert!(matches!(
             apply_without_tick(&mut state, Message::Completed(Ok(None)), 63).as_slice(),
-            [Effect::Retire]
+            [Effect::Retire { .. }]
         ));
     }
 
@@ -892,7 +892,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert!(late_work.lock().expect("settle").is_none());
         assert!(matches!(
             apply_without_tick(&mut state, refused(), 84).as_slice(),
-            [Effect::Retire]
+            [Effect::Retire { .. }]
         ));
         assert_eq!(state.phase(), Phase::Retired);
     }
@@ -954,7 +954,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         );
         assert!(matches!(
             apply_without_tick(&mut state, Message::SettleAttempted(Ok(true)), 99).as_slice(),
-            [Effect::Retire]
+            [Effect::Retire { .. }]
         ));
         assert_eq!(state.phase(), Phase::Retired);
         let (effects, mut refused, refused_work) = result(&mut state, 10, 100);
@@ -1090,7 +1090,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         ));
         assert!(matches!(
             apply_without_tick(&mut state, Message::Interrupted(Ok(())), now + 4).as_slice(),
-            [Effect::Retire]
+            [Effect::Retire { .. }]
         ));
         assert_eq!(state.phase(), Phase::Retired);
     }
@@ -1161,7 +1161,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
             304,
         );
         assert!(
-            matches!(effects.as_slice(), [Effect::Retire]),
+            matches!(effects.as_slice(), [Effect::Retire { .. }]),
             "{effects:?}"
         );
     }
@@ -2057,7 +2057,7 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
             Message::Completed(Ok(None)),
             5,
         ));
-        assert!(matches!(effects.as_slice(), [Effect::Retire]));
+        assert!(matches!(effects.as_slice(), [Effect::Retire { .. }]));
         assert!(matches!(
             decided(&mut during),
             Some(Ok(DecisionAnswer::FromRecord))

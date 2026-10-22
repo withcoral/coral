@@ -526,38 +526,15 @@ async fn a_cancel_and_the_run_deadline_record_the_first_applied_kind() {
             .cancel(&principal, &workspace_id, &run_id, &immediate(None, 100))
             .await
             .expect("cancel");
-        let terminal = if terminal.state().is_terminal() {
-            terminal
-        } else {
-            wait_for_terminal(&fixture.runs, &principal, &workspace_id, &run_id).await
-        };
-        let expected = if deadline_first {
-            RunState::TimedOut
-        } else {
-            RunState::Canceled
-        };
-        assert_eq!(
-            terminal.state(),
-            expected,
-            "deadline first: {deadline_first}"
-        );
-        let events = retained_events(&fixture.runs, &principal, &workspace_id, &run_id).await;
-        let ended: Vec<_> = events
-            .iter()
-            .filter(|event| matches!(event.kind(), RunEventKind::Ended { .. }))
-            .collect();
-        assert!(
-            matches!(ended.as_slice(), [ended] if ended.kind() == &RunEventKind::Ended { state: expected }),
-            "exactly one terminal kind: {events:?}"
-        );
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(event.kind(), RunEventKind::CancellationRequested { .. }))
-                .count(),
-            usize::from(!deadline_first),
-            "a cancel applied after the timeout writes no Event: {events:?}"
-        );
+        assert_first_applied_kind(
+            &fixture.runs,
+            &principal,
+            &workspace_id,
+            &run_id,
+            terminal,
+            deadline_first,
+        )
+        .await;
         assert_eq!(engine.executions.load(Ordering::SeqCst), 1);
     }
 }
@@ -626,39 +603,62 @@ async fn a_cancel_and_the_run_deadline_in_one_mailbox_drain_record_the_first_app
         release.send(()).expect("release the owner");
         gates.release.send(()).expect("release the Program");
         let terminal = cancelling.await.expect("the cancel task").expect("cancel");
-        let terminal = if terminal.state().is_terminal() {
-            terminal
-        } else {
-            wait_for_terminal(&fixture.runs, &principal, &workspace_id, &run_id).await
-        };
-        let expected = if deadline_first {
-            RunState::TimedOut
-        } else {
-            RunState::Canceled
-        };
-        assert_eq!(
-            terminal.state(),
-            expected,
-            "deadline first: {deadline_first}"
-        );
-        let events = retained_events(&fixture.runs, &principal, &workspace_id, &run_id).await;
-        let ended: Vec<_> = events
-            .iter()
-            .filter(|event| matches!(event.kind(), RunEventKind::Ended { .. }))
-            .collect();
-        assert!(
-            matches!(ended.as_slice(), [ended] if ended.kind() == &RunEventKind::Ended { state: expected }),
-            "exactly one terminal kind: {events:?}"
-        );
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(event.kind(), RunEventKind::CancellationRequested { .. }))
-                .count(),
-            usize::from(!deadline_first),
-            "a cancel applied after the timeout writes no Event: {events:?}"
-        );
+        assert_first_applied_kind(
+            &fixture.runs,
+            &principal,
+            &workspace_id,
+            &run_id,
+            terminal,
+            deadline_first,
+        )
+        .await;
     }
+}
+
+/// The record a cancel and the Run deadline leave: the first the owner
+/// applied decides the one terminal kind, and `cancellation.requested` is
+/// written only when the cancel came first. `terminal` is what the cancel
+/// returned.
+async fn assert_first_applied_kind(
+    runs: &RunModule,
+    principal: &AuthenticatedPrincipal,
+    workspace_id: &coral_workspace::WorkspaceId,
+    run_id: &crate::RunId,
+    terminal: crate::RunUpdate,
+    deadline_first: bool,
+) {
+    let terminal = if terminal.state().is_terminal() {
+        terminal
+    } else {
+        wait_for_terminal(runs, principal, workspace_id, run_id).await
+    };
+    let expected = if deadline_first {
+        RunState::TimedOut
+    } else {
+        RunState::Canceled
+    };
+    assert_eq!(
+        terminal.state(),
+        expected,
+        "deadline first: {deadline_first}"
+    );
+    let events = retained_events(runs, principal, workspace_id, run_id).await;
+    let ended: Vec<_> = events
+        .iter()
+        .filter(|event| matches!(event.kind(), RunEventKind::Ended { .. }))
+        .collect();
+    assert!(
+        matches!(ended.as_slice(), [ended] if ended.kind() == &RunEventKind::Ended { state: expected }),
+        "exactly one terminal kind: {events:?}"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind(), RunEventKind::CancellationRequested { .. }))
+            .count(),
+        usize::from(!deadline_first),
+        "a cancel applied after the timeout writes no Event: {events:?}"
+    );
 }
 
 /// What ends the Run while its Invocation is in flight.

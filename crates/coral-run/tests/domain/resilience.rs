@@ -212,10 +212,9 @@ async fn a_run_whose_owner_retired_on_a_failed_settle_is_ended_by_its_deadline()
     let (workspace_id, principal) = fixture
         .user_scope("user:deadline-after-retire", "Survive the database")
         .await;
-    // The supervisor sleeps this long on the host clock; the owner must
-    // have retired, and the fault be gone, well before it fires.
+    // The supervisor sleeps this long on the host clock from the launch; the
+    // owner must have retired, and the fault be gone, well before it fires.
     let run_timeout = Duration::from_secs(3);
-    let scheduled = std::time::Instant::now();
     let accepted = fixture
         .runs
         .start(
@@ -229,6 +228,9 @@ async fn a_run_whose_owner_retired_on_a_failed_settle_is_ended_by_its_deadline()
         )
         .await
         .expect("accept the Program");
+    // The launch, which anchors the supervisor's sleep, happened inside
+    // `start`; admission before it does not count against the window.
+    let scheduled = std::time::Instant::now();
     let run_id = accepted.run_id().clone();
     wait_until_started(&fixture, &workspace_id, &run_id).await;
     let before = fixture.run_record(&workspace_id, &run_id).await;

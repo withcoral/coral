@@ -336,7 +336,8 @@ async fn ask_in_band(
         }
         () = &mut withdrawn => "The action no longer needs an answer.",
         // The prompt's own countdown ends at the deadline; what the action
-        // became is the Run's record, not the prompt's judgement.
+        // became is its owner's record (the Run's for an approval, the
+        // Account's for a connection), not the prompt's judgement.
         () = tokio::time::sleep(remaining) => "The action's deadline passed.",
     };
     // Best effort: an unreachable client keeps a stale prompt that decides nothing.

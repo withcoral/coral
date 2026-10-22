@@ -99,8 +99,9 @@ pub(crate) enum Effect {
     /// self-interrupt bound. The Program is terminated with its dispatches,
     /// and the Interrupted chunk is written as soon as the database answers.
     Interrupt { last_commit_age_nanos: i64 },
-    /// The owner is done.
-    Retire,
+    /// The owner is done; `ended` when its own write ended the Run, so
+    /// nothing is left for recovery.
+    Retire { ended: bool },
 }
 
 /// The limits one owner decides against.
@@ -832,10 +833,11 @@ impl OwnerState {
 
     /// The Run deadline passed: the timeout is applied like a cancellation
     /// (the intent rides the next chunk's head update, with no Event, and
-    /// the Program is terminated at once), dated at the deadline. Nothing
-    /// more once a termination is applied (a cancel applied first decides
-    /// the kind), or past the point where the terminal write decides on its
-    /// own.
+    /// the Program is terminated at once), dated when the owner applies it
+    /// and never before the deadline, so the shutdown grace runs from then.
+    /// Nothing more once a termination is applied (a cancel applied first
+    /// decides the kind), or past the point where the terminal write decides
+    /// on its own.
     fn deadline(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
         if self.termination.is_some()
             || !matches!(self.phase, Phase::Starting | Phase::Running | Phase::Ending)
@@ -875,11 +877,14 @@ impl OwnerState {
             self.limits.shutdown_grace_nanos,
         ) {
             Ok(intent) => intent,
+            // An intent the row cannot hold: a requester learns it; the
+            // owner's own timeout still stops the Program, and the terminal
+            // write records the timeout it finds passed.
             Err(error) => {
-                return reply
-                    .map(|reply| Effect::Answer(reply, Err(error)))
-                    .into_iter()
-                    .collect();
+                return match reply {
+                    Some(reply) => vec![Effect::Answer(reply, Err(error))],
+                    None => self.stop(),
+                };
             }
         };
         self.termination = Some(intent.clone());
@@ -1051,7 +1056,7 @@ impl OwnerState {
         };
         let mut effects = self.abandon_pending(|| Error::ProgramHostTerminated, answer);
         effects.extend(self.answer_parked(answer));
-        effects.push(Effect::Retire);
+        effects.push(Effect::Retire { ended });
         effects
     }
 

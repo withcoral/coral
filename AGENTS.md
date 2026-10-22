@@ -69,7 +69,9 @@
   memory. A timer is armed as an effect and fires as a message into the
   owner's mailbox, so the clock never decides state outside the owner (ADR
   0018): a Run's timeout and an Approval Request's expiry are decided in the
-  owner's pure `apply` when a timer fires, the owner's own writes read the
+  owner's pure `apply`, in mailbox order (when the timer fires, or first
+  when a decision or a cancel applied before it finds the deadline passed),
+  the owner's own writes read the
   clock only for their own sample (the start mark and the terminal write
   date a timeout they find passed; the Dispatch Fence judges an approved
   request's deadline at dispatch, contract line 3, and records no expiry),
