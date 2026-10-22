@@ -1,0 +1,36 @@
+---
+title: Using the Slack provider
+sidebarTitle: Slack
+---
+
+The Slack provider uses Slack's MCP server. You need to provision a correctly-configured Slack app in your Slack workspace in order to use it.
+
+<Steps titleSize="h3">
+  <Step title="Add the Slack provider">
+    In your Coral workspace, click **Providers**, then **Add Provider**, and choose **Slack**. On the Setup screen, scroll down to the **OAuth Application** section.
+</Step>
+  <Step title="Connect your Slack app">
+    <Tabs>
+      <Tab title="I already have a Slack app configured">
+      Find your Slack app's client ID and client secret. You can find them in the **Basic Information** section of your [Slack app's settings](https://api.slack.com/apps).
+      </Tab>
+
+      <Tab title="I need to create a Slack app">
+        1. Click the link to **Create a Slack app** in Coral. This will open a new tab at https://api.slack.com/apps?new_app=1, with all the details needed to set up the app pre-configured.
+        1. Review the app's JSON config. This is the config [recommended by Slack](https://docs.slack.dev/ai/slack-mcp-server/#authentication).
+        1. Choose the Slack Workspace you want to add the app to, then continue through Slack's flow to either add the app to your workspace or request approval from an admin, depending on your permissions.
+        1. Make a note of your new Slack app's client ID and client secret, shown in the **Basic Information** section of your Slack app's settings page.
+
+        <Note>You can't complete adding the Slack provider to Coral until your Slack app has been added to your Slack workspace. If you have to wait for an admin to approve that, just come back here once it's done and repeat the instructions, this time following the "I already have a Slack app configured" branch.</Note>
+     </Tab>
+    </Tabs>
+
+  </Step>
+  <Step title="Complete the setup">
+    Enter your Slack app's client ID and client secret into Coral's provider setup screen, then click Next to continue adding the provider.
+  </Step>
+</Steps>
+
+## Configuring your Slack app manually
+
+If you don't want to use Coral's **Create a Slack app** link, you can create the app yourself, by following [Slack's instructions](https://docs.slack.dev/ai/slack-mcp-server/#authentication).

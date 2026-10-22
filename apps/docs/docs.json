@@ -75,7 +75,13 @@
         "group": "Guides",
         "pages": [
           "guides/concepts",
-          "guides/query-databases"
+          "guides/query-databases",
+          {
+            "group": "Providers",
+            "pages": [
+              "guides/providers/slack"
+            ]
+          }
         ]
       },
       {
