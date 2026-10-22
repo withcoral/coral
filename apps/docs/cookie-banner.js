@@ -1,11 +1,11 @@
 // Cookie consent banner for the docs.
 //
 // Cloudflare Zaraz loads analytics on withcoral.com, including these docs, and
-// holds back non-essential tools until a visitor consents. The marketing site
-// renders the same banner; both write Zaraz's `cf_consent` cookie, so a choice
-// made on one applies to the other. Without Zaraz (local `mint dev`, the
-// mintlify.dev preview), the consent API never becomes ready and no banner
-// appears.
+// holds back each tool that has a consent purpose until a visitor consents. The
+// marketing site renders the same banner; both write Zaraz's `cf_consent`
+// cookie, so a choice made on one applies to the other. Without Zaraz (local
+// `mint dev`, the mintlify.dev preview), the consent API never becomes ready
+// and no banner appears.
 (function () {
   const CONSENT_COOKIE_NAME = "cf_consent";
   const BANNER_ID = "coral-cookie-banner";
@@ -22,10 +22,16 @@
       padding: 0 12px 12px;
       pointer-events: none;
       transform: translateY(100%);
-      transition: transform 500ms ease-out;
+      visibility: hidden;
+      /* Hide the buttons from focus and screen readers after the slide-out. */
+      transition:
+        transform 500ms ease-out,
+        visibility 0s linear 500ms;
     }
     #${BANNER_ID}[data-visible="true"] {
       transform: translateY(0);
+      visibility: visible;
+      transition: transform 500ms ease-out;
     }
     #${BANNER_ID} .coral-cookie-card {
       display: flex;
@@ -118,7 +124,7 @@
 
     const banner = document.createElement("div");
     banner.id = BANNER_ID;
-    banner.setAttribute("role", "dialog");
+    banner.setAttribute("role", "region");
     banner.setAttribute("aria-label", "Cookie consent");
     banner.innerHTML = `
       <div class="coral-cookie-card">
