@@ -55,8 +55,8 @@ pub(crate) use chunk::ChunkWork;
 #[cfg(test)]
 pub(crate) use chunk::{CHUNK_WORK_CAP, ChunkBuildView, FENCE_BATCH_CAP};
 pub(crate) use handle::{
-    Check, DecisionAnswer, DecisionRequest, Message, OwnerHandle, Owners, ParkedWait, RecoveryEnd,
-    RequestKey, StartedExecution, Timer,
+    Check, DecisionAnswer, DecisionRequest, Message, OwnerHandle, Owners, ParkedWait, RequestKey,
+    StartedExecution, Timer,
 };
 #[cfg(test)]
 pub(crate) use handle::{CommitRejection, Reply};

@@ -14,24 +14,16 @@ use crate::{Error, RunModule, ShutdownDrain};
 
 /// Whether the process still accepts new owners, and how many it admitted
 /// that have not registered yet; shared by every clone of one Run module.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct Admission(Arc<AdmissionState>);
 
+#[derive(Default)]
 struct AdmissionState {
     closed: AtomicBool,
     /// Admissions between their check and their owner's registration (or
     /// their failure): a Run being accepted and launched, or a recovered
     /// owner being registered.
     in_flight: watch::Sender<usize>,
-}
-
-impl Default for Admission {
-    fn default() -> Self {
-        Self(Arc::new(AdmissionState {
-            closed: AtomicBool::new(false),
-            in_flight: watch::Sender::new(0),
-        }))
-    }
 }
 
 impl Admission {

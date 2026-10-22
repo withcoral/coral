@@ -247,7 +247,7 @@ pub(crate) enum Message {
     Interrupted(Result<(), CommitRejection>),
     /// A recovered owner has applied every timer that passed: end the Run in
     /// one chunk. The sweep queues it last.
-    Recover(RecoveryEnd),
+    Recover,
     /// The process interrupts the Run: its Shutdown Drain is out, or another
     /// owner registered for the Run.
     Stop,
@@ -325,7 +325,7 @@ impl fmt::Debug for Message {
             Self::Interrupted(result) => {
                 formatter.debug_tuple("Interrupted").field(result).finish()
             }
-            Self::Recover(end) => formatter.debug_tuple("Recover").field(end).finish(),
+            Self::Recover => formatter.write_str("Recover"),
             Self::Stop => formatter.write_str("Stop"),
             Self::Drained => formatter.write_str("Drained"),
         }
@@ -400,16 +400,6 @@ struct Shared {
     stop: Arc<ExecutionStop>,
     stopped: AtomicBool,
     stopped_notification: Notify,
-}
-
-/// How a recovered owner ends its Run, after the timers that passed: the
-/// sweep queues it last.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RecoveryEnd {
-    /// The Run row records a termination: finish it as recorded.
-    FinishRecorded,
-    /// Interrupt the Run, unless a passed Run deadline timed it out first.
-    Interrupt,
 }
 
 /// A handle on one live Run Owner: the Program host and the Invocation tasks
@@ -594,20 +584,11 @@ impl OwnerHandle {
 }
 
 /// The live Run Owners of this process, by Run.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct Owners {
     owners: Arc<Mutex<HashMap<RunId, OwnerHandle>>>,
     /// How many owners are live, for the Shutdown Drain to wait on.
     live: Arc<watch::Sender<usize>>,
-}
-
-impl Default for Owners {
-    fn default() -> Self {
-        Self {
-            owners: Arc::default(),
-            live: Arc::new(watch::Sender::new(0)),
-        }
-    }
 }
 
 impl Owners {

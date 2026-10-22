@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use crate::approval::ApprovalId;
 use crate::lifecycle::{RequestedTermination, RunRecord, RunTerminationKind};
-use crate::owner::{self, Message, OwnerHandle, OwnerStart, RecoveryEnd, Timer};
+use crate::owner::{self, Message, OwnerHandle, OwnerStart, Timer};
 use crate::termination::end_in_one_chunk;
 use crate::types::AcceptedRun;
 use crate::{Error, RunId, RunModule, approval, run_repository};
@@ -88,8 +88,8 @@ impl RunModule {
     }
 
     /// Recreates the owner of `run`, with a new claim, its mailbox queued
-    /// with `timers` and then the end: finish the termination the row
-    /// records, else interrupt. `false` when an owner for the Run became live
+    /// with `timers` and then the end; its chunk finishes a termination the
+    /// row records, else interrupts the Run. `false` when an owner for the Run became live
     /// here meanwhile, or the process began shutting down. The owner is
     /// registered, so the next sweep leaves the Run to it and the Shutdown
     /// Drain waits for it.
@@ -103,11 +103,7 @@ impl RunModule {
         for timer in timers {
             handle.send(Message::Timer(timer));
         }
-        handle.send(Message::Recover(if run.termination.is_some() {
-            RecoveryEnd::FinishRecorded
-        } else {
-            RecoveryEnd::Interrupt
-        }));
+        handle.send(Message::Recover);
         let Some(registration) = self.owners.register_recovered(handle.clone()) else {
             return false;
         };

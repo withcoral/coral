@@ -58,8 +58,8 @@ use crate::{CoralFailure, Error};
 
 use super::chunk::{ChunkBuild, ChunkItem, ChunkWork, PendingRequest};
 use super::handle::{
-    Check, CommitRejection, DecisionAnswer, DecisionRequest, Message, ParkedWait, RecoveryEnd,
-    Reply, RequestKey, RequestReply, StartedExecution, Timer,
+    Check, CommitRejection, DecisionAnswer, DecisionRequest, Message, ParkedWait, Reply,
+    RequestKey, RequestReply, StartedExecution, Timer,
 };
 
 /// What the hosting task does for the owner.
@@ -1528,8 +1528,9 @@ impl OwnerState {
     /// A recovered owner applies one message (ADR 0018, Recovery). The sweep
     /// queued every timer that passed, in deadline order, then
     /// [`Message::Recover`]: an Approval Request whose timer fired expires,
-    /// a passed Run deadline times the Run out, and the end finishes the
-    /// termination the row records or interrupts the Run, in one chunk. A
+    /// a passed Run deadline times the Run out, and the end interrupts the
+    /// Run, in one chunk; a termination the row records when the chunk is
+    /// written stands instead, since it was applied first. A
     /// timer applied after a termination changes nothing, as in a live
     /// owner: the termination closes the request. A stop (the Shutdown
     /// Drain is out) retires the owner, its chunk unwritten or in flight. No
@@ -1547,10 +1548,10 @@ impl OwnerState {
                 self.termination = self.intent(RunTerminationKind::TimedOut, at);
                 Vec::new()
             }
-            Message::Recover(end) if !writing => {
+            Message::Recover if !writing => {
                 // A deadline that passed since the sweep read the Run times
                 // it out, as its timer would have first.
-                if end == RecoveryEnd::Interrupt && self.termination.is_none() {
+                if self.termination.is_none() {
                     let kind = if now_unix_nanos >= self.limits.deadline_at_unix_nanos {
                         RunTerminationKind::TimedOut
                     } else {
@@ -1655,7 +1656,7 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
             Vec::new()
         }
         // Only a recovered owner ends its Run on a queued end.
-        Message::Interrupted(_) | Message::Recover(_) => Vec::new(),
+        Message::Interrupted(_) | Message::Recover => Vec::new(),
         Message::Started(Ok(Some(started))) => state.started(started, now_unix_nanos),
         // The terminal write refused a Run with a nonterminal Invocation (or
         // failed). Work that arrived meanwhile may be that Invocation's end,

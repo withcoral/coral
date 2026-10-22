@@ -2816,30 +2816,23 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
 /// A recovered owner applies the mailbox the sweep queued, in order, and
 /// ends its Run in one chunk: a passed Approval Request timer expires the
 /// request, a passed Run deadline times the Run out, and the end carries
-/// the expiries and the intent (none for a termination the row records, the
-/// interruption otherwise, or the timeout once the deadline passed since the
-/// sweep read the Run). A timer applied after a termination changes
+/// the expiries and the intent (the interruption, or the timeout once the
+/// deadline passed since the sweep read the Run). A timer applied after a termination changes
 /// nothing, as the termination closes the request.
 #[test]
 fn a_recovered_owner_applies_its_queued_timers_then_ends_its_run_in_one_chunk() {
     use crate::lifecycle::RunTerminationKind::{Interrupted, TimedOut};
-    use crate::owner::RecoveryEnd::{FinishRecorded, Interrupt};
     let (first, second) = (approval_id(), approval_id());
     let (before, past) = (APPROVAL_DEADLINE + 1, LIMITS.deadline_at_unix_nanos + 10);
     // (when the owner applies its mailbox, the queue, the expiries and the
     // intent its one chunk carries)
     let cases = [
-        (
-            before,
-            vec![Message::Recover(Interrupt)],
-            vec![],
-            Some(Interrupted),
-        ),
+        (before, vec![Message::Recover], vec![], Some(Interrupted)),
         (
             before,
             vec![
                 Message::Timer(Timer::Approval(first.clone())),
-                Message::Recover(Interrupt),
+                Message::Recover,
             ],
             vec![first.clone()],
             Some(Interrupted),
@@ -2850,20 +2843,14 @@ fn a_recovered_owner_applies_its_queued_timers_then_ends_its_run_in_one_chunk() 
                 Message::Timer(Timer::Approval(first.clone())),
                 Message::Timer(Timer::RunDeadline),
                 Message::Timer(Timer::Approval(second.clone())),
-                Message::Recover(Interrupt),
+                Message::Recover,
             ],
             vec![first.clone()],
             Some(TimedOut),
         ),
         // The deadline passed after the sweep read the Run: no timer was
         // queued for it, and the end times the Run out all the same.
-        (
-            past,
-            vec![Message::Recover(Interrupt)],
-            vec![],
-            Some(TimedOut),
-        ),
-        (past, vec![Message::Recover(FinishRecorded)], vec![], None),
+        (past, vec![Message::Recover], vec![], Some(TimedOut)),
     ];
     for (index, (now, queue, expected_expired, expected_kind)) in cases.into_iter().enumerate() {
         let mut state = OwnerState::recovered(LIMITS, 1);
@@ -2902,15 +2889,11 @@ fn a_recovered_owner_writes_once_and_retires_on_the_writes_answer() {
         Err(CommitRejection::ClaimMismatch),
     ] {
         let mut state = OwnerState::recovered(LIMITS, 1);
-        let effects = apply_without_tick(
-            &mut state,
-            Message::Recover(crate::owner::RecoveryEnd::Interrupt),
-            3,
-        );
+        let effects = apply_without_tick(&mut state, Message::Recover, 3);
         assert!(matches!(effects.as_slice(), [Effect::Recover { .. }]));
         for ignored in [
             Message::Timer(Timer::RunDeadline),
-            Message::Recover(crate::owner::RecoveryEnd::Interrupt),
+            Message::Recover,
             Message::Drained,
         ] {
             assert!(
@@ -2928,11 +2911,7 @@ fn a_recovered_owner_writes_once_and_retires_on_the_writes_answer() {
     for writing in [false, true] {
         let mut state = OwnerState::recovered(LIMITS, 1);
         if writing {
-            apply_without_tick(
-                &mut state,
-                Message::Recover(crate::owner::RecoveryEnd::Interrupt),
-                3,
-            );
+            apply_without_tick(&mut state, Message::Recover, 3);
         }
         let effects = apply_without_tick(&mut state, Message::Stop, 4);
         assert!(
