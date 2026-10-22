@@ -411,12 +411,15 @@ test('Current Run and operation actions settle live while exact review stays sel
           parent: provider,
           policies: [{ operation, accessState: OperationAccessState.DISABLED }],
         })
-        await page
-          .getByText('Coral failure: operation_disabled', { exact: true })
-          .waitFor({ timeout: 10_000 })
+        // The action leaves the queue as soon as the policy commits. The parked
+        // call ends when its Run Owner's periodic precheck (every 15 s) finds the
+        // Operation disabled.
         await expect
           .poll(() => page.getByText('needs action', { exact: true }).count(), { timeout: 10_000 })
           .toBe(0)
+        await page
+          .getByText('Coral failure: operation_disabled', { exact: true })
+          .waitFor({ timeout: 25_000 })
         expect(new URL(page.url()).searchParams.get('record')).toBe(selected)
         expect(await page.getByRole('dialog').count()).toBe(1)
         expect(await shownArguments(page.getByRole('dialog'))).toEqual(logical)
