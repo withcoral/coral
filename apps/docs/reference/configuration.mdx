@@ -63,11 +63,10 @@ All provider calls not covered by an explicit policy in this section are treated
 
 ### `[runtime]`
 
-| Key                      | Description                                                                                                   | Required | Default |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------- | -------- | ------- |
-| `execution_heap_bytes`   | Maximum heap bytes allowed for a single V8 isolate                                                            | No       | 128MiB  |
-| `compiler_heap_bytes`    | Maximum heap bytes allowed for a single Typescript compilation job                                            | No       | 512MiB  |
-| `shutdown_drain_seconds` | Seconds a stopping server lets its running runs finish before it interrupts them; `0` interrupts them at once | No       | 30      |
+| Key                    | Description                                                        | Required | Default |
+| ---------------------- | ------------------------------------------------------------------ | -------- | ------- |
+| `execution_heap_bytes` | Maximum heap bytes allowed for a single V8 isolate                 | No       | 128MiB  |
+| `compiler_heap_bytes`  | Maximum heap bytes allowed for a single Typescript compilation job | No       | 512MiB  |
 
 ### `[search]`
 

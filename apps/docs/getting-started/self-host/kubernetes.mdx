@@ -236,8 +236,6 @@ spec:
       labels:
         app: coral
     spec:
-      # Longer than the Shutdown Drain (30 s by default) plus the 6 s commit grace.
-      terminationGracePeriodSeconds: 45
       securityContext:
         runAsNonRoot: true
         fsGroup: 65532
@@ -344,8 +342,6 @@ spec:
       labels:
         app: coral
     spec:
-      # Longer than the Shutdown Drain (30 s by default) plus the 6 s commit grace.
-      terminationGracePeriodSeconds: 45
       securityContext:
         runAsNonRoot: true
       containers:

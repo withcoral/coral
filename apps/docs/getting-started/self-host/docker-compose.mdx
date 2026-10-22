@@ -35,8 +35,6 @@ We will use `<coral-host>` as the placeholder for the domain of your Coral deplo
 services:
   coral:
     image: ghcr.io/withcoral/coral:latest
-    # Longer than the Shutdown Drain (30 s by default) plus the 6 s commit grace.
-    stop_grace_period: 45s
     volumes:
       - coral-state:/var/lib/coral
     environment:
@@ -94,8 +92,6 @@ volumes:
 services:
   coral:
     image: ghcr.io/withcoral/coral:latest
-    # Longer than the Shutdown Drain (30 s by default) plus the 6 s commit grace.
-    stop_grace_period: 45s
     environment:
       CORAL_DATABASE_URL: ${CORAL_DATABASE_URL}
       CORAL_CREDENTIALS_KEY: ${CORAL_CREDENTIALS_KEY}
