@@ -10,6 +10,7 @@ import type { ActivityObservation } from './activity-live-types'
 import { finalValue } from '@/views/activity/navigation'
 import { activityObservation, activityView, useActivityReader } from './activity-observation'
 import { loadActivityPage } from './activity-page-fetch'
+import { liveTarget } from '@/views/activity/navigation'
 
 const page: ActivityPage = {
   rows: [],
@@ -759,6 +760,51 @@ it('away from the newest records, watches the running records and lets a snapsho
     // The ended Run leaves the window, so the stream reconnects without it.
     await vi.advanceTimersByTimeAsync(120)
     expect(requests.at(-1)!.window.roots).toEqual([])
+  } finally {
+    unmount()
+    await vi.advanceTimersByTimeAsync(0)
+  }
+})
+
+// Catches: page live mode resting on an old record while a new Task or Search arrives
+// that a snapshot of only the records you watch never adds to the list.
+it('away from the newest records, sends page live mode to a newer record the snapshot names', async () => {
+  vi.useFakeTimers()
+  const streams: ReadableStreamDefaultController<Uint8Array>[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((_url, init) =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(c) {
+              streams.push(c)
+              c.enqueue(snapshot(initial))
+              init.signal.addEventListener('abort', () => c.close(), { once: true })
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      ),
+    ),
+  )
+  // Page live mode shows the end of r1, which ended. Nothing runs.
+  const initial = { ...page, rows: [listed(1), listed(2)], selected: listed(1).name }
+  const store = createStore()
+  const state = activityObservation(initial, '/activity', '?live=latest')
+  const unmount = store.sub(state, () => {})
+  try {
+    await vi.waitFor(() => expect(streams).toHaveLength(1))
+    store.set(state, { kind: 'root', atStart: false })
+    await vi.advanceTimersByTimeAsync(120)
+    await vi.waitFor(() => expect(streams).toHaveLength(2))
+    const newer = 'workspaces/w/tasks/new'
+    await act(async () =>
+      streams[1].enqueue(snapshot({ ...page, rows: [listed(1)], liveLatest: { newest: newer } })),
+    )
+    const view = activityView(store.get(state))
+    expect(view.rows.map((row) => row.name)).not.toContain(newer)
+    expect(liveTarget(view, 'latest')).toEqual({ kind: 'newest' })
   } finally {
     unmount()
     await vi.advanceTimersByTimeAsync(0)

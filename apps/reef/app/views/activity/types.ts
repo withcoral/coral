@@ -309,10 +309,10 @@ export interface ActivityPage {
    */
   liveAction?: LiveAction
   /**
-   * By Task, what page live mode needs past the Task's loaded window. Read only while
-   * it follows a Task with no Run that runs open.
+   * What page live mode needs that the list and its loaded windows do not show. Read
+   * only while it follows the newest activity with no Run that runs open.
    */
-  liveTasks?: Record<string, LiveTask>
+  liveLatest?: LiveLatest
   selectedRow: ActivityRow | null
   listPath: string
 }
@@ -327,17 +327,32 @@ export interface LiveAction {
   request: string
 }
 
-/** What page live mode knows of a Task that its list and loaded window do not show. */
-export interface LiveTask {
+export type RunRow = Extract<ActivityRow, { kind: 'run' }>
+
+/** What page live mode knows past the list and its loaded windows. */
+export interface LiveLatest {
   /**
-   * The oldest action you can take in any Run of the Task, timed by when the operation
-   * that waits on it started, not by when the request was made.
+   * The oldest action you can take in any Run page live mode may follow, timed by when
+   * the operation that waits on it started, not by when the request was made. `task`
+   * is the Run's Task, empty for a standalone Run.
    */
-  action?: LiveAction
-  /** Its newest Run that runs, before its loaded window, while the window holds none. */
-  running?: string
-  /** The Task, when the list does not hold it. */
-  task?: TaskRow
+  action?: { task: string; action: LiveAction }
+  /**
+   * By top-level record, as Coral's records say: a Task's newest Run that runs by
+   * submission, for each Task whose row says one runs, and every standalone Run that
+   * runs, under its own name.
+   */
+  running?: Record<string, RunRow>
+  /**
+   * The newest top-level record, when the snapshot does not start with it, such as one
+   * that holds only the records you watch.
+   */
+  newest?: string
+  /**
+   * The loader read every top-level record, so `running` names every standalone Run
+   * that runs. A row of the list it did not refresh can lag its Run's end.
+   */
+  complete?: boolean
 }
 
 /**
