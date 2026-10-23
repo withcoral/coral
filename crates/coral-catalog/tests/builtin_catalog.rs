@@ -339,7 +339,7 @@ fn sha256_hex(value: &str) -> String {
 }
 
 #[tokio::test]
-async fn a_builtin_row_whose_binding_disagrees_with_its_index_is_corrupt_for_every_read() {
+async fn a_builtin_binding_disagreeing_with_its_index_fails_full_and_search_reads() {
     for (case, corruption) in [
         (
             "Operation Key",
