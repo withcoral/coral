@@ -15,7 +15,7 @@ import {
   type ActivityStop,
   type StopPosition,
 } from './navigation'
-import type { ActivityPage, ActivityRow, RunEvent } from './types'
+import type { ActivityPage, ActivityRow, RunDetail, RunEvent } from './types'
 
 const task = 'workspaces/w/tasks/t'
 const run = 'workspaces/w/runs/r'
@@ -631,13 +631,16 @@ describe('live mode', () => {
   })
 })
 
+/** A time on the fixtures' day, at `minute` past 14:00 UTC. */
+const minuteAt = (minute: number) => new Date(Date.UTC(2026, 8, 18, 14, minute)).toISOString()
 describe('live scopes', () => {
   const alone = runRow('alone', '', { state: 'running' })
   const work = taskRow('work')
   const first = runRow('first', work.name)
   const second = runRow('second', work.name, { state: 'running', endedAt: null })
   const third = runRow('third', work.name, { state: 'running', endedAt: null })
-  const lookup = toolRow('work', 'lookup')
+  const lookup = toolRow(work.name, 'lookup')
+  const described = toolRow(work.name, 'described', { tool: 'describe' })
   /** The fixtures' clock: each record started just now. */
   const now = Date.parse(work.startedAt)
   const hour = 60 * 60 * 1000
@@ -654,13 +657,428 @@ describe('live scopes', () => {
       branches: { [work.name]: { ...childPage(rows, total), offset } },
       ...more,
     })
+  // Page live mode recomputes its target from each snapshot. Only an open Run that runs
+  // holds it. Without one: the oldest action you can take, else the newest Run that
+  // runs, else the newest record, which it only shows.
+  const done = runRow('done', '')
+  const closed = { ...taskRow('closed'), outcome: 'succeeded', endedAt: done.endedAt }
+  const over = { ...third, state: 'succeeded' as const, endedAt: done.endedAt }
+  const fresh = taskRow('fresh')
+  const other = taskRow('other')
+  const elsewhere = runRow('elsewhere', other.name, { state: 'running', endedAt: null })
+  const running = { ...first, state: 'running' as const, endedAt: null }
+  const finished = { ...second, state: 'succeeded' as const, endedAt: first.endedAt }
+  const waiting = invocationRow(first.name, 'waiting', { task: work.name, requiresAction: true })
+  const call = invocationRow(first.name, 'call', { task: work.name })
+  const followsAlone: ReturnType<typeof liveTarget> = {
+    kind: 'run',
+    run: alone.name,
+    chain: [alone.name],
+  }
+  const followsThird: ReturnType<typeof liveTarget> = {
+    kind: 'run',
+    run: third.name,
+    chain: [work.name, third.name],
+  }
+  /** `work` listed after `newer`, expanded with `rows`, and `selectedRow` open. */
+  const opened = (
+    selectedRow: ActivityRow | null,
+    rows: ActivityRow[] = [running, second],
+    newer: ActivityRow[] = [alone],
+  ) =>
+    activityPage({
+      rows: [...newer, work],
+      expanded: [work.name],
+      branches: {
+        [work.name]: childPage(
+          rows.map((row, position) => ({ ...row, position })),
+          rows.length,
+        ),
+      },
+      selected: selectedRow?.name ?? null,
+      selectedRow,
+    })
+  const context = (state: 'running' | 'succeeded' | 'failed'): RunDetail => ({
+    kind: 'run',
+    run: { ...running, state, endedAt: state === 'running' ? null : first.endedAt },
+    source: '',
+    linkedFunctions: [],
+    terminal: { kind: 'unavailable' },
+  })
+  const invocationDetail = (state: 'running' | 'succeeded' | 'failed'): ActivityPage['detail'] => ({
+    kind: 'invocation',
+    invocation: call,
+    arguments: '{}',
+    result: { kind: 'unknown' },
+    requests: [],
+    request: null,
+    requestUnavailable: false,
+    context: context(state),
+  })
+  // You have open the standalone Run `own`, whose row in the list can lag its end.
+  const own = runRow('own', '', { state: 'running', endedAt: null })
+  const ownOpen = (rows: ActivityRow[], state: 'running' | 'succeeded' | 'failed') =>
+    activityPage({
+      rows,
+      selected: own.name,
+      selectedRow: own,
+      detail: { ...context(state), run: state === 'running' ? own : runRow('own', '', { state }) },
+    })
+  const followsOwn: ReturnType<typeof liveTarget> = {
+    kind: 'run',
+    run: own.name,
+    chain: [own.name],
+  }
+
+  // 1. An open Run that runs holds live mode, whatever arrives.
+  it.each<[string, ActivityPage, ReturnType<typeof liveTarget>]>([
+    [
+      'a newer Run never takes over the Run you have open',
+      opened(second),
+      { kind: 'run', run: second.name, chain: [work.name, second.name] },
+    ],
+    [
+      'a newer Task never takes over a record you have open in a Run',
+      opened(waiting, [running, second], [fresh, alone]),
+      { kind: 'run', run: first.name, chain: [work.name, first.name] },
+    ],
+    [
+      'a newer Search never takes over a record you have open in a Run',
+      opened(waiting, [running, lookup]),
+      { kind: 'run', run: first.name, chain: [work.name, first.name] },
+    ],
+    [
+      'an action elsewhere never takes over the Run you have open',
+      {
+        ...opened(second),
+        liveLatest: {
+          action: {
+            task: other.name,
+            action: { run: elsewhere.name, record: elsewhere.name, request: 'r' },
+          },
+        },
+      },
+      { kind: 'run', run: second.name, chain: [work.name, second.name] },
+    ],
+    [
+      'a record holds its Run while nothing says whether the Run ended',
+      { ...opened(call, [second]), detail: null },
+      { kind: 'run', run: first.name, chain: [work.name, first.name] },
+    ],
+    [
+      'the standalone Run you have open holds while its detail says it runs',
+      ownOpen([alone, own], 'running'),
+      followsOwn,
+    ],
+    [
+      'a Run that runs holds although the list does not hold its Task',
+      { ...opened(call, [running]), rows: [fresh, alone], detail: invocationDetail('running') },
+      { kind: 'run', run: first.name, chain: [work.name, first.name] },
+    ],
+  ])('latest holds: %s', (_, current, expected) => {
+    for (const scope of ['latest', 'task'] as const)
+      expect(liveTarget(current, scope, now), scope).toEqual(expected)
+  })
+
+  // 2. Without one, the oldest action you can take in any Run it may follow goes first,
+  // as the loader names it.
+  const named = { run: first.name, record: waiting.name, request: 'workspaces/w/approvals/a' }
+  const asks = { ...running, requiresAction: true }
+  const asked = (selectedRow: ActivityRow | null, rows: ActivityRow[] = [asks, third, lookup]) => ({
+    ...opened(selectedRow, rows),
+    liveLatest: { action: { task: work.name, action: named } },
+  })
+  const followsAsks: ReturnType<typeof liveTarget> = {
+    kind: 'run',
+    run: first.name,
+    chain: [work.name, first.name],
+    action: named,
+  }
+  const lone = { run: alone.name, record: alone.name, request: 'workspaces/w/connections/c' }
+  it.each<[string, ActivityPage, boolean, ReturnType<typeof liveTarget>]>([
+    ['goes first with nothing open, over a newer Run that runs', asked(null), true, followsAsks],
+    ['goes first from a Search', asked(lookup), true, followsAsks],
+    ['goes first from a Task', asked(work), true, followsAsks],
+    [
+      'goes first once the Run you followed ends',
+      asked(finished, [asks, finished]),
+      true,
+      followsAsks,
+    ],
+    [
+      'goes first when the window does not hold its Run',
+      asked(lookup, [third, lookup]),
+      true,
+      followsAsks,
+    ],
+    [
+      'goes first in a standalone Run',
+      {
+        ...opened(lookup, [lookup], [done, alone]),
+        liveLatest: { action: { task: '', action: lone } },
+      },
+      true,
+      { ...followsAlone, action: lone },
+    ],
+    ['never takes over a Run you have open that runs', asked(third), true, followsThird],
+    [
+      'gives way to the newest Run that runs where you cannot act',
+      asked(lookup, [third, lookup]),
+      false,
+      followsAlone,
+    ],
+    [
+      'never names a Run that a record says ended',
+      asked(lookup, [first, lookup]),
+      true,
+      followsAlone,
+    ],
+  ])('latest action: %s', (_, current, actionable, expected) => {
+    expect(liveTarget(current, 'latest', now, actionable)).toEqual(expected)
+  })
+  it('steps to the action the target names in its Run', () => {
+    const current = { ...asked(lookup), expanded: [work.name, first.name] }
+    expect(liveStep(current, first.name, true, named)).toEqual({
+      kind: 'select',
+      record: named.record,
+      request: named.request,
+    })
+    expect(liveStep(current, first.name, false, named)).toEqual({ kind: 'wait' })
+  })
+
+  // 3. Then the newest Run that runs, by Coral's order of the list and of each Task.
+  // A Task holds nothing: one with no Run that runs gives way to an older one that does.
   it.each<[string, ActivityPage, ReturnType<typeof liveTarget>]>([
     [
       'follows the newest standalone Run',
       activityPage({ rows: [alone, taskRow('older')] }),
-      { kind: 'run', run: alone.name, chain: [alone.name] },
+      followsAlone,
     ],
+    [
+      "follows the newest Task's latest Run by submission",
+      withTask([first, lookup, second, third].map((row, position) => ({ ...row, position }))),
+      followsThird,
+    ],
+    [
+      "follows an open Task's latest Run that runs, past a newer one that ended",
+      withTask([first, second, over].map((row, position) => ({ ...row, position }))),
+      { kind: 'run', run: second.name, chain: [work.name, second.name] },
+    ],
+    [
+      'passes a newer Task with no Run that runs for an older Run that runs',
+      withTask([first, lookup].map((row, position) => ({ ...row, position }))),
+      followsAlone,
+    ],
+    [
+      'never expands a Task to look for a Run that runs',
+      activityPage({ rows: [work, alone] }),
+      followsAlone,
+    ],
+    [
+      'passes a newer ended Run for an older one that runs',
+      activityPage({ rows: [done, alone] }),
+      followsAlone,
+    ],
+    [
+      'passes a newer ended Task for an older Run that runs',
+      activityPage({ rows: [closed, alone] }),
+      followsAlone,
+    ],
+    [
+      'follows a Run that runs before the loaded window, as the loader names it',
+      {
+        ...opened(lookup, [finished, lookup], [done]),
+        liveLatest: { running: { [work.name]: running } },
+      },
+      { kind: 'run', run: first.name, chain: [work.name, first.name] },
+    ],
+    [
+      'follows a Run that runs in a Task it has not expanded, as the loader names it',
+      activityPage({
+        rows: [done, other],
+        liveLatest: { running: { [other.name]: elsewhere } },
+      }),
+      { kind: 'run', run: elsewhere.name, chain: [other.name, elsewhere.name] },
+    ],
+    [
+      'follows a standalone Run past the loaded list, as the loader names it',
+      activityPage({ rows: [done], liveLatest: { running: { [alone.name]: alone } } }),
+      followsAlone,
+    ],
+    [
+      'follows a Run of a Task past the loaded list, as the loader names it',
+      activityPage({ rows: [done], liveLatest: { running: { [other.name]: elsewhere } } }),
+      { kind: 'run', run: elsewhere.name, chain: [other.name, elsewhere.name] },
+    ],
+    // When the loader read every record, its Runs that run are the only ones: a row of
+    // the list it did not refresh can lag the Run's end.
+    [
+      'passes a listed standalone Run that the loader read as ended',
+      activityPage({ rows: [done, alone], liveLatest: { running: {}, complete: true } }),
+      { kind: 'run', run: done.name, chain: [done.name] },
+    ],
+    [
+      'follows a listed standalone Run while the loader did not read every record',
+      activityPage({ rows: [done, alone], liveLatest: { running: {} } }),
+      followsAlone,
+    ],
+    [
+      'follows a listed standalone Run that the loader read as running',
+      activityPage({
+        rows: [done, alone],
+        liveLatest: { running: { [alone.name]: alone }, complete: true },
+      }),
+      followsAlone,
+    ],
+    [
+      'never follows a Run the loader names that a record says ended',
+      {
+        ...opened(lookup, [{ ...first, position: undefined }, finished, lookup], []),
+        liveLatest: { running: { [work.name]: running } },
+      },
+      { kind: 'select', record: lookup.name, chain: [work.name] },
+    ],
+    [
+      'leaves the Task of the Run you followed once it ends, though the Task has not ended',
+      opened(finished, [first, finished]),
+      followsAlone,
+    ],
+    [
+      'finds a Run that runs in an older Task once the Run you followed ends',
+      {
+        ...opened(finished, [first, finished], []),
+        rows: [work, other],
+        liveLatest: { running: { [other.name]: elsewhere } },
+      },
+      { kind: 'run', run: elsewhere.name, chain: [other.name, elsewhere.name] },
+    ],
+    [
+      'a record of a Run gives way once only its detail says the Run ended',
+      { ...opened(call, [second], []), detail: invocationDetail('succeeded') },
+      { kind: 'run', run: second.name, chain: [work.name, second.name] },
+    ],
+    [
+      "a record of a failed Run gives way although its Task's row still says it runs",
+      { ...opened(call, [second, running], []), detail: invocationDetail('failed') },
+      { kind: 'run', run: second.name, chain: [work.name, second.name] },
+    ],
+    [
+      'a Run takes over once the detail says the standalone Run failed, though its row says it runs',
+      ownOpen([own, alone], 'failed'),
+      followsAlone,
+    ],
+    [
+      'a Run that runs takes over a record whose Task the list does not hold',
+      { ...opened(call, [running]), rows: [alone], detail: invocationDetail('succeeded') },
+      followsAlone,
+    ],
+  ])('latest running: %s', (_, current, expected) => {
+    expect(liveTarget(current, 'latest', now)).toEqual(expected)
+  })
+  // Across the list, the Run submitted last wins, whatever its Task's place in the list.
+  // `fresh` is newer than `other`, but `other` submitted its Run later.
+  const early = runRow('early', fresh.name, {
+    state: 'running',
+    endedAt: null,
+    startedAt: minuteAt(21),
+  })
+  const late = runRow('late', other.name, {
+    state: 'running',
+    endedAt: null,
+    startedAt: minuteAt(30),
+  })
+  const loose = runRow('loose', '', { state: 'running', endedAt: null, startedAt: minuteAt(25) })
+  const across = (rows: ActivityRow[], more: Partial<ActivityPage> = {}) =>
+    activityPage({
+      rows,
+      expanded: [fresh.name, other.name],
+      branches: {
+        [fresh.name]: childPage([{ ...early, position: 0 }], 1),
+        [other.name]: childPage([{ ...late, position: 0 }], 1),
+      },
+      ...more,
+    })
+  const otherEnded = { ...other, outcome: 'succeeded', endedAt: done.endedAt }
+  const followsEarly: ReturnType<typeof liveTarget> = {
+    kind: 'run',
+    run: early.name,
+    chain: [fresh.name, early.name],
+  }
+  const followsLate: ReturnType<typeof liveTarget> = {
+    kind: 'run',
+    run: late.name,
+    chain: [other.name, late.name],
+  }
+  it.each<[string, ActivityPage, ReturnType<typeof liveTarget>]>([
+    [
+      "an older Task's Run submitted later",
+      across([fresh, other]),
+      { kind: 'run', run: late.name, chain: [other.name, late.name] },
+    ],
+    [
+      'a Run the loader names, submitted later',
+      across([fresh, other], {
+        expanded: [fresh.name],
+        branches: { [fresh.name]: childPage([{ ...early, position: 0 }], 1) },
+        liveLatest: { running: { [other.name]: late } },
+      }),
+      { kind: 'run', run: late.name, chain: [other.name, late.name] },
+    ],
+    // Reef cannot tell whether a Run in an unknown state has ended, so it counts as
+    // one that runs, never as a record live mode only shows.
+    [
+      'a Run in an unknown state, submitted later',
+      across([
+        loose,
+        runRow('unsure', '', { state: 'unknown', endedAt: null, startedAt: minuteAt(40) }),
+      ]),
+      { kind: 'run', run: runRow('unsure', '').name, chain: [runRow('unsure', '').name] },
+    ],
+    [
+      "a standalone Run submitted later than a newer Task's Run",
+      across([fresh, loose]),
+      { kind: 'run', run: loose.name, chain: [loose.name] },
+    ],
+    // `other` has ended, and its loaded window still says `late` runs. When the loader
+    // read every record, its read wins over a window it did not refresh. A Task's end
+    // never ends its Runs, so it says whether `late` still runs.
+    [
+      'passes a Run that its Task window says runs, once the loader read it as ended',
+      across([fresh, otherEnded], {
+        liveLatest: { running: { [fresh.name]: early }, complete: true },
+      }),
+      followsEarly,
+    ],
+    [
+      'follows a Run that runs in an ended Task, as the loader read it',
+      across([fresh, otherEnded], {
+        liveLatest: { running: { [fresh.name]: early, [other.name]: late }, complete: true },
+      }),
+      followsLate,
+    ],
+    [
+      'follows a Run that its Task window says runs, while the loader did not read every record',
+      across([fresh, otherEnded], { liveLatest: { running: { [fresh.name]: early } } }),
+      followsLate,
+    ],
+  ])('latest running follows the Run submitted last: %s', (_, current, expected) => {
+    expect(liveTarget(current, 'latest', now)).toEqual(expected)
+  })
+
+  // 4. Else it shows the newest record, by Coral's order: a Search or Describe, a Run
+  // that ended, or a Task with no record. It holds none of them, so new work replaces it.
+  it.each<[string, ActivityPage, ReturnType<typeof liveTarget>]>([
     ['waits while the list has no records', activityPage(), { kind: 'wait' }],
+    [
+      'reads the newest records first when the loader names a newer one than the list holds',
+      { ...opened(lookup, [first, lookup], []), liveLatest: { newest: fresh.name } },
+      { kind: 'newest' },
+    ],
+    [
+      'shows the newest record when the list holds the newest one the loader names',
+      { ...opened(lookup, [first, lookup], []), liveLatest: { newest: work.name } },
+      { kind: 'select', record: lookup.name, chain: [work.name] },
+    ],
     [
       'reads the newest records first when the list holds older ones',
       activityPage({ rows: [alone], hasBefore: true }),
@@ -668,27 +1086,58 @@ describe('live scopes', () => {
     ],
     [
       'expands the newest Task',
-      activityPage({ rows: [work, alone] }),
+      activityPage({ rows: [work, done] }),
       { kind: 'expand', chain: [work.name] },
     ],
     [
-      "follows the newest Task's latest Run by submission",
-      withTask([first, lookup, second, third].map((row, position) => ({ ...row, position }))),
-      { kind: 'run', run: third.name, chain: [work.name, third.name] },
+      "reads the end of the newest Task's children",
+      activityPage({
+        rows: [work, done],
+        expanded: [work.name],
+        branches: { [work.name]: childPage([{ ...first, position: 0 }], 4) },
+      }),
+      { kind: 'load', parent: work.name, offset: 4, chain: [work.name] },
     ],
     [
-      'shows a Task that has no Run yet',
-      withTask([{ ...lookup, position: 0 }]),
+      'shows the newest Search or Describe of the newest Task',
+      {
+        ...withTask([first, lookup, described].map((row, position) => ({ ...row, position }))),
+        rows: [work, done],
+      },
+      { kind: 'select', record: described.name, chain: [work.name] },
+    ],
+    [
+      'shows a Task that has no record yet',
+      { ...withTask([]), rows: [work, done] },
       { kind: 'select', record: work.name, chain: [work.name] },
     ],
-    // The window holds positions 0–1 of 4: the latest Run may be past it.
     [
-      "reads the end of the Task's children",
-      withTask(
-        [first, second].map((row, position) => ({ ...row, position })),
-        4,
-      ),
-      { kind: 'load', parent: work.name, offset: 4, chain: [work.name] },
+      'shows the newest record of a Run that ended, the newest of its Task',
+      {
+        ...withTask([lookup, first].map((row, position) => ({ ...row, position }))),
+        rows: [work, done],
+      },
+      { kind: 'run', run: first.name, chain: [work.name, first.name] },
+    ],
+    [
+      'shows the newest standalone Run that ended',
+      activityPage({ rows: [done, closed] }),
+      { kind: 'run', run: done.name, chain: [done.name] },
+    ],
+    [
+      'shows the newest Task that ended',
+      activityPage({ rows: [closed, done] }),
+      { kind: 'expand', chain: [closed.name] },
+    ],
+    [
+      'stays on the record it shows',
+      opened(lookup, [first, lookup], []),
+      { kind: 'select', record: lookup.name, chain: [work.name] },
+    ],
+    [
+      'rests on the ended standalone Run you followed while nothing else runs',
+      ownOpen([own], 'succeeded'),
+      followsOwn,
     ],
     [
       'waits on an unavailable Task history',
@@ -699,108 +1148,48 @@ describe('live scopes', () => {
       }),
       { kind: 'wait' },
     ],
-  ])('latest: %s', (_, current, expected) => {
+  ])('latest shows: %s', (_, current, expected) => {
     expect(liveTarget(current, 'latest', now)).toEqual(expected)
   })
 
-  // Page live mode never opens a Task or Run that has ended.
-  const done = runRow('done', '')
-  const closed = { ...taskRow('closed'), outcome: 'succeeded', endedAt: done.endedAt }
-  const over = { ...third, state: 'succeeded' as const, endedAt: done.endedAt }
-  it.each<[string, ActivityPage, ReturnType<typeof liveTarget>]>([
-    [
-      'waits while every record has ended',
-      activityPage({ rows: [done, closed] }),
-      { kind: 'wait' },
-    ],
-    [
-      'passes a newer ended Run for an older one that runs',
-      activityPage({ rows: [done, alone] }),
-      { kind: 'run', run: alone.name, chain: [alone.name] },
-    ],
-    [
-      'passes a newer ended Task for an older Run that runs',
-      activityPage({ rows: [closed, alone] }),
-      { kind: 'run', run: alone.name, chain: [alone.name] },
-    ],
-    [
-      'expands an ended Task while one of its Runs still runs',
-      activityPage({ rows: [{ ...closed, contextImpactPartial: true }, alone] }),
-      { kind: 'expand', chain: [closed.name] },
-    ],
-    // Passing it would collapse it, then expand it again on the next step.
-    [
-      'waits on an ended Task whose Run that runs is not loaded',
-      activityPage({
-        rows: [{ ...closed, contextImpactPartial: true }, alone],
-        expanded: [closed.name],
-        branches: { [closed.name]: childPage([{ ...first, position: 0 }], 1) },
-      }),
-      { kind: 'wait' },
-    ],
-    [
-      'shows an open Task whose Runs have all ended, not its last Run',
-      withTask([first, lookup, over].map((row, position) => ({ ...row, position }))),
-      { kind: 'select', record: work.name, chain: [work.name] },
-    ],
-    [
-      "follows an open Task's latest Run that runs, past a newer one that ended",
-      withTask([first, second, over].map((row, position) => ({ ...row, position }))),
-      { kind: 'run', run: second.name, chain: [work.name, second.name] },
-    ],
-    [
-      'follows a new Run that runs, after only ended records',
-      activityPage({ rows: [alone, done, closed] }),
-      { kind: 'run', run: alone.name, chain: [alone.name] },
-    ],
-    // Once the Run you follow ends, live mode rests on it until newer work runs.
-    [
-      'rests on the standalone Run you follow once it ends',
-      activityPage({ rows: [done], selected: done.name, selectedRow: done }),
-      { kind: 'run', run: done.name, chain: [done.name] },
-    ],
-    [
-      "rests on the Task's Run you follow once it ends",
-      withTask(
-        [first, over].map((row, position) => ({ ...row, position })),
-        2,
-        0,
-        { selected: over.name, selectedRow: over },
-      ),
-      { kind: 'run', run: over.name, chain: [work.name, over.name] },
-    ],
-  ])('latest: %s', (_, current, expected) => {
-    expect(liveTarget(current, 'latest', now)).toEqual(expected)
+  // The record it shows holds nothing: a new Task replaces it, without a click.
+  it.each<[string, ActivityRow]>([
+    ['a Search of an older Task that has not ended', lookup],
+    ['a Run that ended in an older Task that has not ended', finished],
+    ['an older Task that has not ended', work],
+  ])('latest shows a new Task in place of %s', (_, shown) => {
+    const before = opened(shown, [first, finished, lookup], [])
+    expect(liveTarget(before, 'latest', now)).toEqual({
+      kind: 'select',
+      record: lookup.name,
+      chain: [work.name],
+    })
+    const after = { ...before, rows: [fresh, work] }
+    expect(liveTarget(after, 'latest', now)).toEqual({ kind: 'expand', chain: [fresh.name] })
+  })
+  it('latest shows the standalone Run you followed until a Run that runs arrives, though its row says it runs', () => {
+    expect(liveTarget(ownOpen([own], 'succeeded'), 'latest', now)).toEqual(followsOwn)
+    expect(liveTarget(ownOpen([own, alone], 'succeeded'), 'latest', now)).toEqual(followsAlone)
   })
 
-  // With nothing open, page live mode passes a Task that started more than
-  // TAKS_MAX_AGE, one hour, ago. `work` runs `third`; `alone` is an older standalone Run.
+  // Page live mode passes a Task that started more than TAKS_MAX_AGE, one hour, ago.
+  // `work` runs `third`; `alone` is an older standalone Run.
   const runningTask = withTask([first, third].map((row, position) => ({ ...row, position })))
-  const followsThird: ReturnType<typeof liveTarget> = {
-    kind: 'run',
-    run: third.name,
-    chain: [work.name, third.name],
-  }
-  const followsAlone: ReturnType<typeof liveTarget> = {
-    kind: 'run',
-    run: alone.name,
-    chain: [alone.name],
-  }
   it.each<[string, ActivityPage, number, ReturnType<typeof liveTarget>]>([
     ['follows a Task that started under an hour ago', runningTask, hour - 1, followsThird],
     ['follows a Task that started exactly an hour ago', runningTask, hour, followsThird],
     ['passes a Task that started over an hour ago', runningTask, hour + 1, followsAlone],
     [
-      'waits when only a Task over an hour old has a Run that runs',
+      'shows an older record when only a Task over an hour old has a Run that runs',
       { ...runningTask, rows: [work, done] },
       hour + 1,
-      { kind: 'wait' },
+      { kind: 'run', run: done.name, chain: [done.name] },
     ],
     [
       'never expands a Task over an hour old',
-      activityPage({ rows: [work, alone] }),
+      activityPage({ rows: [work, done] }),
       hour + 1,
-      followsAlone,
+      { kind: 'run', run: done.name, chain: [done.name] },
     ],
     [
       'follows a standalone Run that started over an hour ago',
@@ -809,65 +1198,20 @@ describe('live scopes', () => {
       followsAlone,
     ],
     [
-      'stays on the Task you have open, over an hour old',
+      'the Task you have open over an hour old holds nothing',
       { ...runningTask, selected: work.name, selectedRow: work },
       hour * 24,
-      followsThird,
+      followsAlone,
     ],
   ])('latest age: %s', (_, current, age, expected) => {
     expect(liveTarget(current, 'latest', now + age)).toEqual(expected)
   })
-
-  // Live mode never moves off the Task or Run you have open. `alone` is the newest
-  // record and runs; you have open a record of the older Task `work`.
-  const waiting = invocationRow(first.name, 'waiting', { task: work.name, requiresAction: true })
-  const opened = (selectedRow: ActivityRow, rows: ActivityRow[] = [first, second]) =>
-    activityPage({
-      rows: [alone, work],
-      expanded: [work.name],
-      branches: {
-        [work.name]: childPage(
-          rows.map((row, position) => ({ ...row, position })),
-          rows.length,
-        ),
-      },
-      selected: selectedRow.name,
-      selectedRow,
+  it('task: the Run you have open keeps it once it ends', () => {
+    expect(liveTarget(opened(finished, [first, finished, third]), 'task', now)).toEqual({
+      kind: 'run',
+      run: finished.name,
+      chain: [work.name, finished.name],
     })
-  const finished = { ...second, state: 'succeeded' as const, endedAt: first.endedAt }
-  it.each<[string, ActivityPage, ReturnType<typeof liveTarget>]>([
-    [
-      'a newer Run never takes over the Run you have open',
-      opened(second),
-      { kind: 'run', run: second.name, chain: [work.name, second.name] },
-    ],
-    [
-      'a newer Run never takes over a record you have open in a Run',
-      opened(waiting),
-      { kind: 'run', run: first.name, chain: [work.name, first.name] },
-    ],
-    [
-      'the Run you have open keeps it once it ends',
-      opened(finished, [first, finished, third]),
-      { kind: 'run', run: finished.name, chain: [work.name, finished.name] },
-    ],
-  ])('pins: %s', (_, current, expected) => {
-    for (const scope of ['latest', 'task'] as const)
-      expect(liveTarget(current, scope, now), scope).toEqual(expected)
-  })
-  it.each<[string, ActivityPage, ReturnType<typeof liveTarget>]>([
-    [
-      'a newer Task never takes over the Task you have open',
-      opened(work, [first]),
-      { kind: 'wait' },
-    ],
-    [
-      'the Task you have open opens its latest Run that runs',
-      opened(work, [first, second, third]),
-      { kind: 'run', run: third.name, chain: [work.name, third.name] },
-    ],
-  ])('latest pins: %s', (_, current, expected) => {
-    expect(liveTarget(current, 'latest', now)).toEqual(expected)
   })
 
   /** You follow `work` from `selectedRow`, with `rows` of its children loaded. */

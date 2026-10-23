@@ -308,6 +308,11 @@ export interface ActivityPage {
    * follows that Run or a request review is open. Absent when it has none.
    */
   liveAction?: LiveAction
+  /**
+   * What page live mode needs that the list and its loaded windows do not show. Read
+   * only while it follows the newest activity with no Run that runs open.
+   */
+  liveLatest?: LiveLatest
   selectedRow: ActivityRow | null
   listPath: string
 }
@@ -320,6 +325,36 @@ export interface LiveAction {
   run: string
   record: string
   request: string
+}
+
+export type RunRow = Extract<ActivityRow, { kind: 'run' }>
+
+/** What page live mode knows past the list and its loaded windows. */
+export interface LiveLatest {
+  /**
+   * The oldest action you can take in any Run page live mode may follow, timed by when
+   * the operation that waits on it started, not by when the request was made. `task`
+   * is the Run's Task, empty for a standalone Run.
+   */
+  action?: { task: string; action: LiveAction }
+  /**
+   * By top-level record, as Coral's records say: every standalone Run that runs, under
+   * its own name, and a Task's newest Run that runs by submission. It names a Task only
+   * when the Task started `TAKS_MAX_AGE` ago or less and its row says a Run of it runs,
+   * so a Run of an older Task never shows here, even while it runs.
+   */
+  running?: Record<string, RunRow>
+  /**
+   * The newest top-level record, when the snapshot does not start with it, such as one
+   * that holds only the records you watch.
+   */
+  newest?: string
+  /**
+   * The loader read every top-level record and every Task it looked in, so `running`
+   * names every Run that runs that page live mode may follow. A row or a Task window
+   * of the list it did not refresh can lag its Run's end, so `running` wins over them.
+   */
+  complete?: boolean
 }
 
 /**
