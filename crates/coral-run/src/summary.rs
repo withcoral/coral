@@ -37,9 +37,10 @@ pub struct CallOutcomes {
     pub answered: i64,
     /// A Workspace, operator or authority rule stopped the call.
     pub blocked: i64,
-    /// A person declined the approval or the Account connection, or let it expire.
+    /// A person declined the approval or the Account connection, or let the approval expire.
     pub not_allowed: i64,
-    /// A Provider, Account or credential needs repair before the call can run.
+    /// A Provider, Account or credential needs repair before the call can run. An
+    /// unanswered Account connection leaves the Account unconnected, so it counts here.
     pub needs_setup: i64,
     /// The Program's call or the upstream failed, or the result is unknown.
     pub failed: i64,
@@ -118,17 +119,13 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
         ) => CallOutcome::Blocked,
         (
             InvocationResultKind::CoralFailure,
-            Some(
-                F::ApprovalDeclined
-                | F::ApprovalExpired
-                | F::AccountConnectionDeclined
-                | F::AccountConnectionExpired,
-            ),
+            Some(F::ApprovalDeclined | F::ApprovalExpired | F::AccountConnectionDeclined),
         ) => CallOutcome::NotAllowed,
         (
             InvocationResultKind::CoralFailure,
             Some(
                 F::AccountRequired
+                | F::AccountConnectionExpired
                 | F::CredentialRefreshFailed
                 | F::OAuthClientConfiguration
                 | F::AccountAuthorizationChanged
@@ -295,7 +292,7 @@ mod tests {
             (failure(F::ApprovalDeclined), O::NotAllowed),
             (failure(F::ApprovalExpired), O::NotAllowed),
             (failure(F::AccountConnectionDeclined), O::NotAllowed),
-            (failure(F::AccountConnectionExpired), O::NotAllowed),
+            (failure(F::AccountConnectionExpired), O::NeedsSetup),
             (failure(F::AccountRequired), O::NeedsSetup),
             (failure(F::CredentialRefreshFailed), O::NeedsSetup),
             (failure(F::OAuthClientConfiguration), O::NeedsSetup),

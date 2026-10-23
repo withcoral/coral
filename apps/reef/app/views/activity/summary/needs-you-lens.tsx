@@ -1,13 +1,12 @@
 import { Typography } from '@/wax/components'
-import { Stat } from '@/wax/components/stat'
 import * as Table from '@/wax/components/table'
 import type { ActivitySummaryData } from '@/lib/activity-summary'
-import { duration, number, outcomes } from './format'
+import { duration, number } from './format'
 import { fixFor, operationRows, type SummaryLinks } from './operations'
-import { ActionLink, Note, OperationName, Reason, Section } from './parts'
+import { Note, OperationName, Reason, Section, StatCards } from './parts'
 import * as styles from './summary.css'
 
-/** What needs you: the stops you fix, then what people decided. */
+/** What needs you: the stops you fix, what people decided, and the calls they did not allow. */
 export function NeedsYouLens({
   summary,
   links,
@@ -16,6 +15,8 @@ export function NeedsYouLens({
   links?: SummaryLinks
 }) {
   const { approvals } = summary
+  // One cursor runs through both tables, so ↑ and ↓ read them as one list.
+  const cursor = Table.useRowCursor()
   const rows = operationRows(summary, links)
   const toFix = rows
     .flatMap((row) =>
@@ -28,12 +29,8 @@ export function NeedsYouLens({
     .filter((row) => row.stops.notAllowed > 0)
     .toSorted((a, b) => b.stops.notAllowed - a.stops.notAllowed)
   return (
-    <div className={styles.lens}>
-      <Section
-        title="To fix"
-        count={toFix.reduce((total, item) => total + item.count, 0)}
-        note="A rule stopped these calls, or the provider or account needs setup."
-      >
+    <div ref={cursor} className={styles.lens}>
+      <Section title="To fix" count={toFix.reduce((total, item) => total + item.count, 0)}>
         {toFix.length === 0 ? (
           <Note>Nothing to fix.</Note>
         ) : (
@@ -45,7 +42,6 @@ export function NeedsYouLens({
               { label: 'Operation', width: { fill: 3 } },
               { label: 'Reason', width: { fill: 1.6 } },
               { label: 'Calls', width: 72, align: 'right' },
-              { ariaLabel: 'Fix', width: 120, align: 'right' },
             ]}
           >
             <Table.Head />
@@ -53,9 +49,9 @@ export function NeedsYouLens({
               {toFix.map(({ row, reason, count }) => {
                 const fix = fixFor(reason, links?.operation(row.callPath))
                 return (
-                  <Table.Row key={`${row.callPath}/${reason}`} to={fix?.to}>
+                  <Table.Row key={`${row.callPath}/${reason}`} to={fix}>
                     <Table.Cell title={row.callPath}>
-                      <OperationName row={row} />
+                      <OperationName row={row} to={fix} />
                     </Table.Cell>
                     <Table.Cell>
                       <Reason reason={reason} />
@@ -65,9 +61,6 @@ export function NeedsYouLens({
                         {number(count)}
                       </Typography.BodySmall>
                     </Table.Cell>
-                    <Table.Cell>
-                      {fix && <ActionLink to={fix.to}>{fix.label}</ActionLink>}
-                    </Table.Cell>
                   </Table.Row>
                 )
               })}
@@ -75,40 +68,23 @@ export function NeedsYouLens({
           </Table.Container>
         )}
       </Section>
-      <Section
-        title="Decided by people"
-        count={approvals.approved + approvals.declined}
-        note="Approval decisions in this period. A declined or expired request stops its call as not allowed."
-      >
-        <div className={styles.stats}>
-          <Stat
-            size="small"
-            icon="CircleCheck"
-            label="Approved"
-            value={number(approvals.approved)}
-          />
-          <Stat
-            size="small"
-            icon="UserRoundX"
-            label="Declined"
-            value={number(approvals.declined)}
-          />
-          <Stat
-            size="small"
-            icon="Clock"
-            label="Median wait"
-            value={
-              approvals.medianWaitSeconds === null ? '—' : duration(approvals.medianWaitSeconds)
-            }
-          />
-          <Stat
-            size="small"
-            icon={outcomes.notAllowed.icon}
-            label="Calls not allowed"
-            value={number(summary.calls.notAllowed)}
-          />
-        </div>
-        {notAllowed.length > 0 && (
+      <Section title="Approval decisions" count={approvals.approved + approvals.declined}>
+        <StatCards
+          stats={[
+            { icon: 'CircleCheck', label: 'Approved', value: number(approvals.approved) },
+            { icon: 'UserRoundX', label: 'Declined', value: number(approvals.declined) },
+            {
+              icon: 'Clock',
+              label: 'Median wait',
+              value:
+                approvals.medianWaitSeconds === null ? '—' : duration(approvals.medianWaitSeconds),
+            },
+          ]}
+        />
+      </Section>
+      {/* Calls, not decisions: an expired approval or a declined connection also lands here. */}
+      {notAllowed.length > 0 && (
+        <Section title="Calls not allowed" count={summary.calls.notAllowed}>
           <Table.Container
             ariaLabel="Calls not allowed"
             variant="card"
@@ -116,7 +92,6 @@ export function NeedsYouLens({
             columns={[
               { label: 'Operation', width: { fill: 3 } },
               { label: 'Not allowed', width: { fill: 1.6 } },
-              { ariaLabel: 'Open', width: 120, align: 'right' },
             ]}
           >
             <Table.Head />
@@ -126,21 +101,20 @@ export function NeedsYouLens({
                 return (
                   <Table.Row key={row.callPath} to={to}>
                     <Table.Cell title={row.callPath}>
-                      <OperationName row={row} />
+                      <OperationName row={row} to={to} />
                     </Table.Cell>
                     <Table.Cell>
                       <Typography.BodySmall as="span" className={styles.count}>
                         {number(row.stops.notAllowed)}
                       </Typography.BodySmall>
                     </Table.Cell>
-                    <Table.Cell>{to && <ActionLink to={to}>Open operation</ActionLink>}</Table.Cell>
                   </Table.Row>
                 )
               })}
             </Table.Body>
           </Table.Container>
-        )}
-      </Section>
+        </Section>
+      )}
     </div>
   )
 }

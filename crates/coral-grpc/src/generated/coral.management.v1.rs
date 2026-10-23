@@ -6025,10 +6025,11 @@ pub struct ActivityCallOutcomes {
     /// or a rejected destination.
     #[prost(int64, tag = "2")]
     pub blocked: i64,
-    /// A person declined the approval or the Account connection, or let it expire.
+    /// A person declined the approval or the Account connection, or let the approval expire.
     #[prost(int64, tag = "3")]
     pub not_allowed: i64,
-    /// A Provider, Account or credential needs repair.
+    /// A Provider, Account or credential needs repair, or an Account connection expired
+    /// unanswered.
     #[prost(int64, tag = "4")]
     pub needs_setup: i64,
     /// The Program's call or the upstream failed, or the result is unknown.

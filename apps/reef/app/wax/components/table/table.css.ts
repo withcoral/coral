@@ -674,19 +674,3 @@ globalStyle(`${scrollTable} ${selectionCell} > label`, {
   paddingBlock: rowPaddingBlock,
   paddingInline: `${scrollRowPaddingInline}px ${scrollRowGap}px`,
 })
-
-// A sortable heading reads as its label; the chevron marks the column the rows follow.
-export const sortButton = style({
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 2,
-  maxWidth: '100%',
-  padding: 0,
-  border: 0,
-  background: 'transparent',
-  color: 'inherit',
-  font: 'inherit',
-  cursor: 'pointer',
-  ':focus-visible': { outline: `1px solid ${theme.button.primary.focus}`, outlineOffset: 2 },
-})
-export const sortIconIdle = style({ opacity: 0.35 })

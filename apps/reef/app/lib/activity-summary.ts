@@ -4,9 +4,9 @@ export interface CallOutcomes {
   answered: number
   /** A rule stopped the call: a disabled operation, a required approval, access, or a destination. */
   blocked: number
-  /** A person declined the approval or the account connection, or let it expire. */
+  /** A person declined the approval or the account connection, or let the approval expire. */
   notAllowed: number
-  /** A provider, account or credential needs repair. */
+  /** A provider, account or credential needs repair, or an account connection expired unanswered. */
   needsSetup: number
   /** The program's call or the upstream failed, or the result is unknown. */
   failed: number

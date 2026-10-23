@@ -68,7 +68,6 @@ const empty: ActivitySummaryData = {
 }
 
 const links: SummaryLinks = {
-  activity: '/workspaces/w/activity',
   provider: (callPath) => {
     const id = callPath.split('.')[2]
     return { name: id[0].toUpperCase() + id.slice(1), path: `/workspaces/w/providers/${id}` }
@@ -78,7 +77,6 @@ const links: SummaryLinks = {
     const path = `/workspaces/w/providers/${id}`
     return {
       operation: `${path}/ops/${rest.join('.')}`,
-      rules: `${path}/policy`,
       settings: `${path}/settings`,
     }
   },
@@ -105,53 +103,50 @@ type Story = StoryObj<typeof meta>
 const tab = (canvas: ReturnType<typeof within>, name: RegExp) => canvas.getByRole('tab', { name })
 
 export const Busy: Story = {
-  // Catches: a metric that loses its split, or approvals hidden behind a lens.
+  // Catches: a metric that loses its split, counts calls a person declined as yours to fix, or
+  // miscounts who moved the context.
   play: async ({ canvas }) => {
     await expect(tab(canvas, /^Calls/)).toHaveTextContent('99.2% answered')
-    const needs = tab(canvas, /^Needs you/)
-    await expect(needs).toHaveTextContent('7 blocked · 2 need setup · 3 not allowed')
-    await expect(needs).toHaveTextContent('38 approved · 3 declined · 2 min median wait')
-    await expect(canvas.getByRole('list', { name: 'Calls by outcome' })).toHaveTextContent(
-      'Failed14 · 0.4%',
-    )
+    await expect(tab(canvas, /^Context/)).toHaveTextContent('Saved · You and 3 agents')
+    await expect(tab(canvas, /^Needs you/)).toHaveTextContent('9 to fix7 blocked · 2 need setup')
+    await expect(canvas.getByRole('group', { name: 'Failed' })).toHaveTextContent('140.4%')
   },
 }
 
 export const NeedsYou: Story = {
   parameters: { search: '?lens=needs' },
-  // Catches: a stop without the page that fixes it, or a person's no listed as a fix.
+  // Catches: a stop without the page that fixes it, a person's no listed as a fix, calls
+  // counted among the approval decisions, or ↓ that stops at the end of the first table.
   play: async ({ canvas }) => {
     await expect(tab(canvas, /^Needs you/)).toHaveAttribute('aria-selected', 'true')
     const toFix = within(canvas.getByRole('region', { name: 'To fix' }))
-    await expect(toFix.getAllByRole('link', { name: 'Review rules' })).toHaveLength(2)
-    await expect(toFix.getByRole('link', { name: 'Fix setup' })).toHaveAttribute(
+    await expect(toFix.getAllByRole('link')).toHaveLength(3)
+    await expect(toFix.getByRole('link', { name: 'salesforce.getAccount' })).toHaveAttribute(
       'href',
       '/workspaces/w/providers/salesforce/settings',
     )
     await expect(toFix.queryByText('sendMessage')).toBeNull()
-    const people = within(canvas.getByRole('region', { name: 'Decided by people' }))
-    await expect(people.getByRole('group', { name: 'Declined' })).toHaveTextContent('3')
-  },
-}
-
-export const GroupedByProvider: Story = {
-  // Catches: a provider group whose total leaves out an operation's calls or stops.
-  play: async ({ canvas }) => {
-    await userEvent.click(canvas.getByRole('radio', { name: 'Providers' }))
-    const operations = within(canvas.getByRole('table', { name: 'Operations' }))
-    const github = operations
-      .getAllByRole('row')
-      .find((row) => within(row).queryByRole('button', { name: 'Collapse Github' }))!
-    await expect(github).toHaveTextContent('1,832')
-    await expect(github).toHaveTextContent('4 blocked')
+    const decisions = within(canvas.getByRole('region', { name: 'Approval decisions' }))
+    await expect(decisions.getByRole('group', { name: 'Declined' })).toHaveTextContent('3')
+    await expect(decisions.queryByText('Calls not allowed')).toBeNull()
+    const notAllowed = within(canvas.getByRole('region', { name: 'Calls not allowed' }))
+    toFix.getAllByRole('link').at(-1)!.focus()
+    await userEvent.keyboard('{ArrowDown}')
+    await expect(notAllowed.getAllByRole('link')[0]).toHaveFocus()
   },
 }
 
 export const Filtered: Story = {
-  // Catches: a filter that ignores the provider name, or forgets how many it hid.
+  // Catches: a filter that ignores the provider name, or forgets how many it hid, or rows
+  // that ↓ cannot reach from the filter or that do not open the busiest operation first.
   play: async ({ canvas }) => {
     await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter operations' }), 'slack')
     await expect(await canvas.findByText('2 of 11')).toBeVisible()
+    await userEvent.keyboard('{ArrowDown}')
+    await expect(document.activeElement).toHaveAttribute(
+      'href',
+      '/workspaces/w/providers/slack/ops/listChannelMessages',
+    )
   },
 }
 
@@ -202,8 +197,7 @@ export const AllClear: Story = {
   // Catches: a quiet period that still reads as if something needs you.
   play: async ({ canvas }) => {
     const needs = tab(canvas, /^Needs you/)
-    await expect(needs).toHaveTextContent('Nothing')
-    await expect(needs).toHaveTextContent('No approval decisions')
+    await expect(needs).toHaveTextContent('NothingNo calls to fix')
   },
 }
 
@@ -231,9 +225,7 @@ export const Owner: Story = {
   args: { owner: true },
   // Catches: an owner reading their agents' calls as their own.
   play: async ({ canvas }) => {
-    await expect(
-      canvas.getByRole('heading', { name: 'Activity by you and your agents' }),
-    ).toBeVisible()
+    await expect(canvas.getByRole('heading', { name: 'Workspace activity' })).toBeVisible()
   },
 }
 
@@ -258,7 +250,7 @@ export const OneOfEach: Story = {
   },
   // Catches: a count of one read with the plural verb, as in "1 need setup".
   play: async ({ canvas }) => {
-    await expect(tab(canvas, /^Needs you/)).toHaveTextContent('1 needs setup · 1 not allowed')
+    await expect(tab(canvas, /^Needs you/)).toHaveTextContent('1 to fix1 needs setup')
   },
 }
 

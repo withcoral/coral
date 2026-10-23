@@ -3,9 +3,20 @@ import { Icon } from '@/wax/components/icon'
 import * as Table from '@/wax/components/table'
 import type { ContextEntry } from '@/lib/activity-summary'
 import { ContextImpact } from '../context-impact'
-import { share } from './format'
+import { number, share } from './format'
 import { BarCell, Note } from './parts'
 import * as styles from './summary.css'
+
+// The API names no caller kind yet; only your own row reads "You".
+const isYou = (entry: ContextEntry) => entry.label === 'You'
+
+/** Who moved the context: you, your agents, or both. */
+export function callers(entries: readonly ContextEntry[]) {
+  const count = entries.filter((entry) => !isYou(entry)).length
+  const agents = count > 0 && `${number(count)} ${count === 1 ? 'agent' : 'agents'}`
+  if (!entries.some(isYou)) return agents
+  return agents ? `You and ${agents}` : 'You'
+}
 
 /** Each caller's net context, with its share of all the context moved. */
 export function ContextLens({ entries }: { entries: readonly ContextEntry[] }) {
@@ -31,12 +42,7 @@ export function ContextLens({ entries }: { entries: readonly ContextEntry[] }) {
           <Table.Row key={entry.key}>
             <Table.Cell title={entry.label}>
               <span className={styles.labeled}>
-                {/* The API names no caller kind yet; only your own row reads "You". */}
-                <Icon
-                  name={entry.label === 'You' ? 'UserRound' : 'Bot'}
-                  size="14"
-                  color="tertiary"
-                />
+                <Icon name={isYou(entry) ? 'UserRound' : 'Bot'} size="14" color="tertiary" />
                 <Typography.BodySmall as="span" className={styles.truncate}>
                   {entry.label}
                 </Typography.BodySmall>

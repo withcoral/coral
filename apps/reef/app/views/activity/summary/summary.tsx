@@ -1,18 +1,13 @@
 import { useNavigate, useSearchParams } from 'react-router'
 import { Card, Tabs, Typography } from '@/wax/components'
 import { SegmentedControl } from '@/wax/components/segmented-control'
-import {
-  SUMMARY_DAYS,
-  type ActivitySummaryData,
-  type CallOutcomes,
-  type SummaryDays,
-} from '@/lib/activity-summary'
+import { SUMMARY_DAYS, type ActivitySummaryData, type SummaryDays } from '@/lib/activity-summary'
 import { describeContextImpact } from '../context-impact'
 import { CallsLens } from './calls-lens'
-import { ContextLens } from './context-lens'
-import { duration, joined, number, share } from './format'
+import { ContextLens, callers } from './context-lens'
+import { joined, number, share } from './format'
 import { NeedsYouLens } from './needs-you-lens'
-import { STOP_REASONS, type SummaryLinks } from './operations'
+import type { SummaryLinks } from './operations'
 import { Note } from './parts'
 import * as styles from './summary.css'
 
@@ -41,15 +36,12 @@ function useLens() {
   return [lens, setLens] as const
 }
 
-const stoppedTotal = (calls: CallOutcomes) =>
-  STOP_REASONS.reduce((total, reason) => total + calls[reason], 0)
-
 /** The three numbers that head the summary, one per lens. */
 function metrics(summary: ActivitySummaryData) {
-  const { calls, approvals } = summary
+  const { calls } = summary
   const total = Object.values(calls).reduce((sum, value) => sum + value, 0)
-  const stopped = stoppedTotal(calls)
-  const decided = approvals.approved + approvals.declined
+  // A call a person declined was decided, so only the stops you fix count.
+  const toFix = calls.blocked + calls.needsSetup
   const impact =
     summary.contextImpactBytes === undefined
       ? undefined
@@ -66,22 +58,13 @@ function metrics(summary: ActivitySummaryData) {
       value: 'needs',
       icon: 'Hand',
       label: 'Needs you',
-      metric: stopped ? `${number(stopped)} stopped` : 'Nothing',
+      metric: toFix ? `${number(toFix)} to fix` : 'Nothing',
       details: [
         joined([
           calls.blocked > 0 && `${number(calls.blocked)} blocked`,
           calls.needsSetup > 0 &&
             `${number(calls.needsSetup)} ${calls.needsSetup === 1 ? 'needs' : 'need'} setup`,
-          calls.notAllowed > 0 && `${number(calls.notAllowed)} not allowed`,
-        ]) || 'No stopped calls',
-        decided
-          ? joined([
-              `${number(approvals.approved)} approved`,
-              `${number(approvals.declined)} declined`,
-              approvals.medianWaitSeconds !== null &&
-                `${duration(approvals.medianWaitSeconds)} median wait`,
-            ])
-          : 'No approval decisions',
+        ]) || 'No calls to fix',
       ],
     },
     {
@@ -89,7 +72,7 @@ function metrics(summary: ActivitySummaryData) {
       icon: 'Layers',
       label: 'Context',
       metric: impact?.label ?? '—',
-      details: [impact ? `${impact.change} · by caller` : 'No runs'],
+      details: [impact ? joined([impact.change, callers(summary.contextActors ?? [])]) : 'No runs'],
       variant: impact?.variant,
     },
   ] satisfies (Tabs.MetricTabProps & { value: Lens })[]
@@ -130,7 +113,7 @@ export function ActivitySummary({
     >
       <div className={styles.heading}>
         <Typography.BodySmallStrong as="h2" variant="primary">
-          {owner ? 'Activity by you and your agents' : 'Your activity'}
+          {owner ? 'Workspace activity' : 'Your activity'}
         </Typography.BodySmallStrong>
         {pending && (
           <Typography.BodySmall as="span" variant="tertiary" role="status">
@@ -158,7 +141,7 @@ export function ActivitySummary({
               ))}
             </Tabs.MetricList>
             <Tabs.Panel value="calls" className={styles.panel}>
-              <CallsLens summary={summary} links={links} onStopped={() => setLens('needs')} />
+              <CallsLens summary={summary} links={links} />
             </Tabs.Panel>
             <Tabs.Panel value="needs" className={styles.panel}>
               <NeedsYouLens summary={summary} links={links} />

@@ -20,6 +20,10 @@ export const Medium: Story = {
   ],
 }
 export const Small: Story = { args: { size: 'small', detail: undefined } }
+// In a row of stats, the detail beside the value saves a line.
+export const InlineDetail: Story = {
+  args: { size: 'small', detail: '90%', detailPlacement: 'inline' },
+}
 // The value speaks its meaning when its sign alone is ambiguous.
 export const Toned: Story = {
   args: {

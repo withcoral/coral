@@ -158,7 +158,6 @@ function summaryLinks(
   const providerOf = (callPath: string) =>
     providers.find((p) => callPath.startsWith(`coral.providers.${p.namespace}.`))
   return {
-    activity: `${workspacePath}/activity`,
     provider: (callPath) => {
       const p = providerOf(callPath)
       return p && { name: p.displayName, path: p.path, icons: p.icons }
@@ -169,7 +168,6 @@ function summaryLinks(
       const operation = callPath.slice(`coral.providers.${p.namespace}.`.length)
       return {
         operation: `${p.path}/ops/${encodeURIComponent(operation)}`,
-        rules: `${p.path}/policy`,
         settings: `${p.path}/settings`,
       }
     },

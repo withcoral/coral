@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { fixFor, groupByProvider, operationRows } from './operations'
+import { fixFor, operationRows } from './operations'
 
 const links = {
   provider: (callPath: string) =>
@@ -26,47 +26,25 @@ it('joins a stopped operation that is not among the busiest, with its stops as i
   ])
 })
 
-// Catches: a row named by its full Call Path, or a removed provider left without a name.
+// Catches: a row named by its full Call Path, a removed provider left without a name, or two
+// providers with one name that only the namespace tells apart.
 it.each([
-  ['coral.providers.github.issues.list', 'GitHub', 'issues.list'],
-  ['coral.providers.slack.post', 'slack', 'post'],
-])('names %s as provider %s and operation %s', (callPath, provider, operation) => {
-  const [row] = operationRows({ operations: [{ callPath, calls: 1 }], stopped: [] }, links)
-  expect(row).toMatchObject({ provider, operation })
-})
-
-// Catches: a provider's totals that leave out one of its operations.
-it('totals each provider across its operations', () => {
-  const rows = operationRows(
-    {
-      operations: [
-        { callPath: 'coral.providers.github.getIssue', calls: 9 },
-        { callPath: 'coral.providers.slack.post', calls: 4 },
-        { callPath: 'coral.providers.github.merge', calls: 3 },
-      ],
-      stopped: [
-        { callPath: 'coral.providers.github.merge', blocked: 2, notAllowed: 1, needsSetup: 0 },
-      ],
-    },
-    links,
-  )
-  expect(groupByProvider(rows)).toEqual([
-    expect.objectContaining({
-      provider: 'GitHub',
-      calls: 12,
-      stops: { blocked: 2, notAllowed: 1, needsSetup: 0 },
-      stopped: 3,
-    }),
-    expect.objectContaining({ provider: 'slack', calls: 4, stopped: 0 }),
-  ])
-})
+  ['coral.providers.github.issues.list', 'GitHub', 'github', 'issues.list'],
+  ['coral.providers.slack.post', 'slack', 'slack', 'post'],
+])(
+  'names %s as provider %s, namespace %s and operation %s',
+  (callPath, provider, namespace, operation) => {
+    const [row] = operationRows({ operations: [{ callPath, calls: 1 }], stopped: [] }, links)
+    expect(row).toMatchObject({ provider, namespace, operation })
+  },
+)
 
 // Catches: a stop that links to the wrong page, or a link for an operation Coral cannot open.
 it.each([
-  ['blocked', { to: '/p/policy', label: 'Review rules' }],
-  ['needsSetup', { to: '/p/settings', label: 'Fix setup' }],
+  ['blocked', '/p/ops/x'],
+  ['needsSetup', '/p/settings'],
 ] as const)('fixes a %s call on its page', (reason, fix) => {
-  const pages = { operation: '/p/ops/x', rules: '/p/policy', settings: '/p/settings' }
+  const pages = { operation: '/p/ops/x', settings: '/p/settings' }
   expect(fixFor(reason, pages)).toEqual(fix)
   expect(fixFor(reason, undefined)).toBeUndefined()
 })

@@ -1,9 +1,10 @@
 import type { ReactNode } from 'react'
-import { Button, Typography } from '@/wax/components'
+import { Card, Typography } from '@/wax/components'
 import { Meter } from '@/wax/components/charts'
 import { HighlightedMatches } from '@/wax/components/highlighted-matches'
 import { Icon } from '@/wax/components/icon'
 import { Logo } from '@/wax/components/logo'
+import { Stat, type StatProps } from '@/wax/components/stat'
 import * as Table from '@/wax/components/table'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import type { StopReason } from '@/lib/activity-summary'
@@ -74,59 +75,66 @@ export function Reason({ reason }: { reason: StopReason }) {
 }
 
 /**
- * The provider's logo and name, then the operation's own name. Under a provider's
- * heading, only the operation. The full Call Path is the cell's title.
+ * The provider's logo and name, then its namespace and the operation: two providers with one
+ * name differ by namespace. The full Call Path is the cell's title. With `to`, the namespace
+ * and operation are the row's link.
  */
 export function OperationName({
   row,
   to,
   query,
-  grouped = false,
 }: {
   row: OperationRow
   to?: string
   query?: FilterQuery
-  grouped?: boolean
 }) {
   const mark = (text: string) => (query ? <HighlightedMatches text={text} query={query} /> : text)
   const operation = (
-    <Typography.CodeSmallInline className={styles.truncate}>
+    <Typography.BodySmall as="span" className={styles.truncate}>
+      {row.namespace && (
+        <Typography.BodySmall as="span" variant="tertiary">
+          {mark(row.namespace)}.
+        </Typography.BodySmall>
+      )}
       {mark(row.operation)}
-    </Typography.CodeSmallInline>
+    </Typography.BodySmall>
   )
   return (
-    <span className={grouped ? styles.grouped : styles.operation}>
-      {!grouped && (
-        <>
-          <Logo name={row.provider} icons={row.icons} size="20" />
-          <Typography.BodySmall as="span" variant="tertiary" className={styles.operationProvider}>
-            {mark(row.provider)}
-          </Typography.BodySmall>
-        </>
-      )}
+    <span className={styles.operation}>
+      <Logo name={row.provider} icons={row.icons} size="20" />
+      <Typography.BodySmall as="span" className={styles.operationProvider}>
+        {mark(row.provider)}
+      </Typography.BodySmall>
       {to ? <Table.RowLink to={to}>{operation}</Table.RowLink> : operation}
     </span>
   )
 }
 
-export function ActionLink({ to, children }: { to: string; children: string }) {
+/** Stats side by side, each on its own card, with its detail beside the value. */
+export function StatCards({
+  stats,
+}: {
+  stats: readonly Omit<StatProps, 'size' | 'detailPlacement'>[]
+}) {
   return (
-    <Button.InternalLink to={to} variant="link" size="x-small">
-      {children}
-    </Button.InternalLink>
+    <div className={styles.statCards}>
+      {stats.map((stat) => (
+        <Card.Container key={stat.label} compact>
+          <Stat size="small" detailPlacement="inline" {...stat} />
+        </Card.Container>
+      ))}
+    </div>
   )
 }
 
-/** A titled part of a lens, with a count beside its title and a line that says what it holds. */
+/** A titled part of a lens, with a count beside its title. */
 export function Section({
   title,
   count,
-  note,
   children,
 }: {
   title: string
   count: number
-  note: string
   children: ReactNode
 }) {
   return (
@@ -137,7 +145,6 @@ export function Section({
           {number(count)}
         </Typography.BodySmall>
       </div>
-      <Note>{note}</Note>
       {children}
     </section>
   )

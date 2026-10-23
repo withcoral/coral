@@ -15,7 +15,7 @@ import { OperationAccessState } from '../../../generated/coral/management/v1/pol
 const CALL =
   "try { await coral.providers.summaryFixture.read(); return 'sent'; } catch (error) { return error.code; }"
 
-test('The Overview summary counts not allowed calls, reads blocked and answered calls again when you return to it, and keeps the period you choose in the URL', async (context) => {
+test('The Overview summary counts a denied call as decided, not to fix, reads blocked and answered calls again when you return to it, opens a blocked operation to allow it, and keeps the period you choose in the URL', async (context) => {
   const upstream = await listen(
     context,
     createServer((_request, response) => {
@@ -60,9 +60,7 @@ test('The Overview summary counts not allowed calls, reads blocked and answered 
       await page.goto(overview)
       // Hydration first: the refresh and the period picker start after it.
       await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
-      await summary
-        .getByRole('heading', { name: 'Activity by you and your agents', exact: true })
-        .waitFor()
+      await summary.getByRole('heading', { name: 'Workspace activity', exact: true }).waitFor()
     }
     // You come back to the tab, as after running a program elsewhere.
     const returnToOverview = () => page.evaluate(() => window.dispatchEvent(new Event('focus')))
@@ -80,7 +78,7 @@ test('The Overview summary counts not allowed calls, reads blocked and answered 
       ])
     })
 
-    await step('Deny the call, and the summary counts it as not allowed', async () => {
+    await step('Deny the call, and the summary counts it as decided, not to fix', async () => {
       await page.goto(paused.required_actions[0].run_status_url)
       await page
         .getByRole('link', { name: 'Review coral.providers.summaryFixture.read', exact: true })
@@ -91,25 +89,52 @@ test('The Overview summary counts not allowed calls, reads blocked and answered 
       expect(update.final_value).toEqual({ kind: 'value', value: 'approval_declined' })
       await openOverview()
       const needsYou = lens(/^Needs you/)
-      await needsYou.getByText('1 not allowed', { exact: true }).waitFor()
-      // The median wait depends on how fast the review ran.
-      await needsYou.getByText(/^0 approved · 1 declined/).waitFor()
+      await needsYou.getByText('No calls to fix', { exact: true }).waitFor()
+      await needsYou.click()
+      await summary
+        .getByRole('region', { name: 'Approval decisions', exact: true })
+        .getByRole('group', { name: 'Declined', exact: true })
+        .getByText('1', { exact: true })
+        .waitFor()
     })
 
-    await step('Blocked and answered calls arrive when you return, without a reload', async () => {
+    await step('A blocked call arrives when you return, without a reload', async () => {
       await setPolicy(OperationAccessState.DISABLED)
       const blocked = await observeRun(runner, await runner.exec(CALL))
       expect(blocked.update.final_value).toEqual({ kind: 'value', value: 'operation_disabled' })
       await returnToOverview()
-      await summary.getByText('1 blocked · 1 not allowed', { exact: true }).waitFor()
-      await lens(/^Needs you/).click()
+      const needsYou = lens(/^Needs you/)
+      await needsYou.getByText('1 to fix', { exact: true }).waitFor()
+      await needsYou.getByText('1 blocked', { exact: true }).waitFor()
+      await needsYou.click()
       await operationRow('To fix').getByText('Blocked by a rule', { exact: true }).waitFor()
-      await lens(/^Calls/).click()
-      await setPolicy(OperationAccessState.ENABLED)
+    })
+
+    await step('The blocked row opens its operation, and you allow it there', async () => {
+      await operationRow('To fix').click()
+      await page.waitForURL((url) => url.pathname === `/${provider}/ops/read`)
+      const policy = page
+        .getByRole('dialog', { name: 'read', exact: true })
+        .getByRole('radiogroup', { name: 'Policy', exact: true })
+      await policy.getByRole('radio', { name: 'Disabled', exact: true, checked: true }).waitFor()
+      const allow = policy.getByRole('radio', { name: 'Always allow', exact: true })
+      await allow.click()
+      await policy
+        .getByRole('radio', { name: 'Always allow', exact: true, checked: true })
+        .waitFor()
+      // The toggle stays disabled until the save answers.
+      await expect.poll(() => allow.isEnabled()).toBe(true)
+      expect(await page.getByText('Not saved', { exact: true }).count()).toBe(0)
+      await page.goBack()
+      await summary.waitFor()
+    })
+
+    await step('An answered call arrives when you return, without a reload', async () => {
       const sent = await observeRun(runner, await runner.exec(CALL))
       expect(sent.update.final_value).toEqual({ kind: 'value', value: 'sent' })
       await returnToOverview()
       await summary.getByText('33% answered', { exact: true }).waitFor()
+      await lens(/^Calls/).click()
       await operationRow('Operations').getByText('3', { exact: true }).waitFor()
       expect(new URL(page.url()).pathname).toBe(overview)
     })
