@@ -45,6 +45,13 @@ test('The Overview summary counts not allowed calls, reads blocked and answered 
         policies: [{ operation, accessState }],
       })
     const summary = page.getByRole('region', { name: 'Activity summary', exact: true })
+    const lens = (name: RegExp) => summary.getByRole('tab', { name })
+    // The full Call Path is each operation cell's title; the cell shows the provider and the operation.
+    const operationRow = (table: string) =>
+      summary
+        .getByRole('table', { name: table, exact: true })
+        .getByRole('row')
+        .filter({ has: page.locator('[title="coral.providers.summaryFixture.read"]') })
     const runner = programRunner(page, target, workspace, {
       accessToken: await mcpToken(page, workspace),
       taskIntent: 'Summary goal',
@@ -83,15 +90,10 @@ test('The Overview summary counts not allowed calls, reads blocked and answered 
       const { update } = await observeRun(runner, await runner.wait(paused))
       expect(update.final_value).toEqual({ kind: 'value', value: 'approval_declined' })
       await openOverview()
-      await summary
-        .getByRole('region', { name: 'Stopped operations', exact: true })
-        .getByText('1 not allowed', { exact: true })
-        .waitFor()
-      const approvals = summary.getByRole('region', { name: 'Approvals', exact: true })
+      const needsYou = lens(/^Needs you/)
+      await needsYou.getByText('1 not allowed', { exact: true }).waitFor()
       // The median wait depends on how fast the review ran.
-      const decisions = (name: string) => approvals.getByRole('group', { name, exact: true })
-      await decisions('Approved').getByText('0', { exact: true }).waitFor()
-      await decisions('Declined').getByText('1', { exact: true }).waitFor()
+      await needsYou.getByText(/^0 approved · 1 declined/).waitFor()
     })
 
     await step('Blocked and answered calls arrive when you return, without a reload', async () => {
@@ -100,19 +102,15 @@ test('The Overview summary counts not allowed calls, reads blocked and answered 
       expect(blocked.update.final_value).toEqual({ kind: 'value', value: 'operation_disabled' })
       await returnToOverview()
       await summary.getByText('1 blocked · 1 not allowed', { exact: true }).waitFor()
-      await summary
-        .getByRole('region', { name: 'Stopped operations', exact: true })
-        .getByText('coral.providers.summaryFixture.read', { exact: true })
-        .waitFor()
+      await lens(/^Needs you/).click()
+      await operationRow('To fix').getByText('Blocked by a rule', { exact: true }).waitFor()
+      await lens(/^Calls/).click()
       await setPolicy(OperationAccessState.ENABLED)
       const sent = await observeRun(runner, await runner.exec(CALL))
       expect(sent.update.final_value).toEqual({ kind: 'value', value: 'sent' })
       await returnToOverview()
       await summary.getByText('33% answered', { exact: true }).waitFor()
-      await summary
-        .getByRole('region', { name: 'Most called operations', exact: true })
-        .getByText('3 calls', { exact: true })
-        .waitFor()
+      await operationRow('Operations').getByText('3', { exact: true }).waitFor()
       expect(new URL(page.url()).pathname).toBe(overview)
     })
 

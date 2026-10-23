@@ -11,5 +11,5 @@ export const size = styleVariants({
   medium: [track, { height: 8 }],
   small: [track, { height: 4 }],
 })
-// One tone for every meter: the text beside it says what it counts.
-export const fill = style({ minWidth: 2, background: theme.chart.blue.fill })
+// One quiet tone for every meter: the text beside it says what it counts.
+export const fill = style({ minWidth: 2, background: theme.chart.neutral.fill })

@@ -20,7 +20,8 @@ import { agentView, membershipView, ownerView } from '@/lib/management-views.ser
 import { RECIPE_CHOICES } from '@/lib/provider-recipes/library.server'
 import { blockerLabel, listAllProviders, providerPath } from '@/lib/providers.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
-import { ActivitySummary } from '@/views/activity/summary/summary'
+import type { RecipeIcons } from '@/lib/provider-recipes/choice'
+import { ActivitySummary, type SummaryLinks } from '@/views/activity/summary/summary'
 import { GLIMPSE_FETCH, WorkspaceOverview } from '@/views/management/workspace-overview'
 
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
@@ -127,6 +128,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 }
 
 export default function WorkspaceRoute({ loaderData }: Route.ComponentProps) {
+  const links = summaryLinks(loaderData.workspace.path, loaderData.providers)
   // Keyed by workspace, not location: a new summary period navigates within this page.
   return (
     <WorkspaceOverview
@@ -136,10 +138,42 @@ export default function WorkspaceRoute({ loaderData }: Route.ComponentProps) {
         <LiveSummary
           {...loaderData.activity}
           owner={loaderData.workspace.effectiveRole === 'owner'}
+          links={links}
         />
       }
     />
   )
+}
+
+/** The pages a summary row opens, found by the provider namespace in its Call Path. */
+function summaryLinks(
+  workspacePath: string,
+  providers: readonly {
+    namespace: string
+    path: string
+    displayName: string
+    icons?: RecipeIcons
+  }[],
+): SummaryLinks {
+  const providerOf = (callPath: string) =>
+    providers.find((p) => callPath.startsWith(`coral.providers.${p.namespace}.`))
+  return {
+    activity: `${workspacePath}/activity`,
+    provider: (callPath) => {
+      const p = providerOf(callPath)
+      return p && { name: p.displayName, path: p.path, icons: p.icons }
+    },
+    operation: (callPath) => {
+      const p = providerOf(callPath)
+      if (!p) return undefined
+      const operation = callPath.slice(`coral.providers.${p.namespace}.`.length)
+      return {
+        operation: `${p.path}/ops/${encodeURIComponent(operation)}`,
+        rules: `${p.path}/policy`,
+        settings: `${p.path}/settings`,
+      }
+    },
+  }
 }
 
 /** The loader's summary, read again while you look at it. While a new period loads, the
@@ -149,7 +183,8 @@ function LiveSummary({
   days,
   summary,
   owner,
-}: Route.ComponentProps['loaderData']['activity'] & { owner: boolean }) {
+  links,
+}: Route.ComponentProps['loaderData']['activity'] & { owner: boolean; links: SummaryLinks }) {
   useRevalidateWhileVisible(SUMMARY_REFRESH_MS)
   const location = useLocation()
   const navigation = useNavigation()
@@ -160,6 +195,7 @@ function LiveSummary({
   return (
     <ActivitySummary
       summary={summary}
+      links={links}
       owner={owner}
       days={chosen}
       pending={chosen !== days}

@@ -59,6 +59,9 @@ export const lightThemeValues = {
     green: {
       fill: paletteLight.Green['10'],
     },
+    neutral: {
+      fill: paletteLight.GrayAlpha['07'],
+    },
     orange: {
       fill: paletteLight.Orange['10'],
     },
