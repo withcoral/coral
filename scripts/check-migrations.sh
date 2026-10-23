@@ -3,8 +3,6 @@
 # main, adds one whose version does not sort after every version on main, or
 # adds one where no ledger reads it. Databases record applied migrations by
 # checksum, so either change breaks a database created from an earlier main.
-# The one rename it accepts moves a step off a version another step on main
-# shares, since main cannot migrate any database until one of them moves.
 #
 #   scripts/check-migrations.sh [base-ref]   # default: origin/main
 set -euo pipefail
@@ -51,51 +49,22 @@ if [ -n "$stray" ]; then
   status=1
 fi
 
-added="$({
-  git diff --no-renames --name-only --diff-filter=A "$fork_point" -- "$pathspec"
-  git ls-files --others --exclude-standard -- "$pathspec"
-} | { grep -E "$chain_runs" || true; } | sort -u)"
-
-# The version of each migration path on stdin.
-version_of() { sed -nE 's#^.*/0*([0-9]+)_[^/]*$#\1#p'; }
-
-on_base="$(git ls-tree -r --name-only "$base_ref" -- "$chain" | grep -E "$chain_runs" || true)"
-max="$(version_of <<<"$on_base" | sort -n | tail -1)"
-# A chain with no migrations on main yet accepts any version, 0000 included.
-max="${max:--1}"
-
-# Two steps that share a version both run as it, and the second one's ledger
-# row collides with the first's. A checkout may move one: delete it and add
-# it under a new version, with its name and bytes unchanged, in the same
-# folder. The version check below keeps the new version above main's highest.
-# A database-specific step's two halves share one name, so they count as one
-# step.
-moves_off_shared_version() {
-  local file="$1" name="${1##*/}" version blob new moved
-  [ ! -e "$file" ] || return 1
-  blob="$(git rev-parse --verify --quiet "$base_ref:$file")" || return 1
-  version="$(version_of <<<"$file")"
-  [ -n "$(sed -nE "s#^.*/(0*${version}_[^/]*)\$#\1#p" <<<"$on_base" | sort -u | sed -n 2p)" ] || return 1
-  while IFS= read -r new; do
-    moved="${new##*/}"
-    if [ "${new%/*}" = "${file%/*}" ] && [ "${moved#*_}" = "${name#*_}" ] &&
-      [ "$(git hash-object "$new")" = "$blob" ]; then
-      return 0
-    fi
-  done <<<"$added"
-  return 1
-}
-
-changed="$(git diff --no-renames --name-only --diff-filter=MDT "$fork_point" -- "$pathspec" |
-  while IFS= read -r file; do
-    if ! moves_off_shared_version "$file"; then echo "$file"; fi
-  done)"
+changed="$(git diff --no-renames --name-only --diff-filter=MDT "$fork_point" -- "$pathspec")"
 if [ -n "$changed" ]; then
   echo "check-migrations: these migrations are on $base_ref and must not change; add a new migration instead:" >&2
   echo "$changed" | sed 's/^/  /' >&2
   status=1
 fi
 
+on_base="$(git ls-tree -r --name-only "$base_ref" -- "$chain" | grep -E "$chain_runs" || true)"
+max="$(echo "$on_base" | sed -nE 's#^.*/0*([0-9]+)_[^/]*$#\1#p' | sort -n | tail -1)"
+# A chain with no migrations on main yet accepts any version, 0000 included.
+max="${max:--1}"
+
+added="$({
+  git diff --no-renames --name-only --diff-filter=A "$fork_point" -- "$pathspec"
+  git ls-files --others --exclude-standard -- "$pathspec"
+} | { grep -E "$chain_runs" || true; } | sort -u)"
 while IFS= read -r file; do
   [ -n "$file" ] || continue
   if ! [[ "$(basename "$file")" =~ ^0*([0-9]+)_ ]]; then
