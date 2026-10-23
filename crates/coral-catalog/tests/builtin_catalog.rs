@@ -120,13 +120,33 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     let graph = coral_catalog::schema_graph_in_transaction(&mut transaction, &first)
         .await
         .unwrap();
-    let fields = coral_catalog::StoredDeclarationFields::new(graph)
-        .all(&operations)
+    // Search reads the same Operations as the search targets, and the same
+    // fields as a full Operation gives.
+    let searchable = coral_catalog::searchable_operations_in_transaction(&mut transaction, &first)
+        .await
         .unwrap();
+    assert_eq!(
+        searchable
+            .iter()
+            .map(|operation| operation.key().as_str())
+            .collect::<Vec<_>>(),
+        target_keys
+    );
+    let fields = coral_catalog::StoredDeclarationFields::new(graph);
     let key = OperationKey::parse("createProvider").unwrap();
-    let paths = fields
-        .get(&key)
-        .expect("createProvider declaration fields")
+    let create_provider = searchable
+        .iter()
+        .find(|operation| operation.key() == &key)
+        .expect("createProvider is searchable");
+    let full = operations
+        .iter()
+        .find(|operation| operation.key() == &key)
+        .unwrap();
+    assert_eq!(create_provider.relative_path(), full.relative_path());
+    assert_eq!(create_provider.presentation(), full.presentation());
+    let prepared = fields.searchable_operation(create_provider).unwrap();
+    assert_eq!(prepared, fields.operation(full).unwrap());
+    let paths = prepared
         .entries()
         .iter()
         .map(|entry| entry.path().as_str())
