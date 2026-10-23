@@ -5,6 +5,7 @@ import { markAuthResponsePrivate } from '@/auth/response.server'
 import { runtimeConfigContext } from '@/lib/runtime-config.server'
 import { routePath } from '@/routing/routemap'
 import * as Button from '@/wax/components/button'
+import { PageTitle } from '@/wax/components/page-title'
 import { Typography } from '@/wax/components/typography'
 
 import * as styles from './login.css'
@@ -26,11 +27,13 @@ export default function AuthCallback() {
 }
 
 export function ErrorBoundary() {
+  const title = 'Sign-in failed'
   return (
     <main className={styles.page}>
+      <PageTitle>{title}</PageTitle>
       <section className={styles.content} aria-labelledby="auth-error-title">
         <Typography.HeadingLarge as="h1" id="auth-error-title">
-          Sign-in failed
+          {title}
         </Typography.HeadingLarge>
         <div className={styles.actions}>
           <Button.InternalLink to={routePath('login')}>Try again</Button.InternalLink>

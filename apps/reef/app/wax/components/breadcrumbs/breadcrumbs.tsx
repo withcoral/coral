@@ -2,6 +2,7 @@ import { createContext, useContext } from 'react'
 import { LinkProps } from 'react-router'
 
 import { Container, InternalLink, Text } from '../button'
+import { PageTitle } from '../page-title'
 import { Tooltip } from '../tooltip'
 import { Typography } from '../typography'
 import * as styles from './breadcrumbs.css'
@@ -56,6 +57,13 @@ export function Breadcrumbs({
       : [{ id: root.id, text: root.text, type: 'text' }]
   return (
     <nav aria-label={ariaLabel}>
+      {/* The trail names the page, so it also titles the tab, most specific first. */}
+      <PageTitle>
+        {items
+          .map((item) => item.text)
+          .toReversed()
+          .join(' · ')}
+      </PageTitle>
       <ol className={styles.breadcrumbList}>
         {items.map((item, index) => {
           const as = heading && index === items.length - 1 ? 'h1' : 'span'

@@ -13,6 +13,7 @@ import resetStylesheet from './wax/theme/reset.css?url'
 import './wax/theme/global.css'
 import { darkTheme } from './wax/theme/theme-dark.css'
 import { lightTheme } from './wax/theme/theme-light.css'
+import { PageTitleRoot } from './wax/components/page-title'
 import { THEME_STORAGE_KEY, useTheme } from './wax/theme/theme-provider'
 
 export const links = () => [
@@ -71,7 +72,7 @@ function ThemedBody({ children }: { children: React.ReactNode }) {
   return (
     <body className={themeClass} style={{ colorScheme: theme }} suppressHydrationWarning>
       <ThemeBootstrapScript />
-      {children}
+      <PageTitleRoot value="Coral">{children}</PageTitleRoot>
       <ScrollRestoration />
       <Scripts />
     </body>
