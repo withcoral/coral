@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.4.0](https://github.com/withcoral/coral/compare/v1.3.0...v1.4.0) (2026-10-23)
+
+
+### Features
+
+* **provider:** report each provider's callRoot and callable operations in listProviders ([#2643](https://github.com/withcoral/coral/issues/2643)) ([9eda089](https://github.com/withcoral/coral/commit/9eda089211ee1b6dedcaf77ca13dc74886c9db6e))
+* **run:** read a provider's configuration with coral.workspace.getProvider ([#2598](https://github.com/withcoral/coral/issues/2598)) ([37f37a5](https://github.com/withcoral/coral/commit/37f37a50b254b640d2dab6689ebf94d0515cfaaf))
+* **run:** rename coral.workspace.createProvider to addProvider ([#2648](https://github.com/withcoral/coral/issues/2648)) ([191d095](https://github.com/withcoral/coral/commit/191d09524c10512e2a36bc31a5f2dbc13bf322f2))
+* **ui:** show the Overview summary as calls, needs you and context ([#2628](https://github.com/withcoral/coral/issues/2628)) ([a788ba3](https://github.com/withcoral/coral/commit/a788ba396b921e6430dfd8aa2b33454396e95bd9))
+* **ui:** title each browser tab with the page's breadcrumb trail ([#2649](https://github.com/withcoral/coral/issues/2649)) ([6bb6918](https://github.com/withcoral/coral/commit/6bb69181ef9ba2e2559126ca761b0b3e26ecee6e))
+
+
+### Bug Fixes
+
+* **ui:** connect your account in a dialog and remove the operation policy page ([#2647](https://github.com/withcoral/coral/issues/2647)) ([3bf6fd6](https://github.com/withcoral/coral/commit/3bf6fd638772aac77d155c2d842486dd9e2869e5))
+
 ## [1.3.0](https://github.com/withcoral/coral/compare/v1.2.0...v1.3.0) (2026-10-23)
 
 
