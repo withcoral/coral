@@ -529,17 +529,30 @@ it.each([false, true])(
   },
 )
 
-it('reveals an identity-only child anchor when a continuous reading URL is reloaded', () => {
-  const run = 'workspaces/work/runs/run'
-  const selected = `${run}/events/200`
+const revealRun = 'workspaces/work/runs/run'
+const revealEvent = `${revealRun}/events/200`
+// Catches: the table revealing the Run when the URL names its final value. The Run's
+// detail shows the final value, but the table then scrolls to the Run's first records.
+it.each([
+  ['an identity-only child anchor', null, '', revealEvent],
+  [
+    "a Run's final value, not the Run its detail shows",
+    revealRun,
+    `&record=${revealRun}/final`,
+    `${revealRun}/final`,
+  ],
+  ['a selected Run', revealRun, `&record=${revealRun}`, revealRun],
+])('reveals %s when a continuous reading URL is reloaded', (_name, selected, record, revealed) => {
+  const run = revealRun
   const initial: ActivityPage = {
     ...page,
+    selected,
     branches: {
       [run]: {
         rows: [
           {
             kind: 'output',
-            name: selected,
+            name: revealEvent,
             position: 199,
             workspace: 'workspaces/work',
             run,
@@ -555,14 +568,14 @@ it('reveals an identity-only child anchor when a continuous reading URL is reloa
       },
     },
     expanded: [run],
-    anchors: { [run]: selected },
+    anchors: { [run]: revealEvent },
   }
   function Reveal() {
     return <output>{useActivityReader(initial).revealRecord}</output>
   }
   const router = createMemoryRouter([{ path: '/activity', element: <Reveal /> }], {
     initialEntries: [
-      `/activity?anchor=workspaces/work/tasks/t&expand=${run}&anchor.${run}=${selected}&offset.${run}=174&preceding.${run}=25`,
+      `/activity?anchor=workspaces/work/tasks/t&expand=${run}&anchor.${run}=${revealEvent}&offset.${run}=174&preceding.${run}=25${record}`,
     ],
   })
   try {
@@ -573,7 +586,7 @@ it('reveals an identity-only child anchor when a continuous reading URL is reloa
           <RouterProvider router={router} />
         </Provider>,
       ),
-    ).toBe(`<output>${selected}</output>`)
+    ).toBe(`<output>${revealed}</output>`)
   } finally {
     router.dispose()
   }
