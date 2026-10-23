@@ -87,7 +87,8 @@ async fn coral_publishes_a_change_nobody_needs_to_act_on() {
                 "displayName": "Forecasts",
                 "credentialRoute": "none",
                 "authentication": "none",
-                "operations": 1,
+                // The kept Operation stays disabled, so the Program cannot call it.
+                "operations": 0,
                 "accountRequired": false,
             },
             "metadata": { "kind": "builtin" },
