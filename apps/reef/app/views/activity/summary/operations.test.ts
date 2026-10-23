@@ -38,7 +38,9 @@ it.each([
   (callPath, provider, namespace, operation, path) => {
     const [row] = operationRows({ operations: [{ callPath, calls: 1 }], stopped: [] }, providers)
     expect(row).toMatchObject({ provider, namespace, operation })
-    expect(row.pages?.operation).toBe(path && `${path}/ops/${operation}`)
+    expect(row.pages).toEqual(
+      path && { operation: `${path}/ops/${operation}`, settings: `${path}/settings` },
+    )
   },
 )
 
