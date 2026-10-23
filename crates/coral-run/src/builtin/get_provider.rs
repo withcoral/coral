@@ -21,7 +21,7 @@ impl GetProvider {
     pub(super) fn new(arguments: &GetProviderArguments) -> Result<Self, Rejection> {
         // The contract checks the namespace with the same rule, so this does
         // not fail.
-        let namespace = ProviderNamespace::parse(&arguments.namespace)
+        let namespace = ProviderNamespace::parse(arguments.namespace())
             .map_err(|_error| Rejection::from(CoralFailure::InvalidInput))?;
         Ok(Self { namespace })
     }

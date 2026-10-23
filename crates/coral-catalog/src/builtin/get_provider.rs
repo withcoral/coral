@@ -74,11 +74,16 @@ struct Arguments {
 /// state.
 #[derive(Debug, Clone)]
 pub struct GetProviderArguments {
-    /// A valid Provider Namespace.
-    pub namespace: String,
+    namespace: String,
 }
 
 impl GetProviderArguments {
+    /// A valid Provider Namespace.
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
     /// Reads the arguments: the shape first, then the namespace syntax.
     ///
     /// # Errors
