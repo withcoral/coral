@@ -330,7 +330,7 @@ const onboardingCopy = (connect: string[]) =>
     '1. Ask me what to name this MCP server in your client. Recommend "coral-operations-team". Let me choose my own name.',
     ...connect,
     '4. Search the workspace operations for coral.admin.createProvider. Describe it to read its input.',
-    '5. Ask me which kind of provider or which specific service I want to connect. Do not choose one for me.',
+    '5. Ask me which kind of provider or which specific service I want to connect. Give a few examples, such as GitHub, a weather service or Slack. These are only suggestions. I can connect any provider. Do not choose one for me.',
     '6. Use coral.admin.createProvider to add that provider. If Coral asks for an approval or an account authorization, guide me through it.',
     '',
     'Never ask me to paste a token, API key or other secret into this chat.',

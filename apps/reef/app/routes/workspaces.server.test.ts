@@ -35,10 +35,7 @@ coral.transport = fakeManagementTransport({
   agents: { listAgents: () => ({ agents: [] }) },
   providers: { listProviders: () => ({ providers: [] }) },
   memberships: { listWorkspaceOwners: () => ({ owners: [] }) },
-  activity: {
-    browseActivityRoots: () => ({ roots: [] }),
-    browseRequiredActions: () => ({ actions: [] }),
-  },
+  activity: { summarizeActivity: () => ({}) },
 })
 
 /** The cookies a browser keeps across the responses it receives. */
@@ -101,6 +98,7 @@ async function openOverview(
     headers: { cookie: browser.header() },
   })
   const result = await overview.loader(authRouteTestArgs(request, { workspace }, token, runtime))
+  if (result instanceof Response) throw new Error('The workspace page renders')
   browser.receive(result.init?.headers)
   return result.data.onboarding
 }
