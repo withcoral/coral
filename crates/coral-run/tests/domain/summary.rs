@@ -93,9 +93,16 @@ async fn summary(
     actor: &AuthenticatedPrincipal,
     workspace: &coral_workspace::WorkspaceId,
 ) -> ActivitySummary {
+    let since = fixture.runs.summary_window_start(1).unwrap();
+    let mut tx = fixture.database.begin_read_snapshot().await.unwrap();
+    let authority = fixture
+        .workspaces
+        .action_history_authority_in_transaction(&mut tx, actor, Some(workspace))
+        .await
+        .unwrap();
     fixture
         .runs
-        .activity_summary(actor, workspace, 1)
+        .activity_summary_in_transaction(&mut tx, &authority, since, Vec::new())
         .await
         .unwrap()
 }
@@ -329,39 +336,12 @@ async fn summary_marks_the_total_partial_while_a_run_is_unmeasured() {
 
 #[tokio::test]
 async fn summary_rejects_a_window_outside_one_to_thirty_days() {
-    let (fixture, operation) = forecast_fixture().await;
+    let (fixture, _) = forecast_fixture().await;
     for days in [0, crate::MAX_SUMMARY_DAYS + 1, u32::MAX] {
-        let error = fixture
-            .runs
-            .activity_summary(&operation.principal, &operation.workspace_id, days)
-            .await
-            .unwrap_err();
+        let error = fixture.runs.summary_window_start(days).unwrap_err();
         assert!(
             matches!(error, Error::InvalidInput(_)),
             "{days} days: {error:?}"
         );
     }
-}
-
-#[tokio::test]
-async fn summary_denies_agent_callers() {
-    let (fixture, operation) = forecast_fixture().await;
-    let agent = registered_agent(
-        &fixture.workspaces,
-        &operation.principal,
-        &operation.workspace_id,
-    )
-    .await;
-    let error = fixture
-        .runs
-        .activity_summary(&agent, &operation.workspace_id, 1)
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(
-            error,
-            Error::Workspace(coral_workspace::Error::PermissionDenied(_))
-        ),
-        "{error:?}"
-    );
 }

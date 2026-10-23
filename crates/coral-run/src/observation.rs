@@ -1,5 +1,6 @@
 //! Non-consuming Run observation: one authorized snapshot per read, with
-//! bounded waiting on committed changes and required-action expiry.
+//! bounded waiting on committed changes. A deadline wakes nothing by itself:
+//! the Run Owner's record of a timeout or an expiry is a committed change.
 
 use std::time::Duration;
 
@@ -9,7 +10,7 @@ use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use crate::lifecycle::RunRecord;
 use crate::{
     Error, RequiredAction, RunCursor, RunEvent, RunId, RunModule, RunObservation, RunUpdate,
-    duration_until, required_actions, run_repository,
+    required_actions, run_repository,
 };
 
 /// Minimum spacing between one waiter's rereads.
@@ -24,7 +25,7 @@ impl RunModule {
     /// A terminal outcome appears on the final output page, without draining internal Events. Required
     /// actions are a current snapshot; their content revision grants no authority.
     /// Every read rechecks visibility, including while waiting. Waits reread after
-    /// committed changes and action expiries, and poll slowly if notification fails.
+    /// committed changes, and poll slowly if notification fails.
     ///
     /// # Errors
     ///
@@ -59,21 +60,13 @@ impl RunModule {
             if observation.is_ready(&update, seen_sequence) || read_at >= deadline {
                 return Ok(update);
             }
-            // Expiry changes action visibility without a commit.
-            let now = self.now()?;
-            let expiry = update
-                .required_actions()
-                .iter()
-                .map(|action| read_at + duration_until(action.deadline_at_unix_nanos, now))
-                .min();
-            let wake = expiry.map_or(deadline, |expiry| expiry.min(deadline));
             match &mut changes {
                 Some(subscription) => tokio::select! {
                     result = subscription.changed() => if result.is_err() { changes = None },
-                    () = tokio::time::sleep_until(wake) => {}
+                    () = tokio::time::sleep_until(deadline) => {}
                 },
                 None => {
-                    tokio::time::sleep_until(wake.min(read_at + OBSERVE_FALLBACK_POLL)).await;
+                    tokio::time::sleep_until(deadline.min(read_at + OBSERVE_FALLBACK_POLL)).await;
                 }
             }
             // Busy Runs commit often. Coalesce their wake-ups into bounded rereads.

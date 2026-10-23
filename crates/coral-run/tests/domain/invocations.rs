@@ -183,7 +183,7 @@ async fn builtin_scope(
 }
 
 #[tokio::test]
-async fn builtin_create_provider_waits_for_approval_by_default() {
+async fn builtin_add_provider_waits_for_approval_by_default() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
     let (workspace_id, owner) = builtin_scope(&fixture, "user:builtin-policy").await;
     let mut transaction = fixture.database.begin().await.unwrap();
@@ -191,7 +191,7 @@ async fn builtin_create_provider_waits_for_approval_by_default() {
         &mut transaction,
         &workspace_id,
         coral_provider::InvocationCaller::new(&fixture.workspaces, &owner, 12),
-        "coral.workspace.createProvider",
+        "coral.workspace.addProvider",
     )
     .await
     .unwrap()
@@ -210,7 +210,7 @@ async fn builtin_create_provider_waits_for_approval_by_default() {
     .await
     .unwrap();
     transaction.rollback().await.unwrap();
-    // createProvider declares no read-only hint, so it takes the cautious default.
+    // addProvider declares no read-only hint, so it takes the cautious default.
     assert_eq!(
         decision.access_state(),
         OperationAccessState::ApprovalRequired

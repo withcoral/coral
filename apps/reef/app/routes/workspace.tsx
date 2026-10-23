@@ -1,7 +1,6 @@
 import { data, redirect, useLocation, useNavigate, useNavigation } from 'react-router'
 import type { Route } from './+types/workspace'
 import { ProviderState } from '@/generated/coral/management/v1/provider_pb'
-import { isBuiltinProvider } from '@/lib/call-root'
 import { DEFAULT_SUMMARY_DAYS, summaryDays, summarySearch } from '@/lib/activity-summary'
 import { glimpseActivitySummary } from '@/lib/activity-summary.server'
 import { useRevalidateWhileVisible } from '@/lib/use-revalidate-while-visible'
@@ -58,30 +57,41 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
           }),
       glimpseActivitySummary(api, w.name, days, request.signal),
     ])
+    const views = providers.map((provider) => ({
+      id: provider.name.split('/').at(-1)!,
+      displayName: provider.displayName,
+      namespace: provider.namespace,
+      callRoot: provider.callRoot,
+      builtin: provider.builtin,
+      path: providerPath(w.path, provider.name),
+      blockers: [
+        ...(provider.state === ProviderState.DISABLED ? ['Disabled'] : []),
+        ...provider.blockers.map(blockerLabel),
+      ],
+      icons: RECIPE_CHOICES.find((r) => r.id === provider.namespace)?.icons,
+    }))
     return data(
       {
         workspace: w,
         agents: agents?.agents.map(agentView) ?? [],
         // The card shows the providers you add. Coral's Built-in Provider stays on
         // the providers page, so a new workspace still offers Add provider here.
-        providers: providers
-          .filter((provider) => !isBuiltinProvider(provider.callRoot))
-          .map((provider) => ({
-            id: provider.name.split('/').at(-1)!,
-            displayName: provider.displayName,
-            namespace: provider.namespace,
-            path: providerPath(w.path, provider.name),
-            blockers: [
-              ...(provider.state === ProviderState.DISABLED ? ['Disabled'] : []),
-              ...provider.blockers.map(blockerLabel),
-            ],
-            icons: RECIPE_CHOICES.find((r) => r.id === provider.namespace)?.icons,
-          })),
+        providers: views.filter((provider) => !provider.builtin),
         owners: owners?.owners.map(ownerView) ?? null,
         ownMembership: own ? membershipView(own) : null,
         form: formContext(context),
         recipes: RECIPE_CHOICES,
-        activity: { days, summary },
+        // The summary names and opens calls to every provider, the Built-in Provider's too.
+        activity: {
+          days,
+          summary,
+          providers: views.map(({ callRoot, displayName, path, icons }) => ({
+            callRoot,
+            displayName,
+            path,
+            icons,
+          })),
+        },
       },
       { headers: privateHeaders },
     )
@@ -149,6 +159,7 @@ function LiveSummary({
   days,
   summary,
   owner,
+  providers,
 }: Route.ComponentProps['loaderData']['activity'] & { owner: boolean }) {
   useRevalidateWhileVisible(SUMMARY_REFRESH_MS)
   const location = useLocation()
@@ -160,6 +171,7 @@ function LiveSummary({
   return (
     <ActivitySummary
       summary={summary}
+      providers={providers}
       owner={owner}
       days={chosen}
       pending={chosen !== days}

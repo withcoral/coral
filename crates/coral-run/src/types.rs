@@ -1054,14 +1054,48 @@ impl Default for FanOutLimit {
     }
 }
 
+/// The Shutdown Drain: how long a process that is shutting down lets its live
+/// Runs end on their own before it interrupts the rest
+/// ([`RunModule::shutdown`](crate::RunModule::shutdown)). Set at process
+/// bootstrap; the default is 30 seconds, and zero interrupts at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShutdownDrain {
+    duration: Duration,
+}
+
+impl ShutdownDrain {
+    /// The default drain, 30 seconds.
+    pub const DEFAULT_DURATION: Duration = Duration::from_secs(30);
+
+    /// A drain of `duration`; zero interrupts every live Run at once.
+    #[must_use]
+    pub const fn new(duration: Duration) -> Self {
+        Self { duration }
+    }
+
+    /// How long the drain lasts.
+    #[must_use]
+    pub const fn duration(self) -> Duration {
+        self.duration
+    }
+}
+
+impl Default for ShutdownDrain {
+    fn default() -> Self {
+        Self::new(Self::DEFAULT_DURATION)
+    }
+}
+
 /// The limits one deployment sets for Program execution: the V8 isolate
-/// heaps, the Run Owner's Applied cap and its Fan-out Limit. Resolved once at
-/// process bootstrap and handed to the Run module whole.
+/// heaps, the Run Owner's Applied cap and its Fan-out Limit, and the
+/// Shutdown Drain. Resolved once at process bootstrap and handed to the Run
+/// module whole.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RuntimeLimits {
     isolate: crate::IsolateLimits,
     applied_output_cap: AppliedOutputCap,
     fan_out_limit: FanOutLimit,
+    shutdown_drain: ShutdownDrain,
 }
 
 impl RuntimeLimits {
@@ -1071,12 +1105,20 @@ impl RuntimeLimits {
         isolate: crate::IsolateLimits,
         applied_output_cap: AppliedOutputCap,
         fan_out_limit: FanOutLimit,
+        shutdown_drain: ShutdownDrain,
     ) -> Self {
         Self {
             isolate,
             applied_output_cap,
             fan_out_limit,
+            shutdown_drain,
         }
+    }
+
+    /// How long a shutting-down process lets its live Runs end on their own.
+    #[must_use]
+    pub const fn shutdown_drain(&self) -> ShutdownDrain {
+        self.shutdown_drain
     }
 
     /// The per-isolate heap budgets the compiler and the executor read.

@@ -10,11 +10,10 @@ import {
   observeRun,
   programRunner,
 } from '../../../support/providers.ts'
+import { updateBytes } from '../../../support/update-bytes.ts'
 
 const loop = (count: number) =>
   `for(let i=0;i<${count};i++) await coral.providers.lean.read({}); return ${count};`
-const size = (responses: string[]) =>
-  responses.reduce((total, response) => total + Buffer.byteLength(response), 0)
 
 // history.test.ts owns revealing the exact terminal Event.
 test('Lean MCP updates preserve complete authorized Reef history', async (context) => {
@@ -51,10 +50,11 @@ test('Lean MCP updates preserve complete authorized Reef history', async (contex
     const source = loop(128)
     const observed = await observeRun(execute, await execute.exec(source))
     // Invocations are not Events, so 127 more calls leave the update the same
-    // size: only the final value and the cursor gain digits.
+    // size: only the final value gains digits. Run identities can differ in
+    // length, so neither size counts its own.
     expect(observed.events).toEqual([])
     expect(observed.responses).toHaveLength(1)
-    expect(size(observed.responses) - size(single.responses)).toBeLessThan(16)
+    expect(updateBytes(observed) - updateBytes(single)).toBeLessThan(16)
     expect(observed.update.required_actions).toEqual([])
     expect(observed.update.final_value).toEqual({ kind: 'value', value: 128 })
     expect(calls).toBe(1 + 128)

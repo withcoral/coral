@@ -187,10 +187,18 @@ async fn composed_server_provisions_a_user_through_the_oidc_callback() {
         .await
         .unwrap();
     let upstream = location(&approved);
+    let sign_in_cookie = approved
+        .headers()
+        .get(SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .expect("sign-in cookie")
+        .to_owned();
     mount_token(&provider, "upstream-subject", &param(&upstream, "nonce")).await;
 
     let returned = http
         .get(format!("{endpoint}/auth/oidc/callback"))
+        .header(COOKIE, sign_in_cookie)
         .query(&[
             ("state", param(&upstream, "state").as_str()),
             ("code", "provider-code"),

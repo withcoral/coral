@@ -318,10 +318,10 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
         let workspace = workspace_filter(&input.workspace)?
             .ok_or_else(|| Status::invalid_argument("Workspace is required"))?;
         let summary = self
-            .runs
-            .activity_summary(&actor, &workspace, input.days)
+            .tasks
+            .activity_summary(&self.runs, &actor, &workspace, input.days)
             .await
-            .map_err(execution::run_error)?;
+            .map_err(error)?;
         Ok(Response::new(execution::summary(summary)))
     }
 

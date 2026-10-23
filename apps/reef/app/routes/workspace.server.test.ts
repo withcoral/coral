@@ -30,6 +30,7 @@ function fakeCoral(summaries: number[] = []) {
             name: `${parent}/providers/builtin`,
             displayName: 'Coral',
             callRoot: 'coral.workspace',
+            builtin: true,
             state: ProviderState.ACTIVE,
           },
           {
@@ -58,11 +59,16 @@ function fakeCoral(summaries: number[] = []) {
 const overview = (search = '') =>
   loader(authRouteTestArgs(new Request(`http://reef/${parent}${search}`), { workspace }, null))
 
-it('leaves the Built-in Provider out of the overview, so a new workspace offers Add provider', async () => {
+// Catches: a new workspace without Add provider, or built-in calls the summary cannot name or open.
+it('leaves the Built-in Provider out of the providers card, but not out of the summary', async () => {
   fakeCoral()
   const result = await overview()
   if (result instanceof Response) throw new Error('The workspace page renders')
   expect(result.data.providers.map((provider) => provider.displayName)).toEqual(['Weather'])
+  expect(result.data.activity.providers.map((provider) => provider.callRoot)).toEqual([
+    'coral.workspace',
+    'coral.providers.weather',
+  ])
 })
 
 // Catches: a reload showing another period than the URL names.

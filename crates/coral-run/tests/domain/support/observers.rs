@@ -25,6 +25,36 @@ impl ExecutionObserver for ClaimGate {
     }
 }
 
+/// Records every timer the Run Owner armed, with how long after its arming
+/// it fires.
+#[derive(Default)]
+pub(crate) struct TimerProbe {
+    armed: Mutex<Vec<(crate::owner::Timer, i64)>>,
+}
+
+impl TimerProbe {
+    /// How long after its last arming `timer` fires, once armed.
+    pub(crate) fn armed(&self, timer: &crate::owner::Timer) -> Option<i64> {
+        self.armed
+            .lock()
+            .expect("armed lock")
+            .iter()
+            .rev()
+            .find(|(armed, _)| armed == timer)
+            .map(|(_, after_nanos)| *after_nanos)
+    }
+}
+
+#[async_trait]
+impl ExecutionObserver for TimerProbe {
+    fn timer_armed(&self, timer: &crate::owner::Timer, after_nanos: i64) {
+        self.armed
+            .lock()
+            .expect("armed lock")
+            .push((timer.clone(), after_nanos));
+    }
+}
+
 /// Holds the first caller that reaches it until released; every later caller
 /// passes. The gates below embed it at the hook they hold.
 pub(crate) struct BlockingGate {
@@ -56,8 +86,8 @@ impl BlockingGate {
     }
 }
 
-/// Holds the Run Owner's first chunk commit (after its start mark) until
-/// released; every later commit passes.
+/// Holds the first chunk commit (a Run Owner's after its start mark, or a
+/// recovered owner's one chunk) until released; every later commit passes.
 pub(crate) struct CommitGate(BlockingGate);
 
 impl CommitGate {
@@ -302,7 +332,7 @@ impl FenceLatch {
     }
 
     /// Like [`Self::until_arrived`] for an arrival that may take `within` of
-    /// waiting, such as one behind a parked wait's fallback poll.
+    /// waiting, such as one behind a parked wait's wake-up.
     pub(crate) async fn until_arrived_within(&self, count: usize, within: Duration) {
         wait_until_async_within(within, async || {
             self.arrived.load(Ordering::SeqCst) >= count
@@ -346,39 +376,62 @@ impl InvocationObserver for FenceLatch {
     }
 }
 
-/// Counts held approval rechecks and the times a waiting Invocation parks
-/// until a commit, an expiry, or the fallback poll.
-pub(crate) struct ApprovalWaitProbe {
-    gate: Option<Arc<FenceGate>>,
+/// Watches parked waits from both sides: counts the held rechecks, the
+/// times an Invocation parks, its Dispatch Fence attempts, and the owner's
+/// snapshot checks of its parked waits with what each found.
+pub(crate) struct WaitProbe {
     held: watch::Sender<usize>,
     parked: watch::Sender<usize>,
+    fences: ObservedFences,
+    /// Each check of the parked waits: its kind, what it found, and when it
+    /// finished.
+    prechecks: Mutex<Vec<(crate::owner::Check, usize, tokio::time::Instant)>>,
 }
 
-impl ApprovalWaitProbe {
+impl WaitProbe {
     pub(crate) fn new() -> Arc<Self> {
-        Self::with_gate(None)
-    }
-
-    /// Holds the first approval wait before its first snapshot until the sender fires.
-    pub(crate) fn gated() -> (Arc<Self>, oneshot::Sender<()>) {
-        let (gate, release) = FenceGate::blocking();
-        (Self::with_gate(Some(gate)), release)
-    }
-
-    fn with_gate(gate: Option<Arc<FenceGate>>) -> Arc<Self> {
         Arc::new(Self {
-            gate,
             held: watch::channel(0).0,
             parked: watch::channel(0).0,
+            fences: ObservedFences::default(),
+            prechecks: Mutex::new(Vec::new()),
         })
     }
 
+    /// Held rechecks: the approval gate's and the credential selection's.
     pub(crate) fn held(&self) -> usize {
         *self.held.borrow()
     }
 
     pub(crate) fn parked(&self) -> usize {
         *self.parked.borrow()
+    }
+
+    /// Dispatch Fence attempts that returned.
+    pub(crate) fn fences(&self) -> usize {
+        self.fences.len()
+    }
+
+    /// The owner's checks of its parked waits, in order, each with how many
+    /// waits it found ended or moot.
+    pub(crate) fn prechecks(&self) -> Vec<(crate::owner::Check, usize)> {
+        self.prechecks
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(check, found, _)| (*check, *found))
+            .collect()
+    }
+
+    /// When the first check of `check`'s kind that found a wait ended or
+    /// moot finished.
+    pub(crate) fn first_found(&self, check: crate::owner::Check) -> Option<tokio::time::Instant> {
+        self.prechecks
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(kind, found, _)| *kind == check && *found > 0)
+            .map(|(_, _, at)| *at)
     }
 
     /// Returns once the wait has parked `count` times in total.
@@ -391,34 +444,30 @@ impl ApprovalWaitProbe {
         .expect("the Invocation parks in its wait")
         .expect("probe is alive");
     }
-
-    /// Returns once `count` held rechecks have run in total, or fails after `within`.
-    pub(crate) async fn until_held(&self, count: usize, within: Duration) {
-        tokio::time::timeout(within, async {
-            let mut held = self.held.subscribe();
-            held.wait_for(|held| *held >= count).await.map(|_| ())
-        })
-        .await
-        .expect("the wait runs a held recheck in time")
-        .expect("probe is alive");
-    }
 }
 
 #[async_trait]
-impl InvocationObserver for ApprovalWaitProbe {
+impl InvocationObserver for WaitProbe {
     fn approval_authority_checked(&self) {
         self.held.send_modify(|held| *held += 1);
     }
 
-    async fn approval_waiting(&self) -> Result<(), Error> {
-        match &self.gate {
-            Some(gate) => gate.before_fence().await,
-            None => Ok(()),
-        }
+    fn wait_parked(&self) {
+        self.parked.send_modify(|parked| *parked += 1);
     }
 
-    fn change_wait_started(&self) {
-        self.parked.send_modify(|parked| *parked += 1);
+    fn fence_attempt_finished(&self, permit: bool, durable_start: bool) {
+        self.fences.record(permit, durable_start);
+    }
+}
+
+#[async_trait]
+impl ExecutionObserver for WaitProbe {
+    fn precheck_finished(&self, check: crate::owner::Check, found: usize) {
+        self.prechecks
+            .lock()
+            .unwrap()
+            .push((check, found, tokio::time::Instant::now()));
     }
 }
 
@@ -434,6 +483,10 @@ pub(crate) struct CommitProbe {
     lose: Mutex<Option<oneshot::Receiver<()>>>,
     lost: AtomicBool,
     panic_on_next_message: AtomicBool,
+    /// Blocks the owner's task on its next dequeued message until released:
+    /// everything sent meanwhile is applied in one mailbox drain after it.
+    hold_message: Mutex<Option<mpsc::Receiver<()>>>,
+    message_held: AtomicBool,
 }
 
 impl CommitProbe {
@@ -446,6 +499,8 @@ impl CommitProbe {
             lose: Mutex::new(None),
             lost: AtomicBool::new(false),
             panic_on_next_message: AtomicBool::new(false),
+            hold_message: Mutex::new(None),
+            message_held: AtomicBool::new(false),
         })
     }
 
@@ -491,6 +546,20 @@ impl CommitProbe {
     pub(crate) fn panic_on_next_message(&self) {
         self.panic_on_next_message.store(true, Ordering::SeqCst);
     }
+
+    /// Holds the owner's task at its next dequeued message until the sender
+    /// fires (or is dropped): the messages that arrive meanwhile are applied
+    /// in one mailbox drain with it, in arrival order.
+    pub(crate) fn hold_next_message(&self) -> mpsc::Sender<()> {
+        let (release, receiver) = mpsc::channel();
+        self.message_held.store(false, Ordering::SeqCst);
+        *self.hold_message.lock().expect("hold lock") = Some(receiver);
+        release
+    }
+
+    pub(crate) fn message_held(&self) -> bool {
+        self.message_held.load(Ordering::SeqCst)
+    }
 }
 
 #[async_trait]
@@ -529,5 +598,12 @@ impl ExecutionObserver for CommitProbe {
             !self.panic_on_next_message.swap(false, Ordering::SeqCst),
             "scripted Run Owner task panic"
         );
+        let release = self.hold_message.lock().expect("hold lock").take();
+        if let Some(release) = release {
+            self.message_held.store(true, Ordering::SeqCst);
+            // Blocks the owner's thread on purpose; the test runs on more
+            // than one worker thread.
+            let _released = release.recv();
+        }
     }
 }

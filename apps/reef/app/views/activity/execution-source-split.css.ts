@@ -28,11 +28,27 @@ export const split = style({
 // other is dragged toward it or the drawer itself shrinks, with no JS measurement.
 // A column: the record's evidence scrolls, and its decision footer stays below it.
 export const detailPane = style({
+  position: 'relative',
   display: 'flex',
   flexDirection: 'column',
   minHeight: 120,
   minWidth: 0,
   overflow: 'hidden',
+})
+// The selected record's detail, header and decision footer included, that slides as one card.
+export const detailStage = style({
+  display: 'flex',
+  flexDirection: 'column',
+  flex: 1,
+  minHeight: 0,
+  minWidth: 0,
+})
+// The leaving record's copy slides over the pane, which clips it above the divider.
+export const detailLeaving = style({
+  position: 'absolute',
+  inset: 0,
+  display: 'flex',
+  flexDirection: 'column',
 })
 export const detailRegion = style({
   display: 'flex',

@@ -169,7 +169,7 @@ test('Members get 403 on Owner-only pages; malformed identifiers get 404', async
         await page.getByRole('heading', { level: 2, name: 'Team API', exact: true }).waitFor()
       })
       await step('A valid form still gives a Member no mutation authority', async () => {
-        await page.goto(`/workspaces/${ws}/providers/${providerId}/policy`)
+        await page.goto(`/workspaces/${ws}/providers/${providerId}`)
         const csrf = await page.locator('input[name="csrf"]').first().inputValue()
         const before = await api.providers.getProvider({ name: publication.provider })
         const response = await page.request.post(`/workspaces/${ws}/providers`, {

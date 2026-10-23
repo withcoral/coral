@@ -316,13 +316,16 @@ async fn provider_and_catalog_inspection_require_current_workspace_access() {
             1
         );
         assert_eq!(
-            providers
-                .published_providers(actor, workspace.id())
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|published| published.provider)
-                .collect::<Vec<_>>(),
+            crate::tests::published_providers(
+                &providers,
+                &coral_workspace::AuthenticatedPrincipal::user(actor.clone()),
+                workspace.id(),
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|published| published.provider)
+            .collect::<Vec<_>>(),
             std::slice::from_ref(&provider)
         );
     }
@@ -345,7 +348,12 @@ async fn provider_and_catalog_inspection_require_current_workspace_access() {
             Err(Error::Workspace(coral_workspace::Error::WorkspaceNotFound))
         ));
         assert!(matches!(
-            providers.published_providers(actor, workspace.id()).await,
+            crate::tests::published_providers(
+                &providers,
+                &coral_workspace::AuthenticatedPrincipal::user(actor.clone()),
+                workspace.id(),
+            )
+            .await,
             Err(Error::Workspace(coral_workspace::Error::WorkspaceNotFound))
         ));
     }

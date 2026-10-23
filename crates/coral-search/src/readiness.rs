@@ -1,10 +1,10 @@
 //! Focused inspection shares Operation eligibility with discovery, not its mixed
 //! candidate set. Each interface owns one snapshot and its exact inspection scope.
-use crate::{Error, ProviderId, UniversalSearchModule, eligibility};
+use crate::{Error, ProviderId, UniversalSearchModule};
 use coral_db::Transaction;
 use coral_provider::access::{AgentProviderInspection, ProviderReadiness};
 use coral_workspace::{
-    AuthenticatedUser, PrincipalId, WorkspaceAction, WorkspaceId, WorkspaceState,
+    AuthenticatedUser, PrincipalId, WorkspaceAction, WorkspaceId, WorkspaceRole, WorkspaceState,
 };
 use std::collections::BTreeSet;
 
@@ -64,7 +64,8 @@ impl UniversalSearchModule {
         )
         .await?;
         if evidence.workspace().state() != WorkspaceState::Archived {
-            let ready = operation_ready_providers(&mut tx, workspace, None).await?;
+            // The Agent's own reach decides; it holds no Workspace role.
+            let ready = operation_ready_providers(&mut tx, workspace, None, None).await?;
             inspections = inspections
                 .into_iter()
                 .map(|mut inspection| {
@@ -98,7 +99,13 @@ impl UniversalSearchModule {
         )
         .await?;
         if evidence.workspace().state() != WorkspaceState::Archived {
-            let ready = operation_ready_providers(&mut tx, workspace, provider_filter).await?;
+            let ready = operation_ready_providers(
+                &mut tx,
+                workspace,
+                provider_filter,
+                Some(evidence.effective_role()),
+            )
+            .await?;
             inspections = inspections
                 .into_iter()
                 .map(|inspection| {
@@ -112,10 +119,13 @@ impl UniversalSearchModule {
     }
 }
 
+/// The Providers with at least one Operation that a Principal whose role is
+/// `role` reaches and that policy and structure leave ready.
 async fn operation_ready_providers(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
     provider_filter: Option<&ProviderId>,
+    role: Option<WorkspaceRole>,
 ) -> Result<BTreeSet<ProviderId>, Error> {
     let catalogs =
         coral_provider::provider_search_catalogs_in_transaction(tx, workspace, provider_filter)
@@ -127,14 +137,8 @@ async fn operation_ready_providers(
         .iter()
         .filter(|catalog| {
             catalog.operations().iter().any(|operation| {
-                eligibility::operation_approval(
-                    &rules,
-                    catalog.provider_id(),
-                    operation.key(),
-                    operation.hints(),
-                    operation.http_method(),
-                )
-                .is_some()
+                coral_provider::reaches(catalog.access().call_root(), operation.key(), role)
+                    && !rules.disables(catalog.provider_id(), operation)
             })
         })
         .map(|catalog| catalog.access().id().clone())

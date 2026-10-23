@@ -41,26 +41,25 @@ pub(crate) fn restrict(select: &mut SelectStatement, authority: &HistoryAuthorit
         (Alias::new("r"), Alias::new("principal_kind")).into_column_ref(),
     );
 }
-fn current_approval(now: i64) -> SimpleExpr {
+fn current_approval() -> SimpleExpr {
     Expr::exists(
         Query::select()
             .expr(Expr::val(1_i64))
             .from_as(Alias::new("invocation_approvals"), Alias::new("a"))
-            .and_where(crate::approval_repository::pending_invocation(now))
+            .and_where(crate::approval_repository::pending_invocation())
             .to_owned(),
     )
 }
-fn invocation_action(now: i64) -> SimpleExpr {
+fn invocation_action() -> SimpleExpr {
     let connection = coral_provider::account::history_repository::has_pending_connection(
         (Alias::new("i"), Alias::new("workspace_id")).into_column_ref(),
         (Alias::new("r"), Alias::new("principal_id")).into_column_ref(),
         (Alias::new("r"), Alias::new("principal_kind")).into_column_ref(),
         (Alias::new("i"), Alias::new("account_connection_request_id")).into_column_ref(),
-        now,
     );
     col("i", "state")
         .eq("pending")
-        .and(current_approval(now).or(connection))
+        .and(current_approval().or(connection))
 }
 fn invoking_authority(now: i64) -> SimpleExpr {
     let column = |field: &str| (Alias::new("r"), Alias::new(field)).into_column_ref();
@@ -91,10 +90,12 @@ pub(super) async fn invoking_authority_current(
 pub(crate) fn running() -> SimpleExpr {
     col("r", "state").eq(crate::RunState::Running.as_storage_str())
 }
+/// A Run that still takes human actions, as recorded: running with no
+/// termination intent (its deadline ends it only once the owner records the
+/// timeout), under an invoking authority current at `now`.
 pub(super) fn active_run(now: i64) -> SimpleExpr {
     running()
         .and(col("r", "termination_kind").is_null())
-        .and(col("r", "deadline_at_unix_nanos").gt(now))
         .and(invoking_authority(now))
 }
 fn duration(table: &str, start: &str, end: &str, now: i64) -> SimpleExpr {
@@ -151,14 +152,14 @@ fn incomplete_context(workspace: SimpleExpr, run: SimpleExpr) -> SimpleExpr {
     )
 }
 
-fn run_action(now: i64) -> SimpleExpr {
+fn run_action() -> SimpleExpr {
     Expr::exists(
         Query::select()
             .expr(Expr::val(1_i64))
             .from_as(Alias::new("operation_invocations"), Alias::new("i"))
             .and_where(col("i", "workspace_id").eq(col("r", "workspace_id")))
             .and_where(col("i", "run_id").eq(col("r", "id")))
-            .and_where(invocation_action(now))
+            .and_where(invocation_action())
             .to_owned(),
     )
 }
@@ -196,7 +197,7 @@ fn run_select(now: i64) -> SelectStatement {
             Alias::new("duration"),
         )
         .expr_as(
-            active_run(now).and(run_action(now)),
+            active_run(now).and(run_action()),
             Alias::new("requires_action"),
         )
         .expr_as(
@@ -348,7 +349,7 @@ pub(crate) async fn exact_invocation(
             Alias::new("duration"),
         )
         .expr_as(
-            active_run(now).and(invocation_action(now)),
+            active_run(now).and(invocation_action()),
             Alias::new("requires_action"),
         )
         .and_where(col("i", "workspace_id").eq(workspace.to_string()))

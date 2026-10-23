@@ -28,13 +28,15 @@ impl GetProvider {
 
     /// Reads the Provider Configuration as the invoking User.
     pub(super) async fn perform(&self, host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
+        // Only an Owner reaches getProvider; an Agent reads no configuration.
+        let Some(context) = host.context else {
+            return Err(Error::InvocationRejected(
+                CoralFailure::AuthorityLost.into(),
+            ));
+        };
         let inspected = host
             .providers
-            .inspect_provider_configuration(
-                host.context.actor(),
-                host.workspace_id,
-                &self.namespace,
-            )
+            .inspect_provider_configuration(context.actor(), host.workspace_id, &self.namespace)
             .await
             .map_err(|error| match error {
                 coral_provider::Error::ProviderNotFound => {

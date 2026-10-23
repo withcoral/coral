@@ -308,7 +308,20 @@ async fn runtime_with_mcp_client(
 ) {
     let temp = TempDir::new().expect("temporary state root");
     std::fs::write(temp.path().join("config.toml"), config).unwrap();
-    let server = start(ServerBuilder::new().with_config_dir(temp.path()))
+    let (server, workspace, client) = serve_with_mcp_client(temp.path()).await;
+    (temp, server, workspace, client)
+}
+
+/// Starts a composed runtime on the state root `dir`, whose configuration is
+/// written already, with a Workspace and an MCP client connected to it.
+async fn serve_with_mcp_client(
+    dir: &std::path::Path,
+) -> (
+    RunningRuntime,
+    coral_workspace::WorkspaceId,
+    rmcp::service::RunningService<rmcp::RoleClient, ()>,
+) {
+    let server = start(ServerBuilder::new().with_config_dir(dir))
         .await
         .expect("start composed server");
     let workspace = WorkspaceModule::new(server.grpc.database())
@@ -333,7 +346,59 @@ async fn runtime_with_mcp_client(
         ))
         .await
         .expect("connect MCP client");
-    (temp, server, workspace.id().clone(), client)
+    (server, workspace.id().clone(), client)
+}
+
+/// Starts a Run over MCP whose Program spins and commits nothing after it
+/// starts, so only a stop ends it; returns its id once it is running.
+async fn spin_a_run(client: &rmcp::service::RunningService<rmcp::RoleClient, ()>) -> String {
+    let task = mcp_tool(
+        client,
+        "start_task",
+        serde_json::json!({"intent": "Spin until stopped"}),
+    )
+    .await;
+    let task_id = task
+        .get("task_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("task id");
+    let exec = mcp_tool(
+        client,
+        "exec",
+        serde_json::json!({
+            "task_id": task_id,
+            "intent": "Spin until stopped",
+            "program": "while (true) {}",
+            "wait_ms": 200,
+        }),
+    )
+    .await;
+    assert_eq!(exec.get("state"), Some(&serde_json::json!("running")));
+    exec.get("run_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("run id")
+        .to_owned()
+}
+
+/// A connection of its own to the SQLite state database at `dir`.
+async fn state_database(dir: &std::path::Path) -> sqlx::SqliteConnection {
+    use sqlx::Connection as _;
+    sqlx::SqliteConnection::connect_with(
+        &sqlx::sqlite::SqliteConnectOptions::new().filename(dir.join("coral.db")),
+    )
+    .await
+    .expect("open the state database")
+}
+
+/// The state of the Run `run_id` as the SQLite state database at `dir`
+/// records it.
+async fn recorded_run_state(dir: &std::path::Path, run_id: &str) -> String {
+    let (state,): (String,) = sqlx::query_as("SELECT state FROM program_run_records WHERE id = ?")
+        .bind(run_id)
+        .fetch_one(&mut state_database(dir).await)
+        .await
+        .expect("read the Run");
+    state
 }
 
 async fn mcp_tool(
@@ -380,33 +445,7 @@ async fn a_reef_cancel_stops_a_run_started_over_mcp_promptly() {
         ActivityRunState, CancelActivityRunRequest, activity_service_client::ActivityServiceClient,
     };
     let (_temp, server, workspace, client) = runtime_with_mcp_client(WEB).await;
-    let task = mcp_tool(
-        &client,
-        "start_task",
-        serde_json::json!({"intent": "Spin until cancelled"}),
-    )
-    .await;
-    let task_id = task
-        .get("task_id")
-        .and_then(serde_json::Value::as_str)
-        .expect("task id");
-    // The Program commits nothing after it starts, so only a stop reaches it.
-    let exec = mcp_tool(
-        &client,
-        "exec",
-        serde_json::json!({
-            "task_id": task_id,
-            "intent": "Spin until cancelled",
-            "program": "while (true) {}",
-            "wait_ms": 200,
-        }),
-    )
-    .await;
-    assert_eq!(exec.get("state"), Some(&serde_json::json!("running")));
-    let run_id = exec
-        .get("run_id")
-        .and_then(serde_json::Value::as_str)
-        .expect("run id");
+    let run_id = spin_a_run(&client).await;
 
     let mut activity = ActivityServiceClient::connect(server.endpoint_uri().to_owned())
         .await
@@ -433,4 +472,117 @@ async fn a_reef_cancel_stops_a_run_started_over_mcp_promptly() {
 
     client.cancel().await.expect("close MCP client");
     server.shutdown().await.expect("stop composed server");
+}
+
+/// The expired-lease sweep's boot pass ends a Run left running by a process
+/// that died (its Run Owner gone, its lease lapsed): the Run is `interrupted`
+/// within seconds of the next process starting, well before the sweep's
+/// first cadence tick a half lease later.
+#[test]
+fn the_boot_sweep_ends_a_run_whose_process_died() {
+    let temp = TempDir::new().expect("temporary state root");
+    std::fs::write(temp.path().join("config.toml"), WEB).unwrap();
+    // The process that dies: its runtime goes away with the Run executing,
+    // and its owner writes nothing more.
+    let dying = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("the dying process's runtime");
+    let run_id = dying.block_on(async {
+        let (server, _workspace, client) = serve_with_mcp_client(temp.path()).await;
+        let run_id = spin_a_run(&client).await;
+        drop(client);
+        drop(server);
+        run_id
+    });
+    dying.shutdown_timeout(std::time::Duration::from_secs(10));
+
+    let next = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("the next process's runtime");
+    next.block_on(async {
+        assert_eq!(recorded_run_state(temp.path(), &run_id).await, "running");
+        // The lease the dead owner last renewed lapses, without waiting it
+        // out.
+        sqlx::query(
+            "UPDATE program_run_records \
+             SET worker_claim_expires_at_unix_nanos = accepted_at_unix_nanos WHERE id = ?",
+        )
+        .bind(&run_id)
+        .execute(&mut state_database(temp.path()).await)
+        .await
+        .expect("lapse the dead owner's lease");
+        let server = start(ServerBuilder::new().with_config_dir(temp.path()))
+            .await
+            .expect("start the next process");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while recorded_run_state(temp.path(), &run_id).await != "interrupted" {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the boot pass ends the dead process's Run");
+        server.shutdown().await.expect("stop the next process");
+    });
+}
+
+/// Once shutdown begins, every listener reports not ready while it keeps
+/// serving for the Shutdown Drain.
+#[tokio::test(flavor = "multi_thread")]
+async fn readiness_reports_not_serving_once_shutdown_begins() {
+    use tonic_health::pb::{
+        HealthCheckRequest, health_check_response::ServingStatus, health_client::HealthClient,
+    };
+    let (_temp, server, _workspace, client) =
+        runtime_with_mcp_client(&format!("{WEB}[runtime]\nshutdown_drain_seconds = 3\n")).await;
+    // A live Run keeps the drain going.
+    spin_a_run(&client).await;
+    client.cancel().await.expect("close MCP client");
+    let mcp = format!("http://{}", server.mcp_http_addr());
+    let http = reqwest::Client::new();
+    let status = async |path: &str| {
+        http.get(format!("{mcp}/{path}"))
+            .send()
+            .await
+            .expect("the MCP listener serves")
+            .status()
+    };
+    let mut health = HealthClient::new(
+        tonic::transport::Channel::from_shared(server.endpoint_uri().to_owned())
+            .unwrap()
+            .connect()
+            .await
+            .expect("connect gRPC health"),
+    );
+    let mut check = async |service: &str| {
+        health
+            .check(HealthCheckRequest {
+                service: service.into(),
+            })
+            .await
+            .expect("the gRPC listener serves")
+            .into_inner()
+            .status
+    };
+    assert_eq!(
+        check("coral.readiness").await,
+        ServingStatus::Serving as i32
+    );
+    assert_eq!(status("readyz").await, 200);
+
+    let shutdown = tokio::spawn(server.shutdown());
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while check("coral.readiness").await != ServingStatus::NotServing as i32 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("readiness reports not serving once shutdown begins");
+    assert_eq!(status("readyz").await, 503);
+
+    shutdown
+        .await
+        .expect("shutdown task")
+        .expect("stop composed server");
 }

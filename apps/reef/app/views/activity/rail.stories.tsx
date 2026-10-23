@@ -253,13 +253,15 @@ export const PointerAndHistory: Story = {
     await userEvent.click(link('Task 1'))
     await waitFor(() => expect(focus()).toBe('table on Task 1'))
     const close = within(reopened).getByRole('button', { name: 'Close details' })
+    // The rail's first control is its live toggle.
+    const follow = within(reopened).getByRole('button', { name: 'Follow this task' })
     for (let step = 0; step < 20 && table.contains(document.activeElement); step++)
       await userEvent.tab()
-    await waitFor(() => expect(close).toHaveFocus())
+    await waitFor(() => expect(follow).toHaveFocus())
     await userEvent.tab({ shift: true })
     await waitFor(() => expect(table.contains(document.activeElement)).toBe(true))
     await userEvent.tab()
-    await waitFor(() => expect(close).toHaveFocus())
+    await waitFor(() => expect(follow).toHaveFocus())
 
     // Escape in the rail closes it.
     close.focus()

@@ -10,6 +10,7 @@ import {
   addProviderFromFile,
   createWorkspace,
   createWorkspaceViaUi,
+  enableOperation,
   openCustomSource,
   programRunner,
 } from '../../../../support/providers.ts'
@@ -55,13 +56,8 @@ test.for(['http', 'trusted', 'untrusted'] as const)(
           openApiDocument('Sidecar', { hello: {} }, { server: upstream.origin }),
           'sidecar',
         )
-        await page.goto(`${path}/policy`)
-        await page
-          .getByRole('checkbox', { name: 'coral.providers.sidecar.hello', exact: true })
-          .check()
-        await page.getByRole('radio', { name: 'Always allow', exact: true }).check()
-        await page.getByRole('button', { name: 'Save selected operations', exact: true }).click()
-        await page.getByText('Always allow · Exact rule', { exact: true }).waitFor()
+        await page.goto(path)
+        await enableOperation(page, 'hello')
       })
       await step('Dispatch as the signed-in user with normal TLS verification', async () => {
         const token = await mcpToken(page, workspace)

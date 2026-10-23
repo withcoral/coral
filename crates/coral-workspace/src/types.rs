@@ -339,6 +339,23 @@ pub enum WorkspaceAction {
     Dispatch,
 }
 
+impl WorkspaceAction {
+    /// Whether only a User with effective Workspace Owner authority may take
+    /// this action. Agents hold no Workspace role, so they never may.
+    #[must_use]
+    pub const fn requires_owner(self) -> bool {
+        matches!(self, Self::Configure)
+    }
+
+    /// Whether a Principal whose Workspace role is `role` (`None` for an
+    /// Agent) may take this action, before the Workspace's lifecycle state
+    /// is considered.
+    #[must_use]
+    pub fn permitted_to(self, role: Option<WorkspaceRole>) -> bool {
+        !self.requires_owner() || role == Some(WorkspaceRole::Owner)
+    }
+}
+
 /// Source of one Workspace authority decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthoritySource {

@@ -121,7 +121,7 @@ test('Workspace OAuth supports external-browser consent and application secret r
       await page.getByRole('link', { name: 'Approve fixture access', exact: true }).waitFor()
       const consent = page.url()
       await page.goto(authorization)
-      await page.getByRole('link', { name: 'Check connection', exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Cancel', exact: true }).waitFor()
       expect(await page.getByText('Account connected.', { exact: false }).count()).toBe(0)
       expect((await inspect()).account?.state).toBe(ProviderAccountState.DISCONNECTED)
       expect((await inspect()).account?.connectedTime).toBeUndefined()
@@ -147,7 +147,7 @@ test('Workspace OAuth supports external-browser consent and application secret r
       expect(page.url()).not.toContain(secret)
       const consent = page.url()
       await page.goto(authorization)
-      await page.getByRole('link', { name: 'Check connection', exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Cancel', exact: true }).waitFor()
       const browser = await page.context().newPage()
       try {
         await browser.goto(consent)

@@ -647,8 +647,9 @@ message SummarizeActivityResponse {
   repeated ActivityOperationCalls operations = 3;
   // Approval requests decided in the window.
   ActivityApprovalDecisions approvals = 4;
-  // Net context bytes of Runs that ended in the window. Negative means saved.
-  // Absent when no Run in the window has a measured total.
+  // Net context bytes of the work that ended in the window, as Activity counts
+  // it: each search and describe response, and each Run. Negative means saved.
+  // Absent when no work in the window has a measured total.
   optional int64 context_impact_bytes = 5;
   // True while a Run in scope is running, or when a Run that ended in the window
   // has no measurement. context_impact_bytes then leaves that work out.
@@ -664,9 +665,10 @@ message ActivityCallOutcomes {
   // A rule stopped the call: a disabled Operation, a required approval, lost access,
   // or a rejected destination.
   int64 blocked = 2;
-  // A person declined the approval or the Account connection, or let it expire.
+  // A person declined the approval or the Account connection, or let the approval expire.
   int64 not_allowed = 3;
-  // A Provider, Account or credential needs repair.
+  // A Provider, Account or credential needs repair, or an Account connection expired
+  // unanswered.
   int64 needs_setup = 4;
   // The Program's call or the upstream failed, or the result is unknown.
   int64 failed = 5;

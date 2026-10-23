@@ -5,13 +5,14 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use coral_provider::account::ConnectionRequestId;
 use coral_workspace::{Principal, TraceId};
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
 
 use crate::approval::{ApprovalDecision, ApprovalId, ApprovalState};
 use crate::engine::{ExecutionCompletion, ProgramPackage};
 use crate::execution::ExecutionStop;
-use crate::invocation::FenceRequest;
+use crate::invocation::{FenceRequest, ParkedInvocation};
 use crate::termination::ShutdownAction;
 use crate::{Error, ProgramLogLevel, ProgramValue, RunId, SourceLocation};
 
@@ -38,6 +39,80 @@ pub(crate) enum DecisionAnswer {
     FromRecord,
 }
 
+/// A timer the owner arms (an [`Effect::ArmTimer`] the host runs as a sleep
+/// on its own clock). It fires back into the mailbox as [`Message::Timer`],
+/// applied in arrival order with every other message, so the clock decides
+/// nothing outside `apply`: a passed deadline is one ordered decision
+/// against the cancel or the decision that races it.
+///
+/// [`Effect::ArmTimer`]: super::state::Effect::ArmTimer
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum Timer {
+    /// The Run deadline: the Run times out.
+    RunDeadline,
+    /// One Approval Request's deadline: the request expires and its
+    /// Invocation ends.
+    Approval(ApprovalId),
+    /// One connection request's deadline: the Invocations parked on it stop
+    /// waiting for it.
+    Connection(ConnectionRequestId),
+    /// Half a lease: an owner that committed nothing meanwhile renews its
+    /// lease with an empty chunk. Armed again on every fire.
+    IdleTick,
+    /// The shutdown grace since the Program was stopped is out.
+    Grace,
+    /// The periodic precheck of the parked waits is due.
+    Precheck,
+    /// The gap since the last connection check after a change is out.
+    WakeGap,
+}
+
+/// What a parked Invocation waits for, as the owner keeps it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ParkedWait {
+    /// A decision on its Approval Request, which expires at the deadline.
+    Approval {
+        approval: ApprovalId,
+        deadline_at_unix_nanos: i64,
+    },
+    /// Its User's connection request to end, which expires at the deadline.
+    Connection {
+        request: ConnectionRequestId,
+        expires_at_unix_nanos: i64,
+    },
+}
+
+impl ParkedWait {
+    /// The owner's timer for the wait's deadline, and the deadline.
+    pub(crate) fn deadline(&self) -> (Timer, i64) {
+        match self {
+            Self::Approval {
+                approval,
+                deadline_at_unix_nanos,
+            } => (Timer::Approval(approval.clone()), *deadline_at_unix_nanos),
+            Self::Connection {
+                request,
+                expires_at_unix_nanos,
+            } => (Timer::Connection(*request), *expires_at_unix_nanos),
+        }
+    }
+
+    pub(crate) const fn on_connection(&self) -> bool {
+        matches!(self, Self::Connection { .. })
+    }
+}
+
+/// One read of the parked waits in a snapshot, held nowhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Check {
+    /// After the change signal rang: the connection requests the parked
+    /// waits are on, and nothing else.
+    Connections,
+    /// The periodic precheck: every parked wait against the Dispatch Fence's
+    /// facts, for a wait that ended or became moot without a wake-up.
+    Periodic,
+}
+
 /// What the owner's first chunk started: the package to execute, and the
 /// Run Ledger head after the execution-start mark, which the owner tracks
 /// from here on.
@@ -61,6 +136,10 @@ pub(crate) enum RequestKey {
 #[derive(Debug, Clone)]
 pub(crate) struct DecisionRequest {
     pub(crate) approval: ApprovalId,
+    /// The request's deadline as the requester read it: a decision applied
+    /// past it on the owner's clock is judged as the request's timer would
+    /// have been first.
+    pub(crate) deadline_at_unix_nanos: i64,
     pub(crate) decision: ApprovalDecision,
     pub(crate) actor: Principal,
     pub(crate) comment: Option<String>,
@@ -68,9 +147,10 @@ pub(crate) struct DecisionRequest {
 }
 
 /// Everything the Run Owner's loop decides on: Run Requests from the Program
-/// host and from outside, the outcomes of the effects the hosting task ran,
-/// and the two signals the hosting task adds (the drained mailbox and the
-/// idle tick).
+/// host and from outside, the outcomes of the effects the hosting task ran
+/// (a chunk's answer and what its work recorded or parked, a snapshot check
+/// of the parked waits), and the signals the hosting task adds (the drained
+/// mailbox, the timers, and the change signal's rings).
 pub(crate) enum Message {
     /// The owner exists; commit its first chunk.
     Launch,
@@ -125,12 +205,23 @@ pub(crate) enum Message {
         requester: Principal,
         reply: RequestReply,
     },
-    /// The Run deadline passed: the Run times out.
-    Deadline,
-    /// The shutdown grace since the owner stopped its Program passed
-    /// without the Program reporting its end: the owner ends the Run
-    /// without it.
-    GraceExpired,
+    /// A timer the owner armed fired: the Run deadline, an Approval
+    /// Request's or a connection request's deadline, the idle tick, the
+    /// shutdown grace, the periodic precheck, or the end of the wake gap.
+    Timer(Timer),
+    /// A chunk that landed parked an Invocation: its held recheck found it
+    /// waiting on an Approval Request or a connection request. Reaches the
+    /// owner before that chunk's `Committed`.
+    Parked(Box<ParkedInvocation>),
+    /// The content-free change signal rang while the owner is subscribed: a
+    /// hint that a connection request may have ended.
+    Changed,
+    /// A check of the parked waits read its snapshot: the parks (by the
+    /// serial the owner gave each) whose wait it found ended or moot.
+    Prechecked {
+        check: Check,
+        found: Result<Vec<u64>, Error>,
+    },
     /// The Program's execution ended.
     ProgramEnded(ExecutionCompletion),
     /// The chunk in flight landed.
@@ -151,13 +242,15 @@ pub(crate) enum Message {
     /// Run is terminal; `Ok(false)` a dispatch is still in flight within the
     /// shutdown grace, and the owner tries again.
     SettleAttempted(Result<bool, Error>),
-    /// The self-interrupt's one chunk is recorded, or another writer ended or
-    /// took the Run first.
+    /// The self-interrupt's one chunk, or a recovered owner's, is recorded,
+    /// or another writer ended or took the Run first.
     Interrupted(Result<(), CommitRejection>),
-    /// An outside writer recorded a termination and wants execution to stop.
+    /// A recovered owner has applied every timer that passed: end the Run in
+    /// one chunk. The sweep queues it last.
+    Recover,
+    /// The process interrupts the Run: its Shutdown Drain is out, or another
+    /// owner registered for the Run.
     Stop,
-    /// Half a lease passed since the last commit.
-    IdleTick,
     /// The mailbox is empty: commit when free.
     Drained,
 }
@@ -199,8 +292,14 @@ impl fmt::Debug for Message {
                 .debug_struct("Cancel")
                 .field("requester", requester)
                 .finish(),
-            Self::Deadline => formatter.write_str("Deadline"),
-            Self::GraceExpired => formatter.write_str("GraceExpired"),
+            Self::Timer(timer) => formatter.debug_tuple("Timer").field(timer).finish(),
+            Self::Parked(parked) => formatter.debug_tuple("Parked").field(parked).finish(),
+            Self::Changed => formatter.write_str("Changed"),
+            Self::Prechecked { check, found } => formatter
+                .debug_struct("Prechecked")
+                .field("check", check)
+                .field("found", found)
+                .finish(),
             Self::ProgramEnded(completion) => formatter
                 .debug_tuple("ProgramEnded")
                 .field(completion)
@@ -226,8 +325,8 @@ impl fmt::Debug for Message {
             Self::Interrupted(result) => {
                 formatter.debug_tuple("Interrupted").field(result).finish()
             }
+            Self::Recover => formatter.write_str("Recover"),
             Self::Stop => formatter.write_str("Stop"),
-            Self::IdleTick => formatter.write_str("IdleTick"),
             Self::Drained => formatter.write_str("Drained"),
         }
     }
@@ -305,7 +404,7 @@ struct Shared {
 
 /// A handle on one live Run Owner: the Program host and the Invocation tasks
 /// send it Program requests, outside requesters their decisions and
-/// cancellations, the deadline task the deadline; recovery asks it to stop.
+/// cancellations; the Shutdown Drain asks it to stop.
 #[derive(Clone)]
 pub(crate) struct OwnerHandle {
     shared: Arc<Shared>,
@@ -469,11 +568,6 @@ impl OwnerHandle {
             .map(drop)
     }
 
-    /// Tells the owner that the Run deadline passed.
-    pub(crate) fn deadline(&self) {
-        self.send(Message::Deadline);
-    }
-
     /// Sends one request and waits for its answer; a retired owner, or one
     /// that dropped the reply, answers [`Error::OwnerLost`].
     async fn ask<T>(
@@ -493,53 +587,86 @@ impl OwnerHandle {
 #[derive(Clone, Default)]
 pub(crate) struct Owners {
     owners: Arc<Mutex<HashMap<RunId, OwnerHandle>>>,
+    /// How many owners are live, for the Shutdown Drain to wait on.
+    live: Arc<watch::Sender<usize>>,
 }
 
 impl Owners {
-    /// Registers `handle` as its Run's owner for the registration's lifetime.
-    pub(crate) fn register(&self, handle: OwnerHandle) -> OwnerRegistration {
-        let replaced = self
-            .owners
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<RunId, OwnerHandle>> {
+        self.owners
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(handle.run_id().clone(), handle.clone());
+    }
+
+    /// Registers `handle` as its Run's owner for the registration's lifetime.
+    pub(crate) fn register(&self, handle: OwnerHandle) -> OwnerRegistration {
+        let (registration, replaced) = self.insert(&mut self.lock(), handle);
         if let Some(replaced) = replaced {
             replaced.request_stop();
         }
-        OwnerRegistration {
-            owners: self.clone(),
-            handle,
+        registration
+    }
+
+    /// Registers a recovered owner, unless an owner for its Run is live here
+    /// already: a local owner is never swept, it continues while its commits
+    /// find its claim.
+    pub(crate) fn register_recovered(&self, handle: OwnerHandle) -> Option<OwnerRegistration> {
+        let mut owners = self.lock();
+        if owners.contains_key(handle.run_id()) {
+            return None;
         }
+        Some(self.insert(&mut owners, handle).0)
+    }
+
+    fn insert(
+        &self,
+        owners: &mut HashMap<RunId, OwnerHandle>,
+        handle: OwnerHandle,
+    ) -> (OwnerRegistration, Option<OwnerHandle>) {
+        let replaced = owners.insert(handle.run_id().clone(), handle.clone());
+        self.live.send_replace(owners.len());
+        (
+            OwnerRegistration {
+                owners: self.clone(),
+                handle,
+            },
+            replaced,
+        )
     }
 
     /// The owner holding `claim_id` for `run_id`, when one is live here.
     pub(crate) fn find(&self, run_id: &RunId, claim_id: &str) -> Option<OwnerHandle> {
-        self.owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.lock()
             .get(run_id)
             .filter(|handle| handle.claim_id() == claim_id)
             .cloned()
     }
 
-    #[cfg(test)]
+    /// Whether an owner for `run_id` is live here, whatever its claim.
     pub(crate) fn contains(&self, run_id: &RunId) -> bool {
-        self.owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(run_id)
+        self.lock().contains_key(run_id)
+    }
+
+    /// Every owner live here now.
+    pub(crate) fn live(&self) -> Vec<OwnerHandle> {
+        self.lock().values().cloned().collect()
+    }
+
+    /// Returns once no owner is live here.
+    pub(crate) async fn retired(&self) {
+        let mut live = self.live.subscribe();
+        // The sender lives as long as `self`.
+        let _none_live = live.wait_for(|count| *count == 0).await;
     }
 
     fn remove(&self, handle: &OwnerHandle) {
-        let mut owners = self
-            .owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owners = self.lock();
         if owners
             .get(handle.run_id())
             .is_some_and(|registered| registered.claim_id() == handle.claim_id())
         {
             owners.remove(handle.run_id());
+            self.live.send_replace(owners.len());
         }
     }
 }

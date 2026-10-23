@@ -23,7 +23,6 @@ const pending: AuthorizationView = {
   state: 'pending',
   oauth: false,
   grantedScope: '',
-  expiresAt: '2026-09-24T12:15:00.000Z',
   credentialFields: [{ name: 'token', label: 'Token', description: '', sensitive: true }],
   form: { csrf: 'test', requestId: 'test-request' },
 }

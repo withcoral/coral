@@ -378,8 +378,8 @@ export function attemptProgress(
               ? attempt.account
               : null
   // A configuration confirmed without an OAuth application has nothing to sign
-  // in with. Coral's createProvider now refuses one, but an older Coral server
-  // can still confirm it. Only Configuration asks for an application.
+  // in with. Coral's addProvider now refuses one, but an older Coral server's
+  // createProvider can still confirm it. Only Configuration asks for an application.
   const needsApplication =
     !frozen && setup?.configuration?.confirmed === true && needsOAuthApplication(setup)
   // Why this Setup can go no further. A replay still reaches its publication.

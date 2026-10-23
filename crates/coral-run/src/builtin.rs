@@ -12,12 +12,13 @@ use coral_catalog::{
     ArgumentProblem, BuiltinArguments, BuiltinOperation, ExecutionBinding, MaterializedOperation,
     OperationKey, ProviderFacts, ProviderGenerationId,
 };
+use coral_policy::ExactOperationRules;
 use coral_provider::account::AccountModule;
 use coral_provider::{
     ManagementRequestId, ProviderModule, ProviderSetupId, PublishedProvider,
     ResolvedInvocationOperation, WorkspaceProviderPublisher,
 };
-use coral_workspace::{ChangeContext, Principal, WorkspaceId};
+use coral_workspace::{AuthenticatedPrincipal, ChangeContext, Principal, WorkspaceId};
 
 use crate::error::InputProblem;
 use crate::lifecycle::RunRecord;
@@ -25,14 +26,14 @@ use crate::{
     CoralFailure, Error, HumanInterfaceUrl, InvocationId, InvocationResultKind, Rejection,
 };
 
-mod create_provider;
+mod add_provider;
 mod get_provider;
 mod list_providers;
 
 /// One admitted Built-in Operation with its validated input.
 #[derive(Clone)]
 pub(crate) enum BuiltinCall {
-    CreateProvider(Box<create_provider::CreateProvider>),
+    AddProvider(Box<add_provider::AddProvider>),
     ListProviders,
     GetProvider(get_provider::GetProvider),
 }
@@ -55,9 +56,9 @@ impl BuiltinCall {
             BuiltinArguments::parse(operation, arguments)
                 .map_err(|problems| rejection(&problems))
                 .and_then(|arguments| match arguments {
-                    BuiltinArguments::CreateProvider(arguments) => {
-                        create_provider::CreateProvider::new(*arguments)
-                            .map(|call| Self::CreateProvider(Box::new(call)))
+                    BuiltinArguments::AddProvider(arguments) => {
+                        add_provider::AddProvider::new(*arguments)
+                            .map(|call| Self::AddProvider(Box::new(call)))
                     }
                     BuiltinArguments::ListProviders => Ok(Self::ListProviders),
                     BuiltinArguments::GetProvider(arguments) => {
@@ -70,7 +71,7 @@ impl BuiltinCall {
     /// Performs the Operation and returns its Operation Result.
     pub(crate) async fn perform(&self, host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
         match self {
-            Self::CreateProvider(call) => call.perform(host).await,
+            Self::AddProvider(call) => call.perform(host).await,
             Self::ListProviders => list_providers::perform(host).await,
             Self::GetProvider(call) => call.perform(host).await,
         }
@@ -97,11 +98,9 @@ pub(crate) async fn recover(
         return Ok(None);
     };
     match binding.operation() {
-        Some(BuiltinOperation::CreateProvider) => {
-            create_provider::recover(transaction, run, invocation)
-                .await
-                .map(Some)
-        }
+        Some(BuiltinOperation::AddProvider) => add_provider::recover(transaction, run, invocation)
+            .await
+            .map(Some),
         // A read leaves nothing behind, and this version cannot read an
         // Operation it does not perform.
         Some(BuiltinOperation::ListProviders | BuiltinOperation::GetProvider) | None => Ok(None),
@@ -125,15 +124,19 @@ pub(crate) trait InvokingRun: Send + Sync {
     fn setup_prepared(&self) {}
 }
 
-/// What a Built-in Operation acts through: the invoking User in the Run's
-/// Workspace, the workflow Reef publishes with, and the Reef origin its
+/// What a Built-in Operation acts through: the invoking Principal in the
+/// Run's Workspace, the workflow Reef publishes with, and the Reef origin its
 /// results link to.
 pub(crate) struct BuiltinHost<'a> {
+    pub(crate) database: &'a coral_db::Database,
     pub(crate) providers: &'a ProviderModule,
     /// Where people sign in; without it, nobody can.
     pub(crate) accounts: Option<&'a AccountModule>,
     pub(crate) publisher: Option<&'a dyn WorkspaceProviderPublisher>,
-    pub(crate) context: &'a ChangeContext,
+    pub(crate) actor: &'a AuthenticatedPrincipal,
+    /// The invoking User's change context; `None` for an Agent, which
+    /// reaches no Operation that changes the Workspace.
+    pub(crate) context: Option<&'a ChangeContext>,
     pub(crate) principal: &'a Principal,
     pub(crate) workspace_id: &'a WorkspaceId,
     pub(crate) human_interface: &'a HumanInterfaceUrl,
@@ -153,14 +156,19 @@ fn rejection(problems: &[ArgumentProblem]) -> Rejection {
 }
 
 /// What both Operations report about a Provider: how to call it and whether
-/// the Program needs a person first.
-fn provider_facts(published: &PublishedProvider) -> ProviderFacts {
+/// the Program needs a person first. It counts only the Operations that
+/// `rules`, read in the same snapshot as `published`, leave callable.
+fn provider_facts(published: &PublishedProvider, rules: &ExactOperationRules) -> ProviderFacts {
     let provider = &published.provider;
     ProviderFacts {
         display_name: provider.display_name().to_owned(),
         credential_route: provider.access().credential_route().into(),
         authentication: published.authentication,
-        operations: published.available_operations,
+        operations: published
+            .operations
+            .iter()
+            .filter(|operation| !rules.disables(provider.id(), operation))
+            .count(),
         account_required: published.account_required,
     }
 }
@@ -176,15 +184,13 @@ fn setup_url(host: &BuiltinHost<'_>, setup: &ProviderSetupId) -> String {
     ))
 }
 
-/// A User who lost Workspace authority since admission is a failure the
-/// Program can catch; anything else is a host defect.
+/// A Principal that lost Workspace authority since admission is a failure
+/// the Program can catch; anything else is a host defect.
 fn authority_error(error: coral_provider::Error) -> Error {
     match error {
-        coral_provider::Error::Workspace(
-            coral_workspace::Error::WorkspaceNotFound
-            | coral_workspace::Error::PermissionDenied(_)
-            | coral_workspace::Error::WorkspaceArchived,
-        ) => Error::InvocationRejected(CoralFailure::AuthorityLost.into()),
+        coral_provider::Error::Workspace(error) if crate::fence::loses_authority(&error) => {
+            Error::InvocationRejected(CoralFailure::AuthorityLost.into())
+        }
         other => other.into(),
     }
 }

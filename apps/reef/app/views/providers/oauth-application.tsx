@@ -38,7 +38,7 @@ export function OAuthApplicationBlock({
   const signInHost = device ? '' : hostOf(setup.configuration?.values.authorizationUrl)
   const tokenHost = hostOf(setup.configuration?.values.tokenUrl)
   const callHosts = credentialHosts(setup)
-  // An agent's createProvider can choose these endpoints and the servers, so
+  // An agent's addProvider can choose these endpoints and the servers, so
   // you see them before you sign in.
   const destination = [
     signInHost && `You sign in at ${signInHost}.`,
@@ -214,7 +214,7 @@ export function OAuthApplicationBlock({
           <input type="hidden" name="authorizationParameters" value={parameters} />
           {configured.mode === 'manual' &&
             note('Signs in through your own OAuth application, client ID')}
-          {/* An agent's createProvider names a confidential application but
+          {/* An agent's addProvider names a confidential application but
               never its secret, so you enter it here before you sign in. The
               sign-in form supplies the field, so it stays a document form. */}
           {configured.authentication &&
@@ -236,7 +236,7 @@ export function OAuthApplicationBlock({
               {destination}
             </Typography.BodySmall>
           )}
-          {/* An agent's createProvider confirms the configuration without an
+          {/* An agent's addProvider confirms the configuration without an
               application. Coral chooses one at sign-in: the one it registered
               for this setup, or a new one. It never reuses a client ID you
               entered, so no client ID is named here. */}

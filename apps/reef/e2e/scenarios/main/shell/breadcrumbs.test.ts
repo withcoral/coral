@@ -7,7 +7,6 @@ import {
   chooseFile,
   configurationNext,
   createWorkspace,
-  openProviderPolicy,
   openProviderSettings,
 } from '../../../support/providers.ts'
 import { copyNewAgentKey } from '../../../support/agent-key.ts'
@@ -49,9 +48,15 @@ test('Each page has one title, and breadcrumbs lead back from nested pages', asy
       await crumbs.getByRole('link', { name: 'Agents', exact: true }).click()
       await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/agents`)
     })
-    await step('Page actions sit in the top bar', async () => {
+    await step('Create agent ends the agents toolbar', async () => {
       await heading.waitFor()
-      await topBar.getByRole('button', { name: 'Create agent', exact: true }).waitFor()
+      await page
+        .getByRole('main')
+        .getByRole('button', { name: 'Create agent', exact: true })
+        .waitFor()
+      expect(await topBar.getByRole('button', { name: 'Create agent', exact: true }).count()).toBe(
+        0,
+      )
     })
     await step(
       'Each setup step titles the page with its provider and heads its content with its actions',
@@ -89,11 +94,7 @@ test('Each page has one title, and breadcrumbs lead back from nested pages', asy
       // The provider crumb returns to the provider's operations.
       await crumbs.getByRole('link', { name: 'Ledger', exact: true }).click()
       await page.waitForURL((url) => url.pathname === providerPath)
-      await openProviderPolicy(page, providerPath)
-      await expect.poll(trail).toEqual([name, 'Providers', 'Ledger', 'Operation policy'])
-      await crumbs.getByRole('link', { name: 'Ledger', exact: true }).click()
-      await page.waitForURL((url) => url.pathname === providerPath)
-      await openProviderPolicy(page, providerPath)
+      await openProviderSettings(page)
       await crumbs.getByRole('link', { name: 'Providers', exact: true }).click()
       await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/providers`)
       // The provider list's toolbar titles the page. Add provider ends that

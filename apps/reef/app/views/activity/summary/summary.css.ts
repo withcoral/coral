@@ -16,56 +16,59 @@ export const heading = style({
   justifyContent: 'space-between',
   gap: 12,
 })
-export const strip = style({
-  display: 'grid',
-  gap: 12,
-  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-})
-export const panels = style({
-  display: 'grid',
-  gap: 12,
-  gridTemplateColumns: 'repeat(auto-fit, minmax(min(320px, 100%), 1fr))',
-})
+export const panel = style({ padding: 16, outline: 'none' })
+export const lens = style({ display: 'flex', flexDirection: 'column', gap: 16 })
 
-export const rows = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 10,
-  margin: 0,
-  padding: 0,
-  listStyle: 'none',
-})
-export const row = style({
-  display: 'grid',
-  gridTemplateColumns: 'minmax(0, 1fr) auto',
-  alignItems: 'center',
-  columnGap: 12,
-  rowGap: 4,
-})
-export const rowName = style({
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-})
-export const count = style({
-  marginLeft: 'auto',
-  fontVariantNumeric: 'tabular-nums',
-})
-export const rowMeter = style({ gridColumn: '1 / -1' })
-export const split = style({
-  display: 'flex',
-  alignItems: 'center',
-  gap: 10,
-})
 export const labeled = style({
   display: 'inline-flex',
   alignItems: 'center',
   gap: 4,
   minWidth: 0,
 })
+export const truncate = style({
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+})
+export const count = style({ fontVariantNumeric: 'tabular-nums' })
+export const stopSplit = style({ display: 'inline-flex', alignItems: 'center', gap: 10 })
 
-export const stats = style({
+export const operation = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 8,
+  minWidth: 0,
+  maxWidth: '100%',
+})
+// A long provider name gives way before the operation does.
+export const operationProvider = style({
+  flexShrink: 1,
+  minWidth: 0,
+  maxWidth: '50%',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+})
+export const barCell = style({
+  display: 'grid',
+  gridTemplateColumns: '48px minmax(0, 1fr)',
+  alignItems: 'center',
+  gap: 8,
+})
+
+export const tools = style({
+  display: 'flex',
+  flexWrap: 'wrap',
+  alignItems: 'center',
+  justifyContent: 'flex-end',
+  gap: 12,
+})
+export const filter = style({ flex: '0 1 280px' })
+export const shown = style({ fontVariantNumeric: 'tabular-nums' })
+export const section = style({ display: 'flex', flexDirection: 'column', gap: 8 })
+export const sectionHeading = style({ display: 'flex', alignItems: 'baseline', gap: 8 })
+export const statCards = style({
   display: 'grid',
   gap: 12,
-  gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
 })

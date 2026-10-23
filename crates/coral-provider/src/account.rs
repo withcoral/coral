@@ -794,7 +794,9 @@ pub(crate) async fn credentials_ready_in_transaction(
 
 /// Decides whether this Principal can discover the Provider's Operations.
 ///
-/// [`reaches_call_root`] decides first. Otherwise the Credential Route decides. A User connects its own `caller`
+/// [`crate::reaches`] decides first: the Principal must reach one of the
+/// Provider's Operations, and discovery leaves out each one it does not
+/// reach. Otherwise the Credential Route decides. A User connects its own `caller`
 /// Account during Invocation, so this reads no User Account; every other route
 /// and Principal needs usable credentials now. Discovery is not Account
 /// readiness: it creates no connection request and exposes no Account.
@@ -811,36 +813,20 @@ pub async fn discoverable_in_transaction(
     // Load the contract even when no Account is read, so corrupt evidence fails closed.
     let contract =
         coral_catalog::credential_contract_in_transaction(tx, provider.generation_id()).await?;
-    if !reaches_call_root(access.call_root(), principal, authority) {
+    if !crate::reach::reaches_provider_in_transaction(
+        tx,
+        access.call_root(),
+        provider.generation_id(),
+        authority.effective_user_role(),
+    )
+    .await?
+    {
         return Ok(false);
     }
     if connects_during_invocation(access, principal) {
         return Ok(true);
     }
     credentials_ready_in_transaction(tx, access, principal, contract).await
-}
-
-/// Decides whether this Principal may reach Operations under this Call Root at
-/// all, before any credential check. [`discoverable_in_transaction`] and
-/// [`crate::resolve_invocation_operation_in_transaction`] both apply it, so
-/// "cannot discover" and "cannot call" stay one rule.
-///
-/// Only a User with effective Workspace Owner authority, explicit or inherited
-/// from the Organization, reaches the Built-in Provider. Every Principal
-/// reaches an Owner-added Provider's Call Root.
-#[must_use]
-pub(crate) fn reaches_call_root(
-    call_root: &crate::ProviderCallRoot,
-    principal: &coral_workspace::Principal,
-    authority: &coral_workspace::PrincipalWorkspaceEvidence,
-) -> bool {
-    match call_root {
-        crate::ProviderCallRoot::Owner(_) => true,
-        crate::ProviderCallRoot::Builtin => {
-            principal.kind() == coral_workspace::PrincipalKind::User
-                && authority.effective_user_role() == Some(coral_workspace::WorkspaceRole::Owner)
-        }
-    }
 }
 
 /// A User connects its own `caller` Account through the Invocation's connection

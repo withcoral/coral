@@ -297,12 +297,23 @@ jobs:
           repositories: ${{ env.DESKTOP_FEED_NAME }}
           permission-contents: write
 
+      # release-please wrote the notes on this repository's release, which
+      # started this run. The feed token reaches only the feed repository.
+      - name: Read the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --json body --jq .body \
+            > "$RUNNER_TEMP/release-notes.md"
+
       - name: Upload the verified assets to a draft
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           set -euo pipefail
           args=(--tag "$TAG_NAME" --feed-repo "$DESKTOP_FEED_OWNER/$DESKTOP_FEED_NAME" --assets release-assets)
+          args+=(--notes-file "$RUNNER_TEMP/release-notes.md")
           ./target/debug/xtask release-desktop-publish "${args[@]}"
 
   # Anyone sees the release only from here. It runs once the draft holds every
@@ -557,6 +568,10 @@ jobs:
         run: |
           set -euo pipefail
           version="${TAG_NAME#v}"
+          notes="Release notes: https://github.com/withcoral/coral/releases/tag/${TAG_NAME}"
+          # --provenance pushes an index, and GHCR reads a package description
+          # only from the index's annotations, never from image labels. The
+          # annotation is set here because promote must tag the signed digest.
           build() {
             local image="$1"
             shift
@@ -569,10 +584,12 @@ jobs:
             --build-arg "CORAL_GIT_SHA=$(git rev-parse --short HEAD)" \
             --label "org.opencontainers.image.source=https://github.com/withcoral/coral" \
             --label "org.opencontainers.image.version=${version}" \
-            --label "org.opencontainers.image.revision=${COMMIT_SHA}")"
+            --label "org.opencontainers.image.revision=${COMMIT_SHA}" \
+            --annotation "index:org.opencontainers.image.description=Coral runtime ${version}. ${notes}")"
           coral_web="$(build "$CORAL_WEB_IMAGE" --file docker/Dockerfile.reef \
             --build-arg "CORAL_WEB_VERSION=${version}" \
-            --build-arg "CORAL_WEB_REVISION=${COMMIT_SHA}")"
+            --build-arg "CORAL_WEB_REVISION=${COMMIT_SHA}" \
+            --annotation "index:org.opencontainers.image.description=Coral Web ${version}. ${notes}")"
           {
             echo "version=${version}"
             echo "coral=${coral}"

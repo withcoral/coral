@@ -22,13 +22,13 @@ mod termination;
 pub(crate) use acceptance::{insert_acceptance, load_package_in_transaction};
 #[cfg(test)]
 pub(crate) use claims::claim_for_test;
-pub(crate) use claims::{release_unstarted_worker_claim, start_execution};
+pub(crate) use claims::start_execution;
 use events::last_event_sequence;
 pub(crate) use events::{
     NewEvent, OwnedEvent, OwnedEventKind, event_page_in_transaction, output_page_in_transaction,
 };
 pub(crate) use ledger::{Chunk, ChunkEvent, commit_chunk};
-pub(crate) use retention::{delete_retained_history, retention_activity};
+pub(crate) use retention::{delete_retained_history, hold_terminal_run, retention_activity};
 use run_row::RunRow;
 pub(crate) use termination::{
     finish_run, finish_termination, finish_unstarted_run, interrupt_run, request_termination,
@@ -66,32 +66,6 @@ enum ProgramRunRecords {
     ChunkSequence,
 }
 
-/// Locks the Run row for the rest of `transaction` and returns the Run as the
-/// lock found it, in one round trip. Returns `None` when the Run does not exist.
-///
-/// The held Run carries no `last_event_sequence`: on Postgres a blocked
-/// `UPDATE` keeps the snapshot it took before the wait, so a read of the Event
-/// rows beside the lock could miss the previous holder's Events. The chunk
-/// commit numbers its Events in its own statement instead.
-pub(crate) async fn hold_run(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    run_id: &RunId,
-) -> Result<Option<RunRecord>, Error> {
-    let statement = Query::update()
-        .table(ProgramRunRecords::Table)
-        .value(
-            ProgramRunRecords::State,
-            Expr::col(ProgramRunRecords::State),
-        )
-        .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::Id).eq(run_id.to_string()))
-        .returning(Query::returning().columns(RUN_COLUMNS))
-        .to_owned();
-    let row: Option<RunRow> = transaction.fetch_optional_returning(statement).await?;
-    row.map(RunRow::decode).transpose()
-}
-
 /// Reads the Run row in one statement, outside any transaction and without
 /// holding it: the reread a Run Owner makes when a commit got no answer.
 pub(crate) async fn find_exact(
@@ -116,24 +90,36 @@ pub(crate) async fn find_exact_in_transaction(
     row.map(RunRow::decode).transpose()
 }
 
-pub(crate) async fn recoverable_runs(
-    database: &coral_db::Database,
+/// Every `running` Run no process owns at `now_unix_nanos`, as the
+/// expired-lease sweep reads them in one snapshot, in acceptance order: its
+/// lease lapsed, or it has no claim and was accepted more than `lease_nanos`
+/// ago. An earlier release claimed a moment after acceptance and released
+/// the claim on an interruption, so a fresh Run with no claim belongs to the
+/// process that accepted it and is not abandoned.
+pub(crate) async fn lapsed_leases(
+    transaction: &mut Transaction<'_>,
     now_unix_nanos: i64,
+    lease_nanos: i64,
 ) -> Result<Vec<RunRecord>, Error> {
-    let condition = Condition::any()
-        .add(Expr::col(ProgramRunRecords::TerminationKind).is_not_null())
-        .add(Expr::col(ProgramRunRecords::DeadlineAtUnixNanos).lte(now_unix_nanos))
-        .add(Expr::col(ProgramRunRecords::WorkerClaimExpiresAtUnixNanos).lte(now_unix_nanos));
-    let rows: Vec<RunRow> = database
+    let lapsed = Condition::any()
+        .add(Expr::col(ProgramRunRecords::WorkerClaimExpiresAtUnixNanos).lte(now_unix_nanos))
+        .add(
+            Condition::all()
+                .add(Expr::col(ProgramRunRecords::WorkerClaimExpiresAtUnixNanos).is_null())
+                .add(
+                    Expr::col(ProgramRunRecords::AcceptedAtUnixNanos)
+                        .lt(now_unix_nanos.saturating_sub(lease_nanos)),
+                ),
+        );
+    let rows: Vec<RunRow> = transaction
         .fetch_all(
             base_run_select()
                 .and_where(
                     Expr::col(ProgramRunRecords::State).eq(RunState::Running.as_storage_str()),
                 )
-                .cond_where(condition)
+                .cond_where(lapsed)
                 .order_by(ProgramRunRecords::AcceptedAtUnixNanos, Order::Asc)
                 .order_by(ProgramRunRecords::Id, Order::Asc)
-                .limit(100)
                 .to_owned(),
         )
         .await?;
@@ -197,7 +183,7 @@ fn exact_run_statement(workspace_id: &WorkspaceId, run_id: &RunId) -> sea_query:
         .to_owned()
 }
 
-/// The columns `RunRow` decodes, shared by Run reads and `hold_run`.
+/// The columns `RunRow` decodes, shared by Run reads and retention's hold.
 const RUN_COLUMNS: [ProgramRunRecords; 26] = [
     ProgramRunRecords::Id,
     ProgramRunRecords::WorkspaceId,

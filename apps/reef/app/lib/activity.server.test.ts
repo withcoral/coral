@@ -1863,6 +1863,272 @@ describe('hierarchical activity through the private server interface', () => {
   })
 })
 
+/** An operation of `run` that waits on a request, as Coral lists and inspects it. */
+interface Wait {
+  id: string
+  startedAt: bigint
+  request: { kind: 'approval' | 'accountConnection'; id: string }
+  /** The caller can decide the approval, or the connection is still pending. */
+  actionable?: boolean
+  /** Coral still reports the operation waiting. */
+  waiting?: boolean
+  /** Its approval was approved; the operation no longer waits. */
+  decided?: boolean
+  /** The 100-child page of the Run's children that lists it. */
+  page?: number
+}
+const waitName = (id: string) => `${workspace}/invocations/${id}`
+const requestName = (wait: Wait) =>
+  `${workspace}/${wait.request.kind === 'approval' ? 'approvals' : 'accountConnections'}/${wait.request.id}`
+const waiting = (wait?: Wait) => wait?.waiting !== false && !wait?.decided
+/** The action summary Coral lists for the request `name`. */
+const summary = (name: string) => ({
+  request: {
+    request: name.includes('/approvals/')
+      ? { case: 'approval' as const, value: name }
+      : { case: 'accountConnection' as const, value: name },
+  },
+  callPath: 'mail.send',
+  providerLabel: 'Mail',
+  deadlineAtUnixNanos: 902_000_000_000n,
+})
+const approvalWait = (id: string, startedAt: bigint, extra: Partial<Wait> = {}): Wait => ({
+  id,
+  startedAt,
+  request: { kind: 'approval', id: `approval-${id}` },
+  ...extra,
+})
+const connectionWait = (id: string, startedAt: bigint, extra: Partial<Wait> = {}): Wait => ({
+  id,
+  startedAt,
+  request: { kind: 'accountConnection', id: `connection-${id}` },
+  ...extra,
+})
+/** An emission of `run`, selected while live mode follows the Run. */
+const followed = (extra: Record<string, string | undefined> = {}) =>
+  request({ record: `${run}/events/3`, tree: '1', live: '1', ...extra })
+/** The action that reviews `wait` on its operation. */
+const target = (wait: Wait) => ({ run, record: waitName(wait.id), request: requestName(wait) })
+
+/**
+ * A Run whose operations wait on `waits`, listed in the order given. Its current requests
+ * come in two action pages: the first holds the last wait, the second all the others.
+ */
+function waitingRun(waits: Wait[]): Handlers {
+  const current = [...new Set(waits.filter(waiting).map(requestName))]
+  const pages = Math.max(1, ...waits.map((wait) => (wait.page ?? 0) + 1))
+  const byName = (name: string) => waits.find((wait) => requestName(wait) === name)
+  return {
+    accounts: {
+      getAccountConnectionRequest: (input) => ({
+        name: input.name,
+        provider: `${workspace}/providers/mail`,
+        state:
+          byName(input.name)?.actionable === false
+            ? AccountConnectionState.DECLINED
+            : AccountConnectionState.PENDING,
+      }),
+    },
+    activity: {
+      inspectRun: (input) => ({
+        run: {
+          ...execution,
+          actionPage: {
+            actions: (input.actionAfter ? current.slice(0, -1) : current.slice(-1)).map(summary),
+            total: BigInt(current.length),
+            nextAction: input.actionAfter || current.length < 2 ? '' : 'older-actions',
+          },
+          requiresAction: current.length > 0,
+        },
+        submittedSource: 'return secretSource;',
+        terminal: { case: 'succeeded', value: { finalValueJson: 'null' } },
+      }),
+      browseRunEntries: (input) => {
+        const page = Number(input.after) / 100
+        return {
+          run: execution,
+          offset: input.after,
+          total: BigInt(pages * 100),
+          entries: [
+            {
+              record: {
+                case: 'event',
+                value: { sequence: input.after + 1n, kind: 'program.logged' },
+              },
+            },
+            ...waits
+              .filter((wait) => (wait.page ?? 0) === page)
+              .map((wait) => ({
+                record: {
+                  case: 'invocation' as const,
+                  value: {
+                    ...operation,
+                    name: waitName(wait.id),
+                    startedAtUnixNanos: wait.startedAt,
+                    requiresAction: waiting(wait),
+                  },
+                },
+              })),
+          ],
+          nextAfter: input.after + 100n,
+          hasMore: page + 1 < pages,
+        }
+      },
+      inspectInvocation: (input) => {
+        const wait = waits.find((item) => waitName(item.id) === input.name)
+        return {
+          invocation: {
+            ...operation,
+            name: input.name,
+            startedAtUnixNanos: wait?.startedAt,
+            requiresAction: waiting(wait),
+          },
+          requests: wait ? [{ request: summary(requestName(wait)).request.request }] : [],
+        }
+      },
+      inspectApproval: (input) => {
+        const wait = byName(input.name)
+        return {
+          name: input.name,
+          run,
+          invocation: wait ? waitName(wait.id) : '',
+          state: wait?.decided ? 'approved' : 'pending',
+          actionable: !wait?.decided && wait?.actionable !== false,
+        }
+      },
+    },
+  }
+}
+
+describe("Live's oldest action in the followed Run", () => {
+  it('times every approval on every action page by its operation, then identity', async () => {
+    // `b` alone is on the first action page; its equal-time tie `a` and the newer `c`
+    // are on the second, and far past the first history page.
+    const a = approvalWait('a', 5n, { page: 3 })
+    const b = approvalWait('b', 5n)
+    const c = approvalWait('c', 1_000n)
+    const { api, calls } = coral(list(), runEvent(), waitingRun([c, a, b]))
+    const page = await loadActivity(followed(), api, { scope })
+    expect(page.liveAction).toEqual(target(a))
+    // Each approval and its operation are read once; the Run's history is not.
+    expect(loaded(calls, 'entries')).toBe(0)
+    expect(loaded(calls, 'approval')).toBe(3)
+    expect(loaded(calls, 'operation')).toBe(3)
+  })
+  it.each(['latest', 'task'])('reads it while live mode follows the %s scope', async (live) => {
+    const oldest = approvalWait('a', 1n)
+    const { api } = coral(list(), runEvent(), waitingRun([approvalWait('b', 9n), oldest]))
+    const page = await loadActivity(followed({ live }), api, { scope })
+    expect(page.liveAction).toEqual(target(oldest))
+  })
+  it('reads the first action page when the review shows a later one', async () => {
+    const oldest = approvalWait('a', 1n)
+    const newer = approvalWait('b', 9n)
+    // The first page holds `a`; the reader's `actionsAfter` page holds only `b`.
+    const { api } = coral(list(), runEvent(), waitingRun([newer, oldest]))
+    const page = await loadActivity(followed({ actionsAfter: 'older-actions' }), api, { scope })
+    expect(page.liveAction).toEqual(target(oldest))
+  })
+  it('reads no operation of an approval you cannot decide, and no history', async () => {
+    const waits = ['a', 'b', 'c'].map((id, index) =>
+      approvalWait(id, BigInt(index), { actionable: false, page: 9 }),
+    )
+    const { api, calls } = coral(list(), runEvent(), waitingRun(waits))
+    const page = await loadActivity(followed(), api, { scope })
+    expect(page.liveAction).toBeUndefined()
+    expect(loaded(calls, 'entries', 'operation')).toBe(0)
+  })
+  it.each([
+    { name: 'an earlier timestamp', early: 1n, approvalTime: 5n },
+    { name: 'an equal timestamp with a lower identity', early: 10n, approvalTime: 10n },
+  ])('times a shared connection across child pages by $name', async ({ early, approvalTime }) => {
+    const first = connectionWait('z', 10n)
+    const oldest = connectionWait('a', early, { page: 1, request: first.request })
+    const other = approvalWait('m', approvalTime)
+    const { api } = coral(list(), runEvent(), waitingRun([first, oldest, other]))
+    const page = await loadActivity(followed(), api, { scope })
+    expect(page.liveAction).toEqual({ ...target(oldest), record: run })
+  })
+  it.each([
+    { name: 'an older connection wins', connected: 3n, approved: 4n, chosen: 'x' },
+    { name: 'an older approval wins', connected: 5n, approved: 4n, chosen: 'y' },
+  ])(
+    'times a connection by the first operation that waits on it: $name',
+    async ({ connected, approved, chosen }) => {
+      const x = connectionWait('x', connected, { page: 1 })
+      const y = approvalWait('y', approved)
+      const { api, calls } = coral(list(), runEvent(), waitingRun([x, y]))
+      const page = await loadActivity(followed(), api, { scope })
+      expect(page.liveAction).toEqual(chosen === 'x' ? { ...target(x), record: run } : target(y))
+      // Connection ordering reads every child page, including shared requests.
+      expect(loaded(calls, 'entries')).toBe(2)
+    },
+  )
+  it.each([
+    {
+      name: 'an approval you cannot decide',
+      waits: [approvalWait('a', 1n, { actionable: false }), approvalWait('b', 2n)],
+      chosen: 'b',
+    },
+    {
+      name: 'an operation that no longer waits',
+      waits: [approvalWait('a', 1n, { waiting: false }), approvalWait('b', 2n)],
+      chosen: 'b',
+    },
+    {
+      name: 'a connection that is no longer pending',
+      waits: [connectionWait('a', 1n, { actionable: false }), connectionWait('b', 2n)],
+      chosen: 'b',
+    },
+    {
+      name: 'every request you cannot act on',
+      waits: [
+        approvalWait('a', 1n, { actionable: false }),
+        connectionWait('b', 2n, { actionable: false }),
+      ],
+      chosen: undefined,
+    },
+  ])('skips $name', async ({ waits, chosen }) => {
+    const { api } = coral(list(), runEvent(), waitingRun(waits))
+    const page = await loadActivity(followed(), api, { scope })
+    const wait = waits.find((item) => item.id === chosen)
+    // An account connection is reviewed on its Run, an approval on its operation.
+    expect(page.liveAction).toEqual(
+      wait && {
+        ...target(wait),
+        record: wait.request.kind === 'approval' ? waitName(wait.id) : run,
+      },
+    )
+  })
+  it.each([
+    { name: 'live mode is off', query: { live: '' }, waits: [approvalWait('a', 1n)] },
+    { name: 'live names no scope', query: { live: 'on' }, waits: [approvalWait('a', 1n)] },
+    { name: 'the Run waits on nothing', query: {}, waits: [] },
+  ])('reads no children when $name', async ({ query, waits }) => {
+    const { api, calls } = coral(list(), runEvent(), waitingRun(waits))
+    const page = await loadActivity(followed(query), api, { scope })
+    expect(page.liveAction).toBeUndefined()
+    expect(loaded(calls, 'entries', 'operation', 'approval', 'connection')).toBe(0)
+  })
+  it('reads the next action once the reviewed approval is decided, with live mode off', async () => {
+    const decided = approvalWait('a', 1n, { decided: true })
+    const next = approvalWait('b', 2n)
+    const { api } = coral(list(), taskDetail(), waitingRun([decided, next]))
+    const query = { record: waitName('a'), request: requestName(decided), tree: '1' }
+    const page = await loadActivity(request(query), api, { scope })
+    expect(page.detail).toMatchObject({ kind: 'invocation', request: { state: 'approved' } })
+    expect(page.liveAction).toEqual(target(next))
+    // A live snapshot of that review never reads it: only the read after the decision advances.
+    const reading = { followRoot: false, roots: [], branches: {} }
+    expect((await loadActivity(request(query), api, { scope, reading })).liveAction).toBeUndefined()
+    // A pending review reads nothing more.
+    const pending = coral(list(), taskDetail(), waitingRun([approvalWait('a', 1n), next]))
+    const query2 = { ...query, request: `${workspace}/approvals/approval-a` }
+    expect((await loadActivity(request(query2), pending.api, { scope })).liveAction).toBeUndefined()
+    expect(loaded(pending.calls, 'entries')).toBe(0)
+  })
+})
+
 describe('links from before continuous loading', () => {
   const neighbor = `${task}-neighbor`
   const empty: Handlers = { activity: { browseActivityRoots: () => ({ roots: [] }) } }

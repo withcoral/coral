@@ -48,7 +48,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     // follows, and the declaration a Program reads.
     for (operation_key, hints, declared) in [
         (
-            BuiltinOperation::CreateProvider,
+            BuiltinOperation::AddProvider,
             // No read-only hint, so the default Operation Access State is approval_required.
             OperationHints::default(),
             &[
@@ -75,8 +75,8 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 r#"{ "providers": Array<Provider>; "setups": Array<ProviderSetup> }"#,
                 // What a person does next on a Setup a Program asked for.
                 r#""state": "awaiting_configuration" | "awaiting_sign_in" | "awaiting_discovery" | "ready""#,
-                // The Built-in Provider has no namespace.
-                r#""namespace": null | string"#,
+                // Every Provider, Coral's own too, has a Call Root.
+                r#""callRoot": string"#,
                 r#""state": "active" | "disabled""#,
                 r#""accountRequired": boolean"#,
                 "metadata: { kind: \"builtin\" }",
@@ -128,21 +128,38 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         .map(|target| target.key().as_str())
         .collect::<Vec<_>>();
     target_keys.sort_unstable();
-    assert_eq!(
-        target_keys,
-        ["createProvider", "getProvider", "listProviders"]
-    );
+    assert_eq!(target_keys, ["addProvider", "getProvider", "listProviders"]);
 
     let graph = coral_catalog::schema_graph_in_transaction(&mut transaction, &first)
         .await
         .unwrap();
-    let fields = coral_catalog::StoredDeclarationFields::new(graph)
-        .all(&operations)
+    // Search reads the same Operations as the search targets, and the same
+    // fields as a full Operation gives.
+    let searchable = coral_catalog::searchable_operations_in_transaction(&mut transaction, &first)
+        .await
         .unwrap();
-    let key = OperationKey::parse("createProvider").unwrap();
-    let paths = fields
-        .get(&key)
-        .expect("createProvider declaration fields")
+    assert_eq!(
+        searchable
+            .iter()
+            .map(|operation| operation.key().as_str())
+            .collect::<Vec<_>>(),
+        target_keys
+    );
+    let fields = coral_catalog::StoredDeclarationFields::new(graph);
+    let key = OperationKey::parse("addProvider").unwrap();
+    let add_provider = searchable
+        .iter()
+        .find(|operation| operation.key() == &key)
+        .expect("addProvider is searchable");
+    let full = operations
+        .iter()
+        .find(|operation| operation.key() == &key)
+        .unwrap();
+    assert_eq!(add_provider.relative_path(), full.relative_path());
+    assert_eq!(add_provider.presentation(), full.presentation());
+    let prepared = fields.searchable_operation(add_provider).unwrap();
+    assert_eq!(prepared, fields.operation(full).unwrap());
+    let paths = prepared
         .entries()
         .iter()
         .map(|entry| entry.path().as_str())
@@ -332,4 +349,51 @@ fn sha256_hex(value: &str) -> String {
             write!(hex, "{byte:02x}").expect("writing to a String succeeds");
             hex
         })
+}
+
+#[tokio::test]
+async fn a_builtin_binding_disagreeing_with_its_index_fails_full_and_search_reads() {
+    for (case, corruption) in [
+        (
+            "Operation Key",
+            "SET operation_key = 'renamedProvider' WHERE operation_key = 'addProvider'",
+        ),
+        (
+            "input schema",
+            "SET input_schema_id = (SELECT input_schema_id FROM materialized_operations \
+             WHERE operation_key = 'listProviders') WHERE operation_key = 'addProvider'",
+        ),
+    ] {
+        let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+        let database = fixture.database();
+        let catalog = BuiltinCatalog::running().unwrap();
+        let mut transaction = database.begin().await.unwrap();
+        let generation =
+            coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, &catalog, 1)
+                .await
+                .unwrap();
+        transaction.commit().await.unwrap();
+        fixture
+            .execute_fixture_sql(&format!(
+                "UPDATE materialized_operations {corruption} \
+                 AND provider_generation_id = '{generation}'"
+            ))
+            .await
+            .unwrap();
+
+        let mut transaction = database.begin_read_snapshot().await.unwrap();
+        let full = coral_catalog::operations_in_transaction(&mut transaction, &generation).await;
+        let searchable =
+            coral_catalog::searchable_operations_in_transaction(&mut transaction, &generation)
+                .await;
+        transaction.rollback().await.unwrap();
+        assert!(
+            matches!(full, Err(Error::CorruptData(_))),
+            "{case}: {full:?}"
+        );
+        assert!(
+            matches!(searchable, Err(Error::CorruptData(_))),
+            "{case}: {searchable:?}"
+        );
+    }
 }

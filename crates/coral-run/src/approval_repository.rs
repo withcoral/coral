@@ -231,7 +231,10 @@ pub(super) async fn find_for_run_invocation(
 
 /// Complete pending-approval match for repository queries using `a` (approval)
 /// and `i` (Invocation). Queue existence, card pages and Run Updates share it.
-pub(super) fn pending_invocation(now: i64) -> SimpleExpr {
+/// A request stays pending until its Run Owner records its expiry: readers
+/// show the recorded state and its deadline, never a state derived from the
+/// clock.
+pub(super) fn pending_invocation() -> SimpleExpr {
     use coral_db::col;
     let column = |field: &str| (Alias::new("i"), Alias::new(field)).into_column_ref();
     col("a", "workspace_id")
@@ -240,7 +243,6 @@ pub(super) fn pending_invocation(now: i64) -> SimpleExpr {
         .and(col("a", "run_id").eq(col("i", "run_id")))
         .and(col("i", "state").eq("pending"))
         .and(col("a", "state").eq(ApprovalState::Pending.storage()))
-        .and(col("a", "deadline_at_unix_nanos").gt(now))
         .and(coral_policy::history_repository::approval_required(
             column("workspace_id"),
             column("provider_id"),
@@ -255,7 +257,6 @@ pub(super) async fn pending_for_run(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
     run: &RunId,
-    now: i64,
 ) -> Result<Vec<(ApprovalId, i64)>, Error> {
     let rows: Vec<(String, i64)> = tx
         .fetch_all(
@@ -269,7 +270,7 @@ pub(super) async fn pending_for_run(
                     JoinType::InnerJoin,
                     Alias::new("operation_invocations"),
                     Alias::new("i"),
-                    pending_invocation(now),
+                    pending_invocation(),
                 )
                 .and_where(
                     Expr::col((Alias::new("a"), Alias::new("workspace_id")))
@@ -277,6 +278,38 @@ pub(super) async fn pending_for_run(
                 )
                 .and_where(Expr::col((Alias::new("a"), Alias::new("run_id"))).eq(run.to_string()))
                 .order_by((Alias::new("a"), Alias::new("id")), Order::Asc)
+                .to_owned(),
+        )
+        .await?;
+    rows.into_iter()
+        .map(|(id, deadline)| Ok((ApprovalId::parse(&id)?, deadline)))
+        .collect()
+}
+
+/// The Run's undecided Approval Requests whose deadline is at or before
+/// `by_unix_nanos`, with their deadlines, in deadline order.
+pub(super) async fn undecided_by(
+    tx: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    run: &RunId,
+    by_unix_nanos: i64,
+) -> Result<Vec<(ApprovalId, i64)>, Error> {
+    let rows: Vec<(String, i64)> = tx
+        .fetch_all(
+            Query::select()
+                .columns([
+                    InvocationApprovals::Id,
+                    InvocationApprovals::DeadlineAtUnixNanos,
+                ])
+                .from(InvocationApprovals::Table)
+                .and_where(Expr::col(InvocationApprovals::WorkspaceId).eq(workspace.to_string()))
+                .and_where(Expr::col(InvocationApprovals::RunId).eq(run.to_string()))
+                .and_where(
+                    Expr::col(InvocationApprovals::State).eq(ApprovalState::Pending.storage()),
+                )
+                .and_where(Expr::col(InvocationApprovals::DeadlineAtUnixNanos).lte(by_unix_nanos))
+                .order_by(InvocationApprovals::DeadlineAtUnixNanos, Order::Asc)
+                .order_by(InvocationApprovals::Id, Order::Asc)
                 .to_owned(),
         )
         .await?;

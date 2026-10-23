@@ -204,10 +204,9 @@ fn provider_filter(value: &str) -> Result<ProviderCallRoot, Error> {
 /// Callers see this value; the Call Root stays internal.
 #[must_use]
 pub fn provider_filter_value(call_root: &ProviderCallRoot) -> &str {
-    match call_root {
-        ProviderCallRoot::Owner(namespace) => namespace.as_str(),
-        ProviderCallRoot::Builtin => call_root.as_str(),
-    }
+    call_root
+        .namespace()
+        .map_or(call_root.as_str(), ProviderNamespace::as_str)
 }
 
 impl SearchRequest {

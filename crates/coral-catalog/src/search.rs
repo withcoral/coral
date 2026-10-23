@@ -5,8 +5,8 @@ use std::rc::Rc;
 use serde_json::Value;
 
 use crate::{
-    CatalogDiagnostic, DeclarationPath, ExecutionBinding, MaterializedOperation, OperationKey,
-    SchemaGraph, SchemaId,
+    CatalogDiagnostic, DeclarationPath, ExecutionBinding, MaterializedOperation, SchemaGraph,
+    SchemaId, SearchableOperation,
 };
 
 const MAX_SEARCH_FIELDS: usize = 8_192;
@@ -65,25 +65,6 @@ impl StoredDeclarationFields {
         }
     }
 
-    /// Rebuilds the declaration fields of every structurally available
-    /// Operation, each with the warnings its walk left.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::Error::CorruptData`] when a stored Operation's input
-    /// declaration can no longer be read; materialization read it once, so
-    /// the package is inconsistent.
-    pub fn all(
-        &self,
-        operations: &[MaterializedOperation],
-    ) -> Result<BTreeMap<OperationKey, PreparedDeclarationFields>, crate::Error> {
-        operations
-            .iter()
-            .filter(|operation| operation.availability() == crate::OperationAvailability::Available)
-            .map(|operation| Ok((operation.key().clone(), self.operation(operation)?)))
-            .collect()
-    }
-
     /// Rebuilds one structurally available Operation's declaration fields and
     /// the warnings its walk left.
     ///
@@ -95,17 +76,39 @@ impl StoredDeclarationFields {
         &self,
         operation: &MaterializedOperation,
     ) -> Result<PreparedDeclarationFields, crate::Error> {
+        self.fields(operation.execution_binding(), operation.input_schema())
+    }
+
+    /// Rebuilds the declaration fields of an Operation as the search index
+    /// reads it, as [`Self::operation`] does for a full one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::CorruptData`] when the stored Operation's input
+    /// declaration can no longer be read.
+    pub fn searchable_operation(
+        &self,
+        operation: &SearchableOperation,
+    ) -> Result<PreparedDeclarationFields, crate::Error> {
+        self.fields(operation.execution_binding(), operation.input_schema())
+    }
+
+    fn fields(
+        &self,
+        binding: &ExecutionBinding,
+        input_schema: &SchemaId,
+    ) -> Result<PreparedDeclarationFields, crate::Error> {
         let graph = &self.graph;
-        let input_declared = match operation.execution_binding() {
+        let input_declared = match binding {
             ExecutionBinding::Http(binding) => crate::openapi::declares_input(
-                operation.input_schema(),
+                input_schema,
                 binding,
                 graph,
                 self.openapi_names
                     .get_or_init(|| crate::openapi::typescript_names(graph)),
             ),
             ExecutionBinding::Mcp(binding) => crate::mcp::declares_input(
-                operation.input_schema(),
+                input_schema,
                 binding,
                 graph,
                 self.mcp_names
@@ -116,12 +119,7 @@ impl StoredDeclarationFields {
         };
         input_declared
             .map(|input_declared| {
-                prepare_operation_declaration_fields(
-                    operation.execution_binding(),
-                    operation.input_schema(),
-                    input_declared,
-                    graph,
-                )
+                prepare_operation_declaration_fields(binding, input_schema, input_declared, graph)
             })
             .map_err(|_diagnostic| {
                 crate::Error::CorruptData(

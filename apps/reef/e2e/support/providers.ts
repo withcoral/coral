@@ -240,12 +240,12 @@ export async function nextPublication(page: Page) {
   )
 }
 
-/** Every workspace also holds the Built-in Provider, which Coral adds itself. */
-const BUILTIN_CALL_ROOT = 'coral.workspace'
-
-/** The providers the workspace added, without the Built-in Provider. */
-export function addedProviders<P extends { callRoot: string }>(providers: readonly P[]) {
-  return providers.filter((provider) => provider.callRoot !== BUILTIN_CALL_ROOT)
+/**
+ * The providers the workspace added, without the Built-in Provider that Coral
+ * adds to every workspace itself.
+ */
+export function addedProviders<P extends { builtin: boolean }>(providers: readonly P[]) {
+  return providers.filter((provider) => !provider.builtin)
 }
 
 /** The rail of provider tabs beside the operations table. */
@@ -288,12 +288,6 @@ export async function openProviderSettings(page: Page) {
 export async function closeProviderSettings(page: Page) {
   await breadcrumb(page).getByRole('link').nth(1).click()
   await page.waitForURL((url) => !url.pathname.endsWith('/settings'))
-}
-
-/** Opens a provider's operation policy page. Reef links no route to it. */
-export async function openProviderPolicy(page: Page, providerPath: string) {
-  await page.goto(`${providerPath}/policy`)
-  await breadcrumb(page, 'Operation policy').waitFor()
 }
 
 /**

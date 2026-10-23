@@ -17,12 +17,15 @@ export function AddMembersDialog({
   currentUser,
   disabled,
   form,
+  labelClassName,
 }: {
   /** Organization members who are not in the workspace, or null when you cannot list them. */
   candidates: PersonView[] | null
   currentUser: string
   disabled: boolean
   form: FormContext
+  /** Styles the button's label, such as a toolbar's `toolbarActionLabel`. */
+  labelClassName?: string
 }) {
   const [open, setOpen] = useState(false)
   const [emails, setEmails] = useState<string[]>([])
@@ -31,9 +34,10 @@ export function AddMembersDialog({
   const noun = role === 'owner' ? 'owner' : 'member'
   return (
     <>
-      <Button.TextButton ref={trigger} disabled={disabled} onClick={() => setOpen(true)}>
-        Add members
-      </Button.TextButton>
+      <Button.Container ref={trigger} disabled={disabled} onClick={() => setOpen(true)}>
+        <Button.Icon name="Plus" />
+        <Button.Text className={labelClassName}>Add members</Button.Text>
+      </Button.Container>
       <ActionDialog
         open={open}
         onOpenChange={(next) => {

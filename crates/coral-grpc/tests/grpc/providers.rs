@@ -1763,14 +1763,18 @@ async fn published_weather(f: &Fixture, token: &str) -> management::Provider {
         .into_inner()
 }
 
+// Catches: Reef told a Provider is Coral's own by anything but the
+// builtin field, or an added Provider marked as Coral's own.
 #[tokio::test]
 async fn list_providers_projects_the_provider_that_get_returns() {
     let f = Fixture::new().await;
     let token = f.token(&f.owner, "reef");
+    f.install_builtin().await;
     let provider = published_weather(&f, &token).await;
     assert_eq!(provider.display_name, "Weather");
     assert_eq!(provider.state(), management::ProviderState::Active);
     assert_eq!(provider.namespace, "weather");
+    assert!(!provider.builtin);
     let listed = f
         .providers()
         .list_providers(request(
@@ -1784,7 +1788,18 @@ async fn list_providers_projects_the_provider_that_get_returns() {
         .await
         .unwrap()
         .into_inner();
-    assert_eq!(listed.providers, vec![provider]);
+    let (builtin, added): (Vec<_>, Vec<_>) = listed
+        .providers
+        .into_iter()
+        .partition(|listed| listed.builtin);
+    assert_eq!(
+        builtin
+            .iter()
+            .map(|builtin| (builtin.call_root.as_str(), builtin.namespace.as_str()))
+            .collect::<Vec<_>>(),
+        [("coral.workspace", "")]
+    );
+    assert_eq!(added, vec![provider]);
 }
 
 /// Pages each Provider once in name order; a token is bound to the caller who got it.

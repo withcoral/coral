@@ -14,6 +14,7 @@ use super::AuthorizationServerHttpState;
 use super::query::{MAX_PARAMETER_NAME_BYTES, MAX_PARAMETER_VALUE_BYTES, MAX_PARAMETERS};
 use super::response::security_headers;
 use coral_auth::PrivateAudience;
+use coral_auth::authorization_codes::{AuthorizationGrant, CodeRedemption};
 
 /// The largest form body this endpoint reads.
 ///
@@ -82,17 +83,15 @@ pub(super) async fn oauth_token(
         return token_error(TokenError::InvalidTarget);
     };
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-    let authorization = match state
-        .code_store
-        .take_authorization_code_for_request(code, client_id, redirect_uri, &challenge, &resource)
-        .await
-    {
-        Ok(Some(authorization)) => authorization,
-        Ok(None) => return token_error(TokenError::InvalidGrant),
-        Err(error) => {
-            tracing::warn!(%error, "token endpoint could not take the authorization code");
-            return token_error(TokenError::ServerError);
-        }
+    let redemption = CodeRedemption {
+        client_id,
+        redirect_uri,
+        code_challenge: &challenge,
+        resource: &resource,
+    };
+    let authorization = match redeem(&state, code, redemption).await {
+        Ok(authorization) => authorization,
+        Err(error) => return token_error(error),
     };
     // This endpoint completes an interactive login, which only a person can
     // perform: the code being redeemed was issued to a browser that carried
@@ -124,6 +123,34 @@ pub(super) async fn oauth_token(
             "expires_in": expires_in,
         }),
     )
+}
+
+/// Spends `code` when `redemption` repeats every binding it was issued with.
+async fn redeem(
+    state: &AuthorizationServerHttpState,
+    code: &str,
+    redemption: CodeRedemption<'_>,
+) -> Result<AuthorizationGrant, TokenError> {
+    let Some(codes) = state.codes.as_ref() else {
+        tracing::warn!("token endpoint has no database to redeem authorization codes from");
+        return Err(TokenError::ServerError);
+    };
+    let Ok(now_unix_nanos) = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_error| ())
+        .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).map_err(|_error| ()))
+    else {
+        tracing::warn!("token endpoint could not read the system clock");
+        return Err(TokenError::ServerError);
+    };
+    match codes.redeem(code, redemption, now_unix_nanos).await {
+        Ok(Some(authorization)) => Ok(authorization),
+        Ok(None) => Err(TokenError::InvalidGrant),
+        Err(error) => {
+            tracing::warn!(%error, "token endpoint could not redeem the authorization code");
+            Err(TokenError::ServerError)
+        }
+    }
 }
 
 // First-party selection narrows the resource approved at login; it never
@@ -158,7 +185,7 @@ impl TokenTarget {
     fn issue(
         &self,
         issuer: &coral_auth::SessionTokenIssuer,
-        authorization: &crate::auth::state_store::OAuthAuthorizationCodeRecord,
+        authorization: &AuthorizationGrant,
     ) -> Result<coral_auth::IssuedAccessToken, String> {
         match self {
             Self::Mcp(workspace) => issuer.issue_workspace_access_token(
@@ -377,28 +404,35 @@ mod tests {
     use super::super::query;
     use super::super::test_state::http_state;
     use super::*;
-    use crate::auth::state_store::{CodeStore, InMemoryStateStore, OAuthAuthorizationCodeRecord};
     use coral_auth::SessionTokenIssuer;
+    use coral_auth::authorization_codes::{AuthorizationCodes, CodeIssue};
+    use coral_test_support::TestDatabase;
 
     const CLIENT: &str = "https://client.example.test/oauth/client.json";
     const REDIRECT: &str = "http://127.0.0.1:14554/oauth/callback";
     const VERIFIER: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ";
     const RESOURCE: &str = "https://api.example.test/mcp";
 
-    fn state() -> (
+    /// The token route's state over a fresh database of authorization codes.
+    async fn state() -> (
         AuthorizationServerHttpState,
-        Arc<InMemoryStateStore>,
+        AuthorizationCodes,
         SessionTokenIssuer,
+        TestDatabase,
     ) {
-        let store = Arc::new(InMemoryStateStore::new());
-        let state = http_state(
-            "https://accounts.example.test",
-            "",
-            store.clone(),
-            &[RESOURCE],
-        );
+        let database = TestDatabase::new(coral_db::migration_plan())
+            .await
+            .expect("test database");
+        let codes = AuthorizationCodes::new(database.database());
+        let mut state = http_state("https://accounts.example.test", "", &[RESOURCE]);
+        state.codes = Some(codes.clone());
         let session_tokens = state.session_tokens.clone();
-        (state, store, session_tokens)
+        (state, codes, session_tokens, database)
+    }
+
+    fn now_unix_nanos() -> i64 {
+        let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock");
+        i64::try_from(elapsed.as_nanos()).expect("clock")
     }
 
     #[tokio::test]
@@ -417,23 +451,25 @@ mod tests {
             (RESOURCE, "reef", StatusCode::OK),
             (RESOURCE, "mcp", StatusCode::BAD_REQUEST),
         ] {
-            let (mut state, store, _) = state();
+            let (mut state, codes, _, _database) = state().await;
             state.workspace_resource_family = Some(Arc::new(
                 crate::WorkspaceMcpUrls::new(
                     crate::CanonicalOauthUrl::parse("https://mcp.example.test").unwrap(),
                 )
                 .unwrap(),
             ));
-            store
-                .store_authorization_code(
+            codes
+                .issue(
                     "code",
-                    OAuthAuthorizationCodeRecord {
+                    "sign-in",
+                    &AuthorizationGrant {
                         user_id: "user".into(),
                         client_id: CLIENT.into(),
                         redirect_uri: REDIRECT.into(),
                         code_challenge: URL_SAFE_NO_PAD.encode(Sha256::digest(VERIFIER.as_bytes())),
                         resource: resource.to_owned(),
                     },
+                    now_unix_nanos(),
                 )
                 .await
                 .unwrap();
@@ -483,20 +519,24 @@ mod tests {
         }
     }
 
-    async fn seed(store: &dyn CodeStore, code: &str, verifier: &str) {
-        store
-            .store_authorization_code(
+    /// Issues `code` from a sign-in of its own, for a client proving `verifier`.
+    async fn seed(codes: &AuthorizationCodes, code: &str, verifier: &str) {
+        let issued = codes
+            .issue(
                 code,
-                OAuthAuthorizationCodeRecord {
+                &format!("sign-in-for-{code}"),
+                &AuthorizationGrant {
                     user_id: "raw/provider/subject".into(),
                     client_id: CLIENT.into(),
                     redirect_uri: REDIRECT.into(),
                     code_challenge: URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())),
                     resource: RESOURCE.into(),
                 },
+                now_unix_nanos(),
             )
             .await
             .expect("seed code");
+        assert_eq!(issued, CodeIssue::Issued, "each seeded code is distinct");
     }
 
     fn form(code: &str, client: &str, redirect: &str, verifier: &str) -> String {
@@ -593,7 +633,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_content_type_body_and_malformed_or_unbounded_forms() {
-        let (state, _store, _session) = state();
+        let (state, _codes, _session, _database) = state().await;
         let mut duplicate_type = request(Body::empty());
         let content_type = HeaderValue::from_static("application/x-www-form-urlencoded");
         duplicate_type
@@ -629,10 +669,13 @@ mod tests {
 
     #[tokio::test]
     async fn client_auth_grant_and_verifier_failures_do_not_consume_codes() {
-        let (state, store, _session) = state();
-        for client_secret in [None, Some(""), Some("client-secret-must-not-leak")] {
-            let code = format!("client-auth-{}", client_secret.is_some());
-            seed(store.as_ref(), &code, VERIFIER).await;
+        let (state, codes, _session, _database) = state().await;
+        for (index, client_secret) in [None, Some(""), Some("client-secret-must-not-leak")]
+            .into_iter()
+            .enumerate()
+        {
+            let code = format!("client-auth-{index}");
+            seed(&codes, &code, VERIFIER).await;
             let mut body = form(&code, CLIENT, REDIRECT, VERIFIER);
             let mut invalid = request(body.clone());
             if let Some(secret) = client_secret {
@@ -647,7 +690,7 @@ mod tests {
             assert!(!body.contains("secret"));
             assert_redeems(state.clone(), &code, VERIFIER).await;
         }
-        seed(store.as_ref(), "basic-auth", VERIFIER).await;
+        seed(&codes, "basic-auth", VERIFIER).await;
         let mut basic = request(form("basic-auth", CLIENT, REDIRECT, VERIFIER));
         let authorization = HeaderValue::from_static("Basic ");
         let headers = basic.headers_mut();
@@ -680,7 +723,7 @@ mod tests {
         ];
         for (index, (field, value, error)) in edits.into_iter().enumerate() {
             let code = format!("required-{index}");
-            seed(store.as_ref(), &code, VERIFIER).await;
+            seed(&codes, &code, VERIFIER).await;
             let body = set_field(&form(&code, CLIENT, REDIRECT, VERIFIER), field, value);
             expect_error(state.clone(), request(body), error).await;
             assert_redeems(state.clone(), &code, VERIFIER).await;
@@ -697,7 +740,7 @@ mod tests {
         .enumerate()
         {
             let code = format!("verifier-{index}");
-            seed(store.as_ref(), &code, VERIFIER).await;
+            seed(&codes, &code, VERIFIER).await;
             let invalid = request(form(&code, CLIENT, REDIRECT, &verifier));
             expect_error(state.clone(), invalid, "invalid_request").await;
             assert_redeems(state.clone(), &code, VERIFIER).await;
@@ -706,7 +749,7 @@ mod tests {
 
     #[tokio::test]
     async fn bindings_are_indistinguishable_and_valid_boundary_verifiers_redeem() {
-        let (state, store, _session) = state();
+        let (state, codes, _session, _database) = state().await;
         let wrong_verifier = format!("{}B", "a".repeat(42));
         let mut canonical = None;
         for (index, (client, redirect, verifier)) in [
@@ -718,7 +761,7 @@ mod tests {
         .enumerate()
         {
             let code = format!("binding-{index}");
-            seed(store.as_ref(), &code, VERIFIER).await;
+            seed(&codes, &code, VERIFIER).await;
             let invalid = request(form(&code, client, redirect, verifier));
             let body = expect_error(state.clone(), invalid, "invalid_grant").await;
             canonical.get_or_insert(body.clone());
@@ -730,7 +773,7 @@ mod tests {
         assert_eq!(canonical, Some(replay));
         assert_eq!(canonical, Some(unknown));
 
-        seed(store.as_ref(), "wrong-resource", VERIFIER).await;
+        seed(&codes, "wrong-resource", VERIFIER).await;
         let body = set_field(
             &form("wrong-resource", CLIENT, REDIRECT, VERIFIER),
             "resource",
@@ -739,7 +782,7 @@ mod tests {
         expect_error(state.clone(), request(body), "invalid_grant").await;
         assert_redeems(state.clone(), "wrong-resource", VERIFIER).await;
 
-        seed(store.as_ref(), "invalid-resource", VERIFIER).await;
+        seed(&codes, "invalid-resource", VERIFIER).await;
         let body = set_field(
             &form("invalid-resource", CLIENT, REDIRECT, VERIFIER),
             "resource",
@@ -748,7 +791,7 @@ mod tests {
         expect_error(state.clone(), request(body), "invalid_target").await;
         assert_redeems(state.clone(), "invalid-resource", VERIFIER).await;
 
-        seed(store.as_ref(), "canonical-resource", VERIFIER).await;
+        seed(&codes, "canonical-resource", VERIFIER).await;
         let body = set_field(
             &form("canonical-resource", CLIENT, REDIRECT, VERIFIER),
             "resource",
@@ -764,15 +807,15 @@ mod tests {
         .enumerate()
         {
             let code = format!("boundary-{index}");
-            seed(store.as_ref(), &code, &verifier).await;
+            seed(&codes, &code, &verifier).await;
             assert_redeems(state.clone(), &code, &verifier).await;
         }
     }
 
     #[tokio::test]
     async fn success_returns_valid_raw_identity_token_and_is_single_use() {
-        let (state, store, session) = state();
-        seed(store.as_ref(), "success-code", VERIFIER).await;
+        let (state, codes, session, _database) = state().await;
+        seed(&codes, "success-code", VERIFIER).await;
         let (_status, body) = redeem(state.clone(), "success-code", VERIFIER).await;
         let value: Value = serde_json::from_str(&body).expect("token JSON");
         let get = |key| value.get(key).expect("response field");
@@ -821,12 +864,12 @@ mod tests {
             claims.get("client_id").and_then(Value::as_str),
             Some(CLIENT)
         );
-        // Single use is the store's guarantee rather than this handler's:
-        // `take_authorization_code_for_request` does its get-check-remove under
-        // one lock, so two redemptions of a code cannot both observe it. This
-        // handler only turns the resulting `None` into `invalid_grant`, which
-        // is what the replay below asserts. The atomicity itself is covered by
-        // `state_store`'s `authorization_codes_are_consumed_only_after_all_bindings_match`.
+        // Single use is the code store's guarantee rather than this handler's:
+        // a redemption spends the code in one conditional update, so two
+        // redemptions cannot both see it unspent. This handler only turns the
+        // resulting `None` into `invalid_grant`, which is what the replay below
+        // asserts. The atomicity itself is covered by `coral_auth`'s
+        // `a_code_issued_by_one_process_is_redeemed_once_by_any`.
         invalid_grant(state, "success-code").await;
     }
 }

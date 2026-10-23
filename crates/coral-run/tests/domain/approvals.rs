@@ -787,21 +787,31 @@ async fn approval_deadline_follows_the_run_timeout_and_stays_decidable_until_it(
     );
 }
 
+/// The owner's timer for an Approval Request expires it: the request is
+/// recorded Expired with no approver, dated at its deadline, its Invocation
+/// ends `approval_expired`, every reader shows the record (no action, not
+/// actionable), and a decision that arrives after the timer fired is
+/// answered with the recorded Expired; no Approved decision is written.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "expiry agreement across Run counts, current cards, caller actions, exact decisions and terminal evidence"
 )]
-async fn expired_approval_cannot_be_approved_and_settles_with_a_safe_failure() {
-    let fixture = TestModules::new(Arc::new(
+async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_reads_expired() {
+    let mut fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
+    // The request's own deadline, well inside the Run's and the worker lease.
+    let approval_wait = Duration::from_millis(200);
+    fixture.runs.execution_policy =
+        crate::execution::ExecutionPolicy::testing_with_approval_wait(approval_wait);
     let operation = fixture
         .user_operation("user:expiry", "Approval expiry")
         .await;
     fixture.require_approval(&operation).await;
     let approvals = fixture.approvals();
+    let started = fixture.clock.next.load(Ordering::SeqCst);
     let run = fixture.runs.start(&operation.principal, &operation.workspace_id, RunSubmission::new(
         ProgramSource::parse("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }").unwrap(),
         RunTimeout::from_millis(900_000).unwrap())).await.unwrap();
@@ -812,37 +822,30 @@ async fn expired_approval_cannot_be_approved_and_settles_with_a_safe_failure() {
         run.run_id(),
     )
     .await;
-    // Isolate approval expiry from the capped Run deadline and worker-claim expiry.
-    let approval_deadline = 1_000_000;
-    crate::approval_repository::set_approval_deadline(
-        &fixture.database,
-        &operation.workspace_id,
-        &request.id,
-        approval_deadline,
-    )
-    .await
-    .unwrap();
-    // Advance the decision clock to the Request deadline, not the later Run deadline.
-    // The worker remains alive on its own clock so this tests expiry, not lost claims.
-    let approvals = approvals.with_clock(Arc::new(TestClock::starting_at(approval_deadline)));
-    let stale = approvals
-        .get(&operation.principal, &operation.workspace_id, &request.id)
-        .await
-        .unwrap();
-    assert_eq!(
-        stale.state,
-        ApprovalState::Pending,
-        "reading does not fabricate a terminal decision"
-    );
+    // The deadline is the approval wait from the gate's clock sample, which
+    // lies between the start and this read on a clock that only ticks.
+    let approval_wait_nanos = i64::try_from(approval_wait.as_nanos()).unwrap();
+    let created = request.deadline_at_unix_nanos - approval_wait_nanos;
     assert!(
-        !stale.actionable,
-        "durable pending is not current action availability"
+        (started..=fixture.clock.next.load(Ordering::SeqCst)).contains(&created),
+        "the request's deadline is the approval wait from its creation: {created} not in {started}..="
     );
-    // Sample every current projection after the same deadline without expiring the worker lease.
-    fixture
-        .clock
-        .next
-        .store(approval_deadline, Ordering::SeqCst);
+    // The timer fires on the host clock; the test clock stays before the
+    // deadline, so nothing but the owner's record can show the expiry.
+    let read = || approvals.get(&operation.principal, &operation.workspace_id, &request.id);
+    wait_until_async_within(Duration::from_secs(5), async || {
+        read().await.unwrap().state != ApprovalState::Pending
+    })
+    .await;
+    let expired = read().await.unwrap();
+    assert_eq!(expired.state, ApprovalState::Expired);
+    assert_eq!(expired.approver, None);
+    assert!(!expired.actionable);
+    assert_eq!(
+        expired.decided_at_unix_nanos,
+        Some(request.deadline_at_unix_nanos),
+        "the expiry is dated at the deadline"
+    );
     let queue = fixture
         .runs
         .required_actions(&operation.principal, None, None, 1)
@@ -858,6 +861,15 @@ async fn expired_approval_cannot_be_approved_and_settles_with_a_safe_failure() {
         0
     );
     assert!(queue.actions.is_empty());
+    let terminal = wait_for_terminal(
+        &fixture.runs,
+        &operation.principal,
+        &operation.workspace_id,
+        run.run_id(),
+    )
+    .await;
+    assert_final_code(&terminal, "approval_expired");
+    assert!(terminal.required_actions().is_empty());
     let exact = fixture
         .runs
         .inspect_run(
@@ -871,21 +883,9 @@ async fn expired_approval_cannot_be_approved_and_settles_with_a_safe_failure() {
     let page = exact.summary.action_page.unwrap();
     assert_eq!(page.total, 0);
     assert!(page.actions.is_empty());
-    assert!(
-        fixture
-            .runs
-            .observe(
-                &operation.principal,
-                &operation.workspace_id,
-                run.run_id(),
-                &immediate(None, 1)
-            )
-            .await
-            .unwrap()
-            .required_actions()
-            .is_empty()
-    );
-    let expired = approvals
+    // A decision after the timer: answered with the recorded Expired, and
+    // nothing more is written.
+    let decided = approvals
         .decide(
             &operation.principal,
             &operation.workspace_id,
@@ -896,43 +896,134 @@ async fn expired_approval_cannot_be_approved_and_settles_with_a_safe_failure() {
         )
         .await
         .unwrap();
-    assert_eq!(expired.state, ApprovalState::Expired);
-    assert_eq!(expired.approver, None);
-    let terminal = wait_for_terminal(
-        &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
-        run.run_id(),
-    )
-    .await;
-    assert_final_code(&terminal, "approval_expired");
-    assert_eq!(
-        approvals
-            .get(&operation.principal, &operation.workspace_id, &request.id)
-            .await
-            .unwrap(),
-        expired
-    );
+    assert_eq!(decided, expired);
     let events = approvals
         .list_lifecycle_events(&operation.principal, &operation.workspace_id, &request.id)
         .await
         .unwrap();
     let [event] = events.as_slice() else {
-        panic!("one expiry event")
+        panic!("one expiry event, no approval: {events:?}")
     };
     assert_eq!(event.actor, None);
     assert_eq!(event.state, ApprovalState::Expired);
+    assert_eq!(event.occurred_at_unix_nanos, request.deadline_at_unix_nanos);
 }
 
-/// A decision applied at the request deadline expires the request instead
-/// of approving it: the owner's chunk commit samples the clock once, and
-/// the decision is judged on that sample.
+/// A request whose deadline passed on the clock but whose timer the owner
+/// has not applied reads as recorded: pending, with its deadline, in the
+/// request itself, the required actions and the Run's action page. No
+/// reader derives Expired from the clock.
 #[tokio::test]
-async fn a_decision_at_the_request_deadline_expires() {
-    let fixture = TestModules::new(Arc::new(
+async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_expiry() {
+    let mut fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
+    // Isolate the request's deadline from the Run's: its timer (30 s on the
+    // host clock) does not fire within this test.
+    fixture.runs.execution_policy =
+        crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(30));
+    let operation = fixture
+        .user_operation("user:late-reader", "Approval past its deadline")
+        .await;
+    fixture.require_approval(&operation).await;
+    let approvals = fixture.approvals();
+    let run = fixture.runs.start(&operation.principal, &operation.workspace_id, RunSubmission::new(
+        ProgramSource::parse("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }").unwrap(),
+        RunTimeout::from_millis(900_000).unwrap())).await.unwrap();
+    let request = wait_for_approval(
+        &approvals,
+        &operation.principal,
+        &operation.workspace_id,
+        run.run_id(),
+    )
+    .await;
+    // The clock passes the deadline; the request's timer does not fire
+    // within this test.
+    fixture
+        .clock
+        .next
+        .store(request.deadline_at_unix_nanos + 1, Ordering::SeqCst);
+    let read = approvals
+        .get(&operation.principal, &operation.workspace_id, &request.id)
+        .await
+        .unwrap();
+    assert_eq!(read.state, ApprovalState::Pending);
+    assert!(read.actionable, "the record decides, not the clock");
+    assert_eq!(read.deadline_at_unix_nanos, request.deadline_at_unix_nanos);
+    assert_eq!(read.decided_at_unix_nanos, None);
+    let queue = fixture
+        .runs
+        .required_actions(&operation.principal, None, None, 1)
+        .await
+        .unwrap();
+    assert_eq!(queue.action_count, 1);
+    let [queued] = queue.actions.as_slice() else {
+        panic!("the request is still a current action: {queue:?}")
+    };
+    assert_eq!(
+        queued.action.request,
+        crate::RequiredActionRequest::InvocationApproval(request.id.clone())
+    );
+    assert_eq!(
+        queued.action.deadline_at_unix_nanos, request.deadline_at_unix_nanos,
+        "the deadline is shown beside the recorded state"
+    );
+    let page = fixture
+        .runs
+        .inspect_run(
+            &operation.principal,
+            &operation.workspace_id,
+            run.run_id(),
+            &crate::RunInspection::default(),
+        )
+        .await
+        .unwrap()
+        .summary
+        .action_page
+        .unwrap();
+    assert_eq!(page.total, 1);
+    let observed = fixture
+        .runs
+        .observe(
+            &operation.principal,
+            &operation.workspace_id,
+            run.run_id(),
+            &immediate(None, 1),
+        )
+        .await
+        .unwrap();
+    let [action] = observed.required_actions() else {
+        panic!("one required action: {observed:?}")
+    };
+    assert_eq!(
+        action.deadline_at_unix_nanos,
+        request.deadline_at_unix_nanos
+    );
+    assert_eq!(
+        approvals
+            .list_lifecycle_events(&operation.principal, &operation.workspace_id, &request.id)
+            .await
+            .unwrap(),
+        Vec::new(),
+        "reading writes nothing"
+    );
+}
+
+/// A decision applied at the request deadline on the owner's clock, before
+/// the request's timer fired, expires the request instead of approving it:
+/// the owner applies the expiry first, as its timer would have, and the
+/// decision reads the record.
+#[tokio::test]
+async fn a_decision_at_the_request_deadline_expires() {
+    let mut fixture = TestModules::new(Arc::new(
+        crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
+    ))
+    .await;
+    // Isolate the request's deadline from the Run's: its timer (30 s on the
+    // host clock) does not fire within this test.
+    fixture.runs.execution_policy =
+        crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(30));
     let operation = fixture
         .user_operation("user:late-expiry", "Approval expiry under holds")
         .await;
@@ -948,21 +1039,12 @@ async fn a_decision_at_the_request_deadline_expires() {
         run.run_id(),
     )
     .await;
-    let approval_deadline = 1_000_000;
-    crate::approval_repository::set_approval_deadline(
-        &fixture.database,
-        &operation.workspace_id,
-        &request.id,
-        approval_deadline,
-    )
-    .await
-    .unwrap();
-    // The owner's clock reaches the deadline before the decision chunk
-    // samples it.
+    // The owner's clock reaches the deadline before the decision is applied;
+    // the request's timer has not fired.
     fixture
         .clock
         .next
-        .store(approval_deadline, Ordering::SeqCst);
+        .store(request.deadline_at_unix_nanos, Ordering::SeqCst);
     let expired = approvals
         .decide(
             &operation.principal,
@@ -976,6 +1058,10 @@ async fn a_decision_at_the_request_deadline_expires() {
         .unwrap();
     assert_eq!(expired.state, ApprovalState::Expired);
     assert_eq!(expired.approver, None);
+    assert_eq!(
+        expired.decided_at_unix_nanos,
+        Some(request.deadline_at_unix_nanos)
+    );
     let terminal = wait_for_terminal(
         &fixture.runs,
         &operation.principal,
@@ -984,6 +1070,14 @@ async fn a_decision_at_the_request_deadline_expires() {
     )
     .await;
     assert_final_code(&terminal, "approval_expired");
+    let events = approvals
+        .list_lifecycle_events(&operation.principal, &operation.workspace_id, &request.id)
+        .await
+        .unwrap();
+    assert!(
+        matches!(events.as_slice(), [event] if event.state == ApprovalState::Expired),
+        "no Approved decision is written: {events:?}"
+    );
 }
 
 #[tokio::test]
@@ -1850,13 +1944,19 @@ async fn first_durable_decision_wins_against_policy_changes_before_the_worker_ob
     }
 }
 
+/// While an Approval Request is pending, its Invocation is parked with its
+/// Run Owner and holds nothing. Commits elsewhere ring the content-free
+/// change signal, but an owner subscribes only for a connection wait, so
+/// they wake nothing, read nothing and fence nothing: the decision comes
+/// through the owner, and the periodic precheck (15 s away here) is the
+/// ceiling for everything else. Polling a snapshot per parked wait on every
+/// commit used to starve the pool.
 #[tokio::test]
-async fn a_pending_approval_takes_no_held_recheck_for_unrelated_commits() {
-    let probe = ApprovalWaitProbe::new();
-    let fixture = TestModules::with_invocation_adapters(
-        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
-        Arc::new(RejectingUpstream),
-        probe.clone(),
+async fn an_unrelated_commit_while_an_approval_is_pending_causes_no_fence_and_no_read() {
+    let wake_gap = Duration::from_secs(1);
+    let (fixture, probe) = probed_fixture(
+        crate::execution::ExecutionPolicy::testing()
+            .with_wakeups(Duration::from_secs(15), wake_gap),
     )
     .await;
     let operation = fixture
@@ -1875,24 +1975,19 @@ async fn a_pending_approval_takes_no_held_recheck_for_unrelated_commits() {
         )
         .await
         .unwrap();
-    // The first held recheck requests the approval before the wait parks.
+    // The held gate requests the approval and parks the Invocation.
     probe.until_parked(1).await;
-    let before = probe.held();
-    // Every commit wakes every waiter. Only the snapshot precheck keeps these
-    // wake-ups from becoming held rechecks.
+    let (held, fences) = (probe.held(), probe.fences());
     for at in 0..3 {
-        let parked = probe.parked();
         commit_elsewhere(&fixture, &bystander, at).await;
-        probe.until_parked(parked + 1).await;
     }
+    // Past the wake gap: a subscribed owner would have read by now.
+    tokio::time::sleep(wake_gap + Duration::from_millis(500)).await;
 
-    // Each held recheck locks the Run, Workspace, User, Provider, policy and
-    // Account rows. Polling them on a short timer starved the connection pool.
-    assert_eq!(
-        probe.held() - before,
-        0,
-        "held rechecks while only another Workspace changed"
-    );
+    assert_eq!(probe.held() - held, 0, "held rechecks");
+    assert_eq!(probe.fences() - fences, 0, "fences");
+    assert_eq!(probe.parked(), 1, "the Invocation stays parked");
+    assert_eq!(probe.prechecks(), Vec::new(), "snapshot reads");
     fixture
         .runs
         .cancel(
@@ -1905,17 +2000,104 @@ async fn a_pending_approval_takes_no_held_recheck_for_unrelated_commits() {
         .unwrap();
 }
 
+/// A wait that became moot with no wake-up (the Workspace archived while a
+/// decision is pending) is found by the periodic precheck alone: its
+/// snapshot finds the authority lost, and the Invocation goes back to its
+/// held gate, which refuses it under the fence's shared holds and closes the
+/// request. No fence ever runs. The owner's timers run on the host clock, so
+/// the test shortens the precheck's period instead of advancing a clock 15 s.
 #[tokio::test]
-async fn a_pending_approval_expires_at_its_deadline_without_a_commit() {
-    let (probe, release) = ApprovalWaitProbe::gated();
-    let fixture = TestModules::with_invocation_adapters(
-        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
-        Arc::new(RejectingUpstream),
-        probe.clone(),
+async fn a_wait_that_became_moot_is_found_by_the_periodic_precheck_and_its_request_closed() {
+    let (fixture, probe) = probed_fixture(
+        crate::execution::ExecutionPolicy::testing_with_claim_lease(Duration::from_secs(60))
+            .with_wakeups(Duration::from_millis(300), Duration::from_secs(1)),
     )
     .await;
     let operation = fixture
-        .user_operation("user:quiet-expiry", "Expire without a commit")
+        .user_operation("user:moot-wait", "A wait that became moot")
+        .await;
+    fixture.require_approval(&operation).await;
+    let approvals = fixture.approvals();
+    let run = fixture
+        .runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission(
+                "try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }",
+            ),
+        )
+        .await
+        .unwrap();
+    let request = wait_for_approval(
+        &approvals,
+        &operation.principal,
+        &operation.workspace_id,
+        run.run_id(),
+    )
+    .await;
+    probe.until_parked(1).await;
+    let held = probe.held();
+    fixture
+        .workspaces
+        .archive(
+            &change(operation.user.clone(), 50, '5'),
+            &operation.workspace_id,
+        )
+        .await
+        .unwrap();
+
+    let terminal = wait_for_terminal(
+        &fixture.runs,
+        &operation.principal,
+        &operation.workspace_id,
+        run.run_id(),
+    )
+    .await;
+    assert_final_code(&terminal, "dispatch_authority_lost");
+    let prechecks = probe.prechecks();
+    assert!(
+        prechecks
+            .iter()
+            .all(|(check, _)| *check == crate::owner::Check::Periodic),
+        "no change wake-up reads an approval wait: {prechecks:?}"
+    );
+    assert_eq!(
+        prechecks.last(),
+        Some(&(crate::owner::Check::Periodic, 1)),
+        "the periodic precheck found the moot wait: {prechecks:?}"
+    );
+    assert_eq!(
+        probe.held() - held,
+        1,
+        "one held recheck, after the finding"
+    );
+    assert_eq!(probe.fences(), 0, "no fence");
+    assert_eq!(
+        approvals
+            .get(&operation.principal, &operation.workspace_id, &request.id)
+            .await
+            .unwrap()
+            .state,
+        ApprovalState::Closed
+    );
+}
+
+/// A parked approval wait ends when the owner's timer records the expiry:
+/// the chunk that records it ends the Invocation and wakes the parked wait,
+/// with no read, long before the periodic precheck. The wait parks once.
+#[tokio::test]
+async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
+    // Isolate approval expiry from the capped Run deadline and worker-claim
+    // expiry: the request expires two seconds after its creation, long
+    // before the periodic precheck.
+    let (fixture, probe) = probed_fixture(
+        crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(2))
+            .with_wakeups(Duration::from_secs(15), Duration::from_secs(1)),
+    )
+    .await;
+    let operation = fixture
+        .user_operation("user:quiet-expiry", "Expire by the timer")
         .await;
     fixture.require_approval(&operation).await;
     let approvals = fixture.approvals();
@@ -1929,29 +2111,17 @@ async fn a_pending_approval_expires_at_its_deadline_without_a_commit() {
         run.run_id(),
     )
     .await;
-    // Isolate approval expiry from the capped Run deadline and worker-claim expiry.
-    // The gate keeps the wait from taking its first snapshot until the deadline is set.
-    let approval_deadline = 1_000_000;
-    crate::approval_repository::set_approval_deadline(
-        &fixture.database,
-        &operation.workspace_id,
-        &request.id,
-        approval_deadline,
-    )
-    .await
-    .unwrap();
-    release.send(()).unwrap();
-    // The approval request's own commit wakes the wait once. After that round,
-    // only the deadline or the fallback poll wakes it.
-    probe.until_parked(2).await;
-    let held = probe.held();
-    fixture
-        .clock
-        .next
-        .store(approval_deadline, Ordering::SeqCst);
+    probe.until_parked(1).await;
 
-    // Without the deadline wake-up, the wait would sleep until its 5 s fallback poll.
-    probe.until_held(held + 1, Duration::from_secs(3)).await;
+    // Without the timer's chunk, the wait would sleep until the precheck.
+    wait_until_async_within(Duration::from_secs(3), async || {
+        fixture
+            .run_record(&operation.workspace_id, run.run_id())
+            .await
+            .state
+            .is_terminal()
+    })
+    .await;
     let terminal = wait_for_terminal(
         &fixture.runs,
         &operation.principal,
@@ -1960,9 +2130,37 @@ async fn a_pending_approval_expires_at_its_deadline_without_a_commit() {
     )
     .await;
     assert_final_code(&terminal, "approval_expired");
+    assert_eq!(
+        approvals
+            .get(&operation.principal, &operation.workspace_id, &request.id)
+            .await
+            .unwrap()
+            .state,
+        ApprovalState::Expired
+    );
+    assert_eq!(probe.parked(), 1, "parked once, woken once");
+    assert_eq!(probe.prechecks(), Vec::new(), "no read woke it");
 }
 
-/// Commits a policy change in another Workspace. Each commit wakes every
+/// A fixture under `policy` whose Invocations and Run Owners one
+/// [`WaitProbe`] watches; approval-gated calls go to an upstream that
+/// rejects them.
+async fn probed_fixture(
+    policy: crate::execution::ExecutionPolicy,
+) -> (TestModules, Arc<WaitProbe>) {
+    let probe = WaitProbe::new();
+    let mut fixture = TestModules::with_execution_adapters(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        Arc::new(RejectingUpstream),
+        probe.clone(),
+        probe.clone(),
+    )
+    .await;
+    fixture.runs.execution_policy = policy;
+    (fixture, probe)
+}
+
+/// Commits a policy change in another Workspace. Each commit rings every
 /// change subscriber, as a busy deployment does.
 async fn commit_elsewhere(fixture: &TestModules, bystander: &OperationFixture, at: i64) {
     fixture

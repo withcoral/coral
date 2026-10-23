@@ -6,6 +6,7 @@ import {
   activitySelection,
   branchCoordinate,
   selectionKeys,
+  shownRecordOf,
 } from '@/views/activity/navigation'
 import type { ActivityPage } from '@/views/activity/types'
 import { readingWindow, type ActivityViewport } from './activity-live-types'
@@ -410,12 +411,23 @@ export function useActivityReader(initial: ActivityPage) {
       Number(query.get(`offset.${parent}`)) > 0 &&
       branch.rows.length,
   )?.[1]
+  // A Run's final value selects its Run, whose detail shows it. The table reveals
+  // the final value's own row, which the rail and the cursor show.
+  const shownRecord = shownRecordOf(initial.selected, query.get('record')) ?? undefined
   // A new list reveals what its URL names. Inside a list, a new selection is revealed
   // only when it is off screen: the table does not move a record that is in view.
-  const revealRecord = state.joined
-    ? (initial.selected ?? undefined)
-    : initial.selected && (Object.keys(initial.anchors ?? {}).length || query.has('anchor'))
+  // A new list without the final value's row (its Run is collapsed, or its ending Event
+  // stands for it) reveals the Run.
+  const newListRecord =
+    initial.selected &&
+    shownRecord !== initial.selected &&
+    !initial.branches[initial.selected]?.rows.some((row) => row.name === shownRecord)
       ? initial.selected
+      : shownRecord
+  const revealRecord = state.joined
+    ? shownRecord
+    : newListRecord && (Object.keys(initial.anchors ?? {}).length || query.has('anchor'))
+      ? newListRecord
       : (initialAnchor ??
         initialOffset?.rows.find((row) => row.position === initialOffset.offset)?.name)
   return {

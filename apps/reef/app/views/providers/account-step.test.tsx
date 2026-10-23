@@ -230,7 +230,7 @@ const redirectDone: Partial<SetupView> = {
   credentialMethod: 'oauth',
   authorization: { ...deviceDone.authorization!, userCode: undefined },
 }
-// A Setup that a Program's createProvider call prepared.
+// A Setup that a Program's addProvider call prepared.
 const programSetup: Partial<SetupView> = {
   ...redirectDone,
   request: { namespace: 'weather', route: 'caller' },

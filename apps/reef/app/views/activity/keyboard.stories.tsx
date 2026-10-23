@@ -172,7 +172,10 @@ export const FocusOrder: Story = {
     await press('{ArrowDown}')
     await expect(before).toHaveFocus()
     await expect(cursor()).toBeNull()
-    // Tab reaches the table itself, which shows its focus until a cursor row does.
+    // Tab reaches the live toggle beside the list heading, then the table itself, which shows
+    // its focus until a cursor row does.
+    await press('{Tab}')
+    await expect(canvas.getByRole('button', { name: 'Follow latest activity' })).toHaveFocus()
     await press('{Tab}')
     await expect(table).toHaveFocus()
     await expect(getComputedStyle(table).outlineStyle).not.toBe('none')
@@ -198,9 +201,9 @@ export const FocusOrder: Story = {
     await heading(opened, 'Task 2')
     await expect(table).toHaveFocus()
     // Tab goes from the table to the rail's first control, and Shift+Tab comes back.
-    const close = within(opened).getByRole('button', { name: 'Close details' })
+    const follow = within(opened).getByRole('button', { name: 'Follow this task' })
     await press('{Tab}')
-    await expect(close).toHaveFocus()
+    await expect(follow).toHaveFocus()
     await press('{Shift>}{Tab}{/Shift}')
     await expect(table).toHaveFocus()
 

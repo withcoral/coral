@@ -18,9 +18,9 @@ import { columnStyle } from './columns'
 import { ColumnsProvider } from './columns-context'
 import type { TableDensity, TableGroupHeadings, TableVariant } from './constants'
 import {
+  CELL_HEIGHT_PX,
   GROUP_HEADING_HEIGHT_PROPERTY,
   groupHeadingHeightPx,
-  HEADING_HEIGHT_PX,
   ROWS_MAX_HEIGHT_PROPERTY,
 } from './constants'
 import * as styles from './table.css'
@@ -58,7 +58,7 @@ interface ContainerAutoLayoutProps extends ContainerBaseProps {
   /** Sizes the columns to their content and scrolls sideways. The default. */
   layout?: 'auto'
   /** The sideways scroll leaves no room for a vertical one. Needs `layout="fixed"`. */
-  maxHeight?: never
+  maxRows?: never
   /** Nothing scrolls vertically, so no group heading ever pins. Needs `layout="scroll"`. */
   onPinnedGroupChange?: never
   /** The sideways scroll leaves no room for a vertical one. Needs `layout="fixed"`. */
@@ -75,13 +75,19 @@ interface ContainerFixedBaseProps extends ContainerBaseProps {
 type ContainerFixedLayoutProps = ContainerFixedBaseProps &
   (
     | {
-        /** Caps the table height in pixels and scrolls only the rows beneath the heading. */
-        maxHeight?: number
+        maxRows?: never
         bounded?: false
       }
     | {
+        /** Shows at most this many rows beneath the heading; the rest scroll there. */
+        maxRows: number
+        bounded?: false
+        /** A prominent heading stands taller than a row, so it would cut the last row. */
+        groupHeadings?: 'plain'
+      }
+    | {
         /** A bounded table takes its height from its flex parent, not a fixed cap. */
-        maxHeight?: never
+        maxRows?: never
         /**
          * Shrinks to the height its flex parent leaves, and scrolls only the rows
          * beneath the heading. It never grows past its last row.
@@ -93,7 +99,7 @@ type ContainerFixedLayoutProps = ContainerFixedBaseProps &
 interface ContainerScrollLayoutProps extends ContainerBaseProps {
   /** Bordered, two-axis scroll port with sticky headings. The flex parent bounds its height. */
   layout: 'scroll'
-  maxHeight?: never
+  maxRows?: never
   /** A scroll table always takes the height its flex parent leaves. */
   bounded?: never
   /**
@@ -142,7 +148,7 @@ export function Container({
   focusable = false,
   groupHeadings = 'plain',
   layout = 'auto',
-  maxHeight,
+  maxRows,
   onPinnedGroupChange,
   ref,
   readingKey,
@@ -159,20 +165,14 @@ export function Container({
   useImperativeHandle(ref, () => readingRef.current!)
   const groupHeadingHeight = groupHeadingHeightPx(density, groupHeadings)
   const onScroll = usePinnedGroup(readingRef, density, groupHeadingHeight, onPinnedGroupChange)
-  if (
-    maxHeight !== undefined &&
-    (!Number.isFinite(maxHeight) || maxHeight < HEADING_HEIGHT_PX[density])
-  ) {
-    throw new RangeError(
-      `Table maxHeight must be a finite number at least as tall as its ${HEADING_HEIGHT_PX[density]}px heading.`,
-    )
-  }
+  if (maxRows !== undefined && !(Number.isInteger(maxRows) && maxRows > 0))
+    throw new RangeError('Table maxRows must be a positive integer.')
 
   const bounds =
-    maxHeight === undefined
+    maxRows === undefined
       ? undefined
       : ({
-          [ROWS_MAX_HEIGHT_PROPERTY]: `${maxHeight - HEADING_HEIGHT_PX[density]}px`,
+          [ROWS_MAX_HEIGHT_PROPERTY]: `${maxRows * CELL_HEIGHT_PX[density]}px`,
         } as CSSProperties)
   return (
     <ReadingPosition
@@ -196,7 +196,7 @@ export function Container({
             variant === 'card' && styles.cardTable,
             layout === 'scroll' && styles.scrollTable,
             readingKey && styles.anchoredTable,
-            (maxHeight !== undefined || bounded) && styles.scrollRows,
+            (maxRows !== undefined || bounded) && styles.scrollRows,
             bounded && styles.boundedRows,
             groupHeadings === 'prominent' && styles.prominentGroupHeadings,
             staticRows && styles.staticRows,

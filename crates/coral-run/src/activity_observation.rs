@@ -11,7 +11,10 @@ const ACTIVITY_HEARTBEAT: Duration = Duration::from_secs(5);
 /// Why [`ActivityObservation::next`] returned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActivityWake {
-    /// A committed change or action expiry. Reread authorized activity.
+    /// A committed change, or the expiry of the invoking authority behind
+    /// an action. Reread authorized activity. A Run's or a request's
+    /// deadline wakes nothing by itself: its owner's record of the timeout
+    /// or the expiry is a committed change.
     Changed,
     /// Authority still holds and nothing changed. Do not reread activity.
     Heartbeat,
@@ -71,24 +74,22 @@ impl ActivityObservation {
         Ok(())
     }
 
-    /// Rechecks authority and finds the next time-dependent visibility change.
+    /// Rechecks authority and finds the next time-dependent visibility
+    /// change: the expiry of an invoking authority behind a current action.
     async fn reschedule(&mut self) -> Result<(), Error> {
         let mut tx = self.runs.database.begin_read_snapshot().await?;
         let authority = self.authorize(&mut tx).await?;
         let now = self.runs.now()?;
-        let action =
-            crate::required_actions_repository::next_deadline(&mut tx, &authority, now).await?;
-        let connection = coral_provider::account::history_repository::next_connection_deadline(
-            &mut tx, &authority, now,
-        )
-        .await?;
+        self.deadline =
+            crate::required_actions_repository::next_authority_deadline(&mut tx, &authority, now)
+                .await?;
         tx.commit().await?;
-        self.deadline = action.into_iter().chain(connection).min();
         Ok(())
     }
 
-    /// Waits for a change or expiry, or for the next authorized liveness check.
-    /// Deadlines include actions outside the caller's loaded window.
+    /// Waits for a change or an authority expiry, or for the next authorized
+    /// liveness check. Expiries include actions outside the caller's loaded
+    /// window.
     /// # Errors
     /// Fails closed on authority or notification loss; reconnect with a new snapshot.
     pub async fn next(&mut self) -> Result<ActivityWake, Error> {

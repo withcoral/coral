@@ -15,9 +15,9 @@
 mod binding;
 mod builtin;
 pub use builtin::{
-    ArgumentProblem, BUILTIN_PROVIDER_DISPLAY_NAME, BuiltinArguments, BuiltinCatalog,
-    BuiltinCatalogIdentity, BuiltinCredentialRoute, BuiltinExecutionBinding, BuiltinOperation,
-    ConfigurationChoices, ConfigurationOutput, CreateProviderArguments, CreateProviderResult,
+    AddProviderArguments, AddProviderResult, ArgumentProblem, BUILTIN_PROVIDER_DISPLAY_NAME,
+    BuiltinArguments, BuiltinCatalog, BuiltinCatalogIdentity, BuiltinCredentialRoute,
+    BuiltinExecutionBinding, BuiltinOperation, ConfigurationChoices, ConfigurationOutput,
     GetProviderArguments, GetProviderResult, ListProvidersResult, ListedProvider,
     ListedProviderState, ListedSetup, ListedSetupState, ProviderFacts, ProviderSourceArgument,
     ProviderSourceOutput,
@@ -132,6 +132,7 @@ pub use types::{
     OperationHints, OperationKey, OperationPresentation, PreparedProviderCatalog,
     ProviderGenerationFingerprint, ProviderGenerationId, ProviderSetupInput,
     ProviderSetupInputDigest, ProviderSetupInputKind, SchemaGraph, SchemaId, SchemaSemantics,
+    SearchableOperation,
 };
 
 /// Materializes one pinned Provider Setup input with the deployment-selected policy.
@@ -354,6 +355,20 @@ pub async fn available_search_targets_in_transaction(
     generation_id: &ProviderGenerationId,
 ) -> Result<Vec<CatalogSearchTarget>, Error> {
     repository::available_search_targets(transaction, generation_id).await
+}
+
+/// Loads what the search index reads of each structurally available
+/// Operation, in Operation Key order: presentation, binding and input schema,
+/// without separately materialized schemas, declarations or diagnostics.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-package failure.
+pub async fn searchable_operations_in_transaction(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+) -> Result<Vec<SearchableOperation>, Error> {
+    repository::searchable_operations(transaction, generation_id).await
 }
 
 /// Whether the exact private Generation still holds the Operation, by one

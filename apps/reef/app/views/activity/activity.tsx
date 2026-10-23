@@ -9,7 +9,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { Link, useLocation, useNavigate, useNavigation } from 'react-router'
+import { Link, useFetcher, useLocation, useNavigate, useNavigation } from 'react-router'
 import { CopyMcpEndpoint } from '@/components/copy-mcp-endpoint'
 import { EmptyPage } from '@/components/empty-page'
 import { Button, Typography } from '@/wax/components'
@@ -24,19 +24,25 @@ import {
   type ActivityPage,
   type ActivityViewProps,
   type ActivityRow,
+  type LiveScope,
   type RunState,
 } from './types'
 import {
   activityStops,
   childWindow,
-  finalValue,
+  liveRun,
+  liveStep,
+  liveTarget,
+  orderedRecordPosition,
   recordParents,
   resolveStop,
   revealHref,
   selectionKeys,
+  shownRecordOf,
   stepStop,
   stopPosition,
   useActivityNavigation,
+  windowAt,
   type StopPosition,
 } from './navigation'
 import { ActivityDetail, runContextOf } from './detail'
@@ -45,12 +51,14 @@ import { PanelClose } from './panel'
 import { ActivityConnectedContext, restoreFirst, useActivityArchived } from './live'
 import { PendingActions } from './pending'
 import { useUnsentComment } from '../actions/review'
+import type { action as resolve } from '@/routes/activity-resolve'
 import { ContextImpact } from './context-impact'
 import { ACTIVITY_CHILD_WINDOW, activityRowIdentity } from '@/lib/activity-live-types'
 import { activityDays, utcDay } from '@/lib/activity-list'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import * as styles from './task-activity.css'
 import { invocationOutcomeLabels, resultUnknown } from './labels'
+import * as panelStyles from './panel.css'
 
 export function rowLabel(row: ActivityRow): string {
   switch (row.kind) {
@@ -258,6 +266,14 @@ const RowActionsContext = createContext<RowActions>({
 /** The rail token a navigation's state carries, if any. */
 const railToken = (state: unknown) =>
   typeof state === 'object' && state && 'activityRail' in state ? state.activityRail : undefined
+/** The Task and Run that lead to `row` in the table, which live mode keeps expanded. */
+const liveChain = (row: ActivityRow | null) =>
+  row?.kind === 'task' ? [row.name] : (liveRun(row)?.chain ?? [])
+/** The advance a navigation's state says it read for, if any. */
+const advanceMark = (state: unknown) =>
+  typeof state === 'object' && state && 'activityAdvance' in state
+    ? state.activityAdvance
+    : undefined
 /**
  * Tells whether a pending navigation is the rail's own and history has not moved
  * under it, so replacing the address adds no entry and loses none.
@@ -446,6 +462,137 @@ function selectionHref(listPath: string, search: string, name: string) {
   query.set('record', name)
   return `${listPath}?${query}`
 }
+/** Data that marks a live toggle, so focus can return to it when the record changes. */
+const liveToggleAttribute = 'data-activity-live'
+/** Each live scope's toggle: its name, and its tooltip while off, on, or blocked. */
+const liveToggles: Record<LiveScope, { label: string; off: string; on: string; blocked: string }> =
+  {
+    run: {
+      label: 'Follow latest record',
+      off: 'Follow the latest record of this execution.',
+      on: 'Stop following the latest record.',
+      blocked: 'Collapse a record before you follow this execution.',
+    },
+    task: {
+      label: 'Follow this task',
+      off: 'Follow the runs of this task in order.',
+      on: 'Stop following this task.',
+      blocked: 'Collapse a record before you follow this task.',
+    },
+    latest: {
+      label: 'Follow latest activity',
+      off: 'Follow the newest task or run.',
+      on: 'Stop following the latest activity.',
+      blocked: 'Collapse a record before you follow the latest activity.',
+    },
+  }
+/**
+ * A live mode toggle: beside the drawer's close control for the shown Run or Task,
+ * and above the list for the newest activity. Pressed, live mode follows its `scope`.
+ * The icon shape shows the state too.
+ */
+function LiveToggle({
+  scope,
+  on,
+  blocked,
+  onToggle,
+}: {
+  scope: LiveScope
+  on: boolean
+  /** Following needs more expanded records than the table allows, or did while on. */
+  blocked: boolean
+  onToggle: () => void
+}) {
+  const copy = liveToggles[scope]
+  return (
+    <Button.IconButton
+      name={on ? 'LocateFixed' : 'Locate'}
+      size="22"
+      variant="bare"
+      ariaLabel={copy.label}
+      aria-pressed={on}
+      tooltipText={blocked ? copy.blocked : on ? copy.on : copy.off}
+      tooltipSide="bottom"
+      // Pressed, it still turns live mode off.
+      disabled={blocked && !on}
+      focusableWhenDisabled
+      onClick={blocked && !on ? undefined : onToggle}
+      {...{ [liveToggleAttribute]: '' }}
+    />
+  )
+}
+
+/** A step live mode takes: `key` names it, so it never repeats. `last` ends an advance. */
+type FollowStep = { key: string; href: string; last?: boolean }
+/**
+ * The step live mode, or an advance with live mode off, takes next in `scope`: the
+ * followed Run's oldest action, else its newest record. 'done' rests on the record
+ * shown; null waits.
+ */
+function liveFollow(
+  page: ActivityPage,
+  nav: ReturnType<typeof useActivityNavigation>,
+  {
+    scope,
+    actionable,
+    shownRecord,
+    reviewed,
+  }: {
+    scope: LiveScope | null
+    actionable: boolean
+    shownRecord: string | null
+    /** The request the rail reviews. */
+    reviewed: string | undefined
+  },
+): FollowStep | 'done' | 'blocked' | null {
+  // The records that lead to the selected one stay open until the selection moves.
+  const selectedChain = liveChain(page.selectedRow)
+  // An advance follows the reviewed Run with live mode off.
+  const target = liveTarget(page, scope ?? 'run')
+  if (target.kind === 'wait') return null
+  if (target.kind === 'newest')
+    return { key: 'newest', href: nav.href({ anchor: null, before: null, after: null }) }
+  if (target.kind === 'load')
+    return {
+      key: `load ${target.parent} ${target.offset}`,
+      href: nav.followWindowHref(target.parent, target.offset, scope),
+    }
+  if (target.kind === 'select')
+    return target.record === shownRecord
+      ? 'done'
+      : {
+          key: `select ${target.record}`,
+          href: nav.followHref(target.record, undefined, scope, target.chain),
+          last: true,
+        }
+  if (target.kind === 'run') {
+    const step = liveStep(page, target.run, actionable)
+    if (step.kind === 'wait') return null
+    if (step.kind === 'select') {
+      if (step.record === shownRecord && (!step.request || step.request === reviewed)) return 'done'
+      const action = step.request ? page.liveAction : undefined
+      return {
+        key: `select ${step.record} ${step.request ?? ''}`,
+        // An advance keeps live mode as it was, and ends here.
+        href: nav.followHref(step.record, action, scope, target.chain),
+        last: true,
+      }
+    }
+    if (step.kind === 'load')
+      return {
+        key: `load ${target.run} ${step.total}`,
+        href: nav.followWindowHref(target.run, step.total, scope),
+      }
+  }
+  // Expand the target's records, while the selected record's stay open.
+  return nav.liveRoom(target.chain, selectedChain)
+    ? {
+        key: `expand ${target.chain.join(' ')}`,
+        href: nav.liveHref(scope, target.chain, selectedChain),
+      }
+    : 'blocked'
+}
+
 export function Activity({
   page,
   live,
@@ -476,10 +623,7 @@ export function Activity({
   if (closing !== null && closing !== selected) setClosing(null)
   // The record the rail shows, exactly: a Run's final value has its own name,
   // although its Run's detail shows it.
-  const shownRecord =
-    selected && new URLSearchParams(search).get('record') === finalValue(selected)
-      ? finalValue(selected)
-      : selected
+  const shownRecord = shownRecordOf(selected, new URLSearchParams(search).get('record'))
   // A closing rail keeps showing its record until its exit ends.
   const [shown, setShown] = useState({ page, record: shownRecord })
   if (selected && (shown.page !== page || shown.record !== shownRecord))
@@ -524,6 +668,12 @@ export function Activity({
   // Where ↑ and ↓ go. A glimpse takes no keys.
   const stops = useMemo(() => (glimpse ? [] : activityStops(page, roots)), [glimpse, page, roots])
   const open = selected !== null && closing === null
+  // Live mode follows the shown record's Run, the newest activity, or one Task's Runs.
+  // Any other selection, and closing the rail, turns it off. A glimpse never follows.
+  const liveScope = glimpse ? null : nav.liveScope
+  const liveOn = liveScope !== null
+  // The records that lead to the selected one stay expanded while live mode moves on.
+  const selectedChain = liveChain(page.selectedRow)
   // With the rail open, the keys start from the record it shows, or is about to.
   const shownPosition: StopPosition | null = shownRecord
     ? {
@@ -586,6 +736,7 @@ export function Activity({
     locationKey,
     expanded: page.expanded,
     selectedRow: page.selectedRow,
+    liveOn,
     close,
   }
   const latest = useRef(now)
@@ -597,7 +748,8 @@ export function Activity({
       transition.state === 'idle' ? undefined : transition.location?.key,
     )
   })
-  // Whether Enter in the table opened the rail, which then leaves focus there.
+  // Whether Enter in the table, or live mode, opened the rail, which then leaves focus
+  // where it was.
   const openedByKey = useRef(false)
   const [actions] = useState<RowActions>(() => ({
     select: (row, keyboard = false) => {
@@ -633,13 +785,21 @@ export function Activity({
         current.open &&
         current.expanded.includes(name) &&
         Boolean(current.shownPosition?.parents.includes(name))
+      // Collapsing the Run live mode follows, or its Task, stops following it.
+      const stopLive =
+        current.liveOn &&
+        current.expanded.includes(name) &&
+        liveChain(current.selectedRow).includes(name)
       setKeyStep(null)
-      void current.navigate(hides ? current.nav.collapseHref(name) : current.nav.toggleHref(name), {
-        preventScrollReset: true,
-        replace: keyboard && hides,
-        // A switch to the collapsed record is the rail's own navigation.
-        state: hides ? tokens.next() : undefined,
-      })
+      void current.navigate(
+        hides ? current.nav.collapseHref(name) : current.nav.toggleHref(name, stopLive),
+        {
+          preventScrollReset: true,
+          replace: keyboard && hides,
+          // A switch to the collapsed record is the rail's own navigation.
+          state: hides ? tokens.next() : undefined,
+        },
+      )
     },
     viewport: (parent, value) => latest.current.live?.viewport(parent, value),
   }))
@@ -730,6 +890,172 @@ export function Activity({
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [glimpse, actions, tokens])
+  // Where focus was when live mode last changed the record. The new record's panel
+  // replaces the old one, so focus that was in it returns to the same place.
+  const refocus = useRef<{ record: string | null; on: 'toggle' | 'rail' } | null>(null)
+  useLayoutEffect(() => {
+    const noted = refocus.current
+    const rail = popupRef.current
+    if (!noted || noted.record === shownRecord) return
+    refocus.current = null
+    const active = document.activeElement
+    if (!rail || (active && active !== document.body && document.contains(active))) return
+    const target =
+      noted.on === 'toggle' ? rail.querySelector<HTMLElement>(`[${liveToggleAttribute}]`) : null
+    ;(target ?? rail).focus({ preventScroll: true })
+  }, [shownRecord])
+  // The step live mode last took, and the location it left. It takes each step
+  // once, so a step that cannot land never repeats. Back, Forward or any other
+  // navigation starts afresh.
+  const followStep = useRef<{ step: string; token: unknown; from: string } | null>(null)
+  const connected = live?.connected ?? true
+  // The review guards a comment until its blocker updates, after the commit that
+  // cleared it. Until the next frame, a step would prompt you to discard it.
+  const [guarded, setGuarded] = useState(unsent)
+  if (unsent && !guarded) setGuarded(true)
+  useEffect(() => {
+    if (unsent || !guarded) return
+    const frame = requestAnimationFrame(() => setGuarded(false))
+    return () => cancelAnimationFrame(frame)
+  }, [unsent, guarded])
+  // The request the rail reviews, and the decision its approval review submits.
+  const reviewed =
+    page.detail?.kind === 'invocation' || page.detail?.kind === 'run' ? page.detail.request : null
+  const reviewedApproval = reviewed?.kind === 'approval' ? reviewed.name : undefined
+  const decision = useFetcher<typeof resolve>({ key: reviewedApproval ?? 'activity:no-review' })
+  // A decision you make in the review advances it once, when your decision wins and the
+  // read after it lands. A decision already shown, another review's, or one that another
+  // reviewer's opposite decision beat, never does.
+  const [seen, setSeen] = useState<{ key?: string; data: unknown; intent?: string }>({
+    key: reviewedApproval,
+    data: decision.data,
+  })
+  // The location where the advance started, which also marks the reads it takes first.
+  const [advance, setAdvance] = useState<string | null>(null)
+  const submitted = decision.formData?.get('intent')
+  if (seen.key !== reviewedApproval) setSeen({ key: reviewedApproval, data: decision.data })
+  else if (typeof submitted === 'string' && submitted !== seen.intent)
+    setSeen({ ...seen, intent: submitted })
+  else if (decision.state === 'idle' && seen.data !== decision.data) {
+    setSeen({ key: reviewedApproval, data: decision.data })
+    const state = decision.data && 'state' in decision.data ? decision.data.state : undefined
+    const won = { approve: 'approved', decline: 'declined' }[seen.intent ?? '']
+    if (state !== undefined && state === won) setAdvance(locationKey)
+  }
+  // It holds through the reads it takes first, and ends with its selection. Any other
+  // navigation ends it, and Back or Forward to one of its reads never resumes it.
+  const advancing =
+    advance !== null && (advance === locationKey || advanceMark(locationState) === advance)
+  if (advance !== null && !advancing) setAdvance(null)
+  const following = liveOn || advancing
+  // The step live mode, or an advance, takes next: the Run's oldest action, else its
+  // newest record, in the Run its scope names. Null holds the record: an unsent
+  // comment, a pending navigation or decision, or a lost connection. 'done' rests on
+  // the record shown. Only the newest activity follows while the rail is closed.
+  const follow = ((): FollowStep | 'done' | 'blocked' | null => {
+    if (!following || glimpse || closing !== null || guarded || !connected) return null
+    if (page.unavailable || (!open && liveScope !== 'latest')) return null
+    if (transition.state !== 'idle' || decision.state !== 'idle') return null
+    // In an archived workspace you cannot act, so only the newest record counts.
+    return liveFollow(page, nav, {
+      scope: liveScope,
+      actionable: !archived,
+      shownRecord,
+      reviewed: reviewed?.name,
+    })
+  })()
+  const step = typeof follow === 'object' ? follow : null
+  if (advancing && (follow === 'done' || follow === 'blocked')) setAdvance(null)
+  // Live mode cannot expand what it follows: its toggle says why.
+  const stalled = follow === 'blocked'
+  const followKey = step?.key
+  const followTo = step?.href
+  // A read an advance takes first carries its mark, so the advance holds through it.
+  const followMark = advancing && step && !step.last ? advance : undefined
+  // A selection that opens the rail leaves focus where it is.
+  const followOpens = Boolean(step?.last) && !open
+  // In the commit itself, so a pick or close that starts after this render always
+  // starts after the step and wins.
+  useLayoutEffect(() => {
+    const last = followStep.current
+    if (
+      !following ||
+      (last && last.from !== locationKey && railToken(locationState) !== last.token)
+    )
+      followStep.current = null
+    if (!followKey || !followTo || followStep.current?.step === followKey) return
+    const state = { ...tokens.next(), ...(followMark && { activityAdvance: followMark }) }
+    followStep.current = { step: followKey, token: state.activityRail, from: locationKey }
+    const rail = popupRef.current
+    const active = document.activeElement
+    refocus.current =
+      rail && active && active !== rail && rail.contains(active)
+        ? {
+            record: shownRecord,
+            on: active.closest(`[${liveToggleAttribute}]`) ? 'toggle' : 'rail',
+          }
+        : null
+    if (followOpens) openedByKey.current = true
+    // Following adds no history entry.
+    void navigate(followTo, { replace: true, preventScrollReset: true, state })
+  }, [
+    following,
+    locationKey,
+    locationState,
+    followKey,
+    followTo,
+    followMark,
+    followOpens,
+    shownRecord,
+    navigate,
+    tokens,
+  ])
+  /** Turns live mode on in `scope` from the shown record, or off when it already follows it. */
+  const toggleLive = (scope: LiveScope, chain: string[], changes?: Record<string, string | null>) =>
+    void navigate(
+      liveScope === scope ? nav.liveHref(null) : nav.liveHref(scope, chain, selectedChain, changes),
+      { preventScrollReset: true, state: tokens.next() },
+    )
+  const shownRow = glimpse ? null : detailPage.selectedRow
+  // The rail offers the scope live mode follows, else the one its record can follow.
+  const railScope: LiveScope | null =
+    liveScope === 'latest' || liveScope === 'task'
+      ? liveScope
+      : shownRow?.kind === 'task'
+        ? 'task'
+        : liveRun(shownRow)
+          ? 'run'
+          : null
+  const railChain = railScope === 'task' || railScope === 'run' ? liveChain(shownRow) : []
+  const railToggle = railScope && (
+    <LiveToggle
+      scope={railScope}
+      on={liveScope === railScope}
+      blocked={
+        liveScope === railScope
+          ? stalled
+          : // Following a Task also expands one of its Runs.
+            !nav.liveRoom(
+              railScope === 'task' ? [...railChain, `${railChain[0]}/run`] : railChain,
+              selectedChain,
+            )
+      }
+      onToggle={() =>
+        toggleLive(
+          railScope,
+          railChain,
+          // Following a Task starts at its first child.
+          railScope === 'task' && railChain[0] ? windowAt(railChain[0], 0) : undefined,
+        )
+      }
+    />
+  )
+  const railControls = (
+    <span className={panelStyles.railControls}>
+      {railToggle}
+      <Dialog.Close ariaLabel="Close details" inline />
+    </span>
+  )
   // The cursor row shows while focus is in the table.
   const activeRecord = tableFocused ? (activeStop?.row.name ?? null) : null
   const expandedKey = page.expanded.join('\n')
@@ -828,9 +1154,19 @@ export function Activity({
               setTableFocused(Boolean(tableRef.current?.contains(event.relatedTarget)))
             }
           >
-            {!page.agent && (
-              <Typography.HeadingSmall as="h2">Your recent activity</Typography.HeadingSmall>
-            )}
+            <div className={styles.listHeading}>
+              {!page.agent && (
+                <Typography.HeadingSmall as="h2">Your recent activity</Typography.HeadingSmall>
+              )}
+              {!glimpse && (
+                <LiveToggle
+                  scope="latest"
+                  on={liveScope === 'latest'}
+                  blocked={liveScope === 'latest' && stalled}
+                  onToggle={() => toggleLive('latest', [])}
+                />
+              )}
+            </div>
             {page.listUnavailable && <Typography.Body>This list is unavailable.</Typography.Body>}
             {page.anchorUnavailable && (
               <Typography.Body>
@@ -956,11 +1292,18 @@ export function Activity({
                 placement="right"
                 fullWidthOnMobile
                 ref={popupRef}
-                // Enter in the table opens the rail and leaves focus in the table.
+                // Enter in the table, or live mode, opens the rail and leaves focus where it
+                // was. Otherwise focus goes to the close control, as before the live toggle
+                // came first, so no toggle's tooltip opens and Escape closes the rail.
                 initialFocus={() => {
                   const keep = openedByKey.current
                   openedByKey.current = false
-                  return !keep
+                  if (keep) return false
+                  return (
+                    popupRef.current?.querySelector<HTMLElement>(
+                      'button[aria-label="Close details"]',
+                    ) ?? true
+                  )
                 }}
                 // Closing returns focus to the table, where the cursor shows the record.
                 finalFocus={() => tableRef.current ?? true}
@@ -986,14 +1329,13 @@ export function Activity({
                     context={runContext}
                     locatable={detailPage.detail?.kind === 'run'}
                     selectedRow={detailPage.selectedRow}
-                    close={<Dialog.Close ariaLabel="Close details" inline />}
+                    position={orderedRecordPosition(detailPage, detailPage.selectedRow)}
+                    close={railControls}
                   >
                     <ActivityDetail key={detail.record} page={detailPage} sourceShown />
                   </ExecutionSourceSplit>
                 ) : (
-                  <PanelClose
-                    value={ownHeader ? <Dialog.Close ariaLabel="Close details" inline /> : null}
-                  >
+                  <PanelClose value={ownHeader ? railControls : null}>
                     <ActivityDetail key={detail.record} page={detailPage} />
                   </PanelClose>
                 )}

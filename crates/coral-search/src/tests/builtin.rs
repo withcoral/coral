@@ -1,12 +1,12 @@
-//! Search and describe apply the Provider Module's Built-in discovery rule. The
-//! rule's full Principal table lives with its owner in coral-provider.
+//! Search and describe apply the Provider Module's per-Operation reach rule.
+//! The rule's full Principal table lives with its owner in coral-provider.
 use super::*;
 use coral_workspace::WorkspaceRole;
 
-const CREATE_PROVIDER: &str = "coral.workspace.createProvider";
-
+// Catches: ranking, listing or describing a Built-in Operation that the
+// Principal does not reach, or hiding one it does.
 #[tokio::test]
-async fn search_and_describe_hide_builtin_operations_from_a_member() {
+async fn search_and_describe_show_each_builtin_operation_to_the_principals_it_reaches() {
     let fixture = TestModules::new().await;
     let database = fixture.search.database.clone();
     let owner = organization_user(database.clone(), "user:builtin-owner").await;
@@ -28,41 +28,51 @@ async fn search_and_describe_hide_builtin_operations_from_a_member() {
         .unwrap();
     fixture.converge().await;
 
-    let path = CallPath::parse(CREATE_PROVIDER).unwrap();
-    for (principal, discovers) in [
-        (AuthenticatedPrincipal::user(owner), true),
-        (AuthenticatedPrincipal::user(member), false),
+    for (principal, reached) in [
+        (
+            AuthenticatedPrincipal::user(owner),
+            &["addProvider", "listProviders"][..],
+        ),
+        (AuthenticatedPrincipal::user(member), &["listProviders"][..]),
     ] {
-        for request in [
-            SearchRequest::list(),
-            SearchRequest::query(SearchQuery::parse("create provider").unwrap()),
+        for (key, terms) in [
+            ("addProvider", "add provider"),
+            ("listProviders", "list providers"),
         ] {
-            let page = fixture
+            let reaches = reached.contains(&key);
+            let call_path = format!("coral.workspace.{key}");
+            for request in [
+                SearchRequest::list(),
+                SearchRequest::query(SearchQuery::parse(terms).unwrap()),
+            ] {
+                let page = fixture
+                    .search
+                    .search(&principal, &workspace, &request)
+                    .await
+                    .unwrap();
+                let found = page
+                    .hits()
+                    .iter()
+                    .any(|hit| hit.call_path().as_str() == call_path);
+                assert_eq!(found, reaches, "{principal:?} search {request:?}");
+            }
+            let path = CallPath::parse(&call_path).unwrap();
+            let described = fixture
                 .search
-                .search(&principal, &workspace, &request)
-                .await
-                .unwrap();
-            let found = page
-                .hits()
-                .iter()
-                .any(|hit| hit.call_path().as_str() == CREATE_PROVIDER);
-            assert_eq!(found, discovers, "{principal:?} search {request:?}");
+                .describe(&principal, &workspace, &path, &[])
+                .await;
+            if reaches {
+                assert_eq!(
+                    described.unwrap().authoring().call_path(),
+                    &path,
+                    "{principal:?} describe"
+                );
+            } else {
+                assert!(
+                    matches!(described, Err(Error::AuthoringDescriptionNotFound)),
+                    "{principal:?} describe: {described:?}"
+                );
+            }
         }
-        let described = fixture
-            .search
-            .describe(&principal, &workspace, &path, &[])
-            .await;
-        if !discovers {
-            assert!(
-                matches!(described, Err(Error::AuthoringDescriptionNotFound)),
-                "{principal:?} describe: {described:?}"
-            );
-            continue;
-        }
-        assert_eq!(
-            described.unwrap().authoring().call_path(),
-            &path,
-            "{principal:?} describe"
-        );
     }
 }

@@ -152,6 +152,108 @@ async fn context_impact_task_total_includes_unloaded_measurements_and_ignores_no
     assert_eq!(task.context_impact_bytes(), total);
 }
 
+/// The summary counts context as Activity does: discovery responses add to it, so
+/// each caller's share matches their Task total, not their Runs alone.
+#[tokio::test]
+async fn activity_summary_counts_context_as_the_task_total_does() {
+    let f = Fixture::new().await;
+    let owner = f.actor.authenticated_user().unwrap().clone();
+    let issued = f
+        .tasks
+        .workspaces
+        .create_agent(
+            &ChangeContext::new(owner, 1, coral_test_support::trace('1')),
+            &f.workspace,
+            coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let agent = f
+        .tasks
+        .workspaces
+        .authenticate_agent(&f.workspace, issued.credential.expose(), 2)
+        .await
+        .unwrap();
+    let goal = f.goal().await;
+    let call = f.call(&goal, "Find operations");
+    f.commands
+        .search(&call, coral_search::SearchInput::default())
+        .await
+        .unwrap();
+    let run = f
+        .commands
+        .submit(&call, "return 'é';", 30_000)
+        .await
+        .unwrap();
+    f.wait_for_terminal(run.run_id()).await;
+    let agent_goal = f
+        .tasks
+        .start(
+            &agent,
+            &f.workspace,
+            TaskIntent::parse("Agent goal").unwrap(),
+            3,
+        )
+        .await
+        .unwrap();
+    let agent_call = AttributedCommand::new(
+        agent.clone(),
+        f.workspace.clone(),
+        agent_goal.id().clone(),
+        TaskIntent::parse("Find agent operations").unwrap(),
+        coral_test_support::trace('1'),
+    );
+    f.commands
+        .search(&agent_call, coral_search::SearchInput::default())
+        .await
+        .unwrap();
+
+    let (Some(owner_total), false) = task_impact(&f, &goal).await else {
+        panic!("a measured, finished Task")
+    };
+    let summary = f
+        .tasks
+        .activity_summary(&f.runs, &f.actor, &f.workspace, 1)
+        .await
+        .unwrap();
+    let share = |principal: &coral_workspace::Principal| {
+        summary
+            .actors
+            .iter()
+            .find(|share| share.principal == *principal)
+            .map(|share| (share.bytes, share.agent_label.clone()))
+    };
+    assert_eq!(share(f.actor.principal()), Some((owner_total, None)));
+    let agent_total = task_read(&f, &agent_goal)
+        .await
+        .context_impact_bytes()
+        .unwrap();
+    assert_eq!(
+        share(agent.principal()),
+        Some((agent_total, Some("Worker".to_owned())))
+    );
+    assert_eq!(summary.actors.len(), 2);
+    assert_eq!(
+        summary.context_impact_bytes,
+        Some(owner_total + agent_total)
+    );
+
+    let denied = f
+        .tasks
+        .activity_summary(&f.runs, &agent, &f.workspace, 1)
+        .await;
+    assert!(
+        matches!(
+            denied,
+            Err(Error::Workspace(coral_workspace::Error::PermissionDenied(
+                _
+            )))
+        ),
+        "an Agent cannot read the summary"
+    );
+}
+
 #[tokio::test]
 async fn child_viewports_seek_bounded_history_and_refresh_around_an_authorized_anchor() {
     let f = Fixture::new().await;
@@ -344,8 +446,19 @@ async fn task_impact(f: &Fixture, goal: &Task) -> (Option<i64>, bool) {
     let ActivityRoot::Task(root) = roots.rows.first().unwrap() else {
         panic!("goal root")
     };
-    let page = f
-        .tasks
+    let task = task_read(f, goal).await;
+    let impact = (root.context_impact_bytes(), root.context_impact_partial());
+    assert_eq!(
+        (task.context_impact_bytes(), task.context_impact_partial()),
+        impact,
+        "Task reads disagree"
+    );
+    impact
+}
+
+/// The owner's read of one Task, as its interaction page carries it.
+async fn task_read(f: &Fixture, goal: &Task) -> Task {
+    f.tasks
         .activity_interactions(
             &f.runs,
             &f.actor,
@@ -358,17 +471,8 @@ async fn task_impact(f: &Fixture, goal: &Task) -> (Option<i64>, bool) {
             None,
         )
         .await
-        .unwrap();
-    let impact = (root.context_impact_bytes(), root.context_impact_partial());
-    assert_eq!(
-        (
-            page.task.context_impact_bytes(),
-            page.task.context_impact_partial()
-        ),
-        impact,
-        "Task reads disagree"
-    );
-    impact
+        .unwrap()
+        .task
 }
 
 /// Six goals with tied timestamps in two Workspaces, newest-first by qualified identity.

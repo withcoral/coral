@@ -15,8 +15,8 @@ use axum::http::StatusCode;
 
 /// How long a call that must not move is watched before it is called still.
 const STILL: Duration = Duration::from_millis(300);
-/// How long a call may take to reach the fence behind a parked wait's
-/// fallback poll.
+/// How long a call may take to reach the fence once its owner wakes its
+/// parked wait, on a loaded test machine.
 const UNTIL_FENCED: Duration = Duration::from_secs(10);
 
 const WEATHER: &str = "coral.providers.weather.getForecast";

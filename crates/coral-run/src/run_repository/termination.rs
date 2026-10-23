@@ -9,9 +9,9 @@ use crate::lifecycle::{RequestedTermination, RunRecord, RunTermination};
 use crate::{Error, FinalValue, RunTerminalOutcome};
 
 /// Records termination intent, and `cancellation.requested` when a Principal
-/// asked for it, as one chunk built on `run` as the writer read it: the
-/// writers outside the Run Owner (recovery, a Run that times out before it
-/// starts, the terminal write of a Program that ended without one).
+/// asked for it, as one chunk built on `run` as the writer read it: the Run
+/// Owner's own writes outside its chunk commits (a Run that times out before
+/// it starts, the terminal write of a Program that ended without one).
 ///
 /// # Errors
 ///
@@ -32,9 +32,10 @@ pub(crate) async fn request_termination(
     commit_chunk(transaction, chunk.termination(Some(request))).await
 }
 
-/// The Run row columns a termination intent writes: the termination, the
-/// cancellation's requester and instant when a Principal asked for it, and
-/// the released worker claim when the intent releases it. A chunk that
+/// The Run row columns a termination intent writes: the termination, and the
+/// cancellation's requester and instant when a Principal asked for it. The
+/// worker claim and its lease stay until the terminal chunk, so no other
+/// process's sweep takes the Run over while its owner settles. A chunk that
 /// carries the intent writes them in its head update.
 pub(super) fn request_values(request: &RequestedTermination) -> Vec<(ProgramRunRecords, Expr)> {
     let mut values = termination_values(&request.termination);
@@ -53,9 +54,6 @@ pub(super) fn request_values(request: &RequestedTermination) -> Vec<(ProgramRunR
                 Expr::val(requester.kind().as_storage_str()),
             ),
         ]);
-    }
-    if request.releases_worker_claim() {
-        values.extend(released_worker_claim());
     }
     values
 }

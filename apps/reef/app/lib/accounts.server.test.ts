@@ -734,22 +734,21 @@ it.each(['bind', 'unbind', 'fixed', 'route', 'reconnect'])(
   },
 )
 
-// Catches: connecting your own account from a provider's settings starting a
-// second account in place of a reconnect, a sign-in that does not return to
-// settings, or a start for a provider whose calls use the shared account.
-describe('connecting your account from settings', () => {
-  const settings = `${base}/providers/${providerId}/settings`
-  const connect = () =>
+// Catches: connecting your own account in a dialog starting a second account in
+// place of a reconnect, a sign-in that does not return to the page you came from,
+// or a start for a provider whose calls use the shared account.
+describe('connecting your account in a dialog', () => {
+  const page = `${base}/accounts/${providerId}`
+  const connect = (returnTo?: string) =>
     connectYourAccountAction(
-      new Request(`http://localhost${settings}.data`, { method: 'POST' }),
+      new Request(
+        `http://localhost${page}.data${returnTo ? `?${new URLSearchParams({ returnTo })}` : ''}`,
+        { method: 'POST' },
+      ),
       context,
       { workspace, provider: providerId },
       connectForm('connectAccount'),
     )
-  const progressOf = async () => {
-    const result = (await connect()) as unknown as { data: { progress?: string } }
-    return new URL(result.data.progress!, 'http://localhost')
-  }
 
   it.each([
     ['a new account', { canConnect: true }, { case: 'provider', value: provider }],
@@ -761,16 +760,34 @@ describe('connecting your account from settings', () => {
       },
       { case: 'reconnect', value: expect.objectContaining({ provider, account: 'account' }) },
     ],
-  ])('starts %s and returns to settings', async (_, account, target) => {
+  ])('starts %s', async (_, account, target) => {
     separateAccounts({ ...account, credentialMethod: CredentialMethod.OAUTH_AUTHORIZATION_CODE })
     mocks.startProviderAccountAuthorization.mockResolvedValue({ name: authorizationResource })
-    const progress = await progressOf()
+    await connect()
     expect(mocks.startProviderAccountAuthorization).toHaveBeenCalledWith(
       expect.objectContaining({ target }),
       expect.anything(),
     )
+  })
+
+  it.each([
+    [
+      'settings',
+      `${base}/providers/${providerId}/settings`,
+      `${base}/providers/${providerId}/settings`,
+    ],
+    ['Accounts', `${base}/accounts`, `${base}/accounts`],
+    ['your account page', undefined, page],
+  ])('returns a sign-in from %s to that page', async (_, returnTo, expected) => {
+    separateAccounts({
+      canConnect: true,
+      credentialMethod: CredentialMethod.OAUTH_AUTHORIZATION_CODE,
+    })
+    mocks.startProviderAccountAuthorization.mockResolvedValue({ name: authorizationResource })
+    const result = (await connect(returnTo)) as unknown as { data: { progress: string } }
+    const progress = new URL(result.data.progress, 'http://localhost')
     expect(progress.pathname).toBe(`${base}/account-authorizations/${authorizationId}/progress`)
-    expect(progress.searchParams.get('returnTo')).toBe(settings)
+    expect(progress.searchParams.get('returnTo')).toBe(expected)
   })
 
   it('starts nothing when Coral refuses the connection', async () => {

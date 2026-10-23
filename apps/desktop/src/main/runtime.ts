@@ -45,6 +45,11 @@ bind = "${LOOPBACK}:${ports.grpc}"
 
 [listeners.mcp]
 bind = "${LOOPBACK}:${ports.mcp}"
+
+# Desktop stops the runtime within its stop timeout: Runs still live are
+# interrupted at once instead of draining.
+[runtime]
+shutdown_drain_seconds = 0
 ${databaseSection}`,
     // The runtime treats any file beside config.toml in a fresh state
     // directory as foreign state, so a crash must not leave one there.

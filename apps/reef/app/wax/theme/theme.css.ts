@@ -83,6 +83,7 @@ export const theme = createThemeContract({
     amber: chartColorContract,
     blue: chartColorContract,
     green: chartColorContract,
+    neutral: chartColorContract,
     orange: chartColorContract,
     purple: chartColorContract,
     red: chartColorContract,

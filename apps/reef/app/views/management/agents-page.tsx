@@ -1,6 +1,11 @@
 import { useDeferredValue, useRef, useState } from 'react'
 import { Button, Table } from '@/wax/components'
-import { CatalogFilterMenu, CatalogToolbar, type CatalogFilterOptions } from '@/components/catalog'
+import {
+  CatalogFilterMenu,
+  CatalogToolbar,
+  toolbarActionLabel,
+  type CatalogFilterOptions,
+} from '@/components/catalog'
 import { EmptyPage } from '@/components/empty-page'
 import { Status } from '@/wax/components/status'
 import { AgentKeyDialog } from './agent-key-dialog'
@@ -53,19 +58,14 @@ export function AgentsPage({ workspace: w, agents, nextPage, form, result }: Age
   // One dialog stays mounted whichever button opened it: the list revalidates
   // while the fetcher settles, and an empty state that unmounts with its dialog
   // would lose the one-time credential.
-  const createButton = (
-    <Button.TextButton ref={createTrigger} disabled={!active} onClick={() => setCreateOpen(true)}>
-      Create agent
-    </Button.TextButton>
+  const createButton = (labelClassName?: string) => (
+    <Button.Container ref={createTrigger} disabled={!active} onClick={() => setCreateOpen(true)}>
+      <Button.Icon name="Plus" />
+      <Button.Text className={labelClassName}>Create agent</Button.Text>
+    </Button.Container>
   )
   return (
-    <ManagementLayout
-      breadcrumbs={trail([], 'Agents')}
-      titled
-      compact
-      actions={agents.length > 0 ? createButton : undefined}
-      bounded
-    >
+    <ManagementLayout breadcrumbs={trail([], 'Agents')} titled compact bounded>
       <ActionDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
@@ -94,6 +94,8 @@ export function AgentsPage({ workspace: w, agents, nextPage, form, result }: Age
       {/* The empty state sits in the table, so the page keeps its shape at the first agent. */}
       <CatalogToolbar
         title="Agents"
+        // With no agents, the empty state offers the button instead.
+        action={agents.length > 0 ? createButton(toolbarActionLabel) : undefined}
         filter={{
           id: FILTER_ID,
           label: 'Filter agents',
@@ -131,7 +133,7 @@ export function AgentsPage({ workspace: w, agents, nextPage, form, result }: Age
               iconName="Bot"
               title="No agents yet"
               description="Create an agent to get its API key. Then connect the agent to this workspace."
-              action={active ? createButton : undefined}
+              action={active ? createButton() : undefined}
             />
           </Table.Status>
         ) : (

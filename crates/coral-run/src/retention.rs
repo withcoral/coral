@@ -1,9 +1,12 @@
 //! Transaction-compatible execution-history retention facets, not a cleanup scheduler.
+//! Retention holds and deletes terminal Runs only; a nonterminal Run's rows are its
+//! Run Owner's.
 use crate::{Error, RunId, RunState, run_repository};
 use coral_db::Transaction;
 use coral_workspace::{Principal, WorkspaceId};
 
-/// Scope-bound retained Run evidence, read while holding its lifecycle lock.
+/// Scope-bound retained Run evidence: a terminal Run's read while holding its
+/// row, a nonterminal Run's read without a hold.
 pub struct RunRetentionEvidence {
     principal: Principal,
     state: RunState,
@@ -33,7 +36,9 @@ impl RunRetentionEvidence {
     }
 }
 
-/// Holds the Run lifecycle and returns owning evidence for retention eligibility.
+/// Returns owning evidence for retention eligibility, holding the Run only
+/// when it is terminal. A nonterminal Run is read without a hold, since its
+/// row is its Run Owner's alone, and protects its retention unit.
 /// # Errors
 /// Returns persistence failure; absence remains explicitly unavailable.
 pub async fn hold_in_transaction(
@@ -41,8 +46,23 @@ pub async fn hold_in_transaction(
     workspace: &WorkspaceId,
     run: &RunId,
 ) -> Result<Option<RunRetentionEvidence>, Error> {
-    let Some(row) = run_repository::hold_run(transaction, workspace, run).await? else {
-        return Ok(None);
+    let held = run_repository::hold_terminal_run(transaction, workspace, run).await?;
+    let row = match held {
+        Some(held) => held,
+        None => match run_repository::find_exact_in_transaction(transaction, workspace, run).await?
+        {
+            // It ended between the hold and the read, for good: hold it now.
+            Some(ended) if ended.state.is_terminal() => {
+                let Some(held) =
+                    run_repository::hold_terminal_run(transaction, workspace, run).await?
+                else {
+                    return Ok(None);
+                };
+                held
+            }
+            Some(nonterminal) => nonterminal,
+            None => return Ok(None),
+        },
     };
     let activity = run_repository::retention_activity(transaction, workspace, run).await?;
     Ok(Some(RunRetentionEvidence {

@@ -302,7 +302,29 @@ const meta = {
 } satisfies Meta<typeof Activity>
 export default meta
 type Story = StoryObj<typeof meta>
-export const Combined: Story = {}
+export const Combined: Story = {
+  play: async ({ canvasElement, userEvent }) => {
+    const canvas = within(canvasElement)
+    const pending = await canvas.findByRole('heading', { name: 'Needs your action' })
+    const heading = canvas.getByRole('heading', { name: 'Your recent activity' })
+    const live = canvas.getByRole('button', { name: 'Follow latest activity' })
+    // The page's live toggle sits right after the list heading, below the actions.
+    await expect(heading.parentElement).toContainElement(live)
+    await expect(heading.compareDocumentPosition(live)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    await expect(pending.compareDocumentPosition(live)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    await expect(live).toHaveAttribute('aria-pressed', 'false')
+    // Tab reaches it after the actions, and before the table.
+    live.focus()
+    await userEvent.tab({ shift: true })
+    await expect(pending.closest('section')).toContainElement(
+      canvasElement.ownerDocument.activeElement as HTMLElement,
+    )
+    await userEvent.tab()
+    await expect(live).toHaveFocus()
+    await userEvent.tab()
+    await expect(canvas.getByRole('table', { name: 'Activity records' })).toHaveFocus()
+  },
+}
 export const ExactReview: Story = {
   parameters: {
     initialEntry: `/workspaces/finance/activity?record=${run.name}&request=${request.name}`,

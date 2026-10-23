@@ -10,6 +10,7 @@ import type {
   PersonView,
   WorkspaceView,
 } from './types'
+import { toolbarActionLabel } from '@/components/catalog'
 import { AddMembersDialog } from './add-members-dialog'
 import { ActionDialog, ActionNotice, RoleField } from './forms'
 import { ArchivedBanner, ManagementLayout, trail, PageIntro } from './layout'
@@ -79,21 +80,7 @@ export function WorkspaceMembersPage({
     ),
   }))
   return (
-    <ManagementLayout
-      breadcrumbs={trail([], 'Members')}
-      titled
-      compact
-      actions={
-        owner && (
-          <AddMembersDialog
-            candidates={candidates}
-            currentUser={w.currentUser}
-            disabled={!active}
-            form={form}
-          />
-        )
-      }
-    >
+    <ManagementLayout breadcrumbs={trail([], 'Members')} titled compact>
       <PageIntro status={!active ? <Pill color="gray">Archived</Pill> : undefined}>
         {!owner ? (
           <InfoTip label="Workspace members">
@@ -107,7 +94,22 @@ export function WorkspaceMembersPage({
         </ArchivedBanner>
       )}
       <ActionNotice result={result} />
-      <MembersTable ariaLabel="Members" currentUser={w.currentUser} rows={rows} />
+      <MembersTable
+        ariaLabel="Members"
+        currentUser={w.currentUser}
+        rows={rows}
+        action={
+          owner && (
+            <AddMembersDialog
+              candidates={candidates}
+              currentUser={w.currentUser}
+              disabled={!active}
+              form={form}
+              labelClassName={toolbarActionLabel}
+            />
+          )
+        }
+      />
       {(nextMembers || nextOwners) && (
         <div className={styles.row}>
           {nextMembers && (

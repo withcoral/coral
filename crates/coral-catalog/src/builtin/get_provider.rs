@@ -1,14 +1,15 @@
 //! `coral.workspace.getProvider`: the schemas a Program is typed from, the
 //! arguments Coral reads against the input schema, and the result it writes
 //! against the output schema. The result spells a Provider's Provider
-//! Configuration in the shapes `createProvider` takes, so a Program can read
+//! Configuration in the shapes `addProvider` takes, so a Program can read
 //! it, change some fields, and send back only those. The facts Coral set
 //! itself (an application it registered, and an MCP server's issuer and
-//! resource) read beside them. `createProvider` rejects them, so they are
+//! resource) read beside them. `addProvider` rejects them, so they are
 //! never saved as a person's choices.
 
 use std::collections::BTreeMap;
 
+use coral_workspace::WorkspaceAction;
 use schemars::JsonSchema;
 use schemars::generate::Contract;
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,10 @@ pub(super) mod tests;
 
 pub use output::ProviderSourceOutput;
 
+/// A Provider's configuration is what only an Owner changes, so only an
+/// Owner reads it.
+pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Configure;
+
 pub(super) fn definition() -> Definition {
     Definition {
         key: BuiltinOperation::GetProvider.key(),
@@ -36,7 +41,7 @@ pub(super) fn definition() -> Definition {
         presentation: OperationPresentation::new(
             Some("Get provider".to_string()),
             "Read the configuration of one Provider in this Workspace, in the shapes \
-             createProvider takes."
+             addProvider takes."
                 .to_string(),
             false,
             vec!["providers".to_string()],
@@ -47,7 +52,7 @@ pub(super) fn definition() -> Definition {
                  a credential part with source literal and no value holds a fixed value that \
                  Coral does not return. Coral sets authentication.issuer, \
                  authentication.resource and authentication.client.registration itself; \
-                 remove them before you send authentication to createProvider."
+                 remove them before you send authentication to addProvider."
                     .to_string(),
             ),
         ),
@@ -123,7 +128,7 @@ pub struct GetProviderResult {
     /// Whose Account Invocations use.
     #[schemars(description = "Whose account Invocations use.")]
     pub credential_route: BuiltinCredentialRoute,
-    /// The configuration `createProvider` takes.
+    /// The configuration `addProvider` takes.
     #[serde(flatten)]
     pub configuration: ConfigurationOutput,
 }
@@ -136,7 +141,7 @@ impl GetProviderResult {
     }
 }
 
-/// A Provider's Provider Configuration in the shapes `createProvider` takes,
+/// A Provider's Provider Configuration in the shapes `addProvider` takes,
 /// and the facts Coral set itself. It holds no secret, and no fixed value of
 /// a credential part.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]

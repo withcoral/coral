@@ -67,7 +67,8 @@ impl<'a> Chunk<'a> {
 
     /// Predicates the chunk on the Run row still holding `claim_id` as its
     /// worker claim: the start mark, written before any execution claim
-    /// exists, must not land on a claim recovery released meanwhile.
+    /// exists, must not land on a worker claim released meanwhile (by the
+    /// previous release's recovery, or a recovered owner's chunk).
     pub(crate) const fn held_by_worker(mut self, claim_id: &'a str) -> Self {
         self.worker_claim_id = Some(claim_id);
         self

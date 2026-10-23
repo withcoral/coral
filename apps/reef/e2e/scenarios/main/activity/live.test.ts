@@ -411,12 +411,15 @@ test('Current Run and operation actions settle live while exact review stays sel
           parent: provider,
           policies: [{ operation, accessState: OperationAccessState.DISABLED }],
         })
-        await page
-          .getByText('Coral failure: operation_disabled', { exact: true })
-          .waitFor({ timeout: 10_000 })
+        // The action leaves the queue as soon as the policy commits. The parked
+        // call ends when its Run Owner's periodic precheck (every 15 s) finds the
+        // Operation disabled.
         await expect
           .poll(() => page.getByText('needs action', { exact: true }).count(), { timeout: 10_000 })
           .toBe(0)
+        await page
+          .getByText('Coral failure: operation_disabled', { exact: true })
+          .waitFor({ timeout: 25_000 })
         expect(new URL(page.url()).searchParams.get('record')).toBe(selected)
         expect(await page.getByRole('dialog').count()).toBe(1)
         expect(await shownArguments(page.getByRole('dialog'))).toEqual(logical)
@@ -544,31 +547,41 @@ test('Current Run and operation actions settle live while exact review stays sel
         })
         await activityLink(workspaceCount).waitFor()
         expect(await comment.inputValue()).toBe('Reviewed once')
+        // The two approvals the Run waits on, read from Coral before you decide.
+        const waiting = (
+          await api.activity.inspectRun({ name: run, pageSize: 1 })
+        ).run!.actionPage!.actions.map(({ request }) => {
+          if (request?.request.case !== 'approval') throw new Error('Expected an approval')
+          return request.request.value
+        })
+        expect(waiting).toHaveLength(2)
+        expect(waiting).toContain(selectedRequest)
+        const [decided, remaining] = await Promise.all(
+          [selectedRequest!, waiting.find((name) => name !== selectedRequest)!].map((name) =>
+            api.activity.inspectApproval({ name }),
+          ),
+        )
+        expect(decided.invocation).toBe(selectedOperation)
+        expect(remaining.invocation).not.toBe(selectedOperation)
         const before = calls
         await page.getByRole('button', { name: 'Approve this call', exact: true }).click()
-        await page.getByText('Approved', { exact: true }).waitFor()
-        expect(new URL(page.url()).searchParams.get('request')).toBe(selectedRequest)
-        expect(
-          await page.getByRole('button', { name: 'Approve this call', exact: true }).count(),
-        ).toBe(0)
-        // The decision keeps the exact comment, once, as its Comment fact.
-        const decidedComment = page
-          .getByRole('dialog')
-          .locator('dl > div')
-          .filter({ has: page.locator('dt', { hasText: /^Comment$/ }) })
-          .locator('dd', { hasText: /^Reviewed once$/ })
-        await decidedComment.waitFor()
-        expect(await decidedComment.count()).toBe(1)
-        expect(
-          await page.getByRole('dialog').getByText('Reviewed once', { exact: true }).count(),
-        ).toBe(1)
+        // Your decision wins, so the review advances to the approval the Run waits on now.
+        await page.waitForURL((url) => url.searchParams.get('request') === remaining.name)
+        expect(new URL(page.url()).searchParams.get('record')).toBe(remaining.invocation)
+        await expect
+          .poll(() => selectedRow.getAttribute('data-record-key'))
+          .toBe(remaining.invocation)
+        await page.getByRole('dialog', { name: 'Review action', exact: true }).waitFor()
+        await page.getByRole('button', { name: 'Approve this call', exact: true }).waitFor()
+        // The decision keeps the exact comment as its Comment fact.
+        const approved = await api.activity.inspectApproval({ name: decided.name })
+        expect(approved.state).toBe('approved')
+        expect(approved.comment).toBe('Reviewed once')
         await page.setViewportSize({ width: 1440, height: 900 })
-        // The decided request is settled, so the review lists what the Run waits on now.
-        await page
-          .getByRole('link', { name: 'Review coral.providers.liveGate.lookup', exact: true })
-          .click()
         await page.getByRole('button', { name: 'Deny this call', exact: true }).click()
-        await page.getByText('Denied', { exact: true }).waitFor()
+        await expect
+          .poll(async () => (await api.activity.inspectApproval({ name: remaining.name })).state)
+          .toBe('declined')
         await expect.poll(() => calls).toBe(before + 1)
         await expect
           .poll(
@@ -576,9 +589,41 @@ test('Current Run and operation actions settle live while exact review stays sel
               (await api.activity.browseRequiredActions({ workspace: workspace.name })).actionCount,
           )
           .toBe(0n)
-        const finalRequest = new URL(page.url()).searchParams.get('request')!
-        const reviewed = await api.activity.inspectApproval({ name: finalRequest })
-        expect(new URL(page.url()).searchParams.get('record')).toBe(reviewed.invocation)
+        // The live page settles: nothing waits on you, and no review offers a decision.
+        await expect.poll(() => page.locator('[aria-label="Pending actions"]').count()).toBe(0)
+        await expect
+          .poll(() => page.getByRole('button', { name: 'Approve this call', exact: true }).count())
+          .toBe(0)
+        // Each settled review, opened on its own, shows its decision. Without a decision of
+        // yours there, the review stays where you opened it. Only the approval carries the
+        // exact comment, once, as its Comment fact.
+        for (const [approval, label, comments] of [
+          [decided, 'Approved', 1],
+          [remaining, 'Denied', 0],
+        ] as const) {
+          const review = new URLSearchParams({
+            tree: '1',
+            record: approval.invocation,
+            request: approval.name,
+          })
+          review.append('expand', `${workspace.name}/tasks/${runner.taskId()}`)
+          review.append('expand', run)
+          await page.goto(`${activityUrl}?${review}`)
+          const dialog = page.getByRole('dialog')
+          await dialog.getByText(label, { exact: true }).waitFor()
+          expect(new URL(page.url()).searchParams.get('request')).toBe(approval.name)
+          expect(new URL(page.url()).searchParams.get('record')).toBe(approval.invocation)
+          expect(await selectedRow.getAttribute('data-record-key')).toBe(approval.invocation)
+          expect(
+            await page.getByRole('button', { name: 'Approve this call', exact: true }).count(),
+          ).toBe(0)
+          const commentFact = dialog
+            .locator('dl > div')
+            .filter({ has: page.locator('dt', { hasText: /^Comment$/ }) })
+            .locator('dd', { hasText: /^Reviewed once$/ })
+          await expect.poll(() => commentFact.count()).toBe(comments)
+          expect(await dialog.getByText('Reviewed once', { exact: true }).count()).toBe(comments)
+        }
         await expect.poll(() => page.locator('[aria-label="Pending actions"]').count()).toBe(0)
         expect(
           await page.getByRole('table', { name: 'Activity records', includeHidden: true }).count(),

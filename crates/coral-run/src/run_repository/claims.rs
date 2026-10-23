@@ -1,24 +1,28 @@
-//! The execution-start mark and the worker-claim release.
+//! The execution-start mark.
 //!
 //! The worker claim itself is written by acceptance, so a Run is claimed from
 //! its first durable moment, and the Run Owner renews the lease with every
-//! chunk it commits. Recovery still releases an expired claim that never
-//! reached its start mark, leaving that Run unclaimed until the expired-lease
-//! sweep (slice 9) ends it.
+//! chunk it commits. A Run whose lease lapses with no owner is the
+//! expired-lease sweep's, which takes it over in its recovered owner's one
+//! chunk.
 
 use coral_db::Transaction;
-use sea_query::{Expr, ExprTrait as _, Query};
+use sea_query::Expr;
+#[cfg(test)]
+use sea_query::{ExprTrait as _, Query};
 
 use super::ledger::commit_chunk_with;
 use super::{Chunk, ProgramRunRecords};
+use crate::Error;
+#[cfg(test)]
+use crate::RunState;
 use crate::lifecycle::RunRecord;
-use crate::{Error, RunState};
 
 /// The Run Owner's first chunk: the execution-start mark under the claim the
 /// acceptance transaction wrote, with the worker lease renewed. Built before
 /// any execution claim exists, so it is predicated on the claim column being
-/// unset, the worker claim still held (recovery releases an expired one), the
-/// head, and a running Run.
+/// unset, the worker claim still held (a recovered owner's chunk releases
+/// it), the head, and a running Run.
 pub(crate) async fn start_execution(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
@@ -42,34 +46,6 @@ pub(crate) async fn start_execution(
         ],
     )
     .await
-}
-
-pub(crate) async fn release_unstarted_worker_claim(
-    transaction: &mut Transaction<'_>,
-    run: &RunRecord,
-) -> Result<bool, Error> {
-    let Some(claim_id) = run.worker_claim_id.as_deref() else {
-        return Ok(false);
-    };
-    let statement = Query::update()
-        .table(ProgramRunRecords::Table)
-        .values([
-            (
-                ProgramRunRecords::WorkerClaimId,
-                Expr::val(Option::<String>::None),
-            ),
-            (
-                ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
-                Expr::val(Option::<i64>::None),
-            ),
-        ])
-        .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(run.workspace_id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::Id).eq(run.id.to_string()))
-        .and_where(Expr::col(ProgramRunRecords::State).eq(RunState::Running.as_storage_str()))
-        .and_where(Expr::col(ProgramRunRecords::ExecutionClaimId).is_null())
-        .and_where(Expr::col(ProgramRunRecords::WorkerClaimId).eq(claim_id))
-        .to_owned();
-    Ok(transaction.execute(statement).await? == 1)
 }
 
 /// Gives a staged Run `claim_id` as its worker and execution claim, as a test's

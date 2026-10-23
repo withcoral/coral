@@ -47,7 +47,6 @@ export interface AuthorizationView {
   automaticRefresh?: boolean
   /** The OAuth grant exactly as the service reported it; empty for secrets. */
   grantedScope: string
-  expiresAt: string
   /** The Credential Fields to enter for secret entry, in name order. */
   credentialFields: CredentialFieldView[]
   form: FormContext
@@ -68,6 +67,8 @@ export interface UserAccountRow {
   name: string
   state: PersonalAccountState
   accountId?: string
+  /** OAuth signs in at the provider in one click; secrets open a dialog here. */
+  oauth: boolean
   /** You can start a connection or a reconnect now. */
   canConnect: boolean
   canDisconnect: boolean
