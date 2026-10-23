@@ -5,12 +5,12 @@
 //! stored and ranked. The entries are secret-free and carry no visibility:
 //! Universal Search asks the owners about visibility at query time.
 
-use std::collections::{BTreeMap, HashMap};
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::{Mutex, PoisonError};
 
 use coral_catalog::{
     CatalogDiagnostic, DeclarationIndexEntry, MaterializedOperation, OperationAvailability,
-    OperationKey, OperationPresentation, PreparedDeclarationFields, ProviderGenerationId,
+    OperationKey, PreparedDeclarationFields, ProviderGenerationId, SearchableOperation,
     StoredDeclarationFields,
 };
 use coral_db::Transaction;
@@ -21,34 +21,24 @@ use crate::{Error, OperationAuthoringMaterial, Provider, ProviderId, ProviderSta
 
 /// Everything Universal Search may index about one Generation: the Provider's
 /// identity and one entry per structurally available Operation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// It holds the Generation's schema graph and prepares each entry's
+/// declaration fields as [`Self::operations`] reads it. A caller that turns
+/// each entry into what it keeps, and drops the entry, holds one Operation's
+/// fields at a time: a large Provider's fields together run to gigabytes.
 pub struct GenerationEntries {
     workspace_id: WorkspaceId,
     provider_id: ProviderId,
     call_root: ProviderCallRoot,
     display_name: String,
     generation_id: ProviderGenerationId,
-    operations: Vec<OperationEntry>,
+    operations: Vec<SearchableOperation>,
+    /// Behind a mutex because its type names are built on first use, and
+    /// boxed so a future that holds the entries stays small.
+    fields: Box<Mutex<StoredDeclarationFields>>,
 }
 
 impl GenerationEntries {
-    /// Names the Generation that `operations` were prepared from.
-    #[must_use]
-    pub fn new(
-        provider: &Provider,
-        generation_id: ProviderGenerationId,
-        operations: Vec<OperationEntry>,
-    ) -> Self {
-        Self {
-            workspace_id: provider.owner().clone(),
-            provider_id: provider.id().clone(),
-            call_root: provider.access().call_root().clone(),
-            display_name: provider.display_name().to_string(),
-            generation_id,
-            operations,
-        }
-    }
-
     /// Returns the Workspace that owns the Provider.
     #[must_use]
     pub const fn workspace_id(&self) -> &WorkspaceId {
@@ -79,66 +69,87 @@ impl GenerationEntries {
         &self.generation_id
     }
 
-    /// Returns one entry per structurally available Operation, in Operation-Key
-    /// order.
+    /// Prepares one entry per structurally available Operation, in
+    /// Operation-Key order, each when it is read.
+    ///
+    /// # Errors
+    ///
+    /// An item is corrupt data when the stored package can no longer be
+    /// prepared.
+    pub fn operations(&self) -> impl Iterator<Item = Result<OperationEntry<'_>, Error>> {
+        self.operations.iter().map(|operation| {
+            Ok(OperationEntry {
+                operation,
+                // A walk that panicked leaves at most a partly built type-name
+                // cache, which the next walk extends; the graph is unchanged.
+                declaration_fields: self
+                    .fields
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .searchable_operation(operation)?,
+            })
+        })
+    }
+
+    /// Drops every Operation, as if the Generation held none.
+    #[cfg(any(test, feature = "test-fixtures"))]
     #[must_use]
-    pub fn operations(&self) -> &[OperationEntry] {
-        &self.operations
+    pub fn without_operations(mut self) -> Self {
+        self.operations.clear();
+        self
     }
 }
 
 /// What Universal Search may index about one structurally available Operation:
 /// typed fields, never JSON, and nothing secret.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OperationEntry {
-    key: OperationKey,
-    relative_path: String,
-    presentation: OperationPresentation,
+pub struct OperationEntry<'a> {
+    operation: &'a SearchableOperation,
     declaration_fields: PreparedDeclarationFields,
 }
 
-impl OperationEntry {
+impl<'a> OperationEntry<'a> {
     /// Returns the Operation Key inside its Generation.
     #[must_use]
-    pub const fn key(&self) -> &OperationKey {
-        &self.key
+    pub const fn key(&self) -> &'a OperationKey {
+        self.operation.key()
     }
 
     /// Returns the Call Path below the Provider Call Root.
     #[must_use]
-    pub fn relative_path(&self) -> &str {
-        &self.relative_path
+    pub fn relative_path(&self) -> &'a str {
+        self.operation.relative_path()
     }
 
     /// Returns whether the Provider marks the Operation deprecated. This is an
     /// attribute, not searchable text.
     #[must_use]
     pub const fn deprecated(&self) -> bool {
-        self.presentation.deprecated()
+        self.operation.presentation().deprecated()
     }
 
     /// Returns the short title, when the Provider gives one.
     #[must_use]
-    pub fn title(&self) -> Option<&str> {
-        self.presentation.title()
+    pub fn title(&self) -> Option<&'a str> {
+        self.operation.presentation().title()
     }
 
     /// Returns the description.
     #[must_use]
-    pub fn description(&self) -> &str {
-        self.presentation.description()
+    pub fn description(&self) -> &'a str {
+        self.operation.presentation().description()
     }
 
     /// Returns the tags.
     #[must_use]
-    pub fn tags(&self) -> &[String] {
-        self.presentation.tags()
+    pub fn tags(&self) -> &'a [String] {
+        self.operation.presentation().tags()
     }
 
     /// Returns the guidance, when the Provider gives some.
     #[must_use]
-    pub fn guidance(&self) -> Option<&str> {
-        self.presentation.guidance()
+    pub fn guidance(&self) -> Option<&'a str> {
+        self.operation.presentation().guidance()
     }
 
     /// Returns the readable declaration paths with the values the schema lists.
@@ -156,12 +167,13 @@ impl OperationEntry {
     }
 }
 
-/// Prepares the entries of the Provider's active Generation from what the
-/// catalog stores: its schema graph and its Operation rows, rebuilt by the
-/// current materialization rules. The search index runs this after the commit
-/// that activated the Generation, and its reconcile task runs it for a
-/// Generation that no notification indexed. `Ok(None)` means the Workspace has
-/// no such Provider.
+/// Reads the entries of the Provider's active Generation from what the
+/// catalog stores: its schema graph and what search reads of its Operation
+/// rows. The entries rebuild each Operation's declaration fields by the
+/// current materialization rules as they are read. The search index runs this
+/// after the commit that activated the Generation, and its reconcile task runs
+/// it for a Generation that no notification indexed. `Ok(None)` means the
+/// Workspace has no such Provider.
 ///
 /// The Generation is the one active when this reads, not one the caller names.
 /// When an update replaces the Generation after the caller listed the Provider,
@@ -175,7 +187,7 @@ impl OperationEntry {
 /// # Errors
 ///
 /// Returns a shared persistence failure, or corrupt data when the stored
-/// package can no longer be prepared.
+/// package can no longer be read.
 pub async fn prepare_active_generation_entries_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -189,38 +201,18 @@ pub async fn prepare_active_generation_entries_in_transaction(
     let graph =
         coral_catalog::schema_graph_in_transaction(transaction, &stored.generation_id).await?;
     let operations =
-        coral_catalog::operations_in_transaction(transaction, &stored.generation_id).await?;
-    let declaration_fields = StoredDeclarationFields::new(graph).all(&operations)?;
-    Ok(Some(GenerationEntries::new(
-        &stored.provider,
-        stored.generation_id,
-        operation_entries(&operations, &declaration_fields)?,
-    )))
-}
-
-fn operation_entries(
-    operations: &[MaterializedOperation],
-    declaration_fields: &BTreeMap<OperationKey, PreparedDeclarationFields>,
-) -> Result<Vec<OperationEntry>, Error> {
-    operations
-        .iter()
-        .filter(|operation| operation.availability() == OperationAvailability::Available)
-        .map(|operation| {
-            Ok(OperationEntry {
-                key: operation.key().clone(),
-                relative_path: operation.relative_path().to_string(),
-                presentation: operation.presentation().clone(),
-                declaration_fields: declaration_fields
-                    .get(operation.key())
-                    .cloned()
-                    .ok_or_else(|| {
-                        Error::CorruptData(
-                            "an available Operation has no declaration fields".to_string(),
-                        )
-                    })?,
-            })
-        })
-        .collect()
+        coral_catalog::searchable_operations_in_transaction(transaction, &stored.generation_id)
+            .await?;
+    let provider = &stored.provider;
+    Ok(Some(GenerationEntries {
+        workspace_id: provider.owner().clone(),
+        provider_id: provider.id().clone(),
+        call_root: provider.access().call_root().clone(),
+        display_name: provider.display_name().to_string(),
+        generation_id: stored.generation_id,
+        operations,
+        fields: Box::new(Mutex::new(StoredDeclarationFields::new(graph))),
+    }))
 }
 
 /// One Active Provider of a Workspace with its active Generation.

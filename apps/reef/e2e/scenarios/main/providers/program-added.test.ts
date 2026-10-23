@@ -25,7 +25,7 @@ import { approvedProgramProvider, deniedProgramProvider } from './program-approv
 test("A workspace owner's Program adds a provider that needs no sign-in, and Coral publishes it with no Reef step", async (context) => {
   await withOwnerSession(context, async ({ page, target, actor, step }) => {
     const api = managementClients(actor.accessToken)
-    const workspace = await programWorkspace(api, step, ['createProvider'])
+    const workspace = await programWorkspace(api, step, ['addProvider'])
     const id = workspace.name.split('/')[1]
     const document = JSON.parse(
       openApiDocument('Weather', { getForecast: { summary: 'Get the forecast' } }).toString(),
@@ -45,7 +45,7 @@ test("A workspace owner's Program adds a provider that needs no sign-in, and Cor
       }
       const { update } = await observeRun(
         runner,
-        await runner.exec(`return await coral.workspace.createProvider(${JSON.stringify(call)});`),
+        await runner.exec(`return await coral.workspace.addProvider(${JSON.stringify(call)});`),
       )
       expect(update.required_actions).toEqual([])
       expect(update.final_value).toMatchObject({
@@ -77,7 +77,7 @@ test("A workspace owner's Program adds a provider that needs no sign-in, and Cor
 test("A workspace owner's Program adds a provider with a shared account, and you sign in at its link", async (context) => {
   await withOwnerSession(context, async ({ page, target, actor, step }) => {
     const api = managementClients(actor.accessToken)
-    const workspace = await programWorkspace(api, step, ['createProvider'])
+    const workspace = await programWorkspace(api, step, ['addProvider'])
     const id = workspace.name.split('/')[1]
     const document = openApiDocument(
       'Weather',
@@ -97,7 +97,7 @@ test("A workspace owner's Program adds a provider with a shared account, and you
     await step('The Program gets a link where you sign in', async () => {
       const { update } = await observeRun(
         runner,
-        await runner.exec(`return await coral.workspace.createProvider(${JSON.stringify(call)});`),
+        await runner.exec(`return await coral.workspace.addProvider(${JSON.stringify(call)});`),
       )
       expect(update.required_actions).toEqual([])
       const { data } = (update.final_value as { value: { data: { status: string; url: string } } })
@@ -137,7 +137,7 @@ test("A workspace owner's Program prepares a confidential OAuth application, and
   await withOwnerSession(context, async ({ page, target, actor, step }) => {
     const api = managementClients(actor.accessToken)
     const responses = await collectDataResponses(page)
-    const workspace = await programWorkspace(api, step, ['createProvider'])
+    const workspace = await programWorkspace(api, step, ['addProvider'])
     const id = workspace.name.split('/')[1]
     const runner = programRunner(page, target, id, {
       accessToken: await mcpToken(page, id),
@@ -161,7 +161,7 @@ test("A workspace owner's Program prepares a confidential OAuth application, and
     await step('The Program gets a link where you sign in', async () => {
       const { update } = await observeRun(
         runner,
-        await runner.exec(`return await coral.workspace.createProvider(${JSON.stringify(call)});`),
+        await runner.exec(`return await coral.workspace.addProvider(${JSON.stringify(call)});`),
       )
       run = `${workspace.name}/runs/${update.run_id}`
       const { data } = (update.final_value as { value: { data: { status: string; url: string } } })
@@ -204,7 +204,7 @@ test("A workspace owner's Program prepares a confidential OAuth application, and
     await step("The secret stays out of the Run's arguments and Activity", async () => {
       const entries = await api.activity.browseRunEntries({ name: run, pageSize: 25 })
       const invocation = entries.entries.find((entry) => entry.record.case === 'invocation')!.record
-      if (invocation.case !== 'invocation') throw new Error('Expected the createProvider call')
+      if (invocation.case !== 'invocation') throw new Error('Expected the addProvider call')
       const query = new URLSearchParams({ tree: '1', record: invocation.value.name })
       query.append('expand', `${workspace.name}/tasks/${runner.taskId()}`)
       query.append('expand', run)
@@ -229,7 +229,7 @@ test("Another owner finds nothing at an owner's sign-in link, and the owner who 
   await withBrowserSession(
     context,
     async ({ page, target, step }) => {
-      workspace = (await programWorkspace(api, step, ['createProvider'])).name
+      workspace = (await programWorkspace(api, step, ['addProvider'])).name
       await api.memberships.createWorkspaceMembership({
         parent: workspace,
         email: bob.email,
@@ -256,9 +256,7 @@ test("Another owner finds nothing at an owner's sign-in link, and the owner who 
       await step("Alice's Program gets a link where she signs in", async () => {
         const { update } = await observeRun(
           runner,
-          await runner.exec(
-            `return await coral.workspace.createProvider(${JSON.stringify(call)});`,
-          ),
+          await runner.exec(`return await coral.workspace.addProvider(${JSON.stringify(call)});`),
         )
         link = (update.final_value as { value: { data: { url: string } } }).value.data.url
       })

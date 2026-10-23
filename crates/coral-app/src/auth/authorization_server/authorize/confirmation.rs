@@ -12,17 +12,18 @@ use coral_outbound::{BrowserRedirect, EndpointUrl};
 use ring::rand::{SecureRandom as _, SystemRandom};
 use sha2::{Digest as _, Sha256};
 use url::{Host, Url, form_urlencoded};
+use zeroize::Zeroize as _;
 use zeroize::Zeroizing;
 
-use super::super::super::state_store::{
-    OAuthAuthorizationApprovalBrowserBinding, OAuthAuthorizationApprovalTicket,
-};
+use super::super::cookies;
 use super::super::response::approval_page_security_headers;
 
-const MAX_FORM_BYTES: usize = 256;
-const TICKET_LENGTH: usize = 43;
+/// Room for a sealed approval: the app inputs, a client name from a metadata
+/// document of at most 5 KiB, and the resource, base64url encoded.
+const MAX_FORM_BYTES: usize = 16 * 1024;
 const BROWSER_BINDING_LENGTH: usize = 43;
-const APPROVAL_COOKIE_MAX_AGE_SECONDS: u64 = 5 * 60;
+/// How long both the approval cookie and a sealed approval last.
+pub(super) const APPROVAL_MAX_AGE_SECONDS: u64 = 5 * 60;
 const SECURE_APPROVAL_COOKIE_NAME: &str = "__Host-coral_oauth_approval";
 const LOOPBACK_APPROVAL_COOKIE_NAME: &str = "coral_oauth_approval";
 /// The approval page's policy, which deliberately omits `form-action`.
@@ -36,8 +37,7 @@ const LOOPBACK_APPROVAL_COOKIE_NAME: &str = "coral_oauth_approval";
 /// federates to an enterprise identity provider, adds an MFA or bot-check hop,
 /// or simply changes its own redirect path silently breaks every login, and the browser
 /// blames this page's same-origin form action rather than the hop it blocked.
-/// The POST is delivered and the approval consumed before the block, so the
-/// user sees nothing happen and a retry reports the spent approval as expired.
+/// The POST is delivered before the block, so the user sees nothing happen.
 ///
 /// What the directive would defend against is an injected form exfiltrating
 /// data. This page renders no script, takes no user input beyond a hidden
@@ -62,14 +62,29 @@ pub(super) enum ApprovalDecision {
     Cancel,
 }
 
-pub(super) fn new_ticket() -> Result<OAuthAuthorizationApprovalTicket, ()> {
-    OAuthAuthorizationApprovalTicket::generate(&SystemRandom::new()).map_err(|_error| ())
+/// The secret in the browser's approval cookie that sealed approvals are bound to.
+pub(crate) struct BrowserBinding([u8; 32]);
+
+impl BrowserBinding {
+    pub(super) fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub(super) fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl Drop for BrowserBinding {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
 }
 
 pub(super) fn browser_binding_for_page(
     headers: &HeaderMap,
     secure_cookie: bool,
-) -> Result<OAuthAuthorizationApprovalBrowserBinding, ()> {
+) -> Result<BrowserBinding, ()> {
     if let Some(binding) = browser_binding_from_headers(headers, secure_cookie) {
         return Ok(binding);
     }
@@ -77,23 +92,14 @@ pub(super) fn browser_binding_for_page(
     SystemRandom::new()
         .fill(&mut *binding)
         .map_err(|_error| ())?;
-    Ok(OAuthAuthorizationApprovalBrowserBinding::from_bytes(
-        *binding,
-    ))
+    Ok(BrowserBinding::from_bytes(*binding))
 }
 
 pub(super) async fn parse_submission(
     request: Request,
     expected_origin: &str,
     secure_cookie: bool,
-) -> Result<
-    (
-        OAuthAuthorizationApprovalTicket,
-        OAuthAuthorizationApprovalBrowserBinding,
-        ApprovalDecision,
-    ),
-    (),
-> {
+) -> Result<(Zeroizing<String>, BrowserBinding, ApprovalDecision), ()> {
     let (parts, body) = request.into_parts();
     if !has_exact_origin(&parts.headers, expected_origin) {
         return Err(());
@@ -127,17 +133,18 @@ pub(super) async fn parse_submission(
             _ => return Err(()),
         }
     }
-    let encoded = ticket
-        .filter(|ticket| ticket.len() == TICKET_LENGTH)
-        .ok_or(())?;
-    let mut bytes = Zeroizing::new([0_u8; 32]);
-    let decoded = URL_SAFE_NO_PAD
-        .decode_slice(encoded.as_bytes(), &mut *bytes)
-        .map_err(|_error| ())?;
-    if decoded != bytes.len() {
-        return Err(());
-    }
-    let ticket = OAuthAuthorizationApprovalTicket::from_bytes(*bytes);
+    // A sealed approval is base64url; anything else cannot open, so it is
+    // rejected here with the rest of the malformed form.
+    let ticket = Zeroizing::new(
+        ticket
+            .filter(|ticket| {
+                !ticket.is_empty()
+                    && ticket
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            })
+            .ok_or(())?,
+    );
     Ok((ticket, browser_binding, decision.ok_or(())?))
 }
 
@@ -149,11 +156,11 @@ pub(super) async fn parse_submission(
 /// order keeps `Cancel` as the submit default. The fixed, hash-pinned
 /// stylesheet stacks that safe decision last on a narrow viewport.
 pub(super) fn response(
-    ticket: &OAuthAuthorizationApprovalTicket,
+    ticket: &str,
     client_name: &str,
     client_id: &str,
     redirect_uri: &EndpointUrl<BrowserRedirect>,
-    browser_binding: &OAuthAuthorizationApprovalBrowserBinding,
+    browser_binding: &BrowserBinding,
     secure_cookie: bool,
 ) -> Option<Response> {
     // Resolution already validated the identity. A URL has a metadata host;
@@ -178,7 +185,6 @@ pub(super) fn response(
                 format!("{redirect_host}:{}", redirect_uri.port_or_known_default()?),
             )
         };
-    let encoded_ticket = Zeroizing::new(URL_SAFE_NO_PAD.encode(ticket.as_bytes()));
     // Read slots only from the trusted template. Never rescan substituted client
     // text: a client named "@@ticket@@" must remain literal, not become the approval ticket.
     let mut body = String::with_capacity(APPROVAL_PAGE.len() + APPROVAL_PAGE_STYLES.len());
@@ -193,7 +199,7 @@ pub(super) fn response(
                 "client_identity_label" => body.push_str(client_identity_label),
                 "redirect_label" => body.push_str(redirect_label),
                 "redirect_destination" => body.push_str(&escape_html(&redirect_destination)),
-                "ticket" => body.push_str(&escape_html(&encoded_ticket)),
+                "ticket" => body.push_str(&escape_html(ticket)),
                 _ => return None,
             }
         }
@@ -219,15 +225,12 @@ pub(super) fn response(
     Some(response)
 }
 
-fn approval_cookie_header(
-    browser_binding: &OAuthAuthorizationApprovalBrowserBinding,
-    secure: bool,
-) -> Option<HeaderValue> {
+fn approval_cookie_header(browser_binding: &BrowserBinding, secure: bool) -> Option<HeaderValue> {
     let name = approval_cookie_name(secure);
     let encoded_binding = Zeroizing::new(URL_SAFE_NO_PAD.encode(browser_binding.as_bytes()));
     let secure_attribute = if secure { "; Secure" } else { "" };
     HeaderValue::from_str(&format!(
-        "{name}={}; Path=/; Max-Age={APPROVAL_COOKIE_MAX_AGE_SECONDS}; \
+        "{name}={}; Path=/; Max-Age={APPROVAL_MAX_AGE_SECONDS}; \
          HttpOnly{secure_attribute}; SameSite=Lax",
         encoded_binding.as_str()
     ))
@@ -236,49 +239,18 @@ fn approval_cookie_header(
 
 /// Recovers the binding this browser was given, from the request's cookies.
 ///
-/// The scan works in bytes rather than through `HeaderValue::to_str` because
-/// that rejects every octet outside visible ASCII, and a browser sends a cookie
-/// value however a script set it. Reading the header as text would therefore
-/// let one unrelated cookie on this host decide the answer, and it would fail
-/// in the worst direction: the page handler treats `None` as "no binding yet"
-/// and mints a fresh one, while the submission handler treats it as a rejected
-/// request, so the user loops through the page with no decision ever taking.
-/// Only the value stored under the expected name has to be ASCII, and base64
-/// decoding is already what establishes that.
-///
-/// Returning `None` for a repeated name is what keeps a shadowing cookie from
-/// choosing which binding is read, so every occurrence must be seen, not just
-/// the first.
-fn browser_binding_from_headers(
-    headers: &HeaderMap,
-    secure: bool,
-) -> Option<OAuthAuthorizationApprovalBrowserBinding> {
-    let expected_name = approval_cookie_name(secure).as_bytes();
-    let mut encoded = None;
-    for header_value in headers.get_all(header::COOKIE) {
-        for pair in header_value.as_bytes().split(|byte| *byte == b';') {
-            let Some((name, value)) = split_at_byte(pair.trim_ascii(), b'=') else {
-                continue;
-            };
-            if name != expected_name {
-                continue;
-            }
-            if encoded.is_some() {
-                return None;
-            }
-            encoded = Some(Zeroizing::new(value.to_vec()));
-        }
-    }
-    let encoded = encoded.filter(|value| value.len() == BROWSER_BINDING_LENGTH)?;
+/// A cookie this server cannot read leaves the binding unreadable in the worst
+/// direction: the page handler treats `None` as "no binding yet" and mints a
+/// fresh one, while the submission handler treats it as a rejected request, so
+/// the user loops through the page with no decision ever taking.
+/// [`cookies::single_value`] reads past cookies it cannot interpret and refuses
+/// a repeated name, which is why it is the only reader used here.
+fn browser_binding_from_headers(headers: &HeaderMap, secure: bool) -> Option<BrowserBinding> {
+    let encoded = cookies::single_value(headers, approval_cookie_name(secure))
+        .filter(|value| value.len() == BROWSER_BINDING_LENGTH)?;
     let mut bytes = Zeroizing::new([0_u8; 32]);
     let decoded = URL_SAFE_NO_PAD.decode_slice(&**encoded, &mut *bytes).ok()?;
-    (decoded == bytes.len()).then(|| OAuthAuthorizationApprovalBrowserBinding::from_bytes(*bytes))
-}
-
-/// Splits `value` at the first occurrence of `byte`, dropping the separator.
-fn split_at_byte(value: &[u8], byte: u8) -> Option<(&[u8], &[u8])> {
-    let mut parts = value.splitn(2, |candidate| *candidate == byte);
-    Some((parts.next()?, parts.next()?))
+    (decoded == bytes.len()).then(|| BrowserBinding::from_bytes(*bytes))
 }
 
 fn has_exact_origin(headers: &HeaderMap, expected_origin: &str) -> bool {

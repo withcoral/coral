@@ -129,6 +129,33 @@ pub struct ActivityInteraction {
     pub run: Option<RunSummary>,
 }
 impl TaskModule {
+    /// Sums the caller's own work and their Agents' work in one Workspace over the
+    /// last `days`, in one read snapshot. Context counts what Activity counts:
+    /// each discovery response and each Run, by when it ended.
+    /// # Errors
+    /// Rejects windows outside 1–30 days, Agent callers and inaccessible Workspaces.
+    pub async fn activity_summary(
+        &self,
+        runs: &RunModule,
+        actor: &AuthenticatedPrincipal,
+        workspace: &WorkspaceId,
+        days: u32,
+    ) -> Result<coral_run::ActivitySummary, Error> {
+        let since = runs.summary_window_start(days)?;
+        let mut tx = self.database.begin_read_snapshot().await?;
+        let authority = self
+            .workspaces
+            .action_history_authority_in_transaction(&mut tx, actor, Some(workspace))
+            .await?;
+        let discovery =
+            crate::repository::activity::discovery_context(&mut tx, &authority, since).await?;
+        let summary = runs
+            .activity_summary_in_transaction(&mut tx, &authority, since, discovery)
+            .await?;
+        tx.commit().await?;
+        Ok(summary)
+    }
+
     /// Reads a single bounded mixed root window in one authorization snapshot.
     /// # Errors
     /// Rejects invalid windows, inaccessible scopes and persistence failures.

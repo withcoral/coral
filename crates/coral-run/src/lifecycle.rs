@@ -19,9 +19,9 @@ pub(crate) struct RunRecord {
     pub(crate) shutdown_grace_nanos: i64,
     /// The Run Ledger head: the number of chunk commits since acceptance.
     pub(crate) chunk_sequence: u64,
-    /// The last Event sequence on the Run as of a read snapshot, `0` before
-    /// `run.started`. `None` on a Run read under `hold_run`, which does not
-    /// read the Event rows: the chunk commit numbers its Events itself.
+    /// The last Event sequence on the Run as of the read, `0` before
+    /// `run.started`. Read beside the row; the chunk commit numbers its
+    /// Events itself and never from this.
     pub(crate) last_event_sequence: Option<u64>,
     pub(crate) accumulated_output_bytes: usize,
     pub(crate) terminal_outcome: Option<RunTerminalOutcome>,
@@ -45,15 +45,16 @@ impl RunRecord {
     }
 
     /// Whether the Run row still takes the Run Owner's chunks: a running Run
-    /// whose claim columns both hold `claim_id`, before its deadline. A lapsed
-    /// lease does not end ownership (a local owner continues while its commits
-    /// show a matching claim), and a recorded termination intent does not stop
-    /// the owner recording what it applied before the intent.
-    pub(crate) fn accepts_owner_chunk(&self, claim_id: &str, now_unix_nanos: i64) -> bool {
+    /// whose claim columns both hold `claim_id`. Never the clock: the owner
+    /// applies the Run deadline itself and records the timeout like a
+    /// cancellation. A lapsed lease does not end ownership (a local owner
+    /// continues while its commits show a matching claim), and a recorded
+    /// termination intent does not stop the owner recording what it applied
+    /// before the intent.
+    pub(crate) fn accepts_owner_chunk(&self, claim_id: &str) -> bool {
         self.state == RunState::Running
             && self.execution_claim_id.as_deref() == Some(claim_id)
             && self.worker_claim_id.as_deref() == Some(claim_id)
-            && now_unix_nanos < self.deadline_at_unix_nanos
     }
 
     /// Whether the owner holding `claim_id` may still do Program work on
@@ -77,6 +78,14 @@ impl RunRecord {
 
     pub(crate) const fn execution_started(&self) -> bool {
         self.execution_started_at_unix_nanos.is_some()
+    }
+
+    /// The claim the Run row holds: its execution claim, or the worker claim
+    /// of a Run that has not started; `None` for a Run with no claim.
+    pub(crate) fn held_claim(&self) -> Option<&str> {
+        self.execution_claim_id
+            .as_deref()
+            .or(self.worker_claim_id.as_deref())
     }
 
     /// A termination intent no Principal asked for: the deadline, an
@@ -122,12 +131,6 @@ impl RequestedTermination {
             },
             requester,
         })
-    }
-
-    /// Whether recording this intent releases the worker claim: an
-    /// interruption does, the Run having no live owner.
-    pub(crate) fn releases_worker_claim(&self) -> bool {
-        self.termination.kind == RunTerminationKind::Interrupted
     }
 }
 

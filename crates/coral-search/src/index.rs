@@ -346,22 +346,23 @@ impl SearchIndex {
     /// preparation left. A failure is logged and recorded. The caller holds
     /// the mutex.
     pub(crate) async fn write_generation(&self, entries: &GenerationEntries) {
-        if let Err(error) = self.write(&OperationIndexer, entries).await {
-            self.fail_generation(entries.into(), &error).await;
-            return;
-        }
-        for operation in entries.operations() {
-            for warning in operation.search_warnings() {
-                tracing::warn!(
-                    workspace_id = %entries.workspace_id(),
-                    provider_id = %entries.provider_id(),
-                    generation_id = %entries.generation_id(),
-                    operation_key = %operation.key().as_str(),
-                    code = %warning.code(),
-                    "{}",
-                    warning.message()
-                );
+        let rows = match self.write(&OperationIndexer, entries).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                self.fail_generation(entries.into(), &error).await;
+                return;
             }
+        };
+        for (operation_key, warning) in rows.warnings() {
+            tracing::warn!(
+                workspace_id = %entries.workspace_id(),
+                provider_id = %entries.provider_id(),
+                generation_id = %entries.generation_id(),
+                operation_key = %operation_key.as_str(),
+                code = %warning.code(),
+                "{}",
+                warning.message()
+            );
         }
     }
 
@@ -431,12 +432,13 @@ impl SearchIndex {
     /// its wait fails as [`IndexError::WriterBusy`], which may pass on a
     /// later try. A write that overruns after it takes the lock fails as
     /// [`IndexError::Overran`], which repeats until something changes. A
-    /// write that took the lock logs how long it waited and wrote.
-    async fn write<I: EntityIndexer>(
+    /// write that took the lock logs how long it waited and wrote. Returns
+    /// the rows it wrote.
+    async fn write<'e, I: EntityIndexer + 'e>(
         &self,
         indexer: &I,
-        entry: &I::Entry,
-    ) -> Result<(), IndexError> {
+        entry: &'e I::Entry,
+    ) -> Result<I::Rows<'e>, IndexError> {
         let workspace_id = indexer.workspace_id(entry);
         let rows = indexer.rows(entry)?;
         #[cfg(any(test, feature = "test-fixtures"))]
@@ -455,12 +457,14 @@ impl SearchIndex {
         .await
         .map_err(|_elapsed| IndexError::WriterBusy(self.writer_wait_limit))??;
         let locked = Instant::now();
+        // Borrowed, so the rows outlive the `async move` write and return.
+        let written_rows = &rows;
         let written = tokio::time::timeout(self.write_limit, async move {
             #[cfg(any(test, feature = "test-fixtures"))]
             if let Some(stall) = self.stall_after_lock {
                 tokio::time::sleep(stall).await;
             }
-            if let Err(error) = indexer.index(&mut transaction, entry, &rows).await {
+            if let Err(error) = indexer.index(&mut transaction, entry, written_rows).await {
                 rollback(transaction).await;
                 return Err(error);
             }
@@ -476,7 +480,7 @@ impl SearchIndex {
             succeeded = written.is_ok(),
             "ended a search index write"
         );
-        written
+        written.map(|()| rows)
     }
 
     async fn erase<I: EntityIndexer>(

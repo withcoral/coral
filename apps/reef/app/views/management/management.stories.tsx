@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from '@storybook/react-vite'
+import type { Decorator, Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
 import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { AgentActivityPage } from './agent-activity-page'
@@ -9,11 +9,19 @@ import { OrganizationMembersPage } from './organization-members-page'
 import { OrganizationWorkspacesPage } from './organization-workspaces-page'
 import { WorkspaceMembersPage, type WorkspaceMembersPageProps } from './workspace-members-page'
 import { Activity } from '@/views/activity/activity'
-import type { ActivityRow } from '@/views/activity/types'
+import type { ActivityRow, ActivityViewProps } from '@/views/activity/types'
 import { ActivitySummary } from '@/views/activity/summary/summary'
+import { ACTIVITY_PAGE_SIZE } from '@/lib/activity-list'
+import { resizeViewport } from '../../../.storybook/browser'
 import { WorkspaceOverview, type WorkspaceOverviewProps } from './workspace-overview'
 
 const form = { csrf: 'storybook-csrf', requestId: 'storybook-request' }
+// The app shell bounds a page's height; a story that scrolls inside it needs the same bound.
+const viewportHeight: Decorator = (Story) => (
+  <div style={{ height: '100vh' }}>
+    <Story />
+  </div>
+)
 const jordan = {
   user: 'users/jordan',
   name: 'Jordan Lee',
@@ -74,7 +82,11 @@ const ownMembership = {
   etag: 'self',
 }
 // The overview and agent routes pass no endpoint: their quick start cards show the setup.
-const activityPage = (rows: ActivityRow[], owner: string | null = null) => (
+const activityPage = (
+  rows: ActivityRow[],
+  owner: string | null = null,
+  more?: ActivityViewProps['more'],
+) => (
   <Activity
     page={{
       rows,
@@ -91,9 +103,15 @@ const activityPage = (rows: ActivityRow[], owner: string | null = null) => (
       selectedRow: null,
       listPath: workspace.path,
     }}
+    more={more}
   />
 )
 const emptyAgentActivity = activityPage([], agent.name)
+const emptyAgentGlimpse = activityPage([], agent.name, {
+  to: `${agent.path}?view=activity`,
+  label: 'View all activity',
+  roots: ACTIVITY_PAGE_SIZE,
+})
 const overview: WorkspaceOverviewProps = {
   workspace,
   agents: [agent, blockedAgent],
@@ -349,14 +367,7 @@ export const ManyAgents: Story = {
     const [name] = within(rows[0]).getAllByRole('cell')
     await expect(name).toHaveAttribute('title', expect.stringContaining('reconciliation queue'))
   },
-  // The app shell bounds the page's height; the story needs a bound of its own.
-  decorators: [
-    (Story) => (
-      <div style={{ height: '100vh' }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: [viewportHeight],
 }
 /** The table keeps its shape with no agents, and offers to create one. */
 export const NoAgents: Story = {
@@ -440,6 +451,36 @@ const agentProviders: import('./agent-providers').AgentProviderView[] = [
     blockers: ['Provider disabled', 'Connect an account for this agent'],
   },
 ]
+const activityIntents = [
+  'Reconcile nightly invoices',
+  'Triage incoming support requests',
+  'Update the release readiness report',
+  'Check overdue customer follow-ups',
+  'Summarize provider health signals',
+  'Review unresolved approval requests',
+]
+const busyIntent = (index: number) =>
+  `${activityIntents[index % activityIntents.length]} · batch ${index + 1}`
+const busyAgentActivityRows: ActivityRow[] = Array.from({ length: 36 }, (_, index) => {
+  const ended = Date.UTC(2026, 8, 22, 9) - index * 3_600_000
+  return {
+    kind: 'task' as const,
+    name: `${workspace.name}/tasks/review-${index + 1}`,
+    workspace: workspace.name,
+    agent: agent.name,
+    actor: agent.displayName,
+    intent: busyIntent(index),
+    outcome: index % 7 === 0 ? 'failure' : 'success',
+    startedAt: new Date(ended - 90_000).toISOString(),
+    endedAt: new Date(ended).toISOString(),
+  }
+})
+const busyAgentActivity = activityPage(busyAgentActivityRows, agent.name)
+const agentActivityGlimpse = activityPage(busyAgentActivityRows, agent.name, {
+  to: `${agent.path}?view=activity`,
+  label: 'View all activity',
+  roots: ACTIVITY_PAGE_SIZE,
+})
 export const AgentActivity: Story = {
   render: () => (
     <AgentActivityPage
@@ -447,25 +488,13 @@ export const AgentActivity: Story = {
       agent={agent}
       providers={agentProviders}
       form={form}
-      activity={activityPage(
-        [
-          {
-            kind: 'task' as const,
-            name: `${workspace.name}/tasks/nightly`,
-            workspace: workspace.name,
-            agent: agent.name,
-            actor: agent.displayName,
-            intent: 'Reconcile nightly invoices',
-            outcome: 'success',
-            startedAt: '2026-09-22T09:00:00.000Z',
-            endedAt: '2026-09-22T09:01:00.000Z',
-          },
-        ],
-        agent.name,
-      )}
+      activity={busyAgentActivity}
+      recentActivity={agentActivityGlimpse}
     />
   ),
   parameters: { initialEntry: agent.path },
+  // The app shell bounds the page; the cards fill its height and scroll their rows.
+  decorators: [viewportHeight],
   play: async ({ canvas }) => {
     await expect(canvas.getByRole('link', { name: 'Settings' })).toHaveAttribute(
       'href',
@@ -474,6 +503,77 @@ export const AgentActivity: Story = {
     // Activity only reads; every change waits behind Settings.
     for (const name of ['Replace API key', 'Disable agent', 'Edit expiration', 'Delete agent'])
       await expect(canvas.queryByRole('button', { name })).toBeNull()
+    // Catches: a long list stretching its card past the page instead of scrolling its rows.
+    if (!(await resizeViewport(1440, 800))) return
+    const accounts = canvas.getByRole('region', { name: 'Accounts' })
+    const recent = canvas.getByRole('region', { name: 'Recent activity' })
+    await waitFor(() => {
+      for (const card of [accounts, recent])
+        expect(card.getBoundingClientRect().bottom).toBeLessThanOrEqual(window.innerHeight)
+      expect(accounts.getBoundingClientRect().top).toBe(recent.getBoundingClientRect().top)
+    })
+    const last = within(recent).getByRole('link', {
+      name: busyIntent(ACTIVITY_PAGE_SIZE - 1),
+    })
+    expect(last.getBoundingClientRect().top).toBeGreaterThan(recent.getBoundingClientRect().bottom)
+    expect(
+      within(recent).queryByRole('link', {
+        name: busyIntent(ACTIVITY_PAGE_SIZE),
+      }),
+    ).toBeNull()
+  },
+}
+// Catches: a short viewport trapping Recent activity below the visible page.
+export const AgentActivityShortViewport: Story = {
+  ...AgentActivity,
+  globals: { viewport: { value: 'mobile1', isRotated: false } },
+  play: async ({ canvas }) => {
+    const activity = canvas.getByRole('table', { name: 'Activity records' })
+    activity.scrollIntoView({ block: 'end' })
+    await waitFor(() =>
+      expect(activity.getBoundingClientRect().bottom).toBeLessThanOrEqual(window.innerHeight + 1),
+    )
+  },
+}
+export const AgentFullActivity: Story = {
+  ...AgentActivity,
+  parameters: { initialEntry: `${agent.path}?view=activity` },
+  // The app shell bounds the split page; the story needs the same height so
+  // Activity scrolls its records instead of growing with them.
+  decorators: [viewportHeight],
+  play: async ({ canvas }) => {
+    await expect(canvas.getByRole('heading', { name: 'Activity' })).toBeVisible()
+    await expect(canvas.getByRole('link', { name: 'Back to agent' })).toHaveAttribute(
+      'href',
+      agent.path,
+    )
+  },
+}
+// Catches: a link into the agent's Activity list opening the dashboard instead.
+export const AgentActivityAfterRecord: Story = {
+  ...AgentFullActivity,
+  parameters: { initialEntry: `${agent.path}?anchor=x&tree=1` },
+  play: async ({ canvas }) => {
+    await expect(canvas.getByRole('link', { name: 'Back to agent' })).toBeVisible()
+    await expect(canvas.queryByRole('heading', { name: 'Recent activity' })).toBeNull()
+  },
+}
+// Catches: an agent with no provider requirements showing an empty Accounts card.
+export const AgentWithoutAccounts: Story = {
+  render: () => (
+    <AgentActivityPage
+      workspace={workspace}
+      agent={agent}
+      providers={[]}
+      form={form}
+      activity={busyAgentActivity}
+      recentActivity={agentActivityGlimpse}
+    />
+  ),
+  parameters: { initialEntry: agent.path },
+  play: async ({ canvas }) => {
+    await expect(canvas.queryByRole('region', { name: 'Accounts' })).toBeNull()
+    await expect(canvas.getByRole('heading', { name: 'Recent activity' })).toBeVisible()
   },
 }
 // Catches: a client's setup losing the workspace endpoint or the key placeholder.
@@ -485,6 +585,7 @@ export const NewAgentActivity: Story = {
       providers={agentProviders}
       form={form}
       activity={emptyAgentActivity}
+      recentActivity={emptyAgentGlimpse}
       idle
     />
   ),
@@ -543,6 +644,7 @@ export const AgentAccountsUnavailable: Story = {
       providers={null}
       form={form}
       activity={emptyAgentActivity}
+      recentActivity={emptyAgentGlimpse}
       idle
     />
   ),
@@ -565,6 +667,7 @@ export const ArchivedAgentActivity: Story = {
       providers={agentProviders}
       form={form}
       activity={emptyAgentActivity}
+      recentActivity={emptyAgentGlimpse}
       idle
     />
   ),
@@ -575,6 +678,14 @@ export const ArchivedAgentActivity: Story = {
     await expect(
       accounts.queryByRole('button', { name: /^(Connect|Reconnect) account for/ }),
     ).toBeNull()
+  },
+}
+// Catches: the complete Activity of an archived workspace's agent hiding the archive.
+export const ArchivedAgentFullActivity: Story = {
+  ...ArchivedAgentActivity,
+  parameters: { initialEntry: `${agent.path}?view=activity` },
+  play: async ({ canvas }) => {
+    await expect(canvas.getByText('This workspace is archived')).toBeVisible()
   },
 }
 export const AgentSettings: Story = {
@@ -674,10 +785,8 @@ export const OrganizationMembers: Story = {
   parameters: { chromatic: { viewports: [390, 1280] } },
   play: async ({ canvas }) => {
     await expect(canvas.getByText('Jordan Lee (You)')).toBeVisible()
-    await expect(
-      canvas.getByTitle(`${alice.name}\n${alice.email}`, { normalizer: (t) => t }),
-    ).toBeVisible()
-    await expect(canvas.queryByText(alice.email)).not.toBeInTheDocument()
+    await expect(canvas.getByTitle(alice.name)).toBeVisible()
+    await expect(canvas.getByRole('cell', { name: alice.email })).toBeVisible()
     await expect(canvas.getByText('Disabled')).toBeVisible()
   },
 }
@@ -1259,6 +1368,12 @@ export const ProfileFallbacks: Story = {
     />
   ),
   parameters: { chromatic: { viewports: [390, 1280] } },
+  // Catches: a person with no name repeating their email as the name.
+  play: async ({ canvas }) => {
+    const row = canvas.getByRole('row', { name: /person-with-a-very-long-email-address/ })
+    await expect(within(row).getByText('(no name)')).toBeVisible()
+    await expect(within(row).getAllByText(/person-with-a-very-long-email-address/)).toHaveLength(1)
+  },
 }
 export const LocalUser: Story = {
   render: () => (

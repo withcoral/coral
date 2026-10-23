@@ -61,6 +61,7 @@ async function render(
   action: (data: FormData) => unknown = () => ({ error: null, message: 'Provider name saved.' }),
 ) {
   const submissions: FormData[] = []
+  const targets: string[] = []
   const router = createMemoryRouter(
     [
       {
@@ -68,6 +69,8 @@ async function render(
         action: async ({ request }) => {
           const data = await request.formData()
           submissions.push(data)
+          const url = new URL(request.url)
+          targets.push(url.pathname + url.search)
           return action(data)
         },
         Component: () => (
@@ -89,7 +92,7 @@ async function render(
   roots.push(root)
   routers.push(router)
   await act(async () => root.render(<RouterProvider router={router} />))
-  return { submissions }
+  return { submissions, targets }
 }
 
 // Your account under Accounts, with the way back to these settings.
@@ -435,17 +438,21 @@ test('configuration is a card with its edit action inside', async () => {
   expect(card.querySelector('form')?.textContent).toBe('Edit configuration')
 })
 
-// Catches: connecting your own account sending you away from settings, or
-// starting anyone's account but yours.
+// Catches: connecting your own account sending you away from settings, a sign-in
+// that does not return here, or starting anyone's account but yours.
 test('connects your own account in a dialog on this page', async () => {
-  const { submissions } = await render({ provider: { connection: 'not_connected' } }, () => ({
-    error: 'Stopped here.',
-    credential: null,
-  }))
+  const { submissions, targets } = await render(
+    { provider: { connection: 'not_connected' } },
+    () => ({
+      error: 'Stopped here.',
+      credential: null,
+    }),
+  )
   await click(named('button', 'Connect your account'))
-  // Opening the dialog starts your connection through this page's action.
+  // Opening the dialog starts your connection through your account page, which returns here.
   await expect.poll(() => submissions.length).toBe(1)
   expect(submissions[0]!.get('intent')).toBe('connectAccount')
+  expect(targets[0]).toBe(yourAccountPath)
   const dialog = document.querySelector('[role="dialog"]')!
   expect(dialog.textContent).toContain('Connect GitLab.com')
   expect(dialog.textContent).toContain('Stopped here.')

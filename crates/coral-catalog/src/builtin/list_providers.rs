@@ -1,6 +1,7 @@
 //! `coral.workspace.listProviders`: the schemas a Program is typed from, and
 //! the result Coral writes against the output schema. It takes no arguments.
 
+use coral_workspace::WorkspaceAction;
 use schemars::JsonSchema;
 use schemars::generate::Contract;
 use serde::Serialize;
@@ -12,6 +13,9 @@ use super::{
 };
 use crate::{OperationHints, OperationPresentation};
 
+/// Any Principal that can inspect the Workspace lists its Providers.
+pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Inspect;
+
 pub(super) fn definition() -> Definition {
     Definition {
         key: BuiltinOperation::ListProviders.key(),
@@ -19,19 +23,19 @@ pub(super) fn definition() -> Definition {
         presentation: OperationPresentation::new(
             Some("List providers".to_string()),
             "List every Provider in this Workspace, including disabled ones and Coral's \
-             own, in the order they were created. Also list the Providers your createProvider \
+             own, in the order they were created. Also list the Providers your addProvider \
              calls asked for that a person has not finished yet."
                 .to_string(),
             false,
             vec!["providers".to_string()],
             Some(
-                "Pass an empty object. A namespace in the list is taken, even when its \
-                 Provider is disabled. Call a Provider's Operations under \
-                 coral.providers.<namespace>. A Provider that createProvider asked a person to \
-                 finish is under setups until it is published, and then under providers. The \
-                 person can publish it under another namespace. When its namespace is in \
-                 neither list, the person renamed it, did not finish it in time, or canceled \
-                 it: ask the person before you call createProvider again."
+                "Pass an empty object. Call a Provider's Operations under its callRoot. A \
+                 namespace is taken when coral.providers.<namespace> is a callRoot under \
+                 providers, even when its Provider is disabled. A Provider that addProvider \
+                 asked a person to finish is under setups until it is published, and then \
+                 under providers. The person can publish it under another namespace. When its \
+                 callRoot is in neither list, the person renamed it, did not finish it in \
+                 time, or canceled it: ask the person before you call addProvider again."
                     .to_string(),
             ),
         ),
@@ -68,12 +72,12 @@ pub struct ListProvidersResult {
                        own comes first."
     )]
     pub providers: Vec<ListedProvider>,
-    /// The Providers the caller's `createProvider` calls asked a person to
+    /// The Providers the caller's `addProvider` calls asked a person to
     /// finish, which a person can still finish.
     #[schemars(
-        description = "The Providers your createProvider calls asked a person to finish, which \
+        description = "The Providers your addProvider calls asked a person to finish, which \
                        nobody has published yet, oldest first. Each expires an hour after \
-                       createProvider created it."
+                       addProvider started it."
     )]
     pub setups: Vec<ListedSetup>,
 }
@@ -88,20 +92,26 @@ impl ListProvidersResult {
 
 /// One `listProviders` entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 #[schemars(rename = "Provider", deny_unknown_fields, description = "")]
 pub struct ListedProvider {
-    /// The Provider Namespace; `None` for the Built-in Provider, whose
-    /// Operations are under `coral.workspace`.
+    /// The Call Root its Operations are called under, such as
+    /// `coral.providers.github`, or `coral.workspace` for the Built-in Provider.
+    #[schemars(description = "The path you call the Provider's Operations under: \
+                       coral.providers.<namespace> for a Provider a person added, or \
+                       coral.workspace for Coral's own.")]
+    pub call_root: String,
+    /// The Provider Namespace; `None` for the Built-in Provider, which has
+    /// none.
     #[schemars(
-        description = "The Provider Namespace. Its Operations are called under \
-                       coral.providers.<namespace>. Null for Coral's own Provider, whose \
-                       Operations are called under coral.workspace."
+        description = "The Provider Namespace, which getProvider takes. Null for Coral's own \
+                       Provider, which has none."
     )]
     pub namespace: Option<String>,
     /// Whether the Provider accepts calls.
     #[schemars(
         description = "Whether the Provider accepts calls. A disabled Provider still holds its \
-                       namespace."
+                       callRoot."
     )]
     pub state: ListedProviderState,
     /// What the caller needs to call it.
@@ -109,14 +119,14 @@ pub struct ListedProvider {
     pub facts: ProviderFacts,
 }
 
-/// Whether a Provider accepts calls. A disabled one still holds its
-/// namespace.
+/// Whether a Provider accepts calls. A disabled one still holds its Call
+/// Root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ListedProviderState {
     /// It accepts calls.
     Active,
-    /// It holds its namespace but accepts no calls.
+    /// It holds its Call Root but accepts no calls.
     Disabled,
 }
 
@@ -134,18 +144,19 @@ impl JsonSchema for ListedProviderState {
     }
 }
 
-/// One Provider that a `createProvider` call asked a person to finish.
+/// One Provider that an `addProvider` call asked a person to finish.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[schemars(rename = "ProviderSetup", deny_unknown_fields, description = "")]
 pub struct ListedSetup {
-    /// The Provider Namespace the call asked for.
+    /// The Call Root of the namespace the call asked for.
     #[schemars(
-        description = "The Provider Namespace createProvider asked for. The person can change it."
+        description = "coral.providers.<namespace>, with the namespace addProvider asked \
+                       for. The person can change it."
     )]
-    pub namespace: String,
+    pub call_root: String,
     /// The Credential Route the call asked for.
-    #[schemars(description = "The credentialRoute createProvider asked for.")]
+    #[schemars(description = "The credentialRoute addProvider asked for.")]
     pub credential_route: BuiltinCredentialRoute,
     /// What the person does next.
     #[schemars(

@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.3.0](https://github.com/withcoral/coral/compare/v1.2.0...v1.3.0) (2026-10-23)
+
+
+### Features
+
+* animate Activity detail navigation ([#2581](https://github.com/withcoral/coral/issues/2581)) ([c49a708](https://github.com/withcoral/coral/commit/c49a70809c3105237cfeee29839d8a9f8bea5272))
+* **auth:** finish OAuth sign-ins on any Coral process ([#2587](https://github.com/withcoral/coral/issues/2587)) ([62d022c](https://github.com/withcoral/coral/commit/62d022c9e0e28503cfdc5a7d1ae952e72d0d7f16))
+* follow live activity in Activity ([#2568](https://github.com/withcoral/coral/issues/2568)) ([5e42272](https://github.com/withcoral/coral/commit/5e4227239937d572ff88e63f19d7ceae604f1a1f))
+* **provider:** let members and agents call coral.workspace.listProviders ([#2616](https://github.com/withcoral/coral/issues/2616)) ([4d18a62](https://github.com/withcoral/coral/commit/4d18a6220625fdc403743ad096c7338dab9b5daf))
+* **run:** move Run, approval and connection deadlines into Run Owner timers ([#2592](https://github.com/withcoral/coral/issues/2592)) ([cebb89f](https://github.com/withcoral/coral/commit/cebb89fda84daeaf7846b9d4d2635d6c13329297))
+* **run:** recover Runs with an expired-lease sweep and drain them on shutdown ([#2614](https://github.com/withcoral/coral/issues/2614)) ([3fb00ae](https://github.com/withcoral/coral/commit/3fb00ae08b0691394bf4c84ded1067cbb871af42))
+* **ui:** fill the agent page with its accounts and recent activity ([#2617](https://github.com/withcoral/coral/issues/2617)) ([44d0815](https://github.com/withcoral/coral/commit/44d0815bffe2be839a94b4d09a24b0fff672e709))
+* **ui:** move Add members and Create agent to their toolbars ([#2611](https://github.com/withcoral/coral/issues/2611)) ([22f2ea5](https://github.com/withcoral/coral/commit/22f2ea58dd3d6a933ef6dc94da0b1d12332366c6))
+* **ui:** show an agent's accounts and recent activity on its page ([#2586](https://github.com/withcoral/coral/issues/2586)) ([e0c4f90](https://github.com/withcoral/coral/commit/e0c4f905a5cf26c97e55fb74730d29220599f808))
+
+
+### Bug Fixes
+
+* **db:** renumber the OAuth authorization codes migration to 0040 ([#2622](https://github.com/withcoral/coral/issues/2622)) ([787736d](https://github.com/withcoral/coral/commit/787736dcf264a7c1bd7f69c3f5650d662eb397a8))
+* **release:** show release notes on the Desktop feed and container packages ([#2604](https://github.com/withcoral/coral/issues/2604)) ([d558c2f](https://github.com/withcoral/coral/commit/d558c2f56becca1d63a43e2b66b3a59fe062519b))
+* **ui:** count search and describe context in the Overview summary ([#2607](https://github.com/withcoral/coral/issues/2607)) ([c7f6bb5](https://github.com/withcoral/coral/commit/c7f6bb519f8d032d428509e95d424ebf80063568))
+* **ui:** preserve the final-value row during activity navigation ([#2621](https://github.com/withcoral/coral/issues/2621)) ([edbd6f8](https://github.com/withcoral/coral/commit/edbd6f8cade490d967f8e8dc4adfd37b6d5efe7c))
+* **ui:** show each member's email in the members table ([#2606](https://github.com/withcoral/coral/issues/2606)) ([e42b378](https://github.com/withcoral/coral/commit/e42b37836f91a20899b128cd9f84792887e9be45))
+* **ui:** show submit progress with a spinner on every form ([#2583](https://github.com/withcoral/coral/issues/2583)) ([ce15691](https://github.com/withcoral/coral/commit/ce1569120e7cea96fddfab977eec11bbf3aad8f1))
+
+
+### Performance Improvements
+
+* **run:** wake parked Invocations through the Run Owner instead of polling ([#2609](https://github.com/withcoral/coral/issues/2609)) ([f350b15](https://github.com/withcoral/coral/commit/f350b158b7434589b5ecc70cd93d119e444d43bf))
+* **search:** cut peak memory when indexing a large provider ([#2626](https://github.com/withcoral/coral/issues/2626)) ([61bf3bb](https://github.com/withcoral/coral/commit/61bf3bb2354108e801f5019cbd85119dd5894e77))
+* **search:** delete SQLite text index rows by rowid, not by scan ([#2605](https://github.com/withcoral/coral/issues/2605)) ([b616163](https://github.com/withcoral/coral/commit/b616163ad57700dc5488eefb4d79697065a2d8fc))
+
 ## [1.2.0](https://github.com/withcoral/coral/compare/v1.1.0...v1.2.0) (2026-10-22)
 
 

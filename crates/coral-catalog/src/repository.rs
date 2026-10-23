@@ -239,6 +239,101 @@ impl SearchTargetRow {
     }
 }
 
+/// Rejects a binding whose own input schema or Operation Key disagrees with
+/// the row's index columns. An HTTP binding names neither.
+fn verify_schema_index(
+    binding: &ExecutionBinding,
+    key: &OperationKey,
+    input_schema: &SchemaId,
+) -> Result<(), Error> {
+    match binding {
+        ExecutionBinding::Mcp(binding) if binding.input_schema() != input_schema => Err(
+            Error::CorruptData("MCP Operation binding disagrees with its schema index".to_string()),
+        ),
+        ExecutionBinding::Builtin(binding)
+            if binding.input_schema() != input_schema || binding.operation_key() != key =>
+        {
+            Err(Error::CorruptData(
+                "built-in Operation binding disagrees with its index".to_string(),
+            ))
+        }
+        ExecutionBinding::Http(_) | ExecutionBinding::Mcp(_) | ExecutionBinding::Builtin(_) => {
+            Ok(())
+        }
+    }
+}
+
+fn decode_presentation(
+    title: Option<String>,
+    description: String,
+    deprecated: bool,
+    tags_json: &str,
+    guidance: Option<String>,
+) -> Result<crate::OperationPresentation, Error> {
+    let presentation = crate::OperationPresentation::new(
+        title,
+        description,
+        deprecated,
+        serde_json::from_str(tags_json).map_err(|_error| {
+            Error::CorruptData("Materialized Operation tags are not valid JSON".to_string())
+        })?,
+        guidance,
+    );
+    if !presentation.is_valid() {
+        return Err(Error::CorruptData(
+            "Materialized Operation has invalid presentation metadata".to_string(),
+        ));
+    }
+    Ok(presentation)
+}
+
+/// The columns the search index reads of one Operation.
+#[derive(Debug, FromRow)]
+struct SearchableOperationRow {
+    operation_key: String,
+    relative_path: String,
+    protocol: String,
+    title: Option<String>,
+    description: String,
+    deprecated: bool,
+    tags_json: String,
+    guidance: Option<String>,
+    definition_json: String,
+    input_schema_id: Option<String>,
+}
+
+impl SearchableOperationRow {
+    fn decode(self) -> Result<crate::SearchableOperation, Error> {
+        let key = OperationKey::parse(&self.operation_key).map_err(|_error| {
+            Error::CorruptData("Materialized Operation has invalid key".to_string())
+        })?;
+        if !crate::paths::valid_relative_path(&self.relative_path) {
+            return Err(Error::CorruptData(
+                "Materialized Operation has an invalid Operation-relative path".to_string(),
+            ));
+        }
+        let presentation = decode_presentation(
+            self.title,
+            self.description,
+            self.deprecated,
+            &self.tags_json,
+            self.guidance,
+        )?;
+        let binding = ExecutionBinding::from_storage_json(&self.protocol, &self.definition_json)?;
+        let input_schema = SchemaId::from_storage(self.input_schema_id.ok_or_else(|| {
+            Error::CorruptData("Materialized Operation has no input schema identity".to_string())
+        })?)?;
+        verify_schema_index(&binding, &key, &input_schema)?;
+        Ok(crate::SearchableOperation::new(
+            key,
+            self.relative_path,
+            presentation,
+            binding,
+            input_schema,
+        ))
+    }
+}
+
 #[derive(Debug, FromRow)]
 struct OperationSummaryRow {
     operation_key: String,
@@ -357,20 +452,13 @@ impl OperationRow {
                     "Materialized Operation type references are not valid JSON".to_string(),
                 )
             })?;
-        let presentation = crate::OperationPresentation::new(
+        let presentation = decode_presentation(
             self.title,
             self.description,
             self.deprecated,
-            serde_json::from_str(&self.tags_json).map_err(|_error| {
-                Error::CorruptData("Materialized Operation tags are not valid JSON".to_string())
-            })?,
+            &self.tags_json,
             self.guidance,
-        );
-        if !presentation.is_valid() {
-            return Err(Error::CorruptData(
-                "Materialized Operation has invalid presentation metadata".to_string(),
-            ));
-        }
+        )?;
         let binding = ExecutionBinding::from_storage_json(&self.protocol, &self.definition_json)?;
         let hints = self.hints.decode();
         let availability = OperationAvailability::from_storage_str(&self.availability)?;
@@ -400,6 +488,7 @@ impl OperationRow {
                 "Materialized Operation has inconsistent availability evidence".to_string(),
             ));
         }
+        verify_schema_index(&binding, &key, &input_schema)?;
         let binding_json = match &binding {
             ExecutionBinding::Http(binding) => {
                 let method = self
@@ -427,28 +516,18 @@ impl OperationRow {
                 }
                 self.definition_json
             }
-            ExecutionBinding::Mcp(binding) => {
+            ExecutionBinding::Mcp(_) => {
                 if self.method.is_some() || self.path.is_some() || self.server_url.is_some() {
                     return Err(Error::CorruptData(
                         "MCP Operation has an HTTP index".to_string(),
                     ));
                 }
-                if binding.input_schema() != &input_schema {
-                    return Err(Error::CorruptData(
-                        "MCP Operation binding disagrees with its schema index".to_string(),
-                    ));
-                }
                 self.definition_json
             }
-            ExecutionBinding::Builtin(binding) => {
+            ExecutionBinding::Builtin(_) => {
                 if self.method.is_some() || self.path.is_some() || self.server_url.is_some() {
                     return Err(Error::CorruptData(
                         "built-in Operation has an HTTP index".to_string(),
-                    ));
-                }
-                if binding.input_schema() != &input_schema || binding.operation_key() != &key {
-                    return Err(Error::CorruptData(
-                        "built-in Operation binding disagrees with its index".to_string(),
                     ));
                 }
                 self.definition_json
@@ -956,6 +1035,44 @@ pub(super) async fn available_search_targets(
         )
         .await?;
     rows.into_iter().map(SearchTargetRow::decode).collect()
+}
+
+pub(super) async fn searchable_operations(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+) -> Result<Vec<crate::SearchableOperation>, Error> {
+    require_generation(transaction, generation_id).await?;
+    let rows: Vec<SearchableOperationRow> = transaction
+        .fetch_all(
+            Query::select()
+                .columns([
+                    MaterializedOperations::OperationKey,
+                    MaterializedOperations::RelativePath,
+                    MaterializedOperations::Protocol,
+                    MaterializedOperations::Title,
+                    MaterializedOperations::Description,
+                    MaterializedOperations::Deprecated,
+                    MaterializedOperations::TagsJson,
+                    MaterializedOperations::Guidance,
+                    MaterializedOperations::DefinitionJson,
+                    MaterializedOperations::InputSchemaId,
+                ])
+                .from(MaterializedOperations::Table)
+                .and_where(
+                    Expr::col(MaterializedOperations::ProviderGenerationId)
+                        .eq(generation_id.to_string()),
+                )
+                .and_where(
+                    Expr::col(MaterializedOperations::Availability)
+                        .eq(OperationAvailability::Available.as_storage_str()),
+                )
+                .order_by(MaterializedOperations::OperationKey, Order::Asc)
+                .to_owned(),
+        )
+        .await?;
+    rows.into_iter()
+        .map(SearchableOperationRow::decode)
+        .collect()
 }
 
 pub(super) async fn load_operation_summaries(

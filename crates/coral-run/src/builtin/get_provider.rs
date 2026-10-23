@@ -21,20 +21,22 @@ impl GetProvider {
     pub(super) fn new(arguments: &GetProviderArguments) -> Result<Self, Rejection> {
         // The contract checks the namespace with the same rule, so this does
         // not fail.
-        let namespace = ProviderNamespace::parse(&arguments.namespace)
+        let namespace = ProviderNamespace::parse(arguments.namespace())
             .map_err(|_error| Rejection::from(CoralFailure::InvalidInput))?;
         Ok(Self { namespace })
     }
 
     /// Reads the Provider Configuration as the invoking User.
     pub(super) async fn perform(&self, host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
+        // Only an Owner reaches getProvider; an Agent reads no configuration.
+        let Some(context) = host.context else {
+            return Err(Error::InvocationRejected(
+                CoralFailure::AuthorityLost.into(),
+            ));
+        };
         let inspected = host
             .providers
-            .inspect_provider_configuration(
-                host.context.actor(),
-                host.workspace_id,
-                &self.namespace,
-            )
+            .inspect_provider_configuration(context.actor(), host.workspace_id, &self.namespace)
             .await
             .map_err(|error| match error {
                 coral_provider::Error::ProviderNotFound => {

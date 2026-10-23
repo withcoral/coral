@@ -12,6 +12,7 @@ use coral_workspace::AuthenticatedUser;
 use coral_workspace::WorkspaceAction;
 use coral_workspace::WorkspaceEvidence;
 use coral_workspace::WorkspaceId;
+use coral_workspace::WorkspaceRole;
 
 /// Owner-only source provenance, without descriptors or credential material.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,7 +145,7 @@ impl ProviderModule {
     }
 
     /// Lists exact Workspace Providers under current inspection authority.
-    /// Only an Owner sees the Built-in Provider.
+    /// A Provider whose Operations `actor` does not reach is left out.
     ///
     /// # Errors
     /// Returns current Workspace authority or persistence failures.
@@ -155,46 +156,57 @@ impl ProviderModule {
     ) -> Result<Vec<Provider>, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
         let evidence = self.management_authority(&mut tx, actor, workspace).await?;
-        let result = repository::management_providers(&mut tx, workspace, None)
-            .await?
-            .into_iter()
-            .map(|stored| stored.provider)
-            .filter(|provider| crate::inspects(&evidence, provider))
-            .collect();
+        let mut result = Vec::new();
+        for stored in repository::management_providers(&mut tx, workspace, None).await? {
+            if crate::inspects(&mut tx, &evidence, &stored).await? {
+                result.push(stored.provider);
+            }
+        }
         tx.rollback().await?;
         Ok(result)
     }
 
-    /// Lists every Workspace Provider, in any state and in creation order, with
-    /// what each offers `actor`, from one snapshot. The Built-in Provider,
-    /// created with the Workspace, comes first, and only for an Owner.
+    /// Lists every Workspace Provider that `actor` reaches, in any state and in
+    /// creation order, with what each offers `actor`, in the caller's read
+    /// snapshot. The Built-in Provider, created with the Workspace, comes first.
     ///
     /// # Errors
     /// Returns current Workspace authority, persistence, or corrupt-evidence failures.
-    pub async fn published_providers(
+    pub async fn published_providers_in_snapshot(
         &self,
-        actor: &AuthenticatedUser,
+        tx: &mut coral_db::Transaction<'_>,
+        actor: &coral_workspace::AuthenticatedPrincipal,
         workspace: &WorkspaceId,
+        now: i64,
     ) -> Result<Vec<crate::PublishedProvider>, Error> {
-        let caller = coral_workspace::AuthenticatedPrincipal::user(actor.clone());
-        let mut tx = self.database.begin_read_snapshot().await?;
-        let evidence = self.management_authority(&mut tx, actor, workspace).await?;
-        let providers = repository::management_providers(&mut tx, workspace, None).await?;
+        let role = self
+            .workspaces
+            .check_principal_inspection_in_snapshot(tx, actor, workspace, now)
+            .await?
+            .effective_user_role();
+        let providers = repository::management_providers(tx, workspace, None).await?;
         let mut published = Vec::with_capacity(providers.len());
-        for active in providers
-            .into_iter()
-            .filter(|active| crate::inspects(&evidence, &active.provider))
-        {
+        for active in providers {
+            if !crate::reach::reaches_provider_in_transaction(
+                tx,
+                active.provider.call_root(),
+                &active.generation_id,
+                role,
+            )
+            .await?
+            {
+                continue;
+            }
             published.push(
                 crate::program_setup::published_active_provider_in_transaction(
-                    &mut tx,
+                    tx,
                     active,
-                    caller.principal(),
+                    actor.principal(),
+                    role,
                 )
                 .await?,
             );
         }
-        tx.rollback().await?;
         Ok(published)
     }
 
@@ -221,8 +233,8 @@ impl ProviderModule {
         Ok(in_use)
     }
 
-    /// Inspects one Provider, concealing other Workspaces, and the Built-in
-    /// Provider from a non-Owner, as absent.
+    /// Inspects one Provider, concealing other Workspaces, and a Provider
+    /// whose Operations `actor` does not reach, as absent.
     ///
     /// # Errors
     /// Returns current Workspace authority, missing Provider or persistence failures.
@@ -233,13 +245,14 @@ impl ProviderModule {
         provider: &ProviderId,
     ) -> Result<Provider, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
-        let stored = self
+        let (stored, _role) = self
             .inspected_provider(&mut tx, actor, workspace, provider)
             .await?;
         tx.rollback().await?;
         Ok(stored.provider)
     }
-    /// Reads the current catalog without exposing private execution bindings.
+    /// Reads one page of the current catalog without exposing private
+    /// execution bindings. It leaves out each Operation `actor` does not reach.
     ///
     /// # Errors
     /// Returns current Workspace authority, missing Provider or catalog persistence failures.
@@ -252,16 +265,34 @@ impl ProviderModule {
         page_size: u32,
     ) -> Result<Vec<OperationSummary>, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
-        let stored = self
+        let (stored, role) = self
             .inspected_provider(&mut tx, actor, workspace, provider)
             .await?;
-        let operations = coral_catalog::operation_summaries_in_transaction(
-            &mut tx,
-            &stored.generation_id,
-            after,
-            page_size,
-        )
-        .await?;
+        let call_root = stored.provider.call_root();
+        // Read on past each Operation left out, so a full page still carries
+        // its one lookahead row.
+        let lookahead = usize::try_from(page_size).unwrap_or(usize::MAX);
+        let mut operations = Vec::new();
+        let mut after = after.cloned();
+        loop {
+            let page = coral_catalog::operation_summaries_in_transaction(
+                &mut tx,
+                &stored.generation_id,
+                after.as_ref(),
+                page_size,
+            )
+            .await?;
+            let exhausted = page.len() <= lookahead;
+            after = page.last().map(|operation| operation.key.clone());
+            operations.extend(
+                page.into_iter()
+                    .filter(|operation| crate::reaches(call_root, &operation.key, Some(role))),
+            );
+            if exhausted || operations.len() > lookahead {
+                break;
+            }
+        }
+        operations.truncate(lookahead.saturating_add(1));
         tx.rollback().await?;
         Ok(operations)
     }
@@ -277,19 +308,24 @@ impl ProviderModule {
             .await?)
     }
 
-    /// Loads one Provider that `actor` may inspect; anything else is absent.
+    /// Loads one Provider that `actor` may inspect, with the role it inspects
+    /// under; anything else is absent.
     async fn inspected_provider(
         &self,
         tx: &mut coral_db::Transaction<'_>,
         actor: &AuthenticatedUser,
         workspace: &WorkspaceId,
         provider: &ProviderId,
-    ) -> Result<repository::ProviderWithActiveGeneration, Error> {
+    ) -> Result<(repository::ProviderWithActiveGeneration, WorkspaceRole), Error> {
         let evidence = self.management_authority(tx, actor, workspace).await?;
-        repository::provider_in_transaction(tx, workspace, provider)
+        let stored = repository::provider_in_transaction(&mut *tx, workspace, provider)
             .await?
-            .filter(|stored| crate::inspects(&evidence, &stored.provider))
-            .ok_or(Error::ProviderNotFound)
+            .ok_or(Error::ProviderNotFound)?;
+        if crate::inspects(tx, &evidence, &stored).await? {
+            Ok((stored, evidence.effective_role()))
+        } else {
+            Err(Error::ProviderNotFound)
+        }
     }
 }
 

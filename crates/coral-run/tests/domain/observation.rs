@@ -258,26 +258,22 @@ async fn waiting_observation_wakes_on_a_committed_change() {
     assert!(update.required_actions().is_empty());
 }
 
-/// Expiry hides an action without any commit, so the wait must schedule its own reread.
+/// An action's expiry is a commit of the Run Owner's timer: the wait wakes
+/// on it like on any change, and derives nothing from the clock. Domain time
+/// never reaches the deadline here; the timer fires on the host clock.
 #[tokio::test]
-async fn waiting_observation_wakes_when_an_action_expires_without_a_commit() {
-    let held = HeldApproval::new("user:observation").await;
-    let deadline = held.action().deadline_at_unix_nanos;
-    // Domain time only moves when the test sets it: one second before the deadline now,
-    // and past it once the wait has scheduled its timer. Nothing is committed.
-    held.fixture
-        .clock
-        .next
-        .store(deadline - 1_000_000_000, Ordering::SeqCst);
+async fn waiting_observation_wakes_when_the_owner_records_an_actions_expiry() {
+    // The expiry is a host-clock timer from the request's creation: one
+    // second keeps the "still pending" check clear of it on a slow host.
+    let held = HeldApproval::expiring("user:observation", Duration::from_secs(1)).await;
     let pending = held.observe_changes(Duration::from_secs(10));
     tokio::pin!(pending);
     tokio::time::timeout(Duration::from_millis(50), &mut pending)
         .await
         .expect_err("the action is still pending");
-    held.fixture.clock.next.store(deadline, Ordering::SeqCst);
     let update = tokio::time::timeout(Duration::from_secs(3), pending)
         .await
-        .expect("the expiry timer ends the wait long before its deadline")
+        .expect("the owner's expiry chunk ends the wait long before its deadline")
         .unwrap();
     assert!(update.required_actions().is_empty());
 }

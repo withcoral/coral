@@ -162,7 +162,7 @@ pub struct ProviderSetup {
     request: Option<SetupRequest>,
 }
 
-/// What a Program asked a Setup to publish when it called `createProvider`.
+/// What a Program asked a Setup to publish when it called `addProvider`.
 /// The person who finishes the Setup can still change either.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetupRequest {

@@ -78,9 +78,11 @@ export async function connectionRequests(context: TestContext) {
     )
     await step('Connecting from Accounts continues the waiting run', async () => {
       await page.getByRole('button', { name: 'Connect Connections', exact: true }).click()
-      await page.getByLabel('Token', { exact: true }).waitFor()
-      await page.getByLabel('Token', { exact: true }).fill('connection-secret-canary')
-      await page.getByRole('button', { name: 'Connect', exact: true }).click()
+      // A secret connects in a dialog on Accounts, and the account lands back here.
+      const dialog = page.getByRole('dialog', { name: 'Connect Connections', exact: true })
+      await dialog.getByLabel('Token', { exact: true }).fill('connection-secret-canary')
+      await dialog.getByRole('button', { name: 'Connect account', exact: true }).click()
+      await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/accounts`)
       await page.getByRole('heading', { name: 'Accounts', exact: true, level: 1 }).waitFor()
       await page.getByText('Connected', { exact: true }).waitFor()
       expect(

@@ -156,6 +156,9 @@ message Provider {
   SearchIndexFailureReason search_index_failure_reason = 11;
   // Immutable Workspace-unique Provider Call Root, such as coral.providers.github.
   string call_root = 12;
+  // Whether this is the Workspace's Built-in Provider, which Coral defines
+  // and manages under coral.workspace.
+  bool builtin = 13;
 }
 
 // Lists Providers owned by one authorized Workspace.
@@ -786,7 +789,7 @@ message ProviderSetup {
   ProviderSetupRequest request = 20;
 }
 
-// What a Program asked a Setup to publish when it called createProvider. The
+// What a Program asked a Setup to publish when it called addProvider. The
 // person who finishes the Setup can change either.
 message ProviderSetupRequest {
   // The Provider Namespace the Program asked for.

@@ -12,9 +12,6 @@ export function permissionRows(requested: string[]): string[] {
   return [...new Set(requested)].toSorted()
 }
 
-/** About ten compact rows; the rest scroll under the heading. */
-const MAX_HEIGHT = 360
-
 /**
  * Lists what Coral requests. The grant a service reports stays as it wrote it:
  * services name scopes in their own ways, so Coral does not compare the two.
@@ -35,7 +32,7 @@ export function PermissionsTable({ rows }: { rows: string[] }) {
         variant="card"
         density="compact"
         layout="fixed"
-        maxHeight={MAX_HEIGHT}
+        maxRows={10}
         staticRows
         columns={[{ label: 'Permission', width: 'minmax(160px, 1fr)' }]}
       >

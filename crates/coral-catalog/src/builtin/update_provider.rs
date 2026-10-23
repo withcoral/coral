@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use coral_workspace::WorkspaceAction;
 use schemars::JsonSchema;
 use schemars::generate::Contract;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -28,6 +29,10 @@ use crate::{
 
 #[cfg(test)]
 pub(super) mod tests;
+
+/// Changing a Provider changes the Workspace's configuration, which only an
+/// Owner does.
+pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Configure;
 
 pub(super) fn definition() -> Definition {
     Definition {

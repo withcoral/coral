@@ -1955,7 +1955,7 @@ export const ApprovalPending = approvalStory(
   'Approval required',
 )
 /**
- * Synthetic retained arguments for createProvider, written by hand to keep what a Program's
+ * Synthetic retained arguments for addProvider, written by hand to keep what a Program's
  * `JSON.stringify` cannot emit: an integer above 2^53 and a duplicate key. The review shows them
  * as sent, in one JSON block, and the inline document apart, collapsed, as readable text.
  */
@@ -1969,27 +1969,27 @@ const inlineDocument = [
       `  /forecast/${i}:\n    get: { operationId: getForecast${i}, summary: Get forecast ${i} }`,
   ),
 ].join('\n')
-const exactCreateProviderArguments =
+const exactAddProviderArguments =
   '{"namespace":"weather",' +
   `"source":{"kind":"openapi_document","document":${JSON.stringify(inlineDocument)}},` +
   '"credentialRoute":"fixed","maxForecasts":9007199254740993,' +
   '"label":"first as sent","label":"second as sent"}'
 /** The program that makes this exact call, its arguments written out as sent. */
-const exactCreateProviderProgram = `return await coral.workspace.createProvider(${exactCreateProviderArguments})`
-/** Edge case: createProvider JSON that rows would change, a large integer and a duplicate key,
+const exactAddProviderProgram = `return await coral.workspace.addProvider(${exactAddProviderArguments})`
+/** Edge case: addProvider JSON that rows would change, a large integer and a duplicate key,
  * shows whole, exactly as sent, in one block. The ordinary arguments renderer does this for any
  * such JSON; nothing here is special to OpenAPI: no copy apart, no placeholder. */
 export const ApprovalInlineOpenApiDocument: Story = {
   ...panel(
-    'Approval · createProvider with an inline OpenAPI document, exact-JSON fallback',
+    'Approval · addProvider with an inline OpenAPI document, exact-JSON fallback',
     approvalPage(
       approval({
-        callPath: 'coral.workspace.createProvider',
+        callPath: 'coral.workspace.addProvider',
         provider: `${workspace}/providers/coral`,
         providerLabel: 'Coral workspace',
-        arguments: exactCreateProviderArguments,
+        arguments: exactAddProviderArguments,
       }),
-      { source: exactCreateProviderProgram },
+      { source: exactAddProviderProgram },
     ),
     { evidence: ['9007199254740993', '"first as sent"', '"second as sent"'] },
   ),
@@ -1997,7 +1997,7 @@ export const ApprovalInlineOpenApiDocument: Story = {
     await meta.play(context)
     const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
     const review = within(dialog).getByRole('region', {
-      name: 'Review coral.workspace.createProvider',
+      name: 'Review coral.workspace.addProvider',
     })
     await expect(review).not.toHaveTextContent('shown below')
     await expect(within(review).queryByText('OpenAPI document', { selector: 'summary' })).toBeNull()
@@ -2014,7 +2014,7 @@ export const ApprovalInlineOpenApiDocument: Story = {
     await expect(within(review).getByRole('button', { name: 'Approve this call' })).toBeVisible()
   },
 }
-/** A typical createProvider call: plain JSON that round-trips exactly. */
+/** A typical addProvider call: plain JSON that round-trips exactly. */
 const openApiDocumentText = JSON.stringify({
   openapi: '3.1.0',
   info: { title: 'Weather', version: '1' },
@@ -2023,7 +2023,7 @@ const openApiDocumentText = JSON.stringify({
     '/forecast': { get: { operationId: 'getForecast', summary: 'Get the forecast' } },
   },
 })
-const createProviderCall = {
+const addProviderCall = {
   namespace: 'weather',
   source: { kind: 'openapi_document', document: openApiDocumentText },
   credentialRoute: 'fixed',
@@ -2036,30 +2036,30 @@ const createProviderCall = {
   },
 }
 /** A typical program that adds the provider with this call. */
-const createProviderProgram = `const call = ${JSON.stringify(createProviderCall, null, 2)}
-return await coral.workspace.createProvider(call)`
-/** A typical createProvider call through the ordinary arguments: one row per field, and the
+const addProviderProgram = `const call = ${JSON.stringify(addProviderCall, null, 2)}
+return await coral.workspace.addProvider(call)`
+/** A typical addProvider call through the ordinary arguments: one row per field, and the
  * inline document whole inside `source`, as sent. The Arguments disclosure is the one way to
  * fold it; nothing is special to OpenAPI. */
-export const ApprovalCreateProviderOpenApi: Story = {
+export const ApprovalAddProviderOpenApi: Story = {
   ...panel(
-    'Approval · createProvider with an inline OpenAPI document',
+    'Approval · addProvider with an inline OpenAPI document',
     approvalPage(
       approval({
-        callPath: 'coral.workspace.createProvider',
+        callPath: 'coral.workspace.addProvider',
         provider: `${workspace}/providers/coral`,
         providerLabel: 'Coral workspace',
-        arguments: JSON.stringify(createProviderCall),
+        arguments: JSON.stringify(addProviderCall),
       }),
-      { source: createProviderProgram },
+      { source: addProviderProgram },
     ),
-    { evidence: 'coral.workspace.createProvider' },
+    { evidence: 'coral.workspace.addProvider' },
   ),
   play: async (context) => {
     await meta.play(context)
     const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
     const review = within(dialog).getByRole('region', {
-      name: 'Review coral.workspace.createProvider',
+      name: 'Review coral.workspace.addProvider',
     })
     const sent = within(review)
       .getByText('Arguments (4)', { selector: 'summary' })

@@ -1,5 +1,5 @@
 //! A Provider's source and configuration as a Program writes them for
-//! `createProvider` and `updateProvider`: the contract the catalog schema
+//! `addProvider` and `updateProvider`: the contract the catalog schema
 //! documents, converted explicitly into Coral's configuration types. Coral's
 //! stored configuration encoding never becomes the Program contract, and no
 //! input carries a credential value.

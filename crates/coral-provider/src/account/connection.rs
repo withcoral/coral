@@ -450,9 +450,11 @@ pub(super) async fn satisfy_pending(
     Ok(())
 }
 
-/// Reads only a pending request's deadline for the invoking User's Run snapshot.
-/// The Run owner supplies its exact attached request after checking Run visibility.
-/// This facet neither resolves the request nor grants inspection/decision authority.
+/// Reads only a pending request's deadline for the invoking User's Run snapshot,
+/// as recorded: a request past its deadline stays pending until a holder
+/// records its expiry. The Run owner supplies its exact attached request
+/// after checking Run visibility. This facet neither resolves the request
+/// nor grants inspection/decision authority.
 /// # Errors
 /// Returns persistence or invalid canonical Principal failures.
 pub async fn pending_connection_deadline_in_transaction(
@@ -460,13 +462,12 @@ pub async fn pending_connection_deadline_in_transaction(
     workspace: &WorkspaceId,
     principal: &Principal,
     request: ConnectionRequestId,
-    now: i64,
 ) -> Result<Option<i64>, Error> {
     if principal.kind() != PrincipalKind::User {
         return Ok(None);
     }
     let user = UserId::parse(principal.id().as_str())?;
-    repository::pending_connection_deadline(tx, workspace, &user, request, now).await
+    repository::pending_connection_deadline(tx, workspace, &user, request).await
 }
 
 /// Reads only a pending request's Provider for the invoking User's own prompt.
@@ -479,21 +480,26 @@ pub async fn pending_connection_provider_in_transaction(
     workspace: &WorkspaceId,
     principal: &Principal,
     request: ConnectionRequestId,
-    now: i64,
 ) -> Result<Option<ProviderId>, Error> {
     if principal.kind() != PrincipalKind::User {
         return Ok(None);
     }
     let user = UserId::parse(principal.id().as_str())?;
-    repository::pending_connection_provider(tx, workspace, &user, request, now).await
+    repository::pending_connection_provider(tx, workspace, &user, request).await
 }
 
 /// Transaction result for Invocation-owned selection and durable waiter attachment.
 pub enum ConnectionResolution {
     /// Exact credential selection is ready, or the route needs no credentials.
     Ready(Option<CredentialEvidence>),
-    /// Keep the original Invocation pending; its own Run deadline still applies.
-    Waiting(ConnectionRequestId),
+    /// Keep the original Invocation pending until the request is resolved or
+    /// expires at `expires_at_unix_nanos`; its own Run deadline still applies.
+    Waiting {
+        /// The request the Invocation waits on.
+        request: ConnectionRequestId,
+        /// When the request expires unless the User resolves it first.
+        expires_at_unix_nanos: i64,
+    },
 }
 
 /// Resolves credentials or creates/joins the exact User connection request.
@@ -547,7 +553,10 @@ pub async fn resolve_connection_in_transaction(
                 return Err(Error::AccountInput);
             }
             if previous.state == ConnectionState::Pending {
-                return Ok(ConnectionResolution::Waiting(id));
+                return Ok(ConnectionResolution::Waiting {
+                    request: id,
+                    expires_at_unix_nanos: previous.expires_at_unix_nanos,
+                });
             }
         }
         let id = ConnectionRequestId(Uuid::new_v4());
@@ -565,17 +574,31 @@ pub async fn resolve_connection_in_transaction(
         if repository::insert_connection(tx, target_provider, id, &contract, expires, &account)
             .await?
         {
-            return Ok(ConnectionResolution::Waiting(id));
+            return Ok(ConnectionResolution::Waiting {
+                request: id,
+                expires_at_unix_nanos: expires,
+            });
         }
         // Another creator committed this User's request between the lookup
         // and the insert: it is pending (the index admits no other) and fresh
         // (committed moments ago with a full lifetime), so it is the one to
-        // wait on. Gone again already, the Invocation fails its gate like a
-        // missing Account, without inventing a request.
-        return match repository::pending_connection(tx, target_provider, &user, &contract).await? {
-            Some(id) => Ok(ConnectionResolution::Waiting(id)),
-            None => Err(Error::AccountRequired),
+        // wait on, read again as it stands now. Gone again already, or
+        // resolved meanwhile, the Invocation fails its gate like a missing
+        // Account, without inventing a request.
+        let Some(id) =
+            repository::pending_connection(tx, target_provider, &user, &contract).await?
+        else {
+            return Err(Error::AccountRequired);
         };
+        let mut joined = repository::load_connection(tx, workspace, &user, id).await?;
+        refresh(tx, workspace, &user, &mut joined, now).await?;
+        if joined.state != ConnectionState::Pending {
+            return Err(Error::AccountRequired);
+        }
+        return Ok(ConnectionResolution::Waiting {
+            request: id,
+            expires_at_unix_nanos: joined.expires_at_unix_nanos,
+        });
     };
     if &row.provider_id != target_provider.id()
         || row.provider_account_setting_version != target_provider.version()
@@ -585,7 +608,10 @@ pub async fn resolve_connection_in_transaction(
     }
     refresh(tx, workspace, &user, &mut row, now).await?;
     match row.state {
-        ConnectionState::Pending => Ok(ConnectionResolution::Waiting(row.id)),
+        ConnectionState::Pending => Ok(ConnectionResolution::Waiting {
+            request: row.id,
+            expires_at_unix_nanos: row.expires_at_unix_nanos,
+        }),
         ConnectionState::Connected => {
             let evidence = caller::select(tx, target_provider, principal, contract).await?;
             if evidence.account_id != row.account_id

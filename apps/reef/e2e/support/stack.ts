@@ -174,9 +174,12 @@ export async function startStack(options: {
     else localWeb = await reservePort()
     await writeFile(
       join(stateDir, 'config.toml'),
-      (options.privateNetworkAccess
-        ? `[outbound]\nprivate_networks = "${options.privateNetworkAccess}"\n`
-        : '') +
+      // The stack stops Coral within 5 s: Runs still live are interrupted at
+      // once instead of draining.
+      '[runtime]\nshutdown_drain_seconds = 0\n' +
+        (options.privateNetworkAccess
+          ? `[outbound]\nprivate_networks = "${options.privateNetworkAccess}"\n`
+          : '') +
         (options.postgresURL
           ? "[database]\nbackend = 'postgres'\nurl_env = 'E2E_STACK_POSTGRES_URL'\n"
           : '') +

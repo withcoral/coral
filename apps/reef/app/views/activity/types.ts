@@ -303,8 +303,37 @@ export interface ActivityPage {
   initialRequest?: string
   /** An exact approval resolves its operation as the review selection. */
   initialRecord?: string
+  /**
+   * The oldest action you can take in the selected record's Run, read while live mode
+   * follows that Run or a request review is open. Absent when it has none.
+   */
+  liveAction?: LiveAction
   selectedRow: ActivityRow | null
   listPath: string
+}
+
+/**
+ * A current request of a Run and the record that reviews it: the waiting operation for
+ * an approval, the Run for an account connection.
+ */
+export interface LiveAction {
+  run: string
+  record: string
+  request: string
+}
+
+/**
+ * What live mode follows: the selected record's Run, the newest Task or Run in the
+ * list, or the Runs of the selected Task in order.
+ */
+export type LiveScope = 'run' | 'latest' | 'task'
+/** Each scope's `live=` value. `1` is the Run scope, which older links name. */
+const liveValues: Record<LiveScope, string> = { run: '1', latest: 'latest', task: 'task' }
+export const liveValue = (scope: LiveScope) => liveValues[scope]
+/** The scope a `live=` value names, or null when live mode is off. */
+export function liveScopeOf(value: string | null): LiveScope | null {
+  const scope = Object.entries(liveValues).find(([, item]) => item === value)?.[0]
+  return (scope as LiveScope | undefined) ?? null
 }
 
 export interface TaskRow {

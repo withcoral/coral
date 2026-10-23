@@ -43,3 +43,10 @@ export const trailing = style({
 
 // Nothing to decide leaves no empty bar at the drawer's bottom.
 export const footerSlot = style({ selectors: { '&:empty': { display: 'none' } } })
+
+// The drawer's own controls sit together, apart from the record's status.
+export const railControls = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 2,
+})

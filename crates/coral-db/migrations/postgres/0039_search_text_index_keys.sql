@@ -1,0 +1,2 @@
+-- SQLite links each `search_entities` row to its FTS5 copy in this step.
+-- Postgres keeps its text vector in `search_entities`, so it has nothing to do.

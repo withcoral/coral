@@ -34,7 +34,7 @@ export function SetupFields({ setup, extra }: { setup: SetupView; extra?: ReactN
 
 /**
  * Where typed-in credentials go, shown where you enter them. An agent's
- * createProvider can choose the servers, so you check them here.
+ * addProvider can choose the servers, so you check them here.
  */
 export function CredentialDestination({ setup }: { setup: SetupView }) {
   const hosts = credentialHosts(setup)

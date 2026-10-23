@@ -175,7 +175,22 @@ pub(crate) struct HeldApproval {
 impl HeldApproval {
     /// Holds a Run that the Operation's User started.
     pub(crate) async fn new(user_id: &str) -> Self {
-        let setup = ApprovalGatedOperation::new(user_id).await;
+        Self::under(user_id, crate::execution::ExecutionPolicy::testing()).await
+    }
+
+    /// Holds a Run whose Approval Request expires `approval_wait` after its
+    /// creation, by the owner's timer.
+    pub(crate) async fn expiring(user_id: &str, approval_wait: Duration) -> Self {
+        Self::under(
+            user_id,
+            crate::execution::ExecutionPolicy::testing_with_approval_wait(approval_wait),
+        )
+        .await
+    }
+
+    async fn under(user_id: &str, policy: crate::execution::ExecutionPolicy) -> Self {
+        let mut setup = ApprovalGatedOperation::new(user_id).await;
+        setup.fixture.runs.execution_policy = policy;
         let owner = setup.operation.principal.clone();
         setup.hold(owner).await
     }

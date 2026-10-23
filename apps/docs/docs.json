@@ -75,7 +75,13 @@
         "group": "Guides",
         "pages": [
           "guides/concepts",
-          "guides/query-databases"
+          "guides/query-databases",
+          {
+            "group": "Providers",
+            "pages": [
+              "guides/providers/slack"
+            ]
+          }
         ]
       },
       {
@@ -107,16 +113,6 @@
     "404": {
       "title": "Looks like this page got lost at sea",
       "description": "The route you tried does not exist. Swim back to the [docs home](/) and pick a guide from there."
-    }
-  },
-  "integrations": {
-    "posthog": {
-      "apiKey": "phc_vgjDFiUbVgKPsKQL3wKPwsG3z7KnH4hgLi6n57PX7HEs",
-      "apiHost": "https://eu.posthog.com",
-      "sessionRecording": false
-    },
-    "ga4": {
-      "measurementId": "G-MZ1LQREJTK"
     }
   },
   "thumbnails": {

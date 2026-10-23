@@ -65,7 +65,7 @@ function listed() {
     .getAllByRole('row')
     .map((row) => within(row).queryAllByRole('cell'))
     .filter((cells) => cells.length > 0)
-    .map(([name, role, state, actions]) => [
+    .map(([name, , role, state, actions]) => [
       // The avatar beside the name shows its initial; the name is the longer text.
       within(name).getByText(/\w{2,}/).textContent,
       role.textContent,

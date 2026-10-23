@@ -531,6 +531,62 @@ async fn an_ended_request_records_one_terminal_event_and_replays_unchanged() {
     }
 }
 
+/// The owner arms a timer at each connection request's deadline when an
+/// Invocation parks on it, beside the Run deadline's; when it fires, the
+/// owner sends the parked Invocation back to its held recheck, which records
+/// what the request became.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owner_arms_a_timer_at_a_connection_requests_deadline() {
+    let server = MockServer::start().await;
+    let probe = Arc::new(TimerProbe::default());
+    let fixture = TestModules::with_execution_adapters(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        Arc::new(RejectingUpstream),
+        Arc::new(NoopInvocationObserver),
+        probe.clone(),
+    )
+    .await;
+    let operation = fixture
+        .user_operation_at("user:connection-timer", "Connection timer", &server.uri())
+        .await;
+    let (_directory, accounts) = configure_user_caller(&fixture, &operation, &server.uri()).await;
+    let runs = fixture.runs.clone().with_accounts(accounts.clone());
+    let accepted = runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission(
+                "try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }",
+            ),
+        )
+        .await
+        .unwrap();
+    let request = wait_for_connection(&accounts, &operation).await;
+    let timer = crate::owner::Timer::Connection(request.id);
+    wait_until(|| probe.armed(&timer).is_some()).await;
+    let after_nanos = probe.armed(&timer).unwrap();
+    let now = fixture.clock.next.load(Ordering::SeqCst);
+    assert!(
+        (request.expires_at_unix_nanos - now - after_nanos).abs() < 1_000_000,
+        "the timer fires at the request's deadline: {after_nanos} vs {}",
+        request.expires_at_unix_nanos - now
+    );
+    assert!(
+        probe.armed(&crate::owner::Timer::RunDeadline).is_some(),
+        "the Run deadline is the owner's timer too"
+    );
+    let terminal = runs
+        .cancel(
+            &operation.principal,
+            &operation.workspace_id,
+            accepted.run_id(),
+            &immediate(None, 100),
+        )
+        .await
+        .unwrap();
+    assert_eq!(terminal.state(), RunState::Canceled);
+}
+
 /// A declined or expired request binds no later connection: the User still
 /// connects, but the request stays ended.
 #[tokio::test(flavor = "multi_thread")]
@@ -1139,5 +1195,178 @@ async fn caller_connection_reconnect_preserves_account_and_fences_prepared_dispa
     assert_eq!(
         value.as_json(),
         &serde_json::json!("account_authorization_changed")
+    );
+}
+
+/// A completed connection wakes exactly the Run parked on it: the change
+/// signal rings both parked Runs' owners, each reads just its own pending
+/// connection requests, and only the one whose request ended sends its
+/// Invocation back to its held recheck, within the wake gap. That Invocation
+/// dispatches after one fence. The other owner writes nothing: its Run's
+/// ledger head stays where it was, and its request stays pending.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_completed_connection_wakes_exactly_its_parked_run_within_the_gap_after_one_fence() {
+    let server = MockServer::start().await;
+    forecast_once(&server, "first-canary").await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let first = fixture
+        .user_operation_at("user:first-connecting", "First caller wait", &server.uri())
+        .await;
+    let second = fixture
+        .user_operation_at(
+            "user:second-connecting",
+            "Second caller wait",
+            &server.uri(),
+        )
+        .await;
+    let (_directory, accounts) = configure_user_caller(&fixture, &first, &server.uri()).await;
+    let (_unused_directory, _unused_accounts) =
+        configure_user_caller(&fixture, &second, &server.uri()).await;
+    let probe = WaitProbe::new();
+    let wake_gap = Duration::from_secs(1);
+    let mut runs = fixture.live_runs(Some(accounts.clone()));
+    runs.invocation_observer = probe.clone();
+    runs.execution_observer = probe.clone();
+    // The production cadence: the periodic precheck is 15 s away.
+    runs.execution_policy = runs
+        .execution_policy
+        .with_wakeups(Duration::from_secs(15), wake_gap);
+    let source = "return await coral.providers.weather.getForecast({});";
+    let first_run = runs
+        .start(&first.principal, &first.workspace_id, submission(source))
+        .await
+        .unwrap();
+    let second_run = runs
+        .start(&second.principal, &second.workspace_id, submission(source))
+        .await
+        .unwrap();
+    wait_for_connection(&accounts, &first).await;
+    let second_request = wait_for_connection(&accounts, &second).await;
+    probe.until_parked(2).await;
+    let second_head = fixture
+        .run_record(&second.workspace_id, second_run.run_id())
+        .await
+        .chunk_sequence;
+
+    connect_caller(&accounts, &first, "first-canary").await;
+    // The completion committed before this instant.
+    let connected_at = tokio::time::Instant::now();
+    let terminal = wait_for_terminal(
+        &runs,
+        &first.principal,
+        &first.workspace_id,
+        first_run.run_id(),
+    )
+    .await;
+
+    assert_eq!(terminal.state(), RunState::Succeeded);
+    let found_at = probe
+        .first_found(crate::owner::Check::Connections)
+        .expect("a connection check found the request ended");
+    // At most one gap after the ring, plus the read itself.
+    let found_after = found_at.saturating_duration_since(connected_at);
+    assert!(
+        found_after <= wake_gap + Duration::from_millis(500),
+        "found within the gap: {found_after:?}"
+    );
+    assert_eq!(probe.fences(), 1, "one fence");
+    let prechecks = probe.prechecks();
+    assert!(
+        prechecks
+            .iter()
+            .all(|(check, _)| *check == crate::owner::Check::Connections),
+        "no periodic precheck: {prechecks:?}"
+    );
+    assert_eq!(
+        prechecks.iter().map(|(_, found)| found).sum::<usize>(),
+        1,
+        "one read found one ended request: {prechecks:?}"
+    );
+    let bystander = fixture
+        .run_record(&second.workspace_id, second_run.run_id())
+        .await;
+    assert_eq!(bystander.state, RunState::Running);
+    assert_eq!(
+        bystander.chunk_sequence, second_head,
+        "the other Run's owner wrote nothing"
+    );
+    assert_eq!(
+        accounts
+            .get_connection_request(
+                &change(second.user.clone(), 40, '4'),
+                &second.workspace_id,
+                second_request.id
+            )
+            .await
+            .unwrap()
+            .state,
+        coral_provider::account::ConnectionState::Pending
+    );
+    runs.cancel(
+        &second.principal,
+        &second.workspace_id,
+        second_run.run_id(),
+        &immediate(None, 100),
+    )
+    .await
+    .unwrap();
+}
+
+/// A wake-up is a hint: with the change listener down, the periodic
+/// precheck still finds a completed connection and the Invocation
+/// dispatches. During the outage the owner's subscription rings nothing and
+/// subscribes again only a wake gap apart, which here outlasts the finding.
+#[tokio::test(flavor = "multi_thread")]
+async fn with_the_change_listener_down_the_periodic_precheck_still_finds_a_completed_connection() {
+    coral_test_support::database_only!(Postgres);
+    let server = MockServer::start().await;
+    forecast_once(&server, "outage-canary").await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let operation = fixture
+        .user_operation_at("user:outage-connecting", "Caller wait", &server.uri())
+        .await;
+    let (_directory, accounts) = configure_user_caller(&fixture, &operation, &server.uri()).await;
+    let probe = WaitProbe::new();
+    let mut runs = fixture.live_runs(Some(accounts.clone()));
+    runs.invocation_observer = probe.clone();
+    runs.execution_observer = probe.clone();
+    runs.execution_policy = runs
+        .execution_policy
+        .with_wakeups(Duration::from_millis(200), Duration::from_secs(3));
+    let run = runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission("return await coral.providers.weather.getForecast({});"),
+        )
+        .await
+        .unwrap();
+    wait_for_connection(&accounts, &operation).await;
+    probe.until_parked(1).await;
+    fixture
+        .database
+        .interrupt_change_notifications()
+        .await
+        .unwrap();
+    wait_until(|| fixture.database.subscribe_changes().is_err()).await;
+
+    connect_caller(&accounts, &operation, "outage-canary").await;
+    let terminal = wait_for_terminal(
+        &runs,
+        &operation.principal,
+        &operation.workspace_id,
+        run.run_id(),
+    )
+    .await;
+
+    assert_eq!(terminal.state(), RunState::Succeeded);
+    let prechecks = probe.prechecks();
+    assert!(
+        prechecks.contains(&(crate::owner::Check::Periodic, 1)),
+        "the periodic precheck found it: {prechecks:?}"
+    );
+    assert!(
+        !prechecks.contains(&(crate::owner::Check::Connections, 1)),
+        "no change wake-up found it: {prechecks:?}"
     );
 }

@@ -53,6 +53,10 @@ pub struct Provider {
     /// Immutable Workspace-unique Provider Call Root, such as coral.providers.github.
     #[prost(string, tag = "12")]
     pub call_root: ::prost::alloc::string::String,
+    /// Whether this is the Workspace's Built-in Provider, which Coral defines
+    /// and manages under coral.workspace.
+    #[prost(bool, tag = "13")]
+    pub builtin: bool,
 }
 /// Lists Providers owned by one authorized Workspace.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -782,7 +786,7 @@ pub struct ProviderSetup {
     #[prost(message, optional, tag = "20")]
     pub request: ::core::option::Option<ProviderSetupRequest>,
 }
-/// What a Program asked a Setup to publish when it called createProvider. The
+/// What a Program asked a Setup to publish when it called addProvider. The
 /// person who finishes the Setup can change either.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ProviderSetupRequest {
@@ -6001,8 +6005,9 @@ pub struct SummarizeActivityResponse {
     /// Approval requests decided in the window.
     #[prost(message, optional, tag = "4")]
     pub approvals: ::core::option::Option<ActivityApprovalDecisions>,
-    /// Net context bytes of Runs that ended in the window. Negative means saved.
-    /// Absent when no Run in the window has a measured total.
+    /// Net context bytes of the work that ended in the window, as Activity counts
+    /// it: each search and describe response, and each Run. Negative means saved.
+    /// Absent when no work in the window has a measured total.
     #[prost(int64, optional, tag = "5")]
     pub context_impact_bytes: ::core::option::Option<i64>,
     /// True while a Run in scope is running, or when a Run that ended in the window
@@ -6024,10 +6029,11 @@ pub struct ActivityCallOutcomes {
     /// or a rejected destination.
     #[prost(int64, tag = "2")]
     pub blocked: i64,
-    /// A person declined the approval or the Account connection, or let it expire.
+    /// A person declined the approval or the Account connection, or let the approval expire.
     #[prost(int64, tag = "3")]
     pub not_allowed: i64,
-    /// A Provider, Account or credential needs repair.
+    /// A Provider, Account or credential needs repair, or an Account connection expired
+    /// unanswered.
     #[prost(int64, tag = "4")]
     pub needs_setup: i64,
     /// The Program's call or the upstream failed, or the result is unknown.

@@ -85,6 +85,61 @@ pub(crate) async fn context_totals(
     Ok(ContextTotals { bytes, running })
 }
 
+/// Net response bytes of context-impact attempts without a Run that completed at
+/// or after `since`, per invoking Principal. A Run's bytes belong to the Run.
+pub(crate) async fn discovery_context(
+    tx: &mut Transaction<'_>,
+    authority: &HistoryAuthority,
+    since: i64,
+) -> Result<Vec<coral_run::ActorContext>, Error> {
+    use coral_db::{col, column};
+    use sea_query::Func;
+    let fields = ["workspace_id", "principal_id", "principal_kind"];
+    let mut select = Query::select();
+    select
+        .from_as(Alias::new("task_interactions"), Alias::new("i"))
+        .columns(fields.map(|name| (Alias::new("i"), Alias::new(name))))
+        .expr(coral_workspace::history_repository::agent_label(
+            column("i", "workspace_id"),
+            column("i", "principal_id"),
+        ))
+        .expr(Func::cast_as(
+            Expr::col((Alias::new("i"), Alias::new("response_bytes"))).sum(),
+            Alias::new("bigint"),
+        ))
+        .and_where(
+            col("i", "kind").is_in(
+                crate::activity::CONTEXT_IMPACT_ATTEMPTS
+                    .into_iter()
+                    .map(crate::interaction_repository::encode_kind),
+            ),
+        )
+        .and_where(col("i", "run_id").is_null())
+        .and_where(col("i", "response_bytes").is_not_null())
+        .and_where(col("i", "completed_at_unix_nanos").gte(since))
+        .group_by_columns(fields.map(|name| (Alias::new("i"), Alias::new(name))));
+    coral_workspace::history_repository::restrict(
+        &mut select,
+        authority,
+        column("i", "workspace_id"),
+        column("i", "principal_id"),
+        column("i", "principal_kind"),
+    );
+    let rows: Vec<(String, String, String, Option<String>, i64)> = tx.fetch_all(select).await?;
+    rows.into_iter()
+        .map(|(_, id, kind, agent_label, bytes)| {
+            Ok(coral_run::ActorContext {
+                principal: coral_workspace::Principal::from_parts(
+                    coral_workspace::PrincipalId::parse(&id)?,
+                    coral_workspace::PrincipalKind::from_storage_str(&kind)?,
+                ),
+                agent_label,
+                bytes,
+            })
+        })
+        .collect()
+}
+
 pub(crate) struct RootPage {
     pub identities: Vec<ActivityIdentity>,
     pub has_before: bool,

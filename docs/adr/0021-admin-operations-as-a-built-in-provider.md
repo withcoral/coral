@@ -8,7 +8,11 @@ Agent onboarding needs an agent to add a Provider. Earlier designs gave `coral.a
 catalog, policy, approval and records. Coral instead gives every Workspace one **Built-in Provider**: a real Provider
 row with a real Materialized Operation Catalog whose Operations Coral defines in Rust and performs itself. Search,
 describe, Operation Access State, Approval Requests and Operation Invocation records therefore apply unchanged, and
-Coral grows the catalog one Operation at a time, starting with `createProvider`. This supersedes those designs.
+Coral grows the catalog one Operation at a time, starting with `addProvider`. This supersedes those designs.
+
+Each Built-in Operation takes the words Reef uses for the same action, since an Owner reads its name when approving a
+call: `addProvider` for "Add provider" (it was first named `createProvider`), and later `removeProvider` for "Remove
+provider", not `deleteProvider`.
 
 Each Provider row stores its full **Provider Call Root** (`coral.providers.github`, or `coral.workspace` for the Built-in
 Provider) instead of a short namespace that code prefixes with `coral.providers.`. Call Paths come straight from the

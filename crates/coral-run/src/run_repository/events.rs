@@ -315,8 +315,8 @@ fn values_column(position: usize) -> sea_query::Alias {
 
 /// The Run's last Event sequence as a scalar expression correlated with a
 /// `program_run_records` row, `0` before `run.started`. Read beside the Run
-/// row in one read snapshot; never beside `hold_run`, whose statement
-/// snapshot on Postgres predates the lock wait.
+/// row in one read snapshot; never beside an update that holds the row,
+/// whose statement snapshot on Postgres predates the lock wait.
 pub(super) fn last_event_sequence() -> Expr {
     use super::ProgramRunRecords;
 

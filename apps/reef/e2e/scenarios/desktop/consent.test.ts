@@ -38,7 +38,7 @@ test('Desktop opens provider consent in the system browser and keeps sign-in pro
       'Connect sends consent to the system browser and keeps the window on Coral',
       async () => {
         await page.getByRole('button', { name: 'Connect', exact: true }).click()
-        await page.getByRole('link', { name: 'Check connection', exact: true }).waitFor()
+        await page.getByRole('button', { name: 'Cancel', exact: true }).waitFor()
         expect(new URL(page.url()).origin).toBe(reef)
         await expect.poll(opened).toHaveLength(1)
         consent = (await opened())[0]

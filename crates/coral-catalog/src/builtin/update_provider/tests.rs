@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use super::UpdateProviderArguments;
-use crate::builtin::create_provider::tests::{LITERAL_REASON, NAMESPACE_REASON, SOURCE_URL_REASON};
+use crate::builtin::add_provider::tests::{LITERAL_REASON, NAMESPACE_REASON, SOURCE_URL_REASON};
 use crate::{
     AuthenticationConfiguration, CredentialField, OAuthClientAuthenticationMethod,
     OAuthClientBootstrap, OAuthClientPolicy, OAuthPkcePolicy, OAuthScopeFormat,
@@ -60,7 +60,7 @@ pub(in crate::builtin) fn valid_arguments() -> Vec<Value> {
 
 // Catches: a call that changes nothing, or that asks for two sources at once,
 // reaching admission; a reason that fails to name the argument; or a shared
-// rule of a Provider's input that `updateProvider` skips. `createProvider`'s
+// rule of a Provider's input that `updateProvider` skips. `addProvider`'s
 // tests own those rules.
 #[test]
 fn each_rejected_argument_names_what_to_correct() {

@@ -1,5 +1,5 @@
 import { useId } from 'react'
-import { Button, Card, Table, Typography } from '@/wax/components'
+import { Button, Table, Typography } from '@/wax/components'
 import { Logo } from '@/wax/components/logo'
 import { StatusDot } from '@/wax/components/status'
 import type { RecipeIcons } from '@/lib/provider-recipes/choice'
@@ -38,19 +38,19 @@ export function AgentProviders({
   // A stable sort keeps the server's order within each half.
   const rows = (providers ?? []).toSorted((a, b) => Number(needsYou(b)) - Number(needsYou(a)))
   return (
-    <Card.Container as="section" className={styles.panel} aria-labelledby={heading}>
+    <section className={styles.agentAccounts} aria-labelledby={heading}>
       <div className={styles.intro}>
         <Typography.HeadingSmall as="h2" id={heading}>
           Accounts
         </Typography.HeadingSmall>
-        <Typography.BodySmall as="p" variant="tertiary">
-          Connect accounts for this agent. Your personal accounts stay the same.
-        </Typography.BodySmall>
       </div>
       <Table.Container
         ariaLabel="Provider accounts"
         layout="fixed"
+        // A long list scrolls instead of stretching the dashboard row.
+        bounded
         staticRows
+        variant="card"
         columns={[
           { label: 'Provider', width: { fill: 2 } },
           { label: 'Account', width: 'fill' },
@@ -89,7 +89,7 @@ export function AgentProviders({
           ))}
         </Table.Body>
       </Table.Container>
-    </Card.Container>
+    </section>
   )
 }
 

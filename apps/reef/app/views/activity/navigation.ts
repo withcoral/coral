@@ -6,7 +6,16 @@ import {
   readingWindow,
   type ActivityViewport,
 } from '@/lib/activity-live-types'
-import type { ActivityBranch, ActivityPage, ActivityRow } from './types'
+import {
+  liveScopeOf,
+  liveValue,
+  MAX_EXPANDED_RECORDS,
+  type ActivityBranch,
+  type ActivityPage,
+  type ActivityRow,
+  type LiveAction,
+  type LiveScope,
+} from './types'
 
 export const ActivityNavigationContext = createContext<ReturnType<
   typeof activityNavigation
@@ -17,9 +26,39 @@ export function branchCoordinate(key: string): string | undefined {
   return /^(?:cursor|anchor|offset|preceding)\.(.+)$/.exec(key)?.[1]
 }
 
-/** Query keys that only select a record and its review, never the listed window. */
-export const selectionKeys = ['record', 'request', 'actionsAfter'] as const
+/**
+ * Query keys that only select a record and its review, never the listed window.
+ * `live` names what live mode follows (`liveScopeOf`); any other selection turns it
+ * off. `liveExpanded` names the records live mode expanded itself, which it may
+ * collapse again. Both live in the address, so a reload or Back keeps them, and each
+ * step's link and the expansion limit come from the address alone.
+ */
+export const selectionKeys = ['record', 'request', 'actionsAfter', 'live', 'liveExpanded'] as const
 const clearSelection = Object.fromEntries(selectionKeys.map((key) => [key, null]))
+const listKeys = new Set<string>([
+  ...selectionKeys,
+  'tree',
+  'expand',
+  'anchor',
+  'before',
+  'after',
+  'pendingAfter',
+  'root',
+  'rootMode',
+])
+
+/** Whether the query selects a record or positions the list, which only a complete list can show. */
+export function readsActivity(query: URLSearchParams) {
+  return [...query.keys()].some((key) => listKeys.has(key) || branchCoordinate(key) !== undefined)
+}
+
+/** Address changes that read the children of `parent` from `offset`, with no anchor. */
+export const windowAt = (parent: string, offset: number) => ({
+  [`offset.${parent}`]: String(offset),
+  [`preceding.${parent}`]: '0',
+  [`anchor.${parent}`]: null,
+  [`cursor.${parent}`]: null,
+})
 
 /** Reveal the record's authorized history; leaving review clears only its selection. */
 export function revealHref(row: ActivityRow, options: { select?: boolean; request?: string } = {}) {
@@ -137,8 +176,10 @@ export function activityNavigation(
     return `${path}?${next}`
   }
   const recordHref = (name: string) => href({ ...clearSelection, record: name })
-  const toggleHref = (name: string) =>
+  /** `stopLive` also turns live mode off, for a collapse that hides the Run it follows. */
+  const toggleHref = (name: string, stopLive = false) =>
     href({
+      ...(stopLive && { live: null, liveExpanded: null }),
       tree: '1',
       expand: page.expanded.includes(name)
         ? page.expanded.filter((item) => item !== name)
@@ -153,6 +194,82 @@ export function activityNavigation(
       expand: page.expanded.filter((item) => item !== name),
     })
   const backHref = href(clearSelection)
+  /** What live mode follows, or null while it is off. */
+  const liveScope = liveScopeOf(query.get('live'))
+  const owned = query.getAll('liveExpanded')
+  /**
+   * Live mode in `scope`, with `chain` expanded and `keep` still open. It collapses the
+   * records it expanded itself that neither names, and never one you expanded. Off, it
+   * collapses nothing, and a decision's advance still expands `chain`, as yours.
+   */
+  const liveChanges = (scope: LiveScope | null, chain: string[], keep: string[]) => {
+    const open = context.getAll('expand')
+    const kept = new Set([...chain, ...keep])
+    const stays = (name: string) => !scope || kept.has(name) || !owned.includes(name)
+    const expand = [...new Set([...open.filter(stays), ...chain])]
+    const nextOwned = scope
+      ? expand.filter((name) => kept.has(name) && (owned.includes(name) || !open.includes(name)))
+      : null
+    const changed = expand.length !== open.length || expand.some((name) => !open.includes(name))
+    return {
+      live: scope && liveValue(scope),
+      liveExpanded: nextOwned,
+      ...(changed && { tree: '1', expand }),
+    }
+  }
+  /** Whether `chain` can expand while `keep` stays open, within the expansion limit. */
+  const liveRoom = (chain: string[], keep: string[] = chain) =>
+    (liveChanges('run', chain, keep).expand ?? context.getAll('expand')).length <=
+    MAX_EXPANDED_RECORDS
+  /**
+   * Turns live mode on in `scope`, or off in place with null. On, it expands `chain`
+   * and keeps `keep` open. `changes` also changes the address, such as a window.
+   */
+  const liveHref = (
+    scope: LiveScope | null,
+    chain: string[] = [],
+    keep: string[] = chain,
+    changes: Record<string, string | null> = {},
+  ) => href({ ...changes, ...liveChanges(scope, chain, keep) })
+  /**
+   * Live mode's selection of `name`, which `chain` leads to: its newest record, or the
+   * record that reviews `action`. An action the Run's window does not hold opens at
+   * that action. After a decision the review advances the same way, and `scope`
+   * keeps live mode as it was. Without `chain`, it keeps what live mode expanded.
+   */
+  const followHref = (
+    name: string,
+    action?: LiveAction,
+    scope: LiveScope | null = liveScope,
+    chain?: string[],
+  ) => {
+    const held = page.branches[action?.run ?? '']?.rows.some((row) => row.name === name)
+    const reveal = action && name !== action.run && !held
+    return href({
+      ...clearSelection,
+      record: name,
+      request: action?.request ?? null,
+      ...liveChanges(scope, chain ?? [], chain ?? owned),
+      ...(reveal && {
+        [`anchor.${action.run}`]: name,
+        [`offset.${action.run}`]: null,
+        [`preceding.${action.run}`]: null,
+        [`cursor.${action.run}`]: null,
+      }),
+    })
+  }
+  /**
+   * Live mode's read of the children of `parent` from `offset`. An offset at the end
+   * reads the last window. The selection stays until it loads. An advance after a
+   * decision reads it with live mode as it was, which `scope` keeps. Without `chain`,
+   * it keeps what live mode expanded.
+   */
+  const followWindowHref = (
+    parent: string,
+    offset: number,
+    scope: LiveScope | null = liveScope,
+    chain?: string[],
+  ) => href({ ...liveChanges(scope, chain ?? [], chain ?? owned), ...windowAt(parent, offset) })
   return {
     query,
     href,
@@ -161,6 +278,11 @@ export function activityNavigation(
     collapseHref,
     revealHref,
     backHref,
+    liveScope,
+    liveHref,
+    liveRoom,
+    followHref,
+    followWindowHref,
   }
 }
 
@@ -186,6 +308,176 @@ export function childWindow(branch: ActivityBranch) {
   }
 }
 
+/**
+ * The Run live mode follows for a record: the Run itself, or the Run that made it.
+ * `chain` names the records that must be expanded for its children to load: its
+ * Task, if any, then the Run.
+ */
+export function liveRun(row: ActivityRow | null): { run: string; chain: string[] } | null {
+  const run =
+    row?.kind === 'run'
+      ? row.name
+      : row?.kind === 'invocation' || row?.kind === 'output'
+        ? row.run
+        : null
+  if (!row || !run) return null
+  const task = 'task' in row ? (row.task ?? '') : ''
+  return { run, chain: task ? [task, run] : [run] }
+}
+
+/** What live mode follows next in its scope, before the followed Run's own step. */
+export type LiveTarget =
+  /** Follow `run`; `liveStep` picks its record. `chain` must be expanded. */
+  | { kind: 'run'; run: string; chain: string[] }
+  /** Show `record`, a Task with no Run yet. */
+  | { kind: 'select'; record: string; chain: string[] }
+  /** Expand `chain`, so its children load. */
+  | { kind: 'expand'; chain: string[] }
+  /** Read the children of `parent` from `offset`. An offset at the end reads the last window. */
+  | { kind: 'load'; parent: string; offset: number; chain: string[] }
+  /** Read the newest top-level records, which the list does not hold. */
+  | { kind: 'newest' }
+  | { kind: 'wait' }
+
+/** How long after it starts page live mode still opens a Task, in milliseconds. */
+export const TAKS_MAX_AGE = 60 * 60 * 1000
+
+/**
+ * The target of live mode in `scope`. It never moves off the Task or Run you have open:
+ * a Run stays followed through its records and its end, whatever arrives.
+ * - `run`: the open record's Run.
+ * - `latest`: the open record's Run, else the open Task's latest Run that has not
+ *   ended. With nothing open, the newest top-level record in Coral's order that has not
+ *   ended: a standalone Run itself, a Task through its latest Run that has not ended,
+ *   or a Task that has not ended while it has none.
+ *   Of those, it passes a Task that started more than `TAKS_MAX_AGE` before `now`.
+ * - `task`: the open record's Run, else the open Task's first Run by submission that
+ *   has not ended, else its last Run.
+ */
+export function liveTarget(page: ActivityPage, scope: LiveScope, now = Date.now()): LiveTarget {
+  const row = page.selectedRow
+  const current = liveRun(row)
+  if (current) return { kind: 'run', ...current }
+  const task = row?.kind === 'task' ? row.name : row && 'task' in row ? (row.task ?? '') : ''
+  if (scope === 'task' && task) return taskTarget(page, task)
+  if (scope === 'latest' && task) {
+    // The open Task can open its own Run, and nothing else.
+    const root = page.rows.find((item) => item.name === task)
+    const target = root && rootTarget(page, root)
+    return target && target.kind !== 'select' ? target : { kind: 'wait' }
+  }
+  if (scope !== 'latest' || row) return { kind: 'wait' }
+  if (page.hasBefore) return { kind: 'newest' }
+  for (const root of page.rows) {
+    if (root.kind === 'task' && now - Date.parse(root.startedAt) > TAKS_MAX_AGE) continue
+    const target = rootTarget(page, root)
+    if (target) return target
+  }
+  return { kind: 'wait' }
+}
+
+type RunRow = Extract<ActivityRow, { kind: 'run' }>
+
+/** What `latest` follows in `root`, or null when its work has ended. */
+function rootTarget(page: ActivityPage, root: ActivityRow): LiveTarget | null {
+  if (root.kind === 'run')
+    return root.state === 'running' ? { kind: 'run', run: root.name, chain: [root.name] } : null
+  if (root.kind !== 'task') return null
+  // An ended Task can still hold a Run that has not ended; `contextImpactPartial` says so.
+  if (root.endedAt && !root.contextImpactPartial) return null
+  const task = root.name
+  const loaded = taskRuns(page, task)
+  if (loaded.kind !== 'runs') return loaded
+  // The latest Run may be past the window.
+  if (loaded.end < loaded.total)
+    return { kind: 'load', parent: task, offset: loaded.total, chain: [task] }
+  const latest = loaded.runs.findLast((row) => row.state === 'running')
+  if (latest) return { kind: 'run', run: latest.name, chain: [task, latest.name] }
+  // An ended Task's Run that runs is past the loaded Runs. Passing it would collapse
+  // the Task, then expand it again on the next step.
+  return root.endedAt ? { kind: 'wait' } : { kind: 'select', record: task, chain: [task] }
+}
+
+/**
+ * The loaded Runs of `task` by submission, where its window ends, and how many children
+ * it has. Without them, the step that reads them.
+ */
+function taskRuns(
+  page: ActivityPage,
+  task: string,
+): LiveTarget | { kind: 'runs'; runs: RunRow[]; end: number; total: number } {
+  if (!page.expanded.includes(task)) return { kind: 'expand', chain: [task] }
+  const branch = page.branches[task]
+  if (!branch || branch.unavailable) return { kind: 'wait' }
+  const { items, total } = childWindow(branch)
+  const runs = items
+    .toSorted((a, b) => a.index - b.index)
+    .flatMap(({ row }) => (row.kind === 'run' ? [row] : []))
+  const end = Math.max(branch.offset ?? 0, ...items.map(({ index }) => index + 1))
+  return { kind: 'runs', runs, end, total }
+}
+
+/**
+ * The next Run of `task` by submission that has not ended, else its last Run, else the
+ * Task. Runs never start again once they end, so the next one never lies before the
+ * loaded window.
+ */
+function taskTarget(page: ActivityPage, task: string): LiveTarget {
+  const chain = [task]
+  const loaded = taskRuns(page, task)
+  if (loaded.kind !== 'runs') return loaded
+  const next = loaded.runs.find((row) => row.state === 'running')
+  if (next) return { kind: 'run', run: next.name, chain: [task, next.name] }
+  // Past the window, the next one may wait.
+  if (loaded.end < loaded.total) return { kind: 'load', parent: task, offset: loaded.end, chain }
+  const last = loaded.runs.at(-1)?.name
+  return last
+    ? { kind: 'run', run: last, chain: [task, last] }
+    : { kind: 'select', record: task, chain }
+}
+
+/** What live mode does next for a Run. */
+export type LiveStep =
+  /**
+   * Select the record that reviews the Run's oldest action, with its `request`.
+   * Without one, the Run's newest record, or the Run itself while it has none.
+   */
+  | { kind: 'select'; record: string; request?: string }
+  /** The newest child is past the loaded window; read the Run's last `total` children. */
+  | { kind: 'load'; total: number }
+  /** Expand the Run, so its children load. */
+  | { kind: 'expand' }
+  /** The Run's children are not readable now. */
+  | { kind: 'wait' }
+
+/**
+ * The oldest action you can take in `run`, as the loader names it, wins over newer
+ * records. `actionable` is false where you cannot act, such as in an archived workspace.
+ * Otherwise, the newest record of `run` on `page`. Children keep the order Coral gives
+ * them: the highest position is the newest. Only this Run's own branch counts.
+ */
+export function liveStep(page: ActivityPage, run: string, actionable = true): LiveStep {
+  const action = actionable && page.liveAction?.run === run ? page.liveAction : undefined
+  if (action) {
+    const row = page.branches[run]?.rows.find((item) => item.name === action.record)
+    // A live update ended the wait first. The next read names the next action, if any.
+    if (row?.kind === 'invocation' && !row.requiresAction) return { kind: 'wait' }
+    return { kind: 'select', record: action.record, request: action.request }
+  }
+  if (!page.expanded.includes(run)) return { kind: 'expand' }
+  const branch = page.branches[run]
+  if (!branch || branch.unavailable) return { kind: 'wait' }
+  const { items, total } = childWindow(branch)
+  if (!total) return { kind: 'select', record: run }
+  // Positions are unique. Were two equal, the later in Coral's order wins.
+  const newest = items.reduce<(typeof items)[number] | undefined>(
+    (last, item) => (!last || item.index >= last.index ? item : last),
+    undefined,
+  )
+  if (!newest || newest.index + 1 < total) return { kind: 'load', total }
+  return { kind: 'select', record: newest.row.name }
+}
+
 /** Where ↑ and ↓ rest: a record the table shows, with its enclosing Tasks and Runs. */
 export interface RecordStop {
   kind: 'record'
@@ -205,6 +497,10 @@ export interface StopPosition {
 
 /** A Run's final value is its own record, although its Run's detail shows it. */
 export const finalValue = (run: string) => `${run}/final`
+
+/** The record a selection shows: its Run's final value when the URL's `record` names it. */
+export const shownRecordOf = (selected: string | null, record: string | null) =>
+  selected && record === finalValue(selected) ? record : selected
 
 /** Where the keys start from when they rest on `stop`. */
 export const stopPosition = (stop: RecordStop): StopPosition => ({
@@ -288,4 +584,17 @@ export function stepStop(
   const from = resolveStop(stops, position)
   const next = from < 0 ? undefined : stops[from + step]
   return next?.kind === 'record' ? next : null
+}
+
+/**
+ * The position among its Run's records, as Coral ordered them, of a record inside a
+ * Run: an Operation Invocation or any Program Run Event, its lifecycle included.
+ * Undefined for any other record, such as the Run itself or its final value, or when its Run's
+ * loaded window does not hold it.
+ */
+export function orderedRecordPosition(page: ActivityPage, row: ActivityRow | null) {
+  if (row?.kind !== 'invocation' && row?.kind !== 'output') return undefined
+  const branch = page.branches[row.run]
+  if (!branch || branch.unavailable) return undefined
+  return branch.rows.find((item) => item.name === row.name)?.position
 }

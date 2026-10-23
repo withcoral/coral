@@ -1,6 +1,6 @@
 //! Windowed totals of the execution history a caller can see in one Workspace.
 use crate::{CoralFailure, Error, InvocationResultKind, RunModule};
-use coral_workspace::{AuthenticatedPrincipal, Principal, WorkspaceId};
+use coral_workspace::{HistoryAuthority, Principal};
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 
@@ -20,7 +20,8 @@ pub struct ActivitySummary {
     pub operations: Vec<OperationCalls>,
     /// Approval requests decided in the window.
     pub approvals: ApprovalDecisions,
-    /// Net context bytes of measured Runs that ended in the window; absent when none were measured.
+    /// Net context bytes of the measured work that ended in the window, as Activity
+    /// counts it; absent when none was measured.
     pub context_impact_bytes: Option<i64>,
     /// A Run in scope is still running, or a Run that ended in the window has no
     /// measurement, so the total leaves some work out.
@@ -36,9 +37,11 @@ pub struct CallOutcomes {
     pub answered: i64,
     /// A Workspace, operator or authority rule stopped the call.
     pub blocked: i64,
-    /// A person declined the approval or the Account connection, or let it expire.
+    /// A person declined the approval or the Account connection, or let the approval expire.
     pub not_allowed: i64,
-    /// A Provider, Account or credential needs repair before the call can run.
+    /// A Provider, Account or credential needs repair before the call can run. An
+    /// Account connection request that expired unanswered leaves the call unauthorized,
+    /// so it counts here.
     pub needs_setup: i64,
     /// The Program's call or the upstream failed, or the result is unknown.
     pub failed: i64,
@@ -117,17 +120,13 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
         ) => CallOutcome::Blocked,
         (
             InvocationResultKind::CoralFailure,
-            Some(
-                F::ApprovalDeclined
-                | F::ApprovalExpired
-                | F::AccountConnectionDeclined
-                | F::AccountConnectionExpired,
-            ),
+            Some(F::ApprovalDeclined | F::ApprovalExpired | F::AccountConnectionDeclined),
         ) => CallOutcome::NotAllowed,
         (
             InvocationResultKind::CoralFailure,
             Some(
                 F::AccountRequired
+                | F::AccountConnectionExpired
                 | F::CredentialRefreshFailed
                 | F::OAuthClientConfiguration
                 | F::AccountAuthorizationChanged
@@ -227,34 +226,39 @@ fn tally(
 }
 
 impl RunModule {
-    /// Sums the caller's own work and Agent work in owned Workspaces over the last
-    /// `days`, in one read snapshot. Never loads arguments, results or source.
+    /// Returns the start of a summary window that ends now and spans `days`.
     /// # Errors
-    /// Rejects windows outside 1–30 days, Agent callers and inaccessible Workspaces.
-    pub async fn activity_summary(
-        &self,
-        actor: &AuthenticatedPrincipal,
-        workspace: &WorkspaceId,
-        days: u32,
-    ) -> Result<ActivitySummary, Error> {
+    /// Rejects windows outside 1–30 days.
+    pub fn summary_window_start(&self, days: u32) -> Result<i64, Error> {
         if !(1..=MAX_SUMMARY_DAYS).contains(&days) {
             return Err(Error::InvalidInput("invalid summary window".into()));
         }
-        let now = self.now()?;
-        let since = now.saturating_sub(i64::from(days) * NANOS_PER_DAY);
-        let mut tx = self.database.begin_read_snapshot().await?;
-        let authority = self
-            .workspaces
-            .action_history_authority_in_transaction(&mut tx, actor, Some(workspace))
-            .await?;
-        let evidence = crate::summary_repository::call_outcomes(&mut tx, &authority, since).await?;
-        let approvals =
-            crate::summary_repository::approval_decisions(&mut tx, &authority, since).await?;
-        let mut actors =
-            crate::summary_repository::actor_context(&mut tx, &authority, since).await?;
+        Ok(self.now()?.saturating_sub(i64::from(days) * NANOS_PER_DAY))
+    }
+
+    /// Sums the Runs in `authority` that ended at or after `since`. Never loads
+    /// arguments, results or source. `context` holds the net bytes that work
+    /// outside Runs added in the same window; it joins each Principal's Run total.
+    /// # Errors
+    /// Returns persistence failures.
+    pub async fn activity_summary_in_transaction(
+        &self,
+        tx: &mut coral_db::Transaction<'_>,
+        authority: &HistoryAuthority,
+        since: i64,
+        context: Vec<ActorContext>,
+    ) -> Result<ActivitySummary, Error> {
+        let evidence = crate::summary_repository::call_outcomes(tx, authority, since).await?;
+        let approvals = crate::summary_repository::approval_decisions(tx, authority, since).await?;
+        let mut actors = crate::summary_repository::actor_context(tx, authority, since).await?;
         let context_impact_partial =
-            crate::summary_repository::unmeasured(&mut tx, &authority, since).await?;
-        tx.commit().await?;
+            crate::summary_repository::unmeasured(tx, authority, since).await?;
+        for share in context {
+            match actors.iter_mut().find(|a| a.principal == share.principal) {
+                Some(actor) => actor.bytes += share.bytes,
+                None => actors.push(share),
+            }
+        }
         // Principal order breaks ties, so both backends return one order.
         actors.sort_by(|a, b| (a.bytes, a.principal.id()).cmp(&(b.bytes, b.principal.id())));
         let (calls, stopped, operations) = tally(evidence);
@@ -290,7 +294,7 @@ mod tests {
             (failure(F::ApprovalDeclined), O::NotAllowed),
             (failure(F::ApprovalExpired), O::NotAllowed),
             (failure(F::AccountConnectionDeclined), O::NotAllowed),
-            (failure(F::AccountConnectionExpired), O::NotAllowed),
+            (failure(F::AccountConnectionExpired), O::NeedsSetup),
             (failure(F::AccountRequired), O::NeedsSetup),
             (failure(F::CredentialRefreshFailed), O::NeedsSetup),
             (failure(F::OAuthClientConfiguration), O::NeedsSetup),

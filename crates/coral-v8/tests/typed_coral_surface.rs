@@ -39,7 +39,7 @@ const NOTION_SEARCH: &str = "export default function (): Promise<{ status: 200; 
 // resolve.
 const EXPORTED_GET: &str = "export type Item = { \"name\": string };\nexport default function (): Promise<{ status: 200; data: Item }>;";
 
-const LIST_PROVIDERS: &str = "export default function (input?: { \"limit\"?: number }): Promise<{ \"providers\": Array<{ \"namespace\": string | null }> }>;";
+const LIST_PROVIDERS: &str = "export default function (input?: { \"limit\"?: number }): Promise<{ \"providers\": Array<{ \"callRoot\": string }> }>;";
 
 const FORECAST: &str = "interface Forecast {\n    temperatureC: number;\n}\nexport default function forecast(city: string): Forecast;\n";
 
@@ -129,7 +129,7 @@ fn saved_function_diagnostics_check_calls_against_declarations() {
         ),
         (
             "a wrong Built-in Operation input",
-            "export default async function namespaces() {\n  const r = await coral.workspace.listProviders({ limit: \"all\" });\n  return r.providers.map((p) => p.namespace);\n}",
+            "export default async function namespaces() {\n  const r = await coral.workspace.listProviders({ limit: \"all\" });\n  return r.providers.map((p) => p.callRoot);\n}",
             &[(2322, Some(2), Some(51))],
         ),
         (

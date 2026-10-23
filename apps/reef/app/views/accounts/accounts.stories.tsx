@@ -3,7 +3,6 @@ import { createRoutesStub } from 'react-router'
 import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { AccountsPage } from './accounts-page'
 import { AuthorizationPage } from './authorization-page'
-import { PolicyPage } from './policy-page'
 import { UserAccountsPage } from './user-accounts-page'
 import type { AccountsView, AuthorizationView, UserAccountsView } from './types'
 
@@ -44,7 +43,6 @@ const authorization: AuthorizationView = {
   state: 'pending',
   oauth: false,
   grantedScope: '',
-  expiresAt: '2026-09-12T12:15:00.000Z',
   credentialFields: [{ name: 'token', label: 'Token', description: '', sensitive: true }],
   form,
 }
@@ -66,6 +64,7 @@ const personal: UserAccountsView = {
     {
       provider: 'workspaces/demo/providers/linear',
       name: 'Linear',
+      oauth: true,
       state: 'not_connected',
       canConnect: true,
       canDisconnect: false,
@@ -77,6 +76,7 @@ const personal: UserAccountsView = {
     {
       provider: 'workspaces/demo/providers/github',
       name: 'GitHub',
+      oauth: true,
       state: 'connected',
       accountId: account.id,
       canConnect: false,
@@ -87,6 +87,7 @@ const personal: UserAccountsView = {
     {
       provider: 'workspaces/demo/providers/ledger',
       name: 'Ledger',
+      oauth: false,
       state: 'needs_reconnect',
       accountId: account.id,
       canConnect: true,
@@ -98,7 +99,7 @@ const personal: UserAccountsView = {
   form,
 }
 const meta = {
-  title: 'Reef/Accounts and policy',
+  title: 'Reef/Accounts',
   parameters: { layout: 'fullscreen' },
   decorators: [
     (Story) => {
@@ -281,42 +282,6 @@ export const NoSeparateAccounts: Story = {
     )
   },
 }
-export const ExactPolicy: Story = {
-  render: () => (
-    <PolicyPage
-      view={{
-        parents,
-        canChange: true,
-        next: '',
-        form,
-        operations: [
-          {
-            name: 'op1',
-            path: 'coral.providers.ledger.listEntries',
-            state: 'enabled',
-            explicit: true,
-            available: true,
-          },
-          {
-            name: 'op2',
-            path: 'coral.providers.ledger.createEntry',
-            state: 'approval_required',
-            explicit: false,
-            available: true,
-          },
-          {
-            name: 'op3',
-            path: 'coral.providers.ledger.deleteEntry',
-            state: 'disabled',
-            explicit: true,
-            available: false,
-          },
-        ],
-      }}
-    />
-  ),
-}
-
 export const WithoutAutomaticRefresh: Story = {
   render: () => (
     <AccountsPage view={{ ...view, account: { ...account, automaticRefresh: false } }} />

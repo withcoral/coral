@@ -3,7 +3,7 @@
 use super::*;
 
 use crate::run_repository::{
-    Chunk, NewEvent, commit_chunk, hold_run, release_unstarted_worker_claim, start_execution,
+    Chunk, NewEvent, commit_chunk, find_exact_in_transaction, start_execution,
 };
 
 const LEASE_UNTIL: i64 = 1_000_000_000_000;
@@ -44,9 +44,9 @@ async fn a_chunk_built_on_a_stale_claim_matches_no_row_and_changes_nothing() {
         let events_before = fixture.events_after(&workspace_id, &run_id, 0).await;
 
         let mut transaction = fixture.database.begin().await.expect("begin");
-        let run = hold_run(&mut transaction, &workspace_id, &run_id)
+        let run = find_exact_in_transaction(&mut transaction, &workspace_id, &run_id)
             .await
-            .expect("hold")
+            .expect("read")
             .expect("Run exists");
         let chunk = Chunk::new(&run, chunk_claim)
             .event(
@@ -89,9 +89,9 @@ async fn a_chunk_built_on_a_stale_head_matches_no_row_and_changes_nothing() {
     let (workspace_id, run_id) = arranged_run(&fixture, "head", Some("claim-a")).await;
     // Move the head once, so a chunk can be stale in either direction.
     let mut transaction = fixture.database.begin().await.expect("begin");
-    let run = hold_run(&mut transaction, &workspace_id, &run_id)
+    let run = find_exact_in_transaction(&mut transaction, &workspace_id, &run_id)
         .await
-        .expect("hold")
+        .expect("read")
         .expect("Run exists");
     commit_chunk(
         &mut transaction,
@@ -108,9 +108,9 @@ async fn a_chunk_built_on_a_stale_head_matches_no_row_and_changes_nothing() {
 
     for stale_head in [0, 2] {
         let mut transaction = fixture.database.begin().await.expect("begin");
-        let run = hold_run(&mut transaction, &workspace_id, &run_id)
+        let run = find_exact_in_transaction(&mut transaction, &workspace_id, &run_id)
             .await
-            .expect("hold")
+            .expect("read")
             .expect("Run exists");
         let chunk = Chunk::new(&run, Some("claim-a"))
             .built_on_head(stale_head)
@@ -159,9 +159,9 @@ async fn a_chunk_of_n_events_moves_the_head_once_and_lands_prefix_complete() {
     let counter_before = fixture.compatibility_counter(&workspace_id, &run_id).await;
 
     let mut transaction = fixture.database.begin().await.expect("begin");
-    let run = hold_run(&mut transaction, &workspace_id, &run_id)
+    let run = find_exact_in_transaction(&mut transaction, &workspace_id, &run_id)
         .await
-        .expect("hold")
+        .expect("read")
         .expect("Run exists");
     let mut chunk = Chunk::new(&run, Some("claim-a"))
         .output_bytes(run.accumulated_output_bytes + 5 * EVENTS)
@@ -222,53 +222,59 @@ async fn a_chunk_of_n_events_moves_the_head_once_and_lands_prefix_complete() {
     )));
 }
 
+/// No Run row hold orders writers: the head predicate does. Writers that
+/// race with chunks built on the same head land once; every other one
+/// matches no row and writes nothing, and the one that landed numbers its
+/// Event after the Run's last one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn writers_serialized_by_the_run_hold_number_their_events_after_each_other() {
+async fn writers_racing_on_one_head_land_once_and_the_rest_write_nothing() {
     const WRITERS: usize = 4;
     let fixture = Arc::new(TestModules::new(Arc::new(ImmediateEngine::default())).await);
-    let (workspace_id, run_id) = arranged_run(&fixture, "serial", Some("claim-a")).await;
-    let before = fixture.run_record(&workspace_id, &run_id).await;
+    let (workspace_id, run_id) = arranged_run(&fixture, "race", Some("claim-a")).await;
+    let before = Arc::new(fixture.run_record(&workspace_id, &run_id).await);
 
-    // Each writer reads the Run under its hold and commits one chunk; the hold
-    // serializes them, so each must number its Event after the previous one's.
     let barrier = Arc::new(tokio::sync::Barrier::new(WRITERS));
     let writers = (0..WRITERS).map(|_| {
         let fixture = Arc::clone(&fixture);
         let barrier = barrier.clone();
-        let workspace_id = workspace_id.clone();
-        let run_id = run_id.clone();
+        let before = Arc::clone(&before);
         tokio::spawn(async move {
             barrier.wait().await;
             let mut transaction = fixture.database.begin().await.expect("begin");
-            let run = hold_run(&mut transaction, &workspace_id, &run_id)
-                .await
-                .expect("hold")
-                .expect("Run exists");
-            commit_chunk(
+            let written = commit_chunk(
                 &mut transaction,
-                Chunk::new(&run, Some("claim-a")).event(
-                    NewEvent::Logged(ProgramLogLevel::Info, "serial", None),
-                    2_000,
-                ),
+                Chunk::new(&before, Some("claim-a"))
+                    .event(NewEvent::Logged(ProgramLogLevel::Info, "race", None), 2_000),
             )
-            .await
-            .expect("a serialized writer's chunk commits");
-            transaction.commit().await.expect("commit");
+            .await;
+            if written.is_ok() {
+                transaction.commit().await.expect("commit");
+            }
+            written
         })
     });
     // Spawn every writer before awaiting one: they meet at the barrier.
+    let mut outcomes = Vec::new();
     for writer in writers.collect::<Vec<_>>() {
-        writer.await.expect("writer task");
+        outcomes.push(writer.await.expect("writer task"));
     }
 
+    assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
+    assert!(
+        outcomes
+            .iter()
+            .filter_map(|outcome| outcome.as_ref().err())
+            .all(|error| matches!(error, Error::HeadMismatch)),
+        "{outcomes:?}"
+    );
     let after = fixture.run_record(&workspace_id, &run_id).await;
-    assert_eq!(after.chunk_sequence - before.chunk_sequence, WRITERS as u64);
+    assert_eq!(after.chunk_sequence, before.chunk_sequence + 1);
     let landed = fixture
         .events_after(&workspace_id, &run_id, last_sequence(&before))
         .await;
     assert_eq!(
         landed.iter().map(RunEvent::sequence).collect::<Vec<_>>(),
-        (last_sequence(&before) + 1..=last_sequence(&before) + WRITERS as u64).collect::<Vec<_>>()
+        [last_sequence(&before) + 1]
     );
 }
 
@@ -277,9 +283,9 @@ async fn no_chunk_lands_after_run_ended() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
     let (workspace_id, run_id) = arranged_run(&fixture, "ended", Some("claim-a")).await;
     let mut transaction = fixture.database.begin().await.expect("begin");
-    let run = hold_run(&mut transaction, &workspace_id, &run_id)
+    let run = find_exact_in_transaction(&mut transaction, &workspace_id, &run_id)
         .await
-        .expect("hold")
+        .expect("read")
         .expect("Run exists");
     crate::run_repository::finish_run(
         &mut transaction,
@@ -301,9 +307,9 @@ async fn no_chunk_lands_after_run_ended() {
     // A chunk built on the ended Run's own head and claim: nothing stale about
     // it, and still no Event may follow `run.ended`.
     let mut transaction = fixture.database.begin().await.expect("begin");
-    let run = hold_run(&mut transaction, &workspace_id, &run_id)
+    let run = find_exact_in_transaction(&mut transaction, &workspace_id, &run_id)
         .await
-        .expect("hold")
+        .expect("read")
         .expect("Run exists");
     let rejected = commit_chunk(
         &mut transaction,
@@ -328,9 +334,10 @@ async fn no_chunk_lands_after_run_ended() {
     );
 }
 
-/// The start mark lands only on the worker claim acceptance wrote: once
-/// recovery released that claim (expired before the start), the mark matches
-/// no row and changes nothing, instead of leaving a started Run unclaimed.
+/// The start mark lands only on the worker claim acceptance wrote: on a Run
+/// whose worker claim was released (as the previous release's recovery left
+/// an unstarted Run whose lease expired), the mark matches no row and
+/// changes nothing, instead of leaving a started Run unclaimed.
 #[tokio::test]
 async fn a_start_mark_on_a_released_worker_claim_is_refused() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
@@ -341,18 +348,8 @@ async fn a_start_mark_on_a_released_worker_claim_is_refused() {
              worker_claim_expires_at_unix_nanos = {LEASE_UNTIL} WHERE id = '{run_id}'"
         ))
         .await;
-    let mut transaction = fixture.database.begin().await.expect("begin");
-    let claimed = hold_run(&mut transaction, &workspace_id, &run_id)
-        .await
-        .expect("hold")
-        .expect("Run exists");
-    assert!(
-        release_unstarted_worker_claim(&mut transaction, &claimed)
-            .await
-            .expect("release")
-    );
-    transaction.commit().await.expect("commit");
-    let released = fixture.run_record(&workspace_id, &run_id).await;
+    let claimed = fixture.run_record(&workspace_id, &run_id).await;
+    let released = fixture.release_worker_claim(&workspace_id, &run_id).await;
     assert_eq!(released.worker_claim_id, None);
 
     let mut transaction = fixture.database.begin().await.expect("begin");

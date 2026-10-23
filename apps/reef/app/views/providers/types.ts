@@ -363,7 +363,7 @@ export interface SetupView {
    */
   serverName: string
   /**
-   * What a Program's createProvider call asked this Setup to publish. Absent
+   * What a Program's addProvider call asked this Setup to publish. Absent
    * when a person started the Setup. The person can change either. The route
    * is null when a newer Coral asked for one this Reef does not know.
    */

@@ -7,7 +7,7 @@ use std::fmt;
 use async_trait::async_trait;
 use coral_db::Transaction;
 
-use crate::invocation::{FenceBatch, FenceRequest};
+use crate::invocation::{FenceBatch, FenceRequest, ParkedInvocation};
 use crate::lifecycle::{RequestedTermination, RunRecord};
 use crate::run_repository::OwnedEvent;
 use crate::{CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, Error};
@@ -46,17 +46,26 @@ pub(crate) trait ChunkWork: Send + fmt::Debug {
         None
     }
 
+    /// The Invocation this work parked on a wait, once [`Self::run`]
+    /// returned `Ok`: the owner keeps it, arms the wait's deadline, and wakes
+    /// it once the chunk has landed and the wait ended. `None` for work that
+    /// parks nothing.
+    fn take_parked(&mut self) -> Option<Box<ParkedInvocation>> {
+        None
+    }
+
     /// Delivers the outcome once the chunk is recorded, or the failure that
     /// lost it before it ran or before it committed.
     fn settle(self: Box<Self>, recorded: Result<(), Error>);
 }
 
 /// One outside request a chunk records: the entity it decides, who waits
-/// for the answer, and what the chunk's work wrote for it once reported.
+/// for the answer (nobody for the owner's own timer), and what the chunk's
+/// work wrote for it once reported.
 #[derive(Debug)]
 pub(crate) struct PendingRequest {
     pub(crate) key: RequestKey,
-    pub(crate) reply: RequestReply,
+    pub(crate) reply: Option<RequestReply>,
     pub(crate) answer: Option<DecisionAnswer>,
 }
 

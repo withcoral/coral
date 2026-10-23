@@ -1007,6 +1007,63 @@ impl CatalogSearchTarget {
     }
 }
 
+/// What the search index reads of one structurally available Operation: its
+/// presentation, and the binding and input schema its declaration fields come
+/// from. It omits schemas, declarations and diagnostics, which a large
+/// Provider's indexing cannot afford to hold for every Operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchableOperation {
+    key: OperationKey,
+    relative_path: String,
+    presentation: OperationPresentation,
+    execution_binding: ExecutionBinding,
+    input_schema: SchemaId,
+}
+
+impl SearchableOperation {
+    pub(crate) const fn new(
+        key: OperationKey,
+        relative_path: String,
+        presentation: OperationPresentation,
+        execution_binding: ExecutionBinding,
+        input_schema: SchemaId,
+    ) -> Self {
+        Self {
+            key,
+            relative_path,
+            presentation,
+            execution_binding,
+            input_schema,
+        }
+    }
+
+    /// Returns the private Provider-catalog policy address.
+    #[must_use]
+    pub const fn key(&self) -> &OperationKey {
+        &self.key
+    }
+
+    /// Returns the collision-free Operation-relative Call Path projection.
+    #[must_use]
+    pub fn relative_path(&self) -> &str {
+        &self.relative_path
+    }
+
+    /// Returns the title, description, tags, guidance and deprecation.
+    #[must_use]
+    pub const fn presentation(&self) -> &OperationPresentation {
+        &self.presentation
+    }
+
+    pub(crate) const fn execution_binding(&self) -> &ExecutionBinding {
+        &self.execution_binding
+    }
+
+    pub(crate) const fn input_schema(&self) -> &SchemaId {
+        &self.input_schema
+    }
+}
+
 /// Secret-free Operation definition materialized by this profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializedOperation {

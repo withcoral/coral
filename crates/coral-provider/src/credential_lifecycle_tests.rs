@@ -511,7 +511,7 @@ async fn a_permanently_rejected_refresh_opens_a_connection_request_that_reconnec
         resolution
     };
     let waiting = |resolution| match resolution {
-        Ok(ConnectionResolution::Waiting(id)) => id,
+        Ok(ConnectionResolution::Waiting { request: id, .. }) => id,
         Ok(ConnectionResolution::Ready(_)) => panic!("expected a waiting request"),
         Err(error) => panic!("expected a waiting request: {error:?}"),
     };
@@ -1428,7 +1428,7 @@ async fn invocation_connection_requests_wait_for_the_user_and_resolve_once_conne
         resolution
     };
     let waiting = |resolution| match resolution {
-        Ok(ConnectionResolution::Waiting(id)) => id,
+        Ok(ConnectionResolution::Waiting { request: id, .. }) => id,
         Ok(ConnectionResolution::Ready(_)) => panic!("expected a waiting request"),
         Err(error) => panic!("expected a waiting request: {error:?}"),
     };

@@ -1,8 +1,8 @@
 //! Invocation completion and termination decisions. Every write joins the
 //! caller's transaction: the Invocation and Approval rows through their
 //! repositories, and the `invocation.ended` Events are returned for the
-//! caller's Run Ledger chunk, the owner's or the terminal chunk of a writer
-//! outside it (recovery, until slice 9).
+//! caller's Run Ledger chunk: the owner's, its terminal chunk, or a
+//! recovered owner's one chunk.
 
 use crate::invocation::{AdmittedInvocation, InvocationCompletion};
 use crate::lifecycle::RunRecord;
@@ -30,7 +30,7 @@ pub(crate) struct UnfinishedInvocation {
 impl UnfinishedInvocation {
     /// How the Invocation ends with its Run, and the Operation Result recovery
     /// can still establish. A lost send is indeterminate. A lost Built-in
-    /// Operation may not be: a `createProvider`'s own Publication shows what
+    /// Operation may not be: an `addProvider`'s own Publication shows what
     /// happened.
     async fn settle_for_termination(
         &self,

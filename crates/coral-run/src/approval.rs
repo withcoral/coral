@@ -13,11 +13,14 @@
 //! A decision is authorized and concealed here, then recorded by the Run's
 //! owner in its next chunk; the first decision wins, and a repeat receives the
 //! recorded answer. The decision reads no policy: the Dispatch Fence judges
-//! the approval when the Invocation dispatches. The first terminal transition
-//! and its safe lifecycle event commit together; a lost response can be
-//! recovered by reading or deciding again. Invocation owns live gate ordering
-//! and Promise settlement. Approval owns only request validity, decisions and
-//! evidence, not required-action projections or UI.
+//! the approval when the Invocation dispatches. A request's deadline is the
+//! owner's timer: it expires the request in a chunk of its own, in mailbox
+//! order with the decisions that race it, and no reader or decision compares
+//! the clock with the deadline. The first terminal transition and its safe
+//! lifecycle event commit together; a lost response can be recovered by
+//! reading or deciding again. Invocation owns live gate ordering and Promise
+//! settlement. Approval owns only request validity, decisions and evidence,
+//! not required-action projections or UI.
 
 use crate::lifecycle::RunRecord;
 use std::sync::Arc;
@@ -41,9 +44,6 @@ use crate::run_repository::OwnedEvent;
 use crate::{
     CoralFailure, Error, InvocationId, RunId, invocation_repository, owner, run_repository,
 };
-
-/// Host approval wait limit, further bounded by the accepted Run deadline.
-const APPROVAL_WAIT_NANOS: i64 = 900_000_000_000;
 
 /// Opaque, non-authorizing Approval Request identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -347,6 +347,7 @@ impl ApprovalModule {
         let answer = owner
             .decide(DecisionRequest {
                 approval: id.clone(),
+                deadline_at_unix_nanos: request.deadline_at_unix_nanos,
                 decision,
                 actor: actor.principal().clone(),
                 comment: comment.map(str::to_owned),
@@ -513,8 +514,7 @@ async fn view(
     let target =
         invocation_repository::approval_target(tx, workspace, &run.id, &row.invocation_id).await?;
     let actionable = row.state == ApprovalState::Pending
-        && now < row.deadline_at_unix_nanos
-        && crate::required_actions::run_accepts_actions(run, now)
+        && crate::required_actions::run_accepts_actions(run)
         && decision_required(tx, workspaces, run, &target, now).await?;
     let (provider_label, agent_label) =
         crate::inspection_repository::approval_labels(tx, workspace, &row.invocation_id).await?;
@@ -545,38 +545,62 @@ async fn view(
     })
 }
 
+/// The Run's Approval Requests still undecided whose deadline passed by
+/// `by_unix_nanos`, each with its deadline: the expired-lease sweep queues
+/// their timers for the Run's recovered owner.
+pub(crate) async fn undecided_by(
+    tx: &mut Transaction<'_>,
+    run: &RunRecord,
+    by_unix_nanos: i64,
+) -> Result<Vec<(ApprovalId, i64)>, Error> {
+    approval_repository::undecided_by(tx, &run.workspace_id, &run.id, by_unix_nanos).await
+}
+
 // Safe summary only: Agents observing their own Runs must not load approval detail.
 pub(super) async fn pending_for_run(
     tx: &mut Transaction<'_>,
     run: &RunRecord,
-    now: i64,
 ) -> Result<Vec<(ApprovalId, i64)>, Error> {
-    approval_repository::pending_for_run(tx, &run.workspace_id, &run.id, now).await
+    approval_repository::pending_for_run(tx, &run.workspace_id, &run.id).await
 }
 
-// All private facets join the Run Owner's chunk transaction with its Run hold;
-// an Invocation this settles appends its `invocation.ended` to `events`.
-// Returns the approval the fence decides on once the Invocation is ready,
-// or `None` while a decision is still pending.
+/// What the held approval gate found for an Invocation.
+pub(crate) enum Gate {
+    /// The approval the fence decides on once the Invocation is ready.
+    Ready(ApprovalFact),
+    /// A decision is still pending. The request expires at this instant
+    /// unless decided first: the owner's timer records the expiry.
+    Pending {
+        id: ApprovalId,
+        deadline_at_unix_nanos: i64,
+    },
+}
+
+// All private facets join the Run Owner's chunk transaction; an Invocation
+// this settles appends its `invocation.ended` to `events`. A request this
+// creates waits at most `approval_wait_nanos`, bounded by the Run deadline.
+// The gate never judges a deadline: the owner's timer expires a pending
+// request, and the fence judges an approved one at dispatch.
 pub(super) async fn gate(
     tx: &mut Transaction<'_>,
     admitted: &AdmittedInvocation,
     run: &RunRecord,
     required: bool,
+    approval_wait_nanos: i64,
     now: i64,
     events: &mut Vec<OwnedEvent>,
-) -> Result<Option<ApprovalFact>, Error> {
+) -> Result<Gate, Error> {
     let row =
         approval_repository::find_for_invocation(tx, &admitted.workspace_id, &admitted.id).await?;
     let mut row = if let Some(row) = row {
         row
     } else {
         if !required {
-            return Ok(Some(ApprovalFact::NotRequested));
+            return Ok(Gate::Ready(ApprovalFact::NotRequested));
         }
         let deadline = std::cmp::min(
             run.deadline_at_unix_nanos,
-            now.saturating_add(APPROVAL_WAIT_NANOS),
+            now.saturating_add(approval_wait_nanos),
         );
         let id = ApprovalId(Uuid::new_v4());
         approval_repository::insert_pending(
@@ -591,40 +615,26 @@ pub(super) async fn gate(
         .await?;
         approval_repository::load(tx, &admitted.workspace_id, &id).await?
     };
-    if row.state == ApprovalState::Pending {
-        let state = if now >= row.deadline_at_unix_nanos {
-            Some(ApprovalState::Expired)
-        } else if !required {
-            Some(ApprovalState::Closed)
-        } else {
-            None
-        };
-        if let Some(state) = state {
-            transition(
-                tx,
-                &admitted.workspace_id,
-                &mut row,
-                state,
-                now,
-                None,
-                &TraceId::current_or_new(),
-            )
-            .await?;
-            events.extend(settle_rejection(tx, run, &row, now).await?);
-        }
+    if row.state == ApprovalState::Pending && !required {
+        transition(
+            tx,
+            &admitted.workspace_id,
+            &mut row,
+            ApprovalState::Closed,
+            now,
+            None,
+            &TraceId::current_or_new(),
+        )
+        .await?;
+        events.extend(settle_rejection(tx, run, &row, now).await?);
     }
     match row.state {
-        ApprovalState::Pending => Ok(None),
-        ApprovalState::Approved => {
-            if required && now >= row.deadline_at_unix_nanos {
-                Err(Error::InvocationRejected(
-                    CoralFailure::ApprovalExpired.into(),
-                ))
-            } else {
-                Ok(Some(approval_fact(&row)))
-            }
-        }
-        ApprovalState::Closed if !required => Ok(Some(ApprovalFact::NotRequested)),
+        ApprovalState::Pending => Ok(Gate::Pending {
+            id: row.id,
+            deadline_at_unix_nanos: row.deadline_at_unix_nanos,
+        }),
+        ApprovalState::Approved => Ok(Gate::Ready(approval_fact(&row))),
+        ApprovalState::Closed if !required => Ok(Gate::Ready(ApprovalFact::NotRequested)),
         ApprovalState::Declined => Err(Error::InvocationRejected(
             CoralFailure::ApprovalDeclined.into(),
         )),
@@ -635,19 +645,6 @@ pub(super) async fn gate(
             CoralFailure::ApprovalRequired.into(),
         )),
     }
-}
-
-/// This Invocation's Approval Request as a read snapshot shows it, for the
-/// parked-wait precheck.
-pub(super) async fn fact_in_snapshot(
-    tx: &mut Transaction<'_>,
-    admitted: &AdmittedInvocation,
-) -> Result<ApprovalFact, Error> {
-    let row =
-        approval_repository::find_for_invocation(tx, &admitted.workspace_id, &admitted.id).await?;
-    Ok(row
-        .as_ref()
-        .map_or(ApprovalFact::NotRequested, approval_fact))
 }
 
 /// The request's recorded decision as the fence decides on it.
@@ -711,26 +708,54 @@ pub(super) async fn close_for_invocation(
     Ok(())
 }
 
+/// What the Run Owner decided for one Approval Request, as the pure `apply`
+/// decided it in mailbox order.
+enum Decided {
+    /// A human's decision, recorded as made.
+    Decision(DecisionRequest),
+    /// The request is closed: the Run no longer accepted actions when the
+    /// decision was applied.
+    Close(DecisionRequest),
+    /// The request's deadline passed (its timer fired): it expires, and its
+    /// Invocation ends.
+    Expire,
+}
+
 /// One decision as the Run Owner records it in a chunk: the Approval
 /// Request's transition and its lifecycle event, and the end of a declined
 /// or expired Invocation. A request no longer pending records nothing: the
 /// first decision won, and the record answers. The owner runs its decisions
 /// one at a time, so the read before the write decides every outcome the
 /// request can have; a write that still fails with a definite answer fails
-/// the chunk, as any row work's does.
+/// the chunk, as any row work's does. Nothing here compares the clock with
+/// the request's deadline: the owner applied the expiry when its timer
+/// fired, or a decision came first.
 pub(crate) struct DecideWork {
-    request: DecisionRequest,
-    /// Record the decision; `false` closes the request instead, the Run no
-    /// longer accepting actions when the owner applied it.
-    decide: bool,
+    approval: ApprovalId,
+    decided: Decided,
     answer: Option<DecisionAnswer>,
 }
 
 impl DecideWork {
-    pub(crate) fn new(request: DecisionRequest, decide: bool) -> Self {
+    /// A human's decision; `decide: false` closes the request instead, the
+    /// Run no longer accepting actions when the owner applied it.
+    pub(crate) fn decision(request: DecisionRequest, decide: bool) -> Self {
         Self {
-            request,
-            decide,
+            approval: request.approval.clone(),
+            decided: if decide {
+                Decided::Decision(request)
+            } else {
+                Decided::Close(request)
+            },
+            answer: None,
+        }
+    }
+
+    /// The owner's timer for the request fired: the request expires.
+    pub(crate) fn expiry(approval: ApprovalId) -> Self {
+        Self {
+            approval,
+            decided: Decided::Expire,
             answer: None,
         }
     }
@@ -741,7 +766,7 @@ impl DecideWork {
         run: &RunRecord,
         now: i64,
     ) -> Result<(Vec<OwnedEvent>, DecisionAnswer), Error> {
-        let row = approval_repository::load(tx, &run.workspace_id, &self.request.approval).await;
+        let row = approval_repository::load(tx, &run.workspace_id, &self.approval).await;
         let mut row = match row {
             Ok(row) => row,
             Err(Error::ApprovalNotFound) => return Ok((Vec::new(), DecisionAnswer::FromRecord)),
@@ -750,26 +775,34 @@ impl DecideWork {
         if row.state != ApprovalState::Pending {
             return Ok((Vec::new(), DecisionAnswer::FromRecord));
         }
-        let state = if !self.decide {
-            ApprovalState::Closed
-        } else if now >= row.deadline_at_unix_nanos {
-            ApprovalState::Expired
-        } else {
-            match self.request.decision {
-                ApprovalDecision::Approve => ApprovalState::Approved,
-                ApprovalDecision::Decline => ApprovalState::Declined,
-            }
+        let (state, decided_at, human, trace) = match &self.decided {
+            Decided::Decision(request) => (
+                match request.decision {
+                    ApprovalDecision::Approve => ApprovalState::Approved,
+                    ApprovalDecision::Decline => ApprovalState::Declined,
+                },
+                now,
+                Some((&request.actor, request.comment.as_deref())),
+                request.trace.clone(),
+            ),
+            Decided::Close(request) => (ApprovalState::Closed, now, None, request.trace.clone()),
+            // The expiry is dated at the deadline, not when the owner
+            // recorded it.
+            Decided::Expire => (
+                ApprovalState::Expired,
+                row.deadline_at_unix_nanos,
+                None,
+                TraceId::current_or_new(),
+            ),
         };
-        let human = matches!(state, ApprovalState::Approved | ApprovalState::Declined)
-            .then_some((&self.request.actor, self.request.comment.as_deref()));
         transition(
             tx,
             &run.workspace_id,
             &mut row,
             state,
-            now,
+            decided_at,
             human,
-            &self.request.trace,
+            &trace,
         )
         .await?;
         let events = settle_rejection(tx, run, &row, now)
@@ -780,7 +813,7 @@ impl DecideWork {
             events,
             DecisionAnswer::Recorded {
                 state,
-                decided_at_unix_nanos: now,
+                decided_at_unix_nanos: decided_at,
             },
         ))
     }
@@ -788,12 +821,15 @@ impl DecideWork {
 
 impl std::fmt::Debug for DecideWork {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("DecideWork")
-            .field("approval", &self.request.approval)
-            .field("decision", &self.request.decision)
-            .field("decide", &self.decide)
-            .finish_non_exhaustive()
+        let mut work = formatter.debug_struct("DecideWork");
+        work.field("approval", &self.approval);
+        // The request's comment is never printed.
+        match &self.decided {
+            Decided::Decision(request) => work.field("decision", &request.decision),
+            Decided::Close(_) => work.field("decided", &"close"),
+            Decided::Expire => work.field("decided", &"expire"),
+        };
+        work.finish_non_exhaustive()
     }
 }
 
@@ -814,7 +850,7 @@ impl ChunkWork for DecideWork {
     fn take_recorded_request(&mut self) -> Option<(RequestKey, DecisionAnswer)> {
         self.answer
             .take()
-            .map(|answer| (RequestKey::Approval(self.request.approval.clone()), answer))
+            .map(|answer| (RequestKey::Approval(self.approval.clone()), answer))
     }
 
     /// The requester is answered by the owner, with the chunk's fate or the

@@ -21,8 +21,8 @@ On the machine that runs the checkout:
   in the Organization you will configure. You need permission to create a
   Connect application, or a teammate must create it for you.
 
-Herdr is optional. Docker and a locally managed Postgres are not required; this
-setup uses a separate SQLite database.
+Herdr and Rex are optional. Docker and a locally managed Postgres are not
+required; this setup uses a separate SQLite database.
 
 ## First setup
 
@@ -124,6 +124,13 @@ workspace**, not a coding-agent pane:
 This keeps Coral in the left pane and starts Reef on the right without changing
 focus. Each pane is independent: stop each with Ctrl-C. Restart with `./dev coral`
 or `./dev reef`. The same two commands work in ordinary separate terminals.
+
+For the same layout in Rex, start in **the only pane of a fresh tab**, an
+ordinary shell rather than a coding-agent pane:
+
+```bash
+/path/to/checkout/dev run --rex
+```
 
 ```bash
 ./dev doctor  # Check an already-running stack, including its HTTPS routes

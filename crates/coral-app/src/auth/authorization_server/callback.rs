@@ -1,4 +1,5 @@
 use axum::extract::{RawQuery, State};
+use axum::http::{HeaderMap, header};
 use axum::response::Response;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -6,15 +7,16 @@ use ring::rand::{SecureRandom as _, SystemRandom};
 use zeroize::Zeroizing;
 
 use super::super::id_token::ValidatedOidcIdentity;
-use super::super::state_store::{OAuthAuthorizationCodeRecord, OAuthAuthorizationSessionRecord};
-use super::AuthorizationServerHttpState;
-use super::query;
+use super::super::sealed_handshake::SignInSession;
 use super::response::{TrustedRedirect, direct_error};
+use super::{AuthorizationServerHttpState, query, sign_in_cookie};
+use coral_auth::authorization_codes::{AuthorizationGrant, CodeIssue};
 use coral_auth::{LoginProvisioning, UserDirectory, VerifiedOidcLogin};
 
 pub(super) async fn oidc_callback(
     State(state): State<AuthorizationServerHttpState>,
     RawQuery(raw_query): RawQuery,
+    headers: HeaderMap,
 ) -> Response {
     let Ok(query) = parse_query(raw_query.as_deref().unwrap_or_default()) else {
         return direct_error("invalid_request", "OIDC callback request is malformed");
@@ -22,20 +24,42 @@ pub(super) async fn oidc_callback(
     let Some(oidc_state) = query.state.as_deref().filter(|state| !state.is_empty()) else {
         return direct_error("invalid_request", "OIDC callback state is required");
     };
-    let Ok(Some(session)) = state
-        .session_store
-        .take_authorization_session(oidc_state)
-        .await
-    else {
-        return direct_error(
-            "invalid_request",
-            "OIDC callback state is invalid or expired",
-        );
+    // A browser that did not start this sign-in has no cookie for it.
+    let secure = state.secure_cookies();
+    let Some((cookie_name, sealed)) = sign_in_cookie::find(&headers, oidc_state, secure) else {
+        return invalid_state();
     };
+    let session = sign_in_cookie::now_unix_secs().and_then(|now| {
+        SignInSession::open(state.settings.handshake_keys(), oidc_state, &sealed, now)
+    });
+    let mut response = match session {
+        Some(session) => complete(&state, &query, oidc_state, session).await,
+        None => invalid_state(),
+    };
+    if let Some(clear) = sign_in_cookie::clear_header(&cookie_name, secure) {
+        response.headers_mut().append(header::SET_COOKIE, clear);
+    }
+    response
+}
+
+fn invalid_state() -> Response {
+    direct_error(
+        "invalid_request",
+        "OIDC callback state is invalid or expired",
+    )
+}
+
+/// Finishes the sign-in `session` describes with the provider's answer in `query`.
+async fn complete(
+    state: &AuthorizationServerHttpState,
+    query: &CallbackQuery,
+    oidc_state: &str,
+    session: SignInSession,
+) -> Response {
     let Some(trusted) = trusted_redirect(&session) else {
         return direct_error("server_error", "authorization failed");
     };
-    let provider_code = match classify_result(&query) {
+    let provider_code = match classify_result(query) {
         Ok(CallbackResult::Code(code)) => code,
         Ok(CallbackResult::AccessDenied) => {
             return trusted.error("access_denied", "authorization was denied");
@@ -50,7 +74,11 @@ pub(super) async fn oidc_callback(
     let provider = state.settings.provider();
     let exchange = match state
         .provider_client
-        .exchange_code(provider, &provider_code, &session.oidc_code_verifier)
+        .exchange_code(
+            provider,
+            &provider_code,
+            &state.settings.handshake_keys().pkce_verifier(oidc_state),
+        )
         .await
     {
         Ok(exchange) => exchange,
@@ -61,7 +89,11 @@ pub(super) async fn oidc_callback(
     };
     let identity = match state
         .provider_client
-        .validate_code_exchange(provider, exchange, &session.oidc_nonce)
+        .validate_code_exchange(
+            provider,
+            exchange,
+            &state.settings.handshake_keys().nonce(oidc_state),
+        )
         .await
     {
         Ok(identity) => identity,
@@ -78,22 +110,34 @@ pub(super) async fn oidc_callback(
         tracing::warn!("OIDC callback could not generate an authorization code");
         return trusted.error("server_error", "authorization failed");
     };
-    let authorization = OAuthAuthorizationCodeRecord {
+    let grant = AuthorizationGrant {
         user_id,
         client_id: session.client_id,
         redirect_uri: session.redirect_uri,
         code_challenge: session.code_challenge,
         resource: session.resource,
     };
-    if let Err(error) = state
-        .code_store
-        .store_authorization_code(&authorization_code, authorization)
+    let Some(codes) = state.codes.as_ref() else {
+        tracing::warn!("OIDC callback has no database to store the authorization code in");
+        return trusted.error("server_error", "authorization failed");
+    };
+    let Ok(now_unix_nanos) = now_unix_nanos_i64() else {
+        tracing::warn!("OIDC callback could not read the system clock");
+        return trusted.error("server_error", "authorization failed");
+    };
+    match codes
+        .issue(&authorization_code, oidc_state, &grant, now_unix_nanos)
         .await
     {
-        tracing::warn!(%error, "OIDC callback could not store the authorization code");
-        return trusted.error("server_error", "authorization failed");
+        Ok(CodeIssue::Issued) => trusted.success(&authorization_code),
+        Ok(CodeIssue::SignInAlreadyUsed) => {
+            trusted.error("invalid_request", "authorization was already completed")
+        }
+        Err(error) => {
+            tracing::warn!(%error, "OIDC callback could not store the authorization code");
+            trusted.error("server_error", "authorization failed")
+        }
     }
-    trusted.success(&authorization_code)
 }
 
 /// Guidance for the operator whose directory already binds this subject.
@@ -236,13 +280,13 @@ fn random_code() -> Result<String, ()> {
 
 /// Rebuilds the client callback this login was started for.
 ///
-/// `redirect_uri` is only ever stored after `authorize`'s `registered_redirect`
+/// `redirect_uri` is only ever sealed after `authorize`'s `registered_redirect`
 /// matched it against a registered URI and parsed it under
 /// [`BrowserRedirect`](coral_outbound::BrowserRedirect), so
 /// re-applying `BrowserRedirect` here would not add a check — it would only
 /// move where the same policy was applied. [`TrustedRedirect::parse`] carries
 /// the reason the `None` arm is checked rather than unwrapped.
-fn trusted_redirect(session: &OAuthAuthorizationSessionRecord) -> Option<TrustedRedirect> {
+fn trusted_redirect(session: &SignInSession) -> Option<TrustedRedirect> {
     TrustedRedirect::parse(&session.redirect_uri, session.client_state.clone())
 }
 
@@ -251,7 +295,8 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use axum::http::{StatusCode, header};
+    use axum::body::to_bytes;
+    use axum::http::{HeaderValue, StatusCode, header};
 
     use serde_json::{Value, json};
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -265,32 +310,27 @@ mod tests {
     use crate::auth::id_token::tests::{
         claims as id_token_claims, rsa_key, set_claim, token as id_token,
     };
-    use crate::auth::state_store::{CodeStore, InMemoryStateStore, SessionStore, StateStoreError};
     use crate::auth::test_config::PROVIDER_SECRET;
+    use coral_auth::authorization_codes::{AuthorizationCodes, CodeRedemption};
     use coral_db::Database;
     use coral_test_support::TestDatabase;
 
     const OIDC_STATE: &str = "oidc-state";
     const CLIENT_STATE: &str = "client&error=injected";
     const REDIRECT_URI: &str = "https://client.example.test/callback?tenant=one";
-    const VERIFIER: &str = "stored-upstream-verifier";
-    const NONCE: &str = "stored-upstream-nonce";
     const PROVIDER_CODE: &str = "provider-code-secret";
     const RESOURCE: &str = "https://api.example.test/mcp";
     const UPSTREAM_SUBJECT: &str = "raw-principal";
     const BOUND_ISSUER: &str = "https://already.bound.example.test";
 
-    fn state(issuer: &str, store: Arc<InMemoryStateStore>) -> AuthorizationServerHttpState {
-        http_state(issuer, "", store, &[RESOURCE])
+    fn state(issuer: &str) -> AuthorizationServerHttpState {
+        http_state(issuer, "", &[RESOURCE])
     }
 
-    fn state_with(
-        issuer: &str,
-        store: Arc<InMemoryStateStore>,
-        database: Arc<Database>,
-    ) -> AuthorizationServerHttpState {
-        let mut state = state(issuer, store);
-        state.user_directory = Some(UserDirectory::new(database));
+    fn state_with(issuer: &str, database: Arc<Database>) -> AuthorizationServerHttpState {
+        let mut state = state(issuer);
+        state.user_directory = Some(UserDirectory::new(database.clone()));
+        state.codes = Some(AuthorizationCodes::new(database));
         state
     }
 
@@ -312,36 +352,52 @@ mod tests {
 
     /// Redeems the code a successful callback returned and reports the identity
     /// the authorization record binds it to.
-    async fn stored_user_id(store: &dyn CodeStore, response: &Response) -> String {
+    async fn stored_user_id(database: &Arc<Database>, response: &Response) -> String {
         let code = redirect_query(response)
             .into_iter()
             .find(|(key, _value)| key == "code")
             .expect("authorization code")
             .1;
-        store
-            .take_authorization_code_for_request(
-                &code,
-                &session().client_id,
-                REDIRECT_URI,
-                &session().code_challenge,
-                RESOURCE,
-            )
+        redeem(database, &code)
             .await
-            .expect("store")
             .expect("authorization")
             .user_id
     }
 
-    fn session() -> OAuthAuthorizationSessionRecord {
-        OAuthAuthorizationSessionRecord {
+    /// Redeems `code` with the bindings of the seeded sign-in.
+    async fn redeem(database: &Arc<Database>, code: &str) -> Option<AuthorizationGrant> {
+        let session = session();
+        AuthorizationCodes::new(database.clone())
+            .redeem(
+                code,
+                CodeRedemption {
+                    client_id: &session.client_id,
+                    redirect_uri: REDIRECT_URI,
+                    code_challenge: &session.code_challenge,
+                    resource: RESOURCE,
+                },
+                now_unix_nanos_i64().expect("clock"),
+            )
+            .await
+            .expect("code storage")
+    }
+
+    fn session() -> SignInSession {
+        SignInSession {
             client_id: "https://client.example.test/oauth/client.json".into(),
             redirect_uri: REDIRECT_URI.into(),
             client_state: Some(CLIENT_STATE.into()),
             code_challenge: "client-code-challenge".into(),
             resource: RESOURCE.into(),
-            oidc_code_verifier: VERIFIER.to_string().into(),
-            oidc_nonce: NONCE.into(),
         }
+    }
+
+    /// The nonce Coral expects in the ID token for the sign-in named `OIDC_STATE`.
+    fn nonce() -> String {
+        state("https://unused.invalid")
+            .settings
+            .handshake_keys()
+            .nonce(OIDC_STATE)
     }
 
     fn query(pairs: &[(&str, &str)]) -> String {
@@ -352,23 +408,60 @@ mod tests {
         serializer.finish()
     }
 
+    /// The `Cookie` a browser holds after starting the sign-in named by
+    /// `oidc_state` for `session`.
+    fn browser_cookie(
+        state: &AuthorizationServerHttpState,
+        oidc_state: &str,
+        session: &SignInSession,
+    ) -> HeaderValue {
+        let now = sign_in_cookie::now_unix_secs().expect("clock");
+        let sealed = session
+            .seal(state.settings.handshake_keys(), oidc_state, now + 300)
+            .expect("sealed session");
+        let name = sign_in_cookie::name(oidc_state, now, state.secure_cookies());
+        HeaderValue::from_str(&format!("{name}={sealed}")).expect("cookie")
+    }
+
+    /// Runs the callback from the browser that started each sign-in `raw` names.
     async fn callback_raw(state: AuthorizationServerHttpState, raw: String) -> Response {
-        oidc_callback(State(state), RawQuery(Some(raw))).await
+        let mut headers = HeaderMap::new();
+        for (name, oidc_state) in form_urlencoded::parse(raw.as_bytes()) {
+            if name == "state" {
+                headers.append(
+                    header::COOKIE,
+                    browser_cookie(&state, &oidc_state, &session()),
+                );
+            }
+        }
+        oidc_callback(State(state), RawQuery(Some(raw)), headers).await
     }
 
     async fn callback(state: AuthorizationServerHttpState, pairs: &[(&str, &str)]) -> Response {
         callback_raw(state, query(pairs)).await
     }
 
-    async fn seed(store: &dyn SessionStore, key: &str) {
-        store
-            .store_authorization_session(key, session())
-            .await
-            .expect("store");
+    /// Whether `response` removes the sign-in cookie it answered.
+    fn clears_sign_in_cookie(response: &Response) -> bool {
+        response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .any(|cookie| {
+                cookie.as_bytes().starts_with(b"__Host-coral_oauth_signin_")
+                    && cookie
+                        .to_str()
+                        .is_ok_and(|cookie| cookie.contains("Max-Age=0"))
+            })
     }
 
-    async fn take(store: &dyn SessionStore, key: &str) -> Option<OAuthAuthorizationSessionRecord> {
-        store.take_authorization_session(key).await.expect("store")
+    fn error_code(body: &[u8]) -> String {
+        serde_json::from_slice::<Value>(body)
+            .expect("JSON error")
+            .get("error")
+            .and_then(Value::as_str)
+            .expect("error code")
+            .to_owned()
     }
 
     fn assert_security(response: &Response) {
@@ -425,35 +518,71 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_queries_are_bounded_and_do_not_consume_state() {
+    async fn malformed_queries_are_bounded_and_leave_the_sign_in() {
         for raw in query::rejected_queries() {
             let Err(()) = parse_query(&raw) else {
                 panic!("malformed callback query must be rejected");
             };
         }
-        let store = Arc::new(InMemoryStateStore::new());
-        seed(store.as_ref(), OIDC_STATE).await;
         let response = callback_raw(
-            state("https://provider.invalid", store.clone()),
+            state("https://provider.invalid"),
             format!("state={OIDC_STATE}&%73tate=duplicate&code=x"),
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert!(!response.headers().contains_key(header::LOCATION));
         assert_security(&response);
-        assert!(take(store.as_ref(), OIDC_STATE).await.is_some());
-        let response = callback(
-            state("https://provider.invalid", store),
-            &[("state", "unknown"), ("code", "x")],
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert!(!response.headers().contains_key(header::LOCATION));
+        assert!(
+            !clears_sign_in_cookie(&response),
+            "a malformed callback leaves the sign-in to finish"
+        );
+    }
+
+    /// An identity provider link forwarded to another browser carries the
+    /// sign-in's `state` but not its cookie. The callback stops before it
+    /// contacts the identity provider, so nothing is exchanged or issued for the
+    /// wrong browser. Whether a cookie that is present opens is
+    /// `SignInSession`'s rule.
+    #[tokio::test]
+    async fn callback_needs_the_cookie_of_the_browser_that_started_sign_in() {
+        let provider = MockServer::start().await;
+        let auth_state = state(&provider.uri());
+        let own = browser_cookie(&auth_state, OIDC_STATE, &session());
+        let mut shadowed = HeaderMap::new();
+        shadowed.append(header::COOKIE, own.clone());
+        shadowed.append(header::COOKIE, own);
+        for (case, headers) in [
+            ("no cookie", HeaderMap::new()),
+            ("a repeated cookie", shadowed),
+        ] {
+            let response = oidc_callback(
+                State(auth_state.clone()),
+                RawQuery(Some(query(&[
+                    ("state", OIDC_STATE),
+                    ("code", PROVIDER_CODE),
+                ]))),
+                headers,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{case}");
+            assert!(!response.headers().contains_key(header::LOCATION), "{case}");
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            assert_eq!(error_code(&body), "invalid_request", "{case}");
+        }
+        assert!(
+            provider
+                .received_requests()
+                .await
+                .expect("requests")
+                .is_empty(),
+            "no provider exchange may start without the starting browser's cookie"
+        );
     }
 
     #[tokio::test]
-    async fn provider_errors_are_sanitized_and_malformed_results_consume_state() {
-        let store = Arc::new(InMemoryStateStore::new());
+    async fn provider_errors_are_sanitized_and_end_the_sign_in() {
         for (index, suffix, expected) in [
             (
                 0,
@@ -467,9 +596,8 @@ mod tests {
             ),
         ] {
             let state_key = format!("state-{index}");
-            seed(store.as_ref(), &state_key).await;
             let response = callback_raw(
-                state("https://provider.invalid", store.clone()),
+                state("https://provider.invalid"),
                 format!("state={state_key}&{suffix}"),
             )
             .await;
@@ -478,6 +606,7 @@ mod tests {
             assert!(values.contains(&("state".into(), CLIENT_STATE.into())));
             assert!(!values.iter().any(|(_key, value)| value == "secret"));
             assert_security(&response);
+            assert!(clears_sign_in_cookie(&response));
         }
         for (index, suffix) in [
             (2, "code=x&error=access_denied"),
@@ -486,38 +615,36 @@ mod tests {
             (5, ""),
         ] {
             let state_key = format!("state-{index}");
-            seed(store.as_ref(), &state_key).await;
             let response = callback_raw(
-                state("https://provider.invalid", store.clone()),
+                state("https://provider.invalid"),
                 format!("state={state_key}&{suffix}"),
             )
             .await;
             assert!(
                 redirect_query(&response).contains(&("error".into(), "invalid_request".into()))
             );
-            assert!(take(store.as_ref(), &state_key).await.is_none());
+            assert!(clears_sign_in_cookie(&response));
         }
     }
 
     #[tokio::test]
     async fn upstream_organization_admission_gates_codes_without_importing_roles() {
         let server = MockServer::start().await;
-        let store = Arc::new(InMemoryStateStore::new());
         let (db, _temp) = database().await;
         let mut app = http_state(
             &server.uri(),
             "[auth.provider.access_token]\naudience = 'environment'\n\
              [auth.provider.access_token.required_claims]\norg_id = 'org_allowed'",
-            store.clone(),
             &[RESOURCE],
         );
         app.user_directory = Some(UserDirectory::new(db.clone()));
+        app.codes = Some(AuthorizationCodes::new(db.clone()));
         for (organization, accepted) in [("org_other", false), ("org_allowed", true)] {
             server.reset().await;
-            mount_provider(&server, 200, 200, NONCE).await;
+            mount_provider(&server, 200, 200, &nonce()).await;
             let mut identity = id_token_claims();
             set_claim(&mut identity, "iss", json!(server.uri()));
-            set_claim(&mut identity, "nonce", json!(NONCE));
+            set_claim(&mut identity, "nonce", json!(nonce()));
             set_claim(&mut identity, "sub", json!(UPSTREAM_SUBJECT));
             let mut access = identity.clone();
             access.as_object_mut().expect("claims").remove("nonce");
@@ -532,14 +659,13 @@ mod tests {
                 .with_priority(1)
                 .mount(&server)
                 .await;
-            seed(store.as_ref(), OIDC_STATE).await;
             let response = callback(
                 app.clone(),
                 &[("state", OIDC_STATE), ("code", PROVIDER_CODE)],
             )
             .await;
             if accepted {
-                let user_id = stored_user_id(store.as_ref(), &response).await;
+                let user_id = stored_user_id(&db, &response).await;
                 let authority = coral_workspace::OrganizationModule::new(db.clone())
                     .resolve_user_authority(
                         &coral_workspace::UserId::parse(&user_id).expect("User ID"),
@@ -555,7 +681,7 @@ mod tests {
                 assert!(values.contains(&("error".into(), "server_error".into())));
                 assert!(!values.iter().any(|(key, _)| key == "code"));
                 assert!(!values.iter().any(|(_, value)| value.contains(organization)));
-                assert!(take(store.as_ref(), OIDC_STATE).await.is_none());
+                assert!(clears_sign_in_cookie(&response));
             }
         }
     }
@@ -563,23 +689,34 @@ mod tests {
     #[tokio::test]
     async fn success_is_single_use_and_stores_the_internal_identity_with_bindings() {
         let server = MockServer::start().await;
-        mount_provider(&server, 200, 200, NONCE).await;
-        let store = Arc::new(InMemoryStateStore::new());
+        mount_provider(&server, 200, 200, &nonce()).await;
         let (db, _temp) = database().await;
-        seed(store.as_ref(), OIDC_STATE).await;
-        let app = state_with(&server.uri(), store.clone(), db.clone());
+        let app = state_with(&server.uri(), db.clone());
         let raw = query(&[("state", OIDC_STATE), ("code", PROVIDER_CODE)]);
+        // The mock provider accepts its code twice, so only Coral's own
+        // one-code-per-sign-in guard stops the replay.
         let (first, second) = tokio::join!(
             callback_raw(app.clone(), raw.clone()),
             callback_raw(app, raw)
         );
-        let (success, replay) = if first.status() == StatusCode::FOUND {
+        let issued_code = |response: &Response| {
+            redirect_query(response)
+                .iter()
+                .any(|(key, _value)| key == "code")
+        };
+        let (success, replay) = if issued_code(&first) {
             (first, second)
         } else {
             (second, first)
         };
-        assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
+        let replayed = redirect_query(&replay);
+        assert!(replayed.contains(&("error".into(), "invalid_request".into())));
+        assert!(!replayed.iter().any(|(key, _value)| key == "code"));
         assert_security(&success);
+        assert!(
+            clears_sign_in_cookie(&success),
+            "a finished sign-in removes its cookie"
+        );
         let values = redirect_query(&success);
         assert!(values.contains(&("tenant".into(), "one".into())));
         assert_eq!(values.iter().filter(|(key, _)| key == "state").count(), 1);
@@ -591,17 +728,7 @@ mod tests {
             .1
             .clone();
         assert_eq!(code.len(), 43);
-        let authorization = store
-            .take_authorization_code_for_request(
-                &code,
-                &session().client_id,
-                REDIRECT_URI,
-                &session().code_challenge,
-                RESOURCE,
-            )
-            .await
-            .expect("store")
-            .expect("authorization");
+        let authorization = redeem(&db, &code).await.expect("authorization");
         assert_ne!(
             authorization.user_id, UPSTREAM_SUBJECT,
             "the stored code must name Coral's opaque User id, never the upstream subject"
@@ -618,24 +745,33 @@ mod tests {
             Some(coral_workspace::OrganizationRole::Member)
         );
         assert_eq!(authorization.resource, RESOURCE);
+        let verifier = state(&server.uri())
+            .settings
+            .handshake_keys()
+            .pkce_verifier(OIDC_STATE);
         let requests = server.received_requests().await.expect("requests");
-        let token_requests = requests
+        for token_request in requests
             .iter()
             .filter(|request| request.url.path() == "/token")
-            .collect::<Vec<_>>();
-        assert_eq!(token_requests.len(), 1);
-        let token_request = token_requests.first().expect("token request");
-        let form = form_urlencoded::parse(&token_request.body)
-            .into_owned()
-            .collect::<BTreeMap<_, _>>();
-        assert_eq!(
-            form.get("code_verifier").map(String::as_str),
-            Some(VERIFIER)
-        );
+        {
+            let form = form_urlencoded::parse(&token_request.body)
+                .into_owned()
+                .collect::<BTreeMap<_, _>>();
+            assert_eq!(
+                form.get("code_verifier").map(String::as_str),
+                Some(verifier.as_str()),
+                "the verifier is derived from the sign-in's state"
+            );
+        }
         let location = success.headers()[header::LOCATION]
             .to_str()
             .expect("location");
-        for secret in [VERIFIER, PROVIDER_SECRET, PROVIDER_CODE, UPSTREAM_SUBJECT] {
+        for secret in [
+            verifier.as_str(),
+            PROVIDER_SECRET,
+            PROVIDER_CODE,
+            UPSTREAM_SUBJECT,
+        ] {
             assert!(!location.contains(secret));
         }
     }
@@ -643,8 +779,7 @@ mod tests {
     #[tokio::test]
     async fn issuer_mismatch_fails_login_without_logging_the_upstream_identity() {
         let server = MockServer::start().await;
-        mount_provider(&server, 200, 200, NONCE).await;
-        let store = Arc::new(InMemoryStateStore::new());
+        mount_provider(&server, 200, 200, &nonce()).await;
         let (db, _temp) = database().await;
         UserDirectory::new(db.clone())
             .provision_login(VerifiedOidcLogin::new(
@@ -655,9 +790,7 @@ mod tests {
             ))
             .await
             .expect("seed the directory");
-        seed(store.as_ref(), OIDC_STATE).await;
-        let mut app = state_with(&server.uri(), store, db);
-        app.code_store = Arc::new(RejectCodeStore);
+        let app = state_with(&server.uri(), db);
 
         let logs = CapturedLogs::default();
         let response = {
@@ -692,14 +825,13 @@ mod tests {
     #[tokio::test]
     async fn logins_that_cannot_be_provisioned_issue_no_code() {
         let server = MockServer::start().await;
-        mount_provider(&server, 200, 200, NONCE).await;
+        mount_provider(&server, 200, 200, &nonce()).await;
         let (unmigrated, _temp) = unmigrated_database().await;
+        let (codes, _codes_temp) = database().await;
         for user_directory in [None, Some(UserDirectory::new(unmigrated))] {
-            let store = Arc::new(InMemoryStateStore::new());
-            seed(store.as_ref(), OIDC_STATE).await;
-            let mut app = state(&server.uri(), store);
+            let mut app = state(&server.uri());
             app.user_directory = user_directory;
-            app.code_store = Arc::new(RejectCodeStore);
+            app.codes = Some(AuthorizationCodes::new(codes.clone()));
 
             let response = callback(app, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await;
 
@@ -748,38 +880,11 @@ mod tests {
         }
     }
 
-    /// Code store that fails the test if an unprovisioned login reaches storage.
-    struct RejectCodeStore;
-
-    #[async_trait::async_trait]
-    impl CodeStore for RejectCodeStore {
-        async fn store_authorization_code(
-            &self,
-            _code: &str,
-            _authorization: OAuthAuthorizationCodeRecord,
-        ) -> Result<(), StateStoreError> {
-            unreachable!("a login that was not provisioned must not store an authorization code")
-        }
-
-        async fn take_authorization_code_for_request(
-            &self,
-            _code: &str,
-            _client_id: &str,
-            _redirect_uri: &str,
-            _challenge: &str,
-            _resource: &str,
-        ) -> Result<Option<OAuthAuthorizationCodeRecord>, StateStoreError> {
-            unreachable!("the OIDC callback issues authorization codes, it never redeems them")
-        }
-    }
-
     async fn assert_provider_failure(token_status: u16, jwks_status: u16, nonce: &str) {
         let server = MockServer::start().await;
         mount_provider(&server, token_status, jwks_status, nonce).await;
-        let store = Arc::new(InMemoryStateStore::new());
-        seed(store.as_ref(), OIDC_STATE).await;
         let response = callback(
-            state(&server.uri(), store),
+            state(&server.uri()),
             &[("state", OIDC_STATE), ("code", PROVIDER_CODE)],
         )
         .await;
@@ -790,8 +895,12 @@ mod tests {
         let location = response.headers()[header::LOCATION]
             .to_str()
             .expect("location");
+        let verifier = state(&server.uri())
+            .settings
+            .handshake_keys()
+            .pkce_verifier(OIDC_STATE);
         for secret in [
-            VERIFIER,
+            verifier.as_str(),
             PROVIDER_SECRET,
             PROVIDER_CODE,
             "internal-provider-body",
@@ -802,45 +911,19 @@ mod tests {
 
     #[tokio::test]
     async fn exchange_jwks_and_nonce_failures_are_equally_sanitized() {
-        assert_provider_failure(500, 200, NONCE).await;
-        assert_provider_failure(200, 500, NONCE).await;
+        assert_provider_failure(500, 200, &nonce()).await;
+        assert_provider_failure(200, 500, &nonce()).await;
         assert_provider_failure(200, 200, "wrong-nonce").await;
     }
 
-    /// Code store whose writes always fail, standing in for a full store.
-    struct FailCodeStore;
-
-    #[async_trait::async_trait]
-    impl CodeStore for FailCodeStore {
-        async fn store_authorization_code(
-            &self,
-            _code: &str,
-            _authorization: OAuthAuthorizationCodeRecord,
-        ) -> Result<(), StateStoreError> {
-            Err(StateStoreError::CapacityExceeded { max_entries: 0 })
-        }
-
-        async fn take_authorization_code_for_request(
-            &self,
-            _code: &str,
-            _client_id: &str,
-            _redirect_uri: &str,
-            _challenge: &str,
-            _resource: &str,
-        ) -> Result<Option<OAuthAuthorizationCodeRecord>, StateStoreError> {
-            unreachable!("the OIDC callback issues authorization codes, it never redeems them")
-        }
-    }
-
     #[tokio::test]
-    async fn code_store_capacity_failure_exposes_no_client_code() {
+    async fn code_storage_failure_exposes_no_client_code() {
         let server = MockServer::start().await;
-        mount_provider(&server, 200, 200, NONCE).await;
-        let store = Arc::new(InMemoryStateStore::new());
+        mount_provider(&server, 200, 200, &nonce()).await;
         let (db, _temp) = database().await;
-        seed(store.as_ref(), OIDC_STATE).await;
-        let mut state = state_with(&server.uri(), store, db);
-        state.code_store = Arc::new(FailCodeStore);
+        let (unwritable, _unwritable_temp) = unmigrated_database().await;
+        let mut state = state_with(&server.uri(), db);
+        state.codes = Some(AuthorizationCodes::new(unwritable));
         let response = callback(state, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await;
         let values = redirect_query(&response);
         assert!(values.contains(&("error".into(), "server_error".into())));

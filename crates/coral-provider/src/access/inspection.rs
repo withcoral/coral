@@ -76,8 +76,8 @@ pub struct AgentProviderInspection {
 }
 
 /// Supplies Provider inspection with lifecycle and route blockers inside the
-/// caller's snapshot. Search adds policy/structural Operation evidence. Only
-/// an Owner sees the Built-in Provider.
+/// caller's snapshot. Search adds policy/structural Operation evidence. A
+/// User sees a Provider only when it reaches one of its Operations.
 /// # Errors
 /// Returns persistence failures; never inspects another User's Account.
 pub async fn inspect_provider_readiness_in_transaction(
@@ -91,9 +91,10 @@ pub async fn inspect_provider_readiness_in_transaction(
     for stored in
         crate::repository::management_providers(tx, evidence.workspace().id(), provider_filter)
             .await?
-            .into_iter()
-            .filter(|stored| crate::inspects(evidence, &stored.provider))
     {
+        if !crate::inspects(tx, evidence, &stored).await? {
+            continue;
+        }
         let contract =
             coral_catalog::credential_contract_in_transaction(tx, &stored.generation_id).await?;
         result.push(

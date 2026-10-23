@@ -3293,7 +3293,7 @@ async fn confidential_setup_authenticates_with_the_organization_owners_applicati
     Box::pin(confidential_application_lifecycle(true)).await;
 }
 
-/// An agent's createProvider confirms a confidential application without its
+/// An agent's addProvider confirms a confidential application without its
 /// secret, which it never sees. Sign-in refuses to start until the person gives
 /// the secret, and then seals it with the flow, as configuration would have.
 #[tokio::test]

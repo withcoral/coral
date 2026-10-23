@@ -379,6 +379,10 @@ struct RuntimeSettings {
     /// at once. A ready call above it waits, `pending`, for an earlier one to
     /// end. At least 1; 32 by default.
     fan_out_limit: usize,
+    /// The Shutdown Drain: seconds a shutting-down process lets its live
+    /// Runs end on their own before it interrupts the rest. 0 interrupts at
+    /// once; 30 by default.
+    shutdown_drain_seconds: u64,
 }
 
 impl Default for RuntimeSettings {
@@ -389,6 +393,7 @@ impl Default for RuntimeSettings {
             compiler_heap_bytes: limits.compiler_heap_bytes(),
             applied_output_cap: coral_run::AppliedOutputCap::DEFAULT_BYTES,
             fan_out_limit: coral_run::FanOutLimit::DEFAULT_INVOCATIONS,
+            shutdown_drain_seconds: coral_run::ShutdownDrain::DEFAULT_DURATION.as_secs(),
         }
     }
 }
@@ -409,6 +414,9 @@ impl RuntimeSettings {
             isolate_limits,
             applied_output_cap,
             fan_out_limit,
+            coral_run::ShutdownDrain::new(std::time::Duration::from_secs(
+                self.shutdown_drain_seconds,
+            )),
         ))
     }
 }
@@ -1145,6 +1153,28 @@ client_secret = 'test-secret'
                 .invocations(),
             4
         );
+        for (raw, drain) in [
+            ("", coral_run::ShutdownDrain::DEFAULT_DURATION),
+            (
+                "[runtime]\nshutdown_drain_seconds = 0\n",
+                std::time::Duration::ZERO,
+            ),
+            (
+                "[runtime]\nshutdown_drain_seconds = 90\n",
+                std::time::Duration::from_secs(90),
+            ),
+        ] {
+            assert_eq!(
+                load(raw)
+                    .1
+                    .runtime_limits()
+                    .expect("a drain")
+                    .shutdown_drain()
+                    .duration(),
+                drain,
+                "{raw:?}"
+            );
+        }
     }
 
     #[test]

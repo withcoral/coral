@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use coral_catalog::ProviderGenerationId;
+use coral_catalog::{CatalogDiagnostic, OperationKey, ProviderGenerationId};
 use coral_db::Transaction;
 use coral_provider::{ActiveGeneration, GenerationEntries, OperationEntry, ProviderId};
 use coral_workspace::WorkspaceId;
@@ -37,7 +37,7 @@ pub(crate) enum OperationRemoval {
 #[async_trait]
 impl EntityIndexer for OperationIndexer {
     type Entry = GenerationEntries;
-    type Rows<'e> = Vec<OperationRow<'e>>;
+    type Rows<'e> = GenerationRows<'e>;
     type Removal = OperationRemoval;
     type Expected = ActiveGeneration;
 
@@ -45,23 +45,30 @@ impl EntityIndexer for OperationIndexer {
         entries.workspace_id()
     }
 
-    fn rows<'e>(
-        &self,
-        entries: &'e GenerationEntries,
-    ) -> Result<Vec<OperationRow<'e>>, IndexError> {
-        entries
-            .operations()
-            .iter()
-            .map(|operation| operation_row(entries, operation))
-            .collect()
+    /// Turns each entry into its row as the entries prepare it, so one
+    /// Operation's declaration fields are held at a time.
+    fn rows<'e>(&self, entries: &'e GenerationEntries) -> Result<GenerationRows<'e>, IndexError> {
+        let mut rows = GenerationRows::default();
+        for operation in entries.operations() {
+            let operation = operation?;
+            rows.warnings.extend(
+                operation
+                    .search_warnings()
+                    .iter()
+                    .map(|warning| (operation.key(), warning.clone())),
+            );
+            rows.rows.push(operation_row(entries, &operation)?);
+        }
+        Ok(rows)
     }
 
     async fn index(
         &self,
         transaction: &mut Transaction<'_>,
         entries: &GenerationEntries,
-        rows: &Vec<OperationRow<'_>>,
+        rows: &GenerationRows<'_>,
     ) -> Result<(), IndexError> {
+        let rows = &rows.rows;
         let workspace_id = entries.workspace_id();
         let generation_id = entries.generation_id();
         let attempted_at = now_unix_nanos()?;
@@ -177,6 +184,20 @@ impl OperationIndexer {
     }
 }
 
+/// One Generation's rows, and the search warnings preparing them left.
+#[derive(Default)]
+pub(crate) struct GenerationRows<'e> {
+    rows: Vec<OperationRow<'e>>,
+    warnings: Vec<(&'e OperationKey, CatalogDiagnostic)>,
+}
+
+impl<'e> GenerationRows<'e> {
+    /// Each Operation's search warnings, with its key.
+    pub(crate) fn warnings(&self) -> &[(&'e OperationKey, CatalogDiagnostic)] {
+        &self.warnings
+    }
+}
+
 /// The Generation an attempt tried to index, as its state row names it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AttemptedGeneration<'a> {
@@ -278,7 +299,7 @@ fn generation_state(
 
 fn operation_row<'a>(
     entries: &'a GenerationEntries,
-    operation: &'a OperationEntry,
+    operation: &OperationEntry<'a>,
 ) -> Result<OperationRow<'a>, IndexError> {
     let call_path = CallPath::operation(entries.call_root(), operation.relative_path())
         .map_err(|error| IndexError::InvalidEntry(error.to_string()))?;
@@ -308,7 +329,7 @@ fn operation_row<'a>(
 /// of the name-like fields, each once, as [`DistinctWords`] keeps them. The
 /// deprecation flag is a column, never text. Raise [`INDEXER_REVISION`]
 /// when this text changes.
-fn searchable_text(entries: &GenerationEntries, operation: &OperationEntry) -> String {
+fn searchable_text(entries: &GenerationEntries, operation: &OperationEntry<'_>) -> String {
     let names = [
         operation.relative_path(),
         operation.title().unwrap_or_default(),

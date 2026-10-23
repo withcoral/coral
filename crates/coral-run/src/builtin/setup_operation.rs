@@ -1,5 +1,5 @@
 //! The flow each Built-in Operation that prepares a Provider Setup for a
-//! Program follows: `createProvider` for a new Provider, `updateProvider` for
+//! Program follows: `addProvider` for a new Provider, `updateProvider` for
 //! a new Generation of one. Coral prepares and configures the Setup as the
 //! invoking User, then publishes it when nobody needs to act, or returns the
 //! Reef page where a person finishes it. The call never waits for that
@@ -10,11 +10,13 @@ use std::collections::BTreeMap;
 
 use coral_catalog::{ConfigurationChoices, ProviderConfiguration, ProviderSourceArgument};
 use coral_db::Transaction;
+use coral_policy::ExactOperationRules;
 use coral_provider::account::AccountModule;
 use coral_provider::{
     ManagementRequestId, ProviderId, ProviderSetup, ProviderSetupId, ProviderSetupSource,
     PublishabilityRejection, PublishedProvider, SetupPublishability, WorkspaceProviderPublisher,
 };
+use coral_workspace::{ChangeContext, Principal, WorkspaceId};
 
 use super::{BuiltinHost, authority_error};
 use crate::error::InputProblem;
@@ -40,14 +42,19 @@ pub(super) trait SetupOperation: Sync {
     /// The terminal Publication Coral attempts.
     type Publication: Send;
 
-    /// Prepares the Setup. Only this step waits on the network, so only it
-    /// stops with the Run.
-    async fn prepare(&self, host: &BuiltinHost<'_>) -> Result<ProviderSetup, Error>;
+    /// Prepares the Setup as the User `context` names. Only this step waits
+    /// on the network, so only it stops with the Run.
+    async fn prepare(
+        &self,
+        host: &BuiltinHost<'_>,
+        context: &ChangeContext,
+    ) -> Result<ProviderSetup, Error>;
 
     /// Confirms the Program's configuration and decides who publishes the Setup.
     async fn configure(
         &self,
         host: &BuiltinHost<'_>,
+        context: &ChangeContext,
         setup: &ProviderSetup,
     ) -> Result<(Publisher, Self::Configured), Error>;
 
@@ -63,6 +70,7 @@ pub(super) trait SetupOperation: Sync {
     async fn publish(
         &self,
         host: &BuiltinHost<'_>,
+        context: &ChangeContext,
         publisher: &dyn WorkspaceProviderPublisher,
         setup: &ProviderSetupId,
         configured: Self::Configured,
@@ -83,22 +91,23 @@ pub(super) trait SetupOperation: Sync {
     ) -> Result<serde_json::Value, Error>;
 }
 
-/// Prepares and configures `operation`'s Setup, then publishes it or returns
-/// the Reef page where a person finishes it.
+/// Prepares and configures `operation`'s Setup as the User `context` names,
+/// then publishes it or returns the Reef page where a person finishes it.
 pub(super) async fn perform(
     operation: &impl SetupOperation,
     host: &BuiltinHost<'_>,
+    context: &ChangeContext,
 ) -> Result<serde_json::Value, Error> {
     // Once a Setup exists, the call runs to an end that publishes it, links a
     // person to it, or ends it.
     let setup = tokio::select! {
         biased;
         () = host.run.stopped() => return Err(Error::ProgramHostTerminated),
-        setup = operation.prepare(host) => setup?,
+        setup = operation.prepare(host, context) => setup?,
     };
     #[cfg(test)]
     host.run.setup_prepared();
-    let (publisher, configured) = match operation.configure(host, &setup).await {
+    let (publisher, configured) = match operation.configure(host, context, &setup).await {
         Ok(configured) => configured,
         Err(error) => {
             // Nobody will finish a Setup whose configuration failed.
@@ -112,7 +121,7 @@ pub(super) async fn perform(
             require_current_run(host, setup.id()).await?;
             Ok(operation.needs_sign_in(host, setup.id(), configured))
         }
-        Publisher::Coral => publish(operation, host, setup.id(), configured).await,
+        Publisher::Coral => publish(operation, host, context, setup.id(), configured).await,
     }
 }
 
@@ -121,6 +130,7 @@ pub(super) async fn perform(
 async fn publish<O: SetupOperation>(
     operation: &O,
     host: &BuiltinHost<'_>,
+    context: &ChangeContext,
     setup: &ProviderSetupId,
     configured: O::Configured,
 ) -> Result<serde_json::Value, Error> {
@@ -134,7 +144,10 @@ async fn publish<O: SetupOperation>(
     // The Run can still end between this check and the Publication; the
     // Provider then changes and search finds it, though the call ended.
     require_current_run(host, setup).await?;
-    match operation.publish(host, publisher, setup, configured).await {
+    match operation
+        .publish(host, context, publisher, setup, configured)
+        .await
+    {
         Ok(publication) => operation.published(host, publication).await,
         Err(error) => {
             // The Publication left the Setup reusable, but nobody will reuse it.
@@ -149,6 +162,7 @@ async fn publish<O: SetupOperation>(
 /// Setup only a person can publish needs one.
 pub(super) async fn publisher(
     host: &BuiltinHost<'_>,
+    context: &ChangeContext,
     setup: &ProviderSetupId,
     publishability: SetupPublishability,
     configuration: Option<&ProviderConfiguration>,
@@ -159,7 +173,7 @@ pub(super) async fn publisher(
     match publishability {
         SetupPublishability::Coral => Ok(Publisher::Coral),
         SetupPublishability::Person
-            if !has_oauth_application(host, setup, configuration).await? =>
+            if !has_oauth_application(host, context, setup, configuration).await? =>
         {
             Err(invalid(
                 "authentication.client",
@@ -214,6 +228,52 @@ pub(super) fn request_id(invocation: &InvocationId) -> Result<ManagementRequestI
     Ok(ManagementRequestId::parse(&invocation.to_string())?)
 }
 
+/// The Operation Result for a Provider Coral published, from what its active
+/// Generation offers the Principal and the Workspace's Operation rules.
+pub(super) type PublishedResult = fn(&PublishedProvider, &ExactOperationRules) -> serde_json::Value;
+
+/// `result` for `provider`, which Coral published, read in one snapshot. It
+/// says what Coral resolved, so the Program need not guess whether its next
+/// call needs a person.
+pub(super) async fn published_result(
+    host: &BuiltinHost<'_>,
+    provider: &ProviderId,
+    result: PublishedResult,
+) -> Result<serde_json::Value, Error> {
+    let mut snapshot = host.database.begin_read_snapshot().await?;
+    let value = published_result_in_transaction(
+        &mut snapshot,
+        host.workspace_id,
+        provider,
+        host.principal,
+        result,
+    )
+    .await?;
+    snapshot.rollback().await?;
+    Ok(value)
+}
+
+/// `result` for `provider`, which Coral published, read in the caller's
+/// transaction.
+async fn published_result_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    provider: &ProviderId,
+    principal: &Principal,
+    result: PublishedResult,
+) -> Result<serde_json::Value, Error> {
+    let published = coral_provider::published_provider_in_transaction(
+        transaction,
+        workspace_id,
+        provider,
+        principal,
+    )
+    .await?;
+    let rules =
+        coral_policy::exact_operation_rules_in_transaction(transaction, workspace_id).await?;
+    Ok(result(&published, &rules))
+}
+
 /// Settles a call whose worker was lost after the dispatch fence, from the
 /// Provider its Publication published: `result` describes it, as the call
 /// would have. Without one, the Run ended first.
@@ -221,27 +281,28 @@ pub(super) async fn recover_published(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
     provider: Option<&ProviderId>,
-    result: fn(&PublishedProvider) -> serde_json::Value,
+    result: PublishedResult,
 ) -> Result<(InvocationResultKind, Option<String>), Error> {
     let Some(provider) = provider else {
         return Ok((InvocationResultKind::RunTerminated, None));
     };
-    let published = match coral_provider::published_provider_in_transaction(
+    let result = match published_result_in_transaction(
         transaction,
         &run.workspace_id,
         provider,
         &run.principal,
+        result,
     )
     .await
     {
-        Ok(published) => published,
+        Ok(result) => result,
         // An Owner deleted the Provider since; no result can describe it now.
-        Err(coral_provider::Error::ProviderNotFound) => {
+        Err(Error::Provider(coral_provider::Error::ProviderNotFound)) => {
             return Ok((InvocationResultKind::RunTerminated, None));
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(error),
     };
-    let result = serde_json::to_string(&result(&published)).map_err(Error::ProgramValueJson)?;
+    let result = serde_json::to_string(&result).map_err(Error::ProgramValueJson)?;
     Ok((InvocationResultKind::UpstreamOutcome, Some(result)))
 }
 
@@ -260,6 +321,7 @@ async fn require_current_run(host: &BuiltinHost<'_>, setup: &ProviderSetupId) ->
 /// Reef offers it. Without accounts, Coral sets none up.
 async fn has_oauth_application(
     host: &BuiltinHost<'_>,
+    context: &ChangeContext,
     setup: &ProviderSetupId,
     configuration: Option<&ProviderConfiguration>,
 ) -> Result<bool, Error> {
@@ -267,7 +329,7 @@ async fn has_oauth_application(
     match host.accounts {
         Some(accounts) => accounts
             .setup_oauth_application_available(
-                host.context.actor(),
+                context.actor(),
                 host.workspace_id,
                 setup,
                 authentication,

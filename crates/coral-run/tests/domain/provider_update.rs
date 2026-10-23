@@ -127,11 +127,11 @@ fn openapi_document(document: &str) -> serde_json::Value {
     serde_json::json!({ "kind": "openapi_document", "document": document })
 }
 
-/// An Owner whose Programs call createProvider and updateProvider without
+/// An Owner whose Programs call addProvider and updateProvider without
 /// approval, so each test reads the call's own outcome.
 async fn unattended(user: &str) -> AdminScope {
     let scope = AdminScope::new(user).await;
-    for operation in ["createProvider", "updateProvider"] {
+    for operation in ["addProvider", "updateProvider"] {
         scope
             .set_access_to(
                 &format!("coral.workspace.{operation}"),
@@ -146,7 +146,7 @@ async fn unattended(user: &str) -> AdminScope {
 async fn create_weather(scope: &AdminScope, source: serde_json::Value) -> coral_provider::Provider {
     let created = call(
         scope,
-        "createProvider",
+        "addProvider",
         &serde_json::json!({ "namespace": "weather", "source": source, "credentialRoute": "none" }),
     )
     .await;
@@ -408,7 +408,7 @@ async fn each_rejection_names_its_cause_and_changes_nothing() {
             }),
         ),
         (
-            // The route must suit the source, as createProvider's must.
+            // The route must suit the source, as addProvider's must.
             serde_json::json!({ "namespace": "weather", "credentialRoute": "caller" }),
             serde_json::json!({
                 "code": "invalid_input",
@@ -529,10 +529,11 @@ async fn recovery_settles_a_lost_update_from_its_publication() {
             .store(accepted_at + 2_000_000_000, Ordering::SeqCst);
         scope
             .fixture
-            .runs
-            .recover()
+            .next_process()
+            .sweep_expired_leases()
             .await
-            .expect("recover the lost worker");
+            .expect("sweep the lost worker's lapsed lease");
+        wait_for_terminal(&scope.fixture.runs, &scope.owner, &scope.workspace_id, &run).await;
         let ended: Vec<_> =
             retained_events(&scope.fixture.runs, &scope.owner, &scope.workspace_id, &run)
                 .await

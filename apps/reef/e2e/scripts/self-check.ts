@@ -21,6 +21,7 @@ const support = spawnSync(
     'e2e/support/os-processes.test.ts',
     '../../scripts/postgres.test.mjs',
     'e2e/support/data-responses.test.ts',
+    'e2e/support/update-bytes.test.ts',
   ],
   {
     cwd: reefRoot,

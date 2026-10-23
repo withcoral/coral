@@ -102,9 +102,15 @@ Throttling returns HTTP 429 with `temporarily_unavailable` and `Retry-After: 60`
 Wait before trying again. Full storage returns HTTP 503 with
 `temporarily_unavailable`; it never silently evicts working registrations. Existing
 IDs continue to resolve at capacity. Invalid requests and failed transactions leave
-no partial registration. The global pending-consent budget remains 4,096, with a
-64-per-client cap, independently of DCR admission. Handshake state remains local to
-one Coral process; durable registration does not add multi-replica handshake routing.
+no partial registration.
+
+Coral keeps no server state for a sign-in until the person signs in at the
+identity provider, so anonymous authorization requests cost no storage and have
+no shared budget to exhaust. The pending consent travels in the consent form and the sign-in
+in a browser cookie. Both are sealed with AES-256-GCM under keys derived from the
+session signing key. Authorization codes are stored in the database for five
+minutes. Every Coral process that shares the signing key and the database can
+therefore finish a sign-in that another process started and redeem its code, once.
 
 At capacity, the operator must review registrations before reclaiming space. V1 has
 no registration-management endpoint or UI. Stop every Coral process using the database,
@@ -306,6 +312,25 @@ Register `{listeners.auth.public_url}/auth/oidc/callback` as the callback
 URL at the identity provider. Coral derives that URL; it is not a separate
 `redirect_uri` setting. OIDC identity always uses the verified issuer and `sub`,
 not a configurable Principal claim. Discovery metadata is cached for five minutes.
+
+The browser that starts a sign-in receives a five-minute `coral_oauth_signin_*`
+cookie, with the `__Host-` prefix on HTTPS. The cookie carries the sealed sign-in,
+so only that browser can finish it. If the identity provider's sign-in link is
+opened in another browser, the callback fails with `invalid_request` before Coral
+contacts the identity provider. A proxy in front of Coral must pass this cookie through to the
+callback.
+
+- A client's `client_id`, `redirect_uri`, and `state` together may be at most
+  1,536 bytes, so that the sign-in fits in one cookie. A longer request, or one
+  whose sign-in does not fit for another reason such as a long resource, fails
+  with `invalid_request` before the consent page.
+- A new sign-in ends the browser's oldest sign-ins beyond three. For resources of
+  at most 350 bytes, this keeps the sign-in cookies inside the 8 KB header limit of
+  common proxies, unless the browser holds other large cookies for this host. Sign-ins started at
+  the same moment can briefly exceed three until they finish or expire.
+- Each sign-in issues at most one authorization code. A replayed callback gets an
+  error and no code.
+- Rotating the session signing key ends the sign-ins in progress. Start them again.
 
 The remaining authorization-server, signing-key, and MCP listener settings are
 still required. Google domain admission validates the signed `hd` claim; an

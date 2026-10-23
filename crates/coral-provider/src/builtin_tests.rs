@@ -1,5 +1,6 @@
-//! The Built-in Provider: one per Workspace at `coral.workspace`, discoverable and
-//! callable only by Users with effective Workspace Owner authority.
+//! The Built-in Provider: one per Workspace at `coral.workspace`. Each of its
+//! Operations is discoverable and callable by the Principals whose authority
+//! permits the Workspace action it declares.
 use coral_workspace::{
     AgentDisplayName, AuthenticatedPrincipal, OrganizationRole, WorkspaceAction,
     WorkspaceDisplayName, WorkspaceRole,
@@ -19,58 +20,40 @@ use crate::{
     ProviderSetupSource, ProviderState,
 };
 
+// Catches: discovery and Invocation disagreeing on who reaches a Built-in
+// Operation, one Operation's rule applying to the whole Call Root, or an
+// Operation another Coral version defines reaching anyone but an Owner.
 #[tokio::test]
-async fn only_users_with_effective_owner_authority_discover_and_call_the_builtin_provider() {
-    let (fixture, workspaces, providers) = test_modules().await;
-    let database = fixture.database();
-    let owner = organization_user(database.clone(), "user:owner", OrganizationRole::Member).await;
-    let context = change_context(owner.clone(), 10, '1');
-    let workspace = workspaces
-        .create(&context, WorkspaceDisplayName::parse("Builtin").unwrap())
-        .await
-        .unwrap();
-    let mut transaction = database.begin().await.unwrap();
-    providers
-        .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
-        .await
-        .unwrap();
-    transaction.commit().await.unwrap();
-    let member = organization_user(database.clone(), "user:member", OrganizationRole::Member).await;
-    workspaces
-        .set_membership(&context, workspace.id(), &member, WorkspaceRole::Member)
-        .await
-        .unwrap();
-    let issued = workspaces
-        .create_agent(
-            &context,
-            workspace.id(),
-            AgentDisplayName::parse("Worker").unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
-    let agent = workspaces
-        .authenticate_agent(workspace.id(), issued.credential.expose(), 11)
-        .await
-        .unwrap();
+async fn each_builtin_operation_reaches_the_principals_its_workspace_action_permits() {
+    let arranged = BuiltinWorkspace::new().await;
+    let database = arranged.fixture.database();
+    let workspace = arranged.workspace.id();
+    arranged.boot(&catalog_b(), 11).await;
+    let member = arranged.member("user:member").await;
+    let agent = arranged.agent(12).await;
 
-    for (principal, reaches) in [
-        (AuthenticatedPrincipal::user(owner), true),
-        (AuthenticatedPrincipal::user(member), false),
-        (agent, false),
+    let keys = ["addProvider", "listProviders", "listThings"];
+    for (principal, reached) in [
+        (
+            AuthenticatedPrincipal::user(arranged.owner.clone()),
+            &keys[..],
+        ),
+        (AuthenticatedPrincipal::user(member), &["listProviders"][..]),
+        (agent, &["listProviders"][..]),
     ] {
         let mut transaction = database.begin_read_snapshot().await.unwrap();
-        let authority = workspaces
-            .check_discovery_in_transaction(&mut transaction, &principal, workspace.id(), 12)
+        let authority = arranged
+            .workspaces
+            .check_discovery_in_transaction(&mut transaction, &principal, workspace, 13)
             .await
             .unwrap();
-        let [builtin] = crate::active_providers_in_transaction(&mut transaction, workspace.id())
+        let [builtin] = crate::active_providers_in_transaction(&mut transaction, workspace)
             .await
             .unwrap()
             .try_into()
             .expect("the Workspace has only its Built-in Provider");
         assert_eq!(builtin.provider().call_root(), &ProviderCallRoot::Builtin);
-        assert_eq!(
+        assert!(
             crate::account::discoverable_in_transaction(
                 &mut transaction,
                 &builtin,
@@ -79,22 +62,36 @@ async fn only_users_with_effective_owner_authority_discover_and_call_the_builtin
             )
             .await
             .unwrap(),
-            reaches,
             "discover as {principal:?}"
         );
-        transaction.rollback().await.unwrap();
-
-        let mut transaction = database.begin().await.unwrap();
-        let resolved = crate::resolve_invocation_operation_in_transaction(
+        let unreached = crate::unreached_operations_in_transaction(
             &mut transaction,
-            workspace.id(),
-            crate::InvocationCaller::new(&workspaces, &principal, 12),
-            "coral.workspace.createProvider",
+            &builtin,
+            authority.effective_user_role(),
         )
         .await
         .unwrap();
-        assert_eq!(resolved.is_some(), reaches, "call as {principal:?}");
         transaction.rollback().await.unwrap();
+
+        for key in keys {
+            let reaches = reached.contains(&key);
+            assert_eq!(
+                unreached.iter().all(|unreached| unreached.as_str() != key),
+                reaches,
+                "discover {key} as {principal:?}"
+            );
+            let mut transaction = database.begin().await.unwrap();
+            let resolved = crate::resolve_invocation_operation_in_transaction(
+                &mut transaction,
+                workspace,
+                crate::InvocationCaller::new(&arranged.workspaces, &principal, 13),
+                &format!("coral.workspace.{key}"),
+            )
+            .await
+            .unwrap();
+            assert_eq!(resolved.is_some(), reaches, "call {key} as {principal:?}");
+            transaction.rollback().await.unwrap();
+        }
     }
 }
 
@@ -525,6 +522,24 @@ impl BuiltinWorkspace {
             .unwrap()
     }
 
+    /// An Agent the Owner registers at `at`, authenticated then.
+    async fn agent(&self, at: i64) -> AuthenticatedPrincipal {
+        let issued = self
+            .workspaces
+            .create_agent(
+                &change_context(self.owner.clone(), at, '3'),
+                self.workspace.id(),
+                AgentDisplayName::parse("Worker").unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        self.workspaces
+            .authenticate_agent(self.workspace.id(), issued.credential.expose(), at)
+            .await
+            .unwrap()
+    }
+
     async fn member(&self, name: &str) -> coral_workspace::AuthenticatedUser {
         let member =
             organization_user(self.fixture.database(), name, OrganizationRole::Member).await;
@@ -680,7 +695,8 @@ async fn two_processes_that_boot_together_activate_one_generation() {
 }
 
 // Catches: a disabled Provider left out of the list though it still holds its
-// namespace, or a list whose order or account facts a Program cannot rely on.
+// namespace, one that still offers Operations to call, or a list whose order
+// or account facts a Program cannot rely on.
 #[tokio::test]
 async fn published_providers_lists_every_provider_in_creation_order() {
     let arranged = BuiltinWorkspace::new().await;
@@ -715,11 +731,13 @@ async fn published_providers_lists_every_provider_in_creation_order() {
         .await
         .unwrap();
 
-    let listed = arranged
-        .providers
-        .published_providers(&arranged.owner, workspace)
-        .await
-        .unwrap();
+    let listed = crate::tests::published_providers(
+        &arranged.providers,
+        &AuthenticatedPrincipal::user(arranged.owner.clone()),
+        workspace,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(
         listed
@@ -728,7 +746,7 @@ async fn published_providers_lists_every_provider_in_creation_order() {
                 published.provider.call_root().as_str(),
                 published.provider.state(),
                 published.authentication,
-                published.available_operations,
+                published.operations.len(),
                 published.account_required,
             ))
             .collect::<Vec<_>>(),
@@ -740,11 +758,12 @@ async fn published_providers_lists_every_provider_in_creation_order() {
                 arranged.keys().await.len(),
                 false,
             ),
+            // A disabled Provider offers no Operation to call.
             (
                 "coral.providers.weather",
                 ProviderState::Disabled,
                 AuthenticationKind::None,
-                1,
+                0,
                 false,
             ),
             // The Owner has not connected an Account yet.
@@ -759,10 +778,11 @@ async fn published_providers_lists_every_provider_in_creation_order() {
     );
 }
 
-// Catches: a management read showing a Member the Built-in Provider, which
-// discovery keeps from them: in the list, by its ID, or through its Operations.
+// Catches: a management read that disagrees with discovery on what a
+// Principal reaches: in the list, by its ID, or through its Operations; or
+// listProviders refusing an Agent.
 #[tokio::test]
-async fn only_an_owner_inspects_the_builtin_provider() {
+async fn management_reads_show_each_principal_the_builtin_operations_it_reaches() {
     let arranged = BuiltinWorkspace::new().await;
     let workspace = arranged.workspace.id();
     publish_provider(
@@ -775,6 +795,8 @@ async fn only_an_owner_inspects_the_builtin_provider() {
     )
     .await;
     let member = arranged.member("user:member").await;
+    let agent = arranged.agent(16).await;
+    let listed = ["coral.workspace", "coral.providers.added"];
     let roots = |providers: Vec<&crate::Provider>| {
         providers
             .into_iter()
@@ -782,18 +804,16 @@ async fn only_an_owner_inspects_the_builtin_provider() {
             .collect::<Vec<_>>()
     };
 
-    for (actor, listed) in [
+    for (principal, reached) in [
         (
-            &arranged.owner,
-            &["coral.workspace", "coral.providers.added"][..],
+            AuthenticatedPrincipal::user(arranged.owner.clone()),
+            &["addProvider", "getProvider", "listProviders"][..],
         ),
-        (&member, &["coral.providers.added"][..]),
+        (AuthenticatedPrincipal::user(member), &["listProviders"][..]),
+        (agent, &["listProviders"][..]),
     ] {
         let providers = &arranged.providers;
-        let inspected = providers.inspect_providers(actor, workspace).await.unwrap();
-        assert_eq!(roots(inspected.iter().collect()), listed, "{actor:?}");
-        let published = providers
-            .published_providers(actor, workspace)
+        let published = crate::tests::published_providers(providers, &principal, workspace)
             .await
             .unwrap();
         assert_eq!(
@@ -804,8 +824,22 @@ async fn only_an_owner_inspects_the_builtin_provider() {
                     .collect()
             ),
             listed,
-            "{actor:?}"
+            "{principal:?}"
         );
+        let builtin_keys = published
+            .first()
+            .expect("the Built-in Provider comes first")
+            .operations
+            .iter()
+            .map(|operation| operation.key().as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(builtin_keys, reached, "{principal:?}");
+        // Only a User inspects the Workspace's Providers in Reef.
+        let Some(actor) = principal.authenticated_user() else {
+            continue;
+        };
+        let inspected = providers.inspect_providers(actor, workspace).await.unwrap();
+        assert_eq!(roots(inspected.iter().collect()), listed, "{actor:?}");
         let database = arranged.fixture.database();
         let mut tx = database.begin_read_snapshot().await.unwrap();
         let evidence = arranged
@@ -827,18 +861,21 @@ async fn only_an_owner_inspects_the_builtin_provider() {
 
         let builtin = arranged.builtin.id();
         let one = providers.inspect_provider(actor, workspace, builtin).await;
-        let operations = providers
-            .inspect_catalog_page(actor, workspace, builtin, None, 100)
-            .await;
-        if listed.contains(&"coral.workspace") {
-            assert_eq!(one.unwrap().id(), builtin);
-            assert!(!operations.unwrap().is_empty());
-        } else {
-            assert!(matches!(one, Err(Error::ProviderNotFound)), "{one:?}");
-            assert!(
-                matches!(operations, Err(Error::ProviderNotFound)),
-                "{operations:?}"
-            );
+        assert_eq!(one.unwrap().id(), builtin, "{actor:?}");
+        // One Operation a page: an Operation left out must not cost the
+        // page its lookahead row, nor add one.
+        for page_size in [1, 100] {
+            let operations = providers
+                .inspect_catalog_page(actor, workspace, builtin, None, page_size)
+                .await
+                .unwrap();
+            let keys = operations
+                .iter()
+                .map(|operation| operation.key.as_str())
+                .collect::<Vec<_>>();
+            let lookahead = usize::try_from(page_size).unwrap() + 1;
+            let expected = reached.iter().copied().take(lookahead).collect::<Vec<_>>();
+            assert_eq!(keys, expected, "{actor:?}, page of {page_size}");
         }
     }
 }

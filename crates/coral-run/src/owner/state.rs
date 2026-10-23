@@ -15,6 +15,19 @@
 //!   the next chunk, a repeat waits for its answer or reads it from memory;
 //! - the termination intent (a cancellation, the deadline): applied at
 //!   once, recorded by the next chunk's head update;
+//! - the timers: the Run deadline, each Approval Request's and connection
+//!   request's deadline, the idle tick and the shutdown grace are armed as
+//!   effects and fire back into the mailbox, so a passed deadline is applied
+//!   in order with the cancel or the decision that races it, and the first
+//!   applied decides. A passed Run deadline times the Run out; a passed
+//!   Approval deadline expires the request and ends its Invocation; a
+//!   passed connection deadline wakes the Invocations parked on it;
+//! - the parked Invocations: which to wake (a decision or an expiry the
+//!   owner recorded, a connection deadline, what a snapshot check found),
+//!   when to hold the change subscription (while a connection wait is
+//!   parked), when to read the connection requests after the signal rang
+//!   (coalesced, at most once per wake gap), and when the periodic precheck
+//!   reads every parked wait;
 //! - the Run Ledger head, which the owner tracks from its start mark and
 //!   every chunk commit asserts;
 //! - what a lost commit means;
@@ -22,15 +35,23 @@
 //!   owner is suspect and answers Program requests only once recorded.
 //!   After three it gives its Run up: the Program ends, and one terminal
 //!   chunk is written as soon as the database answers, recording
-//!   `Interrupted`, or `TimedOut` when the Run deadline has passed meanwhile.
+//!   `Interrupted`, or `TimedOut` when the Run deadline has passed meanwhile;
+//! - a recovered owner's one chunk: the expired-lease sweep recreates the
+//!   owner of a Run whose process is gone with its mailbox queued (every
+//!   Approval Request timer that passed, in deadline order, then the end),
+//!   and the owner
+//!   records the expiries, the timeout or the interruption, or the
+//!   termination already recorded, in one chunk, then retires. No outside
+//!   request reaches it: until the chunk lands a request for the Run is
+//!   answered `OwnedElsewhere`, and a retry reads the record.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
 use coral_workspace::Principal;
 
-use crate::approval::DecideWork;
+use crate::approval::{ApprovalId, DecideWork};
 use crate::engine::{ExecutionCompletion, ProgramPackage};
-use crate::invocation::{FenceBatch, FenceRequest};
+use crate::invocation::{FenceBatch, FenceRequest, ParkedInvocation, PrecheckBatch};
 use crate::lifecycle::{RequestedTermination, RunTerminationKind};
 use crate::run_repository::{OwnedEvent, OwnedEventKind};
 use crate::termination::ShutdownAction;
@@ -38,8 +59,8 @@ use crate::{CoralFailure, Error};
 
 use super::chunk::{ChunkBuild, ChunkItem, ChunkWork, PendingRequest};
 use super::handle::{
-    CommitRejection, DecisionAnswer, DecisionRequest, Message, Reply, RequestKey, RequestReply,
-    StartedExecution,
+    Check, CommitRejection, DecisionAnswer, DecisionRequest, Message, ParkedWait, Reply,
+    RequestKey, RequestReply, StartedExecution, Timer,
 };
 
 /// What the hosting task does for the owner.
@@ -62,9 +83,20 @@ pub(crate) enum Effect {
     },
     /// Terminate the Program and wake every stop-aware wait.
     TerminateProgram,
-    /// Start the shutdown grace: once it is out, [`Message::GraceExpired`]
-    /// ends the Run even if the Program never reported its end.
-    GraceTimer { grace_nanos: i64 },
+    /// Arm `timer` to fire as [`Message::Timer`] into the mailbox after
+    /// `after_nanos`, replacing the same timer armed before.
+    ArmTimer { timer: Timer, after_nanos: i64 },
+    /// Send one parked Invocation back to its held recheck: its wait ended,
+    /// or a snapshot says it did.
+    Wake(Box<ParkedInvocation>),
+    /// Subscribe to the change signal, which rings as [`Message::Changed`]:
+    /// a connection wait is parked.
+    Subscribe,
+    /// Drop the change subscription: no connection wait is parked.
+    Unsubscribe,
+    /// Read the batch's parked waits in one snapshot, holding nothing; the
+    /// findings come back as [`Message::Prechecked`].
+    Precheck(PrecheckBatch),
     /// Settle row work the owner will never commit.
     Abandon(Box<dyn ChunkWork>, Error),
     /// Write the Run's terminal state for the Program's completion, with
@@ -89,7 +121,14 @@ pub(crate) enum Effect {
     /// self-interrupt bound. The Program is terminated with its dispatches,
     /// and the Interrupted chunk is written as soon as the database answers.
     Interrupt { last_commit_age_nanos: i64 },
-    /// The owner is done.
+    /// A recovered owner's one chunk, written until the database answers:
+    /// the `expired` Approval Requests expire, every nonterminal Invocation
+    /// ends, and the Run ends with the termination its row records, else
+    /// timed out past its deadline or interrupted. The Run is taken over with
+    /// the owner's new claim.
+    Recover { expired: Vec<ApprovalId> },
+    /// The owner is done. A Run it leaves running renews no lease any more,
+    /// and the expired-lease sweep ends it once the lease lapses.
     Retire,
 }
 
@@ -104,10 +143,58 @@ pub(crate) struct OwnerLimits {
     /// The shutdown grace a termination intent the owner applies gives the
     /// Run's dispatches in flight.
     pub(crate) shutdown_grace_nanos: i64,
+    /// How often the owner checks whether its lease needs renewing: half a
+    /// lease.
+    pub(crate) idle_tick_nanos: i64,
     /// How long after its last successful commit the owner is suspect.
     pub(crate) suspect_after_nanos: i64,
     /// How long after its last successful commit the owner interrupts its Run.
     pub(crate) self_interrupt_after_nanos: i64,
+    /// How often the owner prechecks its parked waits while it has any.
+    pub(crate) precheck_interval_nanos: i64,
+    /// The shortest gap between two reads of the parked connection requests
+    /// after the change signal rang.
+    pub(crate) wake_gap_nanos: i64,
+}
+
+/// The owner's change subscription and its snapshot checks of the parked
+/// waits.
+#[derive(Debug, Default)]
+struct Wakeups {
+    signal: Signal,
+    /// The reads of the parked connection requests after the signal rang:
+    /// one at a time, a wake gap apart.
+    connections: ConnectionChecks,
+    precheck: Precheck,
+}
+
+/// The change subscription, held while a connection wait is parked.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Signal {
+    #[default]
+    Unsubscribed,
+    /// Nothing rang since the last connection check started.
+    Quiet,
+    /// The signal rang since the last connection check started.
+    Rang,
+}
+
+#[derive(Debug, Default)]
+struct ConnectionChecks {
+    /// A connection check runs.
+    running: bool,
+    /// The wake gap since the last connection check started is not out.
+    in_gap: bool,
+}
+
+/// The periodic precheck of every parked wait.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Precheck {
+    /// Nothing is parked, or the timer fired with nothing to read.
+    #[default]
+    Unarmed,
+    Armed,
+    Running,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +217,9 @@ pub(crate) enum Phase {
     /// pending commits, and the Interrupted chunk is being written until the
     /// database answers or another writer has the Run.
     Interrupting,
+    /// A recovered owner: no Program runs here. It applies the timers the
+    /// sweep queued, then writes its one chunk.
+    Recovering,
     Retired,
 }
 
@@ -195,9 +285,18 @@ pub(crate) struct OwnerState {
     /// mailbox arrival order). Each one stays `pending`, with no Event, and
     /// joins a fence batch when an earlier dispatch ends.
     waiting: VecDeque<Box<FenceRequest>>,
+    /// Invocations parked on a wait, holding nothing, by the serial the owner
+    /// gave each park. Owner memory only: nothing is registered again after
+    /// a restart, since a recovered owner runs no Program.
+    parked_waits: BTreeMap<u64, Box<ParkedInvocation>>,
+    /// The serial of the last park.
+    last_park: u64,
+    wakeups: Wakeups,
     open: ChunkBuild,
     closed: VecDeque<ChunkBuild>,
     in_flight: Option<InFlight>,
+    /// A recovered owner's Approval Requests whose passed timers it applied.
+    recovered_expiries: Vec<ApprovalId>,
 }
 
 impl OwnerState {
@@ -221,9 +320,23 @@ impl OwnerState {
             suspect: false,
             slots_held: 0,
             waiting: VecDeque::new(),
+            parked_waits: BTreeMap::new(),
+            last_park: 0,
+            wakeups: Wakeups::default(),
             open: ChunkBuild::default(),
             closed: VecDeque::new(),
             in_flight: None,
+            recovered_expiries: Vec::new(),
+        }
+    }
+
+    /// The owner the expired-lease sweep recreates for a Run accepted at
+    /// `accepted_at_unix_nanos` whose process is gone: it starts no Program
+    /// and applies the mailbox the sweep queued.
+    pub(crate) fn recovered(limits: OwnerLimits, accepted_at_unix_nanos: i64) -> Self {
+        Self {
+            phase: Phase::Recovering,
+            ..Self::new(limits, accepted_at_unix_nanos)
         }
     }
 
@@ -286,6 +399,12 @@ impl OwnerState {
     #[cfg(test)]
     pub(crate) fn waiting_for_a_slot(&self) -> usize {
         self.waiting.len()
+    }
+
+    /// Invocations parked on a wait.
+    #[cfg(test)]
+    pub(crate) fn parked_invocations(&self) -> usize {
+        self.parked_waits.len()
     }
 
     /// The owner's own liveness, decided on every message: past the suspect
@@ -351,7 +470,8 @@ impl OwnerState {
                 flight
                     .requests
                     .into_iter()
-                    .map(|request| Effect::Answer(request.reply, Err(Error::OwnerLost))),
+                    .filter_map(|request| request.reply)
+                    .map(|reply| Effect::Answer(reply, Err(Error::OwnerLost))),
             );
         }
         effects.extend(self.abandon_pending(&lost, || Err(Error::OwnerLost)));
@@ -558,7 +678,7 @@ impl OwnerState {
         // whose request the owner batched, so the count is exact.
         self.slots_held = self.slots_held.saturating_sub(1);
         if !self.accepts_program_requests(now_unix_nanos) {
-            return self.abandon_waiting(|| Error::ProgramHostTerminated);
+            return self.release_waiting(|| Error::ProgramHostTerminated);
         }
         match self.waiting.pop_front() {
             Some(request) => self.fence(request, now_unix_nanos),
@@ -566,19 +686,179 @@ impl OwnerState {
         }
     }
 
-    /// Answers every Invocation waiting for a slot, as one batch, with the
-    /// error `lost` makes: no dispatch of theirs ever starts. The slots the
-    /// abandoned batches held stay counted: the Run takes no more requests.
-    fn abandon_waiting(&mut self, lost: impl Fn() -> Error) -> Vec<Effect> {
+    /// The Run takes no more Program requests: every Invocation waiting for
+    /// a slot is answered, as one batch, with the error `lost` makes (no
+    /// dispatch of theirs ever starts; the slots the abandoned batches held
+    /// stay counted), and every parked one is let go with the change
+    /// subscription: its dropped wake tells it the Run ends.
+    fn release_waiting(&mut self, lost: impl Fn() -> Error) -> Vec<Effect> {
+        self.parked_waits.clear();
+        let mut effects: Vec<Effect> = self.unsubscribe_when_idle().into_iter().collect();
         let mut waiting = self.waiting.drain(..);
         let Some(first) = waiting.next() else {
-            return Vec::new();
+            return effects;
         };
         let mut batch = FenceBatch::new(*first);
         for request in waiting {
             batch.push(*request);
         }
-        vec![Effect::Abandon(Box::new(batch), lost())]
+        effects.push(Effect::Abandon(Box::new(batch), lost()));
+        effects
+    }
+
+    /// A chunk that landed parked an Invocation: the owner keeps it until
+    /// its wait ends and arms the wait's deadline, the periodic precheck
+    /// unless it is armed, and the change subscription for a connection
+    /// wait, whose first ring reads the request. Under a subscription already
+    /// held, the park counts as a ring: the request may have ended between
+    /// the held recheck's read and this message, and a ring that came first
+    /// read a batch without it. A Run that takes no more Program requests
+    /// keeps nothing: the dropped wake tells the Invocation the Run ends. An
+    /// Approval Request decided first sends the Invocation back to its held
+    /// recheck at once.
+    fn park(&mut self, parked: Box<ParkedInvocation>, now_unix_nanos: i64) -> Vec<Effect> {
+        if !self.accepts_program_requests(now_unix_nanos) {
+            return Vec::new();
+        }
+        if let ParkedWait::Approval { approval, .. } = parked.wait()
+            && self
+                .recorded_requests
+                .contains(&RequestKey::Approval(approval.clone()))
+        {
+            return vec![Effect::Wake(parked)];
+        }
+        let (timer, at) = parked.wait().deadline();
+        let mut effects = vec![arm_at(timer, at, now_unix_nanos)];
+        let on_connection = parked.wait().on_connection();
+        self.last_park += 1;
+        self.parked_waits.insert(self.last_park, parked);
+        if on_connection {
+            if self.wakeups.signal == Signal::Unsubscribed {
+                self.wakeups.signal = Signal::Quiet;
+                effects.push(Effect::Subscribe);
+            } else {
+                self.wakeups.signal = Signal::Rang;
+                effects.extend(self.check_connections());
+            }
+        }
+        effects.extend(self.arm_precheck());
+        effects
+    }
+
+    /// Arms the periodic precheck while waits are parked, unless it is
+    /// armed or running.
+    fn arm_precheck(&mut self) -> Option<Effect> {
+        if self.parked_waits.is_empty() || self.wakeups.precheck != Precheck::Unarmed {
+            return None;
+        }
+        self.wakeups.precheck = Precheck::Armed;
+        Some(Effect::ArmTimer {
+            timer: Timer::Precheck,
+            after_nanos: self.limits.precheck_interval_nanos,
+        })
+    }
+
+    /// Sends the parked Invocations `woken` selects, by serial and wait,
+    /// back to their held rechecks, and drops the change subscription once
+    /// no connection wait is left.
+    fn wake(&mut self, woken: impl Fn(u64, &ParkedWait) -> bool) -> Vec<Effect> {
+        let mut effects: Vec<Effect> = self
+            .parked_waits
+            .extract_if(.., |serial, parked| woken(*serial, parked.wait()))
+            .map(|(_, parked)| Effect::Wake(parked))
+            .collect();
+        effects.extend(self.unsubscribe_when_idle());
+        effects
+    }
+
+    fn unsubscribe_when_idle(&mut self) -> Option<Effect> {
+        if self.wakeups.signal == Signal::Unsubscribed
+            || self
+                .parked_waits
+                .values()
+                .any(|parked| parked.wait().on_connection())
+        {
+            return None;
+        }
+        self.wakeups.signal = Signal::Unsubscribed;
+        Some(Effect::Unsubscribe)
+    }
+
+    /// The change signal rang: a hint that a connection request may have
+    /// ended. A ring from a subscription since dropped changes nothing.
+    fn changed(&mut self) -> Vec<Effect> {
+        if self.wakeups.signal == Signal::Unsubscribed {
+            return Vec::new();
+        }
+        self.wakeups.signal = Signal::Rang;
+        self.check_connections()
+    }
+
+    /// Reads the requests of the parked connection waits once the signal
+    /// rang since the last check, no check runs, and the wake gap since the
+    /// last one is out: every ring meanwhile is coalesced into this one read.
+    fn check_connections(&mut self) -> Vec<Effect> {
+        if self.wakeups.signal != Signal::Rang
+            || self.wakeups.connections.running
+            || self.wakeups.connections.in_gap
+        {
+            return Vec::new();
+        }
+        self.wakeups.signal = Signal::Quiet;
+        let Some(batch) = PrecheckBatch::of(
+            Check::Connections,
+            self.parked_waits
+                .iter()
+                .filter(|(_, parked)| parked.wait().on_connection()),
+        ) else {
+            return Vec::new();
+        };
+        self.wakeups.connections.running = true;
+        self.wakeups.connections.in_gap = true;
+        vec![
+            Effect::Precheck(batch),
+            Effect::ArmTimer {
+                timer: Timer::WakeGap,
+                after_nanos: self.limits.wake_gap_nanos,
+            },
+        ]
+    }
+
+    /// The periodic precheck is due: every parked wait is read in one
+    /// snapshot against the Dispatch Fence's facts. Past the Run deadline on
+    /// the owner's clock, the deadline is applied instead, as its timer
+    /// would have been first.
+    fn precheck_due(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
+        self.wakeups.precheck = Precheck::Unarmed;
+        if now_unix_nanos >= self.limits.deadline_at_unix_nanos {
+            return self.deadline(now_unix_nanos);
+        }
+        if !self.accepts_program_requests(now_unix_nanos) {
+            return Vec::new();
+        }
+        let Some(batch) = PrecheckBatch::of(Check::Periodic, self.parked_waits.iter()) else {
+            return Vec::new();
+        };
+        self.wakeups.precheck = Precheck::Running;
+        vec![Effect::Precheck(batch)]
+    }
+
+    /// A check read its snapshot: the parks it found ended or moot, while
+    /// still parked under the serial it read, go back to their held
+    /// rechecks. A check that failed found nothing: a precheck is a hint, and
+    /// the next one reads again.
+    fn prechecked(&mut self, check: Check, found: Result<Vec<u64>, Error>) -> Vec<Effect> {
+        match check {
+            Check::Connections => self.wakeups.connections.running = false,
+            Check::Periodic => self.wakeups.precheck = Precheck::Unarmed,
+        }
+        let found: BTreeSet<u64> = found.unwrap_or_default().into_iter().collect();
+        let mut effects = self.wake(|serial, _| found.contains(&serial));
+        match check {
+            Check::Connections => effects.extend(self.check_connections()),
+            Check::Periodic => effects.extend(self.arm_precheck()),
+        }
+        effects
     }
 
     /// A stop reached the owner, from an outside writer's recorded
@@ -593,8 +873,9 @@ impl OwnerState {
         // to report its end before the owner ends the Run without it.
         if !self.stop_requested {
             self.stop_requested = true;
-            effects.push(Effect::GraceTimer {
-                grace_nanos: self.limits.shutdown_grace_nanos,
+            effects.push(Effect::ArmTimer {
+                timer: Timer::Grace,
+                after_nanos: self.limits.shutdown_grace_nanos,
             });
         }
         for chunk in self
@@ -607,7 +888,7 @@ impl OwnerState {
             }
         }
         self.closed.retain(|chunk| !chunk.is_empty());
-        effects.extend(self.abandon_waiting(|| Error::ProgramHostTerminated));
+        effects.extend(self.release_waiting(|| Error::ProgramHostTerminated));
         effects.push(Effect::TerminateProgram);
         effects
     }
@@ -680,16 +961,73 @@ impl OwnerState {
         if !self.accepts_work() {
             return vec![Effect::Answer(reply, Err(Error::OwnerLost))];
         }
+        // The request's deadline passed on the owner's clock before its
+        // timer's message arrived: the expiry is applied first, as the
+        // timer would have been, and the decision waits for its record.
         let decide = self.accepts_program_requests(now_unix_nanos);
-        let work = DecideWork::new(request, decide);
+        if decide && now_unix_nanos >= request.deadline_at_unix_nanos {
+            let effects = self.expire_approval(&request.approval, now_unix_nanos);
+            self.parked.push(Message::Decide { request, reply });
+            return effects;
+        }
+        let work = DecideWork::decision(request, decide);
         self.push(ChunkItem::Work(Box::new(work)), 1, 0)
             .requests
             .push(PendingRequest {
                 key,
-                reply,
+                reply: Some(reply),
                 answer: None,
             });
         Vec::new()
+    }
+
+    /// An Approval Request's deadline passed: the request expires and its
+    /// Invocation ends, in the next chunk. Nothing when a decision came
+    /// first (recorded, or riding a chunk), or the Run takes no more
+    /// Program requests: its termination ends the Invocation and closes the
+    /// request, as it would a decision applied then.
+    fn expire_approval(&mut self, approval: &ApprovalId, now_unix_nanos: i64) -> Vec<Effect> {
+        let key = RequestKey::Approval(approval.clone());
+        if self.recorded_requests.contains(&key)
+            || self.request_is_pending(&key)
+            || !self.accepts_program_requests(now_unix_nanos)
+        {
+            return Vec::new();
+        }
+        let work = DecideWork::expiry(approval.clone());
+        self.push(ChunkItem::Work(Box::new(work)), 1, 0)
+            .requests
+            .push(PendingRequest {
+                key,
+                reply: None,
+                answer: None,
+            });
+        Vec::new()
+    }
+
+    /// A timer fired: applied here, in order with every other message.
+    fn timer(&mut self, timer: Timer, now_unix_nanos: i64) -> Vec<Effect> {
+        match timer {
+            Timer::RunDeadline => self.deadline(now_unix_nanos),
+            Timer::Grace => self.grace_expired(),
+            Timer::IdleTick => self.idle_tick(),
+            Timer::Approval(approval) => self.expire_approval(&approval, now_unix_nanos),
+            // The Invocations parked on the request go back to their held
+            // recheck, which records its expiry inside the owner's chunk.
+            Timer::Connection(expired) => {
+                if !self.accepts_program_requests(now_unix_nanos) {
+                    return Vec::new();
+                }
+                self.wake(|_, wait| {
+                    matches!(wait, ParkedWait::Connection { request, .. } if *request == expired)
+                })
+            }
+            Timer::Precheck => self.precheck_due(now_unix_nanos),
+            Timer::WakeGap => {
+                self.wakeups.connections.in_gap = false;
+                self.check_connections()
+            }
+        }
     }
 
     /// A cancellation: applied at once when no termination is recorded or in
@@ -715,33 +1053,42 @@ impl OwnerState {
             // The terminal write recorded a termination of its own; this
             // changes nothing.
             Phase::Settling => vec![Effect::Answer(reply, Ok(DecisionAnswer::FromRecord))],
-            // Past the Run deadline the Run times out: no chunk commits any
-            // more, and the terminal write records the timeout; the request
-            // is answered once it has.
-            Phase::Starting | Phase::Running | Phase::Ending
-                if now_unix_nanos >= self.limits.deadline_at_unix_nanos =>
-            {
-                let effects = self.deadline(now_unix_nanos);
-                self.parked.push(Message::Cancel { requester, reply });
-                effects
+            Phase::Starting | Phase::Running | Phase::Ending => {
+                // Past the Run deadline on the owner's clock the Run times
+                // out, as its timer would have decided first.
+                let mut effects = Vec::new();
+                if now_unix_nanos >= self.limits.deadline_at_unix_nanos {
+                    effects = self.deadline(now_unix_nanos);
+                }
+                // A timeout applied first decides the kind: the request is
+                // answered from the record once the chunk carrying it, or
+                // the terminal write, has recorded it.
+                if self.termination.is_some() {
+                    self.parked.push(Message::Cancel { requester, reply });
+                    return effects;
+                }
+                self.terminate(
+                    RunTerminationKind::Canceled,
+                    Some(requester),
+                    Some(reply),
+                    now_unix_nanos,
+                )
             }
-            Phase::Starting | Phase::Running | Phase::Ending => self.terminate(
-                RunTerminationKind::Canceled,
-                Some(requester),
-                Some(reply),
-                now_unix_nanos,
-            ),
-            Phase::Completing | Phase::Stopped(_) | Phase::Interrupting | Phase::Retired => {
-                vec![Effect::Answer(reply, Err(Error::OwnerLost))]
-            }
+            Phase::Completing
+            | Phase::Stopped(_)
+            | Phase::Interrupting
+            | Phase::Recovering
+            | Phase::Retired => vec![Effect::Answer(reply, Err(Error::OwnerLost))],
         }
     }
 
-    /// The Run deadline passed: the Program is terminated, and the timeout
-    /// is the intent the terminal write records (the Run row refuses chunks
-    /// past its deadline, so none carries it). Nothing more once a
-    /// termination is applied, or past the point where the terminal write
-    /// decides on its own.
+    /// The Run deadline passed: the timeout is applied like a cancellation
+    /// (the intent rides the next chunk's head update, with no Event, and
+    /// the Program is terminated at once), dated when the owner applies it
+    /// and never before the deadline, so the shutdown grace runs from then.
+    /// Nothing more once a termination is applied (a cancel applied first
+    /// decides the kind), or past the point where the terminal write decides
+    /// on its own.
     fn deadline(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
         if self.termination.is_some()
             || !matches!(self.phase, Phase::Starting | Phase::Running | Phase::Ending)
@@ -749,18 +1096,7 @@ impl OwnerState {
             return Vec::new();
         }
         let at = now_unix_nanos.max(self.limits.deadline_at_unix_nanos);
-        if let Ok(intent) = RequestedTermination::new(
-            RunTerminationKind::TimedOut,
-            None,
-            at,
-            self.limits.shutdown_grace_nanos,
-        ) {
-            self.termination = Some(intent);
-        }
-        if self.stop_requested {
-            return Vec::new();
-        }
-        self.stop()
+        self.terminate(RunTerminationKind::TimedOut, None, None, at)
     }
 
     /// The shutdown grace since the Program was stopped is out and the
@@ -792,11 +1128,14 @@ impl OwnerState {
             self.limits.shutdown_grace_nanos,
         ) {
             Ok(intent) => intent,
+            // An intent the row cannot hold: a requester learns it; the
+            // owner's own timeout still stops the Program, and the terminal
+            // write records the timeout it finds passed.
             Err(error) => {
-                return reply
-                    .map(|reply| Effect::Answer(reply, Err(error)))
-                    .into_iter()
-                    .collect();
+                return match reply {
+                    Some(reply) => vec![Effect::Answer(reply, Err(error))],
+                    None => self.stop(),
+                };
             }
         };
         self.termination = Some(intent.clone());
@@ -814,7 +1153,7 @@ impl OwnerState {
         chunk.termination = Some(intent);
         chunk.requests.extend(reply.map(|reply| PendingRequest {
             key: RequestKey::Termination,
-            reply,
+            reply: Some(reply),
             answer: None,
         }));
         self.stop()
@@ -897,6 +1236,8 @@ impl OwnerState {
         vec![Effect::Settle { shutdown, again }]
     }
 
+    /// Starts one chunk commit; the idle tick is armed again from here, so
+    /// an owner that commits renews its lease by its chunks alone.
     fn commit(&mut self, mut chunk: ChunkBuild) -> Vec<Effect> {
         let output_total = self.recorded_total.saturating_add(chunk.bytes);
         chunk.head = self.head;
@@ -906,10 +1247,13 @@ impl OwnerState {
             requests: std::mem::take(&mut chunk.requests),
             terminates: chunk.termination.is_some(),
         });
-        vec![Effect::Commit {
-            chunk,
-            output_total,
-        }]
+        vec![
+            self.arm_idle_tick(),
+            Effect::Commit {
+                chunk,
+                output_total,
+            },
+        ]
     }
 
     fn committed(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
@@ -927,10 +1271,23 @@ impl OwnerState {
             if flight.terminates {
                 self.recorded_requests.insert(RequestKey::Termination);
             }
+            let mut decided = Vec::new();
             for request in flight.requests {
+                if let RequestKey::Approval(approval) = &request.key {
+                    decided.push(approval.clone());
+                }
                 self.recorded_requests.insert(request.key);
                 let answer = request.answer.unwrap_or(DecisionAnswer::FromRecord);
-                effects.push(Effect::Answer(request.reply, Ok(answer)));
+                if let Some(reply) = request.reply {
+                    effects.push(Effect::Answer(reply, Ok(answer)));
+                }
+            }
+            // The chunk recorded these requests' decisions, expiries or
+            // closes: the Invocations parked on them learn it with no read.
+            if !decided.is_empty() {
+                effects.extend(self.wake(|_, wait| {
+                    matches!(wait, ParkedWait::Approval { approval, .. } if decided.contains(approval))
+                }));
             }
         }
         effects.extend(self.unpark(now_unix_nanos));
@@ -941,6 +1298,7 @@ impl OwnerState {
             | Phase::Completing
             | Phase::Stopped(_)
             | Phase::Interrupting
+            | Phase::Recovering
             | Phase::Retired => {}
         }
         effects
@@ -973,7 +1331,7 @@ impl OwnerState {
         lost: impl Fn() -> Error,
         requests: impl Fn() -> Result<DecisionAnswer, Error>,
     ) -> Vec<Effect> {
-        let mut effects = self.abandon_waiting(&lost);
+        let mut effects = self.release_waiting(&lost);
         let pending = self
             .closed
             .drain(..)
@@ -997,7 +1355,8 @@ impl OwnerState {
                 chunk
                     .requests
                     .into_iter()
-                    .map(|request| Effect::Answer(request.reply, requests())),
+                    .filter_map(|request| request.reply)
+                    .map(|reply| Effect::Answer(reply, requests())),
             );
         }
         effects
@@ -1043,7 +1402,15 @@ impl OwnerState {
             return self.advance_ending();
         }
         self.phase = Phase::Running;
-        vec![Effect::StartProgram(started.package)]
+        vec![self.arm_idle_tick(), Effect::StartProgram(started.package)]
+    }
+
+    /// The idle tick, half a lease from now.
+    fn arm_idle_tick(&self) -> Effect {
+        Effect::ArmTimer {
+            timer: Timer::IdleTick,
+            after_nanos: self.limits.idle_tick_nanos,
+        }
     }
 
     fn program_ended(&mut self, completion: ExecutionCompletion) -> Vec<Effect> {
@@ -1054,7 +1421,7 @@ impl OwnerState {
                 // Wake every detached Invocation wait, as execution's end does;
                 // an Invocation still waiting for a slot never dispatches.
                 let mut effects = vec![Effect::TerminateProgram];
-                effects.extend(self.abandon_waiting(|| Error::ProgramHostTerminated));
+                effects.extend(self.release_waiting(|| Error::ProgramHostTerminated));
                 effects.extend(self.advance_ending());
                 effects
             }
@@ -1079,6 +1446,7 @@ impl OwnerState {
             | Phase::Completing
             | Phase::Settling
             | Phase::Interrupting
+            | Phase::Recovering
             | Phase::Retired => Vec::new(),
         }
     }
@@ -1122,21 +1490,59 @@ impl OwnerState {
             | Phase::Completing
             | Phase::Stopped(_)
             | Phase::Interrupting
+            | Phase::Recovering
             | Phase::Retired => {}
         }
         effects.extend(self.unpark(now_unix_nanos));
         effects
     }
 
+    /// The idle tick, half a lease after the last commit started or the
+    /// last tick: an empty chunk renews the lease while nothing else is
+    /// pending or in flight; otherwise the tick is armed again, which also
+    /// keeps the owner's liveness judged while nothing else reaches the
+    /// mailbox.
     fn idle_tick(&mut self) -> Vec<Effect> {
+        if self.phase == Phase::Retired {
+            return Vec::new();
+        }
         if self.phase != Phase::Running
             || self.stop_requested
             || self.in_flight.is_some()
             || self.pending_chunks() > 0
         {
-            return Vec::new();
+            return vec![self.arm_idle_tick()];
         }
         self.commit(ChunkBuild::default())
+    }
+
+    /// A recovered owner applies one message (ADR 0018, Recovery): the sweep
+    /// queued every Approval Request timer that passed, in deadline order,
+    /// then [`Message::Recover`], which writes the expiries and the Run's end
+    /// in one chunk. The write's answer, or a stop (the Shutdown Drain is
+    /// out), retires the owner. No Program runs here and no outside request
+    /// finds the owner, so nothing else reaches it.
+    fn recovering(&mut self, message: Message) -> Vec<Effect> {
+        match message {
+            Message::Timer(Timer::Approval(approval)) => {
+                self.recovered_expiries.push(approval);
+                Vec::new()
+            }
+            Message::Recover => vec![Effect::Recover {
+                expired: std::mem::take(&mut self.recovered_expiries),
+            }],
+            Message::Interrupted(_) | Message::Stop => self.retire(false),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// Arms `timer` for `at_unix_nanos`: the host sleeps the rest of the way
+/// from `now_unix_nanos` on its own clock.
+fn arm_at(timer: Timer, at_unix_nanos: i64, now_unix_nanos: i64) -> Effect {
+    Effect::ArmTimer {
+        timer,
+        after_nanos: at_unix_nanos.saturating_sub(now_unix_nanos).max(0),
     }
 }
 
@@ -1156,16 +1562,39 @@ pub(crate) fn apply(state: &mut OwnerState, message: Message, now_unix_nanos: i6
     effects
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per message, each a call into the owner's state"
+)]
 fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) -> Vec<Effect> {
+    if state.phase == Phase::Recovering {
+        return state.recovering(message);
+    }
     match message {
+        // The idle tick is armed from the launch, not the start mark: a
+        // start mark the database keeps not answering is judged by the
+        // owner's liveness like any other write, and the Run deadline alone
+        // does not end an owner still starting.
         Message::Launch => {
             state.phase = Phase::Starting;
-            vec![Effect::Start]
+            vec![
+                Effect::Start,
+                arm_at(
+                    Timer::RunDeadline,
+                    state.limits.deadline_at_unix_nanos,
+                    now_unix_nanos,
+                ),
+                state.arm_idle_tick(),
+            ]
         }
         // While the owner interrupts its Run, the chunk and the start mark
         // still in flight may answer and the Program may end: none of it
         // changes what is written. The Interrupted record alone retires it.
-        Message::Interrupted(_) if state.phase == Phase::Interrupting => state.retire(false),
+        // The Interrupted record this owner wrote ended its Run; a record
+        // another writer made first did not.
+        Message::Interrupted(recorded) if state.phase == Phase::Interrupting => {
+            state.retire(recorded.is_ok())
+        }
         Message::Started(_)
         | Message::ProgramEnded(_)
         | Message::Committed
@@ -1173,13 +1602,17 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         | Message::CommitRejected(_)
         | Message::Completed(_)
         | Message::SettleAttempted(_)
-        | Message::GraceExpired
+        | Message::Timer(_)
+        | Message::Parked(_)
+        | Message::Changed
+        | Message::Prechecked { .. }
         | Message::Interrupted(_)
             if state.phase == Phase::Interrupting =>
         {
             Vec::new()
         }
-        Message::Interrupted(_) => Vec::new(),
+        // Only a recovered owner ends its Run on a queued end.
+        Message::Interrupted(_) | Message::Recover => Vec::new(),
         Message::Started(Ok(Some(started))) => state.started(started, now_unix_nanos),
         // The terminal write refused a Run with a nonterminal Invocation (or
         // failed). Work that arrived meanwhile may be that Invocation's end,
@@ -1240,8 +1673,10 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         Message::DispatchEnded => state.dispatch_ended(now_unix_nanos),
         Message::Decide { request, reply } => state.decide(request, reply, now_unix_nanos),
         Message::Cancel { requester, reply } => state.cancel(requester, reply, now_unix_nanos),
-        Message::Deadline => state.deadline(now_unix_nanos),
-        Message::GraceExpired => state.grace_expired(),
+        Message::Timer(timer) => state.timer(timer, now_unix_nanos),
+        Message::Parked(parked) => state.park(parked, now_unix_nanos),
+        Message::Changed => state.changed(),
+        Message::Prechecked { check, found } => state.prechecked(check, found),
         Message::ProgramEnded(completion) => state.program_ended(completion),
         Message::Committed => state.committed(now_unix_nanos),
         Message::RequestRecorded { key, answer } => {
@@ -1250,7 +1685,6 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         }
         Message::CommitRejected(rejection) => state.rejected(rejection, now_unix_nanos),
         Message::Stop => state.stop(),
-        Message::IdleTick => state.idle_tick(),
         Message::Drained => state.commit_when_free(),
     }
 }

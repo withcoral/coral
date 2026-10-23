@@ -69,7 +69,7 @@ export function provider(
 export function builtinProvider(id: string): ProviderView {
   const view: ProviderView = { ...provider(id, 'Coral', ''), builtin: true }
   view.operations = [
-    operation(view, 'createProvider'),
+    operation(view, 'addProvider'),
     // Read-only, so they start enabled.
     ...['listProviders', 'getProvider'].map((key) => ({
       ...operation(view, key),

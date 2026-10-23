@@ -142,7 +142,7 @@ describe('attemptProgress', () => {
       'account',
     ],
   ])("opens the agent's link for %s at the operations", (_, route, over, stage, next) => {
-    // The link Coral returns when a createProvider call needs sign-in names
+    // The link Coral returns when an addProvider call needs sign-in names
     // only the Setup, which holds the namespace and route the Program asked for.
     const requested = {
       ...setup,
@@ -337,7 +337,7 @@ describe('accepting the listed operations', () => {
   })
 })
 
-/** A Setup a Program's createProvider call prepared, asking for `route`. */
+/** A Setup a Program's addProvider call prepared, asking for `route`. */
 const requested = (route: 'fixed' | 'caller') => ({ request: { namespace: 'weather', route } })
 
 describe('accountStep', () => {

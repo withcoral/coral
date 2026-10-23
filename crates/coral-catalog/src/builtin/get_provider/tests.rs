@@ -1,4 +1,4 @@
-//! The Provider Configuration `getProvider` returns: the shapes `createProvider`
+//! The Provider Configuration `getProvider` returns: the shapes `addProvider`
 //! takes, without a fixed credential value.
 
 use std::collections::BTreeMap;
@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use super::{ConfigurationOutput, GetProviderArguments};
-use crate::builtin::CreateProviderArguments;
+use crate::builtin::AddProviderArguments;
 use crate::{
     AuthenticationConfiguration as Auth, CredentialSource, HeaderBinding,
     OAuthClientAuthenticationMethod, OAuthClientBootstrap, OAuthClientPolicy, OAuthPkcePolicy,
@@ -142,7 +142,7 @@ fn configured_reads() -> Vec<(Auth, Value)> {
             }),
         ),
         (
-            // A blank part is no value, so it reads as createProvider takes it.
+            // A blank part is no value, so it reads as addProvider takes it.
             Auth::BasicAuth {
                 username: literal(CANARY),
                 password: literal(""),
@@ -278,10 +278,10 @@ fn configured_reads() -> Vec<(Auth, Value)> {
     ]
 }
 
-/// The configuration `arguments` give `createProvider`, each field over an
+/// The configuration `arguments` give `addProvider`, each field over an
 /// empty suggestion.
 fn written(arguments: &Value) -> ProviderConfiguration {
-    CreateProviderArguments::parse(arguments)
+    AddProviderArguments::parse(arguments)
         .unwrap_or_else(|problems| panic!("{arguments} is valid: {problems:?}"))
         .choices
         .over(ProviderConfiguration {
@@ -293,11 +293,11 @@ fn written(arguments: &Value) -> ProviderConfiguration {
         })
 }
 
-// Catches: a read a Program cannot send back to createProvider, or one that
+// Catches: a read a Program cannot send back to addProvider, or one that
 // sends back a different configuration than the one saved.
 #[test]
 fn a_configuration_a_program_wrote_reads_back_as_the_same_configuration() {
-    for arguments in super::super::create_provider::tests::valid_arguments() {
+    for arguments in super::super::add_provider::tests::valid_arguments() {
         let saved = written(&arguments);
         let read = serde_json::to_value(ConfigurationOutput::new(
             saved.display_name.clone(),
@@ -354,8 +354,8 @@ fn a_fact_coral_set_is_rejected_when_sent_back() {
             "credentialRoute": "caller",
             "authentication": read(saved.clone()),
         });
-        let problems = CreateProviderArguments::parse(&arguments)
-            .expect_err(&format!("{saved:?} is rejected"));
+        let problems =
+            AddProviderArguments::parse(&arguments).expect_err(&format!("{saved:?} is rejected"));
         let found = problems
             .iter()
             .map(|problem| (problem.field(), problem.reason()))

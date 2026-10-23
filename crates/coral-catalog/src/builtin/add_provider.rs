@@ -1,9 +1,10 @@
-//! `coral.workspace.createProvider`: the schemas a Program is typed from, the
+//! `coral.workspace.addProvider`: the schemas a Program is typed from, the
 //! arguments Coral reads against the input schema, and the result it writes
 //! against the output schema.
 
 use std::collections::BTreeMap;
 
+use coral_workspace::WorkspaceAction;
 use schemars::JsonSchema;
 use schemars::generate::Contract;
 use serde::{Deserialize, Serialize};
@@ -22,13 +23,17 @@ use crate::{OperationHints, OperationPresentation};
 #[cfg(test)]
 pub(super) mod tests;
 
+/// Adding a Provider changes the Workspace's configuration, which only an
+/// Owner does.
+pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Configure;
+
 pub(super) fn definition() -> Definition {
     Definition {
-        key: BuiltinOperation::CreateProvider.key(),
-        summary: "Create a Provider from an OpenAPI document or URL, or an MCP server URL",
+        key: BuiltinOperation::AddProvider.key(),
+        summary: "Add a Provider from an OpenAPI document or URL, or an MCP server URL",
         presentation: OperationPresentation::new(
-            Some("Create provider".to_string()),
-            "Create a Provider in this Workspace from an OpenAPI document, an OpenAPI \
+            Some("Add provider".to_string()),
+            "Add a Provider to this Workspace from an OpenAPI document, an OpenAPI \
              document URL, or an MCP server URL. Coral publishes it when nobody needs to \
              sign in. Otherwise it returns a Coral UI link where a person finishes \
              and publishes it."
@@ -57,15 +62,15 @@ pub(super) fn definition() -> Definition {
         // No read-only hint: the default Operation Access State is approval_required.
         hints: OperationHints::default(),
         input: derived_schema::<Arguments>(Contract::Deserialize),
-        output: derived_schema::<CreateProviderResult>(Contract::Serialize),
+        output: derived_schema::<AddProviderResult>(Contract::Serialize),
     }
 }
 
-/// `createProvider`'s arguments, checked by every rule that needs no
+/// `addProvider`'s arguments, checked by every rule that needs no
 /// Workspace state. The Provider's configuration leaves each omitted field to
 /// the source's suggestion.
 #[derive(Debug, Clone)]
-pub struct CreateProviderArguments {
+pub struct AddProviderArguments {
     /// A valid Provider Namespace.
     pub namespace: String,
     /// Where Coral reads the Provider from.
@@ -76,7 +81,7 @@ pub struct CreateProviderArguments {
     pub choices: ConfigurationChoices,
 }
 
-/// `createProvider`'s arguments as a Program writes them. The input schema
+/// `addProvider`'s arguments as a Program writes them. The input schema
 /// is derived from these types, so the two cannot disagree on a shape.
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -143,7 +148,7 @@ fn require_credential_route(schema: &mut schemars::Schema) {
     }
 }
 
-impl CreateProviderArguments {
+impl AddProviderArguments {
     /// Reads the arguments: the shape first, then the namespace syntax, the
     /// route and the source, without any network call.
     ///
@@ -190,11 +195,11 @@ impl CreateProviderArguments {
     }
 }
 
-/// What `createProvider` returns.
+/// What `addProvider` returns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(tag = "status", rename_all = "snake_case")]
 #[schemars(deny_unknown_fields, description = "")]
-pub enum CreateProviderResult {
+pub enum AddProviderResult {
     /// Coral published the Provider, and the Program can call it now.
     #[schemars(description = "Coral published the Provider. You can call it now.")]
     Published {
@@ -219,7 +224,7 @@ pub enum CreateProviderResult {
     },
 }
 
-impl CreateProviderResult {
+impl AddProviderResult {
     /// The Operation Result.
     #[must_use]
     pub fn into_operation_result(self) -> Value {

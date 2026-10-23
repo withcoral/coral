@@ -63,14 +63,14 @@ async function builtinCall(
  */
 async function weatherProvider({ page, target, actor, step }: Session, source: object) {
   const api = managementClients(actor.accessToken)
-  const workspace = await programWorkspace(api, step, ['createProvider', 'updateProvider'])
+  const workspace = await programWorkspace(api, step, ['addProvider', 'updateProvider'])
   const id = workspace.name.split('/')[1]
   const program = programRunner(page, target, id, {
     accessToken: await mcpToken(page, id),
     taskIntent: 'Update the weather provider',
   })
   await step('The Program adds a provider that needs no sign-in', async () => {
-    const created = await builtinCall(program, 'createProvider', {
+    const created = await builtinCall(program, 'addProvider', {
       namespace: 'weather',
       source,
       credentialRoute: 'none',
@@ -105,7 +105,7 @@ async function recordsProvider(
   scopes: string[],
 ) {
   const api = managementClients(actor.accessToken)
-  const workspace = await programWorkspace(api, step, ['createProvider', 'updateProvider'])
+  const workspace = await programWorkspace(api, step, ['addProvider', 'updateProvider'])
   const id = workspace.name.split('/')[1]
   const program = programRunner(page, target, id, {
     accessToken: await mcpToken(page, id),
@@ -114,7 +114,7 @@ async function recordsProvider(
   await step(
     'The Program adds an OAuth provider, and you sign in to its shared account',
     async () => {
-      const created = await builtinCall(program, 'createProvider', {
+      const created = await builtinCall(program, 'addProvider', {
         namespace: 'records',
         source: { kind: 'openapi_document', document: upstream.document('Records').toString() },
         credentialRoute: 'fixed',
@@ -427,7 +427,7 @@ test("Another owner finds nothing at an owner's update link, and the owner who g
   await withBrowserSession(
     context,
     async ({ page, target, step }) => {
-      workspace = (await programWorkspace(api, step, ['createProvider', 'updateProvider'])).name
+      workspace = (await programWorkspace(api, step, ['addProvider', 'updateProvider'])).name
       await api.memberships.createWorkspaceMembership({
         parent: workspace,
         email: bob.email,
@@ -442,7 +442,7 @@ test("Another owner finds nothing at an owner's update link, and the owner who g
       await step(
         "Alice's Program adds a provider, then replaces its source and gets a link",
         async () => {
-          const created = await builtinCall(program, 'createProvider', {
+          const created = await builtinCall(program, 'addProvider', {
             namespace: 'weather',
             source: credentialFree({ getForecast: {}, oldReport: {} }),
             credentialRoute: 'none',

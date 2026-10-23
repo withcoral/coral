@@ -54,6 +54,8 @@ struct Fixture {
     member: AuthenticatedUser,
     workspace: Workspace,
     workspaces: WorkspaceModule,
+    /// The Provider module the server composes, for arrangement only.
+    provider_module: coral_provider::ProviderModule,
     tasks: coral_task::TaskModule,
     runs: coral_run::RunModule,
     saved_functions: coral_functions::SavedFunctionModule,
@@ -253,11 +255,24 @@ impl Fixture {
             member,
             workspace,
             workspaces,
+            provider_module: providers,
             runs,
             tasks,
             saved_functions,
             search_index,
         }
+    }
+
+    /// Gives the Workspace its Built-in Provider, as creating one in
+    /// production does.
+    async fn install_builtin(&self) {
+        let database = self.database.database();
+        let mut tx = database.begin().await.unwrap();
+        self.provider_module
+            .install_builtin_in_transaction(&mut tx, &change(&self.owner), self.workspace.id())
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
     }
 
     fn token(&self, user: &AuthenticatedUser, audience: &str) -> String {

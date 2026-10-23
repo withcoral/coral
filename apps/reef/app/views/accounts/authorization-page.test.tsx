@@ -15,7 +15,6 @@ const view: AuthorizationView = {
   state: 'pending',
   oauth: false,
   grantedScope: '',
-  expiresAt: '2026-09-24T12:15:00.000Z',
   credentialFields: [{ name: 'token', label: 'Token', description: '', sensitive: true }],
   form: { csrf: 'test', requestId: 'test-request' },
 }
@@ -38,7 +37,19 @@ it.each([false, true])(
     const html = render({ oauth })
     const actions = [...html.matchAll(/<form[^>]*action="([^"]+)"/g)].map((match) => match[1])
     expect(actions).toEqual([view.path, view.path])
-    expect(html).toContain(`href="${view.path}"`)
+  },
+)
+
+it.each([false, true])(
+  'offers only the main action and Cancel while the connection is open (OAuth: %s)',
+  (oauth) => {
+    // Catches: a way back that leaves the connection open behind you.
+    renderRoute(<AuthorizationPage view={{ ...view, oauth }} />)
+    screen.getByRole('button', { name: oauth ? 'Continue to sign in' : 'Connect account' })
+    const cancel = screen.getByRole<HTMLButtonElement>('button', { name: 'Cancel' })
+    expect(new FormData(cancel.form!).get('intent')).toBe('cancel')
+    expect(screen.queryByRole('link', { name: 'Check connection' })).toBeNull()
+    expect(screen.queryByRole('link', { name: 'Return to run' })).toBeNull()
   },
 )
 
@@ -63,6 +74,17 @@ it('keeps direct account settings entry usable without inventing a Run', () => {
   expect(html).toContain('Back to activity')
   expect(html).not.toContain('Return to run')
   expect(html).not.toContain('Your run may still need approval.')
+})
+
+// Catches: a connection started outside a run offering "Return to run".
+it.each([
+  ['settings', '/workspaces/w/providers/p/settings', 'Return to settings'],
+  ['Accounts', '/workspaces/w/accounts', 'Return to accounts'],
+  ['your account page', '/workspaces/w/accounts/p', 'Return to account'],
+])('names %s, not a run, as the way back', (_, returnTo, label) => {
+  renderRoute(<AuthorizationPage view={{ ...view, state: 'expired', returnTo }} />)
+  expect(screen.getByRole('link', { name: label }).getAttribute('href')).toBe(returnTo)
+  expect(screen.queryByText(/your run/)).toBeNull()
 })
 
 it.each(['failed', 'expired', 'canceled'] as const)(

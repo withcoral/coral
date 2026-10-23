@@ -4,10 +4,10 @@ mod error;
 mod id_token;
 mod provider_client;
 mod request;
+mod sealed_handshake;
 pub use request::WorkspaceAuthentication;
 #[cfg(test)]
 mod request_tests;
-pub(crate) mod state_store;
 
 pub use authorization_server::{CoralAuthorizationServer, RunningCoralAuthorizationServer};
 pub use config::AuthSettings;
@@ -30,6 +30,7 @@ pub(in crate::auth) const OIDC_CALLBACK_PATH: &str = "/auth/oidc/callback";
 #[cfg(test)]
 pub(super) mod test_config {
     use std::path::Path;
+    use std::sync::LazyLock;
 
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD;
@@ -53,8 +54,12 @@ pub(super) mod test_config {
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps)
     }
 
+    /// One session signing key for every test server, as every process of
+    /// one deployment shares its key.
+    static SIGNING_KEY: LazyLock<Vec<u8>> = LazyLock::new(coral_test_support::p256_pkcs8);
+
     /// Resolves settings for an authorization server at [`AUTH_ISSUER`] whose
-    /// upstream provider is `provider_issuer`, with a fresh session signing key.
+    /// upstream provider is `provider_issuer`, with the shared test signing key.
     ///
     /// `extra` is appended as whole TOML tables. It may define `[auth]`
     /// fields, because TOML allows a table after its sub-tables.
@@ -69,7 +74,7 @@ pub(super) mod test_config {
         ))
         .expect("valid auth config")
         .expect("auth settings");
-        let signing_key = STANDARD.encode(coral_test_support::p256_pkcs8());
+        let signing_key = STANDARD.encode(&*SIGNING_KEY);
         settings
             .resolve_runtime_dependencies(Path::new("config.toml"), &|name| {
                 Ok((name == "CORAL_SESSION_SIGNING_KEY").then(|| signing_key.clone()))

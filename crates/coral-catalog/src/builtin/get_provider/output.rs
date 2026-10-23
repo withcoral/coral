@@ -1,5 +1,5 @@
 //! A Provider Configuration as `getProvider` returns it: the shapes the
-//! `createProvider` input takes, and the facts Coral set itself, converted
+//! `addProvider` input takes, and the facts Coral set itself, converted
 //! explicitly from Coral's configuration types. Coral's stored configuration
 //! encoding never becomes the Program contract, and no output carries a fixed
 //! credential value.
@@ -19,10 +19,10 @@ use crate::{
 const FIELD_DESCRIPTION: &str = "A field from credentialFields.";
 /// An MCP server's authorization server, which only discovery sets.
 const ISSUER_DESCRIPTION: &str = "The MCP server's authorization server, which Coral discovered. \
-     createProvider does not take it.";
+     addProvider does not take it.";
 /// An MCP server's resource indicator, which only discovery sets.
 const RESOURCE_DESCRIPTION: &str = "The MCP server's resource indicator, which Coral discovered. \
-     createProvider does not take it.";
+     addProvider does not take it.";
 
 /// Where Coral last read a Provider from. An uploaded document reads without
 /// its content.
@@ -333,7 +333,7 @@ pub(super) struct ClientOutput {
     #[schemars(
         with = "RegistrationOutput",
         description = "How Coral registered the application itself. Absent when a person \
-                       registered it. createProvider does not take it: omit client to let Coral \
+                       registered it. addProvider does not take it: omit client to let Coral \
                        register one."
     )]
     registration: Option<RegistrationOutput>,

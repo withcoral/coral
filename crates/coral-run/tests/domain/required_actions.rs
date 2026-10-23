@@ -198,7 +198,9 @@ async fn connection_selection_matches_only_the_run_that_waited_on_it() {
 }
 
 /// A later Run's replacement request never retargets the original Run, and a
-/// request's expiry removes its actionability but not its retained reference.
+/// request's recorded expiry removes its actionability but not its retained
+/// reference. The deadline passing on the clock records nothing: the request
+/// stays a current action until a holder records its expiry.
 #[tokio::test(flavor = "multi_thread")]
 async fn connection_selection_never_retargets_to_a_replacement_request() {
     let retained = RetainedConnection::new().await;
@@ -233,6 +235,29 @@ async fn connection_selection_never_retargets_to_a_replacement_request() {
         .clock
         .next
         .store(deadline, Ordering::SeqCst);
+    let past_deadline = retained
+        .select(user, &replacement_run, replacement)
+        .await
+        .unwrap();
+    assert_eq!(
+        past_deadline.summary.action_page.unwrap().total,
+        1,
+        "a reader shows the recorded pending request beside its deadline"
+    );
+    // The User's own read of the request records its expiry.
+    assert_eq!(
+        retained
+            .accounts
+            .get_connection_request(
+                &change(retained.operation.user.clone(), deadline, '7'),
+                workspace,
+                replacement,
+            )
+            .await
+            .unwrap()
+            .state,
+        coral_provider::account::ConnectionState::Expired
+    );
     let expired = retained
         .select(user, &replacement_run, replacement)
         .await

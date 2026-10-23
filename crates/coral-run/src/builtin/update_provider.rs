@@ -19,12 +19,14 @@ use crate::{CoralFailure, Error, InvocationId, InvocationResultKind, Rejection};
 use async_trait::async_trait;
 use coral_catalog::{SourceChange, UpdateProviderArguments, UpdateProviderResult};
 use coral_db::Transaction;
+use coral_policy::ExactOperationRules;
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::{
     Provider, ProviderDisplayName, ProviderPublicationOutcome, ProviderRegenerationPublication,
     ProviderRegenerationRequest, ProviderSetup, ProviderSetupId, ProviderSetupInputKind,
     ProviderSetupSource, ProviderWithConfiguration, PublishedProvider, WorkspaceProviderPublisher,
 };
+use coral_workspace::ChangeContext;
 
 /// `updateProvider`'s arguments in Coral's domain types.
 #[derive(Clone)]
@@ -69,17 +71,19 @@ impl UpdateProvider {
     /// Reef page where a person finishes it. The call never waits for that
     /// person.
     pub(super) async fn perform(&self, host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
+        // Only a User reaches updateProvider; an Agent changes no configuration.
+        let Some(context) = host.context else {
+            return Err(Error::InvocationRejected(
+                CoralFailure::AuthorityLost.into(),
+            ));
+        };
         let saved = host
             .providers
-            .inspect_provider_configuration(
-                host.context.actor(),
-                host.workspace_id,
-                &self.namespace,
-            )
+            .inspect_provider_configuration(context.actor(), host.workspace_id, &self.namespace)
             .await
             .map_err(update_error)?;
         if let Some(name) = self.arguments.rename() {
-            return rename(host, &saved.provider, name).await;
+            return rename(host, context, &saved.provider, name).await;
         }
         let source = self.source(&saved)?;
         let update = TargetedUpdate {
@@ -87,7 +91,7 @@ impl UpdateProvider {
             provider: saved.provider,
             source,
         };
-        setup_operation::perform(&update, host).await
+        setup_operation::perform(&update, host, context).await
     }
 
     /// Where the Update Setup reads the Provider from. A refresh reads the
@@ -130,10 +134,14 @@ impl SetupOperation for TargetedUpdate<'_> {
     type Configured = ConfiguredUpdate;
     type Publication = ProviderRegenerationPublication;
 
-    async fn prepare(&self, host: &BuiltinHost<'_>) -> Result<ProviderSetup, Error> {
+    async fn prepare(
+        &self,
+        host: &BuiltinHost<'_>,
+        context: &ChangeContext,
+    ) -> Result<ProviderSetup, Error> {
         host.providers
             .prepare_setup(
-                host.context,
+                context,
                 host.workspace_id,
                 self.source.clone(),
                 Some(self.provider.id()),
@@ -147,11 +155,12 @@ impl SetupOperation for TargetedUpdate<'_> {
     async fn configure(
         &self,
         host: &BuiltinHost<'_>,
+        context: &ChangeContext,
         setup: &ProviderSetup,
     ) -> Result<(Publisher, ConfiguredUpdate), Error> {
         let review = host
             .providers
-            .review_setup_configuration(host.context.actor(), host.workspace_id, setup.id())
+            .review_setup_configuration(context.actor(), host.workspace_id, setup.id())
             .await
             .map_err(update_error)?;
         // An Update Setup starts from the Provider's saved configuration.
@@ -168,7 +177,7 @@ impl SetupOperation for TargetedUpdate<'_> {
         let confirmed = host
             .providers
             .confirm_setup_configuration(
-                host.context,
+                context,
                 host.workspace_id,
                 setup.id(),
                 review.revision,
@@ -184,7 +193,7 @@ impl SetupOperation for TargetedUpdate<'_> {
         let publishability = host
             .providers
             .update_publishability(
-                host.context.actor(),
+                context.actor(),
                 host.workspace_id,
                 setup.id(),
                 self.call
@@ -196,6 +205,7 @@ impl SetupOperation for TargetedUpdate<'_> {
             .map_err(update_error)?;
         let publisher = setup_operation::publisher(
             host,
+            context,
             setup.id(),
             publishability,
             confirmed.confirmed.as_ref(),
@@ -259,11 +269,12 @@ impl SetupOperation for TargetedUpdate<'_> {
     async fn publish(
         &self,
         host: &BuiltinHost<'_>,
+        context: &ChangeContext,
         publisher: &dyn WorkspaceProviderPublisher,
         setup: &ProviderSetupId,
         configured: ConfiguredUpdate,
     ) -> Result<ProviderRegenerationPublication, coral_provider::Error> {
-        let context = host.context.clone().with_etag(&self.provider.etag())?;
+        let context = context.clone().with_etag(&self.provider.etag())?;
         publisher
             .regenerate_workspace_provider(
                 &context,
@@ -300,12 +311,9 @@ impl SetupOperation for TargetedUpdate<'_> {
                 CoralFailure::ProviderPublicationFailed.into(),
             ));
         }
-        let details = host
-            .providers
-            .published_provider(host.workspace_id, &self.provider, host.principal)
+        setup_operation::published_result(host, self.provider.id(), published_result)
             .await
-            .map_err(update_error)?;
-        Ok(published_result(&details))
+            .map_err(result_error)
     }
 }
 
@@ -313,6 +321,7 @@ impl SetupOperation for TargetedUpdate<'_> {
 /// it had when the call began, and returns what the Program needs to call it.
 async fn rename(
     host: &BuiltinHost<'_>,
+    context: &ChangeContext,
     provider: &Provider,
     name: &str,
 ) -> Result<serde_json::Value, Error> {
@@ -332,7 +341,7 @@ async fn rename(
     if !host.run.still_current().await? {
         return Err(Error::ProgramHostTerminated);
     }
-    let context = host.context.clone().with_etag(&provider.etag())?;
+    let context = context.clone().with_etag(&provider.etag())?;
     let renamed = publisher
         .rename_provider(&context, host.workspace_id, provider.id(), display_name)
         .await
@@ -344,12 +353,9 @@ async fn rename(
             }
             other => update_error(other),
         })?;
-    let details = host
-        .providers
-        .published_provider(host.workspace_id, &renamed, host.principal)
+    setup_operation::published_result(host, renamed.id(), published_result)
         .await
-        .map_err(update_error)?;
-    Ok(published_result(&details))
+        .map_err(result_error)
 }
 
 /// Settles an `updateProvider` whose worker was lost after the dispatch
@@ -387,14 +393,25 @@ pub(super) async fn recover(
     recover_published(transaction, run, provider, published_result).await
 }
 
-/// The Operation Result for a change Coral published. It says what Coral
-/// resolved, so the Program need not guess whether its next call needs a person.
-fn published_result(published: &PublishedProvider) -> serde_json::Value {
+/// The Operation Result for a change Coral published.
+fn published_result(
+    published: &PublishedProvider,
+    rules: &ExactOperationRules,
+) -> serde_json::Value {
     UpdateProviderResult::Published {
         namespace: published.provider.call_root().name().to_owned(),
-        facts: provider_facts(published),
+        facts: provider_facts(published, rules),
     }
     .into_operation_result()
+}
+
+/// A Provider deleted since Coral changed it is a failure the Program can
+/// catch, as when the call began.
+fn result_error(error: Error) -> Error {
+    match error {
+        Error::Provider(error) => update_error(error),
+        other => other,
+    }
 }
 
 /// A Provider that no longer holds the namespace is a failure the Program can

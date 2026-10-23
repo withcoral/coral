@@ -1,7 +1,8 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import * as Card from '@/wax/components/card'
 import { Divider } from '@/wax/components/divider'
 import { Container as ScrollArea } from '@/wax/components/scroll-area'
+import { DetailMotion } from './detail-motion'
 import { PanelClose, PanelFooterSlot, PanelInset, PanelInsetLabel } from './panel'
 import {
   ACCEPTED_PROGRAM_DOCUMENT_ID,
@@ -42,6 +43,7 @@ export function ExecutionSourceSplit({
   context,
   locatable,
   selectedRow,
+  position,
   close,
   children,
 }: {
@@ -56,6 +58,11 @@ export function ExecutionSourceSplit({
   locatable: boolean
   /** The selected record, whose stored location applies when the Run itself is not selected. */
   selectedRow: ActivityRow | null
+  /**
+   * The selected Operation Invocation or Program Run Event's position among the Run's records,
+   * when known. Between two known positions, the detail slides in that order.
+   */
+  position?: number
   /** The drawer's close control. The selected record's own sticky header holds it. */
   close?: React.ReactNode
   children: React.ReactNode
@@ -67,10 +74,15 @@ export function ExecutionSourceSplit({
   const [panelLabel, setPanelLabel] = useState<string>()
   const splitRef = useRef<HTMLDivElement>(null)
   // Each record's detail opens at its top; the source pane keeps its own position.
+  // A layout effect here runs after the scroll area attaches its viewport ref again.
   const detailRef = useRef<HTMLDivElement>(null)
-  const scrollDetailToTop = useCallback((content: HTMLDivElement | null) => {
-    if (content) detailRef.current?.scrollTo?.({ top: 0 })
-  }, [])
+  const record = selectedRow?.name
+  const opened = useRef(record)
+  useLayoutEffect(() => {
+    if (opened.current === record) return
+    opened.current = record
+    detailRef.current?.scrollTo?.({ top: 0 })
+  })
   const resizeSplit = (deltaY: number) => {
     const total = splitRef.current?.getBoundingClientRect().height
     if (!total) return
@@ -102,32 +114,35 @@ export function ExecutionSourceSplit({
           className={styles.detailPane}
           style={{ flexGrow: splitRatio, flexBasis: 0 }}
         >
-          {/* A labelled Panel, such as a review, names this one region around both its
-              evidence and its decision; without a label it is no region of its own. */}
-          <section aria-label={panelLabel} className={styles.detailRegion}>
-            {/* The record's header, with its close control, wraps to the pane's width. */}
-            <ScrollArea
-              className={styles.detailScroll}
-              viewportRef={detailRef}
-              surface="floating"
-              constrainWidth
-              scrollDirection="vertical"
-            >
-              <div key={selectedRow?.name} ref={scrollDetailToTop} className={styles.detailContent}>
-                {/* The record's own header names it and holds the close control; the split
-                    adds no Run header of its own, so a Run's header shows once. */}
-                <PanelInset value>
-                  <PanelInsetLabel value={setPanelLabel}>
-                    <PanelFooterSlot value={footer}>
-                      <PanelClose value={close}>{children}</PanelClose>
-                    </PanelFooterSlot>
-                  </PanelInsetLabel>
-                </PanelInset>
-              </div>
-            </ScrollArea>
-            {/* Outside the scroll area, the decision never scrolls away or sits under its fade. */}
-            <Card.Footer ref={setFooter} className={styles.detailFooter} />
-          </section>
+          {/* The record's evidence and its decision footer slide together as one card. */}
+          <DetailMotion record={record} position={position}>
+            {/* A labelled Panel, such as a review, names this one region around both its
+                evidence and its decision; without a label it is no region of its own. */}
+            <section aria-label={panelLabel} className={styles.detailRegion}>
+              {/* The record's header, with its close control, wraps to the pane's width. */}
+              <ScrollArea
+                className={styles.detailScroll}
+                viewportRef={detailRef}
+                surface="floating"
+                constrainWidth
+                scrollDirection="vertical"
+              >
+                <div key={record} className={styles.detailContent}>
+                  {/* The record's own header names it and holds the close control; the split
+                      adds no Run header of its own, so a Run's header shows once. */}
+                  <PanelInset value>
+                    <PanelInsetLabel value={setPanelLabel}>
+                      <PanelFooterSlot value={footer}>
+                        <PanelClose value={close}>{children}</PanelClose>
+                      </PanelFooterSlot>
+                    </PanelInsetLabel>
+                  </PanelInset>
+                </div>
+              </ScrollArea>
+              {/* Outside the scroll area, the decision never scrolls away or sits under its fade. */}
+              <Card.Footer ref={setFooter} className={styles.detailFooter} />
+            </section>
+          </DetailMotion>
         </section>
         <Divider
           label="Resize detail and source panes"
