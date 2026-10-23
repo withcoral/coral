@@ -437,19 +437,18 @@ export const unfinishedRun = (page: ActivityPage, row: ActivityRow | undefined):
  * another record of the Run already says.
  */
 function runningRun(page: ActivityPage, root: ActivityRow): RunRow | undefined {
-  if (root.kind === 'run') {
-    // A row the loader did not refresh can lag its Run's end. Once it read every
-    // record, its own read wins.
-    const read = page.liveLatest?.complete ? page.liveLatest.running?.[root.name] : root
-    return unfinishedRun(page, read) ? read : undefined
-  }
+  const named = page.liveLatest?.running?.[root.name]
+  // A row or a window the loader did not refresh can lag its Run's end. Once it read
+  // every record, its own read wins, whether the Task has ended or not: a Task's end
+  // never ends its Runs.
+  if (page.liveLatest?.complete) return unfinishedRun(page, named) ? named : undefined
+  if (root.kind === 'run') return unfinishedRun(page, root) ? root : undefined
   const loaded = page.expanded.includes(root.name) ? page.branches[root.name] : undefined
   const shown = loaded && !loaded.unavailable ? childWindow(loaded).items : []
   const window = shown
     .toSorted((a, b) => a.index - b.index)
     .map(({ row }) => row)
     .findLast((row) => unfinishedRun(page, row))
-  const named = page.liveLatest?.running?.[root.name]
   if (!unfinishedRun(page, named)) return window
   return window && Date.parse(window.startedAt) > Date.parse(named.startedAt) ? window : named
 }
