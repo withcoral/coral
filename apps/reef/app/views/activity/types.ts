@@ -338,9 +338,10 @@ export interface LiveLatest {
    */
   action?: { task: string; action: LiveAction }
   /**
-   * By top-level record, as Coral's records say: a Task's newest Run that runs by
-   * submission, for each Task whose row says one runs, and every standalone Run that
-   * runs, under its own name.
+   * By top-level record, as Coral's records say: every standalone Run that runs, under
+   * its own name, and a Task's newest Run that runs by submission. It names a Task only
+   * when the Task started `TAKS_MAX_AGE` ago or less and its row says a Run of it runs,
+   * so a Run of an older Task never shows here, even while it runs.
    */
   running?: Record<string, RunRow>
   /**
@@ -349,8 +350,9 @@ export interface LiveLatest {
    */
   newest?: string
   /**
-   * The loader read every top-level record, so `running` names every standalone Run
-   * that runs. A row of the list it did not refresh can lag its Run's end.
+   * The loader read every top-level record and every Task it looked in, so `running`
+   * names every Run that runs that page live mode may follow. A row or a Task window
+   * of the list it did not refresh can lag its Run's end, so `running` wins over them.
    */
   complete?: boolean
 }

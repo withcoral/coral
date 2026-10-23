@@ -91,9 +91,15 @@ function newTask(id: string, runs: RunModel[] = [], age = 0): Root {
 const world = {
   roots: [] as Root[],
   count: 0,
+  /** By Task, a window of its records that the list keeps although no read refreshes it. */
+  stale: {} as Record<string, ActivityRow[]>,
+  /** Each record the loader read open, in order. */
+  opened: [] as string[],
   reset(roots: Root[]) {
     this.roots = roots
     this.count = 0
+    this.stale = {}
+    this.opened = []
   },
   runs(): RunModel[] {
     return this.roots.flatMap((root) => (root.kind === 'task' ? root.runs : [root.run]))
@@ -115,6 +121,7 @@ const world = {
       | 'end'
       | 'end oldest'
       | 'complete'
+      | 'end oldest task'
       | 'fail oldest',
   ) {
     const runs = this.runs()
@@ -179,6 +186,13 @@ const world = {
     if (kind === 'fail oldest' && first) Object.assign(first, { ended: true, failed: true })
     if (kind === 'complete' && task?.kind === 'task')
       task.row = { ...task.row, outcome: 'succeeded', endedAt: at }
+    // The oldest Task and its Runs end, while the list keeps its window as it was: a
+    // snapshot of only the records you watch never refreshes it.
+    if (kind === 'end oldest task' && oldest?.kind === 'task') {
+      this.stale[oldest.row.name] = taskRecords(oldest)
+      for (const model of oldest.runs) model.ended = true
+      oldest.row = { ...oldest.row, outcome: 'succeeded', endedAt: at }
+    }
   },
   /** Adds an operation to `run`, which waits for your approval if `waits`. */
   operate(run: RunModel, waits = false) {
@@ -220,6 +234,11 @@ function children(model: RunModel): ActivityRow[] {
     },
   ]
 }
+/** The records of a Task: its Runs and tools, in order. */
+const taskRecords = (root: Extract<Root, { kind: 'task' }>) =>
+  [...root.runs.map((model) => ({ order: model.order, row: runView(model) })), ...root.tools]
+    .toSorted((a, b) => a.order - b.order)
+    .map(({ row }) => row)
 const branch = (rows: ActivityRow[]) => ({
   rows: rows.map((row, position) => ({ ...row, position })),
   total: String(rows.length),
@@ -238,30 +257,32 @@ function latestOf(): ActivityPage['liveLatest'] {
     )
     .filter(({ model }) => !model.ended && model.waiting)
     .toSorted((a, b) => startOf(a.model.waiting!) - startOf(b.model.waiting!))[0]
-  if (asking) {
-    const { root, model } = asking
-    return {
-      action: {
-        task: root.kind === 'task' ? root.row.name : '',
-        action: {
-          run: model.row.name,
-          record: model.waiting!,
-          request: approvalOf(model.waiting!),
-        },
-      },
-    }
+  const action = asking && {
+    task: asking.root.kind === 'task' ? asking.root.row.name : '',
+    action: {
+      run: asking.model.row.name,
+      record: asking.model.waiting!,
+      request: approvalOf(asking.model.waiting!),
+    },
   }
+  // By top-level record, its newest Run that runs. The loader reads every record.
   const running = Object.fromEntries(
     roots.flatMap((root) => {
-      if (root.kind !== 'task') return []
-      const newest = root.runs
+      const newest = (root.kind === 'task' ? root.runs : [root.run])
         .filter((model) => !model.ended)
         .toSorted((a, b) => a.order - b.order)
         .at(-1)
-      return newest ? [[root.row.name, runView(newest)]] : []
+      return newest
+        ? [[root.kind === 'task' ? root.row.name : newest.row.name, runView(newest)]]
+        : []
     }),
   )
-  return Object.keys(running).length ? { running } : undefined
+  if (!world.roots.length) return undefined
+  return {
+    ...(action && { action }),
+    ...(Object.keys(running).length && { running }),
+    complete: true,
+  }
 }
 
 function pageFor(url: URL): ActivityPage {
@@ -269,13 +290,10 @@ function pageFor(url: URL): ActivityPage {
   const record = query.get('record')
   const expanded = query.has('tree') ? query.getAll('expand') : []
   const branches: ActivityPage['branches'] = {}
+  if (record) world.opened.push(record)
   for (const root of world.roots)
     if (root.kind === 'task' && expanded.includes(root.row.name))
-      branches[root.row.name] = branch(
-        [...root.runs.map((model) => ({ order: model.order, row: runView(model) })), ...root.tools]
-          .toSorted((a, b) => a.order - b.order)
-          .map(({ row }) => row),
-      )
+      branches[root.row.name] = branch(world.stale[root.row.name] ?? taskRecords(root))
   for (const model of world.runs()) {
     const task = model.row.task ?? ''
     if (expanded.includes(model.row.name) && (!task || expanded.includes(task)))
@@ -413,6 +431,7 @@ function ScopesRoute() {
       {button('End oldest running run', () => world.change('end oldest'))}
       {button('Fail oldest running run', () => world.change('fail oldest'))}
       {button('Complete newest task', () => world.change('complete'))}
+      {button('End oldest task', () => world.change('end oldest task'))}
       <Activity
         page={page}
         windowKey="live-scopes"
@@ -1016,6 +1035,47 @@ export const FollowsNewWorkFromWhatItShows: Story = {
     await reviews('call.r8-op-9')
     await expect(address().get('record')).toBe(waits)
     await pressed()
+  },
+}
+
+/** The older Task, whose window the list keeps once it ends. */
+const keptTask = taskRow('older').name
+/** The newer Task, where the next Run starts. */
+const nextTask = taskRow('newer').name
+// Once a Run and its Task end, the list can keep a window of the Task that still says
+// the Run runs. Page live mode never reopens that Run, and follows the next one.
+export const PassesARunThatAKeptWindowSaysRuns: Story = {
+  // You expanded the older Task.
+  parameters: { initialEntry: `${list}?tree=1&expand=${encodeURIComponent(keptTask)}` },
+  beforeEach: () => {
+    // `a` runs in the older Task, the newer Task has no record yet, and `a` was
+    // submitted after every Run the newer Task will start.
+    world.reset([newTask('newer'), newTask('older', [newRun('a', keptTask, 9)])])
+  },
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, address, press, selects, idle } = await surface(context)
+    const a = runRow('a', keptTask).name
+    await userEvent.click(latest())
+    await selects('Run a', 'run a')
+
+    // `a` and its Task end. The older Task's window still says `a` runs. Nothing runs,
+    // so live mode shows the newest record and stays there.
+    await press('End oldest task')
+    await selects('Task newer', 'Task newer')
+    await idle()
+    await selects('Task newer', 'Task newer')
+    await expect(address().get('record')).toBe(nextTask)
+
+    // A new Run of the newer Task opens, with no further click.
+    await press('Add run to newest task')
+    await selects('Run r1', 'run r1')
+    await expect(address().get('record')).toBe(runRow('r1', nextTask).name)
+    await expect(address().get('live')).toBe('latest')
+    // Once the newer Task opened, live mode never read `a` open again. On screen, a
+    // reopened Run gives way at once, so the loader's reads are what show it.
+    const reads = world.opened.slice(world.opened.indexOf(nextTask))
+    await expect(reads.filter((record) => record.startsWith(a))).toEqual([])
   },
 }
 

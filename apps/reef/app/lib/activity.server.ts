@@ -1006,14 +1006,15 @@ async function oldestRunAction(
  *   request time. The candidates are the Runs that run and wait on you that the list,
  *   a loaded window or your queue of required actions shows. Your queue lists a shared
  *   connection once, under one Run, so while it holds a connection, every Task whose
- *   row says a Run of it runs is read for the other Runs that wait. An archived
+ *   row says a Run of it runs is read in full for the other Runs that wait. That read
+ *   also finds its newest Run that runs, so no window is read twice. An archived
  *   workspace takes no action, so it reads none.
  * - `running`: every standalone Run that runs, and by Task, its newest Run that runs,
  *   read back from its end one window at a time.
  * - `newest`: the newest top-level record, when the page does not hold it, such as a
  *   snapshot of only the records you watch.
- * - `complete`: it read every top-level record, so `running` names every standalone Run
- *   that runs.
+ * - `complete`: it read every top-level record and every Task it looked in, so
+ *   `running` names every Run that runs that it may follow.
  * It reads the Runs of a Task only while its row in the list says a child Run runs
  * (`contextImpactPartial`). In a top-level record of this list, Coral sets it from the
  * state of each child Run you may see, apart from its byte measurement (coral-task
@@ -1042,6 +1043,10 @@ async function liveLatestWork(
   )
   // The Runs that wait on you, with their Task.
   const asking = new Map<string, string>()
+  // By Task, its newest Run that runs, as `readRuns` read it.
+  const newestRunning = new Map<string, RunRow | undefined>()
+  // Whether `readRuns` read every Task it looked in.
+  let tasksRead = true
   for (const row of roots)
     if (unfinishedRun(page, row) && row.requiresAction) asking.set(row.name, '')
   for (const task of tasks)
@@ -1060,11 +1065,7 @@ async function liveLatestWork(
       if (unfinishedRun(page, run) && (eligible.has(run.task) || asking.has(run.name)))
         asking.set(run.name, run.task)
     if (queue.some(({ action }) => action.kind === 'account_connection'))
-      for (const task of tasks)
-        await newestRunsOf(task.name, (row) => {
-          if (unfinishedRun(page, row) && row.requiresAction) asking.set(row.name, task.name)
-          return false
-        })
+      for (const task of tasks) await readRuns(task.name, { waiting: true })
     const timed = await Promise.all(
       [...asking.keys()].map((run) => runActions(run, undefined, api, scope, signal)),
     )
@@ -1074,15 +1075,31 @@ async function liveLatestWork(
   const listed = new Set(page.rows.map((row) => row.name))
   for (const row of roots)
     if (row.kind === 'run' && unfinishedRun(page, row)) (found.running ??= {})[row.name] = row
-  for (const task of tasks)
-    await newestRunsOf(task.name, (row) => {
-      if (!unfinishedRun(page, row)) return false
-      ;(found.running ??= {})[task.name] = row
-      return true
-    })
+  for (const task of tasks) {
+    if (!newestRunning.has(task.name)) await readRuns(task.name, { waiting: false })
+    const run = newestRunning.get(task.name)
+    if (run) (found.running ??= {})[task.name] = run
+  }
   if (roots[0] && !listed.has(roots[0].name)) found.newest = roots[0].name
-  if (complete && roots.length) found.complete = true
+  if (complete && tasksRead && roots.length) found.complete = true
   return found.action || found.running || found.newest || found.complete ? found : undefined
+
+  /**
+   * Reads the Runs of `task` from its newest back, once per snapshot, for its newest
+   * Run that runs. With `waiting`, it reads every Run, for the Runs that wait on you too.
+   */
+  async function readRuns(task: string, { waiting }: { waiting: boolean }) {
+    let run: RunRow | undefined
+    const read = await newestRunsOf(task, (row) => {
+      if (!unfinishedRun(page, row)) return false
+      run ??= row
+      if (waiting && row.requiresAction) asking.set(row.name, task)
+      return !waiting
+    })
+    newestRunning.set(task, run)
+    // A read cut short still found the newest Run that runs, when it found one.
+    if (!read && !run) tasksRead = false
+  }
 
   /**
    * Every top-level record in the list's scope, newest first: the newest page the list
@@ -1114,7 +1131,8 @@ async function liveLatestWork(
 
   /**
    * Visits the Runs of `task` from its newest back until `visit` says stop: those its
-   * loaded window holds through its end, then the rest read from Coral.
+   * loaded window holds through its end, then the rest read from Coral. False when Reef
+   * could not read a window before it stopped.
    */
   async function newestRunsOf(task: string, visit: (row: RunRow) => boolean) {
     const branch = page.expanded.includes(task) ? page.branches[task] : undefined
@@ -1124,23 +1142,24 @@ async function liveLatestWork(
       const end = Math.max(branch.offset ?? 0, ...items.map(({ index }) => index + 1))
       if (end >= total) {
         for (const { row } of items.toSorted((a, b) => b.index - a.index))
-          if (row.kind === 'run' && visit(row)) return
+          if (row.kind === 'run' && visit(row)) return true
         offset = branch.offset ?? 0
       }
     }
     if (offset === undefined) {
       const head = await taskRead(task)
-      if (!head) return
+      if (!head) return false
       offset = Number(head.total)
     }
     while (offset > 0) {
       const from = Math.max(0, offset - ACTIVITY_CHILD_WINDOW)
       const value = await taskRead(task, from)
-      if (!value) return
+      if (!value) return false
       for (const item of value.interactions.slice(0, offset - from).toReversed())
-        if (item.run && visit({ ...runView(item.run), kind: 'run' })) return
+        if (item.run && visit({ ...runView(item.run), kind: 'run' })) return true
       offset = from
     }
+    return true
   }
 
   /** The Task `name`, with its children from `offset`, or undefined when Reef cannot read it. */

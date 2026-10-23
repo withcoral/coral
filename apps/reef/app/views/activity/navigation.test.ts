@@ -998,6 +998,17 @@ describe('live scopes', () => {
       },
       ...more,
     })
+  const otherEnded = { ...other, outcome: 'succeeded', endedAt: done.endedAt }
+  const followsEarly: ReturnType<typeof liveTarget> = {
+    kind: 'run',
+    run: early.name,
+    chain: [fresh.name, early.name],
+  }
+  const followsLate: ReturnType<typeof liveTarget> = {
+    kind: 'run',
+    run: late.name,
+    chain: [other.name, late.name],
+  }
   it.each<[string, ActivityPage, ReturnType<typeof liveTarget>]>([
     [
       "an older Task's Run submitted later",
@@ -1027,6 +1038,28 @@ describe('live scopes', () => {
       "a standalone Run submitted later than a newer Task's Run",
       across([fresh, loose]),
       { kind: 'run', run: loose.name, chain: [loose.name] },
+    ],
+    // `other` has ended, and its loaded window still says `late` runs. When the loader
+    // read every record, its read wins over a window it did not refresh. A Task's end
+    // never ends its Runs, so it says whether `late` still runs.
+    [
+      'passes a Run that its Task window says runs, once the loader read it as ended',
+      across([fresh, otherEnded], {
+        liveLatest: { running: { [fresh.name]: early }, complete: true },
+      }),
+      followsEarly,
+    ],
+    [
+      'follows a Run that runs in an ended Task, as the loader read it',
+      across([fresh, otherEnded], {
+        liveLatest: { running: { [fresh.name]: early, [other.name]: late }, complete: true },
+      }),
+      followsLate,
+    ],
+    [
+      'follows a Run that its Task window says runs, while the loader did not read every record',
+      across([fresh, otherEnded], { liveLatest: { running: { [fresh.name]: early } } }),
+      followsLate,
     ],
   ])('latest running follows the Run submitted last: %s', (_, current, expected) => {
     expect(liveTarget(current, 'latest', now)).toEqual(expected)

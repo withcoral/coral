@@ -2327,6 +2327,27 @@ const actionIn = (owner: string, id: string, wait: Wait) => ({
   action: actionOf(id, wait),
 })
 
+/** The windows of the Task `owner` that `calls` read in order: `head` for its first record. */
+const windowsOf = (calls: { method: string; input: unknown }[], owner: string) =>
+  calls
+    .filter((call) => call.method === 'task' && nameOf(call) === owner)
+    .map((call) => {
+      const offset = (call.input as { viewport?: { offset: bigint } }).viewport?.offset
+      return offset === undefined ? 'head' : String(offset)
+    })
+/** `world`, where Reef cannot read the window of the Task `owner` from `offset`. */
+function refusing(world: Handlers, owner: string, offset: number): Handlers {
+  const read = world.activity!.inspectTask as (input: unknown) => never
+  return {
+    activity: {
+      inspectTask: (input: { name: string; viewport?: { offset: bigint } }) =>
+        input.name === owner && input.viewport?.offset === BigInt(offset)
+          ? refuse('task unavailable')
+          : read(input),
+    },
+  }
+}
+
 describe("Page live's projection past the list", () => {
   const early = approvalWait('early', 2n)
   const late = approvalWait('late', 9n)
@@ -2363,23 +2384,64 @@ describe("Page live's projection past the list", () => {
     const page = await loadActivity(onLatest(), api, { scope })
     expect(page.liveLatest?.action).toEqual(chosen)
   })
-  it('names a Run that waits on a connection your queue lists under another Task', async () => {
-    // Your queue lists the shared connection once, under `x` of a Task over an hour old.
-    const shared = connectionWait('x', 5n)
-    const also = { ...connectionWait('y', 3n), request: shared.request }
-    const roots: LiveRoot[] = [
-      idle,
-      {
-        kind: 'task',
-        id: 'n',
-        partial: true,
-        runs: [{ id: 'y', waits: [also] }, ...endedRuns(150)],
-      },
-      { kind: 'task', id: 'o', partial: true, old: true, runs: [{ id: 'x', waits: [shared] }] },
-    ]
-    const { api } = coral(liveWorld(roots, { [requestName(shared)]: runOf('x') }))
+  // Your queue lists a shared connection once, under `x` of a Task over an hour old.
+  // `y`, of the Task `n`, waits on it too, before 150 Runs that ended and then `later`.
+  const shared = connectionWait('x', 5n)
+  const also = { ...connectionWait('y', 3n), request: shared.request }
+  const sharing = (later: TaskRun[]): LiveRoot[] => [
+    idle,
+    {
+      kind: 'task',
+      id: 'n',
+      partial: true,
+      runs: [{ id: 'y', waits: [also] }, ...endedRuns(150), ...later],
+    },
+    { kind: 'task', id: 'o', partial: true, old: true, runs: [{ id: 'x', waits: [shared] }] },
+  ]
+  const queued = { [requestName(shared)]: runOf('x') }
+  it('names a Run that waits on a connection your queue lists under another Task, reading each window once', async () => {
+    // `z` runs, submitted last.
+    const { api, calls } = coral(liveWorld(sharing([{ id: 'z' }]), queued))
     const page = await loadActivity(onLatest(), api, { scope })
     expect(page.liveLatest?.action).toEqual(actionIn('n', 'y', also))
+    expect(liveNames(page.liveLatest)?.running).toEqual({ [taskName('n')]: runOf('z') })
+    // Its first record, then its 152 Runs from the end, 100 at a time, each once.
+    expect(windowsOf(calls, taskName('n'))).toEqual(['head', '52', '0'])
+  })
+  it.each<{
+    name: string
+    roots: LiveRoot[]
+    queued?: Record<string, string>
+    refused: [task: string, offset: number]
+    named: ReturnType<typeof liveNames>
+    windows: Record<string, string[]>
+  }>([
+    {
+      name: 'a window of a Task it looks in for its newest Run that runs',
+      roots: [
+        { kind: 'task', id: 'n', partial: true, runs: [{ id: 'b' }] },
+        { kind: 'task', id: 'm', partial: true, runs: [{ id: 'c' }] },
+      ],
+      refused: [taskName('m'), 0],
+      named: { running: { [taskName('n')]: runOf('b') } },
+      windows: { [taskName('n')]: ['head', '0'], [taskName('m')]: ['head', '0'] },
+    },
+    {
+      name: 'a window of a Task it reads in full while your queue holds a connection',
+      roots: sharing([]),
+      queued,
+      refused: [taskName('n'), 0],
+      named: undefined,
+      windows: { [taskName('n')]: ['head', '51', '0'] },
+    },
+  ])('never says it read every record when Reef cannot read $name', async (item) => {
+    const world = liveWorld(item.roots, item.queued)
+    const { api, calls } = coral(world, refusing(world, ...item.refused))
+    const page = await loadActivity(onLatest(), api, { scope })
+    expect(liveNames(page.liveLatest)).toEqual(item.named)
+    // Each window once: a window Reef could not read is not read again.
+    for (const [owner, windows] of Object.entries(item.windows))
+      expect(windowsOf(calls, owner), owner).toEqual(windows)
   })
   it('names an older Run that runs before the loaded window of an older Task', async () => {
     const roots: LiveRoot[] = [
