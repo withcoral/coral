@@ -34,4 +34,4 @@ jobs:
       - name: Dispatch the sandbox deploy
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
-        run: gh workflow run lagoon-autodeploy.yml -R withcoral/coral-cloud --ref main
+        run: gh workflow run coral-autodeploy.yml -R withcoral/coral-cloud --ref main
