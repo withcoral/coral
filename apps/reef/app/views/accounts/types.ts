@@ -67,6 +67,8 @@ export interface UserAccountRow {
   name: string
   state: PersonalAccountState
   accountId?: string
+  /** OAuth signs in at the provider in one click; secrets open a dialog here. */
+  oauth: boolean
   /** You can start a connection or a reconnect now. */
   canConnect: boolean
   canDisconnect: boolean

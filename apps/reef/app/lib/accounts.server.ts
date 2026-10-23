@@ -467,6 +467,7 @@ export async function loadUserAccounts(
         name: row.providerDisplayName,
         state: accountConnectionState(account),
         accountId: account?.id,
+        oauth: current ? isOAuth(current.credentialMethod) : false,
         canConnect: Boolean(current?.canConnect || current?.canReconnect),
         canDisconnect:
           Boolean(account?.canManage) && accountConnectionState(account) !== 'not_connected',
@@ -642,8 +643,9 @@ function startYourAuthorization(
 }
 
 /**
- * Connects your own account from a provider's settings without leaving them.
- * The settings dialog follows the returned progress; a sign-in returns to settings.
+ * Connects your own account in a dialog, without leaving the page it opens on.
+ * The dialog follows the returned progress. A sign-in returns to `returnTo`,
+ * the page you came from, else to your account page.
  */
 export async function connectYourAccountAction(
   request: Request,
@@ -652,7 +654,11 @@ export async function connectYourAccountAction(
   form: FormData,
 ) {
   try {
-    const { api, workspace, provider, current } = await userAccountContext(request, context, params)
+    const { api, workspace, provider, current, returnTo, path } = await userAccountContext(
+      request,
+      context,
+      params,
+    )
     if (!(current.canConnect || current.canReconnect))
       return data(
         { error: 'You cannot connect this account now.', credential: null },
@@ -666,10 +672,8 @@ export async function connectYourAccountAction(
       field(form, 'requestId'),
       callbackRedirectUri(request, context),
     )
-    // Not from the request URL: a fetcher posts to the route's `.data` URL.
-    const settings = `${workspace.path}/providers/${uuidOr404(params.provider)}/settings`
     return data(
-      { error: null, progress: authorizationProgressPath(authorization.name, settings) },
+      { error: null, progress: authorizationProgressPath(authorization.name, returnTo ?? path) },
       { headers: accountHeaders },
     )
   } catch (error) {

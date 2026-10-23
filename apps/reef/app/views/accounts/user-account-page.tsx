@@ -7,6 +7,7 @@ import {
   SettingsLayout,
   SettingsRemoval,
 } from '@/wax/components/settings-layout'
+import { ConnectAccountDialog } from '@/views/management/connect-account-dialog'
 import { CredentialFields } from '@/views/management/credential-fields'
 import { Fields } from '@/views/management/forms'
 import { Section, trail } from '@/views/management/layout'
@@ -49,8 +50,9 @@ export function UserAccountPage({
               <Typography.HeadingLarge as="h2">{`${v.providerName} account`}</Typography.HeadingLarge>
               {description && <Typography.Body as="p">{description}</Typography.Body>}
             </div>
-            {/* OAuth connects in one click. A secret needs the form below. */}
-            {v.canConnect && (v.oauth || connected) && (
+            {/* OAuth signs in at the provider in one click. A secret uses the form
+                below until it connects; after that, Reconnect opens a dialog. */}
+            {v.canConnect && v.oauth && (
               <ConnectButton
                 action={v.path}
                 csrf={v.form.csrf}
@@ -58,6 +60,20 @@ export function UserAccountPage({
                 label={connected ? 'Reconnect' : verb}
                 primary={!connected}
                 disabled={pending}
+              />
+            )}
+            {v.canConnect && !v.oauth && connected && (
+              <ConnectAccountDialog
+                providerName={v.providerName}
+                namespace={v.providerName}
+                form={v.form}
+                connectable
+                reconnect
+                ready
+                fallback={null}
+                trigger={{ label: 'Reconnect', variant: 'secondary', size: '32' }}
+                action={v.path}
+                description="Only you use this account."
               />
             )}
           </div>

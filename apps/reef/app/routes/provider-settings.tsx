@@ -12,7 +12,7 @@ import { providerName, providerSettingsView } from '@/lib/providers.server'
 import { applyProviderChange } from '@/lib/provider-changes.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
 import { ProviderAccountScope } from '@/generated/coral/management/v1/account_pb'
-import { accountConnectionState, connectYourAccountAction } from '@/lib/accounts.server'
+import { accountConnectionState } from '@/lib/accounts.server'
 import { ProviderSetupInputKind } from '@/generated/coral/management/v1/provider_pb'
 import { ProviderSettingsPage } from '@/views/providers/settings-page'
 import { redactSourceUrl } from '@/views/providers/source-url'
@@ -21,14 +21,11 @@ import type { ProviderSettingsView, ProviderSourceView } from '@/views/providers
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 // Rename and removal are the provider list's own mutations.
 /**
- * Your own account connects from here, so any member may; every other change
- * is an owner's, as on the providers page. The form is parsed and checked once.
+ * Every change here is an owner's, as on the providers page. Your own account
+ * connects through your account page. The form is parsed and checked once.
  */
 export async function action({ request, context, params }: Route.ActionArgs) {
-  const form = await mutationForm(request, context)
-  return form.get('intent') === 'connectAccount'
-    ? connectYourAccountAction(request, context, params, form)
-    : applyProviderChange(request, context, params, form)
+  return applyProviderChange(request, context, params, await mutationForm(request, context))
 }
 
 /**

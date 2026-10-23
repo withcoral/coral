@@ -202,7 +202,6 @@ function AccountSection({
     (link ?? (provider.connection === 'not_connected' && !reconnect ? null : manage))
   ) : (
     <ConnectAccountDialog
-      provider={provider.id}
       providerName={provider.displayName}
       namespace={provider.namespace}
       form={form}
@@ -211,6 +210,8 @@ function AccountSection({
       ready={connected}
       fallback={provider.connection === 'not_connected' && !reconnect ? null : manage}
       trigger={{ label: `${verb ?? 'Connect'} ${whose}`, variant: 'primary', size: '32' }}
+      // Your account page starts it, and its `returnTo` brings sign-in back here.
+      action={accountsPath}
       description={audience.onlyYou}
     />
   )
