@@ -11,7 +11,7 @@ use super::{BuiltinHost, authority_error, provider_facts, setup_url};
 use crate::Error;
 
 /// Lists every Provider in the Workspace that the invoking Principal reaches,
-/// with what each offers it, and the Setups its `createProvider` calls left
+/// with what each offers it, and the Setups its `addProvider` calls left
 /// for a person to finish.
 pub(super) async fn perform(host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
     let now = host.run.now()?;

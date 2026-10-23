@@ -425,8 +425,8 @@ fn only_one_call_root_owns_a_call_path_and_splits_it() {
             Some(("coral.providers.github", "repos.get")),
         ),
         (
-            "coral.workspace.createProvider",
-            Some(("coral.workspace", "createProvider")),
+            "coral.workspace.addProvider",
+            Some(("coral.workspace", "addProvider")),
         ),
         (
             "coral.workspace.providers.create",

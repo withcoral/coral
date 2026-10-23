@@ -1,8 +1,8 @@
-//! Performs `coral.workspace.createProvider`, and settles one whose worker was
+//! Performs `coral.workspace.addProvider`, and settles one whose worker was
 //! lost after the Dispatch Fence.
 
 use coral_catalog::{
-    ConfigurationChoices, CreateProviderArguments, CreateProviderResult, ProviderConfiguration,
+    AddProviderArguments, AddProviderResult, ConfigurationChoices, ProviderConfiguration,
     ProviderSourceArgument,
 };
 use coral_db::Transaction;
@@ -19,9 +19,9 @@ use crate::error::InputProblem;
 use crate::lifecycle::RunRecord;
 use crate::{CoralFailure, Error, InvocationId, InvocationResultKind, Rejection};
 
-/// `createProvider`'s arguments in Coral's domain types.
+/// `addProvider`'s arguments in Coral's domain types.
 #[derive(Clone)]
-pub(crate) struct CreateProvider {
+pub(crate) struct AddProvider {
     namespace: ProviderNamespace,
     source: ProviderSetupSource,
     route: CredentialRoute,
@@ -36,10 +36,10 @@ enum Publisher {
     Person,
 }
 
-impl CreateProvider {
+impl AddProvider {
     /// The call for arguments the contract accepted. An MCP server is
     /// discovered with the same non-secret headers it is configured with.
-    pub(super) fn new(arguments: CreateProviderArguments) -> Result<Self, Rejection> {
+    pub(super) fn new(arguments: AddProviderArguments) -> Result<Self, Rejection> {
         // The contract checks the namespace with the same rule, so this does
         // not fail.
         let namespace = ProviderNamespace::parse(&arguments.namespace)
@@ -70,7 +70,7 @@ impl CreateProvider {
     /// when nobody needs to sign in; otherwise the result is the Reef page where
     /// a person finishes it. The call never waits for that person.
     pub(super) async fn perform(&self, host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
-        // Only a User reaches createProvider; an Agent changes no configuration.
+        // Only a User reaches addProvider; an Agent changes no configuration.
         let Some(context) = host.context else {
             return Err(Error::InvocationRejected(
                 CoralFailure::AuthorityLost.into(),
@@ -206,7 +206,7 @@ impl CreateProvider {
 
     /// The Reef page where a person finishes the Setup.
     fn needs_sign_in(&self, host: &BuiltinHost<'_>, setup: &ProviderSetupId) -> serde_json::Value {
-        CreateProviderResult::NeedsSignIn {
+        AddProviderResult::NeedsSignIn {
             url: setup_url(host, setup),
             namespace: self.namespace.as_str().to_owned(),
         }
@@ -274,7 +274,7 @@ impl CreateProvider {
     }
 }
 
-/// Settles a `createProvider` whose worker was lost after the dispatch fence,
+/// Settles an `addProvider` whose worker was lost after the dispatch fence,
 /// from the Publication Coral attempted under the Invocation's identity. A
 /// published Provider becomes the Operation Result; otherwise the Run ended
 /// first. A Setup that was never published expires at its deadline.
@@ -380,7 +380,7 @@ async fn published_result_in_transaction(
     .await?;
     let rules =
         coral_policy::exact_operation_rules_in_transaction(transaction, workspace_id).await?;
-    Ok(CreateProviderResult::Published {
+    Ok(AddProviderResult::Published {
         namespace: published.provider.call_root().name().to_owned(),
         facts: provider_facts(&published, &rules),
     }
@@ -453,7 +453,7 @@ fn configuration_rejection(
         .iter()
         .map(|error| {
             InputProblem::new(
-                CreateProviderArguments::argument_for(&error.field),
+                AddProviderArguments::argument_for(&error.field),
                 error.message.clone(),
             )
         })

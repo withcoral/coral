@@ -100,9 +100,7 @@ test('Coral leads the providers page, offers nothing to change, stops calls whil
         await page.goto(providersPage)
         await waitForProviderStatus(page, 'Coral', 'Ready', { available: 1, total: 1 })
         await page.getByRole('link', { name: 'listProviders', exact: true }).waitFor()
-        expect(await page.getByRole('link', { name: 'createProvider', exact: true }).count()).toBe(
-          0,
-        )
+        expect(await page.getByRole('link', { name: 'addProvider', exact: true }).count()).toBe(0)
       })
     },
     { actor: bob.label, storageState: bob.storageState },

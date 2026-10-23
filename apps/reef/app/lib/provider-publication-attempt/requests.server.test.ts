@@ -706,7 +706,7 @@ describe('consent issuance', () => {
     },
   )
 
-  // Catches: the secret an agent's createProvider cannot give being dropped
+  // Catches: the secret an agent's addProvider cannot give being dropped
   // before Coral, so a confidential application can never sign in.
   it('sends a confidential application secret with the sign-in', async () => {
     const pending = {

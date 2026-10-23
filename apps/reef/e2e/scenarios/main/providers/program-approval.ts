@@ -15,7 +15,7 @@ import {
 import { withOwner } from '../../../support/topology.ts'
 
 /**
- * Starts createProvider with a shared bearer account in a new workspace, which
+ * Starts addProvider with a shared bearer account in a new workspace, which
  * keeps the default policy: the User who runs a Program approves each call.
  * Returns the call, the runner and the paused Run Update.
  */
@@ -42,7 +42,7 @@ async function pauseForApproval(
   }
   const runner = programRunner(page, target, id, { taskIntent: 'Add the weather provider' })
   const started = await runner.exec(
-    `try { return await coral.workspace.createProvider(${JSON.stringify(call)}); } catch (error) { return error.code; }`,
+    `try { return await coral.workspace.addProvider(${JSON.stringify(call)}); } catch (error) { return error.code; }`,
   )
   expect(started.isError).not.toBe(true)
   let paused = started.structuredContent
@@ -57,11 +57,9 @@ async function pauseForApproval(
 /** Opens the paused call's review from the link the Program got. */
 async function openReview(page: Page, paused: RunUpdate) {
   await page.goto(paused.required_actions[0].run_status_url)
-  await page
-    .getByRole('link', { name: 'Review coral.workspace.createProvider', exact: true })
-    .click()
+  await page.getByRole('link', { name: 'Review coral.workspace.addProvider', exact: true }).click()
   const review = page.getByRole('region', {
-    name: 'Review coral.workspace.createProvider',
+    name: 'Review coral.workspace.addProvider',
     exact: true,
   })
   await review.getByRole('button', { name: 'Approve this call', exact: true }).waitFor()
@@ -77,7 +75,7 @@ export async function approvedProgramProvider(context: TestContext) {
   await withOwner(context, async ({ page, target, accessToken, step }) => {
     const api = managementClients(accessToken)
     let started!: Awaited<ReturnType<typeof pauseForApproval>>
-    await step('The Run waits for the owner to approve createProvider', async () => {
+    await step('The Run waits for the owner to approve addProvider', async () => {
       started = await pauseForApproval(page, target, accessToken, 'Approved provider')
     })
     const { workspace, id, call, runner, paused } = started
@@ -123,7 +121,7 @@ export async function deniedProgramProvider(context: TestContext) {
   await withOwner(context, async ({ page, target, accessToken, step }) => {
     const api = managementClients(accessToken)
     let started!: Awaited<ReturnType<typeof pauseForApproval>>
-    await step('The Run waits for the owner to approve createProvider', async () => {
+    await step('The Run waits for the owner to approve addProvider', async () => {
       started = await pauseForApproval(page, target, accessToken, 'Denied provider')
     })
     const { workspace, runner, paused } = started

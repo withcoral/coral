@@ -1,4 +1,4 @@
-//! `coral.workspace.createProvider` prepares and configures a Provider Setup. Coral
+//! `coral.workspace.addProvider` prepares and configures a Provider Setup. Coral
 //! publishes it when nobody needs to sign in; otherwise the call returns the
 //! Reef page where a person finishes it. The call never waits for that person.
 //! `coral.workspace.listProviders` lists the Providers a Program can check first.
@@ -9,14 +9,14 @@ const DOCUMENT: &str = r#"{"openapi":"3.1.0","info":{"title":"Weather","version"
 /// The same service behind a bearer token, which a person enters.
 const PRIVATE_DOCUMENT: &str = r#"{"openapi":"3.1.0","info":{"title":"Weather","version":"1"},"security":[{"bearer":[]}],"components":{"securitySchemes":{"bearer":{"type":"http","scheme":"bearer"}}},"servers":[{"url":"https://weather.example"}],"paths":{"/forecast":{"get":{"operationId":"getForecast","responses":{"200":{"description":"OK"}}}}}}"#;
 
-/// A Program that calls `createProvider` with exactly `arguments` and returns
+/// A Program that calls `addProvider` with exactly `arguments` and returns
 /// its Operation Result, or the JavaScript expression `caught` for the Coral
 /// Failure it catches, such as `error.code`.
-fn create_provider(arguments: &serde_json::Value, caught: &str) -> RunSubmission {
+fn add_provider(arguments: &serde_json::Value, caught: &str) -> RunSubmission {
     submission(
         &"
         try {
-            return await coral.workspace.createProvider(ARGUMENTS);
+            return await coral.workspace.addProvider(ARGUMENTS);
         } catch (error) {
             if (!(error instanceof coral.OperationError)) throw error;
             return CAUGHT;
@@ -27,7 +27,7 @@ fn create_provider(arguments: &serde_json::Value, caught: &str) -> RunSubmission
     )
 }
 
-/// Arguments that `createProvider` accepts for a source that needs no
+/// Arguments that `addProvider` accepts for a source that needs no
 /// credential, with `extra` replacing or adding fields.
 fn valid_with(extra: serde_json::Value) -> serde_json::Value {
     let mut arguments = serde_json::json!({
@@ -115,7 +115,7 @@ impl AdminScope {
             &mut transaction,
             &self.workspace_id,
             coral_provider::InvocationCaller::new(&self.fixture.workspaces, &self.owner, 12),
-            "coral.workspace.createProvider",
+            "coral.workspace.addProvider",
         )
         .await
         .unwrap()
@@ -133,7 +133,7 @@ impl AdminScope {
                 state,
             )
             .await
-            .expect("set createProvider access");
+            .expect("set addProvider access");
     }
 
     async fn start(&self, actor: &AuthenticatedPrincipal, run: RunSubmission) -> crate::RunId {
@@ -168,7 +168,7 @@ impl AdminScope {
                 &TraceId::parse(&"d".repeat(32)).unwrap(),
             )
             .await
-            .expect("approve createProvider");
+            .expect("approve addProvider");
     }
 
     /// Provider-domain lifecycle events: Setups, Publications and Providers.
@@ -350,21 +350,21 @@ fn final_value(update: &crate::RunUpdate) -> serde_json::Value {
     value.as_json().clone()
 }
 
-// Catches: createProvider waiting on the person who finishes its Setup, or
+// Catches: addProvider waiting on the person who finishes its Setup, or
 // returning anything but the Reef page for that Setup.
 #[tokio::test]
-async fn create_provider_returns_the_reef_page_that_finishes_its_setup() {
+async fn add_provider_returns_the_reef_page_that_finishes_its_setup() {
     for access in [
         OperationAccessState::ApprovalRequired,
         OperationAccessState::Enabled,
     ] {
-        let scope = AdminScope::new("user:create-provider").await;
+        let scope = AdminScope::new("user:add-provider").await;
         scope.set_access(access).await;
         let server = private_document_server().await;
         let source = url_source(&server);
         let before = scope.created_setups().await;
         let run = scope
-            .start(&scope.owner, create_provider(&serde_json::json!({ "namespace": "weather", "source": source, "credentialRoute": "fixed" }), "error.code"))
+            .start(&scope.owner, add_provider(&serde_json::json!({ "namespace": "weather", "source": source, "credentialRoute": "fixed" }), "error.code"))
             .await;
         if access == OperationAccessState::ApprovalRequired {
             wait_for_approval(
@@ -438,7 +438,7 @@ async fn coral_publishes_a_provider_that_needs_nobody_to_sign_in() {
     let run = scope
         .start(
             &scope.owner,
-            create_provider(
+            add_provider(
                 &serde_json::json!({
                     "namespace": "weather",
                     "source": document_source(),
@@ -561,7 +561,7 @@ async fn a_failed_publication_is_a_failure_the_program_catches() {
         let run = scope
             .start(
                 &scope.owner,
-                create_provider(
+                add_provider(
                     &serde_json::json!({
                         "namespace": "weather",
                         "source": document_source(),
@@ -598,7 +598,7 @@ async fn a_configuration_the_source_cannot_take_leaves_no_setup_open() {
     let run = scope
         .start(
             &scope.owner,
-            create_provider(
+            add_provider(
                 &serde_json::json!({
                     "namespace": "weather",
                     "source": { "kind": "openapi_document", "document": PRIVATE_DOCUMENT },
@@ -649,7 +649,7 @@ async fn a_source_that_fails_to_answer_is_not_the_programs_input_to_correct() {
         let run = scope
             .start(
                 &scope.owner,
-                create_provider(
+                add_provider(
                     &serde_json::json!({
                         "namespace": "weather",
                         "source": { "kind": "openapi_url", "url": url },
@@ -709,7 +709,7 @@ async fn a_namespace_in_use_fails_before_any_fetch_or_setup() {
     let run = scope
         .start(
             &scope.owner,
-            create_provider(
+            add_provider(
                 &serde_json::json!({
                     "namespace": "weather",
                     "source": url_source(&server),
@@ -769,7 +769,7 @@ async fn a_namespace_taken_while_coral_publishes_is_a_conflict() {
     let run = scope
         .start(
             &scope.owner,
-            create_provider(
+            add_provider(
                 &serde_json::json!({
                     "namespace": "weather",
                     "source": document_source(),
@@ -785,7 +785,7 @@ async fn a_namespace_taken_while_coral_publishes_is_a_conflict() {
     );
 }
 
-/// Ends the Run just after createProvider prepares its Setup.
+/// Ends the Run just after addProvider prepares its Setup.
 struct RunEndsAfterSetup {
     clock: Arc<TestClock>,
 }
@@ -819,7 +819,7 @@ async fn a_run_ends_before_the_call_returns(route: &str, document: &str) {
     let run = scope
         .start(
             &scope.owner,
-            create_provider(
+            add_provider(
                 &serde_json::json!({
                     "namespace": "weather",
                     "source": { "kind": "openapi_document", "document": document },
@@ -895,7 +895,7 @@ impl coral_provider::WorkspaceProviderPublisher for StallingPublisher {
     }
 }
 
-// Catches: a worker lost while Coral publishes leaving createProvider
+// Catches: a worker lost while Coral publishes leaving addProvider
 // indeterminate, when Coral's own Publication shows what happened, or a
 // Provider deleted since then failing the Run's termination.
 #[tokio::test]
@@ -921,7 +921,7 @@ async fn recovery_settles_a_lost_publication_from_its_publication() {
         let run = scope
             .start(
                 &scope.owner,
-                create_provider(
+                add_provider(
                     &serde_json::json!({
                         "namespace": "weather",
                         "source": document_source(),
@@ -1011,9 +1011,9 @@ async fn invalid_input_fails_before_storage_approval_fetch_or_setup() {
         // A method that takes no settings takes no credential beside it.
         authenticated(serde_json::json!({ "method": "bearer", "token": "secret" })),
     ] {
-        // createProvider waits for approval by default; input it can judge alone never does.
+        // addProvider waits for approval by default; input it can judge alone never does.
         let run = scope
-            .start(&scope.owner, create_provider(&arguments, "error.code"))
+            .start(&scope.owner, add_provider(&arguments, "error.code"))
             .await;
         assert_final_code(&scope.terminal(&scope.owner, &run).await, "invalid_input");
         assert!(
@@ -1163,7 +1163,7 @@ async fn the_program_configures_how_a_person_signs_in() {
             .unwrap()
             .extend(choices.as_object().unwrap().clone());
         let run = scope
-            .start(&scope.owner, create_provider(&arguments, "error.code"))
+            .start(&scope.owner, add_provider(&arguments, "error.code"))
             .await;
         let value = final_value(&scope.terminal(&scope.owner, &run).await);
         if !needs_sign_in {
@@ -1355,7 +1355,7 @@ async fn an_invalid_argument_names_what_to_correct() {
         let run = scope
             .start(
                 &scope.owner,
-                create_provider(&arguments, "{ code: error.code, message: error.message }"),
+                add_provider(&arguments, "{ code: error.code, message: error.message }"),
             )
             .await;
         assert_eq!(
@@ -1375,7 +1375,7 @@ async fn an_invalid_argument_names_what_to_correct() {
 // Catches: a Built-in Operation's reach that ignores the Workspace action it
 // declares, or a host that performs listProviders only for a User.
 #[tokio::test]
-async fn members_and_agents_list_providers_but_cannot_reach_create_provider() {
+async fn members_and_agents_list_providers_but_cannot_reach_add_provider() {
     let scope = AdminScope::new("user:admin-owner").await;
     scope.set_access(OperationAccessState::Enabled).await;
     scope.publish_weather().await;
@@ -1401,7 +1401,7 @@ async fn members_and_agents_list_providers_but_cannot_reach_create_provider() {
     let before = scope.lifecycle_events().await;
     for principal in [AuthenticatedPrincipal::user(member), agent] {
         let run = scope
-            .start(&principal, create_provider(&serde_json::json!({ "namespace": "other", "source": document_source(), "credentialRoute": "none" }), "error.code"))
+            .start(&principal, add_provider(&serde_json::json!({ "namespace": "other", "source": document_source(), "credentialRoute": "none" }), "error.code"))
             .await;
         assert_final_code(
             &scope.terminal(&principal, &run).await,
@@ -1459,7 +1459,7 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
         .start(
             &scope.owner,
             &scope.workspace_id,
-            create_provider(&serde_json::json!({ "namespace": "weather", "source": source, "credentialRoute": "fixed" }), "error.code"),
+            add_provider(&serde_json::json!({ "namespace": "weather", "source": source, "credentialRoute": "fixed" }), "error.code"),
         )
         .await
         .unwrap()
@@ -1474,7 +1474,7 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
 
     // A policy that permits loopback fetches the source once and prepares one Setup.
     let run = scope
-        .start(&scope.owner, create_provider(&serde_json::json!({ "namespace": "weather", "source": source, "credentialRoute": "fixed" }), "error.code"))
+        .start(&scope.owner, add_provider(&serde_json::json!({ "namespace": "weather", "source": source, "credentialRoute": "fixed" }), "error.code"))
         .await;
     assert_eq!(
         scope.terminal(&scope.owner, &run).await.state(),
@@ -1531,7 +1531,7 @@ async fn list_providers_lists_every_provider_without_approval() {
                     "state": "active",
                     "credentialRoute": "none",
                     "authentication": "none",
-                    // Policy disables createProvider.
+                    // Policy disables addProvider.
                     "operations": builtin_operations - 1,
                     "accountRequired": false,
                 },

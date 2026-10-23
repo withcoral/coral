@@ -48,7 +48,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     // follows, and the declaration a Program reads.
     for (operation_key, hints, declared) in [
         (
-            BuiltinOperation::CreateProvider,
+            BuiltinOperation::AddProvider,
             // No read-only hint, so the default Operation Access State is approval_required.
             OperationHints::default(),
             &[
@@ -115,7 +115,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         .map(|target| target.key().as_str())
         .collect::<Vec<_>>();
     target_keys.sort_unstable();
-    assert_eq!(target_keys, ["createProvider", "listProviders"]);
+    assert_eq!(target_keys, ["addProvider", "listProviders"]);
 
     let graph = coral_catalog::schema_graph_in_transaction(&mut transaction, &first)
         .await
@@ -133,18 +133,18 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         target_keys
     );
     let fields = coral_catalog::StoredDeclarationFields::new(graph);
-    let key = OperationKey::parse("createProvider").unwrap();
-    let create_provider = searchable
+    let key = OperationKey::parse("addProvider").unwrap();
+    let add_provider = searchable
         .iter()
         .find(|operation| operation.key() == &key)
-        .expect("createProvider is searchable");
+        .expect("addProvider is searchable");
     let full = operations
         .iter()
         .find(|operation| operation.key() == &key)
         .unwrap();
-    assert_eq!(create_provider.relative_path(), full.relative_path());
-    assert_eq!(create_provider.presentation(), full.presentation());
-    let prepared = fields.searchable_operation(create_provider).unwrap();
+    assert_eq!(add_provider.relative_path(), full.relative_path());
+    assert_eq!(add_provider.presentation(), full.presentation());
+    let prepared = fields.searchable_operation(add_provider).unwrap();
     assert_eq!(prepared, fields.operation(full).unwrap());
     let paths = prepared
         .entries()
@@ -343,12 +343,12 @@ async fn a_builtin_binding_disagreeing_with_its_index_fails_full_and_search_read
     for (case, corruption) in [
         (
             "Operation Key",
-            "SET operation_key = 'renamedProvider' WHERE operation_key = 'createProvider'",
+            "SET operation_key = 'renamedProvider' WHERE operation_key = 'addProvider'",
         ),
         (
             "input schema",
             "SET input_schema_id = (SELECT input_schema_id FROM materialized_operations \
-             WHERE operation_key = 'listProviders') WHERE operation_key = 'createProvider'",
+             WHERE operation_key = 'listProviders') WHERE operation_key = 'addProvider'",
         ),
     ] {
         let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();

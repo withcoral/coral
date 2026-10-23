@@ -1,4 +1,4 @@
-//! The `createProvider` configuration as a Program writes it: the contract the
+//! The `addProvider` configuration as a Program writes it: the contract the
 //! catalog schema documents, converted explicitly into Coral's configuration
 //! types. Coral's stored configuration encoding never becomes the Program
 //! contract, and no input carries a credential value.

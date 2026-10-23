@@ -25,13 +25,13 @@ use crate::{
     CoralFailure, Error, HumanInterfaceUrl, InvocationId, InvocationResultKind, Rejection,
 };
 
-mod create_provider;
+mod add_provider;
 mod list_providers;
 
 /// One admitted Built-in Operation with its validated input.
 #[derive(Clone)]
 pub(crate) enum BuiltinCall {
-    CreateProvider(Box<create_provider::CreateProvider>),
+    AddProvider(Box<add_provider::AddProvider>),
     ListProviders,
 }
 
@@ -53,9 +53,9 @@ impl BuiltinCall {
             BuiltinArguments::parse(operation, arguments)
                 .map_err(|problems| rejection(&problems))
                 .and_then(|arguments| match arguments {
-                    BuiltinArguments::CreateProvider(arguments) => {
-                        create_provider::CreateProvider::new(*arguments)
-                            .map(|call| Self::CreateProvider(Box::new(call)))
+                    BuiltinArguments::AddProvider(arguments) => {
+                        add_provider::AddProvider::new(*arguments)
+                            .map(|call| Self::AddProvider(Box::new(call)))
                     }
                     BuiltinArguments::ListProviders => Ok(Self::ListProviders),
                 }),
@@ -65,7 +65,7 @@ impl BuiltinCall {
     /// Performs the Operation and returns its Operation Result.
     pub(crate) async fn perform(&self, host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
         match self {
-            Self::CreateProvider(call) => call.perform(host).await,
+            Self::AddProvider(call) => call.perform(host).await,
             Self::ListProviders => list_providers::perform(host).await,
         }
     }
@@ -91,11 +91,9 @@ pub(crate) async fn recover(
         return Ok(None);
     };
     match binding.operation() {
-        Some(BuiltinOperation::CreateProvider) => {
-            create_provider::recover(transaction, run, invocation)
-                .await
-                .map(Some)
-        }
+        Some(BuiltinOperation::AddProvider) => add_provider::recover(transaction, run, invocation)
+            .await
+            .map(Some),
         // A read leaves nothing behind, and this version cannot read an
         // Operation it does not perform.
         Some(BuiltinOperation::ListProviders) | None => Ok(None),

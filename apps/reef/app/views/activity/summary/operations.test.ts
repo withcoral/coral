@@ -31,7 +31,7 @@ it('joins a stopped operation that is not among the busiest, with its stops as i
 it.each([
   ['coral.providers.github.issues.list', 'GitHub', 'github', 'issues.list', '/p/github'],
   ['coral.providers.ghe.issues.list', 'GitHub', 'ghe', 'issues.list', '/p/ghe'],
-  ['coral.workspace.createProvider', 'Coral', 'workspace', 'createProvider', '/p/builtin'],
+  ['coral.workspace.addProvider', 'Coral', 'workspace', 'addProvider', '/p/builtin'],
   ['coral.providers.slack.post', 'slack', 'slack', 'post', undefined],
 ])(
   'names %s as provider %s, namespace %s and operation %s',

@@ -23,7 +23,7 @@ pub(super) fn definition() -> Definition {
         presentation: OperationPresentation::new(
             Some("List providers".to_string()),
             "List every Provider in this Workspace, including disabled ones and Coral's \
-             own, in the order they were created. Also list the Providers your createProvider \
+             own, in the order they were created. Also list the Providers your addProvider \
              calls asked for that a person has not finished yet."
                 .to_string(),
             false,
@@ -31,11 +31,11 @@ pub(super) fn definition() -> Definition {
             Some(
                 "Pass an empty object. Call a Provider's Operations under its callRoot. A \
                  namespace is taken when coral.providers.<namespace> is a callRoot under \
-                 providers, even when its Provider is disabled. A Provider that createProvider \
+                 providers, even when its Provider is disabled. A Provider that addProvider \
                  asked a person to finish is under setups until it is published, and then \
                  under providers. The person can publish it under another namespace. When its \
                  callRoot is in neither list, the person renamed it, did not finish it in \
-                 time, or canceled it: ask the person before you call createProvider again."
+                 time, or canceled it: ask the person before you call addProvider again."
                     .to_string(),
             ),
         ),
@@ -72,12 +72,12 @@ pub struct ListProvidersResult {
                        own comes first."
     )]
     pub providers: Vec<ListedProvider>,
-    /// The Providers the caller's `createProvider` calls asked a person to
+    /// The Providers the caller's `addProvider` calls asked a person to
     /// finish, which a person can still finish.
     #[schemars(
-        description = "The Providers your createProvider calls asked a person to finish, which \
+        description = "The Providers your addProvider calls asked a person to finish, which \
                        nobody has published yet, oldest first. Each expires an hour after \
-                       createProvider created it."
+                       addProvider started it."
     )]
     pub setups: Vec<ListedSetup>,
 }
@@ -137,19 +137,19 @@ impl JsonSchema for ListedProviderState {
     }
 }
 
-/// One Provider that a `createProvider` call asked a person to finish.
+/// One Provider that an `addProvider` call asked a person to finish.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[schemars(rename = "ProviderSetup", deny_unknown_fields, description = "")]
 pub struct ListedSetup {
     /// The Call Root of the namespace the call asked for.
     #[schemars(
-        description = "coral.providers.<namespace>, with the namespace createProvider asked \
+        description = "coral.providers.<namespace>, with the namespace addProvider asked \
                        for. The person can change it."
     )]
     pub call_root: String,
     /// The Credential Route the call asked for.
-    #[schemars(description = "The credentialRoute createProvider asked for.")]
+    #[schemars(description = "The credentialRoute addProvider asked for.")]
     pub credential_route: BuiltinCredentialRoute,
     /// What the person does next.
     #[schemars(

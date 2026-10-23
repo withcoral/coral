@@ -50,7 +50,7 @@ function posted(over: Partial<ConfigurationReviewView> = {}, setupOver: Partial<
 }
 
 describe('the sign-in application', () => {
-  // Catches: an agent's createProvider confirms the configuration without an
+  // Catches: an agent's addProvider confirms the configuration without an
   // application, and the sign-in form then posts none, so Reef rejects it; or
   // it posts automatic where Coral cannot register one, so sign-in fails.
   it.each([
@@ -79,7 +79,7 @@ describe('the sign-in application', () => {
     ).toEqual({ application: 'explicit', clientId: 'reef-client' })
   })
 
-  // Catches: an agent's createProvider names a confidential application but
+  // Catches: an agent's addProvider names a confidential application but
   // never its secret, and the sign-in then has no way to take it.
   it.each([
     ['asks for the secret nobody saved yet', false, true],
@@ -102,7 +102,7 @@ describe('the sign-in application', () => {
     if (secret) expect(secret).toBeRequired()
   })
 
-  // Catches: an agent's createProvider choosing OAuth endpoints or servers the
+  // Catches: an agent's addProvider choosing OAuth endpoints or servers the
   // person never sees before they sign in, such as a GitHub sign-in whose token
   // goes to another host, or a device sign-in naming its device authorization
   // endpoint as the place you sign in.

@@ -170,26 +170,26 @@ async fn an_install_makes_the_builtin_operations_searchable() {
         .unwrap();
     let search = UniversalSearchModule::new(fixture.db.database(), fixture.workspaces.clone());
     let principal = AuthenticatedPrincipal::user(fixture.owner.clone());
-    let finds_create_provider = || async {
+    let finds_add_provider = || async {
         search
             .search(
                 &principal,
                 workspace.id(),
-                &SearchRequest::query(SearchQuery::parse("create provider").unwrap()),
+                &SearchRequest::query(SearchQuery::parse("add provider").unwrap()),
             )
             .await
             .unwrap()
             .hits()
             .iter()
-            .any(|hit| hit.call_path().as_str() == "coral.workspace.createProvider")
+            .any(|hit| hit.call_path().as_str() == "coral.workspace.addProvider")
     };
     fixture.index.settled().await;
-    assert!(!finds_create_provider().await);
+    assert!(!finds_add_provider().await);
 
     fixture.boot(BuiltinCatalog::running().unwrap(), 200).await;
     fixture.index.settled().await;
 
-    assert!(finds_create_provider().await);
+    assert!(finds_add_provider().await);
 }
 
 // Catches: one Built-in Provider whose update fails stopping the others at

@@ -32,7 +32,7 @@ async fn each_builtin_operation_reaches_the_principals_its_workspace_action_perm
     let member = arranged.member("user:member").await;
     let agent = arranged.agent(12).await;
 
-    let keys = ["createProvider", "listProviders", "listThings"];
+    let keys = ["addProvider", "listProviders", "listThings"];
     for (principal, reached) in [
         (
             AuthenticatedPrincipal::user(arranged.owner.clone()),
@@ -807,7 +807,7 @@ async fn management_reads_show_each_principal_the_builtin_operations_it_reaches(
     for (principal, reached) in [
         (
             AuthenticatedPrincipal::user(arranged.owner.clone()),
-            &["createProvider", "listProviders"][..],
+            &["addProvider", "listProviders"][..],
         ),
         (AuthenticatedPrincipal::user(member), &["listProviders"][..]),
         (agent, &["listProviders"][..]),

@@ -4,8 +4,8 @@
 use serde_json::{Value, json};
 
 use super::{
-    AUTHENTICATION_KINDS, BuiltinArguments, BuiltinCredentialRoute, BuiltinOperation,
-    CreateProviderResult, ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup,
+    AUTHENTICATION_KINDS, AddProviderResult, BuiltinArguments, BuiltinCredentialRoute,
+    BuiltinOperation, ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup,
     ListedSetupState, ProviderFacts, definition,
 };
 
@@ -13,7 +13,7 @@ use super::{
 /// module.
 fn valid_arguments(operation: BuiltinOperation) -> Vec<Value> {
     match operation {
-        BuiltinOperation::CreateProvider => super::create_provider::tests::valid_arguments(),
+        BuiltinOperation::AddProvider => super::add_provider::tests::valid_arguments(),
         BuiltinOperation::ListProviders => super::list_providers::valid_arguments(),
     }
 }
@@ -186,8 +186,8 @@ fn each_result_meets_its_output_schema() {
     let mut results = facts()
         .map(|facts| {
             (
-                BuiltinOperation::CreateProvider,
-                CreateProviderResult::Published {
+                BuiltinOperation::AddProvider,
+                AddProviderResult::Published {
                     namespace: "weather".to_owned(),
                     facts,
                 }
@@ -196,8 +196,8 @@ fn each_result_meets_its_output_schema() {
         })
         .collect::<Vec<_>>();
     results.push((
-        BuiltinOperation::CreateProvider,
-        CreateProviderResult::NeedsSignIn {
+        BuiltinOperation::AddProvider,
+        AddProviderResult::NeedsSignIn {
             url: "https://coral.example/workspaces/w/providers/new?setup=s".to_owned(),
             namespace: "weather".to_owned(),
         }

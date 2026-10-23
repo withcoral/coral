@@ -25,7 +25,7 @@ const setup: SetupView = {
 }
 
 describe('where typed-in credentials go', () => {
-  // Catches: an agent's createProvider pointing credentials at a server the
+  // Catches: an agent's addProvider pointing credentials at a server the
   // person never sees before they paste a secret.
   it.each([
     [

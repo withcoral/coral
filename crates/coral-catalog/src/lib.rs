@@ -15,9 +15,9 @@
 mod binding;
 mod builtin;
 pub use builtin::{
-    ArgumentProblem, BUILTIN_PROVIDER_DISPLAY_NAME, BuiltinArguments, BuiltinCatalog,
-    BuiltinCatalogIdentity, BuiltinCredentialRoute, BuiltinExecutionBinding, BuiltinOperation,
-    ConfigurationChoices, CreateProviderArguments, CreateProviderResult, ListProvidersResult,
+    AddProviderArguments, AddProviderResult, ArgumentProblem, BUILTIN_PROVIDER_DISPLAY_NAME,
+    BuiltinArguments, BuiltinCatalog, BuiltinCatalogIdentity, BuiltinCredentialRoute,
+    BuiltinExecutionBinding, BuiltinOperation, ConfigurationChoices, ListProvidersResult,
     ListedProvider, ListedProviderState, ListedSetup, ListedSetupState, ProviderFacts,
     ProviderSourceArgument,
 };

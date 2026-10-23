@@ -786,7 +786,7 @@ pub struct ProviderSetup {
     #[prost(message, optional, tag = "20")]
     pub request: ::core::option::Option<ProviderSetupRequest>,
 }
-/// What a Program asked a Setup to publish when it called createProvider. The
+/// What a Program asked a Setup to publish when it called addProvider. The
 /// person who finishes the Setup can change either.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ProviderSetupRequest {
