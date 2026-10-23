@@ -337,3 +337,50 @@ fn sha256_hex(value: &str) -> String {
             hex
         })
 }
+
+#[tokio::test]
+async fn a_builtin_row_whose_binding_disagrees_with_its_index_is_corrupt_for_every_read() {
+    for (case, corruption) in [
+        (
+            "Operation Key",
+            "SET operation_key = 'renamedProvider' WHERE operation_key = 'createProvider'",
+        ),
+        (
+            "input schema",
+            "SET input_schema_id = (SELECT input_schema_id FROM materialized_operations \
+             WHERE operation_key = 'listProviders') WHERE operation_key = 'createProvider'",
+        ),
+    ] {
+        let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+        let database = fixture.database();
+        let catalog = BuiltinCatalog::running().unwrap();
+        let mut transaction = database.begin().await.unwrap();
+        let generation =
+            coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, &catalog, 1)
+                .await
+                .unwrap();
+        transaction.commit().await.unwrap();
+        fixture
+            .execute_fixture_sql(&format!(
+                "UPDATE materialized_operations {corruption} \
+                 AND provider_generation_id = '{generation}'"
+            ))
+            .await
+            .unwrap();
+
+        let mut transaction = database.begin_read_snapshot().await.unwrap();
+        let full = coral_catalog::operations_in_transaction(&mut transaction, &generation).await;
+        let searchable =
+            coral_catalog::searchable_operations_in_transaction(&mut transaction, &generation)
+                .await;
+        transaction.rollback().await.unwrap();
+        assert!(
+            matches!(full, Err(Error::CorruptData(_))),
+            "{case}: {full:?}"
+        );
+        assert!(
+            matches!(searchable, Err(Error::CorruptData(_))),
+            "{case}: {searchable:?}"
+        );
+    }
+}

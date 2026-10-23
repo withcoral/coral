@@ -358,7 +358,7 @@ pub async fn available_search_targets_in_transaction(
 
 /// Loads what the search index reads of each structurally available
 /// Operation, in Operation Key order: presentation, binding and input schema,
-/// without schemas, declarations or diagnostics.
+/// without separately materialized schemas, declarations or diagnostics.
 ///
 /// # Errors
 ///

@@ -239,6 +239,30 @@ impl SearchTargetRow {
     }
 }
 
+/// Rejects a binding whose own input schema or Operation Key disagrees with
+/// the row's index columns. An HTTP binding names neither.
+fn verify_schema_index(
+    binding: &ExecutionBinding,
+    key: &OperationKey,
+    input_schema: &SchemaId,
+) -> Result<(), Error> {
+    match binding {
+        ExecutionBinding::Mcp(binding) if binding.input_schema() != input_schema => Err(
+            Error::CorruptData("MCP Operation binding disagrees with its schema index".to_string()),
+        ),
+        ExecutionBinding::Builtin(binding)
+            if binding.input_schema() != input_schema || binding.operation_key() != key =>
+        {
+            Err(Error::CorruptData(
+                "built-in Operation binding disagrees with its index".to_string(),
+            ))
+        }
+        ExecutionBinding::Http(_) | ExecutionBinding::Mcp(_) | ExecutionBinding::Builtin(_) => {
+            Ok(())
+        }
+    }
+}
+
 fn decode_presentation(
     title: Option<String>,
     description: String,
@@ -299,6 +323,7 @@ impl SearchableOperationRow {
         let input_schema = SchemaId::from_storage(self.input_schema_id.ok_or_else(|| {
             Error::CorruptData("Materialized Operation has no input schema identity".to_string())
         })?)?;
+        verify_schema_index(&binding, &key, &input_schema)?;
         Ok(crate::SearchableOperation::new(
             key,
             self.relative_path,
@@ -463,6 +488,7 @@ impl OperationRow {
                 "Materialized Operation has inconsistent availability evidence".to_string(),
             ));
         }
+        verify_schema_index(&binding, &key, &input_schema)?;
         let binding_json = match &binding {
             ExecutionBinding::Http(binding) => {
                 let method = self
@@ -490,28 +516,18 @@ impl OperationRow {
                 }
                 self.definition_json
             }
-            ExecutionBinding::Mcp(binding) => {
+            ExecutionBinding::Mcp(_) => {
                 if self.method.is_some() || self.path.is_some() || self.server_url.is_some() {
                     return Err(Error::CorruptData(
                         "MCP Operation has an HTTP index".to_string(),
                     ));
                 }
-                if binding.input_schema() != &input_schema {
-                    return Err(Error::CorruptData(
-                        "MCP Operation binding disagrees with its schema index".to_string(),
-                    ));
-                }
                 self.definition_json
             }
-            ExecutionBinding::Builtin(binding) => {
+            ExecutionBinding::Builtin(_) => {
                 if self.method.is_some() || self.path.is_some() || self.server_url.is_some() {
                     return Err(Error::CorruptData(
                         "built-in Operation has an HTTP index".to_string(),
-                    ));
-                }
-                if binding.input_schema() != &input_schema || binding.operation_key() != &key {
-                    return Err(Error::CorruptData(
-                        "built-in Operation binding disagrees with its index".to_string(),
                     ));
                 }
                 self.definition_json
