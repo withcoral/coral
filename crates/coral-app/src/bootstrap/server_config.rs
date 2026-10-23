@@ -687,9 +687,8 @@ impl SessionAuthSettings {
     /// family is always registered as a template rather
     /// than an enumeration.
     ///
-    /// The server returned here has no User directory attached and so fails
-    /// every login closed. `ServerBuilder::with_session_auth` is the path that
-    /// attaches the composed authentication Module to it.
+    /// The server records its sign-ins in `database`, the instance's
+    /// initialized deployment database.
     ///
     /// # Errors
     ///
@@ -697,6 +696,7 @@ impl SessionAuthSettings {
     pub fn into_authorization_server(
         self,
         policy: coral_outbound::DestinationPolicy,
+        database: std::sync::Arc<coral_db::Database>,
     ) -> Result<CoralAuthorizationServer, AppError> {
         // Operator-configured HTTP issuer support is a separate auth contract.
         // It must neither narrow explicit Provider permissions nor broaden the
@@ -715,6 +715,7 @@ impl SessionAuthSettings {
             self.settings,
             self.session_tokens,
             policy,
+            database,
         )
         .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
         for audience in &self.public_audiences {
@@ -850,9 +851,11 @@ mod tests {
             .await
             .expect("client database");
         let server = auth
-            .into_authorization_server(coral_outbound::DestinationPolicy::default())
+            .into_authorization_server(
+                coral_outbound::DestinationPolicy::default(),
+                fixture.database(),
+            )
             .expect("authorization server")
-            .with_client_database(fixture.database())
             .start()
             .await
             .expect("start authorization server");
