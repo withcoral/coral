@@ -144,7 +144,7 @@ const coralOperations = ['addProvider', 'listProviders', 'getProvider'].map((key
   callPath: `coral.workspace.${key}`,
   path: `/workspaces/demo/providers/prov-coral/ops/${key}`,
   // Read-only, so they start enabled.
-  ...(key !== 'addProvider' && {
+  ...(['listProviders', 'getProvider'].includes(key) && {
     hints: { readOnly: true, idempotent: true },
     policy: 'enabled' as const,
   }),
