@@ -86,7 +86,7 @@ pub use publication::{
     ProviderPublicationId, ProviderPublicationOutcome, ProviderRegenerationPublication,
     ProviderRegenerationRequest, PublicationEvidence, Published,
     WorkspaceProviderPublicationRequest, WorkspaceProviderPublisher,
-    publication_for_request_in_transaction,
+    publication_for_request_in_transaction, regeneration_for_request_in_transaction,
 };
 pub use types::{
     AdministrativeLifecycleEvent, InvocationOperationVerification, LifecycleAction, LifecycleActor,

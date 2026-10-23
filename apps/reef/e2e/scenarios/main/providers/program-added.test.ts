@@ -10,6 +10,7 @@ import {
   connectSharedAccount,
   observeRun,
   programRunner,
+  programWorkspace,
   signInAndShareAccount,
   waitForPublication,
 } from '../../../support/providers.ts'
@@ -18,38 +19,13 @@ import {
   ProviderAccountScope,
   ProviderAccountState,
 } from '../../../generated/coral/management/v1/account_pb.ts'
-import { OperationAccessState } from '../../../generated/coral/management/v1/policy_pb.ts'
 import { WorkspaceRole } from '../../../generated/coral/management/v1/workspace_pb.ts'
 import { approvedProgramProvider, deniedProgramProvider } from './program-approval.ts'
-
-/** A workspace where the owner's Programs can add providers without approval. */
-async function programWorkspace(
-  api: ReturnType<typeof managementClients>,
-  step: (name: string, act: () => Promise<void>) => Promise<void>,
-) {
-  const workspace = await api.workspaces.createWorkspace({
-    displayName: 'Program provider',
-    requestId: crypto.randomUUID(),
-  })
-  await step("Let the owner's Programs add providers without approval", async () => {
-    const builtin = (await api.providers.listProviders({ parent: workspace.name })).providers.find(
-      (provider) => provider.builtin,
-    )!
-    const catalog = await api.providers.listOperations({ parent: builtin.name })
-    await api.policies.updateOperationPolicies({
-      parent: builtin.name,
-      policies: [
-        { operation: catalog.operations[0].name, accessState: OperationAccessState.ENABLED },
-      ],
-    })
-  })
-  return workspace
-}
 
 test("A workspace owner's Program adds a provider that needs no sign-in, and Coral publishes it with no Reef step", async (context) => {
   await withOwnerSession(context, async ({ page, target, actor, step }) => {
     const api = managementClients(actor.accessToken)
-    const workspace = await programWorkspace(api, step)
+    const workspace = await programWorkspace(api, step, ['addProvider'])
     const id = workspace.name.split('/')[1]
     const document = JSON.parse(
       openApiDocument('Weather', { getForecast: { summary: 'Get the forecast' } }).toString(),
@@ -101,7 +77,7 @@ test("A workspace owner's Program adds a provider that needs no sign-in, and Cor
 test("A workspace owner's Program adds a provider with a shared account, and you sign in at its link", async (context) => {
   await withOwnerSession(context, async ({ page, target, actor, step }) => {
     const api = managementClients(actor.accessToken)
-    const workspace = await programWorkspace(api, step)
+    const workspace = await programWorkspace(api, step, ['addProvider'])
     const id = workspace.name.split('/')[1]
     const document = openApiDocument(
       'Weather',
@@ -161,7 +137,7 @@ test("A workspace owner's Program prepares a confidential OAuth application, and
   await withOwnerSession(context, async ({ page, target, actor, step }) => {
     const api = managementClients(actor.accessToken)
     const responses = await collectDataResponses(page)
-    const workspace = await programWorkspace(api, step)
+    const workspace = await programWorkspace(api, step, ['addProvider'])
     const id = workspace.name.split('/')[1]
     const runner = programRunner(page, target, id, {
       accessToken: await mcpToken(page, id),
@@ -253,7 +229,7 @@ test("Another owner finds nothing at an owner's sign-in link, and the owner who 
   await withBrowserSession(
     context,
     async ({ page, target, step }) => {
-      workspace = (await programWorkspace(api, step)).name
+      workspace = (await programWorkspace(api, step, ['addProvider'])).name
       await api.memberships.createWorkspaceMembership({
         parent: workspace,
         email: bob.email,

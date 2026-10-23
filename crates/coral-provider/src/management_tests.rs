@@ -62,7 +62,7 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
     let stale = provider.etag();
     let scope = workspace.id().clone();
     providers
-        .update_provider(
+        .rename_provider(
             &with_etag(change_context(owner.clone(), 5, '5'), &stale),
             &scope,
             provider.id(),
@@ -463,7 +463,7 @@ async fn an_owner_reads_a_providers_configuration_by_namespace() {
     .await;
     // A rename publishes no Generation.
     let renamed = providers
-        .update_provider(
+        .rename_provider(
             &with_etag(change_context(owner.clone(), 11, 'b'), &published.etag()),
             workspace.id(),
             published.id(),

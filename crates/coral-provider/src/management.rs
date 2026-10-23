@@ -43,6 +43,20 @@ pub struct ProviderWithConfiguration {
     pub credential_fields: BTreeMap<String, CredentialField>,
 }
 
+impl ProviderWithConfiguration {
+    /// The Provider Configuration, with the Provider's display name.
+    #[must_use]
+    pub fn configuration(&self) -> ProviderConfiguration {
+        ProviderConfiguration {
+            display_name: self.provider.display_name().to_owned(),
+            servers: self.servers.clone(),
+            authentication: Some(self.authentication.clone()),
+            request_headers: self.request_headers.clone(),
+            credential_fields: self.credential_fields.clone(),
+        }
+    }
+}
+
 impl ProviderModule {
     /// Reads the Provider Configuration of the Provider at `namespace`, in any
     /// state, under current Owner authority.
@@ -322,7 +336,7 @@ impl ProviderModule {
     /// # Errors
     /// Requires current owner authority, an exact Provider and its current etag. Never commit
     /// the transaction after an error.
-    pub async fn update_provider_in_transaction(
+    pub async fn rename_provider_in_transaction(
         &self,
         tx: &mut coral_db::Transaction<'_>,
         context: &coral_workspace::ChangeContext,
@@ -377,8 +391,8 @@ impl ProviderModule {
     /// Changes safe display metadata in its own transaction.
     ///
     /// # Errors
-    /// Returns the errors of [`Self::update_provider_in_transaction`].
-    pub async fn update_provider(
+    /// Returns the errors of [`Self::rename_provider_in_transaction`].
+    pub async fn rename_provider(
         &self,
         context: &coral_workspace::ChangeContext,
         workspace: &WorkspaceId,
@@ -387,7 +401,7 @@ impl ProviderModule {
     ) -> Result<Provider, Error> {
         let mut tx = self.database.begin().await?;
         let updated = self
-            .update_provider_in_transaction(&mut tx, context, workspace, id, display_name)
+            .rename_provider_in_transaction(&mut tx, context, workspace, id, display_name)
             .await?;
         tx.commit().await?;
         Ok(updated)

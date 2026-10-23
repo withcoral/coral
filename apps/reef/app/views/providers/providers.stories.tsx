@@ -137,18 +137,20 @@ const blocked: ProviderView = {
   operations: githubOps('prov-hr', 'hr'),
 }
 // Coral's Built-in Provider, which leads the rail under Coral's mark.
-const coralOperations = ['addProvider', 'listProviders', 'getProvider'].map((key) => ({
-  ...weather.operations[0]!,
-  name: `providers/prov-coral/operations/${key}`,
-  relativePath: key,
-  callPath: `coral.workspace.${key}`,
-  path: `/workspaces/demo/providers/prov-coral/ops/${key}`,
-  // Read-only, so they start enabled.
-  ...(['listProviders', 'getProvider'].includes(key) && {
-    hints: { readOnly: true, idempotent: true },
-    policy: 'enabled' as const,
+const coralOperations = ['addProvider', 'listProviders', 'getProvider', 'updateProvider'].map(
+  (key) => ({
+    ...weather.operations[0]!,
+    name: `providers/prov-coral/operations/${key}`,
+    relativePath: key,
+    callPath: `coral.workspace.${key}`,
+    path: `/workspaces/demo/providers/prov-coral/ops/${key}`,
+    // Read-only, so they start enabled.
+    ...(['listProviders', 'getProvider'].includes(key) && {
+      hints: { readOnly: true, idempotent: true },
+      policy: 'enabled' as const,
+    }),
   }),
-}))
+)
 const coral: ProviderView = {
   ...weather,
   id: 'prov-coral',

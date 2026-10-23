@@ -39,9 +39,30 @@ pub async fn publication_for_request_in_transaction(
     repository::publication_by_request_in_transaction(transaction, workspace_id, request_id).await
 }
 
-/// Publishes one Workspace-owned Provider in its own transaction and notifies
-/// Universal Search after the commit. The workflow that owns that transaction
-/// implements it, so a Built-in Operation publishes exactly as Reef does.
+/// The terminal regeneration Publication that one management request
+/// produced, in the caller's transaction. A request that reached no terminal
+/// Publication has none.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-evidence failure.
+pub async fn regeneration_for_request_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    request_id: &ManagementRequestId,
+) -> Result<Option<ProviderRegenerationPublication>, Error> {
+    repository::regeneration_publication_by_request_in_transaction(
+        transaction,
+        workspace_id,
+        request_id,
+    )
+    .await
+}
+
+/// Publishes one Workspace-owned Provider, or a new Generation of one, or
+/// renames one, in its own transaction and notifies Universal Search after the
+/// commit. The workflow that owns that transaction implements it, so a Built-in
+/// Operation publishes and renames exactly as Reef does.
 #[async_trait::async_trait]
 pub trait WorkspaceProviderPublisher: Send + Sync {
     /// Publishes the request's Setup. Safe structural and domain failures are
@@ -56,6 +77,35 @@ pub trait WorkspaceProviderPublisher: Send + Sync {
         context: &coral_workspace::ChangeContext,
         request: WorkspaceProviderPublicationRequest,
     ) -> Result<ProviderPublication, crate::Error>;
+
+    /// Publishes the request's Update Setup as the Provider's new Generation.
+    /// The context's etag is the regeneration's precondition. Safe structural
+    /// and domain failures are successful calls whose returned outcome is
+    /// `Failed`.
+    ///
+    /// # Errors
+    ///
+    /// Returns authority, etag, configuration and operational failures, which
+    /// publish nothing and leave the Setup reusable.
+    async fn regenerate_workspace_provider(
+        &self,
+        context: &coral_workspace::ChangeContext,
+        request: ProviderRegenerationRequest,
+    ) -> Result<ProviderRegenerationPublication, crate::Error>;
+
+    /// Renames the Provider `provider` and keeps its Generation. The
+    /// context's etag is the rename's precondition.
+    ///
+    /// # Errors
+    ///
+    /// Returns authority, etag and operational failures, which rename nothing.
+    async fn rename_provider(
+        &self,
+        context: &coral_workspace::ChangeContext,
+        workspace: &WorkspaceId,
+        provider: &crate::ProviderId,
+        display_name: crate::ProviderDisplayName,
+    ) -> Result<crate::Provider, crate::Error>;
 }
 
 pub use types::{

@@ -18,9 +18,10 @@ pub use builtin::{
     AddProviderArguments, AddProviderResult, ArgumentProblem, BUILTIN_PROVIDER_DISPLAY_NAME,
     BuiltinArguments, BuiltinCatalog, BuiltinCatalogIdentity, BuiltinCredentialRoute,
     BuiltinExecutionBinding, BuiltinOperation, ConfigurationChoices, ConfigurationOutput,
-    GetProviderArguments, GetProviderResult, ListProvidersResult, ListedProvider,
-    ListedProviderState, ListedSetup, ListedSetupState, ProviderFacts, ProviderSourceArgument,
-    ProviderSourceOutput,
+    ConfigurationPatch, GetProviderArguments, GetProviderResult, ListProvidersResult,
+    ListedProvider, ListedProviderState, ListedSetup, ListedSetupState, ProviderFacts,
+    ProviderSourceArgument, ProviderSourceOutput, SourceChange, UpdateProviderArguments,
+    UpdateProviderResult,
 };
 mod configuration;
 pub use configuration::{

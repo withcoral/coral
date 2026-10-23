@@ -108,9 +108,12 @@ impl ProviderModule {
         let encoded = previous.as_ref().map(encode).transpose()?;
         repository::prepare_update_configuration(tx, owner, id, provider, encoded.as_deref())
             .await?;
-        if let Some(configuration) = previous {
+        if let Some(saved) = previous {
             // Keep saved choices as unconfirmed evidence. MCP presentation pairs
             // them with fresh read-only metadata; confirmation validates that exact input.
+            let configuration = self
+                .for_source_in_transaction(tx, context.actor(), active, id, saved)
+                .await?;
             repository::confirm_setup_configuration(
                 tx,
                 owner,
@@ -139,6 +142,31 @@ impl ProviderModule {
         )
         .await?;
         Ok(())
+    }
+
+    /// `saved` for the Update Setup `id`'s source. A server chosen for an MCP
+    /// server means nothing to an OpenAPI document, nor the reverse, so a
+    /// source of another kind than `active`'s brings its own servers. A source
+    /// of the same kind keeps every saved choice.
+    async fn for_source_in_transaction(
+        &self,
+        tx: &mut coral_db::Transaction<'_>,
+        actor: &AuthenticatedUser,
+        active: &repository::ProviderWithActiveGeneration,
+        id: &ProviderSetupId,
+        saved: ProviderConfiguration,
+    ) -> Result<ProviderConfiguration, Error> {
+        let saved_kind =
+            coral_catalog::setup_input_kind_in_transaction(&mut *tx, &active.generation_id).await?;
+        let loaded = crate::started_setup(&mut *tx, actor, active.provider.owner(), id).await?;
+        if loaded.setup.input_kind() == saved_kind {
+            return Ok(saved);
+        }
+        let servers = review(self.outbound_policy, &loaded)?
+            .document
+            .map(|document| document.suggested.servers)
+            .unwrap_or_default();
+        Ok(ProviderConfiguration { servers, ..saved })
     }
 
     /// Inspects pinned configuration without fetching the source or authorizing an account.

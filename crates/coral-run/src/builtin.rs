@@ -29,6 +29,8 @@ use crate::{
 mod add_provider;
 mod get_provider;
 mod list_providers;
+mod setup_operation;
+mod update_provider;
 
 /// One admitted Built-in Operation with its validated input.
 #[derive(Clone)]
@@ -36,6 +38,7 @@ pub(crate) enum BuiltinCall {
     AddProvider(Box<add_provider::AddProvider>),
     ListProviders,
     GetProvider(get_provider::GetProvider),
+    UpdateProvider(Box<update_provider::UpdateProvider>),
 }
 
 impl BuiltinCall {
@@ -64,6 +67,10 @@ impl BuiltinCall {
                     BuiltinArguments::GetProvider(arguments) => {
                         get_provider::GetProvider::new(&arguments).map(Self::GetProvider)
                     }
+                    BuiltinArguments::UpdateProvider(arguments) => {
+                        update_provider::UpdateProvider::new(*arguments)
+                            .map(|call| Self::UpdateProvider(Box::new(call)))
+                    }
                 }),
         )
     }
@@ -74,6 +81,7 @@ impl BuiltinCall {
             Self::AddProvider(call) => call.perform(host).await,
             Self::ListProviders => list_providers::perform(host).await,
             Self::GetProvider(call) => call.perform(host).await,
+            Self::UpdateProvider(call) => call.perform(host).await,
         }
     }
 }
@@ -101,6 +109,11 @@ pub(crate) async fn recover(
         Some(BuiltinOperation::AddProvider) => add_provider::recover(transaction, run, invocation)
             .await
             .map(Some),
+        Some(BuiltinOperation::UpdateProvider) => {
+            update_provider::recover(transaction, run, invocation)
+                .await
+                .map(Some)
+        }
         // A read leaves nothing behind, and this version cannot read an
         // Operation it does not perform.
         Some(BuiltinOperation::ListProviders | BuiltinOperation::GetProvider) | None => Ok(None),
@@ -155,9 +168,10 @@ fn rejection(problems: &[ArgumentProblem]) -> Rejection {
     )
 }
 
-/// What both Operations report about a Provider: how to call it and whether
-/// the Program needs a person first. It counts only the Operations that
-/// `rules`, read in the same snapshot as `published`, leave callable.
+/// What `addProvider`, `updateProvider` and `listProviders` report about a
+/// Provider: how to call it and whether the Program needs a person first. It
+/// counts only the Operations that `rules`, read in the same snapshot as
+/// `published`, leave callable.
 fn provider_facts(published: &PublishedProvider, rules: &ExactOperationRules) -> ProviderFacts {
     let provider = &published.provider;
     ProviderFacts {
