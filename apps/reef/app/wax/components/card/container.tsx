@@ -7,6 +7,8 @@ export type ContainerProps<T extends ElementType = 'div'> = ComponentPropsWithou
   as?: T
   /** Less padding, for a card that is one row in a dense list. */
   compact?: boolean
+  /** No padding, and content clipped to the corners, for content that runs to the card's edges. */
+  flush?: boolean
   interactive?: boolean
   ref?: Ref<HTMLElement>
 }
@@ -16,6 +18,7 @@ export function Container<T extends ElementType = 'div'>({
   as,
   className,
   compact = false,
+  flush = false,
   interactive = false,
   ...props
 }: ContainerProps<T>) {
@@ -25,7 +28,11 @@ export function Container<T extends ElementType = 'div'>({
       {...props}
       className={classNames(
         styles.card,
-        { [styles.cardCompact]: compact, [styles.cardButton]: interactive },
+        {
+          [styles.cardCompact]: compact,
+          [styles.cardFlush]: flush,
+          [styles.cardButton]: interactive,
+        },
         className,
       )}
     />

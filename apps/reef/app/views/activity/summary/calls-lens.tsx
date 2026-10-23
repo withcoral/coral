@@ -4,8 +4,8 @@ import * as Table from '@/wax/components/table'
 import { FilterField } from '@/components/catalog'
 import type { ActivitySummaryData } from '@/lib/activity-summary'
 import { filterQuery } from '@/utils/filter-query'
-import { number, share } from './format'
-import { STOP_REASONS, operationRows, type SummaryLinks } from './operations'
+import { number, outcomes, share } from './format'
+import { STOP_REASONS, operationRows, type SummaryProvider } from './operations'
 import { BarCell, None, OperationName, StatCards, StopSplit } from './parts'
 import * as styles from './summary.css'
 
@@ -13,11 +13,12 @@ import * as styles from './summary.css'
 const MAX_ROWS = 8
 const FILTER_ID = 'summary-operations-filter'
 
+// The three kinds of stop read as one part here.
 const parts = [
-  { key: 'answered', label: 'Answered', icon: 'CircleCheck' },
+  { key: 'answered', ...outcomes.answered },
   { key: 'stopped', label: 'Stopped', icon: 'Hand' },
-  { key: 'failed', label: 'Failed', icon: 'CircleX' },
-  { key: 'canceled', label: 'Canceled', icon: 'CircleSlash' },
+  { key: 'failed', ...outcomes.failed },
+  { key: 'canceled', ...outcomes.canceled },
 ] as const
 
 /** Every ended call by outcome, each with its share. */
@@ -45,15 +46,15 @@ function Split({ summary }: { summary: ActivitySummaryData }) {
 /** Is it working? The split of every call, then each operation, busiest first, to filter. */
 export function CallsLens({
   summary,
-  links,
+  providers,
 }: {
   summary: ActivitySummaryData
-  links?: SummaryLinks
+  providers?: readonly SummaryProvider[]
 }) {
   const [input, setInput] = useState('')
   const query = filterQuery(useDeferredValue(input))
   const table = Table.useRowCursor({ filterId: FILTER_ID })
-  const all = operationRows(summary, links).toSorted((a, b) => b.calls - a.calls)
+  const all = operationRows(summary, providers).toSorted((a, b) => b.calls - a.calls)
   const total = all.reduce((sum, row) => sum + row.calls, 0)
   const max = Math.max(0, ...all.map((row) => row.calls))
   const rows = all.filter((row) => query.matches(row.namespace, row.operation, row.provider))
@@ -102,7 +103,7 @@ export function CallsLens({
         ) : (
           <Table.Body>
             {rows.map((row) => {
-              const to = links?.operation(row.callPath)?.operation
+              const to = row.pages?.operation
               return (
                 <Table.Row key={row.callPath} to={to}>
                   <Table.Cell title={row.callPath}>

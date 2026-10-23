@@ -1,12 +1,11 @@
 import { expect, it } from 'vitest'
 import { fixFor, operationRows } from './operations'
 
-const links = {
-  provider: (callPath: string) =>
-    callPath.startsWith('coral.providers.github.')
-      ? { name: 'GitHub', path: '/workspaces/w/providers/gh' }
-      : undefined,
-}
+const providers = [
+  { callRoot: 'coral.providers.github', displayName: 'GitHub', path: '/p/github' },
+  { callRoot: 'coral.providers.ghe', displayName: 'GitHub', path: '/p/ghe' },
+  { callRoot: 'coral.workspace', displayName: 'Coral', path: '/p/builtin' },
+]
 
 // Catches: an operation stopped without being among the busiest dropping out of the table.
 it('joins a stopped operation that is not among the busiest, with its stops as its calls', () => {
@@ -18,7 +17,7 @@ it('joins a stopped operation that is not among the busiest, with its stops as i
         { callPath: 'coral.providers.slack.post', blocked: 2, notAllowed: 1, needsSetup: 0 },
       ],
     },
-    links,
+    providers,
   )
   expect(rows).toEqual([
     expect.objectContaining({ callPath: 'coral.providers.github.getIssue', calls: 9, stopped: 1 }),
@@ -26,16 +25,20 @@ it('joins a stopped operation that is not among the busiest, with its stops as i
   ])
 })
 
-// Catches: a row named by its full Call Path, a removed provider left without a name, or two
-// providers with one name that only the namespace tells apart.
+// Catches: a row named by its full Call Path, two providers with one name that only the
+// namespace tells apart, a built-in call misread as a provider's, or a removed provider left
+// without a name or given a page that does not exist.
 it.each([
-  ['coral.providers.github.issues.list', 'GitHub', 'github', 'issues.list'],
-  ['coral.providers.slack.post', 'slack', 'slack', 'post'],
+  ['coral.providers.github.issues.list', 'GitHub', 'github', 'issues.list', '/p/github'],
+  ['coral.providers.ghe.issues.list', 'GitHub', 'ghe', 'issues.list', '/p/ghe'],
+  ['coral.workspace.createProvider', 'Coral', 'workspace', 'createProvider', '/p/builtin'],
+  ['coral.providers.slack.post', 'slack', 'slack', 'post', undefined],
 ])(
   'names %s as provider %s, namespace %s and operation %s',
-  (callPath, provider, namespace, operation) => {
-    const [row] = operationRows({ operations: [{ callPath, calls: 1 }], stopped: [] }, links)
+  (callPath, provider, namespace, operation, path) => {
+    const [row] = operationRows({ operations: [{ callPath, calls: 1 }], stopped: [] }, providers)
     expect(row).toMatchObject({ provider, namespace, operation })
+    expect(row.pages?.operation).toBe(path && `${path}/ops/${operation}`)
   },
 )
 

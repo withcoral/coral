@@ -21,6 +21,9 @@ export const cardCompact = style({
   paddingInlineEnd: '12px',
 })
 
+// Content that runs to the card's edges, such as a row of tabs, keeps its rounded corners.
+export const cardFlush = style({ padding: 0, overflow: 'hidden' })
+
 export const cardButton = style({
   alignItems: 'stretch',
   color: 'inherit',

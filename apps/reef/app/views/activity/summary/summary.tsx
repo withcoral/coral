@@ -7,11 +7,11 @@ import { CallsLens } from './calls-lens'
 import { ContextLens, callers } from './context-lens'
 import { joined, number, share } from './format'
 import { NeedsYouLens } from './needs-you-lens'
-import type { SummaryLinks } from './operations'
+import type { SummaryProvider } from './operations'
 import { Note } from './parts'
 import * as styles from './summary.css'
 
-export type { SummaryLinks } from './operations'
+export type { SummaryProvider } from './operations'
 
 const periodName = (days: SummaryDays) => (days === 1 ? '24 hours' : `${days} days`)
 const dayOptions = SUMMARY_DAYS.map((days) => ({ value: String(days), label: periodName(days) }))
@@ -82,8 +82,8 @@ export interface ActivitySummaryProps {
   /** Null when the summary is not available. */
   summary: ActivitySummaryData | null
   days: SummaryDays
-  /** The pages its rows open. Without them, rows show but open nothing. */
-  links?: SummaryLinks
+  /** The workspace's providers, which name the rows and open their pages. Without them, rows open nothing. */
+  providers?: readonly SummaryProvider[]
   /** The totals include your agents' runs, as they do in a workspace you own. */
   owner?: boolean
   /** Shows the period picker. Without it, the period is fixed. */
@@ -99,7 +99,7 @@ export interface ActivitySummaryProps {
 export function ActivitySummary({
   summary,
   days,
-  links,
+  providers,
   owner = false,
   onDaysChange,
   pending = false,
@@ -133,7 +133,7 @@ export function ActivitySummary({
         )}
       </div>
       {summary ? (
-        <Card.Container className={styles.card}>
+        <Card.Container flush>
           <Tabs.Root value={lens} onValueChange={(value) => setLens(value as Lens)}>
             <Tabs.MetricList aria-label="Summary">
               {metrics(summary).map((metric) => (
@@ -141,10 +141,10 @@ export function ActivitySummary({
               ))}
             </Tabs.MetricList>
             <Tabs.Panel value="calls" className={styles.panel}>
-              <CallsLens summary={summary} links={links} />
+              <CallsLens summary={summary} providers={providers} />
             </Tabs.Panel>
             <Tabs.Panel value="needs" className={styles.panel}>
-              <NeedsYouLens summary={summary} links={links} />
+              <NeedsYouLens summary={summary} providers={providers} />
             </Tabs.Panel>
             <Tabs.Panel value="context" className={styles.panel}>
               <ContextLens entries={summary.contextActors ?? []} />

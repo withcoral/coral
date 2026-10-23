@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
 import { createRoutesStub } from 'react-router'
 import { expect, userEvent, within } from 'storybook/test'
-import { ActivitySummary, type ActivitySummaryProps, type SummaryLinks } from './summary'
+import { ActivitySummary, type ActivitySummaryProps, type SummaryProvider } from './summary'
 import type { ActivitySummaryData, SummaryDays } from '@/lib/activity-summary'
 
 /** A month of a team's use. Every stopped operation is also among the busiest. */
@@ -67,25 +67,25 @@ const empty: ActivitySummaryData = {
   approvals: { approved: 0, declined: 0, medianWaitSeconds: null },
 }
 
-const links: SummaryLinks = {
-  provider: (callPath) => {
-    const id = callPath.split('.')[2]
-    return { name: id[0].toUpperCase() + id.slice(1), path: `/workspaces/w/providers/${id}` }
-  },
-  operation: (callPath) => {
-    const [, , id, ...rest] = callPath.split('.')
-    const path = `/workspaces/w/providers/${id}`
-    return {
-      operation: `${path}/ops/${rest.join('.')}`,
-      settings: `${path}/settings`,
-    }
-  },
-}
+// Every provider the fixtures call, named after its namespace.
+const providers: SummaryProvider[] = [
+  'datadog',
+  'github',
+  'gmail',
+  'linear',
+  'notion',
+  'salesforce',
+  'slack',
+].map((id) => ({
+  callRoot: `coral.providers.${id}`,
+  displayName: id[0].toUpperCase() + id.slice(1),
+  path: `/workspaces/w/providers/${id}`,
+}))
 
 const meta = {
   component: ActivitySummary,
   title: 'Activity/Summary',
-  args: { summary: busy, days: 30, links },
+  args: { summary: busy, days: 30, providers },
   decorators: [
     (Story, { parameters }) => {
       const Stub = createRoutesStub([{ path: '*', Component: () => <Story /> }])

@@ -96,6 +96,7 @@ test('The Overview summary counts a denied call as decided, not to fix, reads bl
         .getByRole('group', { name: 'Declined', exact: true })
         .getByText('1', { exact: true })
         .waitFor()
+      await operationRow('Calls not allowed').getByText('1', { exact: true }).waitFor()
     })
 
     await step('A blocked call arrives when you return, without a reload', async () => {

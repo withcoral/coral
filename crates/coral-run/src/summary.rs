@@ -40,7 +40,8 @@ pub struct CallOutcomes {
     /// A person declined the approval or the Account connection, or let the approval expire.
     pub not_allowed: i64,
     /// A Provider, Account or credential needs repair before the call can run. An
-    /// unanswered Account connection leaves the Account unconnected, so it counts here.
+    /// Account connection request that expired unanswered leaves the call unauthorized,
+    /// so it counts here.
     pub needs_setup: i64,
     /// The Program's call or the upstream failed, or the result is unknown.
     pub failed: i64,

@@ -38,9 +38,10 @@ export function MetricTab({ value, icon, label, metric, details = [], variant }:
       <Typography.HeadingMedium as="span" variant={variant}>
         {metric}
       </Typography.HeadingMedium>
-      {details.map((detail) => (
+      {details.map((detail, index) => (
         <Typography.BodySmall
-          key={detail}
+          // Two details can read the same.
+          key={index}
           as="span"
           variant="tertiary"
           className={styles.metricDetail}

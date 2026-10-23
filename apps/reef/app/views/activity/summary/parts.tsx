@@ -45,7 +45,8 @@ export function BarCell({
 export function None() {
   return (
     <Typography.BodySmall as="span" variant="tertiary">
-      —
+      <span aria-hidden>—</span>
+      <span className={visuallyHidden}>None</span>
     </Typography.BodySmall>
   )
 }

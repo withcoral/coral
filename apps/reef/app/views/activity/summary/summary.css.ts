@@ -16,8 +16,6 @@ export const heading = style({
   justifyContent: 'space-between',
   gap: 12,
 })
-// The metric tabs run to the card's edges, above the panel's padding.
-export const card = style({ padding: 0, overflow: 'hidden' })
 export const panel = style({ padding: 16, outline: 'none' })
 export const lens = style({ display: 'flex', flexDirection: 'column', gap: 16 })
 
@@ -42,7 +40,15 @@ export const operation = style({
   minWidth: 0,
   maxWidth: '100%',
 })
-export const operationProvider = style({ flexShrink: 0 })
+// A long provider name gives way before the operation does.
+export const operationProvider = style({
+  flexShrink: 1,
+  minWidth: 0,
+  maxWidth: '50%',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+})
 export const barCell = style({
   display: 'grid',
   gridTemplateColumns: '48px minmax(0, 1fr)',
