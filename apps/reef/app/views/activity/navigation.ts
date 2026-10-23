@@ -395,7 +395,8 @@ export function liveTarget(
 function newestTarget(page: ActivityPage, now: number, actionable: boolean): LiveTarget {
   if (page.hasBefore) return { kind: 'newest' }
   for (const root of page.rows) {
-    if (root.kind === 'run' && root.state === 'running')
+    // A row can lag its Run's end, which another record of the Run already says.
+    if (root.kind === 'run' && root.state === 'running' && !runEnded(page, root.name))
       return { kind: 'run', run: root.name, chain: [root.name] }
     if (root.kind !== 'task' || !recentTask(root, now)) continue
     const target = taskWork(page, root, actionable)

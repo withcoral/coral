@@ -905,6 +905,20 @@ describe('live scopes', () => {
     ...opened(selectedRow, rows),
     rows: [alone, closedWork],
   })
+  // You have open the standalone Run `own`, whose row in the list can lag its end.
+  const own = runRow('own', '', { state: 'running', endedAt: null })
+  const ownOpen = (rows: ActivityRow[], state: 'running' | 'succeeded' | 'failed') =>
+    activityPage({
+      rows,
+      selected: own.name,
+      selectedRow: own,
+      detail: { ...context(state), run: state === 'running' ? own : runRow('own', '', { state }) },
+    })
+  const followsOwn: ReturnType<typeof liveTarget> = {
+    kind: 'run',
+    run: own.name,
+    chain: [own.name],
+  }
   it.each<[string, ActivityPage, ReturnType<typeof liveTarget>]>([
     [
       'a Run of its Task that runs takes over the Run you followed once it ends',
@@ -969,8 +983,22 @@ describe('live scopes', () => {
       { ...closedWith(finished, [first, finished]), rows: [closedWork] },
       restsOnFinished,
     ],
+    [
+      'a Run elsewhere takes over once the detail says the standalone Run failed, though its row says it runs',
+      ownOpen([own, alone], 'failed'),
+      followsAlone,
+    ],
+    [
+      'the standalone Run you have open keeps it while its detail says it runs, whatever runs newer',
+      ownOpen([alone, own], 'running'),
+      followsOwn,
+    ],
   ])('latest releases: %s', (_, current, expected) => {
     expect(liveTarget(current, 'latest', now)).toEqual(expected)
+  })
+  it('latest releases: rests on the ended standalone Run until a Run that runs arrives, though its row says it runs', () => {
+    expect(liveTarget(ownOpen([own], 'succeeded'), 'latest', now)).toEqual(followsOwn)
+    expect(liveTarget(ownOpen([own, alone], 'succeeded'), 'latest', now)).toEqual(followsAlone)
   })
   it.each<[string, ActivityPage, ReturnType<typeof liveTarget>]>([
     [
