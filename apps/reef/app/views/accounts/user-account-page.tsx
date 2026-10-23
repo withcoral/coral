@@ -8,6 +8,7 @@ import {
   SettingsRemoval,
 } from '@/wax/components/settings-layout'
 import { ConnectAccountDialog } from '@/views/management/connect-account-dialog'
+import { useAccountAudience } from '@/views/providers/account-labels'
 import { CredentialFields } from '@/views/management/credential-fields'
 import { Fields } from '@/views/management/forms'
 import { Section, trail } from '@/views/management/layout'
@@ -38,6 +39,7 @@ export function UserAccountPage({
   const stored = v.account && v.account.state !== 'disconnected' ? v.account : undefined
   const permissions = permissionRows(v.scopes)
   const description = blocked ? undefined : guidance(v)
+  const audience = useAccountAudience()
   return (
     <PageLayout
       variant="wide"
@@ -73,7 +75,7 @@ export function UserAccountPage({
                 fallback={null}
                 trigger={{ label: 'Reconnect', variant: 'secondary', size: '32' }}
                 action={v.path}
-                description="Only you use this account."
+                description={audience.onlyYou}
               />
             )}
           </div>

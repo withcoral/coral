@@ -45,8 +45,10 @@ it.each([false, true])(
   (oauth) => {
     // Catches: a way back that leaves the connection open behind you.
     renderRoute(<AuthorizationPage view={{ ...view, oauth }} />)
+    screen.getByRole('button', { name: oauth ? 'Continue to sign in' : 'Connect account' })
     const cancel = screen.getByRole<HTMLButtonElement>('button', { name: 'Cancel' })
     expect(new FormData(cancel.form!).get('intent')).toBe('cancel')
+    expect(screen.queryByRole('link', { name: 'Check connection' })).toBeNull()
     expect(screen.queryByRole('link', { name: 'Return to run' })).toBeNull()
   },
 )
@@ -72,6 +74,17 @@ it('keeps direct account settings entry usable without inventing a Run', () => {
   expect(html).toContain('Back to activity')
   expect(html).not.toContain('Return to run')
   expect(html).not.toContain('Your run may still need approval.')
+})
+
+// Catches: a connection started outside a run offering "Return to run".
+it.each([
+  ['settings', '/workspaces/w/providers/p/settings', 'Return to settings'],
+  ['Accounts', '/workspaces/w/accounts', 'Return to accounts'],
+  ['your account page', '/workspaces/w/accounts/p', 'Return to account'],
+])('names %s, not a run, as the way back', (_, returnTo, label) => {
+  renderRoute(<AuthorizationPage view={{ ...view, state: 'expired', returnTo }} />)
+  expect(screen.getByRole('link', { name: label }).getAttribute('href')).toBe(returnTo)
+  expect(screen.queryByText(/your run/)).toBeNull()
 })
 
 it.each(['failed', 'expired', 'canceled'] as const)(

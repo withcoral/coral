@@ -50,11 +50,7 @@ test('Workspace Provider Add, MCP execution, policy, Update and lifecycle use on
       let secondProvider = ''
       let firstRun: RunUpdate
       let run: ReturnType<typeof programRunner>
-      const policy = async (
-        path: string,
-        namespace: string,
-        state: 'Always allow' | 'Disabled',
-      ) => {
+      const policy = async (path: string, state: 'Always allow' | 'Disabled') => {
         await page.goto(path)
         await setOperationPolicy(page, 'getForecast', state)
       }
@@ -101,7 +97,7 @@ test('Workspace Provider Add, MCP execution, policy, Update and lifecycle use on
           providerName = added.name
           expect(providerPath).toBe(`/${providerName}`)
           expect(added.namespace).toBe('weather')
-          await policy(providerPath, 'weather', 'Always allow')
+          await policy(providerPath, 'Always allow')
           run = programRunner(page, target, workspace, {
             accessToken: await mcpToken(page, workspace),
           })
@@ -134,15 +130,15 @@ test('Workspace Provider Add, MCP execution, policy, Update and lifecycle use on
           await waitForPublication(page)
           secondProvider = new URL(page.url()).pathname
           expect(secondProvider).not.toBe(providerPath)
-          await policy(secondProvider, 'otherWeather', 'Always allow')
-          await policy(providerPath, 'weather', 'Disabled')
+          await policy(secondProvider, 'Always allow')
+          await policy(providerPath, 'Disabled')
           expect((await run.describe('coral.providers.weather.getForecast')).isError).toBe(true)
           expect((await run.describe('coral.providers.otherWeather.getForecast')).isError).not.toBe(
             true,
           )
           await execute('otherWeather')
           expect(calls).toBe(2)
-          await policy(providerPath, 'weather', 'Always allow')
+          await policy(providerPath, 'Always allow')
         },
       )
       await step(

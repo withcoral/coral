@@ -7,6 +7,7 @@ import type { PillColor } from '@/wax/components/pill/pill'
 import { CatalogFilterMenu, CatalogToolbar, type CatalogFilterOptions } from '@/components/catalog'
 import { EmptyPage } from '@/components/empty-page'
 import { ConnectAccountDialog } from '@/views/management/connect-account-dialog'
+import { useAccountAudience } from '@/views/providers/account-labels'
 import { ManagementLayout, trail } from '@/views/management/layout'
 import type { PersonalAccountState, UserAccountRow, UserAccountsView } from './types'
 import { accountStates } from './account-states'
@@ -150,6 +151,7 @@ function AccountAction({
   view: UserAccountsView
   pending: boolean
 }) {
+  const audience = useAccountAudience()
   const connected = row.state === 'connected'
   const action = states[row.state].action
   const disconnect =
@@ -191,7 +193,7 @@ function AccountAction({
         size: '22',
       }}
       action={row.connectPath}
-      description="Only you use this account."
+      description={audience.onlyYou}
     />
   )
 }

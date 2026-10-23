@@ -20,10 +20,10 @@ export function AuthorizationPage({
 }) {
   const open = v.state === 'pending' || v.state === 'exchanging'
   const formId = useId()
+  const back = destination(v)
   // An agent's connect dialog returns to the agent's page, where you can start again.
-  const returnsToAgent =
-    v.scope === 'agent' && /^\/workspaces\/[^/?]+\/agents\/[^/?]+$/.test(v.returnTo)
-  const returnsToRun = !returnsToAgent && !/^\/workspaces\/[^/?]+\/activity$/.test(v.returnTo)
+  const returnsToAgent = back === 'agent'
+  const returnsToRun = back === 'run'
   const startAgain = returnsToAgent
     ? 'Return to the agent to start another connection.'
     : 'Return to the account settings to start another connection.'
@@ -117,10 +117,33 @@ export function AuthorizationPage({
       {!open && (
         <div className={styles.actions}>
           <Button.InternalLink to={v.returnTo} variant="secondary">
-            {returnsToAgent ? 'Back to agent' : returnsToRun ? 'Return to run' : 'Back to activity'}
+            {backLabels[back]}
           </Button.InternalLink>
         </div>
       )}
     </ManagementLayout>
   )
+}
+
+const backLabels = {
+  agent: 'Back to agent',
+  run: 'Return to run',
+  activity: 'Back to activity',
+  settings: 'Return to settings',
+  accounts: 'Return to accounts',
+  account: 'Return to account',
+  other: 'Go back',
+}
+
+/** The page `returnTo` leads to, so its link names that page. A run opens in Activity. */
+function destination(v: AuthorizationView): keyof typeof backLabels {
+  const [path, query] = v.returnTo.split('?')
+  const workspace = '^/workspaces/[^/]+'
+  const is = (pattern: string) => new RegExp(`${workspace}${pattern}$`).test(path)
+  if (v.scope === 'agent' && is('/agents/[^/]+')) return 'agent'
+  if (is('/activity')) return query ? 'run' : 'activity'
+  if (is('/providers/[^/]+/settings')) return 'settings'
+  if (is('/accounts')) return 'accounts'
+  if (is('/accounts/[^/]+')) return 'account'
+  return 'other'
 }
