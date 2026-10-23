@@ -5,8 +5,9 @@ import { createMemoryRouter, Outlet, RouterProvider, useLoaderData } from 'react
 import { createStore, Provider } from 'jotai'
 import { renderToString } from 'react-dom/server'
 import { afterEach, expect, it, vi } from 'vitest'
-import type { ActivityPage, ExecutionRow } from '@/views/activity/types'
+import type { ActivityPage, ActivityRow, ExecutionRow } from '@/views/activity/types'
 import type { ActivityObservation } from './activity-live-types'
+import { finalValue } from '@/views/activity/navigation'
 import { activityObservation, activityView, useActivityReader } from './activity-observation'
 import { loadActivityPage } from './activity-page-fetch'
 
@@ -529,68 +530,108 @@ it.each([false, true])(
   },
 )
 
+const revealTask = 'workspaces/work/tasks/t'
 const revealRun = 'workspaces/work/runs/run'
 const revealEvent = `${revealRun}/events/200`
-// Catches: the table revealing the Run when the URL names its final value. The Run's
-// detail shows the final value, but the table then scrolls to the Run's first records.
-it.each([
-  ['an identity-only child anchor', null, '', revealEvent],
-  [
-    "a Run's final value, not the Run its detail shows",
-    revealRun,
-    `&record=${revealRun}/final`,
-    `${revealRun}/final`,
-  ],
-  ['a selected Run', revealRun, `&record=${revealRun}`, revealRun],
-])('reveals %s when a continuous reading URL is reloaded', (_name, selected, record, revealed) => {
-  const run = revealRun
-  const initial: ActivityPage = {
-    ...page,
-    selected,
-    branches: {
-      [run]: {
-        rows: [
-          {
-            kind: 'output',
-            name: revealEvent,
-            position: 199,
-            workspace: 'workspaces/work',
-            run,
-            label: 'emission #200',
-            eventKind: 'program.emitted',
-            startedAt: '1970-01-01T00:00:00.000Z',
-            agent: '',
-          },
-        ],
-        offset: 174,
-        next: '',
-        unavailable: false,
-      },
-    },
-    expanded: [run],
-    anchors: { [run]: revealEvent },
-  }
-  function Reveal() {
-    return <output>{useActivityReader(initial).revealRecord}</output>
-  }
-  const router = createMemoryRouter([{ path: '/activity', element: <Reveal /> }], {
-    initialEntries: [
-      `/activity?anchor=workspaces/work/tasks/t&expand=${run}&anchor.${run}=${revealEvent}&offset.${run}=174&preceding.${run}=25${record}`,
-    ],
-  })
-  try {
-    // Server rendering runs no effects, so no observation connects.
-    expect(
-      renderToString(
-        <Provider>
-          <RouterProvider router={router} />
-        </Provider>,
-      ),
-    ).toBe(`<output>${revealed}</output>`)
-  } finally {
-    router.dispose()
-  }
+const revealEnded = `${revealRun}/events/201`
+const revealFinal = finalValue(revealRun)
+const revealOutput = (name: string, position: number, eventKind = 'program.emitted') => ({
+  kind: 'output' as const,
+  name,
+  position,
+  workspace: 'workspaces/work',
+  run: revealRun,
+  label: name === revealFinal ? 'final value' : `emission #${position + 1}`,
+  eventKind,
+  startedAt: '1970-01-01T00:00:00.000Z',
+  agent: '',
 })
+const revealWindow = (...rows: ActivityRow[]) => ({
+  [revealRun]: { rows, offset: 174, next: '', unavailable: false },
+})
+// A continuous reading URL: the Run is open at a sparse window anchored on an Event.
+const revealReading = `anchor=${revealTask}&expand=${revealRun}&anchor.${revealRun}=${revealEvent}&offset.${revealRun}=174&preceding.${revealRun}=25`
+// Catches: the table revealing the Run when the URL names its final value, so it scrolls
+// to the Run's first records. Catches too: a final value the page has no row for, which
+// the table never reveals, so a direct link leaves the selected Run off screen.
+it.each<{
+  name: string
+  selected: string | null
+  search: string
+  branches: ActivityPage['branches']
+  anchors: Record<string, string>
+  revealed: string
+}>([
+  {
+    name: 'an identity-only child anchor',
+    selected: null,
+    search: revealReading,
+    branches: revealWindow(revealOutput(revealEvent, 199)),
+    anchors: { [revealRun]: revealEvent },
+    revealed: revealEvent,
+  },
+  {
+    name: "a Run's final value, not the Run its detail shows",
+    selected: revealRun,
+    search: `${revealReading}&record=${revealFinal}`,
+    branches: revealWindow(revealOutput(revealEvent, 199), revealOutput(revealFinal, 200)),
+    anchors: { [revealRun]: revealEvent },
+    revealed: revealFinal,
+  },
+  {
+    name: 'the Run of a final value its collapsed Run does not show',
+    selected: revealRun,
+    search: `record=${revealFinal}`,
+    branches: {},
+    anchors: { [revealTask]: revealRun },
+    revealed: revealRun,
+  },
+  {
+    name: 'the Run of a final value its ending Event stands for',
+    selected: revealRun,
+    search: `anchor=${revealTask}&expand=${revealRun}&anchor.${revealRun}=${revealEnded}&record=${revealFinal}`,
+    branches: revealWindow(revealOutput(revealEnded, 200, 'run.ended')),
+    anchors: { [revealRun]: revealEnded },
+    revealed: revealRun,
+  },
+  {
+    name: 'a selected Run',
+    selected: revealRun,
+    search: `${revealReading}&record=${revealRun}`,
+    branches: revealWindow(revealOutput(revealEvent, 199)),
+    anchors: { [revealRun]: revealEvent },
+    revealed: revealRun,
+  },
+])(
+  'reveals $name when its URL opens a new list',
+  ({ selected, search, branches, anchors, revealed }) => {
+    const initial: ActivityPage = {
+      ...page,
+      selected,
+      branches,
+      expanded: Object.keys(branches),
+      anchors,
+    }
+    function Reveal() {
+      return <output>{useActivityReader(initial).revealRecord}</output>
+    }
+    const router = createMemoryRouter([{ path: '/activity', element: <Reveal /> }], {
+      initialEntries: [`/activity?${search}`],
+    })
+    try {
+      // Server rendering runs no effects, so no observation connects.
+      expect(
+        renderToString(
+          <Provider>
+            <RouterProvider router={router} />
+          </Provider>,
+        ),
+      ).toBe(`<output>${revealed}</output>`)
+    } finally {
+      router.dispose()
+    }
+  },
+)
 
 const listed = (n: number, state: ExecutionRow['state'] = 'succeeded') => ({
   ...parentRun,
@@ -601,6 +642,60 @@ const listed = (n: number, state: ExecutionRow['state'] = 'succeeded') => ({
 })
 const shortNames = (value: ActivityPage) =>
   value.rows.map((row) => `${row.name.split('/').at(-1)}:${row.kind === 'run' ? row.state : ''}`)
+
+// Catches: a step onto a final value inside the list revealing its Run, because the
+// step's page arrives without the final value's row. The table then leaves the final value.
+it('keeps revealing a final value that a step inside the list reaches before its row loads', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(() => new Promise(() => {})),
+  )
+  const latest = createRef<ReturnType<typeof useActivityReader>>()
+  function StepReader() {
+    const value = useActivityReader(useLoaderData<ActivityPage>())
+    useLayoutEffect(() => {
+      latest.current = value
+    })
+    return null
+  }
+  const router = createMemoryRouter(
+    [
+      {
+        path: '/activity',
+        element: <StepReader />,
+        loader: ({ request }): ActivityPage => {
+          const stepped = new URL(request.url).searchParams.has('record')
+          return {
+            ...page,
+            rows: [{ ...listed(1), name: revealRun }],
+            expanded: [revealRun],
+            selected: stepped ? revealRun : null,
+            branches: stepped
+              ? revealWindow(revealOutput(revealEvent, 199))
+              : revealWindow(revealOutput(revealEvent, 199), revealOutput(revealFinal, 200)),
+          }
+        },
+      },
+    ],
+    { initialEntries: [`/activity?tree=1&expand=${revealRun}`] },
+  )
+  const container = document.body.appendChild(document.createElement('div'))
+  const root = createRoot(container)
+  try {
+    await act(async () => root.render(<RouterProvider router={router} />))
+    const before = latest.current!.windowKey
+    await act(async () => {
+      await router.navigate(latest.current!.navigation.recordHref(revealFinal))
+    })
+    // The step joins the list, so the table keeps the Run's sparse window.
+    expect(latest.current!.windowKey).toBe(before)
+    expect(latest.current!.revealRecord).toBe(revealFinal)
+  } finally {
+    await act(async () => root.unmount())
+    router.dispose()
+    container.remove()
+  }
+})
 
 // Catches: "Open the first page" still saying the page is unavailable, and not following.
 it('drops an unavailable anchor when the first page joins the list', () => {

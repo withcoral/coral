@@ -30,7 +30,6 @@ import {
 import {
   activityStops,
   childWindow,
-  finalValue,
   liveRun,
   liveStep,
   liveTarget,
@@ -39,6 +38,7 @@ import {
   resolveStop,
   revealHref,
   selectionKeys,
+  shownRecordOf,
   stepStop,
   stopPosition,
   useActivityNavigation,
@@ -623,10 +623,7 @@ export function Activity({
   if (closing !== null && closing !== selected) setClosing(null)
   // The record the rail shows, exactly: a Run's final value has its own name,
   // although its Run's detail shows it.
-  const shownRecord =
-    selected && new URLSearchParams(search).get('record') === finalValue(selected)
-      ? finalValue(selected)
-      : selected
+  const shownRecord = shownRecordOf(selected, new URLSearchParams(search).get('record'))
   // A closing rail keeps showing its record until its exit ends.
   const [shown, setShown] = useState({ page, record: shownRecord })
   if (selected && (shown.page !== page || shown.record !== shownRecord))
