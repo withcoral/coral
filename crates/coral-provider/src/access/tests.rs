@@ -90,28 +90,32 @@ async fn route_etag_race_has_one_winner_and_no_op_preserves_version_and_evidence
         .create(&context, WorkspaceDisplayName::parse("Route").unwrap())
         .await
         .unwrap();
-    let provider = publish_provider(
-        &providers,
-        &context,
-        workspace.id(),
-        CREDENTIAL_FREE_OPENAPI,
-        "race",
-        CredentialRoute::Caller,
-    )
-    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let accounts = crate::tests::accounts_for(&providers, directory.path());
+    let provider = providers
+        .publish_shared_fixture(
+            &context,
+            workspace.id(),
+            crate::OpenApiDocument::parse(CREDENTIAL_REQUIRED_OPENAPI).unwrap(),
+            "race",
+            &accounts,
+            coral_credentials::CredentialValues::token(Secret::new("race-canary".into()).unwrap()),
+        )
+        .await
+        .unwrap();
     let stale = context.clone().with_etag(&provider.etag()).unwrap();
     let (left, right) = tokio::join!(
         providers.change_account_setting_fixture(
             &stale,
             workspace.id(),
             provider.id(),
-            CredentialRoute::None
+            CredentialRoute::Caller
         ),
         providers.change_account_setting_fixture(
             &stale,
             workspace.id(),
             provider.id(),
-            CredentialRoute::None
+            CredentialRoute::Caller
         ),
     );
     let updated = match (left, right) {
@@ -145,7 +149,7 @@ async fn route_etag_race_has_one_winner_and_no_op_preserves_version_and_evidence
                 &current_context,
                 workspace.id(),
                 provider.id(),
-                CredentialRoute::None
+                CredentialRoute::Caller
             )
             .await
             .unwrap(),
@@ -880,5 +884,40 @@ async fn agent_inspection_shows_each_settings_account_for_that_agent_only() {
             )))
         ),
         "only an Owner inspects Agent Providers"
+    );
+}
+
+#[test]
+fn a_route_fits_a_source_only_when_it_sends_what_the_source_needs() {
+    use coral_catalog::{AuthenticationConfiguration, ProviderCredentialContract};
+    let free = ProviderCredentialContract::NONE;
+    let bearer = ProviderCredentialContract::from(AuthenticationConfiguration::Bearer)
+        .at_destinations(vec!["https://weather.example".into()]);
+    for (route, contract, expected) in [
+        (CredentialRoute::None, &free, RouteFit::Fits),
+        (
+            CredentialRoute::Fixed,
+            &free,
+            RouteFit::SourceNeedsNoCredential,
+        ),
+        (
+            CredentialRoute::Caller,
+            &free,
+            RouteFit::SourceNeedsNoCredential,
+        ),
+        (
+            CredentialRoute::None,
+            &bearer,
+            RouteFit::SourceNeedsCredential,
+        ),
+        (CredentialRoute::Fixed, &bearer, RouteFit::Fits),
+        (CredentialRoute::Caller, &bearer, RouteFit::Fits),
+    ] {
+        assert_eq!(route.fits(contract), expected, "{route:?} for {contract:?}");
+    }
+    assert_eq!(CredentialRoute::fitting(&free), vec![CredentialRoute::None]);
+    assert_eq!(
+        CredentialRoute::fitting(&bearer),
+        vec![CredentialRoute::Caller, CredentialRoute::Fixed]
     );
 }

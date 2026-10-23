@@ -22,6 +22,9 @@ const setup: SetupView = {
   sourceLabel: 'https://raw.example.test/openapi.json',
   sourceHost: 'raw.example.test',
   serverName: '',
+  allowedRoutes: ['caller', 'fixed'],
+  connectAvailable: true,
+  connectLaterAvailable: true,
 }
 
 describe('where typed-in credentials go', () => {

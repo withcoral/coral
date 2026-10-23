@@ -11,6 +11,7 @@ import {
   parseAttempt,
   reconcileAttempt,
   reviseAttempt,
+  savesDirectly,
 } from './model'
 
 describe('recipe in an attempt URL', () => {
@@ -58,6 +59,9 @@ const mcpSetup: import('@/views/providers/types').SetupView = {
   sourceLabel: 'https://example.test/mcp',
   sourceHost: 'example.test',
   serverName: 'example.test',
+  allowedRoutes: ['caller', 'fixed'],
+  connectAvailable: true,
+  connectLaterAvailable: true,
 }
 
 describe('attemptProgress', () => {
@@ -168,64 +172,31 @@ describe('attemptProgress', () => {
   })
 
   // Catches: the agent's link for a configuration confirmed without an OAuth
-  // application, where Coral cannot set one up, passing the one step that asks
-  // for a client ID and reaching a sign-in that cannot start.
+  // application, where Coral says no sign-in can start, passing the one step
+  // that asks for a client ID and reaching a sign-in that cannot start.
   it.each([
-    ['an MCP sign-in Coral cannot set up', {}, {}, 'configuration'],
+    ['an MCP sign-in Coral cannot start', {}, false, 'configuration'],
     [
-      'an API sign-in Coral cannot set up',
+      'an API sign-in Coral cannot start',
       { kind: 'openapi' as const, state: 'ready' as const },
-      {},
+      false,
       'configuration',
     ],
+    ['an MCP sign-in Coral can start', {}, true, 'discovery'],
     [
-      'a device sign-in, which Coral never sets up',
-      { kind: 'openapi' as const, state: 'ready' as const, credentialMethod: 'device' as const },
-      { automaticClientAvailable: true },
-      'configuration',
-    ],
-    ['a sign-in Coral sets up', {}, { automaticClientAvailable: true }, 'discovery'],
-    [
-      'a sign-in already started with its application',
-      {
-        authorization: {
-          state: 'failed' as const,
-          requestedScopes: [],
-          bootstrap: 'document' as const,
-          failure: 'access_denied',
-          clientId: 'https://coral.test/.well-known/oauth-client',
-          expiresAt: '',
-        },
-      },
-      {},
-      'discovery',
-    ],
-    [
-      'a sign-in configuration chose the application for',
+      'an API sign-in Coral can start',
       { kind: 'openapi' as const, state: 'ready' as const },
-      {
-        application: {
-          mode: 'manual' as const,
-          clientId: 'weather-app',
-          authentication: 'none' as const,
-          pkce: 's256' as const,
-          parameters: '',
-        },
-      },
+      true,
       'operations',
     ],
-  ])("opens the agent's link for %s", (_, over, review, stage) => {
+  ])("opens the agent's link for %s", (_, over, connectAvailable, stage) => {
     const attempt = parseAttempt('workspace', new URLSearchParams({ setup: setup.id }))
-    const configuration = {
-      revision: '1',
-      confirmed: true,
-      automaticClientAvailable: false,
-      ...review,
-    } as ConfigurationReviewView
+    const configuration = { revision: '1', confirmed: true } as ConfigurationReviewView
     const request = { namespace: 'weather', route: 'fixed' as const }
-    expect(attemptProgress(attempt, { ...setup, ...over, configuration, request }).stage).toBe(
-      stage,
-    )
+    expect(
+      attemptProgress(attempt, { ...setup, ...over, configuration, request, connectAvailable })
+        .stage,
+    ).toBe(stage)
   })
 
   it('discovers an update without asking a creation-only account question', () => {
@@ -284,6 +255,9 @@ describe('accepting the listed operations', () => {
     sourceLabel: 'https://api.example.test/openapi.json',
     sourceHost: 'api.example.test',
     serverName: 'api.example.test',
+    allowedRoutes: ['caller', 'fixed'],
+    connectAvailable: true,
+    connectLaterAvailable: true,
   }
   const draft = () => parseAttempt('workspace', new URLSearchParams({ setup: setupId }))
 
@@ -399,5 +373,42 @@ describe('accountStep', () => {
       plan,
       publishOnReturn,
     })
+  })
+})
+
+// Catches: Reef deciding from the credential method which routes suit a
+// source, or whether a sign-in can start, where Coral already decided.
+describe("Coral's route and Connect decisions", () => {
+  const confirmed = { revision: '1', confirmed: true } as ConfigurationReviewView
+  const ready = { ...mcpSetup, state: 'ready' as const, configuration: confirmed }
+  const accepted = (query: string) =>
+    acceptOperations(parseAttempt('workspace', new URLSearchParams(`setup=${ready.id}&${query}`)))
+
+  it('takes no account only when Coral allows no other route', () => {
+    const free = { ...ready, credentialMethod: 'none' as const, allowedRoutes: ['none' as const] }
+    expect(attemptProgress(accepted(''), free)).toMatchObject({
+      account: 'none',
+      credentialFree: true,
+    })
+    // The method alone does not say the source takes no credential.
+    const credentialed = { ...free, allowedRoutes: ['caller' as const, 'fixed' as const] }
+    expect(attemptProgress(accepted(''), credentialed)).toMatchObject({
+      account: null,
+      credentialFree: false,
+    })
+  })
+
+  it('adds a provider whose accounts connect later only when Coral says they can', () => {
+    const later = accepted('account=caller')
+    expect(attemptProgress(later, ready).stage).toBe('publish')
+    const unavailable = { ...ready, connectLaterAvailable: false }
+    expect(attemptProgress(later, unavailable).stage).toBe('account')
+    expect(accountStep(later, unavailable).plan).toBe('own-connect')
+  })
+
+  it('saves an edit directly only under a route Coral allows', () => {
+    const edited = { ...ready, configuration: { ...confirmed, interruptsAccess: false } }
+    expect(savesDirectly(edited, 'caller')).toBe(true)
+    expect(savesDirectly({ ...edited, allowedRoutes: ['none'] }, 'caller')).toBe(false)
   })
 })

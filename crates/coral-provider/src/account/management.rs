@@ -132,7 +132,8 @@ pub(crate) async fn inspect_authorized_account(
     let account = row.map(|row| summary(row, &contract, workspace, can_manage));
     let can_authorize = can_manage
         && provider.state() == crate::ProviderState::Active
-        && contract != ProviderCredentialContract::NONE;
+        && contract != ProviderCredentialContract::NONE
+        && !super::oauth_client::oauth_application_missing(contract.authentication());
     let can_connect = can_authorize
         && account
             .as_ref()

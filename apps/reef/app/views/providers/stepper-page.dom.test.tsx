@@ -26,6 +26,9 @@ const setup: SetupView = {
   sourceLabel: typed,
   sourceHost: 'records.example.com',
   serverName: '',
+  allowedRoutes: [],
+  connectAvailable: false,
+  connectLaterAvailable: false,
 }
 
 // Catches: a typed URL, which can hold a token, sent in the action's address

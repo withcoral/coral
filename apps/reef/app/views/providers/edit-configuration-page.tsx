@@ -79,11 +79,9 @@ export function EditConfigurationPage({
   const audience = useAccountAudience()
   const frozen = attempt.state === 'frozen'
   const { stage, ended, requiresInterruptionAcceptance } = attemptProgress(attempt, setup, result)
-  const route = frozen
-    ? (attempt.account ?? currentAccount)
-    : setup.credentialMethod === 'none'
-      ? 'none'
-      : setting
+  // Coral says when a source takes no credential, and so no account.
+  const credentialFree = setup.allowedRoutes.includes('none')
+  const route = frozen ? (attempt.account ?? currentAccount) : credentialFree ? 'none' : setting
   const settingChanged = route !== currentAccount
   // A provider without accounts that now needs one asks whose account it uses.
   // Change account setting asks it first.
@@ -298,7 +296,7 @@ export function EditConfigurationPage({
         }
       >
         {publication.body}
-        {needsChoice && setup.credentialMethod === 'none' ? (
+        {needsChoice && credentialFree ? (
           <Typography.Body as="p">This provider does not need an account.</Typography.Body>
         ) : (
           <div className={styles.accountQuestion}>

@@ -6,7 +6,7 @@ use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceAction
 
 use crate::{
     CredentialRoute, Error, Provider, ProviderModule, ProviderSetup, ProviderSetupId,
-    ProviderSetupState,
+    ProviderSetupState, RouteFit,
 };
 
 /// Who can publish a Setup under a Credential Route.
@@ -66,21 +66,22 @@ impl ProviderModule {
                 ));
             }
         };
-        let needs_credential = contract != &coral_catalog::ProviderCredentialContract::NONE;
-        Ok(match (needs_credential, route) {
-            (true, CredentialRoute::None) => {
+        Ok(match (route.fits(contract), route) {
+            (RouteFit::SourceNeedsCredential, _) => {
                 SetupPublishability::Rejected(PublishabilityRejection::SourceNeedsCredential)
             }
-            (false, CredentialRoute::Fixed | CredentialRoute::Caller) => {
+            (RouteFit::SourceNeedsNoCredential, _) => {
                 SetupPublishability::Rejected(PublishabilityRejection::SourceNeedsNoCredential)
             }
             // Coral publishes nothing that needs an Account: a person signs in
             // first, to the shared Account or to their own.
-            (true, CredentialRoute::Fixed | CredentialRoute::Caller) => SetupPublishability::Person,
-            (false, CredentialRoute::None) if loaded.setup.state().is_pre_ready() => {
+            (RouteFit::Fits, CredentialRoute::Fixed | CredentialRoute::Caller) => {
                 SetupPublishability::Person
             }
-            (false, CredentialRoute::None) => SetupPublishability::Coral,
+            (RouteFit::Fits, CredentialRoute::None) if loaded.setup.state().is_pre_ready() => {
+                SetupPublishability::Person
+            }
+            (RouteFit::Fits, CredentialRoute::None) => SetupPublishability::Coral,
         })
     }
 }

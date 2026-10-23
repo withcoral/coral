@@ -338,22 +338,17 @@ export function automaticApplicationAllowed(
 }
 
 /**
- * Whether an OAuth sign-in cannot start for want of an application: configuration
- * chose none and Coral cannot set one up. A sign-in already started has its
- * application.
+ * Whether Coral says no sign-in can start for the confirmed configuration
+ * though it takes a credential: it names no OAuth application, and Coral
+ * cannot set one up.
  */
 export function needsOAuthApplication(setup: SetupView) {
-  return (
-    !setup.authorization &&
-    isOAuthMethod(setup.credentialMethod) &&
-    !setup.configuration?.application &&
-    !automaticApplicationAllowed(setup)
-  )
+  return setup.allowedRoutes.length > 0 && !isCredentialFree(setup) && !setup.connectAvailable
 }
 
-/** Whether the confirmed configuration takes no credential, so nobody signs in. */
+/** Whether Coral says the confirmed configuration takes no credential, so nobody signs in. */
 function isCredentialFree(setup: SetupView) {
-  return setup.credentialMethod === 'none' && setup.configuration?.confirmed === true
+  return setup.allowedRoutes.includes('none')
 }
 
 /** One presentation decision from Coral progress plus explicit local choices. No lifecycle validation. */
@@ -374,14 +369,16 @@ export function attemptProgress(
           ? 'none'
           : attempt.account === 'none'
             ? null
-            : attempt.account !== 'fixed' || (setup?.authorized && attempt.accountGrant)
+            : // A shared account, and an individual one Coral says cannot connect
+              // later, are settled only by a sign-in in hand.
+              (attempt.account === 'caller' && setup?.connectLaterAvailable !== false) ||
+                (attempt.account && setup?.authorized && attempt.accountGrant)
               ? attempt.account
               : null
   // A configuration confirmed without an OAuth application has nothing to sign
   // in with. Coral's addProvider now refuses one, but an older Coral server's
   // createProvider can still confirm it. Only Configuration asks for an application.
-  const needsApplication =
-    !frozen && setup?.configuration?.confirmed === true && needsOAuthApplication(setup)
+  const needsApplication = !frozen && Boolean(setup && needsOAuthApplication(setup))
   // Why this Setup can go no further. A replay still reaches its publication.
   const ended: AttemptEnd | null =
     setup && !replaying && ATTEMPT_ENDS.includes(setup.state as AttemptEnd)
@@ -462,7 +459,7 @@ export function accountStep(
       : route === 'caller'
         ? held
           ? 'own-keep'
-          : returning || !attempt.account
+          : returning || !attempt.account || !setup.connectLaterAvailable
             ? 'own-connect'
             : 'own-later'
         : held
@@ -485,7 +482,7 @@ export function savesDirectly(setup: SetupView, currentAccount: AccountChoice) {
     setup.configuration?.interruptsAccess === false &&
     !setup.authorized &&
     !setup.authorization &&
-    (setup.credentialMethod === 'none') === (currentAccount === 'none')
+    setup.allowedRoutes.includes(currentAccount)
   )
 }
 

@@ -88,6 +88,17 @@ impl SetupConfigurationReview {
     pub(crate) fn confirmed_contract(&self) -> Option<&Contract> {
         self.confirmed_contract.as_ref()
     }
+
+    /// The Credential Routes that suit the confirmed configuration, in
+    /// [`crate::CredentialRoute::ALL`]'s order; none until it is confirmed
+    /// with a contract.
+    #[must_use]
+    pub fn allowed_routes(&self) -> Vec<crate::CredentialRoute> {
+        self.confirmed_contract()
+            .filter(|_| self.configuration_confirmed)
+            .map(crate::CredentialRoute::fitting)
+            .unwrap_or_default()
+    }
 }
 
 impl ProviderModule {

@@ -10,7 +10,8 @@ use coral_workspace::{ChangeContext, OrganizationRole, WorkspaceDisplayName};
 fn document(title: &str) -> crate::OpenApiDocument {
     crate::OpenApiDocument::parse(&format!(
         r#"{{"openapi":"3.1.0","info":{{"title":"{title}","version":"1"}},
-"servers":[{{"url":"https://{title}.example.test"}}],
+"servers":[{{"url":"https://{title}.example.test"}}],"security":[{{"bearer":[]}}],
+"components":{{"securitySchemes":{{"bearer":{{"type":"http","scheme":"bearer"}}}}}},
 "paths":{{"/data":{{"get":{{"operationId":"getData","responses":{{"200":{{"description":"Data"}}}}}}}}}}}}"#
     ))
     .unwrap()
@@ -43,6 +44,22 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
         )
         .await
         .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let accounts = super::tests::accounts_for(&providers, directory.path());
+    let grant = accounts
+        .authorize_setup(
+            &change_context(owner.clone(), 2, '2'),
+            workspace.id(),
+            setup.id(),
+            1,
+            coral_credentials::CredentialValues::token(
+                coral_credentials::Secret::new("etag-secret".into()).unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .provisional_grant_id
+        .unwrap();
     let provider = providers
         .publish_workspace_provider(
             &change_context(owner.clone(), 3, '3'),
@@ -51,8 +68,9 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
                 workspace.id().clone(),
                 setup.id().clone(),
                 ProviderNamespace::parse("etag").unwrap(),
-                CredentialRoute::None,
-            ),
+                CredentialRoute::Fixed,
+            )
+            .with_account_grant(grant),
         )
         .await
         .unwrap()
@@ -177,7 +195,9 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
         provider.id().clone(),
         replacement.id().clone(),
         1,
-    );
+    )
+    // A new destination interrupts each person's bearer Account.
+    .with_incompatible_configuration_confirmation();
     assert!(matches!(
         providers
             .regenerate_provider(

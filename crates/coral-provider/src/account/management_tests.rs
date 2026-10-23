@@ -527,3 +527,100 @@ async fn pending_authorization_cap_keeps_shared_actors_and_providers_independent
         .await
         .expect("another Provider has independent capacity");
 }
+
+/// An earlier Coral could publish an OAuth Provider with no OAuth application
+/// (#2501). Nobody can start a sign-in to it, so Coral offers no Connect, and
+/// a Connect started anyway is refused without an attempt.
+#[tokio::test]
+async fn an_oauth_provider_without_an_application_offers_no_connect() {
+    let (db, workspaces, providers) = test_modules().await;
+    let context = change_context(
+        organization_user(
+            db.database(),
+            "user:no-application",
+            OrganizationRole::Owner,
+        )
+        .await,
+        10,
+        'a',
+    );
+    let workspace = workspaces
+        .create(
+            &context,
+            WorkspaceDisplayName::parse("No application").unwrap(),
+        )
+        .await
+        .unwrap();
+    let document = serde_json::json!({
+        "openapi":"3.1.0", "info":{"title":"OAuth","version":"1"},
+        "servers":[{"url":"https://music.example"}], "security":[{"oauth":["read"]}],
+        "components":{"securitySchemes":{"oauth":{"type":"oauth2","flows":{"authorizationCode":{
+            "authorizationUrl":"https://music.example/authorize",
+            "tokenUrl":"https://music.example/token", "scopes":{"read":"Read"}
+        }}}}},
+        "paths":{"/data":{"get":{"operationId":"getData","responses":{"200":{"description":"Data"}}}}}
+    });
+    let provider = publish_provider(
+        &providers,
+        &context,
+        workspace.id(),
+        &document.to_string(),
+        "music",
+        CredentialRoute::Caller,
+    )
+    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let accounts = crate::tests::accounts_for(&providers, directory.path());
+    let named = accounts
+        .get_account(&context, workspace.id(), provider.id(), &AccountScope::User)
+        .await
+        .unwrap();
+    assert!(named.can_connect, "a named application can start a sign-in");
+    let stored = named.contract.to_storage().unwrap();
+    let unnamed = named
+        .contract
+        .clone()
+        .with_client_policy(None)
+        .to_storage()
+        .unwrap();
+    assert_eq!(
+        db.execute_fixture_sql(&format!(
+            "UPDATE provider_generations SET credential_contract = '{unnamed}' \
+             WHERE credential_contract = '{stored}'"
+        ))
+        .await
+        .unwrap(),
+        1
+    );
+    let view = accounts
+        .get_account(&context, workspace.id(), provider.id(), &AccountScope::User)
+        .await
+        .unwrap();
+    assert_eq!(view.contract.oauth_client(), None);
+    assert!(!view.can_connect);
+    assert!(!view.can_reconnect);
+    let started = accounts
+        .start_user_authorization(
+            &context,
+            workspace.id(),
+            provider.id(),
+            authorization_request(),
+            Some(
+                crate::account::OAuthClient::from_provider("https://reef.example/callback".into())
+                    .unwrap(),
+            ),
+        )
+        .await;
+    assert!(
+        matches!(started, Err(crate::Error::OAuthClientConfiguration)),
+        "{started:?}"
+    );
+    assert_eq!(
+        accounts
+            .get_account(&context, workspace.id(), provider.id(), &AccountScope::User)
+            .await
+            .unwrap(),
+        view,
+        "the refusal created no Account and no attempt"
+    );
+}

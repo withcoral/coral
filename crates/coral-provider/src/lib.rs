@@ -95,7 +95,7 @@ pub use types::{
     ProviderSetupState, ProviderState, ResolvedInvocationOperation, SetupRequest,
 };
 
-pub use access::{CredentialRoute, ProviderAccess, ProviderCallRoot, ProviderNamespace};
+pub use access::{CredentialRoute, ProviderAccess, ProviderCallRoot, ProviderNamespace, RouteFit};
 use account::setup as setup_credentials;
 use coral_catalog::{MaterializedOperation, OperationKey, ProviderSetupInput};
 use publication::materialization::{CatalogMaterializer, Materializer};

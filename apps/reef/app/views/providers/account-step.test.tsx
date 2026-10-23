@@ -62,8 +62,18 @@ const setup: SetupView = {
   sourceHost: '',
   serverName: '',
   configuration: review,
+  allowedRoutes: ['none'],
+  connectAvailable: false,
+  connectLaterAvailable: false,
+}
+/** What Coral says of a source that takes a credential a person can give. */
+const credentialed = {
+  allowedRoutes: ['caller', 'fixed'] as SetupView['allowedRoutes'],
+  connectAvailable: true,
+  connectLaterAvailable: true,
 }
 const held = {
+  ...credentialed,
   credentialMethod: 'bearer' as const,
   authorized: true,
   provisionalGrantId: '33333333-3333-4333-8333-333333333333',
@@ -105,7 +115,7 @@ describe('the account step', () => {
     ['a credential-free provider', {}, 'you and your agents can use it'],
     [
       'no sign-in in hand',
-      { credentialMethod: 'bearer' as const },
+      { ...credentialed, credentialMethod: 'bearer' as const },
       'You connect one for each agent that uses it',
     ],
     ['a sign-in in hand', held, 'You and your agents call the provider with the account'],
@@ -145,7 +155,7 @@ describe('the account step', () => {
   })
 
   it('drops the outcomes that need a sign-in in hand when there is none', () => {
-    const html = render({ credentialMethod: 'bearer' })
+    const html = render({ ...credentialed, credentialMethod: 'bearer' })
     expect(html).toContain('Connect an account')
     expect(html).toContain('Connect now')
     expect(html).toContain(
@@ -160,6 +170,14 @@ describe('the account step', () => {
     // Shared use is the default, and it needs a credential before it can add.
     expect(html).toContain('Connect the shared account')
     expect(html).not.toContain('Add provider')
+  })
+
+  // Catches: offering an individual-account add that Coral would refuse,
+  // because nobody could sign in to the provider afterwards.
+  it('offers to connect later only when Coral says each person can', () => {
+    const oauth = { ...credentialed, credentialMethod: 'oauth' as const }
+    expect(render(oauth)).toContain('Connect later')
+    expect(render({ ...oauth, connectLaterAvailable: false })).not.toContain('Connect later')
   })
 
   it('states the committed answer when the attempt is being retried', () => {
@@ -177,6 +195,7 @@ describe('the account step', () => {
 
 // A device sign-in in flight, and what the page reads once it finishes in the other tab.
 const device: Partial<SetupView> = {
+  ...credentialed,
   credentialMethod: 'device',
   authorization: {
     userCode: 'ABCD-EFGH',
@@ -299,7 +318,14 @@ it.each([
   renderRoute(
     <AccountStep
       attempt={{ ...attempt, account, returnFromConnect: true }}
-      setup={{ ...setup, credentialMethod: 'oauth', serverName: 'Gmail' }}
+      setup={{
+        ...setup,
+        ...credentialed,
+        // Coral says no sign-in can start.
+        connectAvailable: false,
+        credentialMethod: 'oauth',
+        serverName: 'Gmail',
+      }}
       basePath="/workspaces/demo/providers/new"
       form={{ csrf: 'test-csrf', requestId: '22222222-2222-4222-8222-222222222222' }}
       result={{ error: null, credential: null, failed: 'publication_failed' }}

@@ -233,15 +233,18 @@ export function AccountStep({
                 >
                   {held ? 'Connect now with another account' : 'Connect now'}
                 </Radio.Item>
-                <Radio.Item
-                  variant="card"
-                  value="own-later"
-                  description={
-                    held ? `Coral discards this sign-in. ${audience.later}` : audience.later
-                  }
-                >
-                  Connect later
-                </Radio.Item>
+                {/* Coral says when nobody could connect after an add with no sign-in. */}
+                {setup.connectLaterAvailable && (
+                  <Radio.Item
+                    variant="card"
+                    value="own-later"
+                    description={
+                      held ? `Coral discards this sign-in. ${audience.later}` : audience.later
+                    }
+                  >
+                    Connect later
+                  </Radio.Item>
+                )}
               </div>
             </Radio.Group>
           </div>

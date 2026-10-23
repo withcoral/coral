@@ -470,3 +470,100 @@ async fn an_update_ended_before_confirmation_stays_inspectable() {
         assert_eq!(inspected.setup.state(), expected);
     }
 }
+
+/// An Update takes only a route that suits the replacement source, by the
+/// rule Setup publishability and creation use. A refusal keeps the active
+/// Provider and its shared Account.
+#[tokio::test]
+async fn an_update_to_a_credential_free_source_takes_only_the_none_route() {
+    let h = harness().await;
+    let (actor, workspace) = workspace_owner(&h, "fit-owner").await;
+    let context = change_context(actor.clone(), 10, '2');
+    let provider = shared(&h, &context, workspace.id()).await;
+    for (route, refused) in [
+        (CredentialRoute::Fixed, true),
+        (CredentialRoute::Caller, true),
+        (CredentialRoute::None, false),
+    ] {
+        let document = OpenApiDocument::parse(crate::tests::CREDENTIAL_FREE_OPENAPI).unwrap();
+        let values = document.configuration_review().unwrap().suggested;
+        let free = h
+            .providers
+            .prepare_setup(
+                &context,
+                workspace.id(),
+                ProviderSetupSource::OpenApiDocument(document),
+                Some(provider.id()),
+            )
+            .await
+            .unwrap();
+        let review = h
+            .providers
+            .review_setup_configuration(&actor, workspace.id(), free.id())
+            .await
+            .unwrap();
+        let confirmed = h
+            .providers
+            .confirm_setup_configuration(
+                &context,
+                workspace.id(),
+                free.id(),
+                review.revision,
+                values,
+            )
+            .await
+            .unwrap();
+        assert!(confirmed.errors.is_empty(), "{:?}", confirmed.errors);
+        let result = h
+            .providers
+            .regenerate_provider(
+                &context,
+                ProviderRegenerationRequest::new(
+                    request_id(),
+                    workspace.id().clone(),
+                    provider.id().clone(),
+                    free.id().clone(),
+                    confirmed.revision,
+                )
+                .with_account_setting(route)
+                .with_incompatible_configuration_confirmation(),
+            )
+            .await;
+        if refused {
+            assert!(
+                matches!(result, Err(crate::Error::AccountInput)),
+                "{route:?}: {result:?}"
+            );
+            let current = h
+                .providers
+                .inspect_provider(&actor, workspace.id(), provider.id())
+                .await
+                .unwrap();
+            assert_eq!(current.access().credential_route(), CredentialRoute::Fixed);
+            assert_eq!(
+                credential_for(
+                    &h,
+                    workspace.id(),
+                    provider.id(),
+                    "update",
+                    "read",
+                    &user_principal(&actor),
+                    11,
+                )
+                .await
+                .unwrap()
+                .get(coral_credentials::CredentialValues::TOKEN)
+                .unwrap()
+                .expose(),
+                "old-secret",
+                "{route:?}: the refusal keeps the shared Account"
+            );
+        } else {
+            assert_eq!(
+                result.unwrap().outcome(),
+                ProviderPublicationOutcome::Succeeded,
+                "{route:?}"
+            );
+        }
+    }
+}

@@ -178,7 +178,17 @@ export function setupView(s: ProviderSetup): SetupView {
     sourceHost: s.inputUrl ? safeHost(s.inputUrl) : '',
     serverName: serviceHost(s),
     ...setupRequest(s),
+    allowedRoutes: allowedRoutes(s),
+    connectAvailable: s.connectAvailable,
+    connectLaterAvailable: s.connectLaterAvailable,
   }
+}
+
+/** The routes Coral says suit the confirmed configuration, without any this Reef does not know. */
+function allowedRoutes(s: ProviderSetup): AccountChoice[] {
+  return s.allowedCredentialRoutes
+    .map(routeChoice)
+    .filter((route): route is AccountChoice => route !== null)
 }
 
 /**
@@ -986,7 +996,7 @@ export async function setupAction<Published = never>(
         const returning =
           draft.kind === 'workspace' &&
           Boolean(draft.returnFromConnect) &&
-          setup.credentialMethod !== CredentialMethod.NONE
+          !allowedRoutes(setup).includes('none')
         return redirect(stepper(chosen, returning), { headers: privateHeaders })
       }
       case 'update-access':
@@ -1012,14 +1022,14 @@ export async function setupAction<Published = never>(
             headers: privateHeaders,
           })
         const setup = await api.setups.getProviderSetup({ name })
-        const credentialFree = setup.credentialMethod === CredentialMethod.NONE
+        // An older Coral reports no routes; Publication still refuses a misfit.
+        const allowed = allowedRoutes(setup)
         const accountGrant = optionalField(form, 'accountGrant')
         if (
-          (chosen === 'none' && !credentialFree) ||
+          (allowed.length > 0 && !allowed.includes(chosen)) ||
           (chosen === 'fixed' && !accountGrant) ||
           (accountGrant && (!setup.authorized || accountGrant !== setup.provisionalGrantId)) ||
-          (chosen === 'none' && accountGrant) ||
-          (chosen !== 'none' && credentialFree)
+          (chosen === 'none' && accountGrant)
         )
           throw new Response('Invalid form', {
             status: 400,

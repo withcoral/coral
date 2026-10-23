@@ -89,12 +89,18 @@ const datadog: SetupView = {
     'https://raw.githubusercontent.com/DataDog/datadog-api-client-typescript/master/.generator/schemas/v1/openapi.yaml',
   sourceHost: 'raw.githubusercontent.com',
   serverName: 'api.datadoghq.com',
+  allowedRoutes: ['none'],
+  connectAvailable: false,
+  connectLaterAvailable: false,
 }
 
 /** A shared account, signed in, with permissions worth naming before Add. */
 const signedIn: SetupView = {
   ...datadog,
   credentialMethod: 'oauth',
+  allowedRoutes: ['caller', 'fixed'],
+  connectAvailable: true,
+  connectLaterAvailable: true,
   authorized: true,
   grantedScope: 'metrics_read monitors_read',
   configuration: {

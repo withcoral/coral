@@ -107,6 +107,7 @@ pub(crate) async fn publish_provider(
         )
         .await
         .expect("prepare Provider");
+    name_oauth_application(providers, context, workspace, setup.id()).await;
     providers
         .publish_workspace_provider(
             context,
@@ -123,6 +124,45 @@ pub(crate) async fn publish_provider(
         .published_provider()
         .expect("Provider")
         .clone()
+}
+
+/// The public OAuth application that fixture Providers sign in through.
+pub(crate) const REGISTERED_PUBLIC_CLIENT: &str = "registered-public-client";
+
+/// Confirms an OAuth Setup with [`REGISTERED_PUBLIC_CLIENT`] when its
+/// configuration names no application, as an Owner does in Reef. Publication
+/// refuses an OAuth source that nobody could sign in to.
+pub(crate) async fn name_oauth_application(
+    providers: &ProviderModule,
+    context: &ChangeContext,
+    workspace: &WorkspaceId,
+    setup: &crate::ProviderSetupId,
+) {
+    let review = providers
+        .review_setup_configuration(context.actor(), workspace, setup)
+        .await
+        .expect("review fixture configuration");
+    let Some(mut configuration) = review.confirmed else {
+        return;
+    };
+    if AccountModule::names_oauth_application(configuration.authentication.as_ref()) {
+        return;
+    }
+    let application = coral_catalog::OAuthClientPolicy {
+        bootstrap: coral_catalog::OAuthClientBootstrap::Manual,
+        client_id: REGISTERED_PUBLIC_CLIENT.into(),
+        authentication: coral_catalog::OAuthClientAuthenticationMethod::None,
+        pkce: coral_catalog::OAuthPkcePolicy::S256,
+        authorization_parameters: std::collections::BTreeMap::new(),
+    };
+    configuration.authentication = configuration
+        .authentication
+        .map(|method| method.with_oauth_client(&application));
+    let confirmed = providers
+        .confirm_setup_configuration(context, workspace, setup, review.revision, configuration)
+        .await
+        .expect("confirm fixture application");
+    assert!(confirmed.errors.is_empty(), "{:?}", confirmed.errors);
 }
 
 pub(crate) async fn retained_operation(
