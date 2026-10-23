@@ -62,7 +62,24 @@ export function AuthorizationPage({
             {...signInFormTarget(v.userCode !== undefined)}
           >
             <Fields form={v.form} intent="navigate" />
-            {v.userCode !== undefined ? (
+          </Form>
+        ) : (
+          <form id={formId} method="post" action={v.path} className={styles.stack}>
+            <Fields form={v.form} intent="secret" />
+            <Typography.BodySmall as="p">
+              Enter the credentials from {v.providerName}.
+            </Typography.BodySmall>
+            <CredentialFields fields={v.credentialFields}>
+              {(input) => <Inputs.CredentialInput {...input} />}
+            </CredentialFields>
+          </form>
+        ))}
+      {v.state === 'exchanging' && <Banner variant="info">Completing sign-in…</Banner>}
+      {open && (
+        // The main action names its form by ID, so it can sit beside Cancel.
+        <div className={styles.actions}>
+          {v.state === 'pending' &&
+            (v.oauth && v.userCode !== undefined ? (
               <DeviceCodeDialog
                 code={v.userCode}
                 formId={formId}
@@ -70,23 +87,17 @@ export function AuthorizationPage({
                 triggerLabel="Continue to sign in"
               />
             ) : (
-              <DocumentSubmitButton>Continue to sign in</DocumentSubmitButton>
-            )}
+              <DocumentSubmitButton form={formId}>
+                {v.oauth ? 'Continue to sign in' : 'Connect account'}
+              </DocumentSubmitButton>
+            ))}
+          <Form method="post" action={v.path}>
+            <Fields form={v.form} intent="cancel" />
+            <Button.TextButton type="submit" variant="secondary" disabled={pending}>
+              Cancel
+            </Button.TextButton>
           </Form>
-        ) : (
-          <form method="post" action={v.path} className={styles.stack}>
-            <Fields form={v.form} intent="secret" />
-            <CredentialFields fields={v.credentialFields}>
-              {(input) => <Inputs.CredentialInput {...input} />}
-            </CredentialFields>
-            <Typography.BodySmall as="p">
-              Enter the credentials from {v.providerName}.
-            </Typography.BodySmall>
-            <DocumentSubmitButton>Connect account</DocumentSubmitButton>
-          </form>
-        ))}
-      {v.state === 'exchanging' && (
-        <Banner variant="info">Completing sign-in. Check the connection again.</Banner>
+        </div>
       )}
       {v.state === 'succeeded' && v.automaticRefresh === false && (
         <Banner variant="info">
@@ -96,24 +107,6 @@ export function AuthorizationPage({
       {v.grantedScope && (
         <Typography.BodySmall as="p">Granted permissions: {v.grantedScope}</Typography.BodySmall>
       )}
-      {open && (
-        <>
-          <Typography.BodySmall as="p">
-            This connection expires at {v.expiresAt}. Closing this page does not cancel it.
-          </Typography.BodySmall>
-          <div className={styles.actions}>
-            <Button.InternalLink to={v.path} variant="secondary">
-              Check connection
-            </Button.InternalLink>
-            <Form method="post" action={v.path}>
-              <Fields form={v.form} intent="cancel" />
-              <Button.TextButton type="submit" variant="secondary" disabled={pending}>
-                Cancel connection
-              </Button.TextButton>
-            </Form>
-          </div>
-        </>
-      )}
       {v.state === 'succeeded' && (
         <Typography.BodySmall as="p">
           {returnsToRun
@@ -121,11 +114,13 @@ export function AuthorizationPage({
             : 'Return to the account settings. Check the account before you make calls.'}
         </Typography.BodySmall>
       )}
-      <div className={styles.actions}>
-        <Button.InternalLink to={v.returnTo} variant="secondary">
-          {returnsToAgent ? 'Back to agent' : returnsToRun ? 'Return to run' : 'Back to activity'}
-        </Button.InternalLink>
-      </div>
+      {!open && (
+        <div className={styles.actions}>
+          <Button.InternalLink to={v.returnTo} variant="secondary">
+            {returnsToAgent ? 'Back to agent' : returnsToRun ? 'Return to run' : 'Back to activity'}
+          </Button.InternalLink>
+        </div>
+      )}
     </ManagementLayout>
   )
 }

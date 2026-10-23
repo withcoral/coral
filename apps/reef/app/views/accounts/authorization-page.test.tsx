@@ -15,7 +15,6 @@ const view: AuthorizationView = {
   state: 'pending',
   oauth: false,
   grantedScope: '',
-  expiresAt: '2026-09-24T12:15:00.000Z',
   credentialFields: [{ name: 'token', label: 'Token', description: '', sensitive: true }],
   form: { csrf: 'test', requestId: 'test-request' },
 }
@@ -38,7 +37,17 @@ it.each([false, true])(
     const html = render({ oauth })
     const actions = [...html.matchAll(/<form[^>]*action="([^"]+)"/g)].map((match) => match[1])
     expect(actions).toEqual([view.path, view.path])
-    expect(html).toContain(`href="${view.path}"`)
+  },
+)
+
+it.each([false, true])(
+  'offers only the main action and Cancel while the connection is open (OAuth: %s)',
+  (oauth) => {
+    // Catches: a way back that leaves the connection open behind you.
+    renderRoute(<AuthorizationPage view={{ ...view, oauth }} />)
+    const cancel = screen.getByRole<HTMLButtonElement>('button', { name: 'Cancel' })
+    expect(new FormData(cancel.form!).get('intent')).toBe('cancel')
+    expect(screen.queryByRole('link', { name: 'Return to run' })).toBeNull()
   },
 )
 

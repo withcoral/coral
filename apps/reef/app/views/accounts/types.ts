@@ -47,7 +47,6 @@ export interface AuthorizationView {
   automaticRefresh?: boolean
   /** The OAuth grant exactly as the service reported it; empty for secrets. */
   grantedScope: string
-  expiresAt: string
   /** The Credential Fields to enter for secret entry, in name order. */
   credentialFields: CredentialFieldView[]
   form: FormContext

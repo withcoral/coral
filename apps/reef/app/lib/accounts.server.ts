@@ -212,7 +212,6 @@ export async function loadAuthorization(
     failure: value.failureCode,
     automaticRefresh: value.automaticRefresh,
     grantedScope: value.grantedScope,
-    expiresAt: timestamp(value.expireTime),
     credentialFields: credentialFieldViews(value.credentialFields),
     form: formContext(context),
   }

@@ -163,7 +163,7 @@ test.for(['user', 'shared', 'agent'] as const)(
         })
         await step('Cancellation and failed OAuth preserve the active account', async () => {
           await reconnect()
-          await page.getByRole('button', { name: 'Cancel connection', exact: true }).click()
+          await page.getByRole('button', { name: 'Cancel', exact: true }).click()
           expect(await snapshot()).toBe(original)
           await reconnect()
           upstream.knobs.tokenError = 'invalid_grant'

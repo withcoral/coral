@@ -290,12 +290,6 @@ export async function closeProviderSettings(page: Page) {
   await page.waitForURL((url) => !url.pathname.endsWith('/settings'))
 }
 
-/** Opens a provider's operation policy page. Reef links no route to it. */
-export async function openProviderPolicy(page: Page, providerPath: string) {
-  await page.goto(`${providerPath}/policy`)
-  await breadcrumb(page, 'Operation policy').waitFor()
-}
-
 /**
  * Disables or enables a provider through Coral, as an operator does: Reef
  * offers no control for it. `providerPath` is the provider's Reef path.

@@ -47,7 +47,6 @@ export default [
       route('workspaces/:workspace/providers/:provider/settings', 'routes/provider-settings.tsx', {
         id: 'provider-settings',
       }),
-      route('workspaces/:workspace/providers/:provider/policy', 'routes/provider-policy.tsx'),
       route('workspaces/:workspace/providers/:provider/accounts', 'routes/provider-accounts.tsx', {
         id: 'provider-accounts',
       }),

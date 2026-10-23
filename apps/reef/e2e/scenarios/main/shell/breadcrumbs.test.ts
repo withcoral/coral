@@ -7,7 +7,6 @@ import {
   chooseFile,
   configurationNext,
   createWorkspace,
-  openProviderPolicy,
   openProviderSettings,
 } from '../../../support/providers.ts'
 import { copyNewAgentKey } from '../../../support/agent-key.ts'
@@ -95,11 +94,7 @@ test('Each page has one title, and breadcrumbs lead back from nested pages', asy
       // The provider crumb returns to the provider's operations.
       await crumbs.getByRole('link', { name: 'Ledger', exact: true }).click()
       await page.waitForURL((url) => url.pathname === providerPath)
-      await openProviderPolicy(page, providerPath)
-      await expect.poll(trail).toEqual([name, 'Providers', 'Ledger', 'Operation policy'])
-      await crumbs.getByRole('link', { name: 'Ledger', exact: true }).click()
-      await page.waitForURL((url) => url.pathname === providerPath)
-      await openProviderPolicy(page, providerPath)
+      await openProviderSettings(page)
       await crumbs.getByRole('link', { name: 'Providers', exact: true }).click()
       await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/providers`)
       // The provider list's toolbar titles the page. Add provider ends that

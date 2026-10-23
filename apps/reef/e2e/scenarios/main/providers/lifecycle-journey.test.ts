@@ -12,7 +12,7 @@ import {
   chooseFile,
   confirmConfiguration,
   createWorkspace,
-  openProviderPolicy,
+  setOperationPolicy,
   openProviderSettings,
   programRunner,
   type RunUpdate,
@@ -55,13 +55,8 @@ test('Workspace Provider Add, MCP execution, policy, Update and lifecycle use on
         namespace: string,
         state: 'Always allow' | 'Disabled',
       ) => {
-        await openProviderPolicy(page, path)
-        await page
-          .getByRole('checkbox', { name: `coral.providers.${namespace}.getForecast`, exact: true })
-          .check()
-        await page.getByRole('radio', { name: state, exact: true }).check()
-        await page.getByRole('button', { name: 'Save selected operations', exact: true }).click()
-        await page.getByText(`${state} · Exact rule`, { exact: true }).waitFor()
+        await page.goto(path)
+        await setOperationPolicy(page, 'getForecast', state)
       }
       const execute = async (namespace: string) => {
         const result = await run.exec(
