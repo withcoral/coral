@@ -131,10 +131,6 @@ async fn redeem(
     code: &str,
     redemption: CodeRedemption<'_>,
 ) -> Result<AuthorizationGrant, TokenError> {
-    let Some(codes) = state.codes.as_ref() else {
-        tracing::warn!("token endpoint has no database to redeem authorization codes from");
-        return Err(TokenError::ServerError);
-    };
     let Ok(now_unix_nanos) = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_error| ())
@@ -143,7 +139,7 @@ async fn redeem(
         tracing::warn!("token endpoint could not read the system clock");
         return Err(TokenError::ServerError);
     };
-    match codes.redeem(code, redemption, now_unix_nanos).await {
+    match state.codes.redeem(code, redemption, now_unix_nanos).await {
         Ok(Some(authorization)) => Ok(authorization),
         Ok(None) => Err(TokenError::InvalidGrant),
         Err(error) => {
@@ -402,7 +398,7 @@ mod tests {
     use url::form_urlencoded;
 
     use super::super::query;
-    use super::super::test_state::http_state;
+    use super::super::test_state::{database, http_state};
     use super::*;
     use coral_auth::SessionTokenIssuer;
     use coral_auth::authorization_codes::{AuthorizationCodes, CodeIssue};
@@ -420,12 +416,9 @@ mod tests {
         SessionTokenIssuer,
         TestDatabase,
     ) {
-        let database = TestDatabase::new(coral_db::migration_plan())
-            .await
-            .expect("test database");
-        let codes = AuthorizationCodes::new(database.database());
-        let mut state = http_state("https://accounts.example.test", "", &[RESOURCE]);
-        state.codes = Some(codes.clone());
+        let database = database().await;
+        let state = http_state(&database, "https://accounts.example.test", "", &[RESOURCE]);
+        let codes = state.codes.clone();
         let session_tokens = state.session_tokens.clone();
         (state, codes, session_tokens, database)
     }
@@ -823,9 +816,7 @@ mod tests {
         assert!(value.get("scope").is_none());
         let expires_in = get("expires_in").as_u64().expect("expires_in");
         assert!(expires_in > 0 && expires_in <= session.access_token_ttl().as_secs());
-        let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
-            .await
-            .unwrap();
+        let fixture = database().await;
         let organization = coral_workspace::OrganizationModule::new(fixture.database());
         let user = coral_workspace::AuthenticatedUser::organization_member(
             coral_workspace::UserId::parse("raw/provider/subject").unwrap(),

@@ -21,7 +21,6 @@ use crate::auth::CoralAuthorizationServer;
 use crate::state::DatabaseConfig;
 use crate::state::{AppStateLayout, InitializedState, StateLock, initialize_state};
 use crate::telemetry::TelemetryConfig;
-use coral_auth::UserDirectory;
 use coral_db::{Database, DatabaseOptions};
 
 /// HTTP/2 `SETTINGS_MAX_HEADER_LIST_SIZE` for the private listener.
@@ -388,24 +387,17 @@ impl PreparedServerBuilder {
 
 /// Prepares the authorization server this instance's logins are provisioned by.
 ///
-/// It never opens a database of its own: application bootstrap constructs the
-/// User directory over the single pool and attaches that Module here, which is
-/// what lets the OIDC callback record a verified login before issuing a code.
+/// It never opens a database of its own: it records verified logins,
+/// authorization codes, and registered clients in the single pool.
 fn build_authorization_server(
     session_auth: SessionAuthSettings,
     coral_db: &Arc<Database>,
     policy: coral_outbound::DestinationPolicy,
     readiness: EngineReadiness,
 ) -> Result<Box<CoralAuthorizationServer>, AppError> {
-    let mut directory = UserDirectory::new(Arc::clone(coral_db));
-    if let Some((issuer, subject)) = session_auth.settings.bootstrap_owner() {
-        directory = directory.with_bootstrap_owner(issuer, subject);
-    }
     Ok(Box::new(
         session_auth
-            .into_authorization_server(policy)?
-            .with_user_directory(directory)
-            .with_client_database(coral_db.clone())
+            .into_authorization_server(policy, Arc::clone(coral_db))?
             .with_readiness(readiness),
     ))
 }
