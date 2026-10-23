@@ -1549,6 +1549,7 @@ async fn list_providers_lists_every_provider_without_approval() {
             "providers": [
                 {
                     "callRoot": "coral.workspace",
+                    "namespace": null,
                     "displayName": "Coral",
                     "state": "active",
                     "credentialRoute": "none",
@@ -1559,6 +1560,7 @@ async fn list_providers_lists_every_provider_without_approval() {
                 },
                 {
                     "callRoot": "coral.providers.weather",
+                    "namespace": "weather",
                     "displayName": "Weather",
                     "state": "disabled",
                     "credentialRoute": "none",

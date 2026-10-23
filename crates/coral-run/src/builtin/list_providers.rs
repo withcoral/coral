@@ -48,6 +48,10 @@ fn listed_provider(published: &PublishedProvider, rules: &ExactOperationRules) -
     let provider = &published.provider;
     ListedProvider {
         call_root: provider.call_root().as_str().to_owned(),
+        namespace: provider
+            .call_root()
+            .namespace()
+            .map(|namespace| namespace.as_str().to_owned()),
         state: provider.state().into(),
         facts: provider_facts(published, rules),
     }

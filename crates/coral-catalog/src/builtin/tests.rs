@@ -268,18 +268,22 @@ fn each_result_meets_its_output_schema() {
         ListProvidersResult {
             providers: facts()
                 .enumerate()
-                .map(|(index, facts)| ListedProvider {
-                    call_root: if index == 0 {
-                        "coral.workspace".to_owned()
-                    } else {
-                        format!("coral.providers.provider{index}")
-                    },
-                    state: if index.is_multiple_of(2) {
-                        ListedProviderState::Active
-                    } else {
-                        ListedProviderState::Disabled
-                    },
-                    facts,
+                .map(|(index, facts)| {
+                    // The first entry stands for the Built-in Provider.
+                    let namespace = (index != 0).then(|| format!("provider{index}"));
+                    ListedProvider {
+                        call_root: namespace.as_ref().map_or_else(
+                            || "coral.workspace".to_owned(),
+                            |namespace| format!("coral.providers.{namespace}"),
+                        ),
+                        namespace,
+                        state: if index.is_multiple_of(2) {
+                            ListedProviderState::Active
+                        } else {
+                            ListedProviderState::Disabled
+                        },
+                        facts,
+                    }
                 })
                 .collect(),
             setups: [
