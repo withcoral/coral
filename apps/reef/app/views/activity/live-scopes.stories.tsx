@@ -63,7 +63,13 @@ const finalOf = (run: string) => `${run}/final`
 function newRun(id: string, task = '', order = 0): RunModel {
   return {
     order,
-    row: runRow(id, task, { actor: `run ${id}`, intent: `Run ${id}`, state: 'running' }),
+    row: runRow(id, task, {
+      actor: `run ${id}`,
+      intent: `Run ${id}`,
+      state: 'running',
+      // Coral accepts each new Run later than the last.
+      startedAt: new Date(Date.parse(at) + order * 1000).toISOString(),
+    }),
     operations: [],
     ended: false,
     waiting: null,
@@ -98,6 +104,8 @@ const world = {
       | 'task'
       | 'standalone'
       | 'run'
+      | 'run oldest'
+      | 'ask'
       | 'search'
       | 'describe'
       | 'submit'
@@ -116,6 +124,9 @@ const world = {
     const task = this.roots.find((root) => root.kind === 'task')
     if (kind === 'run' && task?.kind === 'task')
       task.runs.push(newRun(`r${++this.count}`, task.row.name, this.count))
+    const oldest = this.roots.findLast((root) => root.kind === 'task')
+    if (kind === 'run oldest' && oldest?.kind === 'task')
+      oldest.runs.push(newRun(`r${++this.count}`, oldest.row.name, this.count))
     if ((kind === 'search' || kind === 'describe') && task?.kind === 'task') {
       const id = `${kind}-${++this.count}`
       const row = toolRow(task.row.name, id, { tool: kind, intent: `${kind} ${this.count}` })
@@ -152,15 +163,20 @@ const world = {
       .toSorted((a, b) => a.order - b.order || a.row.name.localeCompare(b.row.name))
       .at(-1)
     if (kind === 'operation' && latest) this.operate(latest)
+    const asking = runs
+      .filter((model) => !model.ended)
+      .toSorted((a, b) => a.order - b.order)
+      .at(-1)
+    if (kind === 'ask' && asking) this.operate(asking, true)
     if (kind === 'approve') for (const model of runs) model.waiting = null
     const running = runs.find((model) => !model.ended)
     if (kind === 'end' && running) running.ended = true
     // The Run that started first: the lowest order, then the lowest name.
-    const oldest = runs
+    const first = runs
       .filter((model) => !model.ended)
       .toSorted((a, b) => a.order - b.order || a.row.name.localeCompare(b.row.name))[0]
-    if (kind === 'end oldest' && oldest) oldest.ended = true
-    if (kind === 'fail oldest' && oldest) Object.assign(oldest, { ended: true, failed: true })
+    if (kind === 'end oldest' && first) first.ended = true
+    if (kind === 'fail oldest' && first) Object.assign(first, { ended: true, failed: true })
     if (kind === 'complete' && task?.kind === 'task')
       task.row = { ...task.row, outcome: 'succeeded', endedAt: at }
   },
@@ -210,6 +226,43 @@ const branch = (rows: ActivityRow[]) => ({
   next: '',
   unavailable: false,
 })
+
+/** What the loader names for page live mode past the list, across the Runs it may follow. */
+function latestOf(): ActivityPage['liveLatest'] {
+  const recent = (root: Root) =>
+    root.kind === 'run' || Date.now() - Date.parse(root.row.startedAt) <= TAKS_MAX_AGE
+  const roots = world.roots.filter(recent)
+  const asking = roots
+    .flatMap((root) =>
+      (root.kind === 'task' ? root.runs : [root.run]).map((model) => ({ root, model })),
+    )
+    .filter(({ model }) => !model.ended && model.waiting)
+    .toSorted((a, b) => startOf(a.model.waiting!) - startOf(b.model.waiting!))[0]
+  if (asking) {
+    const { root, model } = asking
+    return {
+      action: {
+        task: root.kind === 'task' ? root.row.name : '',
+        action: {
+          run: model.row.name,
+          record: model.waiting!,
+          request: approvalOf(model.waiting!),
+        },
+      },
+    }
+  }
+  const running = Object.fromEntries(
+    roots.flatMap((root) => {
+      if (root.kind !== 'task') return []
+      const newest = root.runs
+        .filter((model) => !model.ended)
+        .toSorted((a, b) => a.order - b.order)
+        .at(-1)
+      return newest ? [[root.row.name, runView(newest)]] : []
+    }),
+  )
+  return Object.keys(running).length ? { running } : undefined
+}
 
 function pageFor(url: URL): ActivityPage {
   const query = url.searchParams
@@ -291,33 +344,10 @@ function pageFor(url: URL): ActivityPage {
       query.has('live') && owner?.waiting
         ? { run: owner.row.name, record: owner.waiting, request: approvalOf(owner.waiting) }
         : undefined,
-    // With no Run that runs open, each expanded Task names the Run whose operation
-    // started waiting first, as the loader does in the page scope.
-    liveTasks:
-      query.get('live') === 'latest' && (!owner || owner.ended)
-        ? Object.fromEntries(
-            world.roots.flatMap((root) => {
-              if (root.kind !== 'task' || !expanded.includes(root.row.name)) return []
-              const asking = root.runs
-                .filter((model) => !model.ended && model.waiting)
-                .toSorted((a, b) => startOf(a.waiting!) - startOf(b.waiting!))[0]
-              return asking
-                ? [
-                    [
-                      root.row.name,
-                      {
-                        action: {
-                          run: asking.row.name,
-                          record: asking.waiting!,
-                          request: approvalOf(asking.waiting!),
-                        },
-                      },
-                    ],
-                  ]
-                : []
-            }),
-          )
-        : undefined,
+    // With no Run that runs open, the loader names the Run whose operation started
+    // waiting first, then each Task's newest Run that runs, among the Runs page live mode
+    // may follow.
+    liveLatest: query.get('live') === 'latest' && (!owner || owner.ended) ? latestOf() : undefined,
     detail:
       task?.kind === 'task'
         ? { kind: 'task', task: task.row }
@@ -371,6 +401,8 @@ function ScopesRoute() {
       {button('Add task', () => world.change('task'))}
       {button('Add standalone run', () => world.change('standalone'))}
       {button('Add run to newest task', () => world.change('run'))}
+      {button('Add run to oldest task', () => world.change('run oldest'))}
+      {button('Ask in newest running run', () => world.change('ask'))}
       {button('Add search to newest task', () => world.change('search'))}
       {button('Add describe to newest task', () => world.change('describe'))}
       {button('Submit exec to newest task', () => world.change('submit'))}
@@ -528,14 +560,11 @@ export const KeepsWhatYouExpanded: Story = {
     await selects('Run r1', 'run r1')
     await expect(address().getAll('liveExpanded')).toEqual([runRow('r1', task).name])
 
-    // The Run's end shows its final value. Newer work elsewhere waits until the Task
-    // ends. Then it takes over, and live mode collapses only the Run it expanded.
+    // The Run's end shows its final value. A Run that runs elsewhere then takes over,
+    // although the Task has not ended, and live mode collapses only the Run it expanded.
     await press('End first running run')
     await selects('Run r1', 'final value')
     await press('Add standalone run')
-    await idle()
-    await selects('Run r1', 'final value')
-    await press('Complete newest task')
     await selects('Run s2', 'run s2')
     await expect(address().get('record')).toBe(runRow('s2', '').name)
     await expect(address().getAll('expand')).toEqual([task, runRow('s2', '').name])
@@ -708,7 +737,7 @@ export const FollowsTheRecordsOfATask: Story = {
   },
 }
 
-export const WaitsForWorkThatRuns: Story = {
+export const ShowsTheNewestRecordUntilWorkRuns: Story = {
   beforeEach: () => {
     const done = newRun('done')
     done.ended = true
@@ -720,14 +749,13 @@ export const WaitsForWorkThatRuns: Story = {
   },
   play: async (context) => {
     const { userEvent } = context
-    const { latest, address, press, selects, closed, idle } = await surface(context)
+    const { latest, address, press, selects } = await surface(context)
 
-    // Every Task and Run has ended: live mode opens none of them, and waits.
+    // Every Task and Run has ended: live mode shows the newest record, the end of the
+    // newest Run, and holds nothing.
     await userEvent.click(latest())
-    await waitFor(() => expect(latest()).toHaveAttribute('aria-pressed', 'true'))
-    await idle()
-    await closed()
-    await expect(address().has('expand')).toBe(false)
+    await selects('Run done', 'final value')
+    await expect(latest()).toHaveAttribute('aria-pressed', 'true')
 
     // A new Run that runs opens.
     await press('Add standalone run')
@@ -864,19 +892,24 @@ export const OneScopeAtATime: Story = {
   },
 }
 
-// You expanded 19 records. The newest Task fits, but its Run does not.
+// You expanded 19 records. The newest Task and its Run do not fit together.
 const yours = Array.from({ length: 19 }, (_, index) => `expand=${taskRow(`yours-${index}`).name}`)
 export const StopsAtTheExpansionLimit: Story = {
   parameters: { initialEntry: `${list}?tree=1&${yours.join('&')}` },
   beforeEach: () => world.reset([newTask('alpha', [newRun('a1', taskRow('alpha').name)])]),
   play: async (context) => {
     const { userEvent } = context
-    const { latest, address, canvas, closed, idle } = await surface(context)
+    const { latest, address, closed, idle } = await surface(context)
+    const screen = within(context.canvasElement.ownerDocument.body)
     await userEvent.click(latest())
-    await waitFor(() => expect(address().getAll('expand')).toHaveLength(20))
     await idle()
     await closed()
-    await expect(canvas.getByText('Collapse a record before you expand another.')).toBeVisible()
+    // Live mode expands neither, and its toggle says why.
+    await expect(address().getAll('expand')).toHaveLength(19)
+    await userEvent.hover(latest())
+    await expect(
+      await screen.findByText('Collapse a record before you follow the latest activity.'),
+    ).toBeVisible()
     // Pressed, the toggle still turns live mode off.
     await expect(latest()).toHaveAttribute('aria-pressed', 'true')
     await userEvent.click(latest())
@@ -884,7 +917,7 @@ export const StopsAtTheExpansionLimit: Story = {
   },
 }
 
-export const StaysInItsTaskUntilItEnds: Story = {
+export const HoldsOnlyARunThatRuns: Story = {
   beforeEach: () => {
     // `b1` waits for your approval. `b2` runs, and is newer.
     const waits = newRun('b1', alpha)
@@ -911,22 +944,78 @@ export const StaysInItsTaskUntilItEnds: Story = {
     await selects('call.b1-op-1', 'call.b1-op-1')
     await expect(address().get('record')).toBe(asked)
 
-    // When it ends, the Task's newest Run that runs opens, not the newer Run elsewhere.
+    // When it ends, the Run submitted last opens: the one elsewhere, although the Task
+    // has not ended and still runs `b2`.
     await press('End oldest running run')
-    await selects('Run b2', 'run b2')
-    await expect(address().get('record')).toBe(runRow('b2', alpha).name)
-
-    // When that Run ends too, live mode rests on it while the Task has not ended.
-    await press('End oldest running run')
-    await selects('Run b2', 'final value')
-    await idle()
-    await selects('Run b2', 'final value')
-    await expect(address().get('live')).toBe('latest')
-
-    // Once the Task ends, the Run elsewhere opens.
-    await press('Complete newest task')
     await selects('Run s2', 'run s2')
     await expect(address().get('record')).toBe(runRow('s2', '').name)
+    await expect(address().get('live')).toBe('latest')
+  },
+}
+
+const past = taskRow('past').name
+// Page live mode shows an old record, then follows each new piece of work with no
+// further click, and holds only a Run that runs.
+export const FollowsNewWorkFromWhatItShows: Story = {
+  beforeEach: () => {
+    const run = newRun('p1', past)
+    run.ended = true
+    world.reset([newTask('past', [run])])
+  },
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, address, press, selects, reviews, idle } = await surface(context)
+    const pressed = () => expect(latest()).toHaveAttribute('aria-pressed', 'true')
+    const opened = async (heading: string, row: string, record: string) => {
+      await selects(heading, row)
+      await expect(address().get('record')).toBe(record)
+      await expect(address().get('live')).toBe('latest')
+      await pressed()
+    }
+
+    // Nothing runs: live mode shows the newest record, in a Task that has not ended.
+    await userEvent.click(latest())
+    await opened('Run p1', 'final value', finalOf(runRow('p1', past).name))
+
+    // A new Task replaces it. You click nothing more.
+    await press('Add task')
+    const fresh = taskRow('t1').name
+    await opened('Task t1', 'Task t1', fresh)
+    await press('Add search to newest task')
+    await opened('search 2', 'search 2', toolRow(fresh, 'search-2').name)
+    await press('Add describe to newest task')
+    await opened('describe 3', 'describe 3', toolRow(fresh, 'describe-3').name)
+    // Its new Run opens before it has a record, then its first record.
+    await press('Add run to newest task')
+    await opened('Run r4', 'run r4', runRow('r4', fresh).name)
+    await press('Add operation')
+    const call = invocationRow('', 'r4-op-5').name
+    await opened('call.r4-op-5', 'call.r4-op-5', call)
+
+    // The Run holds live mode while it runs: a newer Task, or a Run submitted later in
+    // the old Task, never takes over.
+    await press('Add task')
+    await press('Add run to oldest task')
+    await idle()
+    await opened('call.r4-op-5', 'call.r4-op-5', call)
+
+    // Once it ends, live mode finds the Run that runs in the old Task.
+    await press('End first running run')
+    await opened('Run r7', 'run r7', runRow('r7', past).name)
+
+    // An action elsewhere waits while that Run runs. Once it ends, the action goes
+    // first, before a Run submitted later.
+    await press('Add run to newest task')
+    await press('Ask in newest running run')
+    await press('Add standalone run')
+    await idle()
+    await opened('Run r7', 'run r7', runRow('r7', past).name)
+    await press('End oldest running run')
+    const waits = invocationRow('', 'r8-op-9').name
+    await waitFor(() => expect(address().get('request')).toBe(approvalOf(waits)))
+    await reviews('call.r8-op-9')
+    await expect(address().get('record')).toBe(waits)
+    await pressed()
   },
 }
 

@@ -49,7 +49,7 @@ import type {
   RunDetail,
   RecordSourceLocation,
   LiveAction,
-  LiveTask,
+  LiveLatest,
   PendingAction,
 } from '@/views/activity/types'
 import {
@@ -62,14 +62,12 @@ import { savedFunctionHref } from './management-views.server'
 import { listAllOperations, listAllProviders, providerPath } from './providers.server'
 import { operationOwner } from './call-root'
 import { connectionState } from './accounts.server'
-import { liveScopeOf, MAX_EXPANDED_RECORDS } from '@/views/activity/types'
+import { liveScopeOf, MAX_EXPANDED_RECORDS, type RunRow } from '@/views/activity/types'
 import {
   childWindow,
   liveHold,
   recentTask,
-  runEnded,
-  rowTask,
-  taskOpen,
+  unfinishedRun,
   type TaskRecord,
 } from '@/views/activity/navigation'
 import { WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
@@ -955,6 +953,8 @@ async function runSourceContext(
 
 /** Children one scan read takes, Coral's largest page. */
 const ACTION_SCAN_PAGE = 100
+/** Top-level records one read of page live mode takes, Coral's largest page. */
+const ROOT_SCAN_PAGE = 100
 
 /**
  * The oldest action you can take in the selected record's Run, while live mode follows
@@ -996,102 +996,152 @@ async function oldestRunAction(
 }
 
 /**
- * By Task, what page live mode needs past the Task's loaded window, while it follows
- * the Task with no Run that runs open: you have the Task or one of its records open, or
- * a record of a Run that has ended, or nothing. Otherwise it reads nothing.
- * - `action`: the oldest action you can take in any Run of the Task. Each is timed as
- *   `oldestRunAction` times it, by the operation that waits on it, so across Runs the
- *   operation that started waiting first wins, not the request made first: Coral states
- *   no request time. The candidates are the loaded Runs that run and wait on you, and,
- *   while the window does not hold every child, the Task's Runs in your queue of
- *   required actions. Each candidate reads its action pages; a pending account
- *   connection also reads its Run's history, page by page, to find the operations that
- *   wait on it. An archived workspace takes no action, so it reads none.
- * - `running`: the Task's newest Run that runs, before its loaded window, while the
- *   window holds none and the Task says one runs. It reads back one window at a time.
- * - `task`: the Task you have a record of open, when the list does not hold it.
+ * What page live mode needs past the list and its loaded windows, while it follows the
+ * newest activity with no Run that runs open. It reads every top-level record in the
+ * list's scope, past the loaded list too, and only the Runs it may follow: a standalone
+ * Run at any age, or one of a Task that started `TAKS_MAX_AGE` ago or less.
+ * - `action`: the oldest action you can take in any of those Runs. Each is timed as
+ *   `oldestRunAction` times it, by the operation that waits on it, so the operation
+ *   that started waiting first wins, not the request made first: Coral states no
+ *   request time. The candidates are the Runs that run and wait on you that the list,
+ *   a loaded window or your queue of required actions shows. Your queue lists a shared
+ *   connection once, under one Run, so while it holds a connection, every Task whose
+ *   row says a Run of it runs is read for the other Runs that wait. An archived
+ *   workspace takes no action, so it reads none.
+ * - `running`: every standalone Run that runs, and by Task, its newest Run that runs,
+ *   read back from its end one window at a time.
+ * - `newest`: the newest top-level record, when the page does not hold it, such as a
+ *   snapshot of only the records you watch.
+ * - `complete`: it read every top-level record, so `running` names every standalone Run
+ *   that runs.
+ * It reads the Runs of a Task only while its row in the list says a child Run runs
+ * (`contextImpactPartial`). In a top-level record of this list, Coral sets it from the
+ * state of each child Run you may see, apart from its byte measurement (coral-task
+ * `context_totals`, coral-run `history_repository::running`). A Task read elsewhere
+ * can carry no impact at all. The flag can lag a Run's end, so only the Run's own
+ * record counts as running.
  */
-async function liveTaskWork(
+async function liveLatestWork(
   page: ActivityPage,
+  newestPage: ActivityRow[] | undefined,
   query: URLSearchParams,
   api: ActivityApi,
   scope: ActivityScope,
   signal: AbortSignal,
-): Promise<Record<string, LiveTask> | undefined> {
-  // A Run that runs holds live mode, whatever waits in its Task.
+): Promise<LiveLatest | undefined> {
+  // A Run that runs holds live mode, whatever waits elsewhere. A page that newer
+  // records come before reads the newest first. A snapshot of only the records you
+  // watch says newer ones exist too, which this reads from the top.
   if (liveScopeOf(query.get('live')) !== 'latest' || liveHold(page)) return undefined
-  const found: Record<string, LiveTask> = {}
-  const own = rowTask(page.selectedRow)
-  const open = (item: ActivityRow): item is TaskRecord =>
-    item.kind === 'task' && taskOpen(item) && page.expanded.includes(item.name)
-  const ownTask = page.rows.find(
-    (item): item is TaskRecord => item.kind === 'task' && item.name === own,
-  )
-  if (own && !ownTask) {
-    const shown = page.detail?.kind === 'task' ? page.detail.task : undefined
-    const read = shown ? undefined : (await taskRead(own))?.task
-    const task = shown ?? (read && taskView(read))
-    if (read && task) found[own] = { task }
-    // Live mode rests in a Task the list does not hold until it ends, or while unread.
-    if (!task || taskOpen(task)) return Object.keys(found).length ? found : undefined
-  }
-  // Live mode stays in the Task you have open until it ends, and expands it before it
-  // reads its Runs. Otherwise it may open any Task the list holds that started
-  // `TAKS_MAX_AGE` ago or less, once it reads the newest.
+  if (newestPage && page.hasBefore) return undefined
   const now = Date.now()
-  const tasks =
-    ownTask && taskOpen(ownTask)
-      ? [ownTask].filter(open)
-      : page.hasBefore
-        ? []
-        : page.rows.filter(open).filter((item) => recentTask(item, now))
-  let actionable: Promise<boolean> | undefined
-  let queue: Promise<PendingAction[]> | undefined
-  for (const task of tasks) {
-    const branch = page.branches[task.name]
-    if (!branch || branch.unavailable) continue
-    const { items, total } = childWindow(branch)
-    const runs = items.flatMap(({ row: child }) => (child.kind === 'run' ? [child] : []))
-    const whole = (branch.offset ?? 0) === 0 && items.length >= total
-    const candidates = new Set(
-      runs
-        .filter((item) => item.state === 'running' && item.requiresAction)
-        .map((item) => item.name),
+  const { roots, complete } = await everyRoot()
+  const tasks = roots.filter(
+    (row): row is TaskRecord =>
+      row.kind === 'task' && recentTask(row, now) && Boolean(row.contextImpactPartial),
+  )
+  // The Runs that wait on you, with their Task.
+  const asking = new Map<string, string>()
+  for (const row of roots)
+    if (unfinishedRun(page, row) && row.requiresAction) asking.set(row.name, '')
+  for (const task of tasks)
+    for (const row of page.branches[task.name]?.rows ?? [])
+      if (unfinishedRun(page, row) && row.requiresAction) asking.set(row.name, task.name)
+  const found: LiveLatest = {}
+  const actionable =
+    (asking.size > 0 || tasks.length > 0) &&
+    (!api.workspaces ||
+      (await api.workspaces.getWorkspace({ name: scope.workspace }, { signal })).state !==
+        WorkspaceState.ARCHIVED)
+  if (actionable) {
+    const queue = tasks.length ? await requiredActions(page, query, api, scope, signal) : []
+    const eligible = new Set(tasks.map((task) => task.name))
+    for (const { run } of queue)
+      if (unfinishedRun(page, run) && (eligible.has(run.task) || asking.has(run.name)))
+        asking.set(run.name, run.task)
+    if (queue.some(({ action }) => action.kind === 'account_connection'))
+      for (const task of tasks)
+        await newestRunsOf(task.name, (row) => {
+          if (unfinishedRun(page, row) && row.requiresAction) asking.set(row.name, task.name)
+          return false
+        })
+    const timed = await Promise.all(
+      [...asking.keys()].map((run) => runActions(run, undefined, api, scope, signal)),
     )
-    if (candidates.size || !whole) {
-      actionable ??= api.workspaces
-        ? api.workspaces
-            .getWorkspace({ name: scope.workspace }, { signal })
-            .then((value) => value.state !== WorkspaceState.ARCHIVED)
-        : Promise.resolve(true)
-      if (await actionable) {
-        if (!whole) {
-          queue ??= requiredActions(page, query, api, scope, signal)
-          for (const item of await queue)
-            if (item.run.task === task.name && item.run.state === 'running')
-              candidates.add(item.run.name)
-        }
-        const timed = await Promise.all(
-          [...candidates].map((run) => runActions(run, undefined, api, scope, signal)),
+    const oldest = timed.flat().toSorted(older)[0]
+    if (oldest) found.action = { task: asking.get(oldest.action.run) ?? '', action: oldest.action }
+  }
+  const listed = new Set(page.rows.map((row) => row.name))
+  for (const row of roots)
+    if (row.kind === 'run' && unfinishedRun(page, row)) (found.running ??= {})[row.name] = row
+  for (const task of tasks)
+    await newestRunsOf(task.name, (row) => {
+      if (!unfinishedRun(page, row)) return false
+      ;(found.running ??= {})[task.name] = row
+      return true
+    })
+  if (roots[0] && !listed.has(roots[0].name)) found.newest = roots[0].name
+  if (complete && roots.length) found.complete = true
+  return found.action || found.running || found.newest || found.complete ? found : undefined
+
+  /**
+   * Every top-level record in the list's scope, newest first: the newest page the list
+   * loaded, then every older page. A standalone Run counts at any age.
+   */
+  async function everyRoot(): Promise<{ roots: ActivityRow[]; complete: boolean }> {
+    const rows = [...(newestPage ?? [])]
+    let more = newestPage ? page.hasAfter : true
+    while (more) {
+      let value
+      try {
+        value = await api.activity.browseActivityRoots(
+          { scope, after: rows.at(-1)?.name ?? '', pageSize: ROOT_SCAN_PAGE },
+          { signal },
         )
-        const oldest = timed.flat().toSorted(older)[0]
-        if (oldest) (found[task.name] ??= {}).action = oldest.action
+      } catch (error) {
+        // An older page Reef cannot read hides what is past it, until the next snapshot.
+        if (!unavailable(error)) throw error
+        return { roots: rows, complete: false }
+      }
+      for (const { record } of value.roots) {
+        if (record.case === 'task') rows.push({ ...taskView(record.value), kind: 'task' })
+        if (record.case === 'run') rows.push({ ...runView(record.value), kind: 'run' })
+      }
+      more = value.hasAfter && value.roots.length > 0
+    }
+    return { roots: rows, complete: true }
+  }
+
+  /**
+   * Visits the Runs of `task` from its newest back until `visit` says stop: those its
+   * loaded window holds through its end, then the rest read from Coral.
+   */
+  async function newestRunsOf(task: string, visit: (row: RunRow) => boolean) {
+    const branch = page.expanded.includes(task) ? page.branches[task] : undefined
+    let offset: number | undefined
+    if (branch && !branch.unavailable) {
+      const { items, total } = childWindow(branch)
+      const end = Math.max(branch.offset ?? 0, ...items.map(({ index }) => index + 1))
+      if (end >= total) {
+        for (const { row } of items.toSorted((a, b) => b.index - a.index))
+          if (row.kind === 'run' && visit(row)) return
+        offset = branch.offset ?? 0
       }
     }
-    const runningRun = runs.some((item) => item.state === 'running' && !runEnded(page, item.name))
-    if (found[task.name]?.action || runningRun) continue
-    if (!task.contextImpactPartial) continue
-    for (let offset = branch.offset ?? 0; offset > 0 && !found[task.name]?.running;) {
-      offset = Math.max(0, offset - ACTIVITY_CHILD_WINDOW)
-      const value = await taskRead(task.name, offset)
-      if (!value) break
-      const running = value.interactions.findLast(
-        (item) => item.run && runView(item.run).state === 'running',
-      )
-      if (running?.run) (found[task.name] ??= {}).running = running.run.name
+    if (offset === undefined) {
+      const head = await taskRead(task)
+      if (!head) return
+      offset = Number(head.total)
+    }
+    while (offset > 0) {
+      const from = Math.max(0, offset - ACTIVITY_CHILD_WINDOW)
+      const value = await taskRead(task, from)
+      if (!value) return
+      for (const item of value.interactions.slice(0, offset - from).toReversed())
+        if (item.run && visit({ ...runView(item.run), kind: 'run' })) return
+      offset = from
     }
   }
-  return Object.keys(found).length ? found : undefined
 
   /** The Task `name`, with its children from `offset`, or undefined when Reef cannot read it. */
   async function taskRead(name: string, offset?: number) {
@@ -1593,8 +1643,10 @@ export async function loadActivity(
       page.branches[row.name] = missingBranch()
     }
   }
-  const liveTasks = await liveTaskWork(page, query, api, scope, signal)
-  if (liveTasks) page.liveTasks = liveTasks
+  // A snapshot of the records you watch holds only those, not the newest page.
+  const newestPage = reading && !reading.followRoot ? undefined : page.rows
+  const liveLatest = await liveLatestWork(page, newestPage, query, api, scope, signal)
+  if (liveLatest) page.liveLatest = liveLatest
   // Expanded executions stay represented even outside their Task's active child viewport.
   // Their owning read supplies the authorized association and ordinal; references never pin content.
   for (const name of page.expanded.filter((value) => recordKind(value) === 'run')) {
