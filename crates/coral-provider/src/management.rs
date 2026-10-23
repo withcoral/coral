@@ -300,7 +300,7 @@ impl ProviderModule {
     /// # Errors
     /// Requires current owner authority, an exact Provider and its current etag. Never commit
     /// the transaction after an error.
-    pub async fn update_provider_in_transaction(
+    pub async fn rename_provider_in_transaction(
         &self,
         tx: &mut coral_db::Transaction<'_>,
         context: &coral_workspace::ChangeContext,
@@ -355,8 +355,8 @@ impl ProviderModule {
     /// Changes safe display metadata in its own transaction.
     ///
     /// # Errors
-    /// Returns the errors of [`Self::update_provider_in_transaction`].
-    pub async fn update_provider(
+    /// Returns the errors of [`Self::rename_provider_in_transaction`].
+    pub async fn rename_provider(
         &self,
         context: &coral_workspace::ChangeContext,
         workspace: &WorkspaceId,
@@ -365,7 +365,7 @@ impl ProviderModule {
     ) -> Result<Provider, Error> {
         let mut tx = self.database.begin().await?;
         let updated = self
-            .update_provider_in_transaction(&mut tx, context, workspace, id, display_name)
+            .rename_provider_in_transaction(&mut tx, context, workspace, id, display_name)
             .await?;
         tx.commit().await?;
         Ok(updated)

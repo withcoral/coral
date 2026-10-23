@@ -541,6 +541,17 @@ impl coral_provider::WorkspaceProviderPublisher for FailingPublisher {
     ) -> Result<coral_provider::ProviderRegenerationPublication, coral_provider::Error> {
         self.0.regenerate_provider(context, request).await
     }
+    async fn rename_provider(
+        &self,
+        context: &coral_workspace::ChangeContext,
+        workspace: &coral_workspace::WorkspaceId,
+        provider: &coral_provider::ProviderId,
+        display_name: coral_provider::ProviderDisplayName,
+    ) -> Result<coral_provider::Provider, coral_provider::Error> {
+        self.0
+            .rename_provider(context, workspace, provider, display_name)
+            .await
+    }
 }
 
 /// Cancels the Setup, as an Owner in Reef would, then forwards the request to
@@ -571,6 +582,17 @@ impl coral_provider::WorkspaceProviderPublisher for SetupCanceledFirst {
         request: ProviderRegenerationRequest,
     ) -> Result<coral_provider::ProviderRegenerationPublication, coral_provider::Error> {
         self.workflow.regenerate_provider(context, request).await
+    }
+    async fn rename_provider(
+        &self,
+        context: &coral_workspace::ChangeContext,
+        workspace: &coral_workspace::WorkspaceId,
+        provider: &coral_provider::ProviderId,
+        display_name: coral_provider::ProviderDisplayName,
+    ) -> Result<coral_provider::Provider, coral_provider::Error> {
+        self.workflow
+            .rename_provider(context, workspace, provider, display_name)
+            .await
     }
 }
 
@@ -804,6 +826,17 @@ impl coral_provider::WorkspaceProviderPublisher for NamespaceTakenFirst {
     ) -> Result<coral_provider::ProviderRegenerationPublication, coral_provider::Error> {
         self.0.regenerate_provider(context, request).await
     }
+    async fn rename_provider(
+        &self,
+        context: &coral_workspace::ChangeContext,
+        workspace: &coral_workspace::WorkspaceId,
+        provider: &coral_provider::ProviderId,
+        display_name: coral_provider::ProviderDisplayName,
+    ) -> Result<coral_provider::Provider, coral_provider::Error> {
+        self.0
+            .rename_provider(context, workspace, provider, display_name)
+            .await
+    }
 }
 
 // Catches: a namespace taken while Coral publishes failing the call as an
@@ -959,6 +992,20 @@ impl coral_provider::WorkspaceProviderPublisher for StallingPublisher {
     ) -> Result<coral_provider::ProviderRegenerationPublication, coral_provider::Error> {
         self.stalled(|| self.workflow.regenerate_provider(context, request.clone()))
             .await
+    }
+
+    async fn rename_provider(
+        &self,
+        context: &ChangeContext,
+        workspace: &coral_workspace::WorkspaceId,
+        provider: &coral_provider::ProviderId,
+        display_name: coral_provider::ProviderDisplayName,
+    ) -> Result<coral_provider::Provider, coral_provider::Error> {
+        self.stalled(|| {
+            self.workflow
+                .rename_provider(context, workspace, provider, display_name.clone())
+        })
+        .await
     }
 }
 

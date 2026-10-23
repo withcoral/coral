@@ -5,7 +5,9 @@
 //! saved source or a new one, the sent fields confirmed over the configuration
 //! saved when the call runs, then a regeneration Publication. Coral publishes
 //! the change only when nobody needs to act; otherwise the result is Reef's
-//! update page for the Setup, where the Owner confirms what Coral cannot.
+//! update page for the Setup, where the Owner confirms what Coral cannot. A
+//! call that changes only the display name takes the path of Reef's settings
+//! page instead: a rename that keeps the Provider's Generation.
 
 use super::setup_operation::{
     self, Publisher, SetupOperation, configuration_rejection, recover_published, request_id,
@@ -19,7 +21,7 @@ use coral_catalog::{SourceChange, UpdateProviderArguments, UpdateProviderResult}
 use coral_db::Transaction;
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::{
-    Provider, ProviderPublicationOutcome, ProviderRegenerationPublication,
+    Provider, ProviderDisplayName, ProviderPublicationOutcome, ProviderRegenerationPublication,
     ProviderRegenerationRequest, ProviderSetup, ProviderSetupId, ProviderSetupInputKind,
     ProviderSetupSource, ProviderWithConfiguration, PublishedProvider, WorkspaceProviderPublisher,
 };
@@ -61,9 +63,11 @@ impl UpdateProvider {
         })
     }
 
-    /// Prepares and configures an Update Setup as the invoking User. Coral
-    /// publishes it when nobody needs to act; otherwise the result is the Reef
-    /// page where a person finishes it. The call never waits for that person.
+    /// Renames the Provider when the call changes only its display name.
+    /// Otherwise prepares and configures an Update Setup as the invoking User.
+    /// Coral publishes it when nobody needs to act; otherwise the result is the
+    /// Reef page where a person finishes it. The call never waits for that
+    /// person.
     pub(super) async fn perform(&self, host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
         let saved = host
             .providers
@@ -74,6 +78,9 @@ impl UpdateProvider {
             )
             .await
             .map_err(update_error)?;
+        if let Some(name) = self.arguments.rename() {
+            return rename(host, &saved.provider, name).await;
+        }
         let source = self.source(&saved)?;
         let update = TargetedUpdate {
             call: self,
@@ -302,16 +309,71 @@ impl SetupOperation for TargetedUpdate<'_> {
     }
 }
 
+/// Renames `provider` through the workflow Reef renames with, under the etag
+/// it had when the call began, and returns what the Program needs to call it.
+async fn rename(
+    host: &BuiltinHost<'_>,
+    provider: &Provider,
+    name: &str,
+) -> Result<serde_json::Value, Error> {
+    // An update Setup trims the name it confirms, so a rename does too.
+    let display_name = ProviderDisplayName::parse(name.trim()).map_err(|error| match error {
+        coral_provider::Error::InvalidInput(reason) => {
+            Error::InvocationRejected(Rejection::invalid_input("displayName", &reason))
+        }
+        other => other.into(),
+    })?;
+    let Some(publisher) = host.publisher else {
+        return Err(Error::InvocationRejected(
+            CoralFailure::OperationUnavailable.into(),
+        ));
+    };
+    // A Run that ended could no longer return the Provider: rename nothing.
+    if !host.run.still_current().await? {
+        return Err(Error::ProgramHostTerminated);
+    }
+    let context = host.context.clone().with_etag(&provider.etag())?;
+    let renamed = publisher
+        .rename_provider(&context, host.workspace_id, provider.id(), display_name)
+        .await
+        .map_err(|error| match error {
+            // An Owner changed the Provider since the call began, as a
+            // regeneration reports it.
+            coral_provider::Error::EtagMismatch => {
+                Error::InvocationRejected(CoralFailure::ProviderPublicationFailed.into())
+            }
+            other => update_error(other),
+        })?;
+    let details = host
+        .providers
+        .published_provider(host.workspace_id, &renamed, host.principal)
+        .await
+        .map_err(update_error)?;
+    Ok(published_result(&details))
+}
+
 /// Settles an `updateProvider` whose worker was lost after the dispatch
 /// fence, from the regeneration Publication Coral attempted under the
 /// Invocation's identity. A published change becomes the Operation Result;
 /// otherwise the Run ended first. A Setup that was never published expires at
-/// its deadline.
+/// its deadline. A rename leaves no record of the call that made it, so a lost
+/// rename is indeterminate.
 pub(super) async fn recover(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
     invocation: &InvocationId,
 ) -> Result<(InvocationResultKind, Option<String>), Error> {
+    let arguments = crate::invocation_repository::arguments(
+        transaction,
+        &run.workspace_id,
+        &run.id,
+        invocation,
+    )
+    .await?;
+    // The contract accepted these arguments when the Invocation was admitted.
+    if UpdateProviderArguments::parse(&arguments).is_ok_and(|call| call.rename().is_some()) {
+        return Ok((InvocationResultKind::Indeterminate, None));
+    }
     let publication = coral_provider::regeneration_for_request_in_transaction(
         transaction,
         &run.workspace_id,

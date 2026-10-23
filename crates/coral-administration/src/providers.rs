@@ -111,8 +111,8 @@ impl ProviderWorkflow {
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`ProviderModule::update_provider_in_transaction`].
-    pub async fn update_provider(
+    /// Returns the errors of [`ProviderModule::rename_provider_in_transaction`].
+    pub async fn rename_provider(
         &self,
         context: &ChangeContext,
         workspace: &WorkspaceId,
@@ -122,7 +122,7 @@ impl ProviderWorkflow {
         let mut transaction = self.database.begin().await?;
         let provider = self
             .providers
-            .update_provider_in_transaction(&mut transaction, context, workspace, id, display_name)
+            .rename_provider_in_transaction(&mut transaction, context, workspace, id, display_name)
             .await?;
         transaction.commit().await?;
         // The rows carry the display name; a rename keeps the Generation.
@@ -280,5 +280,15 @@ impl WorkspaceProviderPublisher for ProviderWorkflow {
         request: ProviderRegenerationRequest,
     ) -> Result<ProviderRegenerationPublication, Error> {
         Self::regenerate_provider(self, context, request).await
+    }
+
+    async fn rename_provider(
+        &self,
+        context: &ChangeContext,
+        workspace: &WorkspaceId,
+        provider: &ProviderId,
+        display_name: ProviderDisplayName,
+    ) -> Result<Provider, Error> {
+        Self::rename_provider(self, context, workspace, provider, display_name).await
     }
 }

@@ -539,6 +539,30 @@ pub(super) async fn completed_failure(
     .transpose()
 }
 
+/// The arguments the Invocation was admitted with.
+pub(super) async fn arguments(
+    transaction: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    run: &RunId,
+    invocation: &InvocationId,
+) -> Result<serde_json::Value, Error> {
+    let (arguments,): (String,) = transaction
+        .fetch_optional(
+            Query::select()
+                .column(OperationInvocations::ArgumentsJson)
+                .from(OperationInvocations::Table)
+                .and_where(Expr::col(OperationInvocations::WorkspaceId).eq(workspace.to_string()))
+                .and_where(Expr::col(OperationInvocations::RunId).eq(run.to_string()))
+                .and_where(Expr::col(OperationInvocations::Id).eq(invocation.to_string()))
+                .to_owned(),
+        )
+        .await?
+        .ok_or_else(|| Error::CorruptData("Invocation is missing".into()))?;
+    serde_json::from_str(&arguments).map_err(|error| {
+        Error::CorruptData(format!("Invocation has invalid arguments JSON: {error}"))
+    })
+}
+
 pub(super) async fn nonterminal_for_run(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,

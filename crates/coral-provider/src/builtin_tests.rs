@@ -251,7 +251,7 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider() {
         let context = context.clone().with_etag(&builtin.etag()).unwrap();
         let result = match change {
             BuiltinChange::Rename => providers
-                .update_provider(
+                .rename_provider(
                     &context,
                     workspace.id(),
                     builtin.id(),

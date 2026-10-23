@@ -329,6 +329,26 @@ fn entries<I, T: From<I>>(
 }
 
 impl UpdateProviderArguments {
+    /// The new display name, when the call changes nothing else. A rename
+    /// keeps the Provider's Generation, as Reef's settings page does.
+    #[must_use]
+    pub fn rename(&self) -> Option<&str> {
+        let ConfigurationPatch {
+            display_name,
+            authentication,
+            servers,
+            request_headers,
+            credential_fields,
+        } = &self.choices;
+        let keeps_the_rest = matches!(self.source, SourceChange::Keep)
+            && self.credential_route.is_none()
+            && authentication.is_none()
+            && servers.is_empty()
+            && request_headers.is_empty()
+            && credential_fields.is_empty();
+        display_name.as_deref().filter(|_name| keeps_the_rest)
+    }
+
     /// The configuration to confirm: each sent field over the configuration
     /// saved when the call runs. An MCP server reports its own server and
     /// OAuth endpoints, which Reef never keeps from the saved values either,

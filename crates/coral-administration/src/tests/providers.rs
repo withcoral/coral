@@ -291,7 +291,7 @@ async fn rename_rewrites_the_rows_of_the_same_generation_under_the_new_name() {
     let [indexed] = f.generations().await.try_into().expect("one Generation");
 
     f.workflow
-        .update_provider(
+        .rename_provider(
             &change(&f.owner),
             &f.workspace,
             &provider,

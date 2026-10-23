@@ -59,10 +59,10 @@ pub async fn regeneration_for_request_in_transaction(
     .await
 }
 
-/// Publishes one Workspace-owned Provider, or a new Generation of one, in its
-/// own transaction and notifies Universal Search after the commit. The
-/// workflow that owns that transaction implements it, so a Built-in Operation
-/// publishes exactly as Reef does.
+/// Publishes one Workspace-owned Provider, or a new Generation of one, or
+/// renames one, in its own transaction and notifies Universal Search after the
+/// commit. The workflow that owns that transaction implements it, so a Built-in
+/// Operation publishes and renames exactly as Reef does.
 #[async_trait::async_trait]
 pub trait WorkspaceProviderPublisher: Send + Sync {
     /// Publishes the request's Setup. Safe structural and domain failures are
@@ -92,6 +92,20 @@ pub trait WorkspaceProviderPublisher: Send + Sync {
         context: &coral_workspace::ChangeContext,
         request: ProviderRegenerationRequest,
     ) -> Result<ProviderRegenerationPublication, crate::Error>;
+
+    /// Renames the Provider `provider` and keeps its Generation. The
+    /// context's etag is the rename's precondition.
+    ///
+    /// # Errors
+    ///
+    /// Returns authority, etag and operational failures, which rename nothing.
+    async fn rename_provider(
+        &self,
+        context: &coral_workspace::ChangeContext,
+        workspace: &WorkspaceId,
+        provider: &crate::ProviderId,
+        display_name: crate::ProviderDisplayName,
+    ) -> Result<crate::Provider, crate::Error>;
 }
 
 pub use types::{

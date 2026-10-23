@@ -400,7 +400,7 @@ async fn a_pass_reindexes_a_renamed_provider_under_its_new_name() {
     world
         .modules
         .providers
-        .update_provider(
+        .rename_provider(
             &change(world.user.clone(), 70, '7'),
             &world.workspace,
             &world.tracer,
@@ -1039,7 +1039,7 @@ async fn a_renamed_provider_rewrites_its_generation_under_the_new_name() {
     world
         .modules
         .providers
-        .update_provider(
+        .rename_provider(
             &change(world.user.clone(), 70, '7'),
             &world.workspace,
             &world.tracer,
