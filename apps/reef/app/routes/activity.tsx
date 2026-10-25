@@ -50,7 +50,7 @@ export default function ActivityRoute({ loaderData }: Route.ComponentProps) {
       {/* An archived workspace takes no new calls, so it offers no endpoint. */}
       <LiveActivity
         initial={loaderData}
-        connect={archived ? undefined : { endpoint: loaderData.workspace.mcpEndpoint }}
+        connect={archived ? undefined : { endpoint: loaderData.workspace.connectEndpoint }}
         archived={archived ? role : undefined}
       />
     </PageLayout>

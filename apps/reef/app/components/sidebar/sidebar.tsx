@@ -372,9 +372,9 @@ function SidebarNavigation({
                         <div className={styles.workspaceActions}>
                           {w.mcpEndpoint && (
                             <Button.CopyButton
-                              ariaLabel={`Copy ${w.displayName} MCP endpoint`}
+                              ariaLabel={`Copy ${w.displayName} workspace MCP URL`}
                               textToCopy={w.mcpEndpoint}
-                              tooltipText="Copy MCP endpoint"
+                              tooltipText="Copy workspace MCP URL"
                               size="22"
                               variant="bare"
                             />

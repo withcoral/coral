@@ -28,6 +28,7 @@ export const workspace = {
   currentUser: 'users/jordan',
   profile: jordan,
   mcpEndpoint: 'https://mcp.example.com/workspaces/demo/mcp',
+  connectEndpoint: 'https://mcp.example.com/workspaces/demo/mcp',
   path: '/workspaces/demo',
 }
 const member = { ...workspace, effectiveRole: 'member' }

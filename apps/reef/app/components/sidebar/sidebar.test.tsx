@@ -54,9 +54,9 @@ test('only an owner can archive a workspace, from its header', async () => {
   expect(screen.queryByRole('button', { name: 'Archive Research' })).toBeNull()
 })
 
-test('every workspace header copies its MCP endpoint', async () => {
+test('every workspace header copies its own workspace MCP URL', async () => {
   render('/workspaces/research')
-  const copy = screen.getByRole('button', { name: 'Copy Research MCP endpoint' })
+  const copy = screen.getByRole('button', { name: 'Copy Research workspace MCP URL' })
   let copied = ''
   const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
   Object.defineProperty(navigator, 'clipboard', {

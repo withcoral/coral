@@ -16,6 +16,7 @@ const workspace: WorkspaceView = {
   currentUser: ada.user,
   profile: ada,
   mcpEndpoint: 'https://mcp.example.com/workspaces/demo/mcp',
+  connectEndpoint: 'https://mcp.example.com/mcp',
   path: '/workspaces/demo',
 }
 const agents = (count: number) =>
@@ -110,18 +111,18 @@ it.each([
   [
     'Claude Code',
     [
-      ['Run in a terminal', `claude mcp add --transport http coral ${workspace.mcpEndpoint}`],
+      ['Run in a terminal', `claude mcp add --transport http coral ${workspace.connectEndpoint}`],
       ['Then sign in', 'claude mcp login coral'],
     ],
   ],
   [
     'Codex',
     [
-      ['Run in a terminal', `codex mcp add coral --url ${workspace.mcpEndpoint}`],
+      ['Run in a terminal', `codex mcp add coral --url ${workspace.connectEndpoint}`],
       ['Then sign in', 'codex mcp login coral'],
     ],
   ],
-  ['Other', [['MCP URL', workspace.mcpEndpoint]]],
+  ['Other', [['MCP URL', workspace.connectEndpoint]]],
 ])('quick start shows the %s setup', async (client, steps) => {
   render({})
   const card = within(screen.getByRole('region', { name: 'Connect your MCP client' }))
@@ -134,7 +135,7 @@ it.each([
 it.each<[string, Partial<WorkspaceView>, boolean]>([
   ['in an active workspace', {}, true],
   ['in an archived workspace', { state: 'archived' }, false],
-  ['without an MCP endpoint', { mcpEndpoint: '' }, false],
+  ['without an MCP endpoint', { connectEndpoint: '' }, false],
 ])('quick start %s', (_, ws, shown) => {
   render({ workspace: ws })
   expect(screen.queryByRole('region', { name: 'Connect your MCP client' }) !== null).toBe(shown)

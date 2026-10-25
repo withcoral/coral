@@ -30,7 +30,10 @@ export interface WorkspaceView {
   effectiveRole: string
   currentUser: string
   profile: PersonView
+  /** This workspace's own MCP URL. */
   mcpEndpoint: string
+  /** The MCP URL a client connects at: `/mcp`, or the workspace URL in local mode. */
+  connectEndpoint: string
   path: string
 }
 export interface MembershipView {

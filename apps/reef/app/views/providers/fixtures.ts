@@ -12,6 +12,7 @@ export const workspaceView: WorkspaceView = {
   currentUser: 'users/test',
   profile: { user: 'users/test', name: 'Test', email: '', local: true },
   mcpEndpoint: '',
+  connectEndpoint: '',
   path: '/workspaces/demo',
 }
 

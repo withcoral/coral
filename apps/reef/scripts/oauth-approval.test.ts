@@ -110,16 +110,17 @@ test('standalone OAuth page works without scripts under its pinned CSP in both t
   }
 })
 
+// Rust renders these rows from escaped names; the fixture mirrors that markup.
+const option = (id: string, name: string, role: string, checked: boolean) =>
+  `<label class="choice"><input type="radio" name="workspace" value="${id}"${checked ? ' checked' : ''}>` +
+  `<span class="choice-name"><bdi>${name}</bdi></span><span class="choice-role">${role}</span></label>`
+
 test('the workspace picker and its empty state work without scripts in both themes', async () => {
   const css = await readFile(new URL('approval.css', approvalDirectory), 'utf8')
   const hash = createHash('sha256').update(css).digest('base64')
   const policy = `default-src 'none'; base-uri 'none'; frame-ancestors 'none'; style-src 'sha256-${hash}'`
   const picker = await readFile(new URL('workspace_choice.html', approvalDirectory), 'utf8')
   const empty = await readFile(new URL('no_workspace.html', approvalDirectory), 'utf8')
-  // Rust renders these rows from escaped names; the fixture mirrors that markup.
-  const option = (id: string, name: string, role: string, checked: boolean) =>
-    `<label class="choice"><input type="radio" name="workspace" value="${id}"${checked ? ' checked' : ''}>` +
-    `<span class="choice-name"><bdi>${name}</bdi></span><span class="choice-role">${role}</span></label>`
   const values: Record<string, string> = {
     styles: css,
     client_name: 'Example client',
@@ -167,7 +168,10 @@ test('the workspace picker and its empty state work without scripts in both them
       await page.getByRole('radio', { name: /very long name/ }).check()
       await page.getByRole('button', { name: 'Continue', exact: true }).click()
       await page.getByText('Submitted', { exact: true }).waitFor()
-      assert.equal(submissions.at(-1), 'ticket=test-only-ticket&workspace=beta-id&decision=continue')
+      assert.equal(
+        submissions.at(-1),
+        'ticket=test-only-ticket&workspace=beta-id&decision=continue',
+      )
 
       await page.goto(`${origin}/empty`)
       await page.getByRole('heading', { name: 'No workspace to choose' }).waitFor()

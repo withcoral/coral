@@ -41,6 +41,9 @@ export function workspaceView(w: Workspace) {
     currentUser: w.currentUser,
     profile: profileView(w.currentUserProfile, w.currentUser),
     mcpEndpoint: w.mcpEndpoint,
+    // Connect a client at `/mcp` where sign-in can pick the workspace; local
+    // mode has no sign-in there, so it keeps the workspace URL.
+    connectEndpoint: w.organizationMcpEndpoint || w.mcpEndpoint,
     path: resourcePath(w.name),
   }
 }

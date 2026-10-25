@@ -38,6 +38,7 @@ const workspace = {
   currentUser: 'users/jordan',
   profile: jordan,
   mcpEndpoint: 'https://mcp.example.com/workspaces/demo/mcp',
+  connectEndpoint: 'https://mcp.example.com/mcp',
   path: '/workspaces/demo',
 }
 const member = { ...workspace, effectiveRole: 'member' }
@@ -305,7 +306,12 @@ export const DisabledOwnerOverview: Story = {
   },
 }
 export const NoEndpointOverview: Story = {
-  render: () => <WorkspaceOverview {...overview} workspace={{ ...workspace, mcpEndpoint: '' }} />,
+  render: () => (
+    <WorkspaceOverview
+      {...overview}
+      workspace={{ ...workspace, mcpEndpoint: '', connectEndpoint: '' }}
+    />
+  ),
 }
 
 // Agents
@@ -592,7 +598,7 @@ export const NewAgentActivity: Story = {
   parameters: { initialEntry: agent.path },
   play: async ({ canvas }) => {
     const card = within(canvas.getByRole('region', { name: 'Connect this agent' }))
-    const endpoint = workspace.mcpEndpoint
+    const endpoint = workspace.connectEndpoint
     for (const [client, field, value] of [
       [
         'Claude Code',

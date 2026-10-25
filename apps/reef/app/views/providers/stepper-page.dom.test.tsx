@@ -46,6 +46,7 @@ it('starts a typed URL again without it in the address, and offers the source fo
         currentUser: 'users/test',
         profile: { user: 'users/test', name: 'Test', email: '', local: true },
         mcpEndpoint: '',
+        connectEndpoint: '',
         path: '/workspaces/demo',
       }}
       basePath={basePath}
@@ -143,6 +144,7 @@ it("suggests the namespace from the document's name, not the host that serves it
         currentUser: 'users/test',
         profile: { user: 'users/test', name: 'Test', email: '', local: true },
         mcpEndpoint: '',
+        connectEndpoint: '',
         path: '/workspaces/demo',
       }}
       basePath={basePath}

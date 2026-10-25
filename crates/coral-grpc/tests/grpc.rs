@@ -468,6 +468,7 @@ async fn workspace_management_requires_a_membership_even_for_an_organization_own
         .into_inner();
     assert_eq!(created.display_name, "Alice's Workspace");
     assert!(created.mcp_endpoint.is_empty());
+    assert!(created.organization_mcp_endpoint.is_empty());
     assert_eq!(
         created.effective_role,
         management::WorkspaceRole::Owner as i32
@@ -485,6 +486,10 @@ async fn workspace_management_requires_a_membership_even_for_an_organization_own
     assert_eq!(
         inspected.mcp_endpoint,
         format!("https://mcp.example.test/{}/mcp", inspected.name)
+    );
+    assert_eq!(
+        inspected.organization_mcp_endpoint,
+        "https://mcp.example.test/mcp"
     );
     assert_eq!(
         inspected.effective_role,

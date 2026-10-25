@@ -8334,6 +8334,10 @@ pub struct Workspace {
     /// Canonical non-secret Streamable HTTP endpoint from host configuration.
     #[prost(string, tag = "12")]
     pub mcp_endpoint: ::prost::alloc::string::String,
+    /// The deployment's fixed `/mcp` endpoint, where a User picks this or another
+    /// Workspace when they sign in. Empty when sign-in is not configured.
+    #[prost(string, tag = "13")]
+    pub organization_mcp_endpoint: ::prost::alloc::string::String,
 }
 /// First-party creation request.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

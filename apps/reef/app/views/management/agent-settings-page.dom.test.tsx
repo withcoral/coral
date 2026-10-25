@@ -20,6 +20,7 @@ const workspace: WorkspaceView = {
   currentUser: person.user,
   profile: person,
   mcpEndpoint: '',
+  connectEndpoint: '',
   path: '/workspaces/demo',
 }
 const agent: AgentView = {

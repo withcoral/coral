@@ -59,7 +59,7 @@ export function AgentSettingsPage({
       <AgentKeyDialog
         credential={key}
         agentName={a.displayName}
-        endpoint={w.mcpEndpoint}
+        endpoint={w.connectEndpoint}
         onClose={() => setSavedKey(key)}
       />
       <SettingsLayout
