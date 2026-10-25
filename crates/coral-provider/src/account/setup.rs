@@ -651,9 +651,11 @@ impl AccountModule {
                 later: false,
             });
         };
-        // A sign-in already started has its application. Only a Setup that
-        // still takes a sign-in can start one.
-        let signed_in = inspected.authentication.authorization.is_some();
+        // A sign-in already started has its application, and a typed
+        // credential needs none. Only a Setup that still takes a sign-in can
+        // start one.
+        let signed_in =
+            inspected.authentication.authorized || inspected.authentication.authorization.is_some();
         let now = match inspected.setup.state() {
             crate::ProviderSetupState::AwaitingAuthorization | crate::ProviderSetupState::Ready => {
                 signed_in

@@ -2115,6 +2115,12 @@ enum Source {
     OAuth,
     /// Signs in with OAuth through an application the Owner named.
     OAuthApplication,
+    /// An MCP server behind a bearer token: a person typed the token, and
+    /// discovery with it failed, so Coral holds it while discovery waits.
+    HeldBearer,
+    /// An OAuth MCP server whose discovery sign-in used an application Coral
+    /// registered with it.
+    RegisteredOAuth,
 }
 
 impl OAuthApi {
@@ -2133,6 +2139,10 @@ impl OAuthApi {
             }
             Source::Bearer => self.bearer_document(),
             Source::OAuth | Source::OAuthApplication => self.document("OAuth"),
+            Source::HeldBearer => return held_bearer_setup(harness, context, workspace).await,
+            Source::RegisteredOAuth => {
+                return registered_sign_in_setup(harness, context, workspace).await;
+            }
         };
         let setup = harness
             .providers
@@ -2150,6 +2160,100 @@ impl OAuthApi {
         }
         setup
     }
+}
+
+/// An MCP Setup whose typed bearer token Coral holds while discovery waits:
+/// the server stops answering after the configuration is confirmed.
+async fn held_bearer_setup(
+    harness: &Harness,
+    context: &coral_workspace::ChangeContext,
+    workspace: &WorkspaceId,
+) -> crate::ProviderSetup {
+    const TOKEN: &str = "held-token";
+    let server = super::setup_tests::mcp_server(TOKEN).await;
+    let setup = harness
+        .providers
+        .prepare_setup(
+            context,
+            workspace,
+            crate::tests::mcp_url(server.uri()),
+            None,
+        )
+        .await
+        .unwrap();
+    let review = harness
+        .providers
+        .review_setup_configuration(context.actor(), workspace, setup.id())
+        .await
+        .unwrap();
+    let mut values = review.document.unwrap().suggested;
+    values.authentication = Some(AuthenticationConfiguration::Bearer);
+    let confirmed = harness
+        .providers
+        .confirm_setup_configuration(context, workspace, setup.id(), review.revision, values)
+        .await
+        .unwrap();
+    server.reset().await;
+    let held = harness
+        .accounts
+        .authorize_setup(
+            context,
+            workspace,
+            setup.id(),
+            confirmed.revision,
+            coral_credentials::CredentialValues::token(Secret::new(TOKEN.into()).unwrap()),
+        )
+        .await
+        .unwrap();
+    assert!(held.authorized && held.authorization.is_none());
+    assert_eq!(
+        harness
+            .providers
+            .get_setup(context.actor(), workspace, setup.id())
+            .await
+            .unwrap()
+            .state(),
+        ProviderSetupState::AwaitingDiscovery
+    );
+    setup
+}
+
+/// An OAuth MCP Setup whose discovery sign-in completed through an
+/// application Coral registered, so its configuration names none.
+async fn registered_sign_in_setup(
+    harness: &Harness,
+    context: &coral_workspace::ChangeContext,
+    workspace: &WorkspaceId,
+) -> crate::ProviderSetup {
+    let upstream = OAuthMcp::start().await;
+    let setup = harness
+        .accounts
+        .prepare_remote_fixture(
+            context,
+            workspace,
+            crate::tests::mcp_url(upstream.mcp_url()),
+            None,
+        )
+        .await
+        .unwrap();
+    let started = harness
+        .accounts
+        .start_setup_authorization(context, workspace, setup.id(), 1, client())
+        .await
+        .unwrap();
+    let navigation = started.authorization.unwrap().authorization_url.unwrap();
+    harness
+        .accounts
+        .complete_setup_authorization(
+            context,
+            Some((workspace, setup.id())),
+            &state_of(&navigation),
+            Secret::new(CODE.into()).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(upstream.knobs.registrations.load(Ordering::SeqCst), 1);
+    setup
 }
 
 fn explicit(client_id: &str) -> SetupOAuthClient {
@@ -2212,6 +2316,28 @@ async fn active_contract(
     contract
 }
 
+/// A Setup's state and configuration revision, which a refused change leaves
+/// as they were.
+async fn setup_progress(
+    harness: &Harness,
+    owner: &coral_workspace::AuthenticatedUser,
+    workspace: &WorkspaceId,
+    setup: &crate::ProviderSetupId,
+) -> (ProviderSetupState, i64) {
+    let state = harness
+        .providers
+        .get_setup(owner, workspace, setup)
+        .await
+        .unwrap()
+        .state();
+    let review = harness
+        .providers
+        .review_setup_configuration(owner, workspace, setup)
+        .await
+        .unwrap();
+    (state, review.revision)
+}
+
 /// Publication without material takes only a route that suits the source,
 /// and never an OAuth source with no application, which nobody could connect.
 #[tokio::test]
@@ -2270,6 +2396,7 @@ async fn publication_without_material_takes_only_a_fitting_route_and_an_oauth_ap
             .prepare(&harness, &context, workspace.id(), source)
             .await;
         let namespace = format!("case_{index}");
+        let before = setup_progress(&harness, &owner, workspace.id(), setup.id()).await;
         let published = harness
             .providers
             .publish_workspace_provider(
@@ -2324,15 +2451,12 @@ async fn publication_without_material_takes_only_a_fitting_route_and_an_oauth_ap
                     matches!(published, Err(Error::OAuthClientConfiguration)),
                     "{case}: {published:?}"
                 );
-                // The refusal changed nothing: the Setup stays open for a
-                // person to name an application.
-                assert!(
-                    harness
-                        .providers
-                        .review_setup_configuration(&owner, workspace.id(), setup.id())
-                        .await
-                        .is_ok(),
-                    "{case}: the Setup stays open"
+                // The refusal changed nothing: the Setup stays open, at the
+                // same configuration, for a person to name an application.
+                assert_eq!(
+                    setup_progress(&harness, &owner, workspace.id(), setup.id()).await,
+                    before,
+                    "{case}"
                 );
             }
         }
@@ -5503,6 +5627,12 @@ async fn a_setup_reports_its_fitting_routes_and_whether_connect_can_start() {
         (Source::OAuthApplication, false, credential(), true, true),
         // An ended Setup takes no sign-in, though its application stays named.
         (Source::OAuthApplication, true, credential(), false, true),
+        // A typed credential Coral holds while discovery waits is a sign-in
+        // in hand, though no OAuth sign-in started.
+        (Source::HeldBearer, false, credential(), true, true),
+        // Publication keeps the application Coral registered for the sign-in,
+        // so each person can connect later through it.
+        (Source::RegisteredOAuth, false, credential(), true, true),
     ]
     .into_iter()
     .enumerate()
