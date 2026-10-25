@@ -31,6 +31,9 @@ The Built-in Provider is immutable apart from its access state. The server rejec
 regeneration, account work and removal for it, and an Owner can only disable or enable it and set its Operations'
 policy.
 
+[ADR 0024](0024-add-provider-returns-a-link-and-does-not-wait.md) records why `addProvider` returns a Reef link when a
+person must sign in, instead of waiting for them.
+
 Amended by [ADR 0022](0022-coral-updates-the-builtin-catalog-at-boot.md): when Coral boots, it installs the Built-in
 Provider in each Workspace that has none and updates it to the catalog it serves. An Owner still cannot regenerate or
 update it.
