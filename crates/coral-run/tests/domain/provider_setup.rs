@@ -1315,7 +1315,8 @@ async fn an_owner_demoted_while_coral_performs_the_call_loses_it() {
 
 /// An MCP server at `/mcp` that answers every request with `challenge`, and
 /// the protected-resource and authorization-server metadata a sign-in reads.
-/// The resource metadata names `resource` as the server's identity.
+/// The resource metadata names `resource` as the server's identity; with no
+/// `resource`, the server publishes none.
 async fn protected_mcp_server(challenge: &str, resource: &str) -> MockServer {
     let server = MockServer::start().await;
     let uri = server.uri();
@@ -1327,14 +1328,16 @@ async fn protected_mcp_server(challenge: &str, resource: &str) -> MockServer {
         )
         .mount(&server)
         .await;
-    Mock::given(method("GET"))
-        .and(path("/.well-known/oauth-protected-resource/mcp"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "resource": resource.replace("{uri}", &uri),
-            "authorization_servers": [uri],
-        })))
-        .mount(&server)
-        .await;
+    if !resource.is_empty() {
+        Mock::given(method("GET"))
+            .and(path("/.well-known/oauth-protected-resource/mcp"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "resource": resource.replace("{uri}", &uri),
+                "authorization_servers": [uri],
+            })))
+            .mount(&server)
+            .await;
+    }
     Mock::given(method("GET"))
         .and(path("/.well-known/oauth-authorization-server"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -1365,6 +1368,17 @@ async fn an_oauth_protected_mcp_server_needs_a_person_to_sign_in() {
         // A person signs in before Coral can read the server, on either route.
         (BEARER, "{uri}/mcp", "fixed", None),
         (BEARER, "{uri}/mcp", "caller", None),
+        // The server publishes no metadata, so nobody can tell how to sign in.
+        (
+            r#"Bearer realm="mcp""#,
+            "",
+            "fixed",
+            Some(
+                " at `authentication`: Choose a supported method. MCP OAuth endpoints are \
+                 read-only."
+                    .to_owned(),
+            ),
+        ),
         (
             BEARER,
             "{uri}/mcp",

@@ -37,10 +37,27 @@ function renderForm(element: ReactNode) {
   render(<Stub initialEntries={['/']} />)
 }
 
+/** Each form that takes typed-in credentials, for one setup. */
+const credentialForms: [string, (shown: SetupView) => ReactNode][] = [
+  ['a setup step', (shown) => <SetupSecretForm setup={shown} form={form} pending={false} />],
+  [
+    "replacing a provider's credentials",
+    (shown) => (
+      <UpdateAuthorization
+        setup={shown}
+        form={form}
+        pending={false}
+        callbackUrl="https://coral.test/callback"
+      />
+    ),
+  ],
+]
+
 describe('where typed-in credentials go', () => {
   // Catches: an agent's addProvider pointing credentials at a server the
-  // person never sees before they paste a secret.
-  it.each([
+  // person never sees before they paste a secret, or a credential form that
+  // leaves the destination out.
+  const destinations = [
     [
       'every host the operations call, once each',
       {
@@ -59,30 +76,21 @@ describe('where typed-in credentials go', () => {
       { kind: 'mcp' as const, sourceHost: 'mcp.example.test' },
       'Coral sends what you enter here to mcp.example.test.',
     ],
-  ])('names %s', (_, over, expected) => {
-    renderForm(<SetupSecretForm setup={{ ...setup, ...over }} form={form} pending={false} />)
+  ] as const
+  it.each(
+    credentialForms.flatMap(([where, renderAt]) =>
+      destinations.map(
+        ([what, over, expected]) => [what, where, renderAt, over, expected] as const,
+      ),
+    ),
+  )('names %s in %s', (_what, _where, renderAt, over, expected) => {
+    renderForm(renderAt({ ...setup, ...over }))
     expect(screen.getByText(expected)).toBeInTheDocument()
   })
 
-  it('says nothing when no destination is known yet', () => {
-    renderForm(<SetupSecretForm setup={setup} form={form} pending={false} />)
+  it.each(credentialForms)('says nothing in %s when no destination is known yet', (_, renderAt) => {
+    renderForm(renderAt(setup))
     expect(screen.queryByText(/Coral sends what you enter here/)).not.toBeInTheDocument()
-  })
-
-  // Catches: the form that replaces a provider's shared credentials taking a
-  // secret without naming where it goes.
-  it("names the destination when you replace a provider's credentials", () => {
-    renderForm(
-      <UpdateAuthorization
-        setup={{ ...setup, kind: 'mcp', sourceHost: 'mcp.example.test' }}
-        form={form}
-        pending={false}
-        callbackUrl="https://coral.test/callback"
-      />,
-    )
-    expect(
-      screen.getByText('Coral sends what you enter here to mcp.example.test.'),
-    ).toBeInTheDocument()
   })
 })
 

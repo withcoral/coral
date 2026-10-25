@@ -26,9 +26,10 @@ expires on its own deadline, and the Run's end does not decide it.
 - The Program does not learn in the same Run whether the person published the Provider. It calls
   `coral.workspace.listProviders`, which reports the open Setups that the caller's `addProvider` calls prepared until
   each is published, expires or is canceled.
-- The person can change the namespace before they publish. Nothing compares the published Provider with the request.
+- The person can change the Provider Namespace before they publish. Nothing compares the published Provider with the
+  request.
 - A Run that ended before the call returns can no longer hand anyone the link, so Coral ends the Setup it prepared. A
-  worker lost after the Dispatch Fence settles from the Setup: a Provider published under the Invocation is the
-  result, and otherwise the Run ended first.
+  worker lost after the Dispatch Fence settles from the Publication Coral attempted under the Invocation: its
+  Provider is the result, and otherwise the Run ended first.
 - Rejected: parking the Invocation on a Provider Setup Request until the person publishes (lagoon #613 and #697), and
   offering that request as an MCP Action Prompt (lagoon #615). Those issues still describe the wait.
