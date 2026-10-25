@@ -51,7 +51,9 @@ pub(super) fn definition() -> Definition {
                  caller. Never pass a secret or a literal credential value: Coral stores \
                  your arguments, and Workspace Owners can see them. When Coral cannot \
                  fetch a source URL, the call fails with upstream_incomplete: check that \
-                 the URL is reachable, then call again. When status is \
+                 the URL is reachable, then call again. When credentialRoute is none and \
+                 Coral cannot publish the Provider, the call fails with \
+                 provider_publication_failed and adds nothing: call again. When status is \
                  published, call the Provider's Operations under \
                  coral.providers.<namespace>. When status is needs_sign_in, show the \
                  person the returned url. To check later whether the person published it, \
