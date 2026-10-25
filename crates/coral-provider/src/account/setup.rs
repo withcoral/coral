@@ -303,7 +303,8 @@ pub struct ProviderSetupInspection {
 /// Whether a person can connect an Account for a Setup's confirmed configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SetupConnectReadiness {
-    /// A person can start the Setup's sign-in, or enter its credential, now.
+    /// A sign-in is in hand for this open Setup, or a person can start one or
+    /// enter its credential now. False once the Setup has ended.
     pub now: bool,
     /// Once Publication adds the Provider with no sign-in here, each person can
     /// still connect their own Account: the configuration names its OAuth
@@ -650,16 +651,27 @@ impl AccountModule {
                 later: false,
             });
         };
-        // A sign-in already started has its application.
-        let now = inspected.authentication.authorization.is_some()
-            || self
-                .setup_oauth_application_available(
-                    actor,
-                    inspected.setup.owner(),
-                    inspected.setup.id(),
-                    Some(contract.authentication()),
-                )
-                .await?;
+        // A sign-in already started has its application. Only a Setup that
+        // still takes a sign-in can start one.
+        let signed_in = inspected.authentication.authorization.is_some();
+        let now = match inspected.setup.state() {
+            crate::ProviderSetupState::AwaitingAuthorization | crate::ProviderSetupState::Ready => {
+                signed_in
+                    || self
+                        .setup_oauth_application_available(
+                            actor,
+                            inspected.setup.owner(),
+                            inspected.setup.id(),
+                            Some(contract.authentication()),
+                        )
+                        .await?
+            }
+            crate::ProviderSetupState::AwaitingDiscovery => signed_in,
+            crate::ProviderSetupState::AwaitingConfiguration
+            | crate::ProviderSetupState::Consumed(_)
+            | crate::ProviderSetupState::Expired
+            | crate::ProviderSetupState::Canceled => false,
+        };
         // Publication keeps the application this person's own sign-in set
         // up, so the reported contract carries it.
         let later = !super::oauth_client::oauth_application_missing(

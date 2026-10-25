@@ -789,12 +789,13 @@ pub struct ProviderSetup {
     /// Reef offers them. Empty until the configuration is confirmed.
     #[prost(message, repeated, tag = "21")]
     pub allowed_credential_routes: ::prost::alloc::vec::Vec<CredentialRoute>,
-    /// The inspecting User can start this Setup's sign-in, or enter its
-    /// credential, now. False when nothing can be connected.
+    /// This Setup holds a sign-in, or the inspecting User can start one or enter
+    /// the credential now. False once the Setup has ended, or when nothing can
+    /// be connected.
     #[prost(bool, tag = "22")]
     pub connect_available: bool,
-    /// Once added with no sign-in here, each person can still connect their own
-    /// account. False when nothing can be connected.
+    /// Whether each person can connect their own account after the provider is
+    /// added without a sign-in. False when nothing can be connected.
     #[prost(bool, tag = "23")]
     pub connect_later_available: bool,
 }

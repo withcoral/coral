@@ -2086,7 +2086,8 @@ enum Source {
 }
 
 impl OAuthApi {
-    /// Prepares an open Setup for `source`, with its application named.
+    /// Prepares an open Setup for `source`. Only [`Source::OAuthApplication`]
+    /// names an application.
     async fn prepare(
         &self,
         harness: &Harness,
@@ -5347,28 +5348,22 @@ async fn a_setup_reports_its_fitting_routes_and_whether_connect_can_start() {
     let api = OAuthApi::start().await;
     let harness = harness(None).await;
     let (owner, workspace) = workspace_owner(&harness, "user:connect-readiness").await;
-    for (index, (source, routes, now, later)) in [
-        (Source::Free, vec![CredentialRoute::None], false, false),
+    let credential = || vec![CredentialRoute::Caller, CredentialRoute::Fixed];
+    for (index, (source, canceled, routes, now, later)) in [
         (
-            Source::Bearer,
-            vec![CredentialRoute::Caller, CredentialRoute::Fixed],
-            true,
-            true,
+            Source::Free,
+            false,
+            vec![CredentialRoute::None],
+            false,
+            false,
         ),
+        (Source::Bearer, false, credential(), true, true),
         // Coral cannot register an application with this service, and the
         // configuration names none, so nobody can sign in.
-        (
-            Source::OAuth,
-            vec![CredentialRoute::Caller, CredentialRoute::Fixed],
-            false,
-            false,
-        ),
-        (
-            Source::OAuthApplication,
-            vec![CredentialRoute::Caller, CredentialRoute::Fixed],
-            true,
-            true,
-        ),
+        (Source::OAuth, false, credential(), false, false),
+        (Source::OAuthApplication, false, credential(), true, true),
+        // An ended Setup takes no sign-in, though its application stays named.
+        (Source::OAuthApplication, true, credential(), false, true),
     ]
     .into_iter()
     .enumerate()
@@ -5378,21 +5373,25 @@ async fn a_setup_reports_its_fitting_routes_and_whether_connect_can_start() {
         let setup = api
             .prepare(&harness, &context, workspace.id(), source)
             .await;
+        if canceled {
+            harness
+                .accounts
+                .cancel_setup(&context, workspace.id(), setup.id())
+                .await
+                .unwrap();
+        }
+        let case = format!("{source:?}, canceled {canceled}");
         let inspected = harness
             .providers
             .inspect_setup(&owner, workspace.id(), setup.id(), at + 1)
             .await
             .unwrap();
-        assert_eq!(
-            inspected.configuration.allowed_routes(),
-            routes,
-            "{source:?}"
-        );
+        assert_eq!(inspected.configuration.allowed_routes(), routes, "{case}");
         let readiness = harness
             .accounts
             .setup_connect_readiness(&owner, &inspected)
             .await
             .unwrap();
-        assert_eq!((readiness.now, readiness.later), (now, later), "{source:?}");
+        assert_eq!((readiness.now, readiness.later), (now, later), "{case}");
     }
 }

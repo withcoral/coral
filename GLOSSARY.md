@@ -324,8 +324,9 @@ disconnected, expired, or incompatible `caller` Account does not hide Operations
 missing or disconnected Account during Invocation, before approval and dispatch, and reconnects an expired or
 incompatible one the same way; Coral never replaces a connected Account's credentials on its own. Before discovery, a
 `fixed` route and an Agent's `caller` route need a usable Account, and a `none` route needs a credential-free Provider.
-A route must suit the source: `none` only one that takes no credential, `fixed` and `caller` only one that takes a
-credential. Coral decides this one rule for a Setup, a Publication and an Invocation; Reef offers the routes Coral allows.
+A route must suit the Provider: `none` suits only a Provider that takes no credential, and `fixed` and `caller` suit
+only one that takes a credential. Coral decides this one rule for a Setup, a Publication and an Invocation; Reef offers
+the routes Coral allows.
 _Avoid_: Authentication method, runtime account selection, route fallback
 _In Reef_: "Whose account does it use?": "No account" (`none`), "One shared account" (`fixed`), "Individual accounts"
 (`caller`); Users connect their own accounts, and a Workspace Owner connects accounts for each Agent.

@@ -564,8 +564,8 @@ describe('account answer', () => {
     ['no account for a credential', 'none', [CALLER, FIXED], 400],
     ['no account for a credential-free source', 'none', [NONE], 302],
     ['an individual account for a credential-free source', 'caller', [NONE], 400],
-    // An older Coral reports no routes, and its Publication decides.
-    ['an answer an older Coral leaves to Publication', 'caller', [], 302],
+    // Coral reports no routes before confirmation, and Publication decides.
+    ['an answer before the configuration is confirmed', 'caller', [], 302],
   ] as const)('takes %s only when Coral allows the route', async (_, account, allowed, status) => {
     getProviderSetup.mockResolvedValue(
       create(ProviderSetupSchema, {

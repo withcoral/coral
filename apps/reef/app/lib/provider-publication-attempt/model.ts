@@ -338,9 +338,9 @@ export function automaticApplicationAllowed(
 }
 
 /**
- * Whether Coral says no sign-in can start for the confirmed configuration
- * though it takes a credential: it names no OAuth application, and Coral
- * cannot set one up.
+ * Whether Coral says nothing can be connected now for a confirmed configuration
+ * that takes a credential: most often because it names no OAuth application
+ * and Coral cannot set one up.
  */
 export function needsOAuthApplication(setup: SetupView) {
   return setup.allowedRoutes.length > 0 && !isCredentialFree(setup) && !setup.connectAvailable

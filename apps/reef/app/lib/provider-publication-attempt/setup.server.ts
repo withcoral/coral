@@ -1023,7 +1023,8 @@ export async function setupAction<Published = never>(
             headers: privateHeaders,
           })
         const setup = await api.setups.getProviderSetup({ name })
-        // An older Coral reports no routes; Publication still refuses a misfit.
+        // Coral reports no routes before the configuration is confirmed, and
+        // Publication refuses a misfit route anyway.
         const allowed = allowedRoutes(setup)
         const accountGrant = optionalField(form, 'accountGrant')
         if (

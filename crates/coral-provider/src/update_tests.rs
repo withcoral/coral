@@ -564,6 +564,12 @@ async fn an_update_to_a_credential_free_source_takes_only_the_none_route() {
                 ProviderPublicationOutcome::Succeeded,
                 "{route:?}"
             );
+            let current = h
+                .providers
+                .inspect_provider(&actor, workspace.id(), provider.id())
+                .await
+                .unwrap();
+            assert_eq!(current.access().credential_route(), CredentialRoute::None);
         }
     }
 }

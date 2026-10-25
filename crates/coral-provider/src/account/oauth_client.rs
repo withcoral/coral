@@ -380,7 +380,7 @@ async fn client_secret_missing(
 
 /// Refuses a contract whose OAuth sign-in names no application. Publication
 /// promotes the application a Setup's sign-in set up, so a contract that still
-/// has none could never start a sign-in.
+/// has none gives an Account's Connect no application to sign in with.
 pub(crate) fn require_oauth_application(
     contract: &coral_catalog::ProviderCredentialContract,
 ) -> Result<(), Error> {

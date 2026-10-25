@@ -233,7 +233,7 @@ export function AccountStep({
                 >
                   {held ? 'Connect now with another account' : 'Connect now'}
                 </Radio.Item>
-                {/* Coral says when nobody could connect after an add with no sign-in. */}
+                {/* Coral says when each person can still connect after an add with no sign-in. */}
                 {setup.connectLaterAvailable && (
                   <Radio.Item
                     variant="card"
