@@ -52,6 +52,7 @@ fn fallback_protocol_version() -> ProtocolVersion {
 pub(crate) struct McpServer {
     runtime: McpRuntime,
     workspace_id: WorkspaceId,
+    title: Option<String>,
 }
 
 impl McpServer {
@@ -59,7 +60,18 @@ impl McpServer {
         Self {
             runtime,
             workspace_id,
+            title: None,
         }
+    }
+
+    /// Names the Workspace in `serverInfo.title`, for a client that connected
+    /// at the Organization MCP Endpoint and cannot read it from the URL. The
+    /// name is display text only, and long names are cut short.
+    pub(crate) fn naming_workspace(mut self, display_name: &str) -> Self {
+        const NAME_CHARS: usize = 120;
+        let name = display_name.chars().take(NAME_CHARS).collect::<String>();
+        self.title = Some(format!("Coral · {name}"));
+        self
     }
 
     async fn dispatch(
@@ -549,7 +561,13 @@ impl ServerHandler for McpServer {
                 .build(),
         )
         .with_protocol_version(fallback_protocol_version())
-        .with_server_info(Implementation::new("Coral", env!("CARGO_PKG_VERSION")))
+        .with_server_info({
+            let implementation = Implementation::new("Coral", env!("CARGO_PKG_VERSION"));
+            match &self.title {
+                Some(title) => implementation.with_title(title),
+                None => implementation,
+            }
+        })
         .with_instructions(crate::instructions::INSTRUCTIONS)
     }
 

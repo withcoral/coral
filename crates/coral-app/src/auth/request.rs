@@ -34,12 +34,7 @@ impl WorkspaceAuthenticator for WorkspaceAuthentication {
         self.authentication
             .authenticate(workspace, bearer, &self.urls.resource(workspace))
             .await
-            .map_err(|error| match error {
-                coral_auth::AuthenticationError::Unauthenticated => {
-                    AuthenticationError::Unauthenticated
-                }
-                coral_auth::AuthenticationError::Unavailable => AuthenticationError::Unavailable,
-            })
+            .map_err(project)
     }
     fn oauth_resource(&self, workspace: &WorkspaceId) -> Option<OauthProtectedResource> {
         Some(OauthProtectedResource {
@@ -47,5 +42,29 @@ impl WorkspaceAuthenticator for WorkspaceAuthentication {
             authorization_server: self.issuer.clone(),
             metadata_url: self.urls.metadata_url(workspace),
         })
+    }
+    async fn authenticate_credential(
+        &self,
+        bearer: Option<&str>,
+    ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
+        self.authentication
+            .authenticate_credential(bearer, &self.urls.organization_resource())
+            .await
+            .map(coral_auth::CredentialWorkspace::into_parts)
+            .map_err(project)
+    }
+    fn organization_oauth_resource(&self) -> Option<OauthProtectedResource> {
+        Some(OauthProtectedResource {
+            resource: self.urls.organization_resource(),
+            authorization_server: self.issuer.clone(),
+            metadata_url: self.urls.organization_metadata_url(),
+        })
+    }
+}
+
+const fn project(error: coral_auth::AuthenticationError) -> AuthenticationError {
+    match error {
+        coral_auth::AuthenticationError::Unauthenticated => AuthenticationError::Unauthenticated,
+        coral_auth::AuthenticationError::Unavailable => AuthenticationError::Unavailable,
     }
 }

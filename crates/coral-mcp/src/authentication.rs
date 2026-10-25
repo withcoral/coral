@@ -11,12 +11,16 @@ pub enum AuthenticationError {
     /// Current authentication evidence could not be loaded.
     #[error("authentication unavailable")]
     Unavailable,
+    /// No credential reached the Organization MCP Endpoint where no sign-in
+    /// can pick a Workspace: auth-disabled local mode.
+    #[error("Use the workspace MCP URL from Coral.")]
+    WorkspaceUrlRequired,
 }
 
 /// Public OAuth discovery information, derived only from configured URLs.
 #[derive(Clone, Debug)]
 pub struct OauthProtectedResource {
-    /// Exact Workspace MCP resource and token audience.
+    /// Exact MCP resource and token audience.
     pub resource: String,
     /// Public authorization-server issuer.
     pub authorization_server: String,
@@ -38,6 +42,16 @@ pub trait WorkspaceAuthenticator: Send + Sync {
     fn oauth_resource(&self, _workspace: &WorkspaceId) -> Option<OauthProtectedResource> {
         None
     }
+    /// Resolves the presented credential at the Organization MCP Endpoint and
+    /// returns the Workspace it fixes.
+    async fn authenticate_credential(
+        &self,
+        bearer: Option<&str>,
+    ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError>;
+    /// Optional OAuth discovery for the Organization MCP Endpoint.
+    fn organization_oauth_resource(&self) -> Option<OauthProtectedResource> {
+        None
+    }
 }
 
 pub(crate) struct LocalAuthentication(pub WorkspaceModule);
@@ -56,6 +70,23 @@ impl WorkspaceAuthenticator for LocalAuthentication {
                 .await
                 .map_err(AuthenticationError::from),
         }
+    }
+    /// The implicit local User has no sign-in to pick a Workspace with, so
+    /// only an Agent credential works here.
+    async fn authenticate_credential(
+        &self,
+        bearer: Option<&str>,
+    ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
+        let credential = bearer.ok_or(AuthenticationError::WorkspaceUrlRequired)?;
+        let principal = self
+            .0
+            .authenticate_agent_credential(credential, now()?)
+            .await?;
+        let workspace = principal
+            .agent_workspace_id()
+            .ok_or(AuthenticationError::Unavailable)?
+            .clone();
+        Ok((principal, workspace))
     }
 }
 

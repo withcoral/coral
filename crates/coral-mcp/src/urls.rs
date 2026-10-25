@@ -1,9 +1,12 @@
-//! The canonical Workspace MCP route shared by serving and OAuth configuration.
+//! The canonical MCP routes shared by serving and OAuth configuration.
 
 use coral_workspace::WorkspaceId;
 
 /// The sole MCP route, parameterized by a stable Workspace identity.
 pub const WORKSPACE_MCP_ROUTE: &str = "/workspaces/{workspace_id}/mcp";
+
+/// The Organization MCP Endpoint. It names no Workspace: the credential fixes one.
+pub const ORGANIZATION_MCP_ROUTE: &str = "/mcp";
 
 /// Returns the canonical MCP path for one Workspace, independent of its name.
 #[must_use]
