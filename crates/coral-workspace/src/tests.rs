@@ -1091,9 +1091,9 @@ async fn sign_in_choices_are_active_memberships_with_their_role() {
         .await
         .unwrap();
 
-    let choices = async |actor| {
+    let choices = async |actor: &crate::AuthenticatedUser| {
         module
-            .list_sign_in_choices(actor)
+            .list_sign_in_choices(actor.user_id())
             .await
             .unwrap()
             .iter()

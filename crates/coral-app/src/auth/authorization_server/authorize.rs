@@ -10,7 +10,7 @@ use axum::http::{HeaderMap, header};
 use axum::response::Response;
 use coral_outbound::{BrowserRedirect, EndpointUrl};
 
-mod confirmation;
+pub(super) mod confirmation;
 
 use confirmation::ApprovalDecision;
 
@@ -93,7 +93,8 @@ pub(super) async fn oauth_authorize_get(
         code_challenge,
         resource,
     };
-    let sealed_len = approval.clone().into_sign_in().sealed_len();
+    let picks_workspace = state.is_organization_resource(&approval.resource);
+    let sealed_len = approval.clone().into_sign_in(picks_workspace).sealed_len();
     if !sealed_len.is_ok_and(|length| sign_in_cookie::sealed_fits(length, state.secure_cookies())) {
         return trusted.error("invalid_request", "authorization request is too large");
     }
@@ -134,6 +135,7 @@ fn consent_page(
         &approval.client_name,
         &approval.client_id,
         callback,
+        state.is_organization_resource(&approval.resource),
         &browser_binding,
         secure_cookie,
     )
@@ -194,7 +196,8 @@ async fn provider_sign_in(
     else {
         return trusted.error("server_error", "authorization failed");
     };
-    let session = approval.into_sign_in();
+    let picks_workspace = state.is_organization_resource(&approval.resource);
+    let session = approval.into_sign_in(picks_workspace);
     let secure = state.secure_cookies();
     let Some(cookie) = sign_in_cookie::now_unix_secs().and_then(|now| {
         let sealed = session
@@ -763,6 +766,7 @@ mod tests {
             CLIENT_ID,
             &EndpointUrl::<BrowserRedirect>::parse("http://127.0.0.1:14554/oauth/callback")
                 .expect("loopback redirect"),
+            false,
             &browser_binding(),
             false,
         )
@@ -789,6 +793,7 @@ mod tests {
             "</bdi><script>alert(\"x\")</script>&' @@ticket@@ @@styles@@",
             CLIENT_ID,
             &EndpointUrl::<BrowserRedirect>::parse(REDIRECT_URI).expect("redirect"),
+            false,
             &browser_binding(),
             true,
         )

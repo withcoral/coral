@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Choose a workspace · Coral</title>
+  <style>@@styles@@</style>
+</head>
+<body>
+  <main>
+    <section class="card" aria-labelledby="choice-title">
+      <header class="intro">
+        <h1 id="choice-title">Choose a workspace</h1>
+        <p>Choose the workspace that <bdi>@@client_name@@</bdi> can use. To use a different workspace, sign in again.</p>
+      </header>
+      <form method="post" action="/oauth/workspace" autocomplete="off">
+        <input type="hidden" name="ticket" value="@@ticket@@">
+        <fieldset class="choices">
+          <legend class="section-title">Your workspaces</legend>
+          <div class="choice-list">@@options@@</div>
+        </fieldset>
+        <div class="buttons">
+          <!-- Cancel is the safe implicit-submit default. Keep it first. -->
+          <button type="submit" name="decision" value="cancel">Cancel</button>
+          <button type="submit" name="decision" value="continue">Continue</button>
+        </div>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

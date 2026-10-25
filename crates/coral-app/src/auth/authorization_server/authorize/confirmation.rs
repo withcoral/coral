@@ -23,7 +23,7 @@ use super::super::response::approval_page_security_headers;
 const MAX_FORM_BYTES: usize = 16 * 1024;
 const BROWSER_BINDING_LENGTH: usize = 43;
 /// How long both the approval cookie and a sealed approval last.
-pub(super) const APPROVAL_MAX_AGE_SECONDS: u64 = 5 * 60;
+pub(in crate::auth::authorization_server) const APPROVAL_MAX_AGE_SECONDS: u64 = 5 * 60;
 const SECURE_APPROVAL_COOKIE_NAME: &str = "__Host-coral_oauth_approval";
 const LOOPBACK_APPROVAL_COOKIE_NAME: &str = "coral_oauth_approval";
 /// The approval page's policy, which deliberately omits `form-action`.
@@ -57,7 +57,7 @@ pub(super) const APPROVAL_PAGE_STYLES: &str = include_str!("approval.css");
 const APPROVAL_PAGE: &str = include_str!("approval.html");
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum ApprovalDecision {
+pub(in crate::auth::authorization_server) enum ApprovalDecision {
     Continue,
     Cancel,
 }
@@ -70,7 +70,7 @@ impl BrowserBinding {
         Self(bytes)
     }
 
-    pub(super) fn as_bytes(&self) -> &[u8; 32] {
+    pub(in crate::auth::authorization_server) fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
 }
@@ -81,7 +81,7 @@ impl Drop for BrowserBinding {
     }
 }
 
-pub(super) fn browser_binding_for_page(
+pub(in crate::auth::authorization_server) fn browser_binding_for_page(
     headers: &HeaderMap,
     secure_cookie: bool,
 ) -> Result<BrowserBinding, ()> {
@@ -100,6 +100,55 @@ pub(super) async fn parse_submission(
     expected_origin: &str,
     secure_cookie: bool,
 ) -> Result<(Zeroizing<String>, BrowserBinding, ApprovalDecision), ()> {
+    let (browser_binding, form) = read_form(request, expected_origin, secure_cookie, 2).await?;
+    if form.workspace.is_some() {
+        return Err(());
+    }
+    Ok((form.ticket, browser_binding, form.decision))
+}
+
+/// The fields of the Workspace picker's submission.
+pub(in crate::auth::authorization_server) struct WorkspaceSubmission {
+    pub(in crate::auth::authorization_server) ticket: Zeroizing<String>,
+    pub(in crate::auth::authorization_server) browser_binding: BrowserBinding,
+    pub(in crate::auth::authorization_server) decision: ApprovalDecision,
+    /// Absent only when the person cancels without a choice.
+    pub(in crate::auth::authorization_server) workspace: Option<String>,
+}
+
+/// Parses the Workspace picker's form with the same origin, cookie and
+/// content checks as the approval form.
+pub(in crate::auth::authorization_server) async fn parse_workspace_submission(
+    request: Request,
+    expected_origin: &str,
+    secure_cookie: bool,
+) -> Result<WorkspaceSubmission, ()> {
+    let (browser_binding, form) = read_form(request, expected_origin, secure_cookie, 3).await?;
+    if form.decision == ApprovalDecision::Continue && form.workspace.is_none() {
+        return Err(());
+    }
+    Ok(WorkspaceSubmission {
+        ticket: form.ticket,
+        browser_binding,
+        decision: form.decision,
+        workspace: form.workspace,
+    })
+}
+
+struct Form {
+    ticket: Zeroizing<String>,
+    decision: ApprovalDecision,
+    workspace: Option<String>,
+}
+
+/// Reads at most `max_fields` form fields from the browser that holds an
+/// approval cookie, submitted from this server's exact origin.
+async fn read_form(
+    request: Request,
+    expected_origin: &str,
+    secure_cookie: bool,
+    max_fields: usize,
+) -> Result<(BrowserBinding, Form), ()> {
     let (parts, body) = request.into_parts();
     if !has_exact_origin(&parts.headers, expected_origin) {
         return Err(());
@@ -117,8 +166,9 @@ pub(super) async fn parse_submission(
     let body = to_bytes(body, MAX_FORM_BYTES).await.map_err(|_error| ())?;
     let mut ticket = None;
     let mut decision = None;
+    let mut workspace = None;
     for (index, (name, value)) in form_urlencoded::parse(&body).enumerate() {
-        if index >= 2 {
+        if index >= max_fields {
             return Err(());
         }
         match name.as_ref() {
@@ -130,6 +180,7 @@ pub(super) async fn parse_submission(
                     _ => return Err(()),
                 });
             }
+            "workspace" if workspace.is_none() => workspace = Some(value.into_owned()),
             _ => return Err(()),
         }
     }
@@ -145,7 +196,14 @@ pub(super) async fn parse_submission(
             })
             .ok_or(())?,
     );
-    Ok((ticket, browser_binding, decision.ok_or(())?))
+    Ok((
+        browser_binding,
+        Form {
+            ticket,
+            decision: decision.ok_or(())?,
+            workspace,
+        },
+    ))
 }
 
 /// Renders the approval page for one pending authorization.
@@ -160,9 +218,23 @@ pub(super) fn response(
     client_name: &str,
     client_id: &str,
     redirect_uri: &EndpointUrl<BrowserRedirect>,
+    picks_workspace: bool,
     browser_binding: &BrowserBinding,
     secure_cookie: bool,
 ) -> Option<Response> {
+    // At the Organization MCP Endpoint the person picks the Workspace after
+    // they sign in, so the page cannot name one yet.
+    let (access_request, providers_label) = if picks_workspace {
+        (
+            "requests access to one of your workspaces. You choose it after you sign in.",
+            "Providers in the workspace you choose",
+        )
+    } else {
+        (
+            "requests access to this workspace.",
+            "Providers in this workspace",
+        )
+    };
     // Resolution already validated the identity. A URL has a metadata host;
     // an opaque registration has no verified origin or branding to display.
     let (client_identity_label, client_identity) = Url::parse(client_id)
@@ -185,25 +257,51 @@ pub(super) fn response(
                 format!("{redirect_host}:{}", redirect_uri.port_or_known_default()?),
             )
         };
-    // Read slots only from the trusted template. Never rescan substituted client
-    // text: a client named "@@ticket@@" must remain literal, not become the approval ticket.
-    let mut body = String::with_capacity(APPROVAL_PAGE.len() + APPROVAL_PAGE_STYLES.len());
-    for (index, segment) in APPROVAL_PAGE.split("@@").enumerate() {
+    let body = render(APPROVAL_PAGE, |slot| {
+        Some(match slot {
+            "client_name" => escape_html(client_name),
+            "client_identity" => escape_html(&client_identity),
+            "client_identity_label" => client_identity_label.to_owned(),
+            "redirect_label" => redirect_label.to_owned(),
+            "redirect_destination" => escape_html(&redirect_destination),
+            "ticket" => escape_html(ticket),
+            "access_request" => access_request.to_owned(),
+            "providers_label" => providers_label.to_owned(),
+            _ => return None,
+        })
+    })?;
+    page(body, Some(browser_binding), secure_cookie)
+}
+
+/// Fills a trusted template's `@@slot@@`s, and its `styles`, in one pass.
+///
+/// Read slots only from the trusted template. Never rescan substituted client
+/// text: a client named "@@ticket@@" must remain literal, not become the
+/// ticket. An unknown slot fails the whole page.
+pub(in crate::auth::authorization_server) fn render(
+    template: &str,
+    slot: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let mut body = String::with_capacity(template.len() + APPROVAL_PAGE_STYLES.len());
+    for (index, segment) in template.split("@@").enumerate() {
         if index % 2 == 0 {
             body.push_str(segment);
+        } else if segment == "styles" {
+            body.push_str(APPROVAL_PAGE_STYLES);
         } else {
-            match segment {
-                "styles" => body.push_str(APPROVAL_PAGE_STYLES),
-                "client_name" => body.push_str(&escape_html(client_name)),
-                "client_identity" => body.push_str(&escape_html(&client_identity)),
-                "client_identity_label" => body.push_str(client_identity_label),
-                "redirect_label" => body.push_str(redirect_label),
-                "redirect_destination" => body.push_str(&escape_html(&redirect_destination)),
-                "ticket" => body.push_str(&escape_html(ticket)),
-                _ => return None,
-            }
+            body.push_str(&slot(segment)?);
         }
     }
+    Some(body)
+}
+
+/// Serves a rendered sign-in page under the approval page's policy. A page
+/// that carries a sealed ticket also sets the approval cookie it is bound to.
+pub(in crate::auth::authorization_server) fn page(
+    body: String,
+    browser_binding: Option<&BrowserBinding>,
+    secure_cookie: bool,
+) -> Option<Response> {
     let mut response = (
         StatusCode::OK,
         approval_page_security_headers(),
@@ -218,10 +316,12 @@ pub(super) fn response(
         body,
     )
         .into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        approval_cookie_header(browser_binding, secure_cookie)?,
-    );
+    if let Some(browser_binding) = browser_binding {
+        response.headers_mut().insert(
+            header::SET_COOKIE,
+            approval_cookie_header(browser_binding, secure_cookie)?,
+        );
+    }
     Some(response)
 }
 
@@ -280,7 +380,7 @@ fn display_host(host: &Host<&str>) -> String {
     }
 }
 
-fn escape_html(value: &str) -> String {
+pub(in crate::auth::authorization_server) fn escape_html(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
         escaped.push_str(match character {

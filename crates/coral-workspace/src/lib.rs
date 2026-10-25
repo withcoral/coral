@@ -248,8 +248,8 @@ impl WorkspaceModule {
             .collect())
     }
 
-    /// Lists the active Workspaces a User can pick when they sign in at the
-    /// Organization MCP Endpoint, ordered by name. Organization Owner governance
+    /// Lists the active Workspaces the User signing in at the Organization
+    /// MCP Endpoint can pick, ordered by name. Organization Owner governance
     /// is not a Membership, so it offers nothing.
     ///
     /// # Errors
@@ -257,10 +257,10 @@ impl WorkspaceModule {
     /// Returns a denial when the User no longer has Organization Membership.
     pub async fn list_sign_in_choices(
         &self,
-        actor: &AuthenticatedUser,
+        user_id: &UserId,
     ) -> Result<Vec<WorkspaceChoice>, Error> {
         let actor = OrganizationModule::new(self.database.clone())
-            .resolve_user_authority(actor.user_id())
+            .resolve_user_authority(user_id)
             .await?;
         let mut choices = repository::list_workspaces(&self.database, actor.user_id())
             .await?

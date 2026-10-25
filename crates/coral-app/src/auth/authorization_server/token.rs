@@ -155,6 +155,9 @@ enum TokenTarget {
     Public,
     Mcp(coral_workspace::WorkspaceId),
     Reef,
+    /// The Organization MCP Endpoint: its public URL audience, plus the
+    /// Workspace the User picked when they signed in.
+    Organization,
 }
 
 impl TokenTarget {
@@ -163,6 +166,11 @@ impl TokenTarget {
         resource: &str,
         audience: Option<&str>,
     ) -> Option<Self> {
+        if state.is_organization_resource(resource) {
+            // Its token must carry the picked Workspace, which only the
+            // public audience does; a private audience would drop or replace it.
+            return audience.is_none().then_some(Self::Organization);
+        }
         let workspace = state
             .workspace_resource_family
             .as_ref()
@@ -200,6 +208,19 @@ impl TokenTarget {
                 &authorization.client_id,
                 &authorization.resource,
             ),
+            Self::Organization => {
+                let workspace = authorization
+                    .workspace_id
+                    .as_deref()
+                    .and_then(|workspace| coral_workspace::WorkspaceId::parse(workspace).ok())
+                    .ok_or("an Organization MCP Endpoint code names no workspace")?;
+                issuer.issue_workspace_access_token(
+                    &authorization.user_id,
+                    &authorization.client_id,
+                    &authorization.resource,
+                    &workspace,
+                )
+            }
         }
     }
 }
@@ -429,20 +450,51 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one table follows each resource and audience to the token it issues"
+    )]
     async fn first_party_tokens_keep_the_authorized_surface_and_workspace() {
         let workspace =
             coral_workspace::WorkspaceId::parse(&uuid::Uuid::new_v4().to_string()).unwrap();
         let workspace_resource = format!("https://mcp.example.test/workspaces/{workspace}/mcp");
-        for (resource, requested, expected_status) in [
-            (workspace_resource.as_str(), "mcp", StatusCode::OK),
-            (workspace_resource.as_str(), "reef", StatusCode::BAD_REQUEST),
+        let organization = "https://mcp.example.test/mcp";
+        let picked = Some(workspace.to_string());
+        // (resource, coral_audience, Workspace the sign-in picked, status)
+        for (resource, requested, chosen, expected_status) in [
             (
                 workspace_resource.as_str(),
-                "unknown",
+                Some("mcp"),
+                None,
+                StatusCode::OK,
+            ),
+            (
+                workspace_resource.as_str(),
+                Some("reef"),
+                None,
                 StatusCode::BAD_REQUEST,
             ),
-            (RESOURCE, "reef", StatusCode::OK),
-            (RESOURCE, "mcp", StatusCode::BAD_REQUEST),
+            (
+                workspace_resource.as_str(),
+                Some("unknown"),
+                None,
+                StatusCode::BAD_REQUEST,
+            ),
+            (RESOURCE, Some("reef"), None, StatusCode::OK),
+            (RESOURCE, Some("mcp"), None, StatusCode::BAD_REQUEST),
+            (organization, None, picked.clone(), StatusCode::OK),
+            (
+                organization,
+                Some("mcp"),
+                picked.clone(),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                organization,
+                Some("reef"),
+                picked.clone(),
+                StatusCode::BAD_REQUEST,
+            ),
         ] {
             let (mut state, codes, _, _database) = state().await;
             state.workspace_resource_family = Some(Arc::new(
@@ -461,7 +513,7 @@ mod tests {
                         redirect_uri: REDIRECT.into(),
                         code_challenge: URL_SAFE_NO_PAD.encode(Sha256::digest(VERIFIER.as_bytes())),
                         resource: resource.to_owned(),
-                        workspace_id: None,
+                        workspace_id: chosen,
                     },
                     now_unix_nanos(),
                 )
@@ -480,7 +532,7 @@ mod tests {
                     Some(resource),
                 ),
                 "coral_audience",
-                Some(requested),
+                requested,
             );
             let response = reqwest::Client::new()
                 .post(format!("{}/oauth/token", server.endpoint_uri()))
@@ -489,7 +541,8 @@ mod tests {
                 .send()
                 .await
                 .unwrap();
-            assert_eq!(response.status(), expected_status);
+            let case = format!("{resource} as {requested:?}");
+            assert_eq!(response.status(), expected_status, "{case}");
             let json: Value = response.json().await.unwrap();
             if expected_status == StatusCode::OK {
                 let token = json.get("access_token").unwrap().as_str().unwrap();
@@ -499,15 +552,23 @@ mod tests {
                         .unwrap(),
                 )
                 .unwrap();
-                assert_eq!(claims.get("aud").unwrap(), requested);
+                assert_eq!(
+                    claims.get("aud").unwrap(),
+                    requested.unwrap_or(resource),
+                    "{case}"
+                );
                 assert_eq!(claims.get("sub").unwrap(), "user");
-                if requested == "mcp" {
-                    assert_eq!(claims.get("workspace_id").unwrap(), &workspace.to_string());
+                if requested == Some("mcp") || resource == organization {
+                    assert_eq!(
+                        claims.get("workspace_id").unwrap(),
+                        &workspace.to_string(),
+                        "{case}"
+                    );
                 } else {
-                    assert!(claims.get("workspace_id").is_none());
+                    assert!(claims.get("workspace_id").is_none(), "{case}");
                 }
             } else {
-                assert_eq!(json.get("error").unwrap(), "invalid_target");
+                assert_eq!(json.get("error").unwrap(), "invalid_target", "{case}");
             }
             server.shutdown().await.unwrap();
         }

@@ -235,6 +235,7 @@ mod tests {
             client_state: Some("s".into()),
             code_challenge: "x".repeat(43),
             resource: "u".repeat(350),
+            client_name: None,
         };
         let pair = name("state", u64::from(u32::MAX), true).len()
             + 1

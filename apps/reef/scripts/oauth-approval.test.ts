@@ -33,6 +33,8 @@ test('standalone OAuth page works without scripts under its pinned CSP in both t
       redirect_label: 'Redirect host and port',
       redirect_destination: loopback ? '127.0.0.1:4111' : 'client.example.test:443',
       ticket: 'test-only-ticket',
+      access_request: 'requests access to this workspace.',
+      providers_label: 'Providers in this workspace',
     }
     // Rust owns real substitution and escaping; this fixture supplies known
     // values solely to exercise the hand-authored document in a real browser.
@@ -101,6 +103,78 @@ test('standalone OAuth page works without scripts under its pinned CSP in both t
       }
     }
     assert.notEqual(backgrounds[0], backgrounds[1])
+  } finally {
+    await browser.close()
+    server.closeAllConnections()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})
+
+test('the workspace picker and its empty state work without scripts in both themes', async () => {
+  const css = await readFile(new URL('approval.css', approvalDirectory), 'utf8')
+  const hash = createHash('sha256').update(css).digest('base64')
+  const policy = `default-src 'none'; base-uri 'none'; frame-ancestors 'none'; style-src 'sha256-${hash}'`
+  const picker = await readFile(new URL('workspace_choice.html', approvalDirectory), 'utf8')
+  const empty = await readFile(new URL('no_workspace.html', approvalDirectory), 'utf8')
+  // Rust renders these rows from escaped names; the fixture mirrors that markup.
+  const option = (id: string, name: string, role: string, checked: boolean) =>
+    `<label class="choice"><input type="radio" name="workspace" value="${id}"${checked ? ' checked' : ''}>` +
+    `<span class="choice-name"><bdi>${name}</bdi></span><span class="choice-role">${role}</span></label>`
+  const values: Record<string, string> = {
+    styles: css,
+    client_name: 'Example client',
+    ticket: 'test-only-ticket',
+    options:
+      option('alpha-id', 'Alpha', 'Owner', true) +
+      option('beta-id', 'A workspace with a very long name that wraps on a phone', 'Member', false),
+    coral_link: '<p class="actions"><a href="https://coral.example.test">Open Coral</a></p>',
+  }
+  const submissions: string[] = []
+  const server = createServer(async (request, response) => {
+    if (request.method === 'POST') {
+      let body = ''
+      for await (const chunk of request) body += chunk
+      submissions.push(body)
+      response.end('Submitted')
+      return
+    }
+    const template = request.url?.includes('empty') ? empty : picker
+    response.writeHead(200, { 'Content-Type': 'text/html', 'Content-Security-Policy': policy })
+    response.end(template.replace(/@@(.*?)@@/g, (_, slot: string) => values[slot]))
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+  const browser = await chromium.launch()
+  try {
+    for (const colorScheme of ['light', 'dark'] as const) {
+      const page = await browser.newPage({
+        colorScheme,
+        javaScriptEnabled: false,
+        viewport: { width: colorScheme === 'dark' ? 390 : 1280, height: 900 },
+      })
+      const errors: string[] = []
+      page.on('console', (message) => {
+        if (message.text().includes('Content Security Policy')) errors.push(message.text())
+      })
+      await page.goto(`${origin}/picker`)
+      await page.getByRole('heading', { name: 'Choose a workspace' }).waitFor()
+      assert.equal(await page.getByRole('radio', { name: /Alpha/ }).isChecked(), true)
+      assert.equal(await page.locator('button').first().getAttribute('value'), 'cancel')
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+        true,
+      )
+      await page.getByRole('radio', { name: /very long name/ }).check()
+      await page.getByRole('button', { name: 'Continue', exact: true }).click()
+      await page.getByText('Submitted', { exact: true }).waitFor()
+      assert.equal(submissions.at(-1), 'ticket=test-only-ticket&workspace=beta-id&decision=continue')
+
+      await page.goto(`${origin}/empty`)
+      await page.getByRole('heading', { name: 'No workspace to choose' }).waitFor()
+      await page.getByRole('link', { name: 'Open Coral' }).waitFor()
+      assert.deepEqual(errors, [])
+      await page.close()
+    }
   } finally {
     await browser.close()
     server.closeAllConnections()

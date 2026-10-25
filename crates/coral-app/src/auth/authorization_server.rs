@@ -34,6 +34,7 @@ mod registration;
 mod response;
 mod sign_in_cookie;
 mod token;
+mod workspace_choice;
 
 use self::client_metadata::{ClientMetadataResolver, HttpClientMetadataResolver};
 
@@ -227,6 +228,10 @@ fn auth_router(state: AuthorizationServerHttpState) -> Router {
         .route("/oauth/token", post(token::oauth_token))
         .route("/oauth/register", post(registration::register))
         .route(OIDC_CALLBACK_PATH, get(callback::oidc_callback))
+        .route(
+            workspace_choice::WORKSPACE_CHOICE_PATH,
+            post(workspace_choice::oauth_workspace_post),
+        )
         .with_state(state)
 }
 
@@ -348,6 +353,10 @@ struct AuthorizationServerHttpState {
     clients: OAuthClients,
     /// Domain Module that provisions stable User identities after OIDC validation.
     user_directory: UserDirectory,
+    /// The Workspaces a User can pick when they sign in at the Organization
+    /// MCP Endpoint. `None` until bootstrap attaches a database; such a
+    /// sign-in then fails closed.
+    workspaces: Option<coral_workspace::WorkspaceModule>,
 }
 
 impl AuthorizationServerHttpState {
@@ -397,7 +406,7 @@ impl AuthorizationServerHttpState {
         Ok(Self {
             settings,
             session_tokens,
-            codes: AuthorizationCodes::new(database),
+            codes: AuthorizationCodes::new(database.clone()),
             provider_client: OidcProviderClient::new(outbound_policy)
                 .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
             authorization_resources,
@@ -405,6 +414,7 @@ impl AuthorizationServerHttpState {
             client_metadata_resolver: Arc::new(clients.clone()),
             clients,
             user_directory,
+            workspaces: Some(coral_workspace::WorkspaceModule::new(database.clone())),
         })
     }
 
@@ -420,7 +430,18 @@ impl AuthorizationServerHttpState {
             || self
                 .workspace_resource_family
                 .as_ref()
-                .is_some_and(|family| family.parse_resource(resource).is_some())
+                .is_some_and(|family| {
+                    family.parse_resource(resource).is_some()
+                        || family.is_organization_resource(resource)
+                })
+    }
+
+    /// Whether `resource` is the Organization MCP Endpoint, whose sign-in
+    /// ends with the User picking a Workspace.
+    pub(super) fn is_organization_resource(&self, resource: &str) -> bool {
+        self.workspace_resource_family
+            .as_ref()
+            .is_some_and(|family| family.is_organization_resource(resource))
     }
 
     /// Whether the browser cookies this server sets carry `Secure` and the
@@ -644,6 +665,8 @@ mod tests {
         for accepted in [
             "https://mcp.example.test/workspaces/01234567-89ab-4cde-8fab-0123456789ab/mcp",
             "https://mcp.example.test/workspaces/11234567-89ab-4cde-8fab-0123456789ab/mcp",
+            // The Organization MCP Endpoint; its sign-in picks the Workspace.
+            "https://mcp.example.test/mcp",
             "https://coral-web.example.test",
             "https://configured.example.test",
         ] {
@@ -664,6 +687,8 @@ mod tests {
             "https://mcp.example.test/workspaces/%301234567-89ab-4cde-8fab-0123456789ab/mcp",
             "https://mcp.example.test/workspaces/01234567-89ab-4cde-8fab-0123456789ab/extra/mcp",
             "https://other.example.test/workspaces/01234567-89ab-4cde-8fab-0123456789ab/mcp",
+            "https://mcp.example.test/mcp/",
+            "https://other.example.test/mcp",
             // Registration stores the canonical spelling only.
             "https://coral-web.example.test/",
         ] {

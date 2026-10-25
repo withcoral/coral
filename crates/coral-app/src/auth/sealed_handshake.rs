@@ -27,6 +27,7 @@ use zeroize::Zeroizing;
 const ENVELOPE_VERSION: u8 = 1;
 const SIGN_IN_SESSION_AAD: &[u8] = b"coral-oauth-sign-in-session-v1\0";
 const PENDING_APPROVAL_AAD: &[u8] = b"coral-oauth-pending-approval-v1\0";
+const WORKSPACE_CHOICE_AAD: &[u8] = b"coral-oauth-workspace-choice-v1\0";
 
 /// Keys derived from the session signing key for sealing sign-in state.
 pub(crate) struct HandshakeKeys {
@@ -136,6 +137,9 @@ pub(crate) struct SignInSession {
     pub(crate) client_state: Option<String>,
     pub(crate) code_challenge: String,
     pub(crate) resource: String,
+    /// The client's self-asserted name, carried only to the Workspace picker
+    /// of an Organization MCP Endpoint sign-in.
+    pub(crate) client_name: Option<String>,
 }
 
 impl SignInSession {
@@ -173,6 +177,7 @@ impl SignInSession {
         frame.put_optional_str(self.client_state.as_deref())?;
         frame.put_str(&self.code_challenge)?;
         frame.put_str(&self.resource)?;
+        frame.put_optional_str(self.client_name.as_deref())?;
         frame.put_u64(expires_at_unix_secs);
         Ok(frame)
     }
@@ -193,6 +198,7 @@ impl SignInSession {
             client_state: reader.optional_str().ok()?,
             code_challenge: reader.str()?,
             resource: reader.str()?,
+            client_name: reader.optional_str().ok()?,
         };
         let expires_at = reader.u64()?;
         (reader.0.is_empty() && now_unix_secs < expires_at).then_some(session)
@@ -263,16 +269,92 @@ impl PendingApproval {
         (reader.0.is_empty() && now_unix_secs < expires_at).then_some(approval)
     }
 
-    /// The sign-in this approval starts once the person allows it.
-    pub(crate) fn into_sign_in(self) -> SignInSession {
+    /// The sign-in this approval starts once the person allows it. Only a
+    /// sign-in that ends at the Workspace picker keeps the client's name, so
+    /// every other sign-in cookie stays as small as before.
+    pub(crate) fn into_sign_in(self, picks_workspace: bool) -> SignInSession {
         SignInSession {
             client_id: self.client_id,
             redirect_uri: self.redirect_uri,
             client_state: self.client_state,
             code_challenge: self.code_challenge,
             resource: self.resource,
+            client_name: picks_workspace.then_some(self.client_name),
         }
     }
+}
+
+/// A finished sign-in at the Organization MCP Endpoint awaiting its User's
+/// Workspace choice, sealed into the picker form.
+///
+/// The seal is bound to the browser's approval cookie, so only the browser
+/// that signed in can submit it. It keeps the sign-in's OIDC state, so the
+/// one-code-per-sign-in guard still holds when the choice issues the code.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PendingWorkspaceChoice {
+    pub(crate) user_id: String,
+    pub(crate) oidc_state: String,
+    pub(crate) client_id: String,
+    pub(crate) redirect_uri: String,
+    pub(crate) client_state: Option<String>,
+    pub(crate) code_challenge: String,
+    pub(crate) resource: String,
+}
+
+impl PendingWorkspaceChoice {
+    /// Seals this choice for the browser holding `browser_binding`, to be
+    /// submitted before `expires_at_unix_secs`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SealError`] when a field is too long to frame or randomness
+    /// is unavailable.
+    pub(crate) fn seal(
+        &self,
+        keys: &HandshakeKeys,
+        browser_binding: &[u8],
+        expires_at_unix_secs: u64,
+    ) -> Result<String, SealError> {
+        let mut frame = Frame::default();
+        frame.put_str(&self.user_id)?;
+        frame.put_str(&self.oidc_state)?;
+        frame.put_str(&self.client_id)?;
+        frame.put_str(&self.redirect_uri)?;
+        frame.put_optional_str(self.client_state.as_deref())?;
+        frame.put_str(&self.code_challenge)?;
+        frame.put_str(&self.resource)?;
+        frame.put_u64(expires_at_unix_secs);
+        keys.seal(&workspace_choice_aad(browser_binding), &frame.0)
+    }
+
+    /// Opens the choice sealed for `browser_binding`, if it is intact,
+    /// belongs to that browser, and has not expired at `now_unix_secs`.
+    pub(crate) fn open(
+        keys: &HandshakeKeys,
+        browser_binding: &[u8],
+        sealed: &[u8],
+        now_unix_secs: u64,
+    ) -> Option<Self> {
+        let plaintext = keys.open(&workspace_choice_aad(browser_binding), sealed)?;
+        let mut reader = Reader(plaintext.as_slice());
+        let choice = Self {
+            user_id: reader.str()?,
+            oidc_state: reader.str()?,
+            client_id: reader.str()?,
+            redirect_uri: reader.str()?,
+            client_state: reader.optional_str().ok()?,
+            code_challenge: reader.str()?,
+            resource: reader.str()?,
+        };
+        let expires_at = reader.u64()?;
+        (reader.0.is_empty() && now_unix_secs < expires_at).then_some(choice)
+    }
+}
+
+fn workspace_choice_aad(browser_binding: &[u8]) -> Vec<u8> {
+    let mut aad = WORKSPACE_CHOICE_AAD.to_vec();
+    aad.extend_from_slice(&Sha256::digest(browser_binding));
+    aad
 }
 
 fn approval_aad(browser_binding: &[u8]) -> Vec<u8> {
@@ -358,6 +440,7 @@ mod tests {
             client_state: Some("client-state".into()),
             code_challenge: "client-challenge".into(),
             resource: "https://mcp.example.test/workspaces/w/mcp".into(),
+            client_name: None,
         }
     }
 

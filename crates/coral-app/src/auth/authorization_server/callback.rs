@@ -33,7 +33,7 @@ pub(super) async fn oidc_callback(
         SignInSession::open(state.settings.handshake_keys(), oidc_state, &sealed, now)
     });
     let mut response = match session {
-        Some(session) => complete(&state, &query, oidc_state, session).await,
+        Some(session) => complete(&state, &query, oidc_state, session, &headers).await,
         None => invalid_state(),
     };
     if let Some(clear) = sign_in_cookie::clear_header(&cookie_name, secure) {
@@ -55,6 +55,7 @@ async fn complete(
     query: &CallbackQuery,
     oidc_state: &str,
     session: SignInSession,
+    headers: &HeaderMap,
 ) -> Response {
     let Some(trusted) = trusted_redirect(&session) else {
         return direct_error("server_error", "authorization failed");
@@ -106,10 +107,14 @@ async fn complete(
         Ok(user_id) => user_id,
         Err(outcome) => return outcome.into_error(&trusted),
     };
-    let Ok(authorization_code) = random_code() else {
-        tracing::warn!("OIDC callback could not generate an authorization code");
-        return trusted.error("server_error", "authorization failed");
-    };
+    // At the Organization MCP Endpoint the User picks the Workspace first;
+    // the picker's submission issues the code.
+    if state.is_organization_resource(&session.resource) {
+        return super::workspace_choice::offer(
+            state, headers, &trusted, oidc_state, user_id, session,
+        )
+        .await;
+    }
     let grant = AuthorizationGrant {
         user_id,
         client_id: session.client_id,
@@ -118,22 +123,49 @@ async fn complete(
         resource: session.resource,
         workspace_id: None,
     };
+    match issue_code(state, &trusted, oidc_state, &grant).await {
+        CodeOutcome::Issued(response) | CodeOutcome::Refused(response) => response,
+    }
+}
+
+/// The client redirect after an attempt to issue a code.
+pub(super) enum CodeOutcome {
+    /// The redirect carries the new code.
+    Issued(Response),
+    /// The redirect carries an error; nothing was stored.
+    Refused(Response),
+}
+
+/// Stores a new code for `grant`, issued by the sign-in named `oidc_state`,
+/// and returns the client redirect that carries it. A sign-in that already
+/// issued its code, or a code that cannot be stored, is refused with the
+/// client's error redirect.
+pub(super) async fn issue_code(
+    state: &AuthorizationServerHttpState,
+    trusted: &TrustedRedirect,
+    oidc_state: &str,
+    grant: &AuthorizationGrant,
+) -> CodeOutcome {
+    let Ok(authorization_code) = random_code() else {
+        tracing::warn!("OIDC callback could not generate an authorization code");
+        return CodeOutcome::Refused(trusted.error("server_error", "authorization failed"));
+    };
     let Ok(now_unix_nanos) = now_unix_nanos_i64() else {
         tracing::warn!("OIDC callback could not read the system clock");
-        return trusted.error("server_error", "authorization failed");
+        return CodeOutcome::Refused(trusted.error("server_error", "authorization failed"));
     };
     match state
         .codes
-        .issue(&authorization_code, oidc_state, &grant, now_unix_nanos)
+        .issue(&authorization_code, oidc_state, grant, now_unix_nanos)
         .await
     {
-        Ok(CodeIssue::Issued) => trusted.success(&authorization_code),
-        Ok(CodeIssue::SignInAlreadyUsed) => {
-            trusted.error("invalid_request", "authorization was already completed")
-        }
+        Ok(CodeIssue::Issued) => CodeOutcome::Issued(trusted.success(&authorization_code)),
+        Ok(CodeIssue::SignInAlreadyUsed) => CodeOutcome::Refused(
+            trusted.error("invalid_request", "authorization was already completed"),
+        ),
         Err(error) => {
             tracing::warn!(%error, "OIDC callback could not store the authorization code");
-            trusted.error("server_error", "authorization failed")
+            CodeOutcome::Refused(trusted.error("server_error", "authorization failed"))
         }
     }
 }
@@ -367,6 +399,7 @@ mod tests {
             client_state: Some(CLIENT_STATE.into()),
             code_challenge: "client-code-challenge".into(),
             resource: RESOURCE.into(),
+            client_name: None,
         }
     }
 
@@ -938,5 +971,367 @@ mod tests {
         assert!(values.contains(&("error".into(), "server_error".into())));
         assert!(!values.iter().any(|(key, _value)| key == "code"));
         assert_security(&response);
+    }
+
+    const ORGANIZATION_RESOURCE: &str = "https://mcp.example.test/mcp";
+
+    /// A sign-in at the Organization MCP Endpoint, by a client with markup in its name.
+    fn organization_session() -> SignInSession {
+        SignInSession {
+            resource: ORGANIZATION_RESOURCE.into(),
+            client_name: Some("Claude <b>".into()),
+            ..session()
+        }
+    }
+
+    fn organization_state(issuer: &str, database: Arc<Database>) -> AuthorizationServerHttpState {
+        let mut state = state_with(issuer, database.clone());
+        state.workspace_resource_family = Some(Arc::new(
+            crate::WorkspaceMcpUrls::new(
+                crate::CanonicalOauthUrl::parse("https://mcp.example.test").unwrap(),
+            )
+            .unwrap(),
+        ));
+        state.workspaces = Some(coral_workspace::WorkspaceModule::new(database));
+        state
+    }
+
+    /// The User the mock provider's identity signs in as, provisioned ahead of
+    /// the callback so the test can give them Workspaces.
+    async fn signed_in_user(
+        database: &Arc<Database>,
+        issuer: &str,
+    ) -> coral_workspace::AuthenticatedUser {
+        let Ok(LoginProvisioning::Provisioned(user_id)) = UserDirectory::new(database.clone())
+            .provision_login(VerifiedOidcLogin::new(
+                issuer,
+                UPSTREAM_SUBJECT,
+                None,
+                now_unix_nanos_i64().unwrap(),
+            ))
+            .await
+        else {
+            panic!("provision the signed-in User");
+        };
+        coral_workspace::OrganizationModule::new(database.clone())
+            .resolve_user_authority(&user_id)
+            .await
+            .unwrap()
+    }
+
+    async fn create_workspace(
+        database: &Arc<Database>,
+        user: &coral_workspace::AuthenticatedUser,
+        name: &str,
+    ) -> coral_workspace::WorkspaceId {
+        coral_workspace::WorkspaceModule::new(database.clone())
+            .create(
+                &coral_workspace::ChangeContext::new(
+                    user.clone(),
+                    now_unix_nanos_i64().unwrap(),
+                    coral_workspace::TraceId::current_or_new(),
+                ),
+                coral_workspace::WorkspaceDisplayName::parse(name).unwrap(),
+            )
+            .await
+            .unwrap()
+            .id()
+            .clone()
+    }
+
+    /// Finishes the provider sign-in of an Organization MCP Endpoint request.
+    async fn organization_callback(
+        state: &AuthorizationServerHttpState,
+        preference: Option<&coral_workspace::WorkspaceId>,
+    ) -> Response {
+        let mut headers = HeaderMap::new();
+        headers.append(
+            header::COOKIE,
+            browser_cookie(state, OIDC_STATE, &organization_session()),
+        );
+        if let Some(workspace) = preference {
+            headers.append(
+                header::COOKIE,
+                HeaderValue::from_str(&format!("__Host-coral_oauth_workspace={workspace}"))
+                    .unwrap(),
+            );
+        }
+        oidc_callback(
+            State(state.clone()),
+            RawQuery(Some(query(&[
+                ("state", OIDC_STATE),
+                ("code", PROVIDER_CODE),
+            ]))),
+            headers,
+        )
+        .await
+    }
+
+    /// The page a picker response renders and the approval cookie it binds.
+    async fn picker(response: Response) -> (String, String) {
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!response.headers().contains_key(header::LOCATION));
+        let cookie = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|cookie| cookie.to_str().ok())
+            .find(|cookie| cookie.starts_with("__Host-coral_oauth_approval="))
+            .and_then(|cookie| cookie.split(';').next())
+            .map(str::to_owned)
+            .unwrap_or_default();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (String::from_utf8(body.to_vec()).unwrap(), cookie)
+    }
+
+    fn ticket(page: &str) -> String {
+        page.split("name=\"ticket\" value=\"")
+            .nth(1)
+            .and_then(|tail| tail.split('"').next())
+            .expect("picker ticket")
+            .to_owned()
+    }
+
+    async fn choose(
+        state: &AuthorizationServerHttpState,
+        cookie: &str,
+        fields: &[(&str, &str)],
+    ) -> Response {
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/oauth/workspace")
+            .header(
+                header::ORIGIN,
+                state.settings.authorization_server().issuer(),
+            )
+            .header(header::COOKIE, cookie)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(axum::body::Body::from(query(fields)))
+            .unwrap();
+        super::super::workspace_choice::oauth_workspace_post(State(state.clone()), request).await
+    }
+
+    async fn redeem_organization(
+        database: &Arc<Database>,
+        response: &Response,
+    ) -> Option<AuthorizationGrant> {
+        let code = redirect_query(response)
+            .into_iter()
+            .find(|(key, _value)| key == "code")?
+            .1;
+        let session = organization_session();
+        AuthorizationCodes::new(database.clone())
+            .redeem(
+                &code,
+                CodeRedemption {
+                    client_id: &session.client_id,
+                    redirect_uri: REDIRECT_URI,
+                    code_challenge: &session.code_challenge,
+                    resource: ORGANIZATION_RESOURCE,
+                },
+                now_unix_nanos_i64().unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    /// A sign-in at `/mcp` issues no code until its User picks one of their
+    /// active Workspaces; the code then carries that choice.
+    #[tokio::test]
+    async fn an_organization_sign_in_issues_its_code_for_the_workspace_the_user_picks() {
+        let server = MockServer::start().await;
+        mount_provider(&server, 200, 200, &nonce()).await;
+        let (db, _temp) = database().await;
+        let app = organization_state(&server.uri(), db.clone());
+        let user = signed_in_user(&db, &server.uri()).await;
+        let beta = create_workspace(&db, &user, "Beta").await;
+        let alpha = create_workspace(&db, &user, "Alpha").await;
+        let gone = create_workspace(&db, &user, "Gone").await;
+        coral_workspace::WorkspaceModule::new(db.clone())
+            .archive(
+                &coral_workspace::ChangeContext::new(
+                    user.clone(),
+                    now_unix_nanos_i64().unwrap(),
+                    coral_workspace::TraceId::current_or_new(),
+                ),
+                &gone,
+            )
+            .await
+            .unwrap();
+
+        let (page, cookie) = picker(organization_callback(&app, None).await).await;
+        assert!(page.contains("Choose a workspace"));
+        assert!(page.contains("Claude &lt;b&gt;"), "client text is escaped");
+        assert!(!page.contains("Claude <b>"));
+        let alpha_at = page.find(&format!("value=\"{alpha}\"")).expect("Alpha");
+        let beta_at = page.find(&format!("value=\"{beta}\"")).expect("Beta");
+        assert!(alpha_at < beta_at, "choices are ordered by name");
+        assert!(
+            !page.contains(&gone.to_string()),
+            "archived Workspaces are not offered"
+        );
+        assert!(
+            page.contains(&format!("value=\"{alpha}\" checked")),
+            "the first choice is selected when the browser has no preference"
+        );
+
+        let ticket = ticket(&page);
+        let chosen = choose(
+            &app,
+            &cookie,
+            &[
+                ("ticket", &ticket),
+                ("decision", "continue"),
+                ("workspace", &beta.to_string()),
+            ],
+        )
+        .await;
+        assert!(
+            redirect_query(&chosen).contains(&("state".into(), CLIENT_STATE.into())),
+            "the client's state comes back"
+        );
+        assert!(
+            chosen
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .any(|cookie| cookie
+                    .to_str()
+                    .is_ok_and(|cookie| cookie
+                        .starts_with(&format!("__Host-coral_oauth_workspace={beta};")))),
+            "the browser remembers the choice"
+        );
+        let grant = redeem_organization(&db, &chosen).await.expect("code");
+        assert_eq!(grant.workspace_id, Some(beta.to_string()));
+        assert_eq!(grant.resource, ORGANIZATION_RESOURCE);
+
+        let replayed = choose(
+            &app,
+            &cookie,
+            &[
+                ("ticket", &ticket),
+                ("decision", "continue"),
+                ("workspace", &alpha.to_string()),
+            ],
+        )
+        .await;
+        assert!(redirect_query(&replayed).contains(&("error".into(), "invalid_request".into())));
+        assert_eq!(redeem_organization(&db, &replayed).await, None);
+
+        let (page, _cookie) = picker(organization_callback(&app, Some(&beta)).await).await;
+        assert!(
+            page.contains(&format!("value=\"{beta}\" checked")),
+            "the remembered choice is preselected"
+        );
+    }
+
+    /// The choice is rechecked when it is submitted. A refused choice issues
+    /// nothing, so the same page can still finish with an allowed one.
+    #[tokio::test]
+    async fn a_refused_workspace_choice_issues_no_code() {
+        let server = MockServer::start().await;
+        mount_provider(&server, 200, 200, &nonce()).await;
+        let (db, _temp) = database().await;
+        let app = organization_state(&server.uri(), db.clone());
+        let user = signed_in_user(&db, &server.uri()).await;
+        let kept = create_workspace(&db, &user, "Kept").await;
+        let archived = create_workspace(&db, &user, "Archived later").await;
+        let stranger = coral_workspace::AuthenticatedUser::organization_member(
+            coral_workspace::UserId::parse("stranger").unwrap(),
+            coral_workspace::OrganizationRole::Member,
+        );
+        coral_workspace::OrganizationModule::new(db.clone())
+            .provision_login(&coral_workspace::ChangeContext::new(
+                stranger.clone(),
+                1,
+                coral_workspace::TraceId::current_or_new(),
+            ))
+            .await
+            .unwrap();
+        let foreign = create_workspace(&db, &stranger, "Foreign").await;
+        let (page, cookie) = picker(organization_callback(&app, None).await).await;
+        let ticket = ticket(&page);
+        coral_workspace::WorkspaceModule::new(db.clone())
+            .archive(
+                &coral_workspace::ChangeContext::new(
+                    user.clone(),
+                    now_unix_nanos_i64().unwrap(),
+                    coral_workspace::TraceId::current_or_new(),
+                ),
+                &archived,
+            )
+            .await
+            .unwrap();
+
+        for (case, decision, workspace) in [
+            (
+                "a Workspace without a Membership",
+                "continue",
+                foreign.to_string(),
+            ),
+            (
+                "a Workspace archived after the page",
+                "continue",
+                archived.to_string(),
+            ),
+            ("Cancel", "cancel", kept.to_string()),
+        ] {
+            let refused = choose(
+                &app,
+                &cookie,
+                &[
+                    ("ticket", &ticket),
+                    ("decision", decision),
+                    ("workspace", &workspace),
+                ],
+            )
+            .await;
+            assert!(
+                redirect_query(&refused).contains(&("error".into(), "access_denied".into())),
+                "{case}"
+            );
+            assert_eq!(redeem_organization(&db, &refused).await, None, "{case}");
+        }
+        let malformed = choose(
+            &app,
+            &cookie,
+            &[("ticket", &ticket), ("decision", "continue")],
+        )
+        .await;
+        assert_eq!(
+            malformed.status(),
+            StatusCode::BAD_REQUEST,
+            "no Workspace named"
+        );
+        let chosen = choose(
+            &app,
+            &cookie,
+            &[
+                ("ticket", &ticket),
+                ("decision", "continue"),
+                ("workspace", &kept.to_string()),
+            ],
+        )
+        .await;
+        assert_eq!(
+            redeem_organization(&db, &chosen)
+                .await
+                .and_then(|grant| grant.workspace_id),
+            Some(kept.to_string())
+        );
+    }
+
+    /// With no active Workspace there is nothing to pick, so no code is issued
+    /// and the page says how to get one.
+    #[tokio::test]
+    async fn a_user_without_workspaces_is_told_to_create_one() {
+        let server = MockServer::start().await;
+        mount_provider(&server, 200, 200, &nonce()).await;
+        let (db, _temp) = database().await;
+        let app = organization_state(&server.uri(), db.clone());
+        let (page, _cookie) = picker(organization_callback(&app, None).await).await;
+        assert!(page.contains("You are not a member of a workspace."));
+        assert!(page.contains("Create a workspace in Coral. Then sign in again."));
+        assert!(!page.contains("name=\"ticket\""));
     }
 }
