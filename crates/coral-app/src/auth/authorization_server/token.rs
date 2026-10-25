@@ -461,6 +461,7 @@ mod tests {
                         redirect_uri: REDIRECT.into(),
                         code_challenge: URL_SAFE_NO_PAD.encode(Sha256::digest(VERIFIER.as_bytes())),
                         resource: resource.to_owned(),
+                        workspace_id: None,
                     },
                     now_unix_nanos(),
                 )
@@ -524,6 +525,7 @@ mod tests {
                     redirect_uri: REDIRECT.into(),
                     code_challenge: URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())),
                     resource: RESOURCE.into(),
+                    workspace_id: None,
                 },
                 now_unix_nanos(),
             )

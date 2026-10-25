@@ -37,6 +37,8 @@ pub struct AuthorizationGrant {
     pub code_challenge: String,
     /// The canonical resource the sign-in approved.
     pub resource: String,
+    /// The Workspace the User picked, for the Organization MCP Endpoint only.
+    pub workspace_id: Option<String>,
 }
 
 /// The request bindings a redemption presents.

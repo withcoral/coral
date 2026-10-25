@@ -3,7 +3,7 @@ use coral_workspace::{
 };
 
 use crate::SessionTokenIssuer;
-use crate::session::SessionTokenVerifier;
+use crate::session::{SessionTokenVerifier, ValidatedSession};
 
 /// Bounded authentication failures, without token, claim, or verifier material.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -105,6 +105,49 @@ impl PrincipalAuthentication {
             .map_err(AuthenticationError::from)
     }
 
+    /// Verifies a credential at the Organization MCP Endpoint, which names no
+    /// Workspace, and returns the Workspace the credential fixes: a User token's
+    /// signed `workspace_id`, or an Agent Registration's Workspace.
+    ///
+    /// # Errors
+    /// Rejects unscoped tokens, wrong audiences, Agent-kind tokens, invalid
+    /// Agent credentials, and disabled Users.
+    pub async fn authenticate_credential(
+        &self,
+        bearer: Option<&str>,
+        expected_audience: &str,
+    ) -> Result<CredentialWorkspace, AuthenticationError> {
+        let credential = bearer.ok_or(AuthenticationError::Unauthenticated)?;
+        if credential.starts_with("coral_agent_") {
+            let principal = self
+                .workspaces
+                .authenticate_agent_credential(credential, now_unix_nanos()?)
+                .await?;
+            let workspace = principal
+                .agent_workspace_id()
+                .ok_or(AuthenticationError::Unavailable)?
+                .clone();
+            return Ok(CredentialWorkspace {
+                principal,
+                workspace,
+            });
+        }
+        let session = self
+            .sessions
+            .validate_access_token(credential, &[expected_audience])
+            .map_err(|_error| AuthenticationError::Unauthenticated)?;
+        let workspace = session
+            .workspace_id
+            .as_deref()
+            .and_then(|scope| WorkspaceId::parse(scope).ok())
+            .ok_or(AuthenticationError::Unauthenticated)?;
+        let principal = self.user(&session).await?;
+        Ok(CredentialWorkspace {
+            principal,
+            workspace,
+        })
+    }
+
     async fn authenticate_request(
         &self,
         workspace: &WorkspaceId,
@@ -114,14 +157,9 @@ impl PrincipalAuthentication {
     ) -> Result<AuthenticatedPrincipal, AuthenticationError> {
         let credential = bearer.ok_or(AuthenticationError::Unauthenticated)?;
         if credential.starts_with("coral_agent_") {
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_error| AuthenticationError::Unavailable)?
-                .as_nanos();
-            let now = i64::try_from(nanos).map_err(|_error| AuthenticationError::Unavailable)?;
             return self
                 .workspaces
-                .authenticate_agent(workspace, credential, now)
+                .authenticate_agent(workspace, credential, now_unix_nanos()?)
                 .await
                 .map_err(AuthenticationError::from);
         }
@@ -134,8 +172,18 @@ impl PrincipalAuthentication {
                 .workspace_id
                 .as_deref()
                 .is_some_and(|scope| scope != workspace.to_string())
-            || session.principal_kind != PrincipalKind::User
         {
+            return Err(AuthenticationError::Unauthenticated);
+        }
+        self.user(&session).await
+    }
+
+    /// The current authority of the User a validated User-kind token names.
+    async fn user(
+        &self,
+        session: &ValidatedSession,
+    ) -> Result<AuthenticatedPrincipal, AuthenticationError> {
+        if session.principal_kind != PrincipalKind::User {
             return Err(AuthenticationError::Unauthenticated);
         }
         let user_id = crate::external_user_id(&session.user_id)
@@ -146,6 +194,42 @@ impl PrincipalAuthentication {
             .map(AuthenticatedPrincipal::user)
             .map_err(AuthenticationError::from)
     }
+}
+
+/// A Principal authenticated at the Organization MCP Endpoint, with the
+/// Workspace its credential fixes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CredentialWorkspace {
+    principal: AuthenticatedPrincipal,
+    workspace: WorkspaceId,
+}
+
+impl CredentialWorkspace {
+    /// Returns the authenticated Principal.
+    #[must_use]
+    pub const fn principal(&self) -> &AuthenticatedPrincipal {
+        &self.principal
+    }
+
+    /// Returns the Workspace the credential fixes.
+    #[must_use]
+    pub const fn workspace(&self) -> &WorkspaceId {
+        &self.workspace
+    }
+
+    /// Splits the Principal and its Workspace.
+    #[must_use]
+    pub fn into_parts(self) -> (AuthenticatedPrincipal, WorkspaceId) {
+        (self.principal, self.workspace)
+    }
+}
+
+fn now_unix_nanos() -> Result<i64, AuthenticationError> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_error| AuthenticationError::Unavailable)?
+        .as_nanos();
+    i64::try_from(nanos).map_err(|_error| AuthenticationError::Unavailable)
 }
 
 impl From<coral_workspace::Error> for AuthenticationError {

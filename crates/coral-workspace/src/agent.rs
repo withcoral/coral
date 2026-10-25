@@ -350,18 +350,53 @@ impl WorkspaceModule {
         credential: &str,
         now_unix_nanos: i64,
     ) -> Result<AuthenticatedPrincipal, Error> {
+        self.authenticate_agent_in(Some(workspace_id), credential, now_unix_nanos)
+            .await
+    }
+
+    /// Verifies an opaque bearer credential and returns the Agent of whichever
+    /// Workspace its Registration belongs to, for the Organization MCP Endpoint.
+    ///
+    /// The returned Principal's `agent_workspace_id` is the Workspace every
+    /// later check must use.
+    ///
+    /// # Errors
+    ///
+    /// Invalid, rotated, disabled, and expired credentials are
+    /// indistinguishable. Errors and evidence contain no credential or verifier.
+    pub async fn authenticate_agent_credential(
+        &self,
+        credential: &str,
+        now_unix_nanos: i64,
+    ) -> Result<AuthenticatedPrincipal, Error> {
+        self.authenticate_agent_in(None, credential, now_unix_nanos)
+            .await
+    }
+
+    async fn authenticate_agent_in(
+        &self,
+        workspace_id: Option<&WorkspaceId>,
+        credential: &str,
+        now_unix_nanos: i64,
+    ) -> Result<AuthenticatedPrincipal, Error> {
         if credential.len() != 55 || !credential.starts_with("coral_agent_") {
             return Err(Error::InvalidAgentCredential);
         }
+        let verifier = credential_verifier(credential);
         let mut transaction = self.database.begin_read_snapshot().await?;
-        let registration = repository::registration_by_verifier(
+        let registration = match workspace_id {
+            Some(workspace_id) => {
+                repository::registration_by_verifier(&mut transaction, workspace_id, &verifier)
+                    .await?
+            }
+            None => repository::registration_by_verifier_alone(&mut transaction, &verifier).await?,
+        };
+        let agent = repository::find(
             &mut transaction,
-            workspace_id,
-            &credential_verifier(credential),
+            registration.workspace_id(),
+            registration.agent_id(),
         )
         .await?;
-        let agent =
-            repository::find(&mut transaction, workspace_id, registration.agent_id()).await?;
         registration
             .require_active(&agent, now_unix_nanos)
             .map_err(|_lifecycle_loss| Error::InvalidAgentCredential)?;

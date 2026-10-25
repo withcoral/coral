@@ -214,6 +214,14 @@ pub(super) async fn history(
 }
 
 fn registrations(workspace_id: &WorkspaceId) -> sea_query::SelectStatement {
+    any_workspace_registrations()
+        .and_where(Expr::col(AgentRegistrations::WorkspaceId).eq(workspace_id.to_string()))
+        .to_owned()
+}
+
+/// Every Workspace's Registrations. Only [`registration_by_verifier_alone`] reads
+/// this unscoped: authentication there finds out the Workspace (ADR 0025).
+fn any_workspace_registrations() -> sea_query::SelectStatement {
     Query::select()
         .columns([
             AgentRegistrations::Id,
@@ -223,7 +231,6 @@ fn registrations(workspace_id: &WorkspaceId) -> sea_query::SelectStatement {
             AgentRegistrations::ExpiresAtUnixNanos,
         ])
         .from(AgentRegistrations::Table)
-        .and_where(Expr::col(AgentRegistrations::WorkspaceId).eq(workspace_id.to_string()))
         .to_owned()
 }
 
@@ -362,6 +369,23 @@ pub(super) async fn registration_by_verifier(
     let row: Option<RegistrationRow> = executor
         .fetch_optional(
             registrations(workspace_id)
+                .and_where(Expr::col(AgentRegistrations::CredentialVerifier).eq(verifier))
+                .to_owned(),
+        )
+        .await?;
+    row.ok_or(Error::InvalidAgentCredential)?.decode()
+}
+
+/// Finds a Registration by its credential verifier in any Workspace. The
+/// credential is a secret, not an ID, so this one lookup is not scoped by
+/// Workspace; the Registration's own Workspace scopes every later read.
+pub(super) async fn registration_by_verifier_alone(
+    executor: impl QueryExecutor,
+    verifier: &str,
+) -> Result<AgentRegistration, Error> {
+    let row: Option<RegistrationRow> = executor
+        .fetch_optional(
+            any_workspace_registrations()
                 .and_where(Expr::col(AgentRegistrations::CredentialVerifier).eq(verifier))
                 .to_owned(),
         )

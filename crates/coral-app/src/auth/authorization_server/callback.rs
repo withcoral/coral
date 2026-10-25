@@ -116,6 +116,7 @@ async fn complete(
         redirect_uri: session.redirect_uri,
         code_challenge: session.code_challenge,
         resource: session.resource,
+        workspace_id: None,
     };
     let Ok(now_unix_nanos) = now_unix_nanos_i64() else {
         tracing::warn!("OIDC callback could not read the system clock");

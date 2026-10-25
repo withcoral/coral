@@ -122,8 +122,8 @@ pub use principal_authority::PrincipalWorkspaceEvidence;
 pub use types::{
     AdministrativeLifecycleEvent, AuthenticatedUser, AuthoritySource, ChangeContext,
     LifecycleAction, LifecycleOutcome, LifecycleTargetKind, MembershipChange, OrganizationRole,
-    UserId, Workspace, WorkspaceAction, WorkspaceDisplayName, WorkspaceEvidence, WorkspaceId,
-    WorkspaceMembership, WorkspaceRole, WorkspaceState, local_organization_owner,
+    UserId, Workspace, WorkspaceAction, WorkspaceChoice, WorkspaceDisplayName, WorkspaceEvidence,
+    WorkspaceId, WorkspaceMembership, WorkspaceRole, WorkspaceState, local_organization_owner,
 };
 
 /// Workspace lifecycle, Membership, and authority Module.
@@ -241,7 +241,41 @@ impl WorkspaceModule {
         let actor = OrganizationModule::new(self.database.clone())
             .resolve_user_authority(actor.user_id())
             .await?;
-        repository::list_workspaces(&self.database, actor.user_id()).await
+        Ok(repository::list_workspaces(&self.database, actor.user_id())
+            .await?
+            .into_iter()
+            .map(|(workspace, _role)| workspace)
+            .collect())
+    }
+
+    /// Lists the active Workspaces a User can pick when they sign in at the
+    /// Organization MCP Endpoint, ordered by name. Organization Owner governance
+    /// is not a Membership, so it offers nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a denial when the User no longer has Organization Membership.
+    pub async fn list_sign_in_choices(
+        &self,
+        actor: &AuthenticatedUser,
+    ) -> Result<Vec<WorkspaceChoice>, Error> {
+        let actor = OrganizationModule::new(self.database.clone())
+            .resolve_user_authority(actor.user_id())
+            .await?;
+        let mut choices = repository::list_workspaces(&self.database, actor.user_id())
+            .await?
+            .into_iter()
+            .filter(|(workspace, _role)| workspace.state() == WorkspaceState::Active)
+            .map(|(workspace, role)| WorkspaceChoice { workspace, role })
+            .collect::<Vec<_>>();
+        choices.sort_by(|left, right| {
+            left.workspace
+                .display_name()
+                .as_str()
+                .cmp(right.workspace.display_name().as_str())
+                .then_with(|| left.workspace.id().cmp(right.workspace.id()))
+        });
+        Ok(choices)
     }
 
     /// Checks one Workspace-sensitive action and returns current evidence.

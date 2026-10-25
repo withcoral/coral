@@ -40,7 +40,7 @@ pub use audience::PrivateAudience;
 mod repository;
 mod session;
 
-pub use authentication::{AuthenticationError, PrincipalAuthentication};
+pub use authentication::{AuthenticationError, CredentialWorkspace, PrincipalAuthentication};
 pub use session::{IssuedAccessToken, SessionTokenError, SessionTokenIssuer};
 
 use std::sync::Arc;

@@ -244,6 +244,27 @@ impl Workspace {
     }
 }
 
+/// One active Workspace a User can pick at sign-in, with their Membership role.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceChoice {
+    pub(crate) workspace: Workspace,
+    pub(crate) role: WorkspaceRole,
+}
+
+impl WorkspaceChoice {
+    /// Returns the Workspace.
+    #[must_use]
+    pub const fn workspace(&self) -> &Workspace {
+        &self.workspace
+    }
+
+    /// Returns the User's Membership role there.
+    #[must_use]
+    pub const fn role(&self) -> WorkspaceRole {
+        self.role
+    }
+}
+
 /// Role held by one explicit Workspace Membership.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceRole {
