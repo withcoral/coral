@@ -5,7 +5,10 @@ import userEvent from '@testing-library/user-event'
 import { createRoutesStub } from 'react-router'
 import { describe, expect, it } from 'vitest'
 
-import { CredentialDestination, DiscoveryPrompt } from './setup-steps'
+import type { ReactNode } from 'react'
+
+import { DiscoveryPrompt, SetupSecretForm } from './setup-steps'
+import { UpdateAuthorization } from './update-authorization'
 import type { ConfigurationReviewView, SetupView } from './types'
 
 const setup: SetupView = {
@@ -25,6 +28,13 @@ const setup: SetupView = {
   allowedRoutes: ['caller', 'fixed'],
   connectAvailable: true,
   connectLaterAvailable: true,
+}
+
+const form = { csrf: 'test-csrf', requestId: 'test-request' }
+
+function renderForm(element: ReactNode) {
+  const Stub = createRoutesStub([{ path: '/', Component: () => element }])
+  render(<Stub initialEntries={['/']} />)
 }
 
 describe('where typed-in credentials go', () => {
@@ -50,13 +60,29 @@ describe('where typed-in credentials go', () => {
       'Coral sends what you enter here to mcp.example.test.',
     ],
   ])('names %s', (_, over, expected) => {
-    render(<CredentialDestination setup={{ ...setup, ...over }} />)
+    renderForm(<SetupSecretForm setup={{ ...setup, ...over }} form={form} pending={false} />)
     expect(screen.getByText(expected)).toBeInTheDocument()
   })
 
   it('says nothing when no destination is known yet', () => {
-    const { container } = render(<CredentialDestination setup={setup} />)
-    expect(container).toBeEmptyDOMElement()
+    renderForm(<SetupSecretForm setup={setup} form={form} pending={false} />)
+    expect(screen.queryByText(/Coral sends what you enter here/)).not.toBeInTheDocument()
+  })
+
+  // Catches: the form that replaces a provider's shared credentials taking a
+  // secret without naming where it goes.
+  it("names the destination when you replace a provider's credentials", () => {
+    renderForm(
+      <UpdateAuthorization
+        setup={{ ...setup, kind: 'mcp', sourceHost: 'mcp.example.test' }}
+        form={form}
+        pending={false}
+        callbackUrl="https://coral.test/callback"
+      />,
+    )
+    expect(
+      screen.getByText('Coral sends what you enter here to mcp.example.test.'),
+    ).toBeInTheDocument()
   })
 })
 

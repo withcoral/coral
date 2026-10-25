@@ -14,14 +14,13 @@ import * as Dialog from '@/wax/components/dialog'
 import { DocumentSubmitButton } from '@/components/document-submit-button'
 import { Fields } from '@/views/management/forms'
 import { accountLabels, useAccountAudience } from './account-labels'
-import { CredentialFields } from '@/views/management/credential-fields'
 import { OAuthApplicationBlock } from './oauth-application'
 import { usePublication } from './publication-form'
 import {
   accountSummary,
   ContinueSignIn,
-  CredentialDestination,
   SetupFields,
+  SetupSecretForm,
   SignInProgress,
   SignInStatus,
   signInLabel,
@@ -110,7 +109,11 @@ export function AccountStep({
     ? attempt
     : credentialFree
       ? { ...attempt, account: 'none', accountGrant: undefined }
-      : { ...attempt, account: choice, accountGrant: keeping ? grant : undefined }
+      : {
+          ...attempt,
+          account: choice,
+          accountGrant: keeping ? grant : undefined,
+        }
   const inFlight =
     signingIn &&
     oauth &&
@@ -286,26 +289,20 @@ export function AccountStep({
               </Dialog.Description>
               {/* Its own form: the portal renders outside the step's, so an
                       input here would never be submitted with it. */}
-              <Form
+              <SetupSecretForm
+                setup={setup}
+                form={form}
+                pending={pending}
                 id={secretFormId}
-                method="post"
-                reloadDocument
-                className={styles.stack}
-                aria-busy={pending}
+                extra={accountField}
               >
-                <Fields form={form} intent="secret" />
-                <SetupFields setup={setup} extra={accountField} />
-                <CredentialFields fields={setup.credentialFields}>
-                  {(input) => <Inputs.CredentialInput {...input} />}
-                </CredentialFields>
-                <CredentialDestination setup={setup} />
                 {documentationUrl && (
                   <Button.ExternalLink href={documentationUrl} className={styles.inlineControl}>
                     Find your credentials in the{' '}
                     {setup.configuration?.values.displayName || 'provider'} docs
                   </Button.ExternalLink>
                 )}
-              </Form>
+              </SetupSecretForm>
               <Dialog.Actions>
                 <Button.TextButton
                   type="button"

@@ -1,10 +1,14 @@
 import { Form } from 'react-router'
 import { isOAuthMethod } from '@/lib/provider-publication-attempt/model'
-import { Inputs } from '@/wax/components'
 import { Fields } from '@/views/management/forms'
 import { OAuthApplicationBlock } from './oauth-application'
-import { SignInProgress, SignInStatus, signInLabel } from './setup-steps'
-import { CredentialFields } from '@/views/management/credential-fields'
+import {
+  SetupFields,
+  SetupSecretForm,
+  SignInProgress,
+  SignInStatus,
+  signInLabel,
+} from './setup-steps'
 import type { FormContext, SetupView } from './types'
 import { DocumentSubmitButton } from '@/components/document-submit-button'
 import * as styles from './providers.css'
@@ -27,6 +31,14 @@ export function UpdateAuthorization({
   const oauth = isOAuthMethod(setup.credentialMethod)
   const inFlight =
     setup.authorization?.state === 'pending' || setup.authorization?.state === 'exchanging'
+  const replacement = (
+    <>
+      <input type="hidden" name="account" value="fixed" />
+      {setup.authorized && (
+        <input type="hidden" name="replacementGrant" value={setup.provisionalGrantId} />
+      )}
+    </>
+  )
   return (
     <div className={styles.stack}>
       <SignInStatus setup={setup} />
@@ -37,28 +49,27 @@ export function UpdateAuthorization({
           pending={pending}
           extra={<input type="hidden" name="account" value="fixed" />}
         />
-      ) : (
+      ) : oauth ? (
         <Form id={formId} method="post" reloadDocument className={styles.stack}>
-          <Fields form={form} intent={oauth ? 'oauth-start' : 'secret'} />
-          <input type="hidden" name="setup" value={setup.id} />
-          <input type="hidden" name="configurationRevision" value={setup.configuration?.revision} />
-          <input type="hidden" name="account" value="fixed" />
-          {setup.authorized && (
-            <input type="hidden" name="replacementGrant" value={setup.provisionalGrantId} />
-          )}
-          {oauth ? (
-            <OAuthApplicationBlock setup={setup} callbackUrl={callbackUrl} />
-          ) : (
-            <CredentialFields fields={setup.credentialFields}>
-              {(input) => <Inputs.CredentialInput {...input} />}
-            </CredentialFields>
-          )}
+          <Fields form={form} intent="oauth-start" />
+          <SetupFields setup={setup} extra={replacement} />
+          <OAuthApplicationBlock setup={setup} callbackUrl={callbackUrl} />
           {!formId && (
-            <DocumentSubmitButton disabled={pending}>
-              {oauth ? signInLabel(setup) : 'Authorize replacement'}
-            </DocumentSubmitButton>
+            <DocumentSubmitButton disabled={pending}>{signInLabel(setup)}</DocumentSubmitButton>
           )}
         </Form>
+      ) : (
+        <SetupSecretForm
+          setup={setup}
+          form={form}
+          pending={pending}
+          id={formId}
+          extra={replacement}
+        >
+          {!formId && (
+            <DocumentSubmitButton disabled={pending}>Authorize replacement</DocumentSubmitButton>
+          )}
+        </SetupSecretForm>
       )}
     </div>
   )
