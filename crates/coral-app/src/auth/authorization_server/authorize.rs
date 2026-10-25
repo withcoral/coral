@@ -12,7 +12,7 @@ use coral_outbound::{BrowserRedirect, EndpointUrl};
 
 pub(super) mod confirmation;
 
-use confirmation::ApprovalDecision;
+use confirmation::{ApprovalDecision, ApprovalScope};
 
 pub(super) async fn oauth_authorize_get(
     State(state): State<AuthorizationServerHttpState>,
@@ -102,10 +102,13 @@ pub(super) async fn oauth_authorize_get(
     // The check sits after every validation above, so trust changes only the
     // confirmation step — never what counts as a valid request — and the
     // metadata document still had to resolve and name this redirect URI.
-    if state
-        .settings
-        .authorization_server()
-        .is_trusted_client(client_id, redirect_uri)
+    // At the Organization MCP Endpoint the person approves after sign-in, on
+    // the page where they pick the Workspace, so no page shows here.
+    if picks_workspace
+        || state
+            .settings
+            .authorization_server()
+            .is_trusted_client(client_id, redirect_uri)
     {
         return provider_sign_in(&state, approval, &trusted, &headers).await;
     }
@@ -135,7 +138,7 @@ fn consent_page(
         &approval.client_name,
         &approval.client_id,
         callback,
-        state.is_organization_resource(&approval.resource),
+        &ApprovalScope::Workspace,
         &browser_binding,
         secure_cookie,
     )
@@ -766,7 +769,7 @@ mod tests {
             CLIENT_ID,
             &EndpointUrl::<BrowserRedirect>::parse("http://127.0.0.1:14554/oauth/callback")
                 .expect("loopback redirect"),
-            false,
+            &confirmation::ApprovalScope::Workspace,
             &browser_binding(),
             false,
         )
@@ -793,7 +796,7 @@ mod tests {
             "</bdi><script>alert(\"x\")</script>&' @@ticket@@ @@styles@@",
             CLIENT_ID,
             &EndpointUrl::<BrowserRedirect>::parse(REDIRECT_URI).expect("redirect"),
-            false,
+            &confirmation::ApprovalScope::Workspace,
             &browser_binding(),
             true,
         )
@@ -1734,38 +1737,61 @@ mod tests {
         assert!(!body.contains("name=\"ticket\""));
     }
 
+    /// A trusted client skips the approval page. At the Organization MCP
+    /// Endpoint every client does: the person approves after sign-in, on the
+    /// page where they pick the Workspace.
     #[tokio::test]
-    async fn trusted_client_skips_the_approval_page_and_carries_a_sealed_sign_in() {
+    async fn these_requests_skip_the_approval_page_and_carry_a_sealed_sign_in() {
+        const ORGANIZATION_RESOURCE: &str = "https://mcp.example.test/mcp";
         let database = database().await;
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
-        let (resolver, calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
-        let auth_state = state_with(&database, &provider.uri(), &trusting(CLIENT_ID), resolver);
-        let response = request(auth_state.clone(), &pairs()).await;
-        assert_eq!(response.status(), StatusCode::FOUND);
-        assert_security(&response);
-        assert!(
-            !sets_approval_cookie(&response),
-            "a skipped approval page must not set an approval cookie"
-        );
-        let provider_url = location(&response).expect("provider redirect");
-        assert!(
-            provider_url.starts_with(&provider.uri()),
-            "redirected to {provider_url}"
-        );
-        assert_eq!(calls.load(Ordering::Relaxed), 1);
-        let query = Url::parse(provider_url)
-            .expect("URL")
-            .query_pairs()
-            .into_owned()
-            .collect::<BTreeMap<_, _>>();
-        let oidc_state = query.get("state").expect("OIDC state");
-        let session = returned_session(&auth_state, &response, oidc_state);
-        assert_eq!(session.client_id, CLIENT_ID);
-        assert_eq!(session.redirect_uri, REDIRECT_URI);
-        assert_eq!(session.client_state.as_deref(), Some(CLIENT_STATE));
-        assert_eq!(session.code_challenge, CHALLENGE);
-        assert_eq!(session.resource, RESOURCE);
+        for (case, extra, resource, client_name) in [
+            ("trusted client", trusting(CLIENT_ID), RESOURCE, None),
+            (
+                "Organization MCP Endpoint",
+                String::new(),
+                ORGANIZATION_RESOURCE,
+                Some("Test Client"),
+            ),
+        ] {
+            let (resolver, calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
+            let mut auth_state = state_with(&database, &provider.uri(), &extra, resolver);
+            auth_state.workspace_resource_family = Some(Arc::new(
+                crate::WorkspaceMcpUrls::new(
+                    crate::CanonicalOauthUrl::parse("https://mcp.example.test").unwrap(),
+                )
+                .unwrap(),
+            ));
+            let mut query = pairs();
+            replace(&mut query, "resource", Some(resource));
+            let response = request(auth_state.clone(), &query).await;
+            assert_eq!(response.status(), StatusCode::FOUND, "{case}");
+            assert_security(&response);
+            assert!(
+                !sets_approval_cookie(&response),
+                "{case}: a skipped approval page must not set an approval cookie"
+            );
+            let provider_url = location(&response).expect("provider redirect");
+            assert!(
+                provider_url.starts_with(&provider.uri()),
+                "{case}: redirected to {provider_url}"
+            );
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+            let provider_query = Url::parse(provider_url)
+                .expect("URL")
+                .query_pairs()
+                .into_owned()
+                .collect::<BTreeMap<_, _>>();
+            let oidc_state = provider_query.get("state").expect("OIDC state");
+            let session = returned_session(&auth_state, &response, oidc_state);
+            assert_eq!(session.client_id, CLIENT_ID);
+            assert_eq!(session.redirect_uri, REDIRECT_URI);
+            assert_eq!(session.client_state.as_deref(), Some(CLIENT_STATE));
+            assert_eq!(session.code_challenge, CHALLENGE);
+            assert_eq!(session.resource, resource);
+            assert_eq!(session.client_name.as_deref(), client_name, "{case}");
+        }
     }
 
     /// Trust skips only the approval page. Every validation the page sits

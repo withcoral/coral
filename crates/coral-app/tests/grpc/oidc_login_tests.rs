@@ -154,8 +154,8 @@ impl Composed {
         }
     }
 
-    /// Registers a client and walks one person through consent and the
-    /// upstream sign-in for `resource`. Returns the client ID and the
+    /// Registers a client and walks one person through consent, where it
+    /// comes before sign-in, and the upstream sign-in for `resource`. Returns the client ID and the
     /// response to the provider's callback.
     async fn sign_in(&self, resource: &str) -> (String, reqwest::Response) {
         let (endpoint, http) = (&self.endpoint, &self.http);
@@ -188,19 +188,24 @@ impl Composed {
             .send()
             .await
             .unwrap();
-        assert_eq!(page.status(), 200);
-        let cookie = cookie_pair(&page, "");
-        let ticket = ticket(&page.text().await.unwrap());
-
-        let approved = http
-            .post(format!("{endpoint}/oauth/authorize"))
-            .header(ORIGIN, AUTH_ISSUER)
-            .header(COOKIE, cookie)
-            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .body(format!("ticket={ticket}&decision=continue"))
-            .send()
-            .await
-            .unwrap();
+        // At `/mcp` the person approves after sign-in, where they pick the
+        // Workspace, so the request goes straight to the provider.
+        let approved = if resource == ORGANIZATION_RESOURCE {
+            assert_eq!(page.status(), 302, "no approval page before sign-in");
+            page
+        } else {
+            assert_eq!(page.status(), 200);
+            let cookie = cookie_pair(&page, "");
+            let ticket = ticket(&page.text().await.unwrap());
+            http.post(format!("{endpoint}/oauth/authorize"))
+                .header(ORIGIN, AUTH_ISSUER)
+                .header(COOKIE, cookie)
+                .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(format!("ticket={ticket}&decision=continue"))
+                .send()
+                .await
+                .unwrap()
+        };
         let upstream = location(&approved);
         let sign_in_cookie = cookie_pair(&approved, "");
         mount_token(
@@ -304,8 +309,8 @@ async fn composed_server_provisions_a_user_through_the_oidc_callback() {
     composed.shutdown().await;
 }
 
-/// A sign-in at `/mcp` ends at the Workspace picker, and its token carries
-/// the Workspace the person picks.
+/// A sign-in at `/mcp` ends at the approval page where the person picks a
+/// Workspace, and its token carries the one they pick.
 #[tokio::test]
 async fn composed_server_issues_an_organization_token_for_the_picked_workspace() {
     let composed = Composed::start().await;
@@ -341,7 +346,7 @@ async fn composed_server_issues_an_organization_token_for_the_picked_workspace()
         .clone();
 
     let (client_id, picker) = composed.sign_in(ORGANIZATION_RESOURCE).await;
-    assert_eq!(picker.status(), 200, "the picker comes before any code");
+    assert_eq!(picker.status(), 200, "the approval comes before any code");
     let cookie = cookie_pair(&picker, "__Host-coral_oauth_approval=");
     let ticket = ticket(&picker.text().await.unwrap());
     let chosen = composed

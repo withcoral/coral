@@ -212,18 +212,15 @@ test('URL-only MCP client connects at /mcp, picks a workspace, and acts only the
         expect(await auth(client.provider, { serverUrl: resource })).toBe('REDIRECT')
         expect(client.authorization().searchParams.get('resource')).toBe(resource)
       })
-      await step('Allow access, sign in, and pick a workspace', async () => {
+      await step('Sign in, then pick a workspace and allow access', async () => {
         await page.goto(client.authorization().href)
-        await page.getByRole('heading', { name: 'Allow workspace access?', exact: true }).waitFor()
-        await page.getByText('You choose it after you sign in.', { exact: false }).waitFor()
-        await page.getByRole('button', { name: 'Allow', exact: true }).click()
         await page
           .getByRole('heading', { name: 'Synthetic identity provider', exact: true })
           .waitFor()
         await page.locator(`button[value="${owner.subject}"]`).click()
-        await page.getByRole('heading', { name: 'Choose a workspace', exact: true }).waitFor()
+        await page.getByRole('heading', { name: 'Allow workspace access?', exact: true }).waitFor()
         await page.getByRole('radio', { name: new RegExp(`^Picked ${suffix}`) }).check()
-        await page.getByRole('button', { name: 'Continue', exact: true }).click()
+        await page.getByRole('button', { name: 'Allow', exact: true }).click()
         await page.waitForURL(
           (url) => url.origin === callbackOrigin && url.pathname === '/fixture/callback',
         )

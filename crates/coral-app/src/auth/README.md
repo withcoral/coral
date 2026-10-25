@@ -35,11 +35,12 @@ only one fixed URL ([ADR 0025](../../../../docs/adr/0025-fixed-mcp-endpoint-take
   signed `workspace_id`. It does not work at a Workspace MCP endpoint, and a
   Workspace MCP token does not work at `/mcp`. `auth.allowed_audiences` cannot
   name `/mcp`, and `coral_audience` cannot be redeemed for it.
-- The sign-in is the normal consent and OIDC flow. After the callback, Coral
-  shows the User's active Workspace Memberships and issues the code only when
-  they pick one. The pending choice is sealed into the form and bound to the
-  approval cookie, so nothing is stored before the pick. The submission rechecks
-  the choice. With no Workspace, Coral shows a page that links to the web
+- The sign-in goes to the identity provider first. After the callback, the
+  approval page also lists the User's active Workspace Memberships, and Coral
+  issues the code only when they allow the client with one picked. So the
+  approval comes after sign-in at `/mcp`, and a trusted client sees it too. The
+  pending approval is sealed into the form and bound to the approval cookie, so
+  nothing is stored before the pick. The submission rechecks the choice. With no Workspace, Coral shows a page that links to the web
   interface and issues no code. `coral_oauth_workspace` remembers the last pick
   as a preselection; it grants nothing.
 - An Agent Registration credential works at `/mcp`. Coral finds the

@@ -1160,7 +1160,12 @@ mod tests {
             .unwrap();
 
         let (page, cookie) = picker(organization_callback(&app, None).await).await;
-        assert!(page.contains("Choose a workspace"));
+        assert!(
+            page.contains("Allow workspace access?"),
+            "the person approves the client on the page where they pick"
+        );
+        assert!(page.contains("action=\"/oauth/workspace\""));
+        assert!(page.contains("client.example.test:443"), "redirect shown");
         assert!(page.contains("Claude &lt;b&gt;"), "client text is escaped");
         assert!(!page.contains("Claude <b>"));
         let alpha_at = page.find(&format!("value=\"{alpha}\"")).expect("Alpha");

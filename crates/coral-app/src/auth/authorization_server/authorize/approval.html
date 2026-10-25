@@ -64,11 +64,13 @@
           </div>
         </dl>
       </section>
-      <form method="post" action="/oauth/authorize" autocomplete="off">
-        <input type="hidden" name="ticket" value="@@ticket@@">
-        <!-- Cancel is the safe implicit-submit default. Keep it first. -->
-        <button type="submit" name="decision" value="cancel">Cancel</button>
-        <button type="submit" name="decision" value="continue">Allow</button>
+      <form method="post" action="@@form_action@@" autocomplete="off">
+        <input type="hidden" name="ticket" value="@@ticket@@">@@choices@@
+        <div class="buttons">
+          <!-- Cancel is the safe implicit-submit default. Keep it first. -->
+          <button type="submit" name="decision" value="cancel">Cancel</button>
+          <button type="submit" name="decision" value="continue">Allow</button>
+        </div>
       </form>
     </section>
   </main>

@@ -35,6 +35,8 @@ test('standalone OAuth page works without scripts under its pinned CSP in both t
       ticket: 'test-only-ticket',
       access_request: 'requests access to this workspace.',
       providers_label: 'Providers in this workspace',
+      form_action: '/oauth/authorize',
+      choices: '',
     }
     // Rust owns real substitution and escaping; this fixture supplies known
     // values solely to exercise the hand-authored document in a real browser.
@@ -110,24 +112,43 @@ test('standalone OAuth page works without scripts under its pinned CSP in both t
   }
 })
 
+// Fills a template's slots the way Rust does, without escaping.
+const fill = (template: string, values: Record<string, string>) =>
+  template.replace(/@@(.*?)@@/g, (_, slot: string) => values[slot])
+
 // Rust renders these rows from escaped names; the fixture mirrors that markup.
 const option = (id: string, name: string, role: string, checked: boolean) =>
   `<label class="choice"><input type="radio" name="workspace" value="${id}"${checked ? ' checked' : ''}>` +
   `<span class="choice-name"><bdi>${name}</bdi></span><span class="choice-role">${role}</span></label>`
 
-test('the workspace picker and its empty state work without scripts in both themes', async () => {
+test('the workspace approval page and its empty state work without scripts in both themes', async () => {
   const css = await readFile(new URL('approval.css', approvalDirectory), 'utf8')
   const hash = createHash('sha256').update(css).digest('base64')
   const policy = `default-src 'none'; base-uri 'none'; frame-ancestors 'none'; style-src 'sha256-${hash}'`
-  const picker = await readFile(new URL('workspace_choice.html', approvalDirectory), 'utf8')
+  const approval = await readFile(new URL('approval.html', approvalDirectory), 'utf8')
+  const choices = await readFile(new URL('workspace_choices.html', approvalDirectory), 'utf8')
   const empty = await readFile(new URL('no_workspace.html', approvalDirectory), 'utf8')
   const values: Record<string, string> = {
     styles: css,
     client_name: 'Example client',
+    client_identity: 'client.example.test',
+    client_identity_label: 'Client ID hostname',
+    redirect_label: 'Redirect host and port',
+    redirect_destination: 'client.example.test:443',
     ticket: 'test-only-ticket',
-    options:
-      option('alpha-id', 'Alpha', 'Owner', true) +
-      option('beta-id', 'A workspace with a very long name that wraps on a phone', 'Member', false),
+    access_request: 'requests access to one of your workspaces.',
+    providers_label: 'Providers in your workspace',
+    form_action: '/oauth/workspace',
+    choices: fill(choices, {
+      options:
+        option('alpha-id', 'Alpha', 'Owner', true) +
+        option(
+          'beta-id',
+          'A workspace with a very long name that wraps on a phone',
+          'Member',
+          false,
+        ),
+    }),
     coral_link: '<p class="actions"><a href="https://coral.example.test">Open Coral</a></p>',
   }
   const submissions: string[] = []
@@ -139,9 +160,9 @@ test('the workspace picker and its empty state work without scripts in both them
       response.end('Submitted')
       return
     }
-    const template = request.url?.includes('empty') ? empty : picker
+    const template = request.url?.includes('empty') ? empty : approval
     response.writeHead(200, { 'Content-Type': 'text/html', 'Content-Security-Policy': policy })
-    response.end(template.replace(/@@(.*?)@@/g, (_, slot: string) => values[slot]))
+    response.end(fill(template, values))
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
@@ -158,7 +179,9 @@ test('the workspace picker and its empty state work without scripts in both them
         if (message.text().includes('Content Security Policy')) errors.push(message.text())
       })
       await page.goto(`${origin}/picker`)
-      await page.getByRole('heading', { name: 'Choose a workspace' }).waitFor()
+      await page.getByRole('heading', { name: 'Allow workspace access?' }).waitFor()
+      await page.getByText('client.example.test:443', { exact: true }).waitFor()
+      await page.getByRole('group', { name: 'Choose a workspace' }).waitFor()
       assert.equal(await page.getByRole('radio', { name: /Alpha/ }).isChecked(), true)
       assert.equal(await page.locator('button').first().getAttribute('value'), 'cancel')
       assert.equal(
@@ -166,7 +189,7 @@ test('the workspace picker and its empty state work without scripts in both them
         true,
       )
       await page.getByRole('radio', { name: /very long name/ }).check()
-      await page.getByRole('button', { name: 'Continue', exact: true }).click()
+      await page.getByRole('button', { name: 'Allow', exact: true }).click()
       await page.getByText('Submitted', { exact: true }).waitFor()
       assert.equal(
         submissions.at(-1),

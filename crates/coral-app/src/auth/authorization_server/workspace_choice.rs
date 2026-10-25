@@ -1,10 +1,11 @@
-//! The Workspace picker that ends a sign-in at the Organization MCP Endpoint.
+//! The approval page that ends a sign-in at the Organization MCP Endpoint.
 //!
 //! The identity provider has answered and Coral knows the User, but no code
-//! exists yet. The page lists the User's active Workspaces, and the code its
-//! submission issues carries the one they pick (ADR 0025). Nothing is stored
-//! while the page waits: the finished sign-in travels sealed in the form,
-//! bound to the browser's approval cookie, like the consent page's approval.
+//! exists yet. The person approves the client and picks one of their active
+//! Workspaces on one page, and the code its submission issues carries that
+//! Workspace (ADR 0025). Nothing is stored while the page waits: the finished
+//! sign-in travels sealed in the form, bound to the browser's approval cookie,
+//! like the approval page a Workspace URL shows before sign-in.
 
 use std::fmt::Write as _;
 
@@ -12,17 +13,17 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::Response;
 use coral_auth::authorization_codes::AuthorizationGrant;
+use coral_outbound::{BrowserRedirect, EndpointUrl};
 use coral_workspace::{UserId, WorkspaceChoice, WorkspaceRole};
 
 use super::super::sealed_handshake::{PendingWorkspaceChoice, SignInSession};
-use super::authorize::confirmation::{self, ApprovalDecision, escape_html};
+use super::authorize::confirmation::{self, ApprovalDecision, ApprovalScope, escape_html};
 use super::callback::{self, CodeOutcome};
 use super::response::{TrustedRedirect, direct_error};
 use super::{AuthorizationServerHttpState, cookies, sign_in_cookie};
 
 /// Where the picker form posts the person's choice.
 pub(super) const WORKSPACE_CHOICE_PATH: &str = "/oauth/workspace";
-const PICKER_PAGE: &str = include_str!("authorize/workspace_choice.html");
 const NO_WORKSPACE_PAGE: &str = include_str!("authorize/no_workspace.html");
 /// The browser's last choice. It is a preference for the picker only: it
 /// selects nothing the User cannot pick anyway, and it grants nothing.
@@ -32,8 +33,8 @@ const PREFERENCE_MAX_AGE_SECONDS: u64 = 30 * 24 * 60 * 60;
 /// Shown when a client registered no name, as registration does.
 const UNNAMED_CLIENT: &str = "Unnamed OAuth client";
 
-/// Shows the person who finished `session` the Workspaces they can pick, or
-/// says how to get one. No code is issued here.
+/// Asks the person who finished `session` to allow the client and pick a
+/// Workspace, or says how to get one. No code is issued here.
 pub(super) async fn offer(
     state: &AuthorizationServerHttpState,
     headers: &HeaderMap,
@@ -210,15 +211,16 @@ fn picker_page(
         )
         .ok()?;
     }
-    let body = confirmation::render(PICKER_PAGE, |slot| {
-        Some(match slot {
-            "client_name" => escape_html(client_name),
-            "ticket" => escape_html(&ticket),
-            "options" => options.clone(),
-            _ => return None,
-        })
-    })?;
-    confirmation::page(body, Some(&browser_binding), secure)
+    let redirect_uri = EndpointUrl::<BrowserRedirect>::parse(&pending.redirect_uri).ok()?;
+    confirmation::response(
+        &ticket,
+        client_name,
+        &pending.client_id,
+        &redirect_uri,
+        &ApprovalScope::Choice { options: &options },
+        &browser_binding,
+        secure,
+    )
 }
 
 fn no_workspace_page(state: &AuthorizationServerHttpState) -> Option<Response> {

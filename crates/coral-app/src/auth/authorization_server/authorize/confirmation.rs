@@ -17,6 +17,7 @@ use zeroize::Zeroizing;
 
 use super::super::cookies;
 use super::super::response::approval_page_security_headers;
+use super::super::workspace_choice::WORKSPACE_CHOICE_PATH;
 
 /// Room for a sealed approval: the app inputs, a client name from a metadata
 /// document of at most 5 KiB, and the resource, base64url encoded.
@@ -55,6 +56,9 @@ static CONTENT_SECURITY_POLICY: LazyLock<String> = LazyLock::new(|| {
 
 pub(super) const APPROVAL_PAGE_STYLES: &str = include_str!("approval.css");
 const APPROVAL_PAGE: &str = include_str!("approval.html");
+/// The Workspace list the approval page carries at the Organization MCP Endpoint.
+const WORKSPACE_CHOICES: &str = include_str!("workspace_choices.html");
+const AUTHORIZE_PATH: &str = "/oauth/authorize";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(in crate::auth::authorization_server) enum ApprovalDecision {
@@ -206,6 +210,15 @@ async fn read_form(
     ))
 }
 
+/// What an approval page asks the person to allow.
+pub(in crate::auth::authorization_server) enum ApprovalScope<'a> {
+    /// A Workspace URL names its one Workspace, so the page shows before sign-in.
+    Workspace,
+    /// At the Organization MCP Endpoint the signed-in person also picks the
+    /// Workspace, from `options` that trusted code rendered from escaped names.
+    Choice { options: &'a str },
+}
+
 /// Renders the approval page for one pending authorization.
 ///
 /// `Cancel` comes before `Allow` in the form because the first submit button
@@ -213,27 +226,30 @@ async fn read_form(
 /// the better default for a keystroke nobody aimed at either button. Source
 /// order keeps `Cancel` as the submit default. The fixed, hash-pinned
 /// stylesheet stacks that safe decision last on a narrow viewport.
-pub(super) fn response(
+pub(in crate::auth::authorization_server) fn response(
     ticket: &str,
     client_name: &str,
     client_id: &str,
     redirect_uri: &EndpointUrl<BrowserRedirect>,
-    picks_workspace: bool,
+    scope: &ApprovalScope<'_>,
     browser_binding: &BrowserBinding,
     secure_cookie: bool,
 ) -> Option<Response> {
-    // At the Organization MCP Endpoint the person picks the Workspace after
-    // they sign in, so the page cannot name one yet.
-    let (access_request, providers_label) = if picks_workspace {
-        (
-            "requests access to one of your workspaces. You choose it after you sign in.",
-            "Providers in the workspace you choose",
-        )
-    } else {
-        (
+    let (access_request, providers_label, form_action, choices) = match scope {
+        ApprovalScope::Workspace => (
             "requests access to this workspace.",
             "Providers in this workspace",
-        )
+            AUTHORIZE_PATH,
+            String::new(),
+        ),
+        ApprovalScope::Choice { options } => (
+            "requests access to one of your workspaces.",
+            "Providers in your workspace",
+            WORKSPACE_CHOICE_PATH,
+            render(WORKSPACE_CHOICES, |slot| {
+                (slot == "options").then(|| (*options).to_owned())
+            })?,
+        ),
     };
     // Resolution already validated the identity. A URL has a metadata host;
     // an opaque registration has no verified origin or branding to display.
@@ -267,6 +283,8 @@ pub(super) fn response(
             "ticket" => escape_html(ticket),
             "access_request" => access_request.to_owned(),
             "providers_label" => providers_label.to_owned(),
+            "form_action" => form_action.to_owned(),
+            "choices" => choices.clone(),
             _ => return None,
         })
     })?;

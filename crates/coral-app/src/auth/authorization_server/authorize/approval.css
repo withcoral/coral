@@ -212,20 +212,19 @@ dd {
   unicode-bidi: isolate;
 }
 
-form,
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
 .buttons {
   display: flex;
   gap: 12px;
 }
 
-form button {
+.buttons button {
   flex: 1;
-}
-
-/* The Workspace picker's form stacks its choices above its buttons. */
-form:has(.choices) {
-  flex-direction: column;
-  gap: 24px;
 }
 
 .choices {
@@ -268,9 +267,14 @@ form:has(.choices) {
   font-weight: 500;
 }
 
-.choice-role {
+.choice-role,
+.choice-hint {
   color: var(--muted);
   font-size: 0.71875rem;
+}
+
+.choice-hint {
+  margin: 8px 0 0;
 }
 
 .actions {
@@ -372,7 +376,6 @@ button:focus-visible {
     padding: 12px;
   }
 
-  form:not(:has(.choices)),
   .buttons {
     /* Keep Cancel first in source for safe implicit submission. */
     flex-direction: column-reverse;
