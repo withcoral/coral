@@ -10,7 +10,7 @@
 use std::fmt::Write as _;
 
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, HeaderValue, header};
+use axum::http::HeaderMap;
 use axum::response::Response;
 use coral_auth::authorization_codes::AuthorizationGrant;
 use coral_outbound::{BrowserRedirect, EndpointUrl};
@@ -20,27 +20,25 @@ use super::super::sealed_handshake::{PendingWorkspaceChoice, SignInSession};
 use super::authorize::confirmation::{self, ApprovalDecision, ApprovalScope, escape_html};
 use super::callback::{self, CodeOutcome};
 use super::response::{TrustedRedirect, direct_error};
-use super::{AuthorizationServerHttpState, cookies, sign_in_cookie};
+use super::{AuthorizationServerHttpState, sign_in_cookie};
 
 /// Where the picker form posts the person's choice.
 pub(super) const WORKSPACE_CHOICE_PATH: &str = "/oauth/workspace";
 const NO_WORKSPACE_PAGE: &str = include_str!("authorize/no_workspace.html");
-/// The browser's last choice. It is a preference for the picker only: it
-/// selects nothing the User cannot pick anyway, and it grants nothing.
-const SECURE_PREFERENCE_COOKIE: &str = "__Host-coral_oauth_workspace";
-const LOOPBACK_PREFERENCE_COOKIE: &str = "coral_oauth_workspace";
-const PREFERENCE_MAX_AGE_SECONDS: u64 = 30 * 24 * 60 * 60;
 /// Shown when a client registered no name, as registration does.
 const UNNAMED_CLIENT: &str = "Unnamed OAuth client";
 
 /// Asks the person who finished `session` to allow the client and pick a
 /// Workspace, or says how to get one. No code is issued here.
+/// `signed_in_as` is the account the identity provider named, shown so the
+/// person can tell why a Workspace is missing.
 pub(super) async fn offer(
     state: &AuthorizationServerHttpState,
     headers: &HeaderMap,
     trusted: &TrustedRedirect,
     oidc_state: &str,
     user_id: String,
+    signed_in_as: Option<&str>,
     session: SignInSession,
 ) -> Response {
     let choices = match choices(state, &user_id).await {
@@ -60,7 +58,14 @@ pub(super) async fn offer(
             resource: session.resource,
         };
         let client_name = session.client_name.as_deref().unwrap_or(UNNAMED_CLIENT);
-        picker_page(state, headers, &pending, client_name, &choices)
+        picker_page(
+            state,
+            headers,
+            &pending,
+            client_name,
+            signed_in_as,
+            &choices,
+        )
     };
     rendered.unwrap_or_else(|| trusted.error("server_error", "authorization failed"))
 }
@@ -71,11 +76,10 @@ pub(super) async fn oauth_workspace_post(
     State(state): State<AuthorizationServerHttpState>,
     request: Request,
 ) -> Response {
-    let secure = state.secure_cookies();
     let Ok(submission) = confirmation::parse_workspace_submission(
         request,
         state.settings.authorization_server().issuer(),
-        secure,
+        state.secure_cookies(),
     )
     .await
     else {
@@ -117,16 +121,10 @@ pub(super) async fn oauth_workspace_post(
         redirect_uri: pending.redirect_uri,
         code_challenge: pending.code_challenge,
         resource: pending.resource,
-        workspace_id: Some(workspace.clone()),
+        workspace_id: Some(workspace),
     };
     match callback::issue_code(&state, &trusted, &pending.oidc_state, &grant).await {
-        CodeOutcome::Issued(mut issued) => {
-            if let Some(cookie) = preference_cookie(&workspace, secure) {
-                issued.headers_mut().append(header::SET_COOKIE, cookie);
-            }
-            issued
-        }
-        CodeOutcome::Refused(refused) => refused,
+        CodeOutcome::Issued(response) | CodeOutcome::Refused(response) => response,
     }
 }
 
@@ -172,6 +170,7 @@ fn picker_page(
     headers: &HeaderMap,
     pending: &PendingWorkspaceChoice,
     client_name: &str,
+    signed_in_as: Option<&str>,
     choices: &[WorkspaceChoice],
 ) -> Option<Response> {
     let secure = state.secure_cookies();
@@ -184,30 +183,31 @@ fn picker_page(
             expires_at,
         )
         .ok()?;
-    let preferred = cookies::single_value(headers, preference_cookie_name(secure))
-        .and_then(|value| String::from_utf8(value.to_vec()).ok())
-        .filter(|preferred| {
-            choices
-                .iter()
-                .any(|choice| choice.workspace().id().to_string() == *preferred)
-        });
+    // Nothing is preselected, so a quick Allow cannot pick a Workspace the
+    // person never looked at; `required` makes the browser ask for one. A
+    // role tells the rows apart only when they differ.
+    let first_role = choices.first().map(WorkspaceChoice::role);
+    let roles_differ = choices
+        .iter()
+        .any(|choice| Some(choice.role()) != first_role);
     let mut options = String::new();
-    for (index, choice) in choices.iter().enumerate() {
-        let id = choice.workspace().id().to_string();
-        let checked = preferred
-            .as_deref()
-            .map_or(index == 0, |preferred| preferred == id);
+    for choice in choices {
+        let role = match choice.role() {
+            _ if !roles_differ => "",
+            WorkspaceRole::Owner => "<span class=\"choice-role\">Owner</span>",
+            WorkspaceRole::Member => "<span class=\"choice-role\">Member</span>",
+        };
+        let name = choice.workspace().display_name().as_str();
+        // The initial is decoration; the name beside it is the label.
+        let initial = name.chars().next().map(char::to_uppercase);
         write!(
             options,
-            "<label class=\"choice\"><input type=\"radio\" name=\"workspace\" \
-             value=\"{id}\"{}><span class=\"choice-name\"><bdi>{}</bdi></span>\
-             <span class=\"choice-role\">{}</span></label>",
-            if checked { " checked" } else { "" },
-            escape_html(choice.workspace().display_name().as_str()),
-            match choice.role() {
-                WorkspaceRole::Owner => "Owner",
-                WorkspaceRole::Member => "Member",
-            },
+            "<label class=\"choice\"><span class=\"choice-initial\" aria-hidden=\"true\">{}</span>\
+             <span class=\"choice-text\"><span class=\"choice-name\"><bdi>{}</bdi></span>{role}</span>\
+             <input type=\"radio\" name=\"workspace\" value=\"{}\" required></label>",
+            escape_html(&initial.map(String::from_iter).unwrap_or_default()),
+            escape_html(name),
+            choice.workspace().id(),
         )
         .ok()?;
     }
@@ -217,7 +217,10 @@ fn picker_page(
         client_name,
         &pending.client_id,
         &redirect_uri,
-        &ApprovalScope::Choice { options: &options },
+        &ApprovalScope::Choice {
+            options: &options,
+            signed_in_as,
+        },
         &browser_binding,
         secure,
     )
@@ -239,24 +242,6 @@ fn no_workspace_page(state: &AuthorizationServerHttpState) -> Option<Response> {
         (slot == "coral_link").then(|| link.clone())
     })?;
     confirmation::page(body, None, state.secure_cookies())
-}
-
-fn preference_cookie_name(secure: bool) -> &'static str {
-    if secure {
-        SECURE_PREFERENCE_COOKIE
-    } else {
-        LOOPBACK_PREFERENCE_COOKIE
-    }
-}
-
-fn preference_cookie(workspace: &str, secure: bool) -> Option<HeaderValue> {
-    let secure_attribute = if secure { "; Secure" } else { "" };
-    HeaderValue::from_str(&format!(
-        "{}={workspace}; Path=/; Max-Age={PREFERENCE_MAX_AGE_SECONDS}; \
-         HttpOnly{secure_attribute}; SameSite=Lax",
-        preference_cookie_name(secure)
-    ))
-    .ok()
 }
 
 fn choice_error() -> Response {

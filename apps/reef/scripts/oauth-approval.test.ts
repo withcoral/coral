@@ -29,12 +29,13 @@ test('standalone OAuth page works without scripts under its pinned CSP in both t
       styles: css,
       client_name: 'Example client',
       client_identity: 'client.example.test',
-      client_identity_label: 'Client ID hostname',
-      redirect_label: 'Redirect host and port',
+      client_identity_label: 'App domain',
+      redirect_label: 'Returns to',
       redirect_destination: loopback ? '127.0.0.1:4111' : 'client.example.test:443',
       ticket: 'test-only-ticket',
-      access_request: 'requests access to this workspace.',
-      providers_label: 'Providers in this workspace',
+      access_scope: 'this workspace',
+      decision_title: 'Allow access?',
+      decision_detail: 'will have access to the providers in this workspace.',
       form_action: '/oauth/authorize',
       choices: '',
     }
@@ -67,10 +68,12 @@ test('standalone OAuth page works without scripts under its pinned CSP in both t
         })
         page.on('request', (request) => requests.push(request.url()))
         await page.goto(`${origin}/oauth/authorize${loopback ? '?loopback' : ''}`)
-        await page.getByRole('heading', { name: 'Allow workspace access?' }).waitFor()
+        await page.getByRole('heading', { name: 'Example client wants to connect' }).waitFor()
         assert.equal(await page.getByRole('alert').count(), 0)
         await page
-          .getByText(loopback ? '127.0.0.1:4111' : 'client.example.test:443', { exact: true })
+          .getByText(loopback ? '127.0.0.1:4111' : 'client.example.test:443', {
+            exact: true,
+          })
           .waitFor()
         assert.equal(await page.locator('script, [style]').count(), 0)
         // Branding must stay embedded: no logo, font, or stylesheet requests.
@@ -91,7 +94,7 @@ test('standalone OAuth page works without scripts under its pinned CSP in both t
               .evaluate((element) => getComputedStyle(element).backgroundColor),
           )
         const decision = loopback
-          ? { label: 'Allow', value: 'continue' }
+          ? { label: 'Allow access', value: 'continue' }
           : { label: 'Cancel', value: 'cancel' }
         await page.getByRole('button', { name: decision.label, exact: true }).click()
         await page.getByText('Submitted', { exact: true }).waitFor()
@@ -117,9 +120,11 @@ const fill = (template: string, values: Record<string, string>) =>
   template.replace(/@@(.*?)@@/g, (_, slot: string) => values[slot])
 
 // Rust renders these rows from escaped names; the fixture mirrors that markup.
-const option = (id: string, name: string, role: string, checked: boolean) =>
-  `<label class="choice"><input type="radio" name="workspace" value="${id}"${checked ? ' checked' : ''}>` +
-  `<span class="choice-name"><bdi>${name}</bdi></span><span class="choice-role">${role}</span></label>`
+const option = (id: string, name: string, role: string) =>
+  `<label class="choice"><span class="choice-initial" aria-hidden="true">${name[0]}</span>` +
+  `<span class="choice-text"><span class="choice-name"><bdi>${name}</bdi></span>` +
+  `<span class="choice-role">${role}</span></span>` +
+  `<input type="radio" name="workspace" value="${id}" required></label>`
 
 test('the workspace approval page and its empty state work without scripts in both themes', async () => {
   const css = await readFile(new URL('approval.css', approvalDirectory), 'utf8')
@@ -132,22 +137,19 @@ test('the workspace approval page and its empty state work without scripts in bo
     styles: css,
     client_name: 'Example client',
     client_identity: 'client.example.test',
-    client_identity_label: 'Client ID hostname',
-    redirect_label: 'Redirect host and port',
+    client_identity_label: 'App domain',
+    redirect_label: 'Returns to',
     redirect_destination: 'client.example.test:443',
     ticket: 'test-only-ticket',
-    access_request: 'requests access to one of your workspaces.',
-    providers_label: 'Providers in your workspace',
+    access_scope: 'a workspace you choose',
+    decision_title: 'Choose a workspace',
+    decision_detail: 'will have access to its providers.',
     form_action: '/oauth/workspace',
     choices: fill(choices, {
       options:
-        option('alpha-id', 'Alpha', 'Owner', true) +
-        option(
-          'beta-id',
-          'A workspace with a very long name that wraps on a phone',
-          'Member',
-          false,
-        ),
+        option('alpha-id', 'Alpha', 'Owner') +
+        option('beta-id', 'A workspace with a very long name that wraps on a phone', 'Member'),
+      signed_in_as: '<span class="account-name"><bdi>person@example.test</bdi></span>',
     }),
     coral_link: '<p class="actions"><a href="https://coral.example.test">Open Coral</a></p>',
   }
@@ -179,17 +181,26 @@ test('the workspace approval page and its empty state work without scripts in bo
         if (message.text().includes('Content Security Policy')) errors.push(message.text())
       })
       await page.goto(`${origin}/picker`)
-      await page.getByRole('heading', { name: 'Allow workspace access?' }).waitFor()
+      await page.getByRole('heading', { name: 'Example client wants to connect' }).waitFor()
       await page.getByText('client.example.test:443', { exact: true }).waitFor()
       await page.getByRole('group', { name: 'Choose a workspace' }).waitFor()
-      assert.equal(await page.getByRole('radio', { name: /Alpha/ }).isChecked(), true)
+      await page.getByText('person@example.test', { exact: true }).waitFor()
+      assert.equal(await page.getByRole('radio', { checked: true }).count(), 0)
       assert.equal(await page.locator('button').first().getAttribute('value'), 'cancel')
+      // With nothing picked, the browser holds Allow back but lets Cancel
+      // through: only Cancel's submission arrives.
+      const before = submissions.length
+      await page.getByRole('button', { name: 'Allow access', exact: true }).click()
+      await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+      await page.getByText('Submitted', { exact: true }).waitFor()
+      assert.deepEqual(submissions.slice(before), ['ticket=test-only-ticket&decision=cancel'])
+      await page.goto(`${origin}/picker`)
       assert.equal(
         await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
         true,
       )
       await page.getByRole('radio', { name: /very long name/ }).check()
-      await page.getByRole('button', { name: 'Allow', exact: true }).click()
+      await page.getByRole('button', { name: 'Allow access', exact: true }).click()
       await page.getByText('Submitted', { exact: true }).waitFor()
       assert.equal(
         submissions.at(-1),

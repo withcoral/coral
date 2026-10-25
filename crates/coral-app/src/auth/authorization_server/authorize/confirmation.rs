@@ -216,7 +216,12 @@ pub(in crate::auth::authorization_server) enum ApprovalScope<'a> {
     Workspace,
     /// At the Organization MCP Endpoint the signed-in person also picks the
     /// Workspace, from `options` that trusted code rendered from escaped names.
-    Choice { options: &'a str },
+    /// `signed_in_as` names the account they signed in with, when the
+    /// identity provider gave one.
+    Choice {
+        options: &'a str,
+        signed_in_as: Option<&'a str>,
+    },
 }
 
 /// Renders the approval page for one pending authorization.
@@ -235,19 +240,31 @@ pub(in crate::auth::authorization_server) fn response(
     browser_binding: &BrowserBinding,
     secure_cookie: bool,
 ) -> Option<Response> {
-    let (access_request, providers_label, form_action, choices) = match scope {
+    let (access_scope, decision_title, decision_detail, form_action, choices) = match scope {
         ApprovalScope::Workspace => (
-            "requests access to this workspace.",
-            "Providers in this workspace",
+            "this workspace",
+            "Allow access?",
+            "will have access to the providers in this workspace.",
             AUTHORIZE_PATH,
             String::new(),
         ),
-        ApprovalScope::Choice { options } => (
-            "requests access to one of your workspaces.",
-            "Providers in your workspace",
+        ApprovalScope::Choice {
+            options,
+            signed_in_as,
+        } => (
+            "a workspace you choose",
+            "Choose a workspace",
+            "will have access to its providers.",
             WORKSPACE_CHOICE_PATH,
-            render(WORKSPACE_CHOICES, |slot| {
-                (slot == "options").then(|| (*options).to_owned())
+            render(WORKSPACE_CHOICES, |slot| match slot {
+                "options" => Some((*options).to_owned()),
+                "signed_in_as" => Some(signed_in_as.map_or_else(String::new, |account| {
+                    format!(
+                        "<span class=\"account-name\"><bdi>{}</bdi></span>",
+                        escape_html(account)
+                    )
+                })),
+                _ => None,
             })?,
         ),
     };
@@ -257,19 +274,19 @@ pub(in crate::auth::authorization_server) fn response(
         .ok()
         .and_then(|url| url.host().as_ref().map(display_host))
         .map_or_else(
-            || ("Client ID", client_id.to_owned()),
-            |host| ("Client ID hostname", host),
+            || ("App ID", client_id.to_owned()),
+            |host| ("App domain", host),
         );
     // An app-scheme callback names the app the operating system opens, not a
     // host and port.
     let (redirect_label, redirect_destination) =
         if let Some(scheme) = redirect_uri.private_use_scheme() {
-            ("Redirect app scheme", scheme.to_owned())
+            ("Opens app", scheme.to_owned())
         } else {
             let redirect_uri = redirect_uri.as_url();
             let redirect_host = redirect_uri.host().as_ref().map(display_host)?;
             (
-                "Redirect host and port",
+                "Returns to",
                 format!("{redirect_host}:{}", redirect_uri.port_or_known_default()?),
             )
         };
@@ -281,8 +298,9 @@ pub(in crate::auth::authorization_server) fn response(
             "redirect_label" => redirect_label.to_owned(),
             "redirect_destination" => escape_html(&redirect_destination),
             "ticket" => escape_html(ticket),
-            "access_request" => access_request.to_owned(),
-            "providers_label" => providers_label.to_owned(),
+            "access_scope" => access_scope.to_owned(),
+            "decision_title" => decision_title.to_owned(),
+            "decision_detail" => decision_detail.to_owned(),
             "form_action" => form_action.to_owned(),
             "choices" => choices.clone(),
             _ => return None,

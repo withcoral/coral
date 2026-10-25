@@ -110,8 +110,18 @@ async fn complete(
     // At the Organization MCP Endpoint the User picks the Workspace first;
     // the picker's submission issues the code.
     if state.is_organization_resource(&session.resource) {
+        let signed_in_as = identity
+            .email
+            .as_deref()
+            .or(identity.display_name.as_deref());
         return super::workspace_choice::offer(
-            state, headers, &trusted, oidc_state, user_id, session,
+            state,
+            headers,
+            &trusted,
+            oidc_state,
+            user_id,
+            signed_in_as,
+            session,
         )
         .await;
     }
@@ -1040,22 +1050,12 @@ mod tests {
     }
 
     /// Finishes the provider sign-in of an Organization MCP Endpoint request.
-    async fn organization_callback(
-        state: &AuthorizationServerHttpState,
-        preference: Option<&coral_workspace::WorkspaceId>,
-    ) -> Response {
+    async fn organization_callback(state: &AuthorizationServerHttpState) -> Response {
         let mut headers = HeaderMap::new();
         headers.append(
             header::COOKIE,
             browser_cookie(state, OIDC_STATE, &organization_session()),
         );
-        if let Some(workspace) = preference {
-            headers.append(
-                header::COOKIE,
-                HeaderValue::from_str(&format!("__Host-coral_oauth_workspace={workspace}"))
-                    .unwrap(),
-            );
-        }
         oidc_callback(
             State(state.clone()),
             RawQuery(Some(query(&[
@@ -1159,10 +1159,14 @@ mod tests {
             .await
             .unwrap();
 
-        let (page, cookie) = picker(organization_callback(&app, None).await).await;
+        let (page, cookie) = picker(organization_callback(&app).await).await;
         assert!(
-            page.contains("Allow workspace access?"),
+            page.contains("<bdi>Claude &lt;b&gt;</bdi> wants to connect"),
             "the person approves the client on the page where they pick"
+        );
+        assert!(
+            page.contains("class=\"account-name\""),
+            "the account is named"
         );
         assert!(page.contains("action=\"/oauth/workspace\""));
         assert!(page.contains("client.example.test:443"), "redirect shown");
@@ -1176,8 +1180,12 @@ mod tests {
             "archived Workspaces are not offered"
         );
         assert!(
-            page.contains(&format!("value=\"{alpha}\" checked")),
-            "the first choice is selected when the browser has no preference"
+            page.contains(&format!("value=\"{alpha}\" required>")) && !page.contains(" checked"),
+            "nothing is preselected, so the person must pick"
+        );
+        assert!(
+            !page.contains("class=\"choice-role\""),
+            "a role that every choice shares is not shown"
         );
 
         let ticket = ticket(&page);
@@ -1195,17 +1203,6 @@ mod tests {
             redirect_query(&chosen).contains(&("state".into(), CLIENT_STATE.into())),
             "the client's state comes back"
         );
-        assert!(
-            chosen
-                .headers()
-                .get_all(header::SET_COOKIE)
-                .iter()
-                .any(|cookie| cookie
-                    .to_str()
-                    .is_ok_and(|cookie| cookie
-                        .starts_with(&format!("__Host-coral_oauth_workspace={beta};")))),
-            "the browser remembers the choice"
-        );
         let grant = redeem_organization(&db, &chosen).await.expect("code");
         assert_eq!(grant.workspace_id, Some(beta.to_string()));
         assert_eq!(grant.resource, ORGANIZATION_RESOURCE);
@@ -1222,12 +1219,54 @@ mod tests {
         .await;
         assert!(redirect_query(&replayed).contains(&("error".into(), "invalid_request".into())));
         assert_eq!(redeem_organization(&db, &replayed).await, None);
+    }
 
-        let (page, _cookie) = picker(organization_callback(&app, Some(&beta)).await).await;
-        assert!(
-            page.contains(&format!("value=\"{beta}\" checked")),
-            "the remembered choice is preselected"
+    /// Another Organization member, who owns Workspaces the signed-in User
+    /// may or may not belong to.
+    async fn stranger(db: &Arc<Database>) -> coral_workspace::AuthenticatedUser {
+        let stranger = coral_workspace::AuthenticatedUser::organization_member(
+            coral_workspace::UserId::parse("stranger").unwrap(),
+            coral_workspace::OrganizationRole::Member,
         );
+        coral_workspace::OrganizationModule::new(db.clone())
+            .provision_login(&coral_workspace::ChangeContext::new(
+                stranger.clone(),
+                1,
+                coral_workspace::TraceId::current_or_new(),
+            ))
+            .await
+            .unwrap();
+        stranger
+    }
+
+    /// A role tells the choices apart only when the User holds different
+    /// roles; the happy-path test covers a User who owns every choice.
+    #[tokio::test]
+    async fn roles_show_when_they_tell_the_choices_apart() {
+        let server = MockServer::start().await;
+        mount_provider(&server, 200, 200, &nonce()).await;
+        let (db, _temp) = database().await;
+        let app = organization_state(&server.uri(), db.clone());
+        let user = signed_in_user(&db, &server.uri()).await;
+        create_workspace(&db, &user, "Owned").await;
+        let stranger = stranger(&db).await;
+        let shared = create_workspace(&db, &stranger, "Shared").await;
+        coral_workspace::WorkspaceModule::new(db.clone())
+            .set_membership(
+                &coral_workspace::ChangeContext::new(
+                    stranger,
+                    now_unix_nanos_i64().unwrap(),
+                    coral_workspace::TraceId::current_or_new(),
+                ),
+                &shared,
+                &user,
+                coral_workspace::WorkspaceRole::Member,
+            )
+            .await
+            .unwrap();
+        let (page, _cookie) = picker(organization_callback(&app).await).await;
+        assert!(page.contains("<span class=\"choice-role\">Member</span>"));
+        assert!(page.contains("<span class=\"choice-role\">Owner</span>"));
     }
 
     /// The choice is rechecked when it is submitted. A refused choice issues
@@ -1241,20 +1280,9 @@ mod tests {
         let user = signed_in_user(&db, &server.uri()).await;
         let kept = create_workspace(&db, &user, "Kept").await;
         let archived = create_workspace(&db, &user, "Archived later").await;
-        let stranger = coral_workspace::AuthenticatedUser::organization_member(
-            coral_workspace::UserId::parse("stranger").unwrap(),
-            coral_workspace::OrganizationRole::Member,
-        );
-        coral_workspace::OrganizationModule::new(db.clone())
-            .provision_login(&coral_workspace::ChangeContext::new(
-                stranger.clone(),
-                1,
-                coral_workspace::TraceId::current_or_new(),
-            ))
-            .await
-            .unwrap();
+        let stranger = stranger(&db).await;
         let foreign = create_workspace(&db, &stranger, "Foreign").await;
-        let (page, cookie) = picker(organization_callback(&app, None).await).await;
+        let (page, cookie) = picker(organization_callback(&app).await).await;
         let ticket = ticket(&page);
         coral_workspace::WorkspaceModule::new(db.clone())
             .archive(
@@ -1334,7 +1362,7 @@ mod tests {
         mount_provider(&server, 200, 200, &nonce()).await;
         let (db, _temp) = database().await;
         let app = organization_state(&server.uri(), db.clone());
-        let (page, _cookie) = picker(organization_callback(&app, None).await).await;
+        let (page, _cookie) = picker(organization_callback(&app).await).await;
         assert!(page.contains("You are not a member of a workspace."));
         assert!(page.contains("Create a workspace in Coral. Then sign in again."));
         assert!(!page.contains("name=\"ticket\""));

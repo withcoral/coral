@@ -23,7 +23,7 @@ deployment holds one Organization, so the listing reaches only that deployment's
   The pending approval is sealed to the browser, so nothing is stored on the server before the pick.
 - The page lists the User's active Workspace Memberships. It shows the page even for one Workspace, so the client is
   never bound somewhere the User did not see. With none, Coral issues no code and the page links to Reef to create a
-  Workspace. A browser cookie preselects the last choice.
+  Workspace. Nothing is preselected, so a quick Allow cannot bind a Workspace the User did not pick.
 - Coral issues no refresh tokens, so each expiry runs sign-in and the approval page again. To switch Workspace, the User signs
   in again. No MCP tool or argument switches it.
 - `/mcp` names the chosen Workspace in its MCP `serverInfo.title`, for display only. The `instructions` are already

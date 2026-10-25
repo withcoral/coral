@@ -114,8 +114,8 @@ test('URL-only MCP client registers, obtains consent, signs in, and uses the exa
       })
       await step('Review the self-asserted client and allow sign-in', async () => {
         await page.goto(client.authorization().href)
-        await page.getByRole('heading', { name: 'Allow workspace access?', exact: true }).waitFor()
-        await page.getByRole('button', { name: 'Allow', exact: true }).click()
+        await page.getByRole('heading', { name: / wants to connect$/ }).waitFor()
+        await page.getByRole('button', { name: 'Allow access', exact: true }).click()
         await page
           .getByRole('heading', { name: 'Synthetic identity provider', exact: true })
           .waitFor()
@@ -218,9 +218,9 @@ test('URL-only MCP client connects at /mcp, picks a workspace, and acts only the
           .getByRole('heading', { name: 'Synthetic identity provider', exact: true })
           .waitFor()
         await page.locator(`button[value="${owner.subject}"]`).click()
-        await page.getByRole('heading', { name: 'Allow workspace access?', exact: true }).waitFor()
+        await page.getByRole('heading', { name: / wants to connect$/ }).waitFor()
         await page.getByRole('radio', { name: new RegExp(`^Picked ${suffix}`) }).check()
-        await page.getByRole('button', { name: 'Allow', exact: true }).click()
+        await page.getByRole('button', { name: 'Allow access', exact: true }).click()
         await page.waitForURL(
           (url) => url.origin === callbackOrigin && url.pathname === '/fixture/callback',
         )

@@ -690,9 +690,9 @@ mod tests {
             .expect("approval cookie")
             .to_string();
         let page = response_body(response).await;
-        assert!(page.contains("Client ID hostname</dt>"));
+        assert!(page.contains("App domain</dt>"));
         assert!(page.contains(">client.example.test</dd>"));
-        assert!(page.contains("Redirect host and port</dt>"));
+        assert!(page.contains("Returns to</dt>"));
         assert!(page.contains(">client.example.test:443</dd>"));
         let form = page
             .split("<form ")
@@ -755,7 +755,7 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::OK);
         let page = response_body(response).await;
-        assert!(page.contains("Redirect app scheme</dt>"));
+        assert!(page.contains("Opens app</dt>"));
         assert!(page.contains(">com.raycast</dd>"));
         let approval = opened_approval(&ticket_from_page(&page));
         assert_eq!(approval.redirect_uri, APP_CALLBACK);
@@ -1650,7 +1650,7 @@ mod tests {
             assert!(
                 response_body(response)
                     .await
-                    .contains("Allow workspace access?")
+                    .contains("wants to connect</h1>")
             );
         }
         // A metadata document that advertises another callback does not
@@ -1707,7 +1707,7 @@ mod tests {
         let response = request(build_state(&[WEB_CALLBACK, SETUP_CALLBACK]), &setup_pairs).await;
         assert_eq!(response.status(), StatusCode::OK);
         let page = response_body(response).await;
-        assert!(page.contains("Allow workspace access?"));
+        assert!(page.contains("wants to connect</h1>"));
         let approval = opened_approval(&ticket_from_page(&page));
         assert_eq!(approval.client_id, WEB_CLIENT);
         assert_eq!(approval.redirect_uri, SETUP_CALLBACK);
@@ -1722,7 +1722,7 @@ mod tests {
         assert!(
             response_body(response)
                 .await
-                .contains("Allow workspace access?")
+                .contains("wants to connect</h1>")
         );
 
         // Metadata still has to name the callback: the web identity gains no
@@ -1844,7 +1844,7 @@ mod tests {
         assert!(
             response_body(response)
                 .await
-                .contains("Allow workspace access?")
+                .contains("wants to connect</h1>")
         );
     }
 
