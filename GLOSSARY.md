@@ -88,14 +88,24 @@ Runs by Run identifier and cursor, but cannot list general execution history or 
 identifier grants no authority. _Avoid_: Delegated Agent, Cross-Workspace Agent, Agent Workspace Grant, movable Agent
 
 **Principal Access Surface**: The Principal-specific view of one Workspace exposed through Streamable HTTP; v1 has no
-stdio MCP transport. Interactive clients and autonomous Agents use the Workspace's non-secret endpoint. An interactive
+stdio MCP transport. Interactive clients and autonomous Agents use the Workspace's non-secret endpoint or the
+Organization MCP Endpoint. An interactive
 client authenticates its User through OAuth; local mode maps this to the implicit local User. An autonomous Agent
-authenticates with its Agent Registration bearer credential. The endpoint fixes the Workspace before Program execution.
-The authenticating credential, not client software or MCP `clientInfo`, selects the Principal and attribution. The same
+authenticates with its Agent Registration bearer credential. The endpoint or the authenticating credential fixes the
+Workspace before Program execution; nothing later changes it. The authenticating credential, not client software or
+MCP `clientInfo`, selects the Principal and attribution. The same
 Workspace can contain both kinds. Each surface applies that Principal's policy, Provider compatibility, discovery, and
 attribution. A dedicated Agent Workspace can be a creation preset for isolation, but is not a separate Workspace kind.
 _Avoid_: User Workspace, Agent Workspace, registration-specific MCP endpoint, shared Principal credential,
-Program-selected Workspace
+Program-selected Workspace, session-selected Workspace
+
+**Organization MCP Endpoint**: The deployment's one fixed MCP endpoint, which names no Workspace. A User picks one of
+their active Workspaces when they sign in, and that sign-in's credential fixes the Workspace until it expires; to use
+another Workspace, the User signs in again. An Agent's Registration fixes its Workspace here as it does everywhere. A
+Workspace MCP endpoint's credential does not work here, and this endpoint's credential does not work at a Workspace
+MCP endpoint. The Workspace MCP endpoint remains for a client that uses two Workspaces at once, for a Provider that
+reaches another Workspace, and for the implicit local User, who has no sign-in to pick with. _Avoid_: default
+Workspace, Workspace switcher, deployment endpoint
 
 **Reef**: Coral's authenticated human interface for administration, authoring, inspection, and Invocation Approval.
 Every supported local and hosted deployment provides it. Reef is the only v1 human administration surface; its server
