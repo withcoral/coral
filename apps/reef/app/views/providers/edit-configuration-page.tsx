@@ -3,6 +3,7 @@ import { Form, useBeforeUnload, useBlocker, useNavigation, useSubmit } from 'rea
 import {
   attemptPath,
   attemptProgress,
+  isCredentialFree,
   isOAuthMethod,
   reviseAttempt,
 } from '@/lib/provider-publication-attempt/model'
@@ -80,7 +81,7 @@ export function EditConfigurationPage({
   const frozen = attempt.state === 'frozen'
   const { stage, ended, requiresInterruptionAcceptance } = attemptProgress(attempt, setup, result)
   // Coral says when a source takes no credential, and so no account.
-  const credentialFree = setup.allowedRoutes.includes('none')
+  const credentialFree = isCredentialFree(setup)
   const route = frozen ? (attempt.account ?? currentAccount) : credentialFree ? 'none' : setting
   const settingChanged = route !== currentAccount
   // A provider without accounts that now needs one asks whose account it uses.

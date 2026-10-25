@@ -347,8 +347,25 @@ export function needsOAuthApplication(setup: SetupView) {
 }
 
 /** Whether Coral says the confirmed configuration takes no credential, so nobody signs in. */
-function isCredentialFree(setup: SetupView) {
+export function isCredentialFree(setup: Pick<SetupView, 'allowedRoutes'>) {
   return setup.allowedRoutes.includes('none')
+}
+
+/** The account an attempt has settled, or null while the account question is still open. */
+function settledAccount(
+  attempt: PublicationAttempt,
+  setup: SetupView | null,
+  frozen: boolean,
+  credentialFree: boolean,
+) {
+  if (attempt.kind === 'update') return null
+  if (frozen) return attempt.account
+  if (credentialFree) return 'none'
+  if (!attempt.account || attempt.account === 'none') return null
+  // A shared account, and an individual one Coral says cannot connect later,
+  // are settled only by a sign-in in hand.
+  if (attempt.account === 'caller' && setup?.connectLaterAvailable !== false) return attempt.account
+  return setup?.authorized && attempt.accountGrant ? attempt.account : null
 }
 
 /** One presentation decision from Coral progress plus explicit local choices. No lifecycle validation. */
@@ -360,21 +377,7 @@ export function attemptProgress(
   const frozen = attempt.state === 'frozen'
   const replaying = frozen && setup?.state === 'consumed'
   const credentialFree = Boolean(setup && isCredentialFree(setup))
-  const account =
-    attempt.kind === 'update'
-      ? null
-      : frozen
-        ? attempt.account
-        : credentialFree
-          ? 'none'
-          : attempt.account === 'none'
-            ? null
-            : // A shared account, and an individual one Coral says cannot connect
-              // later, are settled only by a sign-in in hand.
-              (attempt.account === 'caller' && setup?.connectLaterAvailable !== false) ||
-                (attempt.account && setup?.authorized && attempt.accountGrant)
-              ? attempt.account
-              : null
+  const account = settledAccount(attempt, setup, frozen, credentialFree)
   // A configuration confirmed without an OAuth application has nothing to sign
   // in with. Coral's addProvider now refuses one, but an older Coral server's
   // createProvider can still confirm it. Only Configuration asks for an application.

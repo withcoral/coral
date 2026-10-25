@@ -45,6 +45,7 @@ import {
   accountChoice,
   attemptPath,
   freezeAttempt,
+  isCredentialFree,
   parseAttempt,
   reviseAttempt,
   savesDirectly,
@@ -996,7 +997,7 @@ export async function setupAction<Published = never>(
         const returning =
           draft.kind === 'workspace' &&
           Boolean(draft.returnFromConnect) &&
-          !allowedRoutes(setup).includes('none')
+          !isCredentialFree({ allowedRoutes: allowedRoutes(setup) })
         return redirect(stepper(chosen, returning), { headers: privateHeaders })
       }
       case 'update-access':

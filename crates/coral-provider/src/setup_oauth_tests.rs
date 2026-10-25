@@ -2072,6 +2072,53 @@ impl OAuthApi {
     }
 }
 
+/// A kind of source a Credential Route must suit, served by an [`OAuthApi`].
+#[derive(Debug, Clone, Copy)]
+enum Source {
+    /// Takes no credential.
+    Free,
+    /// Takes a bearer token.
+    Bearer,
+    /// Signs in with OAuth, and its configuration names no application.
+    OAuth,
+    /// Signs in with OAuth through an application the Owner named.
+    OAuthApplication,
+}
+
+impl OAuthApi {
+    /// Prepares an open Setup for `source`, with its application named.
+    async fn prepare(
+        &self,
+        harness: &Harness,
+        context: &coral_workspace::ChangeContext,
+        workspace: &WorkspaceId,
+        source: Source,
+    ) -> crate::ProviderSetup {
+        let document = match source {
+            Source::Free => {
+                crate::OpenApiDocument::parse(crate::tests::CREDENTIAL_FREE_OPENAPI).unwrap()
+            }
+            Source::Bearer => self.bearer_document(),
+            Source::OAuth | Source::OAuthApplication => self.document("OAuth"),
+        };
+        let setup = harness
+            .providers
+            .prepare_openapi_fixture(context, workspace, document)
+            .await
+            .unwrap();
+        if let Source::OAuthApplication = source {
+            crate::tests::name_oauth_application(
+                &harness.providers,
+                context,
+                workspace,
+                setup.id(),
+            )
+            .await;
+        }
+        setup
+    }
+}
+
 fn explicit(client_id: &str) -> SetupOAuthClient {
     SetupOAuthClient::new(
         "https://reef.example/provider-setup/oauth/callback".into(),
@@ -2140,14 +2187,6 @@ async fn active_contract(
     reason = "one table covers every route against every kind of source without material"
 )]
 async fn publication_without_material_takes_only_a_fitting_route_and_an_oauth_application() {
-    use crate::{OAuthClientAuthentication, OAuthClientConfiguration};
-    #[derive(Debug, Clone, Copy)]
-    enum Source {
-        Free,
-        Bearer,
-        OAuth,
-        OAuthApplication,
-    }
     #[derive(Debug)]
     enum Expected {
         Published,
@@ -2157,7 +2196,6 @@ async fn publication_without_material_takes_only_a_fitting_route_and_an_oauth_ap
     let api = OAuthApi::start().await;
     let harness = harness(None).await;
     let (owner, workspace) = workspace_owner(&harness, "user:no-material").await;
-    let free = crate::OpenApiDocument::parse(crate::tests::CREDENTIAL_FREE_OPENAPI).unwrap();
     let cases = [
         (Source::Free, CredentialRoute::None, Expected::Published),
         (
@@ -2195,44 +2233,9 @@ async fn publication_without_material_takes_only_a_fitting_route_and_an_oauth_ap
     for (index, (source, route, expected)) in cases.into_iter().enumerate() {
         let at = i64::try_from(index).unwrap() * 10 + 10;
         let context = change_context(owner.clone(), at, '1');
-        let document = match source {
-            Source::Free => free.clone(),
-            Source::Bearer => api.bearer_document(),
-            Source::OAuth | Source::OAuthApplication => api.document("OAuth"),
-        };
-        let setup = harness
-            .providers
-            .prepare_openapi_fixture(&context, workspace.id(), document)
-            .await
-            .unwrap();
-        if let Source::OAuthApplication = source {
-            let review = harness
-                .providers
-                .review_setup_configuration(&owner, workspace.id(), setup.id())
-                .await
-                .unwrap();
-            let application = SetupOAuthClient::application(
-                "https://reef.example/callback".into(),
-                OAuthClientConfiguration::new(
-                    "manual-client".into(),
-                    OAuthClientAuthentication::None,
-                ),
-            )
-            .unwrap();
-            let confirmed = harness
-                .accounts
-                .confirm_setup_configuration(
-                    &context,
-                    workspace.id(),
-                    setup.id(),
-                    review.revision,
-                    review.confirmed.unwrap(),
-                    Some(application),
-                )
-                .await
-                .unwrap();
-            assert!(confirmed.errors.is_empty(), "{:?}", confirmed.errors);
-        }
+        let setup = api
+            .prepare(&harness, &context, workspace.id(), source)
+            .await;
         let namespace = format!("case_{index}");
         let published = harness
             .providers
@@ -5341,18 +5344,9 @@ async fn mcp_confirmed_scopes_and_format_reach_authorization_without_changing_di
 /// later, after an add with no sign-in.
 #[tokio::test]
 async fn a_setup_reports_its_fitting_routes_and_whether_connect_can_start() {
-    use crate::{OAuthClientAuthentication, OAuthClientConfiguration};
-    #[derive(Debug, Clone, Copy)]
-    enum Source {
-        Free,
-        Bearer,
-        OAuth,
-        OAuthApplication,
-    }
     let api = OAuthApi::start().await;
     let harness = harness(None).await;
     let (owner, workspace) = workspace_owner(&harness, "user:connect-readiness").await;
-    let free = crate::OpenApiDocument::parse(crate::tests::CREDENTIAL_FREE_OPENAPI).unwrap();
     for (index, (source, routes, now, later)) in [
         (Source::Free, vec![CredentialRoute::None], false, false),
         (
@@ -5381,43 +5375,9 @@ async fn a_setup_reports_its_fitting_routes_and_whether_connect_can_start() {
     {
         let at = i64::try_from(index).unwrap() * 10 + 10;
         let context = change_context(owner.clone(), at, '1');
-        let document = match source {
-            Source::Free => free.clone(),
-            Source::Bearer => api.bearer_document(),
-            Source::OAuth | Source::OAuthApplication => api.document("OAuth"),
-        };
-        let setup = harness
-            .providers
-            .prepare_openapi_fixture(&context, workspace.id(), document)
-            .await
-            .unwrap();
-        if let Source::OAuthApplication = source {
-            let review = harness
-                .providers
-                .review_setup_configuration(&owner, workspace.id(), setup.id())
-                .await
-                .unwrap();
-            let application = SetupOAuthClient::application(
-                "https://reef.example/callback".into(),
-                OAuthClientConfiguration::new(
-                    "manual-client".into(),
-                    OAuthClientAuthentication::None,
-                ),
-            )
-            .unwrap();
-            harness
-                .accounts
-                .confirm_setup_configuration(
-                    &context,
-                    workspace.id(),
-                    setup.id(),
-                    review.revision,
-                    review.confirmed.unwrap(),
-                    Some(application),
-                )
-                .await
-                .unwrap();
-        }
+        let setup = api
+            .prepare(&harness, &context, workspace.id(), source)
+            .await;
         let inspected = harness
             .providers
             .inspect_setup(&owner, workspace.id(), setup.id(), at + 1)
