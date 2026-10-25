@@ -2104,7 +2104,8 @@ impl OAuthApi {
     }
 }
 
-/// A kind of source a Credential Route must suit, served by an [`OAuthApi`].
+/// A kind of source a Credential Route must suit, and the state of its open
+/// Setup.
 #[derive(Debug, Clone, Copy)]
 enum Source {
     /// Takes no credential.

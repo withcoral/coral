@@ -5,9 +5,10 @@ status: accepted
 # addProvider returns a link and does not wait for the person
 
 When `coral.workspace.addProvider` needs a person to sign in or enter a credential, the Invocation returns at once with
-`{ status: "needs_sign_in", url }`. The url opens Reef's Add provider steps for the Setup the call prepared, and the
-person publishes the Provider there. The Run goes on, or ends, without them. Coral publishes the Provider itself only
-when nobody needs to sign in (the `none` route on a ready Setup), and then returns `{ status: "published" }`.
+`{ status: "needs_sign_in", url, namespace }`. The url opens Reef's Add provider steps for the Setup the call prepared,
+and the person publishes the Provider there. The Run goes on, or ends, without them. Coral publishes the Provider itself
+only when nobody needs to sign in (the `none` route on a ready Setup), and then returns
+`{ status: "published", namespace, … }` with what the Program needs to call it.
 
 Issue numbers prefixed `lagoon` are in withcoral/lagoon, Coral's previous repository; bare numbers are in this one.
 
@@ -18,8 +19,8 @@ hour, and finishing one can mean registering an OAuth application or finding a t
 
 Waiting also needs its own machinery, which a link does not. Lagoon #613, #614, #615 and #697 planned it: a column that
 links the Invocation to its Setup, a `provider_setup` required action with its own wake-ups, an MCP Action Prompt, and
-rules that end the Run when the Setup fails, expires or is declined. With a link, the Setup is the only state. It
-expires on its own deadline, and the Run's end does not decide it.
+rules that end the Run when the Setup fails, expires or is declined. With a link, the Setup is the only state. Once the
+call returns the link, the Setup expires on its own deadline, and the Run's end does not decide it.
 
 ## Consequences
 

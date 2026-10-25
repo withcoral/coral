@@ -33,9 +33,9 @@ export function SetupFields({ setup, extra }: { setup: SetupView; extra?: ReactN
 }
 
 /**
- * The form that takes typed-in credentials for one setup revision. It always
- * says where they go: an agent's addProvider can choose the servers, so you
- * check them here.
+ * The form that takes typed-in credentials for one setup revision. When the
+ * setup knows where they go, it says so: an agent's addProvider can choose the
+ * servers, so you check them here.
  */
 export function SetupSecretForm({
   setup,
