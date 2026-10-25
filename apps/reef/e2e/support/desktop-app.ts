@@ -120,14 +120,16 @@ export async function withDesktopApp(
   return exit
 }
 
-/** Copies a workspace's MCP endpoint from the sidebar and reads the system clipboard. */
+/** Copies a workspace's own MCP URL from the sidebar and reads the system clipboard. */
 export async function copyMcpEndpoint(page: Page, app: ElectronApplication, workspace: string) {
   const nav = page.getByRole('navigation', { name: 'Coral', exact: true })
-  await nav.getByRole('button', { name: `Copy ${workspace} MCP endpoint`, exact: true }).click()
+  await nav
+    .getByRole('button', { name: `Copy ${workspace} workspace MCP URL`, exact: true })
+    .click()
   // The button is named copied only after the write succeeds, so the clipboard
   // below cannot be a URL copied earlier.
   await nav
-    .getByRole('button', { name: `Copy ${workspace} MCP endpoint: copied`, exact: true })
+    .getByRole('button', { name: `Copy ${workspace} workspace MCP URL: copied`, exact: true })
     .waitFor()
   // Reef writes through the browser clipboard API, which Desktop's permission
   // handler must grant; read what reached the system clipboard.

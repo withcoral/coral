@@ -1,7 +1,9 @@
 # Public Principal authentication
 
 The Workspace MCP endpoint is exactly `/workspaces/{workspace_id}/mcp`.
-Its URL fixes the Workspace, not the Principal or authority.
+Its URL fixes the Workspace, not the Principal or authority. The Organization
+MCP Endpoint is exactly `/mcp`; there the credential fixes the Workspace (see
+[below](#organization-mcp-endpoint)).
 
 - Auth-disabled serving is loopback-only. Missing credentials map to the implicit
   local Organization Owner through normal domain authorization. A presented
@@ -23,6 +25,32 @@ Every HTTP request verifies its credential again. MCP sessions are partitioned
 by Workspace and canonical Principal; session IDs and `clientInfo` cannot select
 another actor. Domain Modules read current Coral-owned Organization Membership
 or Agent/Registration state rather than trusting a session's retained role.
+
+## Organization MCP Endpoint
+
+`/mcp` serves the Workspace its credential names, for clients that can store
+only one fixed URL ([ADR 0025](../../../../docs/adr/0025-fixed-mcp-endpoint-takes-its-workspace-from-the-credential.md)).
+
+- A User token for `/mcp` has `aud = {listeners.mcp.public_url}/mcp` and a
+  signed `workspace_id`. It does not work at a Workspace MCP endpoint, and a
+  Workspace MCP token does not work at `/mcp`. `auth.allowed_audiences` cannot
+  name `/mcp`, and `coral_audience` cannot be redeemed for it.
+- The sign-in is the normal consent and OIDC flow. After the callback, Coral
+  shows the User's active Workspace Memberships and issues the code only when
+  they pick one. The pending choice is sealed into the form and bound to the
+  approval cookie, so nothing is stored before the pick. The submission rechecks
+  the choice. With no Workspace, Coral shows a page that links to the web
+  interface and issues no code. `coral_oauth_workspace` remembers the last pick
+  as a preselection; it grants nothing.
+- An Agent Registration credential works at `/mcp`. Coral finds the
+  Registration by its verifier alone and serves its Workspace.
+- Each request rechecks current authority. A lost Membership or an archived
+  Workspace answers 401 with `error="invalid_token"` and the `/mcp` metadata
+  challenge, so an OAuth client signs in again and the User can pick another.
+  `serverInfo.title` names the Workspace.
+- Protected-resource metadata is at `/.well-known/oauth-protected-resource/mcp`.
+- Auth-disabled local mode serves `/mcp` to Agent credentials only. A request
+  without a credential gets a 401 that points to the Workspace MCP URL.
 
 ## OAuth client registration: DCR and CIMD
 

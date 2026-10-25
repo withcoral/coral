@@ -82,7 +82,7 @@ test('Open Add members dialogs respect archive, in-place restoration and live se
           await page.reload()
           // The header still offers its endpoint, beside where the archive icon was.
           await page
-            .getByRole('button', { name: 'Copy Live authority MCP endpoint', exact: true })
+            .getByRole('button', { name: 'Copy Live authority workspace MCP URL', exact: true })
             .waitFor()
           expect(await archive.count()).toBe(0)
         },

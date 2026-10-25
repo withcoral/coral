@@ -186,3 +186,107 @@ test('URL-only MCP client registers, obtains consent, signs in, and uses the exa
     { actor: owner.label, label: 'URL-only MCP sign-in' },
   )
 })
+
+test('URL-only MCP client connects at /mcp, picks a workspace, and acts only there', async (context) => {
+  const target = authenticatedTarget()
+  const owner = await loginActor(context, target.authentication.owner)
+  const api = managementClients(owner.accessToken)
+  const suffix = randomUUID().slice(0, 8)
+  const picked = await api.workspaces.createWorkspace({
+    displayName: `Picked ${suffix}`,
+    requestId: randomUUID(),
+  })
+  const unpicked = await api.workspaces.createWorkspace({
+    displayName: `Unpicked ${suffix}`,
+    requestId: randomUUID(),
+  })
+  const resource = `${target.mcpURL}/mcp`
+  const callbackOrigin = target.authentication.oidcURL
+  const redirect = `${callbackOrigin}/fixture/callback`
+  const client = clientProvider(redirect)
+  await withBrowserSession(
+    context,
+    async ({ page, step }) => {
+      let accessToken = ''
+      await step('Discover Coral from only the fixed /mcp URL', async () => {
+        expect(await auth(client.provider, { serverUrl: resource })).toBe('REDIRECT')
+        expect(client.authorization().searchParams.get('resource')).toBe(resource)
+      })
+      await step('Allow access, sign in, and pick a workspace', async () => {
+        await page.goto(client.authorization().href)
+        await page.getByRole('heading', { name: 'Allow workspace access?', exact: true }).waitFor()
+        await page.getByText('You choose it after you sign in.', { exact: false }).waitFor()
+        await page.getByRole('button', { name: 'Allow', exact: true }).click()
+        await page
+          .getByRole('heading', { name: 'Synthetic identity provider', exact: true })
+          .waitFor()
+        await page.locator(`button[value="${owner.subject}"]`).click()
+        await page.getByRole('heading', { name: 'Choose a workspace', exact: true }).waitFor()
+        await page.getByRole('radio', { name: new RegExp(`^Picked ${suffix}`) }).check()
+        await page.getByRole('button', { name: 'Continue', exact: true }).click()
+        await page.waitForURL(
+          (url) => url.origin === callbackOrigin && url.pathname === '/fixture/callback',
+        )
+      })
+      await step('The token carries the picked workspace and works only at /mcp', async () => {
+        const result = new URL(page.url())
+        expect(result.searchParams.get('state')).toBe(client.state)
+        const code = result.searchParams.get('code')!
+        expect(await auth(client.provider, { serverUrl: resource, authorizationCode: code })).toBe(
+          'AUTHORIZED',
+        )
+        accessToken = (await client.provider.tokens())!.access_token
+        const claims = JSON.parse(Buffer.from(accessToken.split('.')[1], 'base64url').toString())
+        expect(claims).toMatchObject({
+          sub: owner.userId,
+          aud: resource,
+          workspace_id: picked.name.replace('workspaces/', ''),
+        })
+        const mcp = new Client({ name: 'Fixed URL client', version: '1' })
+        try {
+          await mcp.connect(
+            new StreamableHTTPClientTransport(new URL(resource), { authProvider: client.provider }),
+          )
+          expect(mcp.getServerVersion()?.title).toBe(`Coral · Picked ${suffix}`)
+          const tools = await mcp.listTools()
+          expect(tools.tools.map((tool) => tool.name)).toContain('exec')
+        } finally {
+          await mcp.close()
+        }
+        for (const workspace of [picked, unpicked]) {
+          const refused = await fetch(`${target.mcpURL}/${workspace.name}/mcp`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          })
+          expect(refused.status, workspace.displayName).toBe(401)
+          await refused.body?.cancel()
+        }
+      })
+      await step('Archiving the workspace sends the client back to sign in', async () => {
+        const current = await api.workspaces.getWorkspace({ name: picked.name })
+        await api.workspaces.archiveWorkspace({ name: picked.name, etag: current.etag })
+        const lost = await fetch(resource, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: 'application/json, text/event-stream',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'initialize',
+            params: {
+              protocolVersion: '2025-11-25',
+              capabilities: {},
+              clientInfo: { name: 'Fixed URL client', version: '1' },
+            },
+          }),
+        })
+        expect(lost.status).toBe(401)
+        expect(lost.headers.get('www-authenticate')).toContain('error="invalid_token"')
+        await lost.body?.cancel()
+      })
+    },
+    { actor: owner.label, label: 'Fixed /mcp sign-in' },
+  )
+})

@@ -20,7 +20,7 @@ test('Workspace creation, MCP endpoint copy, rename, archive from the sidebar an
       await page.getByText(`${actor.label} (You)`, { exact: true }).waitFor()
       overview = page.url()
     })
-    await step('Copy the Workspace MCP endpoint from its sidebar header', async () => {
+    await step('Copy the workspace MCP URL from its sidebar header', async () => {
       await page.evaluate(() => {
         Object.defineProperty(navigator, 'clipboard', {
           configurable: true,
@@ -31,9 +31,9 @@ test('Workspace creation, MCP endpoint copy, rename, archive from the sidebar an
           },
         })
       })
-      await nav.getByRole('button', { name: `Copy ${name} MCP endpoint`, exact: true }).click()
+      await nav.getByRole('button', { name: `Copy ${name} workspace MCP URL`, exact: true }).click()
       await nav
-        .getByRole('button', { name: `Copy ${name} MCP endpoint: copied`, exact: true })
+        .getByRole('button', { name: `Copy ${name} workspace MCP URL: copied`, exact: true })
         .waitFor()
       const workspace = new URL(overview).pathname.split('/')[2]
       expect(await page.evaluate(() => (window as unknown as { copied: string }).copied)).toBe(
