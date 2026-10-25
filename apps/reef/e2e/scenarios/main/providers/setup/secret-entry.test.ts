@@ -84,11 +84,11 @@ test('Secret entry with one shared account, then each person’s own account', a
     await step('Remove provider removes the one with a shared account in one step', async () => {
       await page.goto(`${ledgerPath}/settings`)
       await page.getByRole('button', { name: 'Remove provider', exact: true }).click()
-      // The confirmation names the namespace it releases.
+      // The confirmation names the Call Root it releases.
       await page
         .getByRole('dialog')
         .getByRole('listitem')
-        .filter({ hasText: 'The namespace coral.providers.ledger' })
+        .filter({ hasText: 'Every operation under coral.providers.ledger' })
         .waitFor()
       await page
         .getByRole('dialog')
