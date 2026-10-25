@@ -555,15 +555,13 @@ describe('account answer', () => {
   const basePath = '/providers/new'
   const getProviderSetup = vi.fn()
   const api = fakeManagement({ setups: { getProviderSetup } })
-  const { NONE, CALLER, FIXED } = CredentialRoute_Kind
+  const { CALLER, FIXED } = CredentialRoute_Kind
 
   beforeEach(() => vi.resetAllMocks())
 
   it.each([
     ['an individual account for a credential', 'caller', [CALLER, FIXED], 302],
     ['no account for a credential', 'none', [CALLER, FIXED], 400],
-    ['no account for a credential-free source', 'none', [NONE], 302],
-    ['an individual account for a credential-free source', 'caller', [NONE], 400],
     // Coral reports no routes before confirmation, and Publication decides.
     ['an answer before the configuration is confirmed', 'caller', [], 302],
   ] as const)('takes %s only when Coral allows the route', async (_, account, allowed, status) => {

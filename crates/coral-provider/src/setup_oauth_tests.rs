@@ -2343,7 +2343,7 @@ async fn setup_progress(
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one table covers every route against every kind of source without material"
+    reason = "one table covers what Publication does with each route fit and each kind of source without material"
 )]
 async fn publication_without_material_takes_only_a_fitting_route_and_an_oauth_application() {
     #[derive(Debug)]
@@ -2357,14 +2357,11 @@ async fn publication_without_material_takes_only_a_fitting_route_and_an_oauth_ap
     let (owner, workspace) = workspace_owner(&harness, "user:no-material").await;
     let cases = [
         (Source::Free, CredentialRoute::None, Expected::Published),
+        // Route fit itself is tested at its owner; one misfit each way shows
+        // Publication applies it.
         (
             Source::Free,
             CredentialRoute::Caller,
-            Expected::Failed("credential_not_accepted"),
-        ),
-        (
-            Source::Free,
-            CredentialRoute::Fixed,
             Expected::Failed("credential_not_accepted"),
         ),
         // A bearer document: caller succeeds without a secret; none and fixed do not.

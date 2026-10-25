@@ -480,9 +480,9 @@ async fn an_update_to_a_credential_free_source_takes_only_the_none_route() {
     let (actor, workspace) = workspace_owner(&h, "fit-owner").await;
     let context = change_context(actor.clone(), 10, '2');
     let provider = shared(&h, &context, workspace.id()).await;
+    // Route fit itself is tested at its owner; one misfit shows Update applies it.
     for (route, refused) in [
         (CredentialRoute::Fixed, true),
-        (CredentialRoute::Caller, true),
         (CredentialRoute::None, false),
     ] {
         let document = OpenApiDocument::parse(crate::tests::CREDENTIAL_FREE_OPENAPI).unwrap();
