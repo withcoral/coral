@@ -39,8 +39,6 @@ type UpdateChoices = {
   kind: 'update'
   /** Presentation only; every task uses the same atomic publication. */
   task?: UpdateTask
-  access?: boolean
-  review?: boolean
   etag: string
   allowIncompatibleConfiguration: boolean
   account?: AccountChoice
@@ -156,9 +154,6 @@ export function parseAttempt(
     case 'update': {
       const task = scalar('task', 'refresh')
       if (!['refresh', 'configuration', 'accounts'].includes(task)) throw new InvalidAttempt()
-      const review = scalar('review')
-      const access = scalar('access')
-      if ((review && review !== '1') || (access && access !== '1')) throw new InvalidAttempt()
       const consent = scalar('allowIncompatibleConfiguration', 'no')
       if (consent !== 'yes' && consent !== 'no') throw new InvalidAttempt()
       const version = scalar('etag', state.state === 'draft' ? etag : '')
@@ -168,8 +163,6 @@ export function parseAttempt(
         kind,
         etag: version,
         task: task as UpdateTask,
-        access: access === '1',
-        review: review === '1',
         allowIncompatibleConfiguration: consent === 'yes',
         ...(account ? { account } : {}),
         ...(accountGrant ? { accountGrant } : {}),
@@ -200,8 +193,6 @@ export function attemptParams(attempt: PublicationAttempt): URLSearchParams {
       break
     case 'update':
       if (attempt.task) params.set('task', attempt.task)
-      if (attempt.review) params.set('review', '1')
-      if (attempt.access) params.set('access', '1')
       if (attempt.account) params.set('account', attempt.account)
       if (attempt.accountGrant) params.set('accountGrant', attempt.accountGrant)
       params.set('etag', attempt.etag)
@@ -269,8 +260,6 @@ export function reviseAttempt(
         kind: attempt.kind,
         etag: attempt.etag,
         task: attempt.task,
-        access: edit ? false : attempt.access,
-        review: edit ? false : attempt.review,
         ...(attempt.account ? { account: attempt.account } : {}),
         ...(!edit && attempt.accountGrant ? { accountGrant: attempt.accountGrant } : {}),
         allowIncompatibleConfiguration: false,

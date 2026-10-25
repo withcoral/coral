@@ -915,10 +915,7 @@ export async function setupAction<Published = never>(
   // even when the page URL (an agent's link, say) already names a route.
   const answering = Boolean(submittedAccount)
   const draft = reviseAttempt(attempt)
-  if (draft.kind === 'update') {
-    draft.review = false
-    draft.accountGrant = undefined
-  }
+  if (draft.kind === 'update') draft.accountGrant = undefined
   // A confirmed configuration relists the operations, so they are accepted again.
   if (intent === 'configure') draft.operationsAccepted = false
   draft.setupId = name.split('/').at(-1)!
@@ -999,22 +996,6 @@ export async function setupAction<Published = never>(
           Boolean(draft.returnFromConnect) &&
           !isCredentialFree({ allowedRoutes: allowedRoutes(setup) })
         return redirect(stepper(chosen, returning), { headers: privateHeaders })
-      }
-      case 'update-access':
-      case 'review-update': {
-        if (draft.kind !== 'update' || !chosen) throw new Response('Invalid form', { status: 400 })
-        const setup = await api.setups.getProviderSetup({ name })
-        const accountGrant = optionalField(form, 'accountGrant')
-        if (
-          setup.configuration?.revision.toString() !== field(form, 'configurationRevision') ||
-          (accountGrant &&
-            (chosen !== 'fixed' || !setup.authorized || accountGrant !== setup.provisionalGrantId))
-        )
-          throw new Response('Invalid review', { status: 400, headers: privateHeaders })
-        draft.accountGrant = accountGrant || undefined
-        draft.access = true
-        draft.review = intent === 'review-update'
-        return redirect(stepper(chosen), { headers: privateHeaders })
       }
       case 'account': {
         if (!chosen)
