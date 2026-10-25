@@ -1317,7 +1317,7 @@ async fn an_owner_demoted_while_coral_performs_the_call_loses_it() {
 /// the protected-resource and authorization-server metadata a sign-in reads.
 /// The resource metadata names `resource` as the server's identity; with no
 /// `resource`, the server publishes none.
-async fn protected_mcp_server(challenge: &str, resource: &str) -> MockServer {
+async fn protected_mcp_server(challenge: &str, resource: Option<&str>) -> MockServer {
     let server = MockServer::start().await;
     let uri = server.uri();
     let challenge = challenge.replace("{uri}", &uri);
@@ -1328,7 +1328,7 @@ async fn protected_mcp_server(challenge: &str, resource: &str) -> MockServer {
         )
         .mount(&server)
         .await;
-    if !resource.is_empty() {
+    if let Some(resource) = resource {
         Mock::given(method("GET"))
             .and(path("/.well-known/oauth-protected-resource/mcp"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -1366,12 +1366,12 @@ async fn an_oauth_protected_mcp_server_needs_a_person_to_sign_in() {
     };
     for (index, (challenge, resource, route, rejected)) in [
         // A person signs in before Coral can read the server, on either route.
-        (BEARER, "{uri}/mcp", "fixed", None),
-        (BEARER, "{uri}/mcp", "caller", None),
+        (BEARER, Some("{uri}/mcp"), "fixed", None),
+        (BEARER, Some("{uri}/mcp"), "caller", None),
         // The server publishes no metadata, so nobody can tell how to sign in.
         (
             r#"Bearer realm="mcp""#,
-            "",
+            None,
             "fixed",
             Some(
                 " at `authentication`: Choose a supported method. MCP OAuth endpoints are \
@@ -1381,7 +1381,7 @@ async fn an_oauth_protected_mcp_server_needs_a_person_to_sign_in() {
         ),
         (
             BEARER,
-            "{uri}/mcp",
+            Some("{uri}/mcp"),
             "none",
             Some(
                 " at `credentialRoute`: the source needs a credential; use `fixed` or `caller`"
@@ -1391,13 +1391,13 @@ async fn an_oauth_protected_mcp_server_needs_a_person_to_sign_in() {
         // The metadata names another server, so its sign-in is not this one's.
         (
             BEARER,
-            "{uri}/elsewhere",
+            Some("{uri}/elsewhere"),
             "fixed",
             Some(discovery("resource_mismatch")),
         ),
         (
             r#"Basic realm="mcp""#,
-            "{uri}/mcp",
+            Some("{uri}/mcp"),
             "fixed",
             Some(discovery("challenge_unsupported")),
         ),
