@@ -1138,6 +1138,42 @@ pub(super) async fn load_catalog_operations(
     rows.into_iter().map(OperationRow::decode).collect()
 }
 
+pub(super) async fn load_operation_paths(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+) -> Result<Vec<crate::OperationPathAssignment>, Error> {
+    require_generation(transaction, generation_id).await?;
+    let rows: Vec<(String, String)> = transaction
+        .fetch_all(
+            Query::select()
+                .columns([
+                    MaterializedOperations::OperationKey,
+                    MaterializedOperations::RelativePath,
+                ])
+                .from(MaterializedOperations::Table)
+                .and_where(
+                    Expr::col(MaterializedOperations::ProviderGenerationId)
+                        .eq(generation_id.to_string()),
+                )
+                .order_by(MaterializedOperations::OperationKey, Order::Asc)
+                .to_owned(),
+        )
+        .await?;
+    rows.into_iter()
+        .map(|(key, relative_path)| {
+            let key = OperationKey::parse(&key).map_err(|_error| {
+                Error::CorruptData("Operation path has an invalid Operation Key".to_string())
+            })?;
+            if !crate::paths::valid_relative_path(&relative_path) {
+                return Err(Error::CorruptData(
+                    "Operation path has an invalid Operation-relative path".to_string(),
+                ));
+            }
+            Ok(crate::OperationPathAssignment::new(key, relative_path))
+        })
+        .collect()
+}
+
 pub(super) async fn operation_exists(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,

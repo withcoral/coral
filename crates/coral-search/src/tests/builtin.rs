@@ -31,13 +31,17 @@ async fn search_and_describe_show_each_builtin_operation_to_the_principals_it_re
     for (principal, reached) in [
         (
             AuthenticatedPrincipal::user(owner),
-            &["addProvider", "listProviders"][..],
+            &["addProvider", "listProviders", "getPolicy"][..],
         ),
-        (AuthenticatedPrincipal::user(member), &["listProviders"][..]),
+        (
+            AuthenticatedPrincipal::user(member),
+            &["listProviders", "getPolicy"][..],
+        ),
     ] {
         for (key, terms) in [
             ("addProvider", "add provider"),
             ("listProviders", "list providers"),
+            ("getPolicy", "provider policy"),
         ] {
             let reaches = reached.contains(&key);
             let call_path = format!("coral.workspace.{key}");

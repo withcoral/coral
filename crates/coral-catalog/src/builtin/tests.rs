@@ -6,10 +6,10 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use super::{
-    AUTHENTICATION_KINDS, AddProviderResult, BuiltinArguments, BuiltinCredentialRoute,
-    BuiltinOperation, ConfigurationOutput, GetProviderResult, ListProvidersResult, ListedProvider,
-    ListedProviderState, ListedSetup, ListedSetupState, ProviderFacts, ProviderSourceOutput,
-    definition,
+    AUTHENTICATION_KINDS, AddProviderResult, BuiltinAccessState, BuiltinArguments,
+    BuiltinCredentialRoute, BuiltinOperation, ConfigurationOutput, GetPolicyResult,
+    GetProviderResult, ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup,
+    ListedSetupState, ProviderFacts, ProviderSourceOutput, definition,
 };
 use crate::{CredentialField, ServerSelection};
 
@@ -20,6 +20,7 @@ fn valid_arguments(operation: BuiltinOperation) -> Vec<Value> {
         BuiltinOperation::AddProvider => super::add_provider::tests::valid_arguments(),
         BuiltinOperation::ListProviders => super::list_providers::valid_arguments(),
         BuiltinOperation::GetProvider => super::get_provider::tests::valid_arguments(),
+        BuiltinOperation::GetPolicy => super::get_policy::valid_arguments(),
     }
 }
 
@@ -240,6 +241,26 @@ fn configured_providers() -> impl Iterator<Item = GetProviderResult> {
         })
 }
 
+/// A Provider without rules, and one with a rule of each state.
+fn policies() -> impl Iterator<Item = GetPolicyResult> {
+    [
+        BTreeMap::new(),
+        BTreeMap::from([
+            ("repos.get".to_owned(), BuiltinAccessState::Disabled),
+            ("issues.create".to_owned(), BuiltinAccessState::Enabled),
+            (
+                "issues.close".to_owned(),
+                BuiltinAccessState::ApprovalRequired,
+            ),
+        ]),
+    ]
+    .into_iter()
+    .map(|rules| GetPolicyResult {
+        namespace: "github".to_owned(),
+        rules,
+    })
+}
+
 // Catches: a result that tells a typed Program something its declaration does not.
 #[test]
 fn each_result_meets_its_output_schema() {
@@ -323,6 +344,9 @@ fn each_result_meets_its_output_schema() {
     results.extend(
         configured_providers()
             .map(|saved| (BuiltinOperation::GetProvider, saved.into_operation_result())),
+    );
+    results.extend(
+        policies().map(|policy| (BuiltinOperation::GetPolicy, policy.into_operation_result())),
     );
     for (operation, result) in results {
         assert_eq!(

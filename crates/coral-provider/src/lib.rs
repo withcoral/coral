@@ -707,6 +707,36 @@ pub async fn operation_hints_and_methods_batch_in_transaction(
     .await?)
 }
 
+/// Resolves the Provider under `coral.providers.<namespace>`, in any state,
+/// and the Operation-relative path of each Operation in its current catalog.
+/// Definitions and schemas stay lazy.
+///
+/// The caller owns authority and the coherent read transaction. `Ok(None)`
+/// means no Provider of the Workspace holds the namespace.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt Provider-package failure.
+pub async fn provider_operation_paths_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    namespace: &ProviderNamespace,
+) -> Result<Option<(ProviderId, Vec<coral_catalog::OperationPathAssignment>)>, Error> {
+    let Some(active) = repository::provider_by_call_root_in_transaction(
+        transaction,
+        workspace_id,
+        &ProviderCallRoot::Owner(namespace.clone()),
+        coral_db::RowLock::None,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let paths =
+        coral_catalog::operation_paths_in_transaction(transaction, &active.generation_id).await?;
+    Ok(Some((active.provider.id().clone(), paths)))
+}
+
 /// The Principal that asks Invocation admission to call an Operation.
 ///
 /// It carries what admission needs to load the Principal's Workspace authority
