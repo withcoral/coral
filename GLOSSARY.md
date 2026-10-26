@@ -804,8 +804,8 @@ idempotency key
 **Run Inbox**: The durable place where an outside Run Request (a decision on an Approval Request, or a cancellation)
 waits for the Run Owner of its Run. Any Coral Instance may add a request to a Run's Run Inbox. While the Run is not
 terminal, only its Run Owner removes it, in the commit that records it. A request is identified by the thing it
-decides, so the first one wins. A recovered Run Owner applies the requests in the Run's Run Inbox before it ends the
-Run. _Avoid_: mailbox, work queue, outbox, message queue
+decides, so the first one wins. A Run Owner recovered after its lease lapsed applies the requests in the Run's Run
+Inbox before it ends the Run. _Avoid_: mailbox, work queue, outbox, message queue
 
 **Run Output Budget**: The limit on the bytes of Program Emissions, Program Logs, Operation Invocation results, and the
 Final Value that one Coral Program Run may produce. The Run Owner decides every request against the exact total when it
