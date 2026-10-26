@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.keenable.ai/mcp-server
+# The server answers without a key on a shared public tier. A key only raises
+# the rate limits.
+schema_version: 1
+id: keenable
+display_name: Keenable
+description: Web search results and page content from Keenable.
+source:
+  mcp:
+    url: https://api.keenable.ai/mcp
+authentication:
+  default: anonymous
+  options:
+    anonymous:
+      method: none
+      label: Use public access
+      description: Use the public tools with lower limits.
+      documentation_url: https://docs.keenable.ai/authentication#evaluating-without-a-key
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://docs.keenable.ai/authentication#api-key-header
+request_headers:
+  # Names the calling application. Keenable's keyless HTTP API requires it,
+  # and the MCP server reads it when present.
+  x-keenable-title: coral
+icons:
+  light: logo.svg

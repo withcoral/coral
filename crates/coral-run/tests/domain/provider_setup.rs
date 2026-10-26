@@ -3,6 +3,7 @@
 //! Reef page where a person finishes it. The call never waits for that person.
 //! `coral.workspace.listProviders` lists the Providers a Program can check first.
 //! `coral.workspace.getProvider` reads one Provider's Provider Configuration.
+//! `coral.workspace.getPolicy` reads one Provider's exact Operation rules.
 use super::*;
 use coral_provider::{ProviderSetupId, ProviderSetupState};
 
@@ -176,13 +177,13 @@ impl AdminScope {
         final_value(&self.terminal(&self.owner, &run).await)
     }
 
-    /// The Owner approves the Run's one pending Invocation.
-    pub(super) async fn approve(&self, run: &crate::RunId) {
+    /// `actor`, who started the Run, approves its one pending Invocation.
+    pub(super) async fn approve(&self, actor: &AuthenticatedPrincipal, run: &crate::RunId) {
         let approvals = self.fixture.approvals();
-        let request = wait_for_approval(&approvals, &self.owner, &self.workspace_id, run).await;
+        let request = wait_for_approval(&approvals, actor, &self.workspace_id, run).await;
         approvals
             .decide(
-                &self.owner,
+                actor,
                 &self.workspace_id,
                 &request.id,
                 crate::approval::ApprovalDecision::Approve,
@@ -411,7 +412,7 @@ async fn add_provider_returns_the_reef_page_that_finishes_its_setup() {
                 scope.setups_created_since(&before).await.is_empty(),
                 "no Setup before approval"
             );
-            scope.approve(&run).await;
+            scope.approve(&scope.owner, &run).await;
         }
         let terminal = scope.terminal(&scope.owner, &run).await;
         assert_eq!(terminal.state(), RunState::Succeeded, "{access:?}");
@@ -1344,6 +1345,234 @@ async fn the_program_configures_how_a_person_signs_in() {
     }
 }
 
+/// Serves the credential-free Weather document, but holds each response until
+/// released, so a test can change the Workspace while Coral fetches it.
+struct HeldDocument {
+    entered: Arc<tokio::sync::Notify>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl wiremock::Respond for HeldDocument {
+    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+        self.entered.notify_one();
+        // The mock server answers on its own thread, so this blocks only it.
+        let _released = self.release.lock().unwrap().recv();
+        ResponseTemplate::new(200).set_body_string(DOCUMENT)
+    }
+}
+
+// Catches: an Owner demoted after approving their own addProvider, while Coral
+// fetches the source, still preparing a Setup, or the lost authority reaching
+// the Program as anything but a failure it catches.
+#[tokio::test]
+async fn an_owner_demoted_while_coral_performs_the_call_loses_it() {
+    let scope = AdminScope::new("user:demoting-owner").await;
+    scope
+        .set_access(OperationAccessState::ApprovalRequired)
+        .await;
+    let demoted = scope
+        .fixture
+        .workspace_user(
+            &scope.workspace_id,
+            &scope.owner_user(),
+            "user:demoted-owner",
+            WorkspaceRole::Owner,
+        )
+        .await;
+    let actor = AuthenticatedPrincipal::user(demoted.clone());
+    let server = MockServer::start().await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let (release, released) = mpsc::channel();
+    Mock::given(method("GET"))
+        .and(path("/openapi.json"))
+        .respond_with(HeldDocument {
+            entered: entered.clone(),
+            release: Mutex::new(released),
+        })
+        .mount(&server)
+        .await;
+    let before = scope.lifecycle_events().await;
+    let run = scope
+        .start(
+            &actor,
+            add_provider(
+                &valid_with(serde_json::json!({ "source": {
+                    "kind": "openapi_url",
+                    "url": format!("{}/openapi.json", server.uri()),
+                } })),
+                "error.code",
+            ),
+        )
+        .await;
+    scope.approve(&actor, &run).await;
+    entered.notified().await;
+    scope
+        .fixture
+        .workspaces
+        .set_membership(
+            &change(scope.owner_user(), 30, '6'),
+            &scope.workspace_id,
+            &demoted,
+            WorkspaceRole::Member,
+        )
+        .await
+        .unwrap();
+    release.send(()).unwrap();
+
+    assert_final_code(
+        &scope.terminal(&actor, &run).await,
+        "dispatch_authority_lost",
+    );
+    scope
+        .assert_denial_changed_nothing(&before, "demoted while Coral fetched")
+        .await;
+}
+
+/// An MCP server at `/mcp` that answers every request with `challenge`, and
+/// the protected-resource and authorization-server metadata a sign-in reads.
+/// The resource metadata names `resource` as the server's identity; with no
+/// `resource`, the server publishes none.
+async fn protected_mcp_server(challenge: &str, resource: Option<&str>) -> MockServer {
+    let server = MockServer::start().await;
+    let uri = server.uri();
+    let challenge = challenge.replace("{uri}", &uri);
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(
+            ResponseTemplate::new(401).insert_header("www-authenticate", challenge.as_str()),
+        )
+        .mount(&server)
+        .await;
+    if let Some(resource) = resource {
+        Mock::given(method("GET"))
+            .and(path("/.well-known/oauth-protected-resource/mcp"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "resource": resource.replace("{uri}", &uri),
+                "authorization_servers": [uri],
+            })))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-authorization-server"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issuer": uri,
+            "authorization_endpoint": format!("{uri}/authorize"),
+            "token_endpoint": format!("{uri}/token"),
+            "registration_endpoint": format!("{uri}/register"),
+            "code_challenge_methods_supported": ["S256"],
+        })))
+        .mount(&server)
+        .await;
+    server
+}
+
+// Catches: an OAuth-protected MCP server that Coral publishes unread, or
+// whose sign-in Coral cannot discover reaching the Program as anything but
+// the source to correct.
+#[tokio::test]
+async fn an_oauth_protected_mcp_server_needs_a_person_to_sign_in() {
+    const BEARER: &str =
+        r#"Bearer resource_metadata="{uri}/.well-known/oauth-protected-resource/mcp""#;
+    let scope = AdminScope::new("user:protected-mcp").await;
+    scope.set_access(OperationAccessState::Enabled).await;
+    let discovery = |code: &str| {
+        format!(" at `source`: Coral could not discover how to sign in to the MCP server ({code})")
+    };
+    for (index, (challenge, resource, route, rejected)) in [
+        // A person signs in before Coral can read the server, on either route.
+        (BEARER, Some("{uri}/mcp"), "fixed", None),
+        (BEARER, Some("{uri}/mcp"), "caller", None),
+        // The server publishes no metadata, so nobody can tell how to sign in.
+        (
+            r#"Bearer realm="mcp""#,
+            None,
+            "fixed",
+            Some(
+                " at `authentication`: Choose a supported method. MCP OAuth endpoints are \
+                 read-only."
+                    .to_owned(),
+            ),
+        ),
+        (
+            BEARER,
+            Some("{uri}/mcp"),
+            "none",
+            Some(
+                " at `credentialRoute`: the source needs a credential; use `fixed` or `caller`"
+                    .to_owned(),
+            ),
+        ),
+        // The metadata names another server, so its sign-in is not this one's.
+        (
+            BEARER,
+            Some("{uri}/elsewhere"),
+            "fixed",
+            Some(discovery("resource_mismatch")),
+        ),
+        (
+            r#"Basic realm="mcp""#,
+            Some("{uri}/mcp"),
+            "fixed",
+            Some(discovery("challenge_unsupported")),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let server = protected_mcp_server(challenge, resource).await;
+        let arguments = serde_json::json!({
+            "namespace": format!("tools{index}"),
+            "source": { "kind": "mcp_url", "url": format!("{}/mcp", server.uri()) },
+            "credentialRoute": route,
+        });
+        let before = scope.lifecycle_events().await;
+        let setups = scope.created_setups().await;
+        let run = scope
+            .start(
+                &scope.owner,
+                add_provider(&arguments, "{ code: error.code, message: error.message }"),
+            )
+            .await;
+        let value = final_value(&scope.terminal(&scope.owner, &run).await);
+        if let Some(message) = rejected {
+            assert_eq!(
+                value,
+                serde_json::json!({
+                    "code": "invalid_input",
+                    "message": format!("Operation arguments are invalid{message}"),
+                }),
+                "{arguments}"
+            );
+            scope
+                .assert_denial_changed_nothing(&before, &arguments.to_string())
+                .await;
+            continue;
+        }
+        assert_eq!(
+            value.pointer("/data/status"),
+            Some(&serde_json::json!("needs_sign_in")),
+            "{arguments}: {value}"
+        );
+        let created = scope.setups_created_since(&setups).await;
+        let [setup] = created.as_slice() else {
+            panic!("{arguments}: one new Setup: {created:?}")
+        };
+        assert_eq!(
+            scope
+                .fixture
+                .providers
+                .get_setup(&scope.owner_user(), &scope.workspace_id, setup)
+                .await
+                .unwrap()
+                .state(),
+            ProviderSetupState::AwaitingAuthorization,
+            "{arguments}"
+        );
+    }
+    assert_eq!(scope.upstream.sends.load(Ordering::SeqCst), 0);
+}
+
 /// An `invalid_input` message names each argument to correct and what to write,
 /// whether the contract rejects it or Coral does once it reads the source. It
 /// never repeats a submitted value, though it names a header or field the
@@ -1490,9 +1719,10 @@ async fn an_invalid_argument_names_what_to_correct() {
 }
 
 // Catches: a Built-in Operation's reach that ignores the Workspace action it
-// declares, or a host that performs listProviders only for a User.
+// declares, a host that performs listProviders or getPolicy only for a User,
+// or a read that waits for approval.
 #[tokio::test]
-async fn members_and_agents_list_providers_but_cannot_reach_add_or_get_provider() {
+async fn members_and_agents_list_providers_and_get_policy_but_cannot_reach_add_or_get_provider() {
     let scope = AdminScope::new("user:admin-owner").await;
     scope.set_access(OperationAccessState::Enabled).await;
     scope.publish_weather().await;
@@ -1563,6 +1793,19 @@ async fn members_and_agents_list_providers_but_cannot_reach_add_or_get_provider(
             listed.pointer("/data/setups"),
             Some(&serde_json::json!([])),
             "{principal:?}"
+        );
+
+        let run = scope
+            .start(
+                &principal,
+                workspace_call("getPolicy", r#"{ "namespace": "weather" }"#),
+            )
+            .await;
+        let read = final_value(&scope.terminal(&principal, &run).await);
+        assert_eq!(
+            read.pointer("/data/namespace"),
+            Some(&serde_json::json!("weather")),
+            "{principal:?} reads the policy: {read}"
         );
     }
     assert_eq!(scope.lifecycle_events().await, before);
@@ -1856,16 +2099,19 @@ async fn get_provider_reads_back_the_configuration_a_program_saved() {
 // Catches: a namespace that no Provider holds read as something other than
 // not found.
 #[tokio::test]
-async fn get_provider_names_an_absent_provider() {
+async fn get_provider_and_get_policy_name_an_absent_provider() {
     let scope = AdminScope::new("user:get-provider-absent").await;
-    let run = scope
-        .start(
-            &scope.owner,
-            workspace_call("getProvider", r#"{ "namespace": "forecasts" }"#),
-        )
-        .await;
-    assert_eq!(
-        final_value(&scope.terminal(&scope.owner, &run).await),
-        serde_json::json!({ "code": "provider_not_found", "message": "Provider was not found" }),
-    );
+    for operation in ["getProvider", "getPolicy"] {
+        let run = scope
+            .start(
+                &scope.owner,
+                workspace_call(operation, r#"{ "namespace": "forecasts" }"#),
+            )
+            .await;
+        assert_eq!(
+            final_value(&scope.terminal(&scope.owner, &run).await),
+            serde_json::json!({ "code": "provider_not_found", "message": "Provider was not found" }),
+            "{operation}"
+        );
+    }
 }

@@ -163,6 +163,34 @@ pub(super) async fn access_states_in_transaction(
         .collect()
 }
 
+pub(super) async fn provider_rules_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    provider: &ProviderId,
+) -> Result<BTreeMap<OperationKey, OperationAccessState>, Error> {
+    let rows: Vec<(String, String)> = transaction
+        .fetch_all(
+            Query::select()
+                .columns([
+                    OperationAccessRules::OperationKey,
+                    OperationAccessRules::AccessState,
+                ])
+                .from(OperationAccessRules::Table)
+                .and_where(Expr::col(OperationAccessRules::WorkspaceId).eq(workspace.to_string()))
+                .and_where(Expr::col(OperationAccessRules::ProviderId).eq(provider.to_string()))
+                .to_owned(),
+        )
+        .await?;
+    rows.into_iter()
+        .map(|(key, state)| {
+            let key = OperationKey::parse(&key).map_err(|_error| {
+                Error::CorruptData("Operation rule has invalid Operation Key".into())
+            })?;
+            Ok((key, OperationAccessState::from_storage_str(&state)?))
+        })
+        .collect()
+}
+
 pub(super) async fn exact_rules_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,

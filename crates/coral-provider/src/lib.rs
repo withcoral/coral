@@ -95,7 +95,7 @@ pub use types::{
     ProviderSetupState, ProviderState, ResolvedInvocationOperation, SetupRequest,
 };
 
-pub use access::{CredentialRoute, ProviderAccess, ProviderCallRoot, ProviderNamespace};
+pub use access::{CredentialRoute, ProviderAccess, ProviderCallRoot, ProviderNamespace, RouteFit};
 use account::setup as setup_credentials;
 use coral_catalog::{MaterializedOperation, OperationKey, ProviderSetupInput};
 use publication::materialization::{CatalogMaterializer, Materializer};
@@ -705,6 +705,36 @@ pub async fn operation_hints_and_methods_batch_in_transaction(
         operation_keys,
     )
     .await?)
+}
+
+/// Resolves the Provider under `coral.providers.<namespace>`, in any state,
+/// and the Operation-relative path of each Operation in its current catalog.
+/// Definitions and schemas stay lazy.
+///
+/// The caller owns authority and the coherent read transaction. `Ok(None)`
+/// means no Provider of the Workspace holds the namespace.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt Provider-package failure.
+pub async fn provider_operation_paths_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    namespace: &ProviderNamespace,
+) -> Result<Option<(ProviderId, Vec<coral_catalog::OperationPathAssignment>)>, Error> {
+    let Some(active) = repository::provider_by_call_root_in_transaction(
+        transaction,
+        workspace_id,
+        &ProviderCallRoot::Owner(namespace.clone()),
+        coral_db::RowLock::None,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let paths =
+        coral_catalog::operation_paths_in_transaction(transaction, &active.generation_id).await?;
+    Ok(Some((active.provider.id().clone(), paths)))
 }
 
 /// The Principal that asks Invocation admission to call an Operation.

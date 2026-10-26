@@ -75,7 +75,7 @@ async fn coral_publishes_a_change_nobody_needs_to_act_on() {
             })),
         )
         .await;
-    scope.approve(&run).await;
+    scope.approve(&scope.owner, &run).await;
     let result = final_value(&scope.terminal(&scope.owner, &run).await);
 
     assert_eq!(

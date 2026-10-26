@@ -787,6 +787,16 @@ message ProviderSetup {
   google.protobuf.Timestamp expire_time = 15;
   // What a Program asked this Setup to publish; absent for a Setup a person started.
   ProviderSetupRequest request = 20;
+  // The Credential Routes that suit the confirmed configuration, in the order
+  // Reef offers them. Empty until the configuration is confirmed.
+  repeated CredentialRoute allowed_credential_routes = 21;
+  // This Setup holds a sign-in, or the inspecting User can start one or enter
+  // the credential now. False once the Setup has ended, or when nothing can
+  // be connected.
+  bool connect_available = 22;
+  // Whether each person can connect their own account after the provider is
+  // added without a sign-in. False when nothing can be connected.
+  bool connect_later_available = 23;
 }
 
 // What a Program asked a Setup to publish when it called addProvider. The

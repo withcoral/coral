@@ -8,7 +8,7 @@ use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceAction
 
 use crate::{
     CredentialRoute, Error, Provider, ProviderId, ProviderModule, ProviderSetup, ProviderSetupId,
-    ProviderSetupState,
+    ProviderSetupState, RouteFit,
 };
 
 /// Who can publish a Setup under a Credential Route.
@@ -88,13 +88,10 @@ fn route_rejection(
     contract: &coral_catalog::ProviderCredentialContract,
     route: CredentialRoute,
 ) -> Option<PublishabilityRejection> {
-    let needs_credential = contract != &coral_catalog::ProviderCredentialContract::NONE;
-    match (needs_credential, route) {
-        (true, CredentialRoute::None) => Some(PublishabilityRejection::SourceNeedsCredential),
-        (false, CredentialRoute::Fixed | CredentialRoute::Caller) => {
-            Some(PublishabilityRejection::SourceNeedsNoCredential)
-        }
-        _ => None,
+    match route.fits(contract) {
+        RouteFit::Fits => None,
+        RouteFit::SourceNeedsCredential => Some(PublishabilityRejection::SourceNeedsCredential),
+        RouteFit::SourceNeedsNoCredential => Some(PublishabilityRejection::SourceNeedsNoCredential),
     }
 }
 

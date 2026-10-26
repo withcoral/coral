@@ -349,10 +349,11 @@ mod tests {
     use super::super::client_metadata::{
         ClientMetadataError, ClientMetadataResolver, OAuthClientRegistration,
     };
-    use super::super::test_state::http_state;
+    use super::super::test_state::{database, http_state};
     use super::*;
     use crate::auth::sealed_handshake::SignInSession;
-    use crate::auth::test_config::{AUTH_ISSUER, PROVIDER_SECRET};
+    use crate::auth::test_config::{AUTH_ISSUER, PROVIDER_SECRET, resolved_settings};
+    use coral_test_support::TestDatabase;
 
     const RESOURCE: &str = "https://api.example.test/mcp";
     const CLIENT_ID: &str = "https://client.example.test/oauth/client.json";
@@ -403,20 +404,22 @@ mod tests {
     }
 
     fn state_with_resolver(
+        database: &TestDatabase,
         issuer: &str,
         resolver: Arc<dyn ClientMetadataResolver>,
     ) -> AuthorizationServerHttpState {
-        state_with(issuer, "", resolver)
+        state_with(database, issuer, "", resolver)
     }
 
-    /// The authorize route's state for `issuer`, with `extra` settings and
-    /// client metadata resolved by `resolver`.
+    /// The authorize route's state over `database` for `issuer`, with `extra`
+    /// settings and client metadata resolved by `resolver`.
     fn state_with(
+        database: &TestDatabase,
         issuer: &str,
         extra: &str,
         resolver: Arc<dyn ClientMetadataResolver>,
     ) -> AuthorizationServerHttpState {
-        let mut state = http_state(issuer, extra, &[RESOURCE]);
+        let mut state = http_state(database, issuer, extra, &[RESOURCE]);
         state.client_metadata_resolver = resolver;
         state
     }
@@ -446,10 +449,10 @@ mod tests {
     /// The approval a consent page's ticket carries, opened as a submission
     /// from this browser would open it.
     fn opened_approval(ticket: &str) -> PendingApproval {
-        let state = state("https://provider.invalid");
+        let (settings, _session_tokens) = resolved_settings("https://provider.invalid", "");
         let now = sign_in_cookie::now_unix_secs().expect("clock");
         PendingApproval::open(
-            state.settings.handshake_keys(),
+            settings.handshake_keys(),
             &BROWSER_BINDING,
             ticket.as_bytes(),
             now,
@@ -473,9 +476,9 @@ mod tests {
         format!("[auth]\ntrusted_clients = ['{client_id}']")
     }
 
-    fn state(issuer: &str) -> AuthorizationServerHttpState {
+    fn state(database: &TestDatabase, issuer: &str) -> AuthorizationServerHttpState {
         let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
-        state_with_resolver(issuer, resolver)
+        state_with_resolver(database, issuer, resolver)
     }
 
     fn pairs() -> Vec<(String, String)> {
@@ -650,6 +653,7 @@ mod tests {
 
     #[tokio::test]
     async fn confirmation_is_secure_and_stores_only_validated_data() {
+        let database = database().await;
         let expected_style_src = approval_page_style_src();
         let expected_csp = format!(
             "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; {expected_style_src}"
@@ -657,7 +661,7 @@ mod tests {
         let mut request_pairs = pairs();
         request_pairs.push(("approved".into(), "true".into()));
         request_pairs.push(("decision".into(), "continue".into()));
-        let response = request(state("https://provider.invalid"), &request_pairs).await;
+        let response = request(state(&database, "https://provider.invalid"), &request_pairs).await;
         assert_eq!(response.status(), StatusCode::OK);
         for (name, value) in [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
@@ -734,11 +738,12 @@ mod tests {
     #[tokio::test]
     async fn app_scheme_callback_reaches_the_approval_page() {
         const APP_CALLBACK: &str = "com.raycast:/oauth";
+        let database = database().await;
         let (resolver, _calls) = fake_resolver(Ok(registration(&[APP_CALLBACK])));
         let mut request_pairs = pairs();
         replace(&mut request_pairs, "redirect_uri", Some(APP_CALLBACK));
         let response = request(
-            state_with_resolver("https://provider.invalid", resolver),
+            state_with_resolver(&database, "https://provider.invalid", resolver),
             &request_pairs,
         )
         .await;
@@ -864,7 +869,8 @@ mod tests {
 
     #[tokio::test]
     async fn submission_requires_same_origin_browser_binding_without_consuming_the_approval() {
-        let auth_state = state("https://provider.invalid");
+        let database = database().await;
+        let auth_state = state(&database, "https://provider.invalid");
         let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
 
         let missing_cookie = oauth_authorize_post(
@@ -915,7 +921,8 @@ mod tests {
     /// The remaining directives still deny every fetch, base URI and framing.
     #[tokio::test]
     async fn approval_page_does_not_restrict_form_action() {
-        let auth_state = state("https://provider.invalid");
+        let database = database().await;
+        let auth_state = state(&database, "https://provider.invalid");
         let page = request(auth_state, &pairs()).await;
         assert_eq!(page.status(), StatusCode::OK);
         let policy = page.headers()[header::CONTENT_SECURITY_POLICY]
@@ -942,7 +949,8 @@ mod tests {
     /// `Origin: null` case below is the submission this policy would produce.
     #[tokio::test]
     async fn approval_page_referrer_policy_preserves_the_submission_origin() {
-        let auth_state = state("https://provider.invalid");
+        let database = database().await;
+        let auth_state = state(&database, "https://provider.invalid");
         let page = request(auth_state.clone(), &pairs()).await;
         assert_eq!(page.status(), StatusCode::OK);
         assert_eq!(page.headers()[header::CACHE_CONTROL], "no-store");
@@ -964,7 +972,8 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_consent_pages_reuse_the_binding_and_remain_valid() {
-        let auth_state = state("https://provider.invalid");
+        let database = database().await;
+        let auth_state = state(&database, "https://provider.invalid");
         let first = oauth_authorize_get(
             State(auth_state.clone()),
             RawQuery(Some(encode(&pairs()))),
@@ -1000,11 +1009,12 @@ mod tests {
 
     #[tokio::test]
     async fn cimd_client_uses_resolved_exact_redirect_once() {
+        let database = database().await;
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
         let (resolver, calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
         let request_pairs = pairs();
-        let auth_state = state_with_resolver(&provider.uri(), resolver);
+        let auth_state = state_with_resolver(&database, &provider.uri(), resolver);
         let response = request(auth_state.clone(), &request_pairs).await;
         assert_eq!(response.status(), StatusCode::OK);
         let page = response_body(response).await;
@@ -1028,11 +1038,12 @@ mod tests {
 
     #[tokio::test]
     async fn cimd_undeclared_redirect_is_never_trusted() {
+        let database = database().await;
         let (resolver, calls) = fake_resolver(Ok(registration(&[
             "https://client.example.test/other-callback",
         ])));
         let response = request(
-            state_with_resolver("https://provider.invalid", resolver),
+            state_with_resolver(&database, "https://provider.invalid", resolver),
             &pairs(),
         )
         .await;
@@ -1043,12 +1054,13 @@ mod tests {
 
     #[tokio::test]
     async fn resolver_failures_are_generic_direct_errors() {
+        let database = database().await;
         let (resolver, calls) = fake_resolver(Err(ClientMetadataError::HttpStatus));
         let client_id = format!("{CLIENT_ID}?secret=attacker-url-secret");
         let mut request_pairs = pairs();
         replace(&mut request_pairs, "client_id", Some(&client_id));
         let response = request(
-            state_with_resolver("https://provider.invalid", resolver),
+            state_with_resolver(&database, "https://provider.invalid", resolver),
             &request_pairs,
         )
         .await;
@@ -1064,6 +1076,7 @@ mod tests {
 
     #[tokio::test]
     async fn client_and_redirect_must_match_exactly_before_redirecting() {
+        let database = database().await;
         let (resolver, _calls) = fake_resolver(Err(ClientMetadataError::InvalidMetadata));
         let mut wrong_client = pairs();
         replace(
@@ -1072,7 +1085,7 @@ mod tests {
             Some("https://client.example.test/oauth/%63lient.json"),
         );
         let response = request(
-            state_with_resolver("https://provider.invalid", resolver),
+            state_with_resolver(&database, "https://provider.invalid", resolver),
             &wrong_client,
         )
         .await;
@@ -1086,14 +1099,18 @@ mod tests {
             "redirect_uri",
             Some("https://client.example.test/other"),
         );
-        let response = request(state("https://provider.invalid"), &wrong_redirect).await;
+        let response = request(
+            state(&database, "https://provider.invalid"),
+            &wrong_redirect,
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_security(&response);
         assert!(location(&response).is_none());
 
         let raw = format!("{}&client%5Fid=raw-secret", encode(&pairs()));
         let response = oauth_authorize_get(
-            State(state("https://provider.invalid")),
+            State(state(&database, "https://provider.invalid")),
             RawQuery(Some(raw)),
             browser_headers(),
         )
@@ -1105,13 +1122,14 @@ mod tests {
 
     #[tokio::test]
     async fn registered_redirect_outside_browser_policy_never_becomes_a_redirect() {
+        let database = database().await;
         for uri in [
             "javascript:alert(1)",
             "data:text/html,<script>alert(1)</script>",
             "http://client.example.test/callback",
         ] {
             let (resolver, _calls) = fake_resolver(Ok(registration(&[uri])));
-            let auth_state = state_with_resolver("https://provider.invalid", resolver);
+            let auth_state = state_with_resolver(&database, "https://provider.invalid", resolver);
             let mut request_pairs = pairs();
             replace(&mut request_pairs, "redirect_uri", Some(uri));
             let response = request(auth_state, &request_pairs).await;
@@ -1283,9 +1301,10 @@ mod tests {
     /// than the portless URI the metadata document registered.
     #[tokio::test]
     async fn loopback_client_returns_to_the_port_it_requested() {
+        let database = database().await;
         let requested = "http://127.0.0.1:3118/callback";
         let (resolver, _calls) = fake_resolver(Ok(registration(&["http://127.0.0.1/callback"])));
-        let auth_state = state_with_resolver("https://provider.invalid", resolver);
+        let auth_state = state_with_resolver(&database, "https://provider.invalid", resolver);
         let mut request_pairs = pairs();
         replace(&mut request_pairs, "redirect_uri", Some(requested));
         let response = request(auth_state.clone(), &request_pairs).await;
@@ -1306,6 +1325,7 @@ mod tests {
 
     #[tokio::test]
     async fn trusted_protocol_errors_redirect_with_one_encoded_client_state() {
+        let database = database().await;
         for (field, value, expected) in [
             ("response_type", None, "invalid_request"),
             ("response_type", Some("token"), "unsupported_response_type"),
@@ -1318,7 +1338,8 @@ mod tests {
         ] {
             let mut request_pairs = pairs();
             replace(&mut request_pairs, field, value);
-            let response = request(state("https://provider.invalid"), &request_pairs).await;
+            let response =
+                request(state(&database, "https://provider.invalid"), &request_pairs).await;
             assert_eq!(response.status(), StatusCode::FOUND);
             assert_security(&response);
             let url = Url::parse(location(&response).expect("error redirect")).expect("URL");
@@ -1335,7 +1356,8 @@ mod tests {
 
     #[tokio::test]
     async fn empty_resource_allowlist_fails_closed() {
-        let mut auth_state = state("https://provider.invalid");
+        let database = database().await;
+        let mut auth_state = state(&database, "https://provider.invalid");
         auth_state.authorization_resources = Arc::new(BTreeSet::new());
         let response = request(auth_state, &pairs()).await;
         let location = location(&response).expect("trusted error redirect");
@@ -1347,9 +1369,15 @@ mod tests {
     /// the browser the page was shown to.
     #[tokio::test]
     async fn consent_is_honored_by_any_process_for_the_browser_it_was_shown_to() {
-        let ticket = approval_ticket(state("https://provider.invalid"), &pairs()).await;
+        let database = database().await;
+        let ticket = approval_ticket(state(&database, "https://provider.invalid"), &pairs()).await;
         for process in ["another process", "the same page again"] {
-            let cancelled = submit(state("https://provider.invalid"), &ticket, "cancel").await;
+            let cancelled = submit(
+                state(&database, "https://provider.invalid"),
+                &ticket,
+                "cancel",
+            )
+            .await;
             let callback = Url::parse(location(&cancelled).expect("client redirect")).expect("URL");
             let query = callback.query_pairs().into_owned().collect::<Vec<_>>();
             assert!(
@@ -1377,7 +1405,12 @@ mod tests {
             ticket.get(middle + 1..).expect("tail")
         );
         for forged in [altered, URL_SAFE_NO_PAD.encode([7; 32])] {
-            let response = submit(state("https://provider.invalid"), &forged, "continue").await;
+            let response = submit(
+                state(&database, "https://provider.invalid"),
+                &forged,
+                "continue",
+            )
+            .await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
             assert!(location(&response).is_none());
             let body = response_body(response).await;
@@ -1390,9 +1423,10 @@ mod tests {
     /// submission leaves two independent sign-ins rather than a race.
     #[tokio::test]
     async fn each_allow_starts_an_independent_sign_in() {
+        let database = database().await;
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
-        let auth_state = state(&provider.uri());
+        let auth_state = state(&database, &provider.uri());
         let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
         let (first, second) = tokio::join!(
             submit(auth_state.clone(), &ticket, "continue"),
@@ -1421,9 +1455,10 @@ mod tests {
 
     #[tokio::test]
     async fn continue_hands_the_browser_a_sealed_sign_in_with_the_provider_redirect() {
+        let database = database().await;
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
-        let auth_state = state(&provider.uri());
+        let auth_state = state(&database, &provider.uri());
         let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
         assert!(
             provider
@@ -1482,10 +1517,15 @@ mod tests {
     /// resource, which the cookie carries too.
     #[tokio::test]
     async fn requests_a_sign_in_cookie_cannot_carry_are_refused_before_consent() {
+        let database = database().await;
         let long_resource = format!("https://api.example.test/{}", "r".repeat(2000));
         let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
-        let mut long_resource_state =
-            http_state("https://provider.invalid", "", &[long_resource.as_str()]);
+        let mut long_resource_state = http_state(
+            &database,
+            "https://provider.invalid",
+            "",
+            &[long_resource.as_str()],
+        );
         long_resource_state.client_metadata_resolver = resolver;
         let mut oversized_app = pairs();
         replace(&mut oversized_app, "state", Some(&"s".repeat(1536)));
@@ -1495,7 +1535,7 @@ mod tests {
         for (case, auth_state, request_pairs) in [
             (
                 "app inputs over budget",
-                state("https://provider.invalid"),
+                state(&database, "https://provider.invalid"),
                 oversized_app,
             ),
             ("a long resource", long_resource_state, long_resource_pairs),
@@ -1519,10 +1559,11 @@ mod tests {
     /// evicts. Which cookies those are is `sign_in_cookie`'s rule.
     #[tokio::test]
     async fn a_new_sign_in_response_expires_what_the_cap_evicts() {
+        let database = database().await;
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
         let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
-        let auth_state = state_with(&provider.uri(), &trusting(CLIENT_ID), resolver);
+        let auth_state = state_with(&database, &provider.uri(), &trusting(CLIENT_ID), resolver);
         let mut headers = browser_headers();
         for started_at in [30, 10, 20] {
             let name = sign_in_cookie::name(&format!("held-{started_at}"), started_at, true);
@@ -1562,11 +1603,13 @@ mod tests {
         const WEB: &str = "https://web.example.test";
         const WEB_CLIENT: &str = "https://web.example.test/.well-known/oauth-client";
         const WEB_CALLBACK: &str = "https://web.example.test/auth/callback";
+        let database = database().await;
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
         let build_state = |redirects: &[&str]| {
             let (resolver, _) = fake_resolver(Ok(registration(redirects)));
             let mut state = state_with(
+                &database,
                 &provider.uri(),
                 "[listeners.web]\npublic_url = 'https://web.example.test'",
                 resolver,
@@ -1636,9 +1679,11 @@ mod tests {
         const WEB_CLIENT: &str = "https://web.example.test/.well-known/oauth-client";
         const WEB_CALLBACK: &str = "https://web.example.test/auth/callback";
         const SETUP_CALLBACK: &str = "https://web.example.test/provider-setup/oauth/callback";
+        let database = database().await;
         let build_state = |redirects: &[&str]| {
             let (resolver, _) = fake_resolver(Ok(registration(redirects)));
             let mut state = state_with(
+                &database,
                 "https://provider.invalid",
                 "[listeners.web]\npublic_url = 'https://web.example.test'",
                 resolver,
@@ -1686,10 +1731,11 @@ mod tests {
 
     #[tokio::test]
     async fn trusted_client_skips_the_approval_page_and_carries_a_sealed_sign_in() {
+        let database = database().await;
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
         let (resolver, calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
-        let auth_state = state_with(&provider.uri(), &trusting(CLIENT_ID), resolver);
+        let auth_state = state_with(&database, &provider.uri(), &trusting(CLIENT_ID), resolver);
         let response = request(auth_state.clone(), &pairs()).await;
         assert_eq!(response.status(), StatusCode::FOUND);
         assert_security(&response);
@@ -1722,8 +1768,15 @@ mod tests {
     /// like anyone else's rather than being waved through to the provider.
     #[tokio::test]
     async fn trusted_client_requests_are_validated_like_any_other() {
-        let trusted_state =
-            |resolver| state_with("https://provider.invalid", &trusting(CLIENT_ID), resolver);
+        let database = database().await;
+        let trusted_state = |resolver| {
+            state_with(
+                &database,
+                "https://provider.invalid",
+                &trusting(CLIENT_ID),
+                resolver,
+            )
+        };
 
         let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
         let mut missing_challenge = pairs();
@@ -1747,8 +1800,10 @@ mod tests {
 
     #[tokio::test]
     async fn only_the_listed_client_skips_the_approval_page() {
+        let database = database().await;
         let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
         let auth_state = state_with(
+            &database,
             "https://provider.invalid",
             &trusting("https://other.example.test/oauth/client.json"),
             resolver,
@@ -1764,10 +1819,11 @@ mod tests {
 
     #[tokio::test]
     async fn trusted_client_provider_failures_are_generic_trusted_errors() {
+        let database = database().await;
         let provider = MockServer::start().await;
         mount_discovery(&provider, 500).await;
         let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
-        let auth_state = state_with(&provider.uri(), &trusting(CLIENT_ID), resolver);
+        let auth_state = state_with(&database, &provider.uri(), &trusting(CLIENT_ID), resolver);
         let response = request(auth_state, &pairs()).await;
         let error_location = location(&response).expect("error redirect");
         assert!(error_location.starts_with("https://client.example.test/callback"));
@@ -1777,9 +1833,10 @@ mod tests {
 
     #[tokio::test]
     async fn provider_failures_after_consent_are_generic_trusted_errors() {
+        let database = database().await;
         let provider = MockServer::start().await;
         mount_discovery(&provider, 500).await;
-        let auth_state = state(&provider.uri());
+        let auth_state = state(&database, &provider.uri());
         let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
         let response = submit(auth_state, &ticket, "continue").await;
         let error_location = location(&response).expect("error redirect");
@@ -1789,9 +1846,10 @@ mod tests {
 
     #[tokio::test]
     async fn listener_exposes_authorize_route() {
+        let database = database().await;
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
-        let auth_state = state(&provider.uri());
+        let auth_state = state(&database, &provider.uri());
         let bind_addr = auth_state.settings.bind_addr();
         let server = super::super::start_listener(bind_addr, super::super::auth_router(auth_state))
             .await

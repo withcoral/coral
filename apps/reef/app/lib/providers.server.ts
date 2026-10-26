@@ -351,7 +351,8 @@ const reasons: Record<string, string> = {
   ACCOUNT_REQUIRED: 'This choice needs an account. Sign in first.',
   WORKSPACE_ARCHIVED: 'This workspace is archived. Restore it before you make changes.',
   INVALID_LIFECYCLE_STATE: 'The provider is already in that state. Reload the page.',
-  BUILTIN_PROVIDER_MANAGED: 'Ask your Coral administrator to make this change.',
+  BUILTIN_PROVIDER_MANAGED:
+    'You cannot make this change to a provider Coral manages. Reload the page.',
   REQUEST_ID_CONFLICT:
     'Coral used this request for a different change. Reload the page. Start the change again.',
   SETUP_CONSUMED: 'This setup is complete. Start again to continue.',

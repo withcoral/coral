@@ -35,6 +35,9 @@ Amended by [ADR 0022](0022-coral-updates-the-builtin-catalog-at-boot.md): when C
 Provider in each Workspace that has none and updates it to the catalog it serves. An Owner still cannot regenerate or
 update it.
 
+[ADR 0024](0024-add-provider-returns-a-link-and-does-not-wait.md) records why `addProvider` returns a Reef link when a
+person must sign in, instead of waiting for them.
+
 Rejected: a separate admin surface, which duplicates catalog, policy and approval; a reserved `workspace` namespace under
 `coral.providers`, which special-cases the call path; and editing `0003` and `0004` in place, which makes Coral refuse
 every database from an earlier release.

@@ -39,17 +39,12 @@ export function ManagementLayout({
 }
 
 /**
- * One line under the breadcrumb for the current page's status and context.
- * Renders nothing when a page has neither.
+ * One line under the breadcrumb for the current page's status.
+ * Renders nothing when a page has none.
  */
-export function PageIntro({ status, children }: { status?: ReactNode; children?: ReactNode }) {
-  if (!status && !children) return null
-  return (
-    <div className={styles.pageIntro}>
-      {status}
-      {children}
-    </div>
-  )
+export function PageIntro({ status }: { status?: ReactNode }) {
+  if (!status) return null
+  return <div className={styles.pageIntro}>{status}</div>
 }
 
 /** Links to each parent page, ending on the current page as text. */

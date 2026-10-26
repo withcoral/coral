@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use coral_catalog::{HttpMethod, OperationHints, OperationKey};
 use coral_outbound::DestinationPolicy;
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
@@ -7,7 +9,10 @@ use coral_provider::{
 };
 use coral_test_support::change;
 use coral_test_support::{TestDatabase, provision_user as organization_user};
-use coral_workspace::{AuthenticatedUser, OrganizationRole, WorkspaceDisplayName, WorkspaceModule};
+use coral_workspace::{
+    AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, WorkspaceDisplayName,
+    WorkspaceModule,
+};
 
 use crate::{
     LifecycleAction, LifecycleOutcome, OperationAccessState, OperationPolicyModule,
@@ -1256,6 +1261,241 @@ async fn policy_rejects_targets_from_another_workspace_and_writes_nothing() {
         OperationAccessState::Disabled
     );
     assert_eq!(events(&in_second).await, second_events);
+}
+
+// Operation Keys whose Call Paths differ from them, such as `repos.get`.
+const REPOSITORY_OPENAPI: &str = r#"openapi: 3.1.0
+info:
+  title: Repositories
+  version: 1.0.0
+servers:
+  - url: https://repositories.example
+security: []
+paths:
+  /repos:
+    get: { operationId: repos/get, responses: { "200": { description: OK } } }
+    post: { operationId: repos/create, responses: { "200": { description: OK } } }
+  /issues:
+    get: { operationId: issues/list, responses: { "200": { description: OK } } }
+    post: { operationId: issues/create, responses: { "200": { description: OK } } }
+"#;
+
+/// What happens to a Provider after its rules are set.
+#[derive(Debug, Clone, Copy)]
+enum ThenProvider {
+    Unchanged,
+    /// An update removes `issues/create` from its catalog.
+    DropsIssuesCreate,
+    Disabled,
+}
+
+// Catches: a rule read by Operation Key rather than Call Path, a rule whose
+// Operation left the catalog, a default read as a rule, a disabled Provider
+// hidden, a Principal other than an Owner refused, or an absent Provider,
+// the Built-in one included, read as one without rules.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table covers every rule a Provider can hold and each Principal that reads it"
+)]
+async fn provider_rules_hold_the_exact_rules_of_current_operations_by_call_path() {
+    use OperationAccessState::{ApprovalRequired, Disabled, Enabled};
+    let (_fixture, workspaces, providers, policies) = test_modules().await;
+    let owner = organization_user(
+        policies.database.clone(),
+        "user:provider-rules-owner",
+        OrganizationRole::Member,
+    )
+    .await;
+    let member = organization_user(
+        policies.database.clone(),
+        "user:provider-rules-member",
+        OrganizationRole::Member,
+    )
+    .await;
+    let workspace = workspaces
+        .create(
+            &change(owner.clone(), 300, '1'),
+            WorkspaceDisplayName::parse("Provider rules").expect("display name"),
+        )
+        .await
+        .expect("create Workspace");
+    workspaces
+        .set_membership(
+            &change(owner.clone(), 301, '1'),
+            workspace.id(),
+            &member,
+            coral_workspace::WorkspaceRole::Member,
+        )
+        .await
+        .expect("add Workspace Member");
+    let issued = workspaces
+        .create_agent(
+            &change(owner.clone(), 302, '1'),
+            workspace.id(),
+            coral_workspace::AgentDisplayName::parse("Reader").expect("Agent name"),
+            None,
+        )
+        .await
+        .expect("create Agent");
+    let agent = workspaces
+        .authenticate_agent(workspace.id(), issued.credential.expose(), 303)
+        .await
+        .expect("authenticate Agent");
+
+    for (at, namespace, rules, then, expected) in [
+        (310, "unruled", &[][..], ThenProvider::Unchanged, &[][..]),
+        (
+            320,
+            "ruled",
+            &[
+                ("repos/get", Disabled),
+                ("repos/create", Enabled),
+                ("issues/create", ApprovalRequired),
+            ][..],
+            ThenProvider::Unchanged,
+            &[
+                ("issues.create", ApprovalRequired),
+                ("repos.create", Enabled),
+                ("repos.get", Disabled),
+            ][..],
+        ),
+        (
+            330,
+            "updated",
+            &[("repos/get", Disabled), ("issues/create", Disabled)][..],
+            ThenProvider::DropsIssuesCreate,
+            &[("repos.get", Disabled)][..],
+        ),
+        (
+            340,
+            "stopped",
+            &[("repos/get", Disabled)][..],
+            ThenProvider::Disabled,
+            &[("repos.get", Disabled)][..],
+        ),
+    ] {
+        let context = change(owner.clone(), at, '2');
+        let provider = providers
+            .publish_openapi_fixture(
+                &context,
+                workspace.id(),
+                OpenApiDocument::parse(REPOSITORY_OPENAPI).expect("OpenAPI input"),
+                namespace,
+                CredentialRoute::None,
+            )
+            .await
+            .expect("publish Provider");
+        if !rules.is_empty() {
+            policies
+                .set_access_states(
+                    &context,
+                    rules
+                        .iter()
+                        .map(|(key, state)| {
+                            (
+                                OperationPolicyTarget::new(
+                                    workspace.id().clone(),
+                                    provider.id().clone(),
+                                    OperationKey::parse(key).expect("Operation Key"),
+                                ),
+                                *state,
+                            )
+                        })
+                        .collect(),
+                )
+                .await
+                .expect("set rules");
+        }
+        match then {
+            ThenProvider::Unchanged => {}
+            ThenProvider::DropsIssuesCreate => {
+                let setup = providers
+                    .prepare_update_fixture(
+                        &context,
+                        workspace.id(),
+                        provider.id(),
+                        OpenApiDocument::parse(&REPOSITORY_OPENAPI.replace(
+                            "    post: { operationId: issues/create, responses: { \"200\": { description: OK } } }\n",
+                            "",
+                        ))
+                        .expect("OpenAPI input"),
+                    )
+                    .await
+                    .expect("prepare update");
+                let revision = providers
+                    .review_setup_configuration(&owner, workspace.id(), setup.id())
+                    .await
+                    .expect("review update")
+                    .revision;
+                providers
+                    .regenerate_provider(
+                        &context,
+                        coral_provider::ProviderRegenerationRequest::new(
+                            ManagementRequestId::parse(&coral_test_support::fixture_request_id())
+                                .expect("request id"),
+                            workspace.id().clone(),
+                            provider.id().clone(),
+                            setup.id().clone(),
+                            revision,
+                        ),
+                    )
+                    .await
+                    .expect("update Provider");
+            }
+            ThenProvider::Disabled => {
+                providers
+                    .disable_provider(&context, workspace.id(), provider.id())
+                    .await
+                    .expect("disable Provider");
+            }
+        }
+
+        let expected = expected
+            .iter()
+            .map(|(path, state)| ((*path).to_owned(), *state))
+            .collect::<BTreeMap<_, _>>();
+        for principal in [
+            AuthenticatedPrincipal::user(owner.clone()),
+            AuthenticatedPrincipal::user(member.clone()),
+            agent.clone(),
+        ] {
+            assert_eq!(
+                policies
+                    .provider_rules(
+                        &principal,
+                        workspace.id(),
+                        &ProviderNamespace::parse(namespace).expect("namespace"),
+                        at + 5,
+                    )
+                    .await
+                    .expect("read the Provider's rules"),
+                expected,
+                "{namespace} read by {principal:?}"
+            );
+        }
+    }
+    // The Built-in Provider's Call Root is `coral.workspace`, which no
+    // namespace names.
+    for absent in ["absent", "workspace"] {
+        let read = policies
+            .provider_rules(
+                &AuthenticatedPrincipal::user(owner.clone()),
+                workspace.id(),
+                &ProviderNamespace::parse(absent).expect("namespace"),
+                350,
+            )
+            .await;
+        assert!(
+            matches!(
+                read,
+                Err(crate::Error::Provider(
+                    coral_provider::Error::ProviderNotFound
+                ))
+            ),
+            "{absent}: {read:?}"
+        );
+    }
 }
 
 async fn publish_weather_forecast(

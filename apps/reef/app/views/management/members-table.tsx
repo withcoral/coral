@@ -29,11 +29,14 @@ export function MembersTable({
   ariaLabel,
   currentUser,
   rows,
+  titleInfo,
   action,
 }: {
   ariaLabel: string
   currentUser: string
   rows: MemberRow[]
+  /** An info tip beside the title. */
+  titleInfo?: ReactNode
   /** The page's main action, at the end of the toolbar. */
   action?: ReactNode
 }) {
@@ -50,6 +53,7 @@ export function MembersTable({
       {/* The toolbar holds the page's title, so it stays when no rows do. */}
       <CatalogToolbar
         title="Members"
+        titleInfo={titleInfo}
         action={action}
         filter={{
           id: FILTER_ID,

@@ -10,6 +10,8 @@
 //!
 //! - [`OperationPolicyModule::decision`] returns the current exact decision.
 //! - [`OperationPolicyModule::decisions`] reads a Provider's bounded selection in one snapshot.
+//! - [`OperationPolicyModule::provider_rules`] reads one Provider's exact rules
+//!   by Call Path for any Principal that inspects the Workspace.
 //! - [`OperationPolicyModule::set_access_state`] creates or changes one exact
 //!   rule for a Workspace Owner.
 //! - [`OperationPolicyModule::set_access_states`] atomically changes 1–100 distinct
@@ -40,12 +42,15 @@ pub mod history_repository;
 mod repository;
 mod types;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use coral_catalog::{HttpMethod, OperationHints};
 use coral_db::Database;
+use coral_provider::ProviderNamespace;
 use coral_workspace::{
-    AuthenticatedUser, ChangeContext, WorkspaceAction, WorkspaceId, WorkspaceModule, WorkspaceRole,
+    AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, WorkspaceAction, WorkspaceId,
+    WorkspaceModule, WorkspaceRole,
 };
 
 pub use error::Error;
@@ -150,6 +155,52 @@ impl OperationPolicyModule {
             .collect::<Result<_, Error>>()?;
         transaction.rollback().await?;
         Ok(decisions)
+    }
+
+    /// Returns the exact rules a Workspace Owner set for the Provider under
+    /// `coral.providers.<namespace>`, in any state, keyed by each Operation's
+    /// Call Path relative to that Call Root. An Operation without a rule takes
+    /// its default and is left out, and so is a rule whose Operation left the
+    /// current catalog. Every Principal that inspects the Workspace reads them.
+    ///
+    /// # Errors
+    ///
+    /// Returns lost authority, an absent Provider, or a persistence failure.
+    pub async fn provider_rules(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        namespace: &ProviderNamespace,
+        now_unix_nanos: i64,
+    ) -> Result<BTreeMap<String, OperationAccessState>, Error> {
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        self.workspaces
+            .check_principal_inspection_in_snapshot(
+                &mut transaction,
+                actor,
+                workspace_id,
+                now_unix_nanos,
+            )
+            .await?;
+        let (provider, paths) = coral_provider::provider_operation_paths_in_transaction(
+            &mut transaction,
+            workspace_id,
+            namespace,
+        )
+        .await?
+        .ok_or(coral_provider::Error::ProviderNotFound)?;
+        let mut rules =
+            repository::provider_rules_in_transaction(&mut transaction, workspace_id, &provider)
+                .await?;
+        transaction.rollback().await?;
+        Ok(paths
+            .iter()
+            .filter_map(|path| {
+                rules
+                    .remove(path.key())
+                    .map(|state| (path.relative_path().to_owned(), state))
+            })
+            .collect())
     }
 
     /// Creates or changes one exact Operation Access State.

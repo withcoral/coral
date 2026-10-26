@@ -547,6 +547,46 @@ describe('configure', () => {
   )
 })
 
+// Catches: an account answer that Coral would refuse at publication passing
+// the account question, because Reef judged the route from the method.
+describe('account answer', () => {
+  const setup = '29a180e5-397c-4844-92de-8bbea6066235'
+  const parent = 'workspaces/11111111-1111-4111-8111-111111111111'
+  const basePath = '/providers/new'
+  const getProviderSetup = vi.fn()
+  const api = fakeManagement({ setups: { getProviderSetup } })
+  const { CALLER, FIXED } = CredentialRoute_Kind
+
+  beforeEach(() => vi.resetAllMocks())
+
+  it.each([
+    ['an individual account for a credential', 'caller', [CALLER, FIXED], 302],
+    ['no account for a credential', 'none', [CALLER, FIXED], 400],
+    // Coral reports no routes before confirmation, and Publication decides.
+    ['an answer before the configuration is confirmed', 'caller', [], 302],
+  ] as const)('takes %s only when Coral allows the route', async (_, account, allowed, status) => {
+    getProviderSetup.mockResolvedValue(
+      create(ProviderSetupSchema, {
+        name: `${parent}/providerSetups/${setup}`,
+        // The method says nothing here: only the routes Coral allows decide.
+        credentialMethod: CredentialMethod.BEARER,
+        allowedCredentialRoutes: allowed.map((kind: CredentialRoute_Kind) => ({ kind })),
+      }),
+    )
+    const answered = await attemptAction(
+      api,
+      new Request(`http://127.0.0.1${basePath}?setup=${setup}&namespace=example`, {
+        method: 'POST',
+      }),
+      context,
+      formWith({ intent: 'account', setup, account }),
+      { kind: 'workspace', parent, workspacePath: '/', basePath },
+    ).catch((response: unknown) => response)
+    expect(answered).toBeInstanceOf(Response)
+    expect((answered as Response).status).toBe(status)
+  })
+})
+
 describe('secret entry', () => {
   const setup = '29a180e5-397c-4844-92de-8bbea6066235'
   const parent = 'workspaces/11111111-1111-4111-8111-111111111111'
@@ -795,6 +835,7 @@ describe('Edit configuration Save', () => {
         inputKind: ProviderSetupInputKind.OPENAPI,
         state,
         credentialMethod: CredentialMethod.NONE,
+        allowedCredentialRoutes: [{ kind: CredentialRoute_Kind.NONE }],
         configuration: { revision: 3n, errors: {}, interruptsAccess },
       }),
     )

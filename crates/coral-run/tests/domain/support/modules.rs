@@ -1438,6 +1438,7 @@ pub(crate) fn test_invoker(
     crate::invocation::OperationInvoker::new(
         None,
         fixture.providers.clone(),
+        fixture.policies.clone(),
         None,
         Some(test_reef()),
         fixture.database.clone(),

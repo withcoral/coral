@@ -26,6 +26,9 @@ const setup: SetupView = {
   sourceLabel: 'https://example.test/mcp',
   sourceHost: 'example.test',
   serverName: 'example.test',
+  allowedRoutes: ['caller', 'fixed'],
+  connectAvailable: true,
+  connectLaterAvailable: true,
   configuration: review,
 }
 

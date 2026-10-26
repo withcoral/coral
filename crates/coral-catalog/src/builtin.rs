@@ -33,12 +33,14 @@ use crate::{
 };
 
 mod add_provider;
+mod get_policy;
 mod get_provider;
 mod list_providers;
 mod provider_input;
 mod update_provider;
 
 pub use add_provider::{AddProviderArguments, AddProviderResult};
+pub use get_policy::{BuiltinAccessState, GetPolicyArguments, GetPolicyResult};
 pub use get_provider::{
     ConfigurationOutput, GetProviderArguments, GetProviderResult, ProviderSourceOutput,
 };
@@ -105,6 +107,9 @@ pub enum BuiltinOperation {
     /// Reads one Provider's Provider Configuration, so a Program can change some
     /// of it and send back only those fields.
     GetProvider,
+    /// Reads the exact rules a Workspace Owner set for one Provider's
+    /// Operations, so a Program can find the ones discovery hides.
+    GetPolicy,
     /// Changes one Owner-created Provider's configuration or source. Coral
     /// publishes the change when nobody needs to act; otherwise a person
     /// finishes it in Reef.
@@ -112,10 +117,11 @@ pub enum BuiltinOperation {
 }
 
 impl BuiltinOperation {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::AddProvider,
         Self::ListProviders,
         Self::GetProvider,
+        Self::GetPolicy,
         Self::UpdateProvider,
     ];
 
@@ -126,6 +132,7 @@ impl BuiltinOperation {
             Self::AddProvider => "addProvider",
             Self::ListProviders => "listProviders",
             Self::GetProvider => "getProvider",
+            Self::GetPolicy => "getPolicy",
             Self::UpdateProvider => "updateProvider",
         }
     }
@@ -147,6 +154,7 @@ impl BuiltinOperation {
             Self::AddProvider => add_provider::NEEDS,
             Self::ListProviders => list_providers::NEEDS,
             Self::GetProvider => get_provider::NEEDS,
+            Self::GetPolicy => get_policy::NEEDS,
             Self::UpdateProvider => update_provider::NEEDS,
         }
     }
@@ -287,6 +295,8 @@ pub enum BuiltinArguments {
     ListProviders,
     /// `getProvider`'s arguments.
     GetProvider(GetProviderArguments),
+    /// `getPolicy`'s arguments.
+    GetPolicy(GetPolicyArguments),
     /// `updateProvider`'s arguments.
     UpdateProvider(Box<UpdateProviderArguments>),
 }
@@ -310,6 +320,9 @@ impl BuiltinArguments {
             }
             BuiltinOperation::GetProvider => {
                 GetProviderArguments::parse(arguments).map(Self::GetProvider)
+            }
+            BuiltinOperation::GetPolicy => {
+                GetPolicyArguments::parse(arguments).map(Self::GetPolicy)
             }
             BuiltinOperation::UpdateProvider => UpdateProviderArguments::parse(arguments)
                 .map(|arguments| Self::UpdateProvider(Box::new(arguments))),
@@ -556,6 +569,7 @@ fn definition(operation: BuiltinOperation) -> Definition {
         BuiltinOperation::AddProvider => add_provider::definition(),
         BuiltinOperation::ListProviders => list_providers::definition(),
         BuiltinOperation::GetProvider => get_provider::definition(),
+        BuiltinOperation::GetPolicy => get_policy::definition(),
         BuiltinOperation::UpdateProvider => update_provider::definition(),
     }
 }

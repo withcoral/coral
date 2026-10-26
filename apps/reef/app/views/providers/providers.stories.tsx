@@ -137,20 +137,24 @@ const blocked: ProviderView = {
   operations: githubOps('prov-hr', 'hr'),
 }
 // Coral's Built-in Provider, which leads the rail under Coral's mark.
-const coralOperations = ['addProvider', 'listProviders', 'getProvider', 'updateProvider'].map(
-  (key) => ({
-    ...weather.operations[0]!,
-    name: `providers/prov-coral/operations/${key}`,
-    relativePath: key,
-    callPath: `coral.workspace.${key}`,
-    path: `/workspaces/demo/providers/prov-coral/ops/${key}`,
-    // Read-only, so they start enabled.
-    ...(['listProviders', 'getProvider'].includes(key) && {
-      hints: { readOnly: true, idempotent: true },
-      policy: 'enabled' as const,
-    }),
+const coralOperations = [
+  'addProvider',
+  'listProviders',
+  'getProvider',
+  'getPolicy',
+  'updateProvider',
+].map((key) => ({
+  ...weather.operations[0]!,
+  name: `providers/prov-coral/operations/${key}`,
+  relativePath: key,
+  callPath: `coral.workspace.${key}`,
+  path: `/workspaces/demo/providers/prov-coral/ops/${key}`,
+  // Read-only, so they start enabled.
+  ...(['listProviders', 'getProvider', 'getPolicy'].includes(key) && {
+    hints: { readOnly: true, idempotent: true },
+    policy: 'enabled' as const,
   }),
-)
+}))
 const coral: ProviderView = {
   ...weather,
   id: 'prov-coral',
@@ -1028,10 +1032,16 @@ const setupReady: SetupView = {
   sourceLabel: 'Uploaded document',
   sourceHost: '',
   serverName: '',
+  allowedRoutes: ['none'],
+  connectAvailable: false,
+  connectLaterAvailable: false,
 }
 const setupBearer: SetupView = {
   ...setupReady,
   credentialMethod: 'bearer',
+  allowedRoutes: ['caller', 'fixed'],
+  connectAvailable: true,
+  connectLaterAvailable: true,
   configuration: {
     ...setupReady.configuration!,
     values: { ...setupReady.configuration!.values, authentication: 'bearer' },
@@ -1040,6 +1050,8 @@ const setupBearer: SetupView = {
 const configurationSetup: SetupView = {
   ...setupReady,
   state: 'awaiting_configuration',
+  // Coral allows no route until the configuration is confirmed.
+  allowedRoutes: [],
   configuration: {
     ...setupReady.configuration!,
     confirmed: false,
@@ -1147,6 +1159,9 @@ const setupOpenApiOAuth: SetupView = {
     values: { ...setupReady.configuration!.values, authentication: 'oauth' },
   },
   credentialMethod: 'oauth',
+  allowedRoutes: ['caller', 'fixed'],
+  connectAvailable: true,
+  connectLaterAvailable: true,
   sourceLabel: 'https://api.example.com/openapi.json',
   sourceHost: 'api.example.com',
   serverName: 'api.example.com',
@@ -1163,6 +1178,10 @@ const setupAwaiting: SetupView = {
   },
   state: 'awaiting_authorization',
   credentialMethod: 'oauth',
+  // Coral sets up the application only at a sign-in, so nobody can connect later yet.
+  allowedRoutes: ['caller', 'fixed'],
+  connectAvailable: true,
+  connectLaterAvailable: false,
   sourceLabel: 'https://mcp.example.com/mcp',
   sourceHost: 'mcp.example.com',
   serverName: 'mcp.example.com',
@@ -1187,6 +1206,8 @@ const succeeded = (clientId: string, bootstrap: 'registration' | 'manual') => ({
 const setupMcpSignedIn: SetupView = {
   ...setupAwaiting,
   state: 'ready',
+  // The sign-in set up the application each person connects through later.
+  connectLaterAvailable: true,
   authorized: true,
   provisionalGrantId: 'c0000000-0000-4000-8000-000000000001',
   grantedScope: 'read write',
@@ -1868,6 +1889,8 @@ export const UpdateFailed: Story = {
 const mcpReview: SetupView = {
   ...setupAwaiting,
   state: 'awaiting_configuration',
+  allowedRoutes: [],
+  connectAvailable: false,
   configuration: {
     ...configurationSetup.configuration!,
     authenticationMethods: ['bearer', 'oauth'],

@@ -90,28 +90,32 @@ async fn route_etag_race_has_one_winner_and_no_op_preserves_version_and_evidence
         .create(&context, WorkspaceDisplayName::parse("Route").unwrap())
         .await
         .unwrap();
-    let provider = publish_provider(
-        &providers,
-        &context,
-        workspace.id(),
-        CREDENTIAL_FREE_OPENAPI,
-        "race",
-        CredentialRoute::Caller,
-    )
-    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let accounts = crate::tests::accounts_for(&providers, directory.path());
+    let provider = providers
+        .publish_shared_fixture(
+            &context,
+            workspace.id(),
+            crate::OpenApiDocument::parse(CREDENTIAL_REQUIRED_OPENAPI).unwrap(),
+            "race",
+            &accounts,
+            coral_credentials::CredentialValues::token(Secret::new("race-canary".into()).unwrap()),
+        )
+        .await
+        .unwrap();
     let stale = context.clone().with_etag(&provider.etag()).unwrap();
     let (left, right) = tokio::join!(
         providers.change_account_setting_fixture(
             &stale,
             workspace.id(),
             provider.id(),
-            CredentialRoute::None
+            CredentialRoute::Caller
         ),
         providers.change_account_setting_fixture(
             &stale,
             workspace.id(),
             provider.id(),
-            CredentialRoute::None
+            CredentialRoute::Caller
         ),
     );
     let updated = match (left, right) {
@@ -145,7 +149,7 @@ async fn route_etag_race_has_one_winner_and_no_op_preserves_version_and_evidence
                 &current_context,
                 workspace.id(),
                 provider.id(),
-                CredentialRoute::None
+                CredentialRoute::Caller
             )
             .await
             .unwrap(),
@@ -349,72 +353,85 @@ async fn exact_provider_reads_report_an_unparseable_stored_call_root_as_corrupt(
     transaction.rollback().await.unwrap();
 }
 
-/// A database from before Provider rows stored their Call Root: the upgrade
-/// prefixes each stored namespace, so the Provider loads and its Operations
-/// keep their Call Paths.
+/// A database from before one upgrade, holding a Provider an Owner added:
+/// the upgrade keeps the Provider and its catalog, so it loads and its
+/// Operations keep their Call Paths. `0026` rebuilds the catalog tables on
+/// SQLite to accept `builtin`; `0028` prefixes each stored namespace.
 #[tokio::test]
-async fn upgrade_stores_the_call_root_of_each_provider_an_owner_added() {
-    // Every migration but the one under test: the code arranging the rows
-    // runs against the current schema, less the Call Root backfill.
-    let before_call_roots = coral_test_support::edited_migration_plan(|migrations| {
-        migrations
-            .into_iter()
-            .filter(|migration| migration.version != 28)
-            .collect()
-    });
-    let db = coral_test_support::TestDatabase::new(&before_call_roots)
-        .await
-        .expect("create database from before Call Roots");
-    let database = db.database();
-    let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
-    let providers = crate::ProviderModule::with_running_catalog(
-        coral_outbound::DestinationPolicy::default(),
-        database.clone(),
-        workspaces.clone(),
-    );
-    let owner = organization_user(database.clone(), "user:upgrade", OrganizationRole::Owner).await;
-    let context = change_context(owner.clone(), 10, 'a');
-    let workspace = workspaces
-        .create(&context, WorkspaceDisplayName::parse("Upgrade").unwrap())
-        .await
-        .unwrap();
-    let provider = publish_provider(
-        &providers,
-        &context,
-        workspace.id(),
-        CREDENTIAL_FREE_OPENAPI,
-        "weather",
-        CredentialRoute::None,
-    )
-    .await;
-    db.execute_fixture_sql(&format!(
-        "UPDATE provider_records SET namespace = 'weather' WHERE id = '{}'",
-        provider.id()
-    ))
-    .await
-    .unwrap();
+async fn upgrade_keeps_each_provider_an_owner_added() {
+    for (version, before) in [
+        (26, None),
+        (
+            28,
+            Some("UPDATE provider_records SET namespace = 'weather' WHERE id = '{provider}'"),
+        ),
+    ] {
+        // Every migration but the one under test: the code arranging the rows
+        // runs against the current schema, less that upgrade.
+        let before_upgrade = coral_test_support::edited_migration_plan(|migrations| {
+            migrations
+                .into_iter()
+                .filter(|migration| migration.version != version)
+                .collect()
+        });
+        let db = coral_test_support::TestDatabase::new(&before_upgrade)
+            .await
+            .expect("create database from before the upgrade");
+        let database = db.database();
+        let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
+        let providers = crate::ProviderModule::with_running_catalog(
+            coral_outbound::DestinationPolicy::default(),
+            database.clone(),
+            workspaces.clone(),
+        );
+        let owner =
+            organization_user(database.clone(), "user:upgrade", OrganizationRole::Owner).await;
+        let context = change_context(owner.clone(), 10, 'a');
+        let workspace = workspaces
+            .create(&context, WorkspaceDisplayName::parse("Upgrade").unwrap())
+            .await
+            .unwrap();
+        let provider = publish_provider(
+            &providers,
+            &context,
+            workspace.id(),
+            CREDENTIAL_FREE_OPENAPI,
+            "weather",
+            CredentialRoute::None,
+        )
+        .await;
+        if let Some(before) = before {
+            db.execute_fixture_sql(&before.replace("{provider}", &provider.id().to_string()))
+                .await
+                .unwrap();
+        }
 
-    database
-        .migrate(coral_db::migration_plan())
-        .await
-        .expect("apply the upgrade");
+        database
+            .migrate(coral_db::migration_plan())
+            .await
+            .unwrap_or_else(|error| panic!("apply upgrade {version}: {error}"));
 
-    let inspected = providers
-        .inspect_provider(&owner, workspace.id(), provider.id())
+        let inspected = providers
+            .inspect_provider(&owner, workspace.id(), provider.id())
+            .await
+            .unwrap();
+        assert_eq!(
+            inspected.call_root().as_str(),
+            "coral.providers.weather",
+            "upgrade {version}"
+        );
+        let mut transaction = database.begin().await.unwrap();
+        let resolved = crate::resolve_owner_operation_in_transaction(
+            &mut transaction,
+            workspace.id(),
+            "coral.providers.weather.getForecast",
+        )
         .await
-        .unwrap();
-    assert_eq!(inspected.call_root().as_str(), "coral.providers.weather");
-    let mut transaction = database.begin().await.unwrap();
-    let resolved = crate::resolve_owner_operation_in_transaction(
-        &mut transaction,
-        workspace.id(),
-        "coral.providers.weather.getForecast",
-    )
-    .await
-    .unwrap()
-    .map(|target| target.provider_access().id().clone());
-    assert_eq!(resolved.as_ref(), Some(provider.id()));
-    transaction.rollback().await.unwrap();
+        .unwrap()
+        .map(|target| target.provider_access().id().clone());
+        assert_eq!(resolved.as_ref(), Some(provider.id()), "upgrade {version}");
+        transaction.rollback().await.unwrap();
+    }
 }
 
 #[test]
@@ -880,5 +897,40 @@ async fn agent_inspection_shows_each_settings_account_for_that_agent_only() {
             )))
         ),
         "only an Owner inspects Agent Providers"
+    );
+}
+
+#[test]
+fn a_route_fits_a_source_only_when_it_sends_what_the_source_needs() {
+    use coral_catalog::{AuthenticationConfiguration, ProviderCredentialContract};
+    let free = ProviderCredentialContract::NONE;
+    let bearer = ProviderCredentialContract::from(AuthenticationConfiguration::Bearer)
+        .at_destinations(vec!["https://weather.example".into()]);
+    for (route, contract, expected) in [
+        (CredentialRoute::None, &free, RouteFit::Fits),
+        (
+            CredentialRoute::Fixed,
+            &free,
+            RouteFit::SourceNeedsNoCredential,
+        ),
+        (
+            CredentialRoute::Caller,
+            &free,
+            RouteFit::SourceNeedsNoCredential,
+        ),
+        (
+            CredentialRoute::None,
+            &bearer,
+            RouteFit::SourceNeedsCredential,
+        ),
+        (CredentialRoute::Fixed, &bearer, RouteFit::Fits),
+        (CredentialRoute::Caller, &bearer, RouteFit::Fits),
+    ] {
+        assert_eq!(route.fits(contract), expected, "{route:?} for {contract:?}");
+    }
+    assert_eq!(CredentialRoute::fitting(&free), vec![CredentialRoute::None]);
+    assert_eq!(
+        CredentialRoute::fitting(&bearer),
+        vec![CredentialRoute::Caller, CredentialRoute::Fixed]
     );
 }

@@ -75,6 +75,9 @@ const setup: SetupView = {
   sourceLabel: 'Uploaded document',
   sourceHost: '',
   serverName: '',
+  allowedRoutes: [],
+  connectAvailable: false,
+  connectLaterAvailable: false,
   configuration: review,
 }
 

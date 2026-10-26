@@ -300,6 +300,18 @@ pub struct ProviderSetupInspection {
     pub credential_fields: std::collections::BTreeMap<String, coral_catalog::CredentialField>,
 }
 
+/// Whether a person can connect an Account for a Setup's confirmed configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetupConnectReadiness {
+    /// A sign-in is in hand for this open Setup, or a person can start one or
+    /// enter its credential now. False once the Setup has ended.
+    pub now: bool,
+    /// Once Publication adds the Provider with no sign-in here, each person can
+    /// still connect their own Account: the configuration names its OAuth
+    /// application, a sign-in here set one up, or the credential is typed in.
+    pub later: bool,
+}
+
 /// OAuth application input for one setup-scoped Authorization:
 /// the callback, and either automatic bootstrap or an owner-configured application.
 #[derive(Debug)]
@@ -619,17 +631,63 @@ impl AccountModule {
         }
     }
 
+    /// Whether a person can connect an Account for `inspected`'s confirmed
+    /// configuration, as Publication and an Account's Connect decide it.
+    /// Nothing can be connected before confirmation or to a credential-free
+    /// source.
+    /// # Errors
+    /// As [`Self::setup_automatic_client_available`].
+    pub async fn setup_connect_readiness(
+        &self,
+        actor: &AuthenticatedUser,
+        inspected: &ProviderSetupInspection,
+    ) -> Result<SetupConnectReadiness, Error> {
+        let review = &inspected.configuration;
+        let Some(contract) = review.confirmed_contract().filter(|contract| {
+            review.configuration_confirmed && **contract != ProviderCredentialContract::NONE
+        }) else {
+            return Ok(SetupConnectReadiness {
+                now: false,
+                later: false,
+            });
+        };
+        // A sign-in already started has its application, and a typed
+        // credential needs none. Only a Setup that still takes a sign-in can
+        // start one.
+        let signed_in =
+            inspected.authentication.authorized || inspected.authentication.authorization.is_some();
+        let now = match inspected.setup.state() {
+            crate::ProviderSetupState::AwaitingAuthorization | crate::ProviderSetupState::Ready => {
+                signed_in
+                    || self
+                        .setup_oauth_application_available(
+                            actor,
+                            inspected.setup.owner(),
+                            inspected.setup.id(),
+                            Some(contract.authentication()),
+                        )
+                        .await?
+            }
+            crate::ProviderSetupState::AwaitingDiscovery => signed_in,
+            crate::ProviderSetupState::AwaitingConfiguration
+            | crate::ProviderSetupState::Consumed(_)
+            | crate::ProviderSetupState::Expired
+            | crate::ProviderSetupState::Canceled => false,
+        };
+        // Publication keeps the application this person's own sign-in set
+        // up, so the reported contract carries it.
+        let later = !super::oauth_client::oauth_application_missing(
+            inspected.authentication.contract.authentication(),
+        );
+        Ok(SetupConnectReadiness { now, later })
+    }
+
     /// Whether `authentication` names its OAuth application, or needs none.
     /// Only [`Self::setup_oauth_application_available`] can find one that
     /// Coral sets up.
     #[must_use]
     pub fn names_oauth_application(authentication: Option<&AuthenticationConfiguration>) -> bool {
-        !authentication.is_some_and(|method| {
-            matches!(
-                method,
-                AuthenticationConfiguration::OAuthAuthorizationCode { client: None, .. }
-            ) || super::oauth_client::device_client_missing(method)
-        })
+        !authentication.is_some_and(super::oauth_client::oauth_application_missing)
     }
 
     /// Reports only OAuth application choices this host can actually bootstrap.
@@ -1192,6 +1250,16 @@ pub(crate) async fn decide(
             "the requested publication has no authorized setup credential",
         )
     };
+    match route.fits(contract) {
+        crate::RouteFit::Fits => {}
+        crate::RouteFit::SourceNeedsCredential => return Err(account_required()),
+        crate::RouteFit::SourceNeedsNoCredential => {
+            return Err(PublicationDiagnostic::stable(
+                "credential_not_accepted",
+                "the source needs no credential, and the requested route sends one",
+            ));
+        }
+    }
     let row = load(tx, owner, setup_id)
         .await
         .map_err(|_error| account_required())?;
@@ -1212,12 +1280,8 @@ pub(crate) async fn decide(
         return Err(account_required());
     }
     let without_material = || match route {
-        CredentialRoute::None if contract == &ProviderCredentialContract::NONE => {
-            Ok(Promotion::NotRequired)
-        }
-        CredentialRoute::Caller | CredentialRoute::None | CredentialRoute::Fixed => {
-            Err(account_required())
-        }
+        CredentialRoute::None => Ok(Promotion::NotRequired),
+        CredentialRoute::Caller | CredentialRoute::Fixed => Err(account_required()),
     };
     let Some(row) = row else {
         return without_material();

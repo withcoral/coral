@@ -16,12 +16,12 @@ mod binding;
 mod builtin;
 pub use builtin::{
     AddProviderArguments, AddProviderResult, ArgumentProblem, BUILTIN_PROVIDER_DISPLAY_NAME,
-    BuiltinArguments, BuiltinCatalog, BuiltinCatalogIdentity, BuiltinCredentialRoute,
-    BuiltinExecutionBinding, BuiltinOperation, ConfigurationChoices, ConfigurationOutput,
-    ConfigurationPatch, GetProviderArguments, GetProviderResult, ListProvidersResult,
-    ListedProvider, ListedProviderState, ListedSetup, ListedSetupState, ProviderFacts,
-    ProviderSourceArgument, ProviderSourceOutput, SourceChange, UpdateProviderArguments,
-    UpdateProviderResult,
+    BuiltinAccessState, BuiltinArguments, BuiltinCatalog, BuiltinCatalogIdentity,
+    BuiltinCredentialRoute, BuiltinExecutionBinding, BuiltinOperation, ConfigurationChoices,
+    ConfigurationOutput, ConfigurationPatch, GetPolicyArguments, GetPolicyResult,
+    GetProviderArguments, GetProviderResult, ListProvidersResult, ListedProvider,
+    ListedProviderState, ListedSetup, ListedSetupState, ProviderFacts, ProviderSourceArgument,
+    ProviderSourceOutput, SourceChange, UpdateProviderArguments, UpdateProviderResult,
 };
 mod configuration;
 pub use configuration::{
@@ -306,7 +306,9 @@ pub async fn generation_fingerprint_in_transaction(
     repository::generation_fingerprint(transaction, generation_id).await
 }
 
-/// Loads active Operation-relative path claims for regeneration carry-forward.
+/// Loads each Operation's Operation-relative path, in Operation Key order,
+/// without loading its definition or schemas. Regeneration carries them
+/// forward, and an Operation's rules are read by them.
 ///
 /// # Errors
 ///
@@ -315,8 +317,7 @@ pub async fn operation_paths_in_transaction(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
 ) -> Result<Vec<OperationPathAssignment>, Error> {
-    let operations = repository::load_catalog_operations(transaction, generation_id).await?;
-    Ok(OperationPathAssignment::for_operations(&operations))
+    repository::load_operation_paths(transaction, generation_id).await
 }
 
 /// Verifies one active private Generation and complete Catalog package.
