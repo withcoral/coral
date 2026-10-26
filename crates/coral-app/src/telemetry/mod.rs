@@ -381,3 +381,26 @@ pub fn shutdown_tracing() {
         tracing::warn!("OTEL logger provider shutdown error: {error}");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use opentelemetry::{Key, Value};
+
+    use super::telemetry_resource;
+
+    /// Operators filter exported telemetry by `service.instance.id` to find
+    /// the Coral Instance that produced it.
+    #[test]
+    fn the_resource_names_the_service_and_the_coral_instance() {
+        let resource = telemetry_resource("coral-test", "6f1c2b0e-instance");
+
+        assert_eq!(
+            resource.get(&Key::new("service.name")),
+            Some(Value::from("coral-test"))
+        );
+        assert_eq!(
+            resource.get(&Key::new("service.instance.id")),
+            Some(Value::from("6f1c2b0e-instance"))
+        );
+    }
+}
