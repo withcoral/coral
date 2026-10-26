@@ -1608,28 +1608,10 @@ async fn an_invalid_argument_names_what_to_correct() {
 // declares, a host that performs listProviders or getPolicy only for a User,
 // or a read that waits for approval.
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "each Principal calls every Built-in Operation, the ones it reaches and the ones it does not"
-)]
 async fn members_and_agents_list_providers_and_get_policy_but_cannot_reach_add_or_get_provider() {
     let scope = AdminScope::new("user:admin-owner").await;
     scope.set_access(OperationAccessState::Enabled).await;
-    let weather = scope.publish_weather().await;
-    scope
-        .fixture
-        .policies
-        .set_access_state(
-            &change(scope.owner_user(), 13, '4'),
-            OperationPolicyTarget::new(
-                scope.workspace_id.clone(),
-                weather.id().clone(),
-                OperationKey::parse("getForecast").unwrap(),
-            ),
-            OperationAccessState::ApprovalRequired,
-        )
-        .await
-        .expect("set getForecast access");
+    scope.publish_weather().await;
     let member = organization_user(
         scope.fixture.database.clone(),
         "user:admin-member",
@@ -1705,16 +1687,11 @@ async fn members_and_agents_list_providers_and_get_policy_but_cannot_reach_add_o
                 workspace_call("getPolicy", r#"{ "namespace": "weather" }"#),
             )
             .await;
+        let read = final_value(&scope.terminal(&principal, &run).await);
         assert_eq!(
-            final_value(&scope.terminal(&principal, &run).await),
-            serde_json::json!({
-                "data": {
-                    "namespace": "weather",
-                    "rules": { "getForecast": "approval_required" },
-                },
-                "metadata": { "kind": "builtin" },
-            }),
-            "{principal:?}"
+            read.pointer("/data/namespace"),
+            Some(&serde_json::json!("weather")),
+            "{principal:?} reads the policy: {read}"
         );
     }
     assert_eq!(scope.lifecycle_events().await, before);

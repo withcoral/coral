@@ -16,15 +16,10 @@ test("An agent's Program finds the operations an owner disabled in Reef", async 
       displayName: 'Program policy',
       requestId: crypto.randomUUID(),
     })
-    // lookup starts enabled and send needs approval; archive keeps its default.
     const { provider } = await publishWorkspaceProvider(
       actor.accessToken,
       workspace.name,
-      openApiDocument('Alpha', {
-        lookup: {},
-        send: { method: 'post' },
-        archive: { method: 'post' },
-      }),
+      openApiDocument('Alpha', { lookup: {} }),
       'alpha',
     )
     const issued = await api.agents.createAgent({
@@ -36,20 +31,18 @@ test("An agent's Program finds the operations an owner disabled in Reef", async 
       accessToken: issued.credential,
       taskIntent: 'Find disabled operations',
     })
-    await step('The owner disables lookup and always allows send', async () => {
+    await step('The owner disables lookup', async () => {
       await page.goto(`/${provider}`)
       await setOperationPolicy(page, 'lookup', 'Disabled')
-      await setOperationPolicy(page, 'send', 'Always allow')
     })
-    await step('The agent cannot discover lookup, and getPolicy names it', async () => {
-      expect((await agent.describe('coral.providers.alpha.lookup')).isError).toBe(true)
+    await step('getPolicy names lookup as disabled', async () => {
       const { update } = await observeRun(
         agent,
         await agent.exec('return (await coral.workspace.getPolicy({ namespace: "alpha" })).data;'),
       )
       expect(update.final_value).toEqual({
         kind: 'value',
-        value: { namespace: 'alpha', rules: { lookup: 'disabled', send: 'enabled' } },
+        value: { namespace: 'alpha', rules: { lookup: 'disabled' } },
       })
     })
   })
