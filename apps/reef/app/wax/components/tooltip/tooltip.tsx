@@ -35,7 +35,7 @@ export function Tooltip({
   const disabled = showOnlyWhenTruncated && !isTruncated
 
   const composedRef = useComposedRefs(
-    setTrigger,
+    showOnlyWhenTruncated ? setTrigger : undefined,
     (children as React.ReactElement<{ ref?: React.Ref<HTMLElement> }>).props?.ref,
   )
 
