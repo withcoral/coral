@@ -203,7 +203,7 @@ impl ProviderModule {
         }
         tx.rollback().await?;
         for listed in names.values_mut() {
-            listed.sort_by_cached_key(|name| name.to_lowercase());
+            listed.sort_by_cached_key(|name| (name.to_lowercase(), name.clone()));
         }
         Ok(names)
     }

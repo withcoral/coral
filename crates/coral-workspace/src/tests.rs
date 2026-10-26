@@ -1055,6 +1055,10 @@ async fn agent_creation_returns_one_credential_and_safe_durable_attribution() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table covers what each User is offered and what each can pick"
+)]
 async fn sign_in_choices_are_active_memberships_with_their_role_and_only_they_can_be_picked() {
     let (_database, module) = test_module().await;
     let owner = organization_user(
@@ -1144,10 +1148,12 @@ async fn sign_in_choices_are_active_memberships_with_their_role_and_only_they_ca
         (picked.workspace().id(), picked.role()),
         (beta.id(), WorkspaceRole::Member)
     );
+    let absent = crate::WorkspaceId::generate();
     for (case, actor, workspace) in [
         ("no Membership", &member, alpha.id()),
         ("archived", &owner, archived.id()),
         ("governance only", &governor, alpha.id()),
+        ("absent", &owner, &absent),
     ] {
         assert!(
             matches!(

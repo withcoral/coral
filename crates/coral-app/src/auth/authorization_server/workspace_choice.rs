@@ -175,7 +175,7 @@ async fn pick(
 }
 
 /// Each choice's usable Providers, named for display: "GitHub, Linear, Slack". `None` where they cannot be read;
-/// the page then shows the Workspace without them rather than failing. One read covers every choice.
+/// the page then shows the Workspace without them rather than failing. One query names every choice's Providers.
 async fn provider_summaries(
     state: &AuthorizationServerHttpState,
     user_id: &str,

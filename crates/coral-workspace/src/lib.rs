@@ -283,11 +283,19 @@ impl WorkspaceModule {
         user_id: &UserId,
         workspace_id: &WorkspaceId,
     ) -> Result<WorkspaceChoice, Error> {
-        self.list_sign_in_choices(user_id)
-            .await?
-            .into_iter()
-            .find(|choice| choice.workspace.id() == workspace_id)
-            .ok_or(Error::WorkspaceNotFound)
+        let actor = OrganizationModule::new(self.database.clone())
+            .resolve_user_authority(user_id)
+            .await?;
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        let authority =
+            repository::authority(&mut transaction, workspace_id, actor.user_id()).await?;
+        transaction.commit().await?;
+        match authority {
+            Some((workspace, Some(role))) if workspace.state() == WorkspaceState::Active => {
+                Ok(WorkspaceChoice { workspace, role })
+            }
+            _ => Err(Error::WorkspaceNotFound),
+        }
     }
 
     /// Checks one Workspace-sensitive action and returns current evidence.
