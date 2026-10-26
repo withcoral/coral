@@ -1,5 +1,11 @@
-//! User confirmation page and submission parsing for OAuth authorization.
+//! The approval page every sign-in shows, and parsing its submission.
+//!
+//! A Workspace URL shows it before sign-in, from `/oauth/authorize`; the
+//! Organization MCP Endpoint shows it after, from the callback, where the
+//! person also picks the Workspace. This module renders every byte of it and
+//! escapes every value it is handed.
 
+use std::fmt::Write as _;
 use std::sync::LazyLock;
 
 use axum::body::to_bytes;
@@ -15,8 +21,9 @@ use url::{Host, Url, form_urlencoded};
 use zeroize::Zeroize as _;
 use zeroize::Zeroizing;
 
-use super::super::cookies;
-use super::super::response::approval_page_security_headers;
+use super::cookies;
+use super::response::approval_page_security_headers;
+use super::workspace_choice::WORKSPACE_CHOICE_PATH;
 
 /// Room for a sealed approval: the app inputs, a client name from a metadata
 /// document of at most 5 KiB, and the resource, base64url encoded.
@@ -53,8 +60,9 @@ static CONTENT_SECURITY_POLICY: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-pub(super) const APPROVAL_PAGE_STYLES: &str = include_str!("approval.css");
-const APPROVAL_PAGE: &str = include_str!("approval.html");
+pub(super) const APPROVAL_PAGE_STYLES: &str = include_str!("approval_page/approval.css");
+const APPROVAL_PAGE: &str = include_str!("approval_page/approval.html");
+const AUTHORIZE_PATH: &str = "/oauth/authorize";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ApprovalDecision {
@@ -63,7 +71,7 @@ pub(super) enum ApprovalDecision {
 }
 
 /// The secret in the browser's approval cookie that sealed approvals are bound to.
-pub(crate) struct BrowserBinding([u8; 32]);
+pub(super) struct BrowserBinding([u8; 32]);
 
 impl BrowserBinding {
     pub(super) fn from_bytes(bytes: [u8; 32]) -> Self {
@@ -95,11 +103,23 @@ pub(super) fn browser_binding_for_page(
     Ok(BrowserBinding::from_bytes(*binding))
 }
 
+/// The fields of an approval page's submission.
+pub(super) struct Submission {
+    pub(super) ticket: Zeroizing<String>,
+    pub(super) browser_binding: BrowserBinding,
+    pub(super) decision: ApprovalDecision,
+    /// The Workspace picked at the Organization MCP Endpoint. Only that page
+    /// sends one, and only when a row was picked.
+    pub(super) workspace: Option<String>,
+}
+
+/// Reads an approval page's form from the browser that holds an approval
+/// cookie, submitted from this server's exact origin.
 pub(super) async fn parse_submission(
     request: Request,
     expected_origin: &str,
     secure_cookie: bool,
-) -> Result<(Zeroizing<String>, BrowserBinding, ApprovalDecision), ()> {
+) -> Result<Submission, ()> {
     let (parts, body) = request.into_parts();
     if !has_exact_origin(&parts.headers, expected_origin) {
         return Err(());
@@ -117,8 +137,9 @@ pub(super) async fn parse_submission(
     let body = to_bytes(body, MAX_FORM_BYTES).await.map_err(|_error| ())?;
     let mut ticket = None;
     let mut decision = None;
+    let mut workspace = None;
     for (index, (name, value)) in form_urlencoded::parse(&body).enumerate() {
-        if index >= 2 {
+        if index >= 3 {
             return Err(());
         }
         match name.as_ref() {
@@ -130,6 +151,7 @@ pub(super) async fn parse_submission(
                     _ => return Err(()),
                 });
             }
+            "workspace" if workspace.is_none() => workspace = Some(value.into_owned()),
             _ => return Err(()),
         }
     }
@@ -145,7 +167,136 @@ pub(super) async fn parse_submission(
             })
             .ok_or(())?,
     );
-    Ok((ticket, browser_binding, decision.ok_or(())?))
+    Ok(Submission {
+        ticket,
+        browser_binding,
+        decision: decision.ok_or(())?,
+        workspace,
+    })
+}
+
+/// What an approval page asks the person to allow.
+pub(super) enum ApprovalScope<'a> {
+    /// A Workspace URL names its one Workspace, so the page shows before sign-in.
+    Workspace,
+    /// At the Organization MCP Endpoint the signed-in person also picks one
+    /// of `choices`. `signed_in_as` names the account they signed in with,
+    /// when the identity provider gave one.
+    Choice {
+        choices: &'a [Choice<'a>],
+        signed_in_as: Option<&'a str>,
+    },
+    /// The signed-in person has no Workspace to pick. The page says how to
+    /// get one, links to Coral at `coral_url` when it is known, and offers
+    /// only the way back to the client.
+    NoChoice {
+        signed_in_as: Option<&'a str>,
+        coral_url: Option<&'a str>,
+    },
+}
+
+/// One Workspace row on the picker, as plain text.
+pub(super) struct Choice<'a> {
+    /// The value the row submits.
+    pub(super) workspace_id: String,
+    pub(super) name: &'a str,
+    /// Shown after the name, each set apart: a role, the Providers.
+    pub(super) details: Vec<String>,
+}
+
+/// The slots whose content depends on the [`ApprovalScope`].
+struct ScopeSlots {
+    decision_title: &'static str,
+    form_action: &'static str,
+    access_scope: &'static str,
+    account: String,
+    choices: String,
+    cancel_label: String,
+    primary_action: String,
+}
+
+impl ScopeSlots {
+    fn new(scope: &ApprovalScope<'_>, client_name: &str) -> Self {
+        const CONNECT: &str = "\n          <button class=\"connect\" type=\"submit\" \
+                               name=\"decision\" value=\"continue\">Connect</button>";
+        let account = |signed_in_as: Option<&str>| {
+            signed_in_as.map_or_else(String::new, |account| {
+                format!(
+                    "\n        <p class=\"account\"><span>Signed in as <bdi>{}</bdi></span></p>",
+                    escape_html(account)
+                )
+            })
+        };
+        match scope {
+            ApprovalScope::Workspace => Self {
+                decision_title: "Allow access?",
+                form_action: AUTHORIZE_PATH,
+                access_scope: "this workspace",
+                account: String::new(),
+                choices: String::new(),
+                cancel_label: "Cancel".to_owned(),
+                primary_action: CONNECT.to_owned(),
+            },
+            ApprovalScope::Choice {
+                choices,
+                signed_in_as,
+            } => Self {
+                decision_title: "Choose a workspace",
+                form_action: WORKSPACE_CHOICE_PATH,
+                access_scope: "the workspace you choose",
+                account: account(*signed_in_as),
+                choices: choice_rows(choices),
+                cancel_label: "Cancel".to_owned(),
+                primary_action: CONNECT.to_owned(),
+            },
+            // With nothing to connect, Cancel is the way back to the client,
+            // and Coral takes Connect's place when its URL is known.
+            ApprovalScope::NoChoice {
+                signed_in_as,
+                coral_url,
+            } => Self {
+                decision_title: "No workspace to choose",
+                form_action: WORKSPACE_CHOICE_PATH,
+                access_scope: "the workspace you choose",
+                account: account(*signed_in_as),
+                choices: NO_CHOICE.to_owned(),
+                cancel_label: format!("Back to <bdi>{}</bdi>", escape_html(client_name)),
+                primary_action: coral_url.map_or_else(String::new, |url| {
+                    format!(
+                        "\n          <a class=\"connect\" href=\"{}\">Open Coral</a>",
+                        escape_html(url)
+                    )
+                }),
+            },
+        }
+    }
+}
+
+/// One labelled radio group with a row per choice. Nothing is preselected,
+/// so a quick Connect cannot pick a Workspace the person never looked at;
+/// `required` makes the browser ask for one.
+fn choice_rows(choices: &[Choice<'_>]) -> String {
+    let mut rows = String::from(
+        "\n        <div class=\"choices\" role=\"radiogroup\" aria-labelledby=\"decision-title\">",
+    );
+    for choice in choices {
+        let details = choice
+            .details
+            .iter()
+            .map(|detail| escape_html(detail))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let _infallible = write!(
+            rows,
+            "\n          <label class=\"choice\"><input type=\"radio\" name=\"workspace\" \
+             value=\"{}\" required><span class=\"choice-text\"><span class=\"choice-name\">\
+             <bdi>{}</bdi></span><span class=\"choice-meta\">{details}</span></span></label>",
+            escape_html(&choice.workspace_id),
+            escape_html(choice.name),
+        );
+    }
+    rows.push_str("\n        </div>");
+    rows
 }
 
 /// Renders the approval page for one pending authorization.
@@ -160,48 +311,55 @@ pub(super) fn response(
     client_name: &str,
     client_id: &str,
     redirect_uri: &EndpointUrl<BrowserRedirect>,
+    scope: &ApprovalScope<'_>,
     browser_binding: &BrowserBinding,
     secure_cookie: bool,
 ) -> Option<Response> {
+    let scoped = ScopeSlots::new(scope, client_name);
     // Resolution already validated the identity. A URL has a metadata host;
     // an opaque registration has no verified origin or branding to display.
-    let (client_identity_label, client_identity) = Url::parse(client_id)
+    // The client names itself, so its host stands alone, without that name.
+    let client_identity = Url::parse(client_id)
         .ok()
         .and_then(|url| url.host().as_ref().map(display_host))
-        .map_or_else(
-            || ("Client ID", client_id.to_owned()),
-            |host| ("Client ID hostname", host),
-        );
+        .unwrap_or_else(|| client_id.to_owned());
     // An app-scheme callback names the app the operating system opens, not a
     // host and port.
     let (redirect_label, redirect_destination) =
         if let Some(scheme) = redirect_uri.private_use_scheme() {
-            ("Redirect app scheme", scheme.to_owned())
+            ("Opens app", scheme.to_owned())
         } else {
             let redirect_uri = redirect_uri.as_url();
             let redirect_host = redirect_uri.host().as_ref().map(display_host)?;
             (
-                "Redirect host and port",
+                "Returns to",
                 format!("{redirect_host}:{}", redirect_uri.port_or_known_default()?),
             )
         };
-    // Read slots only from the trusted template. Never rescan substituted client
-    // text: a client named "@@ticket@@" must remain literal, not become the approval ticket.
+    // Read slots only from the trusted template. Never rescan substituted
+    // client text: a client named "@@ticket@@" must remain literal, not become
+    // the ticket. An unknown slot fails the whole page.
     let mut body = String::with_capacity(APPROVAL_PAGE.len() + APPROVAL_PAGE_STYLES.len());
     for (index, segment) in APPROVAL_PAGE.split("@@").enumerate() {
         if index % 2 == 0 {
             body.push_str(segment);
-        } else {
-            match segment {
-                "styles" => body.push_str(APPROVAL_PAGE_STYLES),
-                "client_name" => body.push_str(&escape_html(client_name)),
-                "client_identity" => body.push_str(&escape_html(&client_identity)),
-                "client_identity_label" => body.push_str(client_identity_label),
-                "redirect_label" => body.push_str(redirect_label),
-                "redirect_destination" => body.push_str(&escape_html(&redirect_destination)),
-                "ticket" => body.push_str(&escape_html(ticket)),
-                _ => return None,
-            }
+            continue;
+        }
+        match segment {
+            "styles" => body.push_str(APPROVAL_PAGE_STYLES),
+            "client_name" => body.push_str(&escape_html(client_name)),
+            "client_identity" => body.push_str(&escape_html(&client_identity)),
+            "redirect_label" => body.push_str(redirect_label),
+            "redirect_destination" => body.push_str(&escape_html(&redirect_destination)),
+            "ticket" => body.push_str(&escape_html(ticket)),
+            "access_scope" => body.push_str(scoped.access_scope),
+            "decision_title" => body.push_str(scoped.decision_title),
+            "form_action" => body.push_str(scoped.form_action),
+            "account" => body.push_str(&scoped.account),
+            "choices" => body.push_str(&scoped.choices),
+            "cancel_label" => body.push_str(&scoped.cancel_label),
+            "primary_action" => body.push_str(&scoped.primary_action),
+            _ => return None,
         }
     }
     let mut response = (
@@ -224,6 +382,10 @@ pub(super) fn response(
     );
     Some(response)
 }
+
+/// What a person with no Workspace reads in place of the choices.
+const NO_CHOICE: &str = "\n        <div class=\"empty\"><p>You are not a member of a workspace.</p>\
+                         <p>Create a workspace in Coral. Then sign in again.</p></div>";
 
 fn approval_cookie_header(browser_binding: &BrowserBinding, secure: bool) -> Option<HeaderValue> {
     let name = approval_cookie_name(secure);

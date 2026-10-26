@@ -398,6 +398,49 @@ async fn start_task(client: &SdkClient, intent: &str) -> String {
         .to_string()
 }
 
+/// Local mode has no sign-in to pick a Workspace with, so `/mcp` needs an
+/// Agent credential, whose Registration fixes the Workspace.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_organization_endpoint_needs_an_agent_credential_in_local_mode() {
+    let tracer = Tracer::start().await;
+    let endpoint = format!("http://{}/mcp", tracer.server.local_addr());
+    let initialize = async |bearer: Option<&str>| {
+        authorized(
+            reqwest::Client::new()
+                .post(&endpoint)
+                .header("Accept", "application/json, text/event-stream")
+                .json(&json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":"2025-03-26", "capabilities":{}, "clientInfo":{"name":"local", "version":"1"}}})),
+            bearer,
+        )
+        .send()
+        .await
+        .unwrap()
+    };
+    let refused = initialize(None).await;
+    assert_eq!(refused.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert_eq!(refused.headers()["www-authenticate"], "Bearer");
+    assert_eq!(
+        refused.text().await.unwrap(),
+        "Use the workspace MCP URL from Coral."
+    );
+    let accepted = initialize(Some(&tracer.agent_credential)).await;
+    assert_eq!(accepted.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        parse_message(accepted)
+            .await
+            .pointer("/result/serverInfo/title")
+            .and_then(Value::as_str),
+        Some("Coral · Tracer A")
+    );
+    let metadata = reqwest::get(format!(
+        "http://{}/.well-known/oauth-protected-resource/mcp",
+        tracer.server.local_addr()
+    ))
+    .await
+    .unwrap();
+    assert_eq!(metadata.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn sessions_are_bound_to_host_credential_workspace_and_protocol_window() {
     let tracer = Tracer::start().await;

@@ -25,7 +25,7 @@ test('Workspace Overview starts each part, offers MCP setup, and hands off a new
     await step('The Overview sets up Claude Code with sign-in', async () => {
       const add = setup.getByRole('button', { name: 'Copy Claude Code command', exact: true })
       expect(await copiedBy(page, add)).toBe(
-        `claude mcp add --transport http coral ${target.mcpURL}/workspaces/${workspace}/mcp`,
+        `claude mcp add --transport http coral ${target.mcpURL}/mcp`,
       )
       const login = setup.getByRole('button', {
         name: 'Copy Claude Code sign-in command',

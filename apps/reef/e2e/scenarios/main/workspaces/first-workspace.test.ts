@@ -38,23 +38,26 @@ test('Someone with no workspace lands on a page that creates their first one', a
         await content.getByRole('heading', { name: 'Your recent activity', exact: true }).waitFor()
         await content.getByText('No activity yet', { exact: true }).waitFor()
       })
-      await step('Copy the workspace MCP URL from the empty Activity', async () => {
-        await page.evaluate(() => {
-          Object.defineProperty(navigator, 'clipboard', {
-            configurable: true,
-            value: {
-              writeText: async (text: string) => {
-                ;(window as unknown as { copied: string }).copied = text
+      await step(
+        'Copy the MCP URL from the empty Activity, where sign-in picks the workspace',
+        async () => {
+          await page.evaluate(() => {
+            Object.defineProperty(navigator, 'clipboard', {
+              configurable: true,
+              value: {
+                writeText: async (text: string) => {
+                  ;(window as unknown as { copied: string }).copied = text
+                },
               },
-            },
+            })
           })
-        })
-        await content.getByRole('button', { name: 'Copy MCP URL', exact: true }).click()
-        await content.getByRole('button', { name: 'Copy MCP URL: copied', exact: true }).waitFor()
-        expect(await page.evaluate(() => (window as unknown as { copied: string }).copied)).toBe(
-          `${target.mcpURL}/workspaces/${id}/mcp`,
-        )
-      })
+          await content.getByRole('button', { name: 'Copy MCP URL', exact: true }).click()
+          await content.getByRole('button', { name: 'Copy MCP URL: copied', exact: true }).waitFor()
+          expect(await page.evaluate(() => (window as unknown as { copied: string }).copied)).toBe(
+            `${target.mcpURL}/mcp`,
+          )
+        },
+      )
       await step('The first MCP call replaces the empty state without a reload', async () => {
         const runner = programRunner(page, target, id, {
           accessToken: token,

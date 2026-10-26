@@ -19,6 +19,7 @@ enum Codes {
     RedirectUri,
     CodeChallenge,
     Resource,
+    WorkspaceId,
     ExpiresAtUnixNanos,
     RedeemedAtUnixNanos,
 }
@@ -59,6 +60,7 @@ pub(super) async fn insert(
                     Codes::RedirectUri,
                     Codes::CodeChallenge,
                     Codes::Resource,
+                    Codes::WorkspaceId,
                     Codes::ExpiresAtUnixNanos,
                 ])
                 .values_panic([
@@ -69,6 +71,7 @@ pub(super) async fn insert(
                     grant.redirect_uri.clone().into(),
                     grant.code_challenge.clone().into(),
                     grant.resource.clone().into(),
+                    grant.workspace_id.as_ref().map(ToString::to_string).into(),
                     expires_at_unix_nanos.into(),
                 ])
                 .on_conflict(
@@ -90,6 +93,7 @@ struct GrantRow {
     redirect_uri: String,
     code_challenge: String,
     resource: String,
+    workspace_id: Option<String>,
 }
 
 /// The rows a redemption of `code_digest` with `redemption` may spend.
@@ -146,16 +150,27 @@ pub(super) async fn spend(
                     Codes::RedirectUri,
                     Codes::CodeChallenge,
                     Codes::Resource,
+                    Codes::WorkspaceId,
                 ]))
                 .to_owned(),
         )
         .await
         .map_err(|_error| AuthorizationCodeError::Unavailable)?;
-    Ok(row.map(|row| AuthorizationGrant {
-        user_id: row.user_id,
-        client_id: row.client_id,
-        redirect_uri: row.redirect_uri,
-        code_challenge: row.code_challenge,
-        resource: row.resource,
-    }))
+    row.map(|row| {
+        let workspace_id = row
+            .workspace_id
+            .as_deref()
+            .map(coral_workspace::WorkspaceId::parse)
+            .transpose()
+            .map_err(|_error| AuthorizationCodeError::Unavailable)?;
+        Ok(AuthorizationGrant {
+            user_id: row.user_id,
+            client_id: row.client_id,
+            redirect_uri: row.redirect_uri,
+            code_challenge: row.code_challenge,
+            resource: row.resource,
+            workspace_id,
+        })
+    })
+    .transpose()
 }

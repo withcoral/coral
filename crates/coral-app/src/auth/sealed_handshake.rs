@@ -7,8 +7,8 @@
 //! request costs the server no storage.
 //!
 //! The associated data binds each sealed value to what it belongs to: a
-//! pending approval to the browser's approval cookie, and a sign-in session to
-//! its OIDC `state`. A value moved to another browser or sign-in does not open.
+//! pending approval and a pending Workspace choice to the browser's approval
+//! cookie, and a sign-in session to its OIDC `state`. A value moved to another browser or sign-in does not open.
 //! The PKCE verifier and the nonce Coral sends to the identity provider are
 //! derived from the OIDC `state`, so they are never carried at all.
 //!
@@ -24,9 +24,13 @@ use ring::{aead, hkdf, hmac};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
+use coral_auth::authorization_codes::AuthorizationGrant;
+use coral_workspace::{UserId, WorkspaceId};
+
 const ENVELOPE_VERSION: u8 = 1;
 const SIGN_IN_SESSION_AAD: &[u8] = b"coral-oauth-sign-in-session-v1\0";
 const PENDING_APPROVAL_AAD: &[u8] = b"coral-oauth-pending-approval-v1\0";
+const WORKSPACE_CHOICE_AAD: &[u8] = b"coral-oauth-workspace-choice-v1\0";
 
 /// Keys derived from the session signing key for sealing sign-in state.
 pub(crate) struct HandshakeKeys {
@@ -128,14 +132,63 @@ impl HandshakeKeys {
     }
 }
 
-/// What the OIDC callback needs to finish a sign-in, sealed into its cookie.
+/// What a client's authorization request asked for. It travels unchanged
+/// from `/oauth/authorize` to the code issued for it, inside whichever value
+/// is sealed at each step.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SignInSession {
+pub(crate) struct ClientRequest {
     pub(crate) client_id: String,
     pub(crate) redirect_uri: String,
     pub(crate) client_state: Option<String>,
     pub(crate) code_challenge: String,
     pub(crate) resource: String,
+}
+
+impl ClientRequest {
+    /// What the code issued for this request to `user_id` grants.
+    /// `workspace` is the Workspace picked at the Organization MCP Endpoint.
+    pub(crate) fn grant(
+        &self,
+        user_id: &UserId,
+        workspace: Option<WorkspaceId>,
+    ) -> AuthorizationGrant {
+        AuthorizationGrant {
+            user_id: user_id.to_string(),
+            client_id: self.client_id.clone(),
+            redirect_uri: self.redirect_uri.clone(),
+            code_challenge: self.code_challenge.clone(),
+            resource: self.resource.clone(),
+            workspace_id: workspace,
+        }
+    }
+
+    fn put(&self, frame: &mut Frame) -> Result<(), SealError> {
+        frame.put_str(&self.client_id)?;
+        frame.put_str(&self.redirect_uri)?;
+        frame.put_optional_str(self.client_state.as_deref())?;
+        frame.put_str(&self.code_challenge)?;
+        frame.put_str(&self.resource)
+    }
+
+    fn read(reader: &mut Reader<'_>) -> Option<Self> {
+        Some(Self {
+            client_id: reader.str()?,
+            redirect_uri: reader.str()?,
+            client_state: reader.optional_str().ok()?,
+            code_challenge: reader.str()?,
+            resource: reader.str()?,
+        })
+    }
+}
+
+/// What the OIDC callback needs to finish a sign-in, sealed into its cookie
+/// for the sign-in's OIDC `state`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SignInSession {
+    pub(crate) request: ClientRequest,
+    /// The client's self-asserted name, carried only to the Workspace picker
+    /// of an Organization MCP Endpoint sign-in.
+    pub(crate) client_name: Option<String>,
 }
 
 impl SignInSession {
@@ -152,8 +205,8 @@ impl SignInSession {
         oidc_state: &str,
         expires_at_unix_secs: u64,
     ) -> Result<String, SealError> {
-        let frame = self.frame(expires_at_unix_secs)?;
-        keys.seal(&sign_in_aad(oidc_state), &frame.0)
+        let aad = aad(SIGN_IN_SESSION_AAD, oidc_state.as_bytes());
+        keys.seal(&aad, &self.frame(expires_at_unix_secs)?.0)
     }
 
     /// The length of what [`Self::seal`] returns for this session.
@@ -167,14 +220,10 @@ impl SignInSession {
     }
 
     fn frame(&self, expires_at_unix_secs: u64) -> Result<Frame, SealError> {
-        let mut frame = Frame::default();
-        frame.put_str(&self.client_id)?;
-        frame.put_str(&self.redirect_uri)?;
-        frame.put_optional_str(self.client_state.as_deref())?;
-        frame.put_str(&self.code_challenge)?;
-        frame.put_str(&self.resource)?;
-        frame.put_u64(expires_at_unix_secs);
-        Ok(frame)
+        Frame::sealing(expires_at_unix_secs, |frame| {
+            self.request.put(frame)?;
+            frame.put_optional_str(self.client_name.as_deref())
+        })
     }
 
     /// Opens the session sealed for `oidc_state`, if it is intact, belongs to
@@ -185,17 +234,13 @@ impl SignInSession {
         sealed: &[u8],
         now_unix_secs: u64,
     ) -> Option<Self> {
-        let plaintext = keys.open(&sign_in_aad(oidc_state), sealed)?;
-        let mut reader = Reader(plaintext.as_slice());
-        let session = Self {
-            client_id: reader.str()?,
-            redirect_uri: reader.str()?,
-            client_state: reader.optional_str().ok()?,
-            code_challenge: reader.str()?,
-            resource: reader.str()?,
-        };
-        let expires_at = reader.u64()?;
-        (reader.0.is_empty() && now_unix_secs < expires_at).then_some(session)
+        let aad = aad(SIGN_IN_SESSION_AAD, oidc_state.as_bytes());
+        open(keys, &aad, sealed, now_unix_secs, |reader| {
+            Some(Self {
+                request: ClientRequest::read(reader)?,
+                client_name: reader.optional_str().ok()?,
+            })
+        })
     }
 }
 
@@ -208,12 +253,8 @@ impl SignInSession {
 /// browser, which grants nothing the first submission did not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PendingApproval {
-    pub(crate) client_id: String,
+    pub(crate) request: ClientRequest,
     pub(crate) client_name: String,
-    pub(crate) redirect_uri: String,
-    pub(crate) client_state: Option<String>,
-    pub(crate) code_challenge: String,
-    pub(crate) resource: String,
 }
 
 impl PendingApproval {
@@ -230,15 +271,11 @@ impl PendingApproval {
         browser_binding: &[u8],
         expires_at_unix_secs: u64,
     ) -> Result<String, SealError> {
-        let mut frame = Frame::default();
-        frame.put_str(&self.client_id)?;
-        frame.put_str(&self.client_name)?;
-        frame.put_str(&self.redirect_uri)?;
-        frame.put_optional_str(self.client_state.as_deref())?;
-        frame.put_str(&self.code_challenge)?;
-        frame.put_str(&self.resource)?;
-        frame.put_u64(expires_at_unix_secs);
-        keys.seal(&approval_aad(browser_binding), &frame.0)
+        let frame = Frame::sealing(expires_at_unix_secs, |frame| {
+            self.request.put(frame)?;
+            frame.put_str(&self.client_name)
+        })?;
+        keys.seal(&aad(PENDING_APPROVAL_AAD, browser_binding), &frame.0)
     }
 
     /// Opens the approval sealed for `browser_binding`, if it is intact,
@@ -249,42 +286,102 @@ impl PendingApproval {
         sealed: &[u8],
         now_unix_secs: u64,
     ) -> Option<Self> {
-        let plaintext = keys.open(&approval_aad(browser_binding), sealed)?;
-        let mut reader = Reader(plaintext.as_slice());
-        let approval = Self {
-            client_id: reader.str()?,
-            client_name: reader.str()?,
-            redirect_uri: reader.str()?,
-            client_state: reader.optional_str().ok()?,
-            code_challenge: reader.str()?,
-            resource: reader.str()?,
-        };
-        let expires_at = reader.u64()?;
-        (reader.0.is_empty() && now_unix_secs < expires_at).then_some(approval)
+        let aad = aad(PENDING_APPROVAL_AAD, browser_binding);
+        open(keys, &aad, sealed, now_unix_secs, |reader| {
+            Some(Self {
+                request: ClientRequest::read(reader)?,
+                client_name: reader.str()?,
+            })
+        })
     }
 
-    /// The sign-in this approval starts once the person allows it.
-    pub(crate) fn into_sign_in(self) -> SignInSession {
+    /// The sign-in this approval starts once the person allows it. Only a
+    /// sign-in that ends at the Workspace picker keeps the client's name, so
+    /// every other sign-in cookie stays as small as before.
+    pub(crate) fn into_sign_in(self, picks_workspace: bool) -> SignInSession {
         SignInSession {
-            client_id: self.client_id,
-            redirect_uri: self.redirect_uri,
-            client_state: self.client_state,
-            code_challenge: self.code_challenge,
-            resource: self.resource,
+            request: self.request,
+            client_name: picks_workspace.then_some(self.client_name),
         }
     }
 }
 
-fn approval_aad(browser_binding: &[u8]) -> Vec<u8> {
-    let mut aad = PENDING_APPROVAL_AAD.to_vec();
-    aad.extend_from_slice(&Sha256::digest(browser_binding));
+/// A finished sign-in at the Organization MCP Endpoint awaiting its User's
+/// Workspace choice, sealed into the picker form.
+///
+/// The seal is bound to the browser's approval cookie, so only the browser
+/// that signed in can submit it. It keeps the sign-in's OIDC state, so the
+/// one-code-per-sign-in guard still holds when the choice issues the code.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PendingWorkspaceChoice {
+    pub(crate) user_id: UserId,
+    pub(crate) oidc_state: String,
+    pub(crate) request: ClientRequest,
+}
+
+impl PendingWorkspaceChoice {
+    /// Seals this choice for the browser holding `browser_binding`, to be
+    /// submitted before `expires_at_unix_secs`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SealError`] when a field is too long to frame or randomness
+    /// is unavailable.
+    pub(crate) fn seal(
+        &self,
+        keys: &HandshakeKeys,
+        browser_binding: &[u8],
+        expires_at_unix_secs: u64,
+    ) -> Result<String, SealError> {
+        let frame = Frame::sealing(expires_at_unix_secs, |frame| {
+            frame.put_str(self.user_id.as_str())?;
+            frame.put_str(&self.oidc_state)?;
+            self.request.put(frame)
+        })?;
+        keys.seal(&aad(WORKSPACE_CHOICE_AAD, browser_binding), &frame.0)
+    }
+
+    /// Opens the choice sealed for `browser_binding`, if it is intact,
+    /// belongs to that browser, and has not expired at `now_unix_secs`.
+    pub(crate) fn open(
+        keys: &HandshakeKeys,
+        browser_binding: &[u8],
+        sealed: &[u8],
+        now_unix_secs: u64,
+    ) -> Option<Self> {
+        let aad = aad(WORKSPACE_CHOICE_AAD, browser_binding);
+        open(keys, &aad, sealed, now_unix_secs, |reader| {
+            Some(Self {
+                user_id: UserId::parse(&reader.str()?).ok()?,
+                oidc_state: reader.str()?,
+                request: ClientRequest::read(reader)?,
+            })
+        })
+    }
+}
+
+/// Binds a seal to `purpose` and to what it belongs to: an OIDC `state` or a
+/// browser binding.
+fn aad(purpose: &[u8], binding: &[u8]) -> Vec<u8> {
+    let mut aad = purpose.to_vec();
+    aad.extend_from_slice(&Sha256::digest(binding));
     aad
 }
 
-fn sign_in_aad(oidc_state: &str) -> Vec<u8> {
-    let mut aad = SIGN_IN_SESSION_AAD.to_vec();
-    aad.extend_from_slice(&Sha256::digest(oidc_state.as_bytes()));
-    aad
+/// Opens a value `read` decodes from a frame sealed under `aad`, if it is
+/// intact, nothing follows it, and it has not expired at `now_unix_secs`.
+fn open<T>(
+    keys: &HandshakeKeys,
+    aad: &[u8],
+    sealed: &[u8],
+    now_unix_secs: u64,
+    read: impl FnOnce(&mut Reader<'_>) -> Option<T>,
+) -> Option<T> {
+    let plaintext = keys.open(aad, sealed)?;
+    let mut reader = Reader(plaintext.as_slice());
+    let value = read(&mut reader)?;
+    let expires_at = reader.u64()?;
+    (reader.0.is_empty() && now_unix_secs < expires_at).then_some(value)
 }
 
 /// Length-prefixed fields. Unlike a text encoding, framing never expands what
@@ -293,6 +390,17 @@ fn sign_in_aad(oidc_state: &str) -> Vec<u8> {
 struct Frame(Zeroizing<Vec<u8>>);
 
 impl Frame {
+    /// The fields `put` writes, then the expiry [`open`] checks.
+    fn sealing(
+        expires_at_unix_secs: u64,
+        put: impl FnOnce(&mut Self) -> Result<(), SealError>,
+    ) -> Result<Self, SealError> {
+        let mut frame = Self::default();
+        put(&mut frame)?;
+        frame.put_u64(expires_at_unix_secs);
+        Ok(frame)
+    }
+
     fn put_str(&mut self, value: &str) -> Result<(), SealError> {
         let length = u16::try_from(value.len()).map_err(|_overflow| SealError::TooLarge)?;
         self.0.extend_from_slice(&length.to_be_bytes());
@@ -351,13 +459,20 @@ mod tests {
         HandshakeKeys::derive(b"session signing key").expect("keys")
     }
 
-    fn session() -> SignInSession {
-        SignInSession {
+    fn request(resource: &str) -> ClientRequest {
+        ClientRequest {
             client_id: "dcr_0123456789abcdef0123456789abcdef".into(),
             redirect_uri: "http://127.0.0.1:54213/callback".into(),
             client_state: Some("client-state".into()),
             code_challenge: "client-challenge".into(),
-            resource: "https://mcp.example.test/workspaces/w/mcp".into(),
+            resource: resource.into(),
+        }
+    }
+
+    fn session() -> SignInSession {
+        SignInSession {
+            request: request("https://mcp.example.test/workspaces/w/mcp"),
+            client_name: None,
         }
     }
 
@@ -370,8 +485,11 @@ mod tests {
             Some(session())
         );
         let without_state = SignInSession {
-            client_state: None,
-            ..session()
+            request: ClientRequest {
+                client_state: None,
+                ..session().request
+            },
+            client_name: Some("Client".into()),
         };
         let sealed = without_state
             .seal(&keys(), STATE, NOW + 300)
@@ -392,7 +510,10 @@ mod tests {
             Some("a longer client state"),
         ] {
             let session = SignInSession {
-                client_state: client_state.map(str::to_owned),
+                request: ClientRequest {
+                    client_state: client_state.map(str::to_owned),
+                    ..session().request
+                },
                 ..session()
             };
             let sealed = session.seal(&keys(), STATE, NOW).expect("sealed");
@@ -445,12 +566,11 @@ mod tests {
 
     fn approval() -> PendingApproval {
         PendingApproval {
-            client_id: "https://client.example.test/oauth/client.json".into(),
+            request: ClientRequest {
+                client_state: None,
+                ..request("https://mcp.example.test/workspaces/w/mcp")
+            },
             client_name: "Client <b>".into(),
-            redirect_uri: "https://client.example.test/callback".into(),
-            client_state: None,
-            code_challenge: "client-challenge".into(),
-            resource: "https://mcp.example.test/workspaces/w/mcp".into(),
         }
     }
 
@@ -480,6 +600,38 @@ mod tests {
             None,
             "a sealed sign-in session is not an approval"
         );
+    }
+
+    fn choice() -> PendingWorkspaceChoice {
+        PendingWorkspaceChoice {
+            user_id: UserId::parse("user-1").unwrap(),
+            oidc_state: STATE.into(),
+            request: request("https://mcp.example.test/mcp"),
+        }
+    }
+
+    #[test]
+    fn a_workspace_choice_opens_only_in_its_browser_within_its_lifetime() {
+        const BROWSER: [u8; 32] = [0x42; 32];
+        let sealed = choice().seal(&keys(), &BROWSER, NOW + 300).expect("sealed");
+        assert_eq!(
+            PendingWorkspaceChoice::open(&keys(), &BROWSER, sealed.as_bytes(), NOW),
+            Some(choice())
+        );
+        let approval = approval()
+            .seal(&keys(), &BROWSER, NOW + 300)
+            .expect("sealed");
+        for (case, browser, sealed, now) in [
+            ("another browser", [0x43; 32], sealed.as_bytes(), NOW),
+            ("at expiry", BROWSER, sealed.as_bytes(), NOW + 300),
+            ("an approval", BROWSER, approval.as_bytes(), NOW),
+        ] {
+            assert_eq!(
+                PendingWorkspaceChoice::open(&keys(), &browser, sealed, now),
+                None,
+                "{case}"
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,578 @@
+/*
+ * Hand-authored Wax palette and component proportions, not generated output.
+ * Reference: apps/reef/app/wax/{base/palette,theme,components}.
+ * Keep this small and standalone: no imports, external assets, or build step.
+ */
+:root {
+  color-scheme: light dark;
+  --background: #fcfcfc;
+  --surface: #ffffff;
+  --inset: #f9f9f9;
+  --shadow: 0 4px 24px rgb(0 0 0 / 2%), 0 1px 2px rgb(0 0 0 / 3%);
+  --text: rgb(0 0 0 / 87.45%);
+  --muted: #646464;
+  --border: rgb(0 0 0 / 5.88%);
+  --button: #81d66d;
+  --button-hover: #77cc63;
+  --button-active: #69bd54;
+  /* Dark CoralGreen text keeps the bright brand fill readable in both themes. */
+  --button-text: #25411e;
+  --secondary: rgb(0 0 0 / 5.88%);
+  --secondary-hover: rgb(0 0 0 / 9.02%);
+  --secondary-active: rgb(0 0 0 / 12.16%);
+  --control-border: rgb(0 0 0 / 14%);
+  --focus: #398125;
+  --selection: rgb(38 208 0 / 21.18%);
+  font-family: "Encode Sans Semi Expanded", ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #212121;
+    --surface: #2a2a2a;
+    --inset: #242424;
+    --shadow: 0 4px 24px rgb(0 0 0 / 10%), 0 1px 2px rgb(0 0 0 / 15%);
+    --text: rgb(255 255 255 / 92.94%);
+    --muted: #b4b4b4;
+    --border: rgb(255 255 255 / 5.01%);
+    --button: #b2eaa5;
+    --button-hover: #bbf4ae;
+    --button-active: #a8e09b;
+    --button-text: #131a15;
+    --secondary: rgb(255 255 255 / 7.06%);
+    --secondary-hover: rgb(255 255 255 / 13.33%);
+    --secondary-active: rgb(255 255 255 / 13.33%);
+    --control-border: rgb(255 255 255 / 18%);
+    --focus: #88cc78;
+    --selection: rgb(62 250 13 / 16.47%);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--text);
+  font-size: 0.8125rem;
+  line-height: 1.65;
+  letter-spacing: -0.006em;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--selection);
+  color: var(--text);
+}
+
+main {
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  padding: 24px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  width: 100%;
+  max-width: 520px;
+  min-width: 0;
+  padding: 40px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  overflow-wrap: anywhere;
+}
+
+/* The approval page: what the app asks for, beside the decision. */
+.card.split {
+  display: grid;
+  grid-template-columns: minmax(0, 6fr) minmax(0, 5fr);
+  gap: 0;
+  max-width: 1040px;
+  padding: 0;
+  overflow: hidden;
+}
+
+h1, h2, p, dl, dd, ul {
+  margin: 0;
+}
+
+h1,
+h2 {
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+}
+
+h1 {
+  margin-bottom: 8px;
+  font-size: 1.625rem;
+}
+
+h2 {
+  font-size: 1.25rem;
+}
+
+.card > .intro {
+  text-align: center;
+}
+
+.intro p,
+.account {
+  color: var(--muted);
+}
+
+/* One label style on both panes: "Claude Code can", "Requested by". */
+.section-title,
+dt {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.section-title {
+  margin-bottom: 8px;
+}
+
+.context {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  padding: 40px;
+  border-right: 1px solid var(--border);
+  background: var(--inset);
+}
+
+.connection {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.app-mark,
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+}
+
+.app-mark {
+  background: var(--secondary);
+}
+
+.app-mark svg {
+  width: 22px;
+  height: 22px;
+}
+
+.brand-mark {
+  background: #ffffff;
+  color: #111111;
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.brand-mark svg {
+  width: 40px;
+  height: 40px;
+}
+
+.connector {
+  width: 20px;
+  height: 20px;
+  color: var(--muted);
+}
+
+.abilities ul {
+  display: grid;
+  gap: 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.abilities li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+.abilities svg {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  fill: none;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.abilities .can {
+  stroke: var(--focus);
+}
+
+.credentials {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 14px;
+  color: var(--muted);
+}
+
+.credentials svg {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.75;
+}
+
+.details {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  margin-top: auto;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+
+/* Two 20px lines: as tall as the buttons opposite, so the rows align. */
+dt {
+  line-height: 20px;
+}
+
+dd {
+  line-height: 20px;
+}
+
+dd {
+  unicode-bidi: isolate;
+}
+
+/* Monospace runs wide, so it steps down to match the sans text beside it. */
+.destination {
+  font-family: "DM Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.92em;
+  letter-spacing: 0;
+}
+
+/*
+ * The decision mirrors the left pane: the account beside the icons, the title
+ * beside the heading, the choices beside what the app can do, and the buttons
+ * at the bottom beside the details.
+ */
+.decision {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 40px;
+}
+
+.decision > .account {
+  margin-bottom: 12px;
+}
+
+/*
+ * A section heading on the page heading's baseline. The h2 keeps the h1's size,
+ * so its line box and baseline match the h1's in any font; the smaller text
+ * sits on that baseline. The page has one title, on the left.
+ */
+.decision > h2 {
+  font-size: 1.625rem;
+}
+
+.decision > h2 > span {
+  font-size: 1rem;
+}
+
+/*
+ * Without an account line, the title still starts level with the heading.
+ * One column has no heading opposite, so this applies beside it only.
+ */
+@media (min-width: 801px) {
+  .decision:not(:has(.account)) > h2 {
+    margin-top: 72px;
+  }
+}
+
+.choices {
+  display: grid;
+  gap: 8px;
+}
+
+/* The buttons sit at the bottom, level with the details opposite. */
+.actions {
+  display: flex;
+  gap: 12px;
+  margin-top: auto;
+  padding-top: 24px;
+}
+
+.decision .actions > button,
+.decision .actions > a {
+  height: 40px;
+  min-height: 0;
+  padding-block: 0;
+}
+
+.actions > .cancel {
+  flex: 1 1 0;
+}
+
+.actions > .connect {
+  flex: 2 1 0;
+}
+
+/* "Back to" names the client, so it gets as much room as Open Coral. */
+.decision:has(.empty) .cancel {
+  flex-grow: 2;
+}
+
+/* As tall as the icons opposite, so the two panes' first lines align. */
+.account {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  font-size: 0.8125rem;
+}
+
+.account bdi {
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* One line per Workspace, like a table row: its name, then its Providers. */
+.choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.choice:hover {
+  background: var(--inset);
+}
+
+.choice:has(input:checked) {
+  border-color: var(--focus);
+  background: color-mix(in srgb, var(--focus) 10%, transparent);
+}
+
+/* A long name wraps; the Providers give way first and end in an ellipsis. */
+.choice-text {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.choice-name {
+  flex: 0 0 auto;
+  max-width: 60%;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.choice-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A drawn radio, so the picked card reads the same in every browser. */
+.choice input {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 1.5px solid var(--muted);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.choice input:checked {
+  border-color: var(--focus);
+  background: radial-gradient(circle, var(--focus) 0 3px, transparent 4px);
+}
+
+a {
+  color: var(--focus);
+  font-weight: 500;
+}
+
+a:focus-visible,
+.choice input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+button {
+  min-height: 40px;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 10px;
+  background: var(--secondary);
+  color: var(--text);
+  font: inherit;
+  font-weight: 500;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--secondary-hover);
+}
+
+button:active {
+  background: var(--secondary-active);
+}
+
+button[value="continue"] {
+  background: var(--button);
+  color: var(--button-text);
+}
+
+button[value="continue"]:hover {
+  background: var(--button-hover);
+}
+
+button[value="continue"]:active {
+  background: var(--button-active);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* With no Workspace to pick, Open Coral is the way on. */
+a.connect {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--button);
+  color: var(--button-text);
+  text-decoration: none;
+}
+
+a.connect:hover {
+  background: var(--button-hover);
+}
+
+a.connect:active {
+  background: var(--button-active);
+}
+
+.empty p + p {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+button.cancel {
+  border: 1px solid var(--control-border);
+  background: transparent;
+}
+
+button.cancel:hover {
+  background: var(--secondary);
+}
+
+@media (pointer: coarse) {
+  button {
+    min-height: 44px;
+  }
+
+  .decision .actions > button,
+  .decision .actions > a {
+    height: 44px;
+  }
+}
+
+/*
+ * One column: the heading, then the decision, then what the app can do and
+ * the details. The left pane dissolves so its parts can take that order.
+ */
+@media (max-width: 800px) {
+  .card.split {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+    max-width: 520px;
+    padding: 24px;
+  }
+
+  .context {
+    display: contents;
+  }
+
+  .decision {
+    order: 1;
+    padding: 0;
+  }
+
+  .decision > h2 {
+    margin-top: 0;
+    font-size: 1rem;
+  }
+
+  .decision > .account {
+    margin-bottom: 0;
+  }
+
+  .actions {
+    padding-top: 8px;
+  }
+
+  .abilities {
+    order: 2;
+  }
+
+  .details {
+    order: 3;
+    margin-top: 0;
+  }
+}
+
+@media (max-width: 420px) {
+  main {
+    padding: 16px;
+  }
+
+  .card:not(.split) {
+    padding: 24px;
+  }
+
+  .details {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Stack the buttons with Connect above Cancel. */
+  .actions {
+    flex-direction: column-reverse;
+  }
+
+  .decision .actions > * {
+    flex: none;
+  }
+}

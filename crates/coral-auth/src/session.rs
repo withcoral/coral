@@ -591,6 +591,21 @@ pub(crate) mod test_tokens {
         });
         sign(issuer, &claims, Some(&issuer.signing_key_id))
     }
+
+    /// A correctly signed Workspace-scoped token that claims to authenticate an Agent.
+    pub(crate) fn scoped_agent_kind_token(
+        issuer: &SessionTokenIssuer,
+        user_id: &str,
+        client_id: &str,
+        audience: &str,
+        workspace_id: &str,
+    ) -> String {
+        let claims = changed(claims(issuer, user_id, client_id, audience), |claims| {
+            claims.principal_kind = ActorKindClaim::Agent;
+            claims.workspace_id = Some(workspace_id.to_string());
+        });
+        sign(issuer, &claims, Some(&issuer.signing_key_id))
+    }
 }
 
 #[cfg(test)]

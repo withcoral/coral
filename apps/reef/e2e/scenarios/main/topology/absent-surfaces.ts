@@ -93,7 +93,7 @@ async function servedOverHttp1(origin: string, path: string, headers: Record<str
 
 /**
  * What one composed deployment does not expose: no MCP route beside each
- * Workspace's, and no public listener that serves a private gRPC method or
+ * Workspace's and the fixed `/mcp`, and no public listener that serves a private gRPC method or
  * calls an Operation outside a Program. Audience rejection on the private
  * listener stays in `crates/coral-grpc`.
  */
@@ -107,9 +107,14 @@ export async function absentSurfaces(context: TestContext) {
       openApiDocument('Absent surfaces', { lookup: { summary: 'Look something up' } }),
       'surfaces',
     )
-    await step('The public MCP listener serves only each Workspace endpoint', async () => {
+    await step('The public MCP listener serves only each Workspace endpoint and /mcp', async () => {
       const mcp = target.mcpURL!
-      for (const path of ['/', `/workspaces/${workspace}`, `/workspaces/${workspace}/mcp/tools`]) {
+      for (const path of [
+        '/',
+        `/workspaces/${workspace}`,
+        `/workspaces/${workspace}/mcp/tools`,
+        '/mcp/tools',
+      ]) {
         for (const method of ['GET', 'POST']) {
           const response = await fetch(`${mcp}${path}`, {
             method,

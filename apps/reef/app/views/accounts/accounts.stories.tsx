@@ -55,6 +55,7 @@ const workspace = {
   currentUser: 'u_demo',
   profile: { user: 'u_demo', name: 'Demo user', email: 'demo@example.test', local: false },
   mcpEndpoint: '',
+  connectEndpoint: '',
   path: '/workspaces/demo',
 }
 const personal: UserAccountsView = {

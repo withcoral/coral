@@ -1049,11 +1049,120 @@ async fn agent_creation_returns_one_credential_and_safe_durable_attribution() {
     );
     assert!(!format!("{events:?} {issued:?} {actor:?}").contains(issued.credential.expose()));
     assert!(matches!(
-        module
-            .authenticate_agent(workspace.id(), "invalid-secret-canary", 11)
-            .await,
+        authenticate_both(&module, workspace.id(), "invalid-secret-canary", 11).await,
         Err(Error::InvalidAgentCredential)
     ));
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table covers what each User is offered and what each can pick"
+)]
+async fn sign_in_choices_are_active_memberships_with_their_role_and_only_they_can_be_picked() {
+    let (_database, module) = test_module().await;
+    let owner = organization_user(
+        module.database.clone(),
+        "user:choice-owner",
+        OrganizationRole::Member,
+    )
+    .await;
+    let member = organization_user(
+        module.database.clone(),
+        "user:choice-member",
+        OrganizationRole::Member,
+    )
+    .await;
+    let governor = organization_user(
+        module.database.clone(),
+        "user:choice-governor",
+        OrganizationRole::Owner,
+    )
+    .await;
+    let context = change(owner.clone(), 10, '1');
+    let create = async |name| {
+        module
+            .create(&context, WorkspaceDisplayName::parse(name).unwrap())
+            .await
+            .unwrap()
+    };
+    let beta = create("Beta").await;
+    let alpha = create("Alpha").await;
+    create("alpha two").await;
+    let archived = create("Archived").await;
+    module.archive(&context, archived.id()).await.unwrap();
+    module
+        .set_membership(&context, beta.id(), &member, WorkspaceRole::Member)
+        .await
+        .unwrap();
+
+    let choices = async |actor: &crate::AuthenticatedUser| {
+        module
+            .list_sign_in_choices(actor.user_id())
+            .await
+            .unwrap()
+            .iter()
+            .map(|choice| {
+                (
+                    choice.workspace().display_name().as_str().to_owned(),
+                    choice.role(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        choices(&owner).await,
+        [
+            ("Alpha".to_owned(), WorkspaceRole::Owner),
+            ("alpha two".to_owned(), WorkspaceRole::Owner),
+            ("Beta".to_owned(), WorkspaceRole::Owner),
+        ],
+        "archived Workspaces are not offered, and choices sort by name, whatever the case"
+    );
+    assert_eq!(
+        module
+            .list(&owner)
+            .await
+            .unwrap()
+            .iter()
+            .map(|workspace| workspace.display_name().as_str())
+            .collect::<Vec<_>>(),
+        ["Alpha", "alpha two", "Archived", "Beta"],
+        "the Workspace list sorts the same way, archived ones included"
+    );
+    assert_eq!(
+        choices(&member).await,
+        [("Beta".to_owned(), WorkspaceRole::Member)]
+    );
+    assert_eq!(
+        choices(&governor).await,
+        [],
+        "Organization Owner governance is not a Membership"
+    );
+
+    let picked = module
+        .sign_in_choice(member.user_id(), beta.id())
+        .await
+        .unwrap();
+    assert_eq!(
+        (picked.workspace().id(), picked.role()),
+        (beta.id(), WorkspaceRole::Member)
+    );
+    let absent = crate::WorkspaceId::generate();
+    for (case, actor, workspace) in [
+        ("no Membership", &member, alpha.id()),
+        ("archived", &owner, archived.id()),
+        ("governance only", &governor, alpha.id()),
+        ("absent", &owner, &absent),
+    ] {
+        assert!(
+            matches!(
+                module.sign_in_choice(actor.user_id(), workspace).await,
+                Err(Error::WorkspaceNotFound)
+            ),
+            "{case}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1087,8 +1196,7 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
         )
         .await
         .unwrap();
-    let actor = module
-        .authenticate_agent(workspace.id(), issued.credential.expose(), 11)
+    let actor = authenticate_both(&module, workspace.id(), issued.credential.expose(), 11)
         .await
         .unwrap();
     let rotated = module
@@ -1102,14 +1210,11 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
     assert_eq!(rotated.agent, issued.agent);
     assert_eq!(rotated.registration, issued.registration);
     assert!(matches!(
-        module
-            .authenticate_agent(workspace.id(), issued.credential.expose(), 21)
-            .await,
+        authenticate_both(&module, workspace.id(), issued.credential.expose(), 21).await,
         Err(Error::InvalidAgentCredential)
     ));
     assert_eq!(
-        module
-            .authenticate_agent(workspace.id(), rotated.credential.expose(), 21)
+        authenticate_both(&module, workspace.id(), rotated.credential.expose(), 21)
             .await
             .unwrap(),
         actor
@@ -1125,9 +1230,7 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
         Err(Error::AgentRegistrationExpired)
     ));
     assert!(matches!(
-        module
-            .authenticate_agent(workspace.id(), rotated.credential.expose(), 100)
-            .await,
+        authenticate_both(&module, workspace.id(), rotated.credential.expose(), 100).await,
         Err(Error::InvalidAgentCredential)
     ));
     module
@@ -1185,9 +1288,7 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
         Err(Error::AgentDisabled)
     ));
     assert!(matches!(
-        module
-            .authenticate_agent(workspace.id(), rotated.credential.expose(), 101)
-            .await,
+        authenticate_both(&module, workspace.id(), rotated.credential.expose(), 101).await,
         Err(Error::InvalidAgentCredential)
     ));
     assert_eq!(
@@ -1216,6 +1317,28 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
         "each accepted change records one Event; rejected credentials record none"
     );
     assert!(!format!("{events:?}").contains(rotated.credential.expose()));
+}
+
+/// Authenticates through the Workspace-scoped lookup and the credential-only
+/// lookup of the Organization MCP Endpoint, which must give the same answer.
+async fn authenticate_both(
+    module: &WorkspaceModule,
+    workspace: &crate::WorkspaceId,
+    credential: &str,
+    now_unix_nanos: i64,
+) -> Result<crate::AuthenticatedPrincipal, Error> {
+    let scoped = module
+        .authenticate_agent(workspace, credential, now_unix_nanos)
+        .await;
+    let alone = module
+        .authenticate_agent_credential(credential, now_unix_nanos)
+        .await
+        .map(|(principal, resolved)| {
+            assert_eq!(&resolved, workspace);
+            principal
+        });
+    assert_eq!(format!("{scoped:?}"), format!("{alone:?}"));
+    scoped
 }
 
 /// Actions of the Events in `after` that `before` lacks, in a stable order.

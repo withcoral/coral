@@ -15,6 +15,7 @@ const workspace = {
   currentUser: 'users/jordan',
   profile: { user: 'users/jordan', name: 'Jordan Lee', email: 'jordan@example.com', local: false },
   mcpEndpoint: 'https://mcp.example.com/workspaces/demo/mcp',
+  connectEndpoint: 'https://mcp.example.com/workspaces/demo/mcp',
   path: '/workspaces/demo',
 }
 const summary = (path: string, description: string, savedAt = '2026-09-24T14:05:11.000Z') => ({

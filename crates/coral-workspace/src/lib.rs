@@ -122,8 +122,8 @@ pub use principal_authority::PrincipalWorkspaceEvidence;
 pub use types::{
     AdministrativeLifecycleEvent, AuthenticatedUser, AuthoritySource, ChangeContext,
     LifecycleAction, LifecycleOutcome, LifecycleTargetKind, MembershipChange, OrganizationRole,
-    UserId, Workspace, WorkspaceAction, WorkspaceDisplayName, WorkspaceEvidence, WorkspaceId,
-    WorkspaceMembership, WorkspaceRole, WorkspaceState, local_organization_owner,
+    UserId, Workspace, WorkspaceAction, WorkspaceChoice, WorkspaceDisplayName, WorkspaceEvidence,
+    WorkspaceId, WorkspaceMembership, WorkspaceRole, WorkspaceState, local_organization_owner,
 };
 
 /// Workspace lifecycle, Membership, and authority Module.
@@ -232,7 +232,8 @@ impl WorkspaceModule {
         Ok(workspace)
     }
 
-    /// Lists the Workspaces where one authenticated User holds a Membership.
+    /// Lists the Workspaces where one authenticated User holds a Membership,
+    /// in [listing order](Workspace::listing_key).
     ///
     /// # Errors
     ///
@@ -241,7 +242,60 @@ impl WorkspaceModule {
         let actor = OrganizationModule::new(self.database.clone())
             .resolve_user_authority(actor.user_id())
             .await?;
-        repository::list_workspaces(&self.database, actor.user_id()).await
+        Ok(repository::list_workspaces(&self.database, actor.user_id())
+            .await?
+            .into_iter()
+            .map(|(workspace, _role)| workspace)
+            .collect())
+    }
+
+    /// Lists the active Workspaces the User signing in at the Organization
+    /// MCP Endpoint can pick, in [listing order](Workspace::listing_key). Organization Owner governance
+    /// is not a Membership, so it offers nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a denial when the User no longer has Organization Membership.
+    pub async fn list_sign_in_choices(
+        &self,
+        user_id: &UserId,
+    ) -> Result<Vec<WorkspaceChoice>, Error> {
+        let actor = OrganizationModule::new(self.database.clone())
+            .resolve_user_authority(user_id)
+            .await?;
+        Ok(repository::list_workspaces(&self.database, actor.user_id())
+            .await?
+            .into_iter()
+            .filter(|(workspace, _role)| workspace.state() == WorkspaceState::Active)
+            .map(|(workspace, role)| WorkspaceChoice { workspace, role })
+            .collect())
+    }
+
+    /// Returns the Workspace the signing-in User picked, if it is still one of
+    /// their [sign-in choices](Self::list_sign_in_choices).
+    ///
+    /// # Errors
+    ///
+    /// Conceals a Workspace the User cannot pick as not found, and returns a
+    /// denial when the User no longer has Organization Membership.
+    pub async fn sign_in_choice(
+        &self,
+        user_id: &UserId,
+        workspace_id: &WorkspaceId,
+    ) -> Result<WorkspaceChoice, Error> {
+        let actor = OrganizationModule::new(self.database.clone())
+            .resolve_user_authority(user_id)
+            .await?;
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        let authority =
+            repository::authority(&mut transaction, workspace_id, actor.user_id()).await?;
+        transaction.commit().await?;
+        match authority {
+            Some((workspace, Some(role))) if workspace.state() == WorkspaceState::Active => {
+                Ok(WorkspaceChoice { workspace, role })
+            }
+            _ => Err(Error::WorkspaceNotFound),
+        }
     }
 
     /// Checks one Workspace-sensitive action and returns current evidence.

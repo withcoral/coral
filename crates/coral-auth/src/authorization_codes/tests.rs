@@ -16,6 +16,7 @@ fn grant() -> AuthorizationGrant {
         redirect_uri: "http://127.0.0.1:14554/callback".into(),
         code_challenge: "client-challenge".into(),
         resource: "https://mcp.example.test/workspaces/w/mcp".into(),
+        workspace_id: None,
     }
 }
 
@@ -63,6 +64,26 @@ async fn a_code_issued_by_one_process_is_redeemed_once_by_any() {
         granted.extend(outcome.unwrap().unwrap());
     }
     assert_eq!(granted, vec![grant()]);
+}
+
+/// A sign-in at the Organization MCP Endpoint picks a Workspace; its code
+/// hands that choice to the token, on every process.
+#[tokio::test]
+async fn a_code_carries_the_workspace_its_sign_in_chose() {
+    let (codes, fixture) = codes().await;
+    let peer = AuthorizationCodes::new(Arc::new(fixture.connect_peer().await.unwrap()));
+    let chosen = AuthorizationGrant {
+        resource: "https://mcp.example.test/mcp".into(),
+        workspace_id: Some(
+            coral_workspace::WorkspaceId::parse("0199f7a2-6a6e-7c3d-9a51-2f4e8b7d1c06").unwrap(),
+        ),
+        ..grant()
+    };
+    codes.issue("code", "sign-in", &chosen, NOW).await.unwrap();
+    assert_eq!(
+        peer.redeem("code", redemption(&chosen), NOW + 1).await,
+        Ok(Some(chosen))
+    );
 }
 
 /// Anyone can present a code. One that cannot be spent is answered from a

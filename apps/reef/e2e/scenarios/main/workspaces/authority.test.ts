@@ -151,7 +151,7 @@ test('Organization Owner governance, eligible Memberships, and private server pa
             await nav.getByRole('link', { name: `${name} settings`, exact: true }).count(),
           ).toBe(0)
           await nav
-            .getByRole('button', { name: `Copy ${name} MCP endpoint`, exact: true })
+            .getByRole('button', { name: `Copy ${name} workspace MCP URL`, exact: true })
             .waitFor()
           const html = await page.content()
           for (const hidden of [

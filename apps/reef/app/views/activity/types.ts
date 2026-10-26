@@ -8,7 +8,7 @@ export interface ActivityViewProps {
   windowKey?: string
   revealRecord?: string
   /**
-   * The Workspace MCP endpoint the empty state offers to copy. Agent history has
+   * The MCP URL a client connects at, which the empty state offers to copy. Agent history has
    * none: an Agent connects with its API key, which its page explains.
    */
   connect?: { endpoint: string }

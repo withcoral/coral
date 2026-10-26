@@ -1,15 +1,18 @@
 # Public Principal authentication
 
 The Workspace MCP endpoint is exactly `/workspaces/{workspace_id}/mcp`.
-Its URL fixes the Workspace, not the Principal or authority.
+Its URL fixes the Workspace, not the Principal or authority. The Organization
+MCP Endpoint is exactly `/mcp`; there the credential fixes the Workspace (see
+[below](#organization-mcp-endpoint)).
 
 - Auth-disabled serving is loopback-only. Missing credentials map to the implicit
   local Organization Owner through normal domain authorization. A presented
   credential is never ignored: it must authenticate an Agent Registration.
 - Remote User clients use Coral's OAuth authorization server, backed by the
-  configured OIDC provider. Coral-issued User tokens are bound to the exact
-  Workspace resource URL. Protected-resource metadata and the authentication
-  challenge advertise that URL and the configured authorization server.
+  configured OIDC provider. Coral-issued User tokens for a Workspace MCP
+  endpoint are bound to its exact resource URL. Protected-resource metadata and
+  the authentication challenge advertise that URL and the configured
+  authorization server.
 - Agents present their Registration bearer credential at the same endpoint.
   Agent-kind JWT claims are not Registration authentication.
 
@@ -23,6 +26,38 @@ Every HTTP request verifies its credential again. MCP sessions are partitioned
 by Workspace and canonical Principal; session IDs and `clientInfo` cannot select
 another actor. Domain Modules read current Coral-owned Organization Membership
 or Agent/Registration state rather than trusting a session's retained role.
+
+## Organization MCP Endpoint
+
+`/mcp` serves the Workspace its credential names, for clients that can store
+only one fixed URL.
+
+- A User token for `/mcp` has `aud = {listeners.mcp.public_url}/mcp` and a
+  signed `workspace_id`. It does not work at a Workspace MCP endpoint, and a
+  Workspace MCP token does not work at `/mcp`. `auth.allowed_audiences` cannot
+  name `/mcp`, and `coral_audience` cannot be redeemed for it.
+- The sign-in goes to the identity provider first. After the callback, the
+  approval page also lists the User's active Workspace Memberships, and Coral
+  issues the code only when they allow the client with one picked. So the
+  approval comes after sign-in at `/mcp`, and a trusted client sees it too. The
+  callback provisions the User as any sign-in does, but the pending approval is
+  sealed into the form and bound to the approval cookie, so no authorization
+  state is stored before the pick. The submission rechecks the choice. The page
+  names the account when the identity provider supplies an email or name. With
+  no Workspace, Coral issues no code. The page says to create a workspace, links
+  to the web interface when one is configured, and offers Back, which ends the
+  sign-in with `access_denied`.
+  Nothing is preselected; the browser requires a pick before Connect, and the
+  server refuses a submission without one.
+- An Agent Registration credential works at `/mcp`. Coral finds the
+  Registration by its verifier alone and serves its Workspace.
+- Each request rechecks current authority. A lost Membership or an archived
+  Workspace answers 401 with `error="invalid_token"` and the `/mcp` metadata
+  challenge, so an OAuth client signs in again and the User can pick another.
+  `serverInfo.title` names the Workspace.
+- Protected-resource metadata is at `/.well-known/oauth-protected-resource/mcp`.
+- Auth-disabled local mode serves `/mcp` to Agent credentials only. A request
+  without a credential gets a 401 that points to the Workspace MCP URL.
 
 ## OAuth client registration: DCR and CIMD
 
@@ -321,7 +356,8 @@ contacts the identity provider. A proxy in front of Coral must pass this cookie 
 callback.
 
 - A client's `client_id`, `redirect_uri`, and `state` together may be at most
-  1,536 bytes, so that the sign-in fits in one cookie. A longer request, or one
+  1,536 bytes, so that the sign-in fits in one cookie. At `/mcp` the client's
+  name counts too, because the sign-in carries it. A longer request, or one
   whose sign-in does not fit for another reason such as a long resource, fails
   with `invalid_request` before the consent page.
 - A new sign-in ends the browser's oldest sign-ins beyond three. For resources of

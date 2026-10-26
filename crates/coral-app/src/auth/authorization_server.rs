@@ -24,6 +24,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+mod approval_page;
 mod authorize;
 mod callback;
 mod client_metadata;
@@ -34,6 +35,7 @@ mod registration;
 mod response;
 mod sign_in_cookie;
 mod token;
+mod workspace_choice;
 
 use self::client_metadata::{ClientMetadataResolver, HttpClientMetadataResolver};
 
@@ -48,6 +50,7 @@ pub struct CoralAuthorizationServer {
     workspace_resource_family: Option<WorkspaceMcpUrls>,
     database: Arc<coral_db::Database>,
     readiness: Option<crate::ListenerReadiness>,
+    providers: Option<coral_provider::ProviderModule>,
 }
 
 impl CoralAuthorizationServer {
@@ -111,11 +114,19 @@ impl CoralAuthorizationServer {
             workspace_resource_family: None,
             database,
             readiness: None,
+            providers: None,
         })
     }
 
     pub(crate) fn with_readiness(mut self, readiness: crate::ListenerReadiness) -> Self {
         self.readiness = Some(readiness);
+        self
+    }
+
+    /// Names each Workspace's Providers on the Organization MCP Endpoint's
+    /// Workspace picker, from the deployment's Provider Module.
+    pub(crate) fn with_providers(mut self, providers: coral_provider::ProviderModule) -> Self {
+        self.providers = Some(providers);
         self
     }
 
@@ -209,6 +220,7 @@ impl CoralAuthorizationServer {
             self.workspace_resource_family,
             self.database,
             self.outbound_policy,
+            self.providers,
         )?;
         start_listener(bind_addr, health_routes(auth_router(state), self.readiness)).await
     }
@@ -227,6 +239,10 @@ fn auth_router(state: AuthorizationServerHttpState) -> Router {
         .route("/oauth/token", post(token::oauth_token))
         .route("/oauth/register", post(registration::register))
         .route(OIDC_CALLBACK_PATH, get(callback::oidc_callback))
+        .route(
+            workspace_choice::WORKSPACE_CHOICE_PATH,
+            post(workspace_choice::oauth_workspace_post),
+        )
         .with_state(state)
 }
 
@@ -348,6 +364,14 @@ struct AuthorizationServerHttpState {
     clients: OAuthClients,
     /// Domain Module that provisions stable User identities after OIDC validation.
     user_directory: UserDirectory,
+    /// The Workspaces a User can pick when they sign in at the Organization
+    /// MCP Endpoint.
+    workspaces: coral_workspace::WorkspaceModule,
+    /// The current authority of a User who signs in there.
+    organization: coral_workspace::OrganizationModule,
+    /// Names each Workspace's Providers on that page; display only. Absent
+    /// until the server is composed with the Provider Module.
+    providers: Option<coral_provider::ProviderModule>,
 }
 
 impl AuthorizationServerHttpState {
@@ -358,6 +382,7 @@ impl AuthorizationServerHttpState {
         workspace_resource_family: Option<WorkspaceMcpUrls>,
         database: Arc<coral_db::Database>,
         outbound_policy: coral_outbound::DestinationPolicy,
+        providers: Option<coral_provider::ProviderModule>,
     ) -> Result<Self, AuthServerError> {
         // Preserve local MCP client-ID derivation, but never treat an HTTPS
         // MCP base as an operator-registered Reef metadata destination. Only
@@ -394,6 +419,8 @@ impl AuthorizationServerHttpState {
         if let Some((issuer, subject)) = settings.bootstrap_owner() {
             user_directory = user_directory.with_bootstrap_owner(issuer, subject);
         }
+        let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
+        let organization = coral_workspace::OrganizationModule::new(database.clone());
         Ok(Self {
             settings,
             session_tokens,
@@ -405,22 +432,31 @@ impl AuthorizationServerHttpState {
             client_metadata_resolver: Arc::new(clients.clone()),
             clients,
             user_directory,
+            workspaces,
+            organization,
+            providers,
         })
     }
 
-    /// Whether authorization requests may target `resource`.
+    /// What authorization requests that target `resource` reach, or `None`
+    /// when they may not target it.
     ///
     /// A canonical resource is acceptable when it was registered exactly or
-    /// when it is a member of the per-workspace family. Workspace existence is
+    /// when it is one of the MCP endpoints. Workspace existence is
     /// deliberately not consulted: the OAuth flow answers identically for
     /// every well-formed workspace resource, so it discloses nothing about
     /// which workspaces exist.
-    pub(super) fn accepts_authorization_resource(&self, resource: &str) -> bool {
-        self.authorization_resources.contains(resource)
-            || self
-                .workspace_resource_family
-                .as_ref()
-                .is_some_and(|family| family.parse_resource(resource).is_some())
+    pub(super) fn authorization_resource(&self, resource: &str) -> Option<AuthorizationResource> {
+        if let Some(endpoint) = self
+            .workspace_resource_family
+            .as_ref()
+            .and_then(|family| family.parse_endpoint(resource))
+        {
+            return Some(AuthorizationResource::Mcp(endpoint));
+        }
+        self.authorization_resources
+            .contains(resource)
+            .then_some(AuthorizationResource::Registered)
     }
 
     /// Whether the browser cookies this server sets carry `Secure` and the
@@ -430,6 +466,23 @@ impl AuthorizationServerHttpState {
             .authorization_server()
             .issuer()
             .starts_with("https://")
+    }
+}
+
+/// What an acceptable authorization resource names on this server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum AuthorizationResource {
+    /// One of the MCP endpoints.
+    Mcp(coral_mcp::McpEndpoint),
+    /// A resource registered exactly, such as the web interface.
+    Registered,
+}
+
+impl AuthorizationResource {
+    /// Whether a sign-in for it ends with the User picking a Workspace, on
+    /// the page where they also approve the client.
+    pub(super) fn picks_workspace(&self) -> bool {
+        *self == Self::Mcp(coral_mcp::McpEndpoint::Organization)
     }
 }
 
@@ -474,6 +527,12 @@ mod test_state {
             None,
             database.database(),
             loopback_policy(),
+            Some(coral_provider::ProviderModule::new(
+                loopback_policy(),
+                database.database(),
+                coral_workspace::WorkspaceModule::new(database.database()),
+                coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
+            )),
         )
         .expect("authorization server state")
     }
@@ -638,17 +697,20 @@ mod tests {
             prepared.workspace_resource_family,
             prepared.database,
             prepared.outbound_policy,
+            None,
         )
         .expect("authorization server state");
 
         for accepted in [
             "https://mcp.example.test/workspaces/01234567-89ab-4cde-8fab-0123456789ab/mcp",
             "https://mcp.example.test/workspaces/11234567-89ab-4cde-8fab-0123456789ab/mcp",
+            // The Organization MCP Endpoint; its sign-in picks the Workspace.
+            "https://mcp.example.test/mcp",
             "https://coral-web.example.test",
             "https://configured.example.test",
         ] {
             assert!(
-                state.accepts_authorization_resource(accepted),
+                state.authorization_resource(accepted).is_some(),
                 "must accept {accepted}"
             );
         }
@@ -664,11 +726,13 @@ mod tests {
             "https://mcp.example.test/workspaces/%301234567-89ab-4cde-8fab-0123456789ab/mcp",
             "https://mcp.example.test/workspaces/01234567-89ab-4cde-8fab-0123456789ab/extra/mcp",
             "https://other.example.test/workspaces/01234567-89ab-4cde-8fab-0123456789ab/mcp",
+            "https://mcp.example.test/mcp/",
+            "https://other.example.test/mcp",
             // Registration stores the canonical spelling only.
             "https://coral-web.example.test/",
         ] {
             assert!(
-                !state.accepts_authorization_resource(refused),
+                state.authorization_resource(refused).is_none(),
                 "must refuse {refused}"
             );
         }

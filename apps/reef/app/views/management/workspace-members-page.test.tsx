@@ -16,6 +16,7 @@ const workspace: WorkspaceView = {
   currentUser: 'users/ada',
   profile: person('ada', 'Ada'),
   mcpEndpoint: '',
+  connectEndpoint: '',
   path: '/workspaces/demo',
 }
 

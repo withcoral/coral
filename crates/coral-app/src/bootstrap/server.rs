@@ -384,7 +384,8 @@ impl PreparedServerBuilder {
             instance,
         )
         .await?;
-        server.authorization_server = authorization_server;
+        server.authorization_server = authorization_server
+            .map(|authorization| Box::new(authorization.with_providers(server.providers())));
         server.workspace_authentication = workspace_authentication;
         Ok(server)
     }

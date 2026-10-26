@@ -7,6 +7,7 @@ use coral_workspace::{
 use std::time::Duration;
 
 const AUDIENCE: &str = "https://coral.example/workspaces/01234567-89ab-4cde-8fab-0123456789ab/mcp";
+const ORGANIZATION_AUDIENCE: &str = "https://coral.example/mcp";
 
 #[tokio::test]
 async fn user_authentication_reloads_authority_without_provisioning_or_local_fallback() {
@@ -95,9 +96,111 @@ async fn authentication_rejects_wrong_audience_signature_kind_and_malformed_cred
         assert_eq!(
             fixture
                 .authentication
-                .authenticate(&fixture.workspace, Some(&valid), audience)
+                .authenticate(
+                    WorkspaceFixedBy::Url(&fixture.workspace),
+                    Some(&valid),
+                    audience
+                )
                 .await,
             Err(AuthenticationError::Unauthenticated)
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_credential_alone_fixes_the_workspace_at_the_organization_endpoint() {
+    let fixture = Fixture::new().await;
+    let workspace = fixture.workspace.to_string();
+    let scoped = |audience: &str, workspace: &WorkspaceId| {
+        fixture
+            .issuer
+            .issue_workspace_access_token("owner", "client", audience, workspace)
+            .unwrap()
+            .access_token
+    };
+    // Two Workspaces, so a credential is seen to fix its own one.
+    let second = fixture
+        .workspaces
+        .create(
+            &fixture.owner,
+            WorkspaceDisplayName::parse("Second").unwrap(),
+        )
+        .await
+        .unwrap()
+        .id()
+        .clone();
+    for chosen in [&fixture.workspace, &second] {
+        let accepted = fixture
+            .authentication
+            .authenticate(
+                WorkspaceFixedBy::Credential,
+                Some(&scoped(ORGANIZATION_AUDIENCE, chosen)),
+                ORGANIZATION_AUDIENCE,
+            )
+            .await
+            .unwrap();
+        assert_eq!(&accepted.1, chosen);
+        assert_eq!(accepted.0.principal().id().as_str(), "owner");
+
+        let agent = fixture
+            .workspaces
+            .create_agent(
+                &fixture.owner,
+                chosen,
+                AgentDisplayName::parse("Worker").unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        let accepted = fixture
+            .authentication
+            .authenticate(
+                WorkspaceFixedBy::Credential,
+                Some(agent.credential.expose()),
+                ORGANIZATION_AUDIENCE,
+            )
+            .await
+            .unwrap();
+        assert_eq!(&accepted.1, chosen);
+        assert_eq!(accepted.0.principal(), agent.agent.principal());
+    }
+
+    let agent_kind = crate::session::test_tokens::scoped_agent_kind_token(
+        &fixture.issuer,
+        "owner",
+        "client",
+        ORGANIZATION_AUDIENCE,
+        &workspace,
+    );
+    for (case, bearer) in [
+        ("no credential", None),
+        ("a malformed credential", Some("not-a-token".to_owned())),
+        (
+            "an unscoped token, which names no Workspace",
+            Some(fixture.token("owner", ORGANIZATION_AUDIENCE)),
+        ),
+        (
+            "a scoped token for a Workspace MCP URL",
+            Some(scoped(AUDIENCE, &fixture.workspace)),
+        ),
+        ("an Agent-kind token", Some(agent_kind)),
+        (
+            "an invalid Agent credential",
+            Some(format!("coral_agent_{}", "x".repeat(43))),
+        ),
+    ] {
+        assert_eq!(
+            fixture
+                .authentication
+                .authenticate(
+                    WorkspaceFixedBy::Credential,
+                    bearer.as_deref(),
+                    ORGANIZATION_AUDIENCE
+                )
+                .await
+                .map(drop),
+            Err(AuthenticationError::Unauthenticated),
+            "{case}"
         );
     }
 }
@@ -123,7 +226,11 @@ async fn agent_authentication_uses_workspace_registration_not_user_authority() {
     assert_eq!(
         fixture
             .authentication
-            .authenticate(&other_workspace, Some(token), AUDIENCE)
+            .authenticate(
+                WorkspaceFixedBy::Url(&other_workspace),
+                Some(token),
+                AUDIENCE
+            )
             .await,
         Err(AuthenticationError::Unauthenticated)
     );
@@ -239,8 +346,12 @@ impl Fixture {
         token: Option<&str>,
     ) -> Result<AuthenticatedPrincipal, AuthenticationError> {
         self.authentication
-            .authenticate(&self.workspace, token, AUDIENCE)
+            .authenticate(WorkspaceFixedBy::Url(&self.workspace), token, AUDIENCE)
             .await
+            .map(|(principal, workspace)| {
+                assert_eq!(workspace, self.workspace);
+                principal
+            })
     }
 }
 

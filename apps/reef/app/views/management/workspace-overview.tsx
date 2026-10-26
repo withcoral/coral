@@ -105,10 +105,10 @@ export function WorkspaceOverview({
       <AgentKeyDialog
         credential={created?.credential ?? null}
         agentName={created?.agentDisplayName}
-        endpoint={w.mcpEndpoint}
+        endpoint={w.connectEndpoint}
         onClose={() => setCreated(undefined)}
       />
-      {active && w.mcpEndpoint && <WorkspaceQuickStart endpoint={w.mcpEndpoint} />}
+      {active && w.connectEndpoint && <WorkspaceQuickStart endpoint={w.connectEndpoint} />}
       <div className={styles.cards}>
         <Card.Container className={styles.panel}>
           <div className={styles.sectionHeading}>

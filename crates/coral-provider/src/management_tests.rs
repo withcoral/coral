@@ -566,3 +566,102 @@ async fn an_owner_reads_a_providers_configuration_by_namespace() {
         assert!(expected(&error), "{denial}: {error:?}");
     }
 }
+
+/// A credential-free OpenAPI source titled `title`.
+fn credential_free(title: &str) -> String {
+    format!(
+        r#"{{"openapi":"3.1.0","info":{{"title":"{title}","version":"1"}},
+"servers":[{{"url":"https://{title}.example.test"}}],
+"paths":{{"/data":{{"get":{{"operationId":"getData","responses":{{"200":{{"description":"Data"}}}}}}}}}}}}"#
+    )
+}
+
+/// Catches: a name shown from a Workspace the reader cannot inspect, a
+/// Disabled or Built-in Provider named as one the client could use, or the
+/// names in an order that changes between sign-ins.
+#[tokio::test]
+async fn active_provider_names_cover_only_inspectable_workspaces() {
+    use coral_workspace::WorkspaceRole;
+    let (db, workspaces, providers) = test_modules().await;
+    let owner =
+        organization_user(db.database(), "user:names-owner", OrganizationRole::Member).await;
+    let member =
+        organization_user(db.database(), "user:names-member", OrganizationRole::Member).await;
+    let context = change_context(owner.clone(), 20, 'c');
+    let [used, empty, foreign] =
+        ["Used", "Empty", "Foreign"].map(|name| WorkspaceDisplayName::parse(name).unwrap());
+    let used = workspaces.create(&context, used).await.unwrap();
+    let empty = workspaces.create(&context, empty).await.unwrap();
+    let foreign = workspaces.create(&context, foreign).await.unwrap();
+    for workspace in [&used, &empty] {
+        workspaces
+            .set_membership(&context, workspace.id(), &member, WorkspaceRole::Member)
+            .await
+            .unwrap();
+    }
+    let database = db.database();
+    let mut transaction = database.begin().await.unwrap();
+    providers
+        .install_builtin_in_transaction(&mut transaction, &context, used.id())
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    for (workspace, title, namespace) in [
+        (&used, "Zebra", "zebra"),
+        (&used, "apple", "apple"),
+        (&foreign, "Hidden", "hidden"),
+    ] {
+        crate::tests::publish_provider(
+            &providers,
+            &context,
+            workspace.id(),
+            &credential_free(title),
+            namespace,
+            CredentialRoute::None,
+        )
+        .await;
+    }
+    let gone = crate::tests::publish_provider(
+        &providers,
+        &context,
+        used.id(),
+        &credential_free("Gone"),
+        "gone",
+        CredentialRoute::None,
+    )
+    .await;
+    providers
+        .disable_provider(&context, used.id(), gone.id())
+        .await
+        .unwrap();
+
+    let names = providers
+        .active_provider_names(
+            &member,
+            &[used.id().clone(), empty.id().clone(), foreign.id().clone()],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        names.into_iter().collect::<Vec<_>>(),
+        {
+            let mut expected = vec![
+                (
+                    used.id().clone(),
+                    vec!["apple".to_owned(), "Zebra".to_owned()],
+                ),
+                (empty.id().clone(), Vec::new()),
+            ];
+            expected.sort();
+            expected
+        },
+        "the foreign Workspace is left out, and the Built-in and Disabled Providers are not named"
+    );
+    assert!(
+        providers
+            .active_provider_names(&member, &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

@@ -40,6 +40,12 @@ impl GrpcServices {
         view.mcp_endpoint = self.mcp_origin.get().map_or_else(String::new, |origin| {
             format!("{origin}/workspaces/{id}/mcp")
         });
+        // Only a deployment with sign-in can ask which Workspace `/mcp` serves.
+        if self.authentication.is_some()
+            && let Some(origin) = self.mcp_origin.get()
+        {
+            view.organization_mcp_endpoint = format!("{origin}/mcp");
+        }
         Ok(view)
     }
 }
@@ -73,6 +79,7 @@ fn workspace(evidence: &WorkspaceEvidence, meta: ResourceMetadata) -> wire::Work
         current_user: String::new(),
         current_user_profile: None,
         mcp_endpoint: String::new(),
+        organization_mcp_endpoint: String::new(),
         etag: meta.etag,
         create_time: Some(timestamp(meta.created_at)),
         update_time: Some(timestamp(meta.updated_at)),
@@ -323,7 +330,7 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
             input.page_size,
             &input.page_token,
             &format!("{}:workspaces", user.user_id()),
-            |w| w.id().to_string(),
+            coral_workspace::Workspace::listing_key,
         )?;
         let mut workspaces = Vec::new();
         for w in values {

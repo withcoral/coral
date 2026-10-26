@@ -10,11 +10,12 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
-use super::AuthorizationServerHttpState;
 use super::query::{MAX_PARAMETER_NAME_BYTES, MAX_PARAMETER_VALUE_BYTES, MAX_PARAMETERS};
 use super::response::security_headers;
+use super::{AuthorizationResource, AuthorizationServerHttpState};
 use coral_auth::PrivateAudience;
 use coral_auth::authorization_codes::{AuthorizationGrant, CodeRedemption};
+use coral_mcp::McpEndpoint;
 
 /// The largest form body this endpoint reads.
 ///
@@ -99,10 +100,7 @@ pub(super) async fn oauth_token(
     // credential elsewhere, and whatever mints one declares it there.
     let issued = match target.issue(&state.session_tokens, &authorization) {
         Ok(issued) => issued,
-        Err(error) => {
-            tracing::warn!(%error, "token endpoint could not issue an access token");
-            return token_error(TokenError::ServerError);
-        }
+        Err(error) => return token_error(error),
     };
     let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_secs(),
@@ -155,6 +153,9 @@ enum TokenTarget {
     Public,
     Mcp(coral_workspace::WorkspaceId),
     Reef,
+    /// The Organization MCP Endpoint: its public URL audience, plus the
+    /// Workspace the User picked when they signed in.
+    Organization,
 }
 
 impl TokenTarget {
@@ -163,18 +164,23 @@ impl TokenTarget {
         resource: &str,
         audience: Option<&str>,
     ) -> Option<Self> {
-        let workspace = state
-            .workspace_resource_family
-            .as_ref()
-            .and_then(|family| family.parse_resource(resource));
+        let target = state.authorization_resource(resource);
         let Some(audience) = audience else {
-            return Some(Self::Public);
+            return Some(match target {
+                Some(AuthorizationResource::Mcp(McpEndpoint::Organization)) => Self::Organization,
+                _ => Self::Public,
+            });
         };
-        match PrivateAudience::parse(audience)? {
-            PrivateAudience::Mcp => workspace.map(Self::Mcp),
-            PrivateAudience::Reef => (workspace.is_none()
-                && state.authorization_resources.contains(resource))
-            .then_some(Self::Reef),
+        // An Organization MCP Endpoint token must carry the picked Workspace,
+        // which only the public audience does; a private audience would drop
+        // or replace it.
+        match (PrivateAudience::parse(audience)?, target?) {
+            (
+                PrivateAudience::Mcp,
+                AuthorizationResource::Mcp(McpEndpoint::Workspace(workspace)),
+            ) => Some(Self::Mcp(workspace)),
+            (PrivateAudience::Reef, AuthorizationResource::Registered) => Some(Self::Reef),
+            _ => None,
         }
     }
 
@@ -182,8 +188,8 @@ impl TokenTarget {
         &self,
         issuer: &coral_auth::SessionTokenIssuer,
         authorization: &AuthorizationGrant,
-    ) -> Result<coral_auth::IssuedAccessToken, String> {
-        match self {
+    ) -> Result<coral_auth::IssuedAccessToken, TokenError> {
+        let token = match self {
             Self::Mcp(workspace) => issuer.issue_workspace_access_token(
                 &authorization.user_id,
                 &authorization.client_id,
@@ -200,7 +206,25 @@ impl TokenTarget {
                 &authorization.client_id,
                 &authorization.resource,
             ),
-        }
+            Self::Organization => {
+                // Only the Workspace picker issues an Organization MCP
+                // Endpoint code, so a code naming no Workspace is not one.
+                let workspace = authorization
+                    .workspace_id
+                    .as_ref()
+                    .ok_or(TokenError::InvalidGrant)?;
+                issuer.issue_workspace_access_token(
+                    &authorization.user_id,
+                    &authorization.client_id,
+                    &authorization.resource,
+                    workspace,
+                )
+            }
+        };
+        token.map_err(|error| {
+            tracing::warn!(%error, "token endpoint could not issue an access token");
+            TokenError::ServerError
+        })
     }
 }
 
@@ -429,20 +453,47 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one table follows each resource and audience to the token it issues"
+    )]
     async fn first_party_tokens_keep_the_authorized_surface_and_workspace() {
         let workspace =
             coral_workspace::WorkspaceId::parse(&uuid::Uuid::new_v4().to_string()).unwrap();
         let workspace_resource = format!("https://mcp.example.test/workspaces/{workspace}/mcp");
-        for (resource, requested, expected_status) in [
-            (workspace_resource.as_str(), "mcp", StatusCode::OK),
-            (workspace_resource.as_str(), "reef", StatusCode::BAD_REQUEST),
+        let organization = "https://mcp.example.test/mcp";
+        let picked = Some(workspace.clone());
+        // (resource, coral_audience, Workspace the sign-in picked, refusal)
+        for (resource, requested, chosen, refusal) in [
+            (workspace_resource.as_str(), Some("mcp"), None, None),
             (
                 workspace_resource.as_str(),
-                "unknown",
-                StatusCode::BAD_REQUEST,
+                Some("reef"),
+                None,
+                Some("invalid_target"),
             ),
-            (RESOURCE, "reef", StatusCode::OK),
-            (RESOURCE, "mcp", StatusCode::BAD_REQUEST),
+            (
+                workspace_resource.as_str(),
+                Some("unknown"),
+                None,
+                Some("invalid_target"),
+            ),
+            (RESOURCE, Some("reef"), None, None),
+            (RESOURCE, Some("mcp"), None, Some("invalid_target")),
+            (organization, None, picked.clone(), None),
+            (organization, None, None, Some("invalid_grant")),
+            (
+                organization,
+                Some("mcp"),
+                picked.clone(),
+                Some("invalid_target"),
+            ),
+            (
+                organization,
+                Some("reef"),
+                picked.clone(),
+                Some("invalid_target"),
+            ),
         ] {
             let (mut state, codes, _, _database) = state().await;
             state.workspace_resource_family = Some(Arc::new(
@@ -461,6 +512,7 @@ mod tests {
                         redirect_uri: REDIRECT.into(),
                         code_challenge: URL_SAFE_NO_PAD.encode(Sha256::digest(VERIFIER.as_bytes())),
                         resource: resource.to_owned(),
+                        workspace_id: chosen.clone(),
                     },
                     now_unix_nanos(),
                 )
@@ -479,7 +531,7 @@ mod tests {
                     Some(resource),
                 ),
                 "coral_audience",
-                Some(requested),
+                requested,
             );
             let response = reqwest::Client::new()
                 .post(format!("{}/oauth/token", server.endpoint_uri()))
@@ -488,9 +540,13 @@ mod tests {
                 .send()
                 .await
                 .unwrap();
-            assert_eq!(response.status(), expected_status);
+            let case = format!("{resource} as {requested:?} for {chosen:?}");
+            let expected_status = refusal.map_or(StatusCode::OK, |_| StatusCode::BAD_REQUEST);
+            assert_eq!(response.status(), expected_status, "{case}");
             let json: Value = response.json().await.unwrap();
-            if expected_status == StatusCode::OK {
+            if let Some(refusal) = refusal {
+                assert_eq!(json.get("error").unwrap(), refusal, "{case}");
+            } else {
                 let token = json.get("access_token").unwrap().as_str().unwrap();
                 let claims: Value = serde_json::from_slice(
                     &URL_SAFE_NO_PAD
@@ -498,15 +554,21 @@ mod tests {
                         .unwrap(),
                 )
                 .unwrap();
-                assert_eq!(claims.get("aud").unwrap(), requested);
+                assert_eq!(
+                    claims.get("aud").unwrap(),
+                    requested.unwrap_or(resource),
+                    "{case}"
+                );
                 assert_eq!(claims.get("sub").unwrap(), "user");
-                if requested == "mcp" {
-                    assert_eq!(claims.get("workspace_id").unwrap(), &workspace.to_string());
+                if requested == Some("mcp") || resource == organization {
+                    assert_eq!(
+                        claims.get("workspace_id").unwrap(),
+                        &workspace.to_string(),
+                        "{case}"
+                    );
                 } else {
-                    assert!(claims.get("workspace_id").is_none());
+                    assert!(claims.get("workspace_id").is_none(), "{case}");
                 }
-            } else {
-                assert_eq!(json.get("error").unwrap(), "invalid_target");
             }
             server.shutdown().await.unwrap();
         }
@@ -524,6 +586,7 @@ mod tests {
                     redirect_uri: REDIRECT.into(),
                     code_challenge: URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())),
                     resource: RESOURCE.into(),
+                    workspace_id: None,
                 },
                 now_unix_nanos(),
             )
@@ -836,10 +899,11 @@ mod tests {
             coral_workspace::WorkspaceModule::new(fixture.database()),
         );
         let token = get("access_token").as_str().expect("access token");
-        let principal = authentication
+        let workspace =
+            coral_workspace::WorkspaceId::parse("01234567-89ab-4cde-8fab-0123456789ab").unwrap();
+        let (principal, _workspace) = authentication
             .authenticate(
-                &coral_workspace::WorkspaceId::parse("01234567-89ab-4cde-8fab-0123456789ab")
-                    .unwrap(),
+                coral_auth::WorkspaceFixedBy::Url(&workspace),
                 Some(token),
                 RESOURCE,
             )

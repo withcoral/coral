@@ -4,7 +4,7 @@
 //! the configured public origin; neither display names nor URL prefixes select
 //! a Workspace. A matching URL grants no authority.
 
-use coral_mcp::{parse_workspace_mcp_path, workspace_mcp_path};
+use coral_mcp::{McpEndpoint, parse_workspace_mcp_path, workspace_mcp_path};
 use coral_workspace::WorkspaceId;
 
 use crate::oauth_resource::{CanonicalOauthUrl, OauthUrlError};
@@ -83,6 +83,30 @@ impl WorkspaceMcpUrls {
     #[must_use]
     pub fn parse_metadata_path(&self, path: &str) -> Option<WorkspaceId> {
         parse_workspace_mcp_path(path.strip_prefix(PROTECTED_RESOURCE_METADATA_ROOT)?)
+    }
+
+    /// The exact URL of `endpoint`, and so its OAuth resource and audience.
+    /// A token for the Organization MCP Endpoint also carries the Workspace
+    /// its User picked at sign-in.
+    #[must_use]
+    pub fn endpoint_resource(&self, endpoint: &McpEndpoint) -> String {
+        format!("{}{}", self.origin.identifier(), endpoint.path())
+    }
+
+    /// The RFC 9728 protected-resource metadata URL of `endpoint`.
+    #[must_use]
+    pub fn endpoint_metadata_url(&self, endpoint: &McpEndpoint) -> String {
+        format!(
+            "{}{PROTECTED_RESOURCE_METADATA_ROOT}{}",
+            self.origin.identifier(),
+            endpoint.path()
+        )
+    }
+
+    /// Parses an exact resource under this origin into the MCP endpoint it names.
+    #[must_use]
+    pub fn parse_endpoint(&self, resource: &str) -> Option<McpEndpoint> {
+        McpEndpoint::parse_path(resource.strip_prefix(self.origin.identifier())?)
     }
 }
 

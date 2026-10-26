@@ -768,6 +768,16 @@ fn public_surface_audiences(
                  per-workspace MCP resources and not an audience of its own"
             )));
         }
+        // A token for `/mcp` must carry the Workspace its User picked; an
+        // allowed audience would issue it one that names no Workspace.
+        if mcp_workspace_urls.parse_endpoint(&audience)
+            == Some(coral_mcp::McpEndpoint::Organization)
+        {
+            return Err(AppError::FailedPrecondition(format!(
+                "{label} is the Organization MCP Endpoint, whose tokens name the workspace \
+                 picked at sign-in; it is not an audience of its own"
+            )));
+        }
         audiences.push(audience);
     }
     Ok(audiences)
@@ -1613,6 +1623,11 @@ client_secret = 'test-secret'
                 "[listeners.mcp]\npublic_url = 'https://MCP.example.test/'\n",
                 "allowed_audiences = ['https://mcp.example.test']",
                 "auth.allowed_audiences[0] duplicates listeners.mcp.public_url",
+            ),
+            (
+                "[listeners.mcp]\npublic_url = 'https://mcp.example.test'\n",
+                "allowed_audiences = ['https://MCP.example.test/mcp']",
+                "auth.allowed_audiences[0] is the Organization MCP Endpoint",
             ),
             (
                 "[listeners.mcp]\npublic_url = 'https://mcp.example.test'\n",

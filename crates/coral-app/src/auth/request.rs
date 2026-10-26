@@ -1,7 +1,7 @@
 //! MCP projection of transport-neutral Principal authentication.
 use crate::WorkspaceMcpUrls;
-use coral_auth::PrincipalAuthentication;
-use coral_mcp::{AuthenticationError, OauthProtectedResource, WorkspaceAuthenticator};
+use coral_auth::{PrincipalAuthentication, WorkspaceFixedBy};
+use coral_mcp::{AuthenticationError, McpEndpoint, OauthProtectedResource, WorkspaceAuthenticator};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
 /// Authentication Adapter for the exact configured Workspace MCP URL family.
@@ -28,11 +28,15 @@ impl WorkspaceAuthentication {
 impl WorkspaceAuthenticator for WorkspaceAuthentication {
     async fn authenticate(
         &self,
-        workspace: &WorkspaceId,
+        endpoint: &McpEndpoint,
         bearer: Option<&str>,
-    ) -> Result<AuthenticatedPrincipal, AuthenticationError> {
+    ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
+        let fixed_by = match endpoint {
+            McpEndpoint::Workspace(workspace) => WorkspaceFixedBy::Url(workspace),
+            McpEndpoint::Organization => WorkspaceFixedBy::Credential,
+        };
         self.authentication
-            .authenticate(workspace, bearer, &self.urls.resource(workspace))
+            .authenticate(fixed_by, bearer, &self.urls.endpoint_resource(endpoint))
             .await
             .map_err(|error| match error {
                 coral_auth::AuthenticationError::Unauthenticated => {
@@ -41,11 +45,11 @@ impl WorkspaceAuthenticator for WorkspaceAuthentication {
                 coral_auth::AuthenticationError::Unavailable => AuthenticationError::Unavailable,
             })
     }
-    fn oauth_resource(&self, workspace: &WorkspaceId) -> Option<OauthProtectedResource> {
+    fn oauth_resource(&self, endpoint: &McpEndpoint) -> Option<OauthProtectedResource> {
         Some(OauthProtectedResource {
-            resource: self.urls.resource(workspace),
+            resource: self.urls.endpoint_resource(endpoint),
             authorization_server: self.issuer.clone(),
-            metadata_url: self.urls.metadata_url(workspace),
+            metadata_url: self.urls.endpoint_metadata_url(endpoint),
         })
     }
 }

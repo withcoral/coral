@@ -88,6 +88,10 @@ async fn bootstrap_publishes_the_companion_origin_to_private_workspace_responses
         view.mcp_endpoint,
         format!("http://127.0.0.1:14556/workspaces/{}/mcp", workspace.id())
     );
+    assert_eq!(
+        view.organization_mcp_endpoint, "",
+        "local mode has no sign-in to pick a Workspace at /mcp"
+    );
     server.shutdown().await.unwrap();
 }
 

@@ -90,8 +90,8 @@ export function AgentActivityPage({
       }
     >
       <div className={styles.agentDashboard}>
-        {idle && active && w.mcpEndpoint && (
-          <AgentQuickStart endpoint={w.mcpEndpoint} settingsPath={a.settingsPath} />
+        {idle && active && w.connectEndpoint && (
+          <AgentQuickStart endpoint={w.connectEndpoint} settingsPath={a.settingsPath} />
         )}
         <div className={showAccounts ? styles.agentDashboardGrid : styles.agentDashboardSingle}>
           {showAccounts && <AgentProviders providers={providers} form={form} canConnect={active} />}

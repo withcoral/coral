@@ -10,7 +10,7 @@ use axum::extract::State;
 use axum::http::{Request, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
-use coral_workspace::{Principal, WorkspaceId};
+use coral_workspace::{Principal, WorkspaceId, WorkspaceState};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::session::{SessionId, SessionManager as _};
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
@@ -22,8 +22,8 @@ use tower::ServiceExt as _;
 use crate::authentication::{LocalAuthentication, now};
 use crate::server::McpServer;
 use crate::{
-    AuthenticationError, McpModules, McpRuntime, WORKSPACE_MCP_ROUTE, WorkspaceAuthenticator,
-    parse_workspace_mcp_path,
+    AuthenticationError, McpEndpoint, McpModules, McpRuntime, ORGANIZATION_MCP_ROUTE,
+    WORKSPACE_MCP_ROUTE, WorkspaceAuthenticator,
 };
 
 /// Application-owned listener readiness. The callback must bound and coalesce probes.
@@ -225,8 +225,13 @@ async fn start_server(
             }),
         )
         .route(WORKSPACE_MCP_ROUTE, any(mcp))
+        .route(ORGANIZATION_MCP_ROUTE, any(mcp))
         .route(
-            "/.well-known/oauth-protected-resource/workspaces/{workspace_id}/mcp",
+            &format!("{METADATA_ROOT}{WORKSPACE_MCP_ROUTE}"),
+            axum::routing::get(metadata),
+        )
+        .route(
+            &format!("{METADATA_ROOT}{ORGANIZATION_MCP_ROUTE}"),
             axum::routing::get(metadata),
         )
         .with_state(state.clone());
@@ -297,6 +302,12 @@ impl HttpState {
     }
 }
 
+/// The well-known prefix protected-resource metadata is served under (RFC 9728).
+const METADATA_ROOT: &str = "/.well-known/oauth-protected-resource";
+
+/// Authenticates at whichever MCP endpoint the request reached, checks
+/// current authority in the Workspace that fixed, and hands the request to
+/// that Workspace's and Principal's MCP sessions.
 async fn mcp(State(state): State<Arc<HttpState>>, mut request: Request<Body>) -> Response {
     if state.config.cancellation_token.is_cancelled() {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -304,37 +315,66 @@ async fn mcp(State(state): State<Arc<HttpState>>, mut request: Request<Body>) ->
     if request.headers().contains_key(header::ORIGIN) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let Some(workspace_id) = parse_workspace_mcp_path(request.uri().path()) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
     if request.uri().query().is_some() {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let Ok(bearer) = bearer_credential(request.headers()) else {
-        return authentication_error(&state, &workspace_id, AuthenticationError::Unauthenticated);
+    let Some(endpoint) = McpEndpoint::parse_path(request.uri().path()) else {
+        return StatusCode::NOT_FOUND.into_response();
     };
-    let principal = match state
-        .authentication
-        .authenticate(&workspace_id, bearer)
-        .await
+    let Ok(bearer) = bearer_credential(request.headers()) else {
+        return unauthorized(
+            &state,
+            &endpoint,
+            AuthenticationError::Unauthenticated,
+            None,
+        );
+    };
+    let (principal, workspace_id) = match state.authentication.authenticate(&endpoint, bearer).await
     {
-        Ok(principal) => principal,
-        Err(error) => return authentication_error(&state, &workspace_id, error),
+        Ok(authenticated) => authenticated,
+        Err(error) => return unauthorized(&state, &endpoint, error, bearer),
     };
     let Ok(now) = now() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    match state
+    // At `/mcp` a lost Workspace answers 401 `invalid_token`, so the client
+    // signs in again and its User picks another Workspace.
+    let lost = || match endpoint {
+        McpEndpoint::Workspace(_) => StatusCode::NOT_FOUND.into_response(),
+        McpEndpoint::Organization => unauthorized(
+            &state,
+            &endpoint,
+            AuthenticationError::Unauthenticated,
+            bearer,
+        ),
+    };
+    let evidence = match state
         .modules
         .workspaces
         .check_principal_inspection(&principal, &workspace_id, now)
         .await
     {
-        Ok(_evidence) => {}
+        Ok(evidence) => evidence,
         Err(
             coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::PermissionDenied(_),
-        ) => return StatusCode::NOT_FOUND.into_response(),
+        ) => return lost(),
         Err(_error) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
+    let workspace = evidence.workspace();
+    let mut handler = McpServer::new(
+        McpRuntime {
+            modules: state.modules.clone(),
+            principal: principal.clone(),
+        },
+        workspace_id.clone(),
+    );
+    // A client at `/mcp` cannot read its Workspace from the URL, and has no
+    // URL that keeps an archived one reachable.
+    if endpoint == McpEndpoint::Organization {
+        if workspace.state() == WorkspaceState::Archived {
+            return lost();
+        }
+        handler = handler.naming_workspace(workspace.display_name().as_str());
     }
     // Authentication is complete. RMCP/session extensions need no credential
     // material; only the separately constructed canonical context reaches tools.
@@ -342,13 +382,6 @@ async fn mcp(State(state): State<Arc<HttpState>>, mut request: Request<Body>) ->
     let sessions = state
         .session_manager(&workspace_id, principal.principal())
         .await;
-    let handler = McpServer::new(
-        McpRuntime {
-            modules: state.modules.clone(),
-            principal,
-        },
-        workspace_id,
-    );
     let config = state.config.clone();
     let service = StreamableHttpService::new(
         move || Ok::<_, io::Error>(handler.clone()),
@@ -383,19 +416,31 @@ fn bearer_credential(headers: &axum::http::HeaderMap) -> Result<Option<&str>, ()
     Ok(Some(token))
 }
 
-fn authentication_error(
+/// A 401 whose challenge names `endpoint`'s protected-resource metadata.
+/// A presented `bearer` adds `invalid_token`, which tells an OAuth client that
+/// its token no longer works there.
+fn unauthorized(
     state: &HttpState,
-    workspace: &WorkspaceId,
+    endpoint: &McpEndpoint,
     error: AuthenticationError,
+    bearer: Option<&str>,
 ) -> Response {
     if matches!(error, AuthenticationError::Unavailable) {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
-    let challenge = state.authentication.oauth_resource(workspace).map_or_else(
-        || "Bearer".to_owned(),
-        |resource| format!("Bearer resource_metadata=\"{}\"", resource.metadata_url),
-    );
-    let mut response = (StatusCode::UNAUTHORIZED, "authentication required").into_response();
+    let mut parameters = Vec::new();
+    if bearer.is_some() {
+        parameters.push("error=\"invalid_token\"".to_owned());
+    }
+    if let Some(resource) = state.authentication.oauth_resource(endpoint) {
+        parameters.push(format!("resource_metadata=\"{}\"", resource.metadata_url));
+    }
+    let challenge = if parameters.is_empty() {
+        "Bearer".to_owned()
+    } else {
+        format!("Bearer {}", parameters.join(", "))
+    };
+    let mut response = (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
     if let Ok(value) = axum::http::HeaderValue::from_str(&challenge) {
         response
             .headers_mut()
@@ -405,17 +450,13 @@ fn authentication_error(
 }
 
 async fn metadata(State(state): State<Arc<HttpState>>, request: Request<Body>) -> Response {
-    let Some(path) = request
+    let Some(resource) = request
         .uri()
         .path()
-        .strip_prefix("/.well-known/oauth-protected-resource")
+        .strip_prefix(METADATA_ROOT)
+        .and_then(McpEndpoint::parse_path)
+        .and_then(|endpoint| state.authentication.oauth_resource(&endpoint))
     else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let Some(workspace) = parse_workspace_mcp_path(path) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let Some(resource) = state.authentication.oauth_resource(&workspace) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     ([(header::CONTENT_TYPE, "application/json")], serde_json::json!({"resource": resource.resource, "authorization_servers": [resource.authorization_server], "bearer_methods_supported": ["header"]}).to_string()).into_response()

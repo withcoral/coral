@@ -31,7 +31,10 @@ pub use http::{
     start_local,
 };
 pub use server::SUPPORTED_PROTOCOL_VERSIONS;
-pub use urls::{WORKSPACE_MCP_ROUTE, parse_workspace_mcp_path, workspace_mcp_path};
+pub use urls::{
+    McpEndpoint, ORGANIZATION_MCP_ROUTE, WORKSPACE_MCP_ROUTE, parse_workspace_mcp_path,
+    workspace_mcp_path,
+};
 
 /// Default target size of one encoded `exec`, `wait` or `cancel` result.
 const RUN_UPDATE_PAGE_BYTES: NonZeroUsize =

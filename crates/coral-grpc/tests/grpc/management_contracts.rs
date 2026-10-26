@@ -469,8 +469,10 @@ async fn management_pagination_replay_and_archived_configuration_are_bounded() {
     let f = Fixture::new().await;
     let mut client = f.workspace_service();
     let token = f.token(&f.owner, "reef");
+    // A name this long still leaves a page token that fits its limit.
+    let long_name = format!("Archive{}", " of every receipt".repeat(300));
     let create = management::CreateWorkspaceRequest {
-        display_name: "Receipt".into(),
+        display_name: long_name.clone(),
         request_id: uuid::Uuid::new_v4().to_string(),
     };
     let w = client
@@ -514,9 +516,10 @@ async fn management_pagination_replay_and_archived_configuration_are_bounded() {
         .into_inner();
     assert_eq!(second.workspaces.len(), 1);
     assert!(second.next_page_token.is_empty());
-    assert_ne!(
-        first.workspaces.first().unwrap().name,
-        second.workspaces.first().unwrap().name
+    assert_eq!(
+        [&first, &second].map(|page| page.workspaces.first().unwrap().display_name.as_str()),
+        [long_name.as_str(), "private"],
+        "pages follow the alphabetical order"
     );
     assert_eq!(
         client

@@ -82,7 +82,7 @@ export function AgentsPage({ workspace: w, agents, nextPage, form, result }: Age
       <AgentKeyDialog
         credential={key}
         agentName={notice?.agentDisplayName}
-        endpoint={w.mcpEndpoint}
+        endpoint={w.connectEndpoint}
         onClose={() => setSavedKey(key)}
       />
       {!active && (

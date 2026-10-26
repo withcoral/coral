@@ -124,7 +124,7 @@ export function FunctionsPage({ workspace: w, functions, children }: FunctionsPa
             iconName="SquareFunction"
             title="No functions yet"
             description="Save a function from an MCP client. Your functions in this workspace show here."
-            action={<CopyMcpEndpoint endpoint={w.mcpEndpoint} />}
+            action={<CopyMcpEndpoint endpoint={w.connectEndpoint} />}
           />
         </div>
       ) : (

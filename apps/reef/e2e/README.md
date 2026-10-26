@@ -536,21 +536,21 @@ Owner behavior; neither replaces the product Workspace/Agent journeys.
   Connection Request continuation, an Agent Account with its Agent bearer, and a
   failed shared update.
 - `topology/absent-surfaces`: the MCP listener serves only
-  `/workspaces/{workspace_id}/mcp` with the tool set `crates/coral-mcp` pins, and
+  `/workspaces/{workspace_id}/mcp` and `/mcp`, with the tool set `crates/coral-mcp` pins, and
   no public listener serves a private gRPC method. Audience rejection stays tested in `crates/coral-grpc`.
 - `activity/binary-output`: a binary Final Value reaches an MCP client as an image
   block and shows unchanged on Reef's Run Status Page.
 
 Maintained management recordings:
 
-- `workspaces/lifecycle`: Workspace creation, MCP endpoint copy from the sidebar
+- `workspaces/lifecycle`: Workspace creation, the workspace MCP URL copied from the sidebar
   header, the settings dialog over the Overview (shareable URL, closing replaces the history entry),
   stable identity across rename, archive cancellation/confirmation, configuration
   lockout, restoration, sidebar Workspace creation, tree expansion without
   navigation, direct links, and browser Back/Forward. The sidebar tree is the only
   Workspace listing.
 - `workspaces/first-workspace`: a User without a Workspace creates one from the
-  home empty state, copies its MCP URL from the empty Activity, and the first MCP
+  home empty state, copies `/mcp` from the empty Activity, and the first MCP
   call replaces that empty state live.
 - `workspaces/authority`: an Organization Owner denied without a Membership, Owner
   assignment from the organization Workspaces page, one-submit

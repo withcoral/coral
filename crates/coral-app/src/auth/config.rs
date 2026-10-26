@@ -454,6 +454,11 @@ impl AuthorizationServerSettings {
             .filter(|web| web.client_id == client_id && web.login_redirect_uri == redirect_uri)
     }
 
+    /// The HTTPS origin of the web interface, when one is configured.
+    pub(super) fn web_public_url(&self) -> Option<&str> {
+        self.web_client.as_ref().map(|web| web.public_url.as_str())
+    }
+
     /// Returns the trusted client IDs for the topology check at server
     /// construction, which is where the full client-ID policy can first run.
     pub(super) fn trusted_clients(&self) -> &[String] {

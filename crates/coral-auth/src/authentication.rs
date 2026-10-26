@@ -3,7 +3,7 @@ use coral_workspace::{
 };
 
 use crate::SessionTokenIssuer;
-use crate::session::SessionTokenVerifier;
+use crate::session::{SessionTokenVerifier, ValidatedSession};
 
 /// Bounded authentication failures, without token, claim, or verifier material.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -45,21 +45,23 @@ impl PrincipalAuthentication {
         }
     }
 
-    /// Authenticates one request without provisioning a User or granting resource access.
+    /// Authenticates one request without provisioning a User or granting
+    /// resource access, and returns the Workspace it acts in.
     ///
     /// `expected_audience` is selected by the Adapter, never from unverified claims.
     /// Workspace URL construction and private method reachability remain caller-owned.
     /// Missing credentials do not select the implicit local Owner.
     ///
     /// # Errors
-    /// Returns a bounded rejection or authority-store unavailability.
+    /// Returns a bounded rejection or authority-store unavailability. Where the
+    /// credential must fix the Workspace, unscoped tokens are rejected too.
     pub async fn authenticate(
         &self,
-        workspace: &WorkspaceId,
+        fixed_by: WorkspaceFixedBy<'_>,
         bearer: Option<&str>,
         expected_audience: &str,
-    ) -> Result<AuthenticatedPrincipal, AuthenticationError> {
-        self.authenticate_request(workspace, bearer, expected_audience, false)
+    ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
+        self.authenticate_request(fixed_by, bearer, expected_audience, false)
             .await
     }
 
@@ -74,8 +76,14 @@ impl PrincipalAuthentication {
         bearer: Option<&str>,
         expected_audience: &str,
     ) -> Result<AuthenticatedPrincipal, AuthenticationError> {
-        self.authenticate_request(workspace, bearer, expected_audience, true)
-            .await
+        self.authenticate_request(
+            WorkspaceFixedBy::Url(workspace),
+            bearer,
+            expected_audience,
+            true,
+        )
+        .await
+        .map(|(principal, _workspace)| principal)
     }
 
     /// Authenticates an unscoped human management request (including Workspace creation).
@@ -107,35 +115,55 @@ impl PrincipalAuthentication {
 
     async fn authenticate_request(
         &self,
-        workspace: &WorkspaceId,
+        fixed_by: WorkspaceFixedBy<'_>,
         bearer: Option<&str>,
         expected_audience: &str,
         require_scope: bool,
-    ) -> Result<AuthenticatedPrincipal, AuthenticationError> {
+    ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
         let credential = bearer.ok_or(AuthenticationError::Unauthenticated)?;
         if credential.starts_with("coral_agent_") {
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_error| AuthenticationError::Unavailable)?
-                .as_nanos();
-            let now = i64::try_from(nanos).map_err(|_error| AuthenticationError::Unavailable)?;
-            return self
-                .workspaces
-                .authenticate_agent(workspace, credential, now)
-                .await
-                .map_err(AuthenticationError::from);
+            let now = now_unix_nanos()?;
+            return Ok(match fixed_by {
+                WorkspaceFixedBy::Url(workspace) => (
+                    self.workspaces
+                        .authenticate_agent(workspace, credential, now)
+                        .await?,
+                    workspace.clone(),
+                ),
+                WorkspaceFixedBy::Credential => {
+                    self.workspaces
+                        .authenticate_agent_credential(credential, now)
+                        .await?
+                }
+            });
         }
         let session = self
             .sessions
             .validate_access_token(credential, &[expected_audience])
             .map_err(|_error| AuthenticationError::Unauthenticated)?;
-        if (require_scope && session.workspace_id.is_none())
-            || session
-                .workspace_id
-                .as_deref()
-                .is_some_and(|scope| scope != workspace.to_string())
-            || session.principal_kind != PrincipalKind::User
-        {
+        let scope = session.workspace_id.as_deref();
+        let workspace = match fixed_by {
+            WorkspaceFixedBy::Url(workspace) => {
+                if (require_scope && scope.is_none())
+                    || scope.is_some_and(|scope| scope != workspace.to_string())
+                {
+                    return Err(AuthenticationError::Unauthenticated);
+                }
+                workspace.clone()
+            }
+            WorkspaceFixedBy::Credential => scope
+                .and_then(|scope| WorkspaceId::parse(scope).ok())
+                .ok_or(AuthenticationError::Unauthenticated)?,
+        };
+        Ok((self.user(&session).await?, workspace))
+    }
+
+    /// The current authority of the User a validated User-kind token names.
+    async fn user(
+        &self,
+        session: &ValidatedSession,
+    ) -> Result<AuthenticatedPrincipal, AuthenticationError> {
+        if session.principal_kind != PrincipalKind::User {
             return Err(AuthenticationError::Unauthenticated);
         }
         let user_id = crate::external_user_id(&session.user_id)
@@ -146,6 +174,25 @@ impl PrincipalAuthentication {
             .map(AuthenticatedPrincipal::user)
             .map_err(AuthenticationError::from)
     }
+}
+
+/// What fixes the Workspace a request acts in.
+#[derive(Clone, Copy, Debug)]
+pub enum WorkspaceFixedBy<'a> {
+    /// The request URL names the Workspace. A User token may be unscoped or
+    /// scoped to it; an Agent Registration must belong to it.
+    Url(&'a WorkspaceId),
+    /// Nothing in the request names one, so the credential must: a User
+    /// token's signed `workspace_id`, or an Agent Registration's Workspace.
+    Credential,
+}
+
+fn now_unix_nanos() -> Result<i64, AuthenticationError> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_error| AuthenticationError::Unavailable)?
+        .as_nanos();
+    i64::try_from(nanos).map_err(|_error| AuthenticationError::Unavailable)
 }
 
 impl From<coral_workspace::Error> for AuthenticationError {

@@ -2,7 +2,7 @@ use super::request::WorkspaceAuthentication;
 use crate::auth::test_config::loopback_policy;
 use crate::{CanonicalOauthUrl, WorkspaceMcpUrls};
 use coral_auth::{PrincipalAuthentication, SessionTokenIssuer};
-use coral_mcp::{McpModules, WorkspaceAuthenticator};
+use coral_mcp::{McpEndpoint, McpModules, WorkspaceAuthenticator};
 use coral_provider::ProviderModule;
 use coral_workspace::{
     AgentDisplayName, AgentState, AuthenticatedUser, ChangeContext, OrganizationModule,
@@ -40,8 +40,12 @@ async fn http_oauth_requests_use_current_user_authority_not_sessions_or_metadata
     let session = accepted.headers()["mcp-session-id"].clone();
     let principal = fixture
         .auth
-        .authenticate(&fixture.workspace, Some(&token.access_token))
+        .authenticate(
+            &McpEndpoint::Workspace(fixture.workspace.clone()),
+            Some(&token.access_token),
+        )
         .await
+        .map(|(principal, _workspace)| principal)
         .unwrap();
     assert_eq!(principal.principal().id().as_str(), "owner");
     assert_eq!(principal.principal().kind(), PrincipalKind::User);
@@ -130,8 +134,12 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
     let credential = issued.credential.expose();
     let actor = fixture
         .auth
-        .authenticate(&fixture.workspace, Some(credential))
+        .authenticate(
+            &McpEndpoint::Workspace(fixture.workspace.clone()),
+            Some(credential),
+        )
         .await
+        .map(|(principal, _workspace)| principal)
         .unwrap();
     assert_eq!(actor.principal(), issued.agent.principal());
     assert_eq!(actor.agent_workspace_id(), Some(&fixture.workspace));
@@ -218,9 +226,13 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
     assert_eq!(
         fixture
             .auth
-            .authenticate(&fixture.workspace, Some(rotated.credential.expose()))
+            .authenticate(
+                &McpEndpoint::Workspace(fixture.workspace.clone()),
+                Some(rotated.credential.expose())
+            )
             .await
             .unwrap()
+            .0
             .principal(),
         actor.principal()
     );
@@ -293,6 +305,245 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
         issued.registration.id()
     );
     fixture.server.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one HTTP contract follows each credential kind to the Workspace it fixes at /mcp"
+)]
+async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fixes() {
+    let fixture = Fixture::new().await;
+    let organization = fixture.urls.endpoint_resource(&McpEndpoint::Organization);
+    let scoped = |user: &str, workspace: &WorkspaceId| {
+        fixture
+            .issuer
+            .issue_workspace_access_token(user, "untrusted-client", &organization, workspace)
+            .unwrap()
+            .access_token
+    };
+    let challenge = |response: &reqwest::Response| {
+        response
+            .headers()
+            .get("www-authenticate")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned()
+    };
+
+    let missing = fixture.organization_request().send().await.unwrap();
+    assert_eq!(missing.status(), 401);
+    assert_eq!(
+        challenge(&missing),
+        format!(
+            "Bearer resource_metadata=\"{}\"",
+            fixture
+                .urls
+                .endpoint_metadata_url(&McpEndpoint::Organization)
+        )
+    );
+
+    let token = scoped("owner", &fixture.other_workspace);
+    let accepted = fixture
+        .organization_request()
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), 200);
+    let session = accepted.headers().get("mcp-session-id").unwrap().clone();
+    assert_eq!(
+        response_message(accepted)
+            .await
+            .pointer("/result/serverInfo/title")
+            .and_then(serde_json::Value::as_str),
+        Some("Coral · Other"),
+        "the client can show the Workspace the sign-in chose"
+    );
+    let principal = coral_workspace::AuthenticatedPrincipal::user(fixture.owner.actor().clone());
+    fixture
+        .assert_task_principal_at(
+            &fixture.organization_url(),
+            &fixture.other_workspace,
+            &token,
+            &session,
+            &principal,
+        )
+        .await;
+    let elsewhere = fixture
+        .organization_request()
+        .bearer_auth(scoped("owner", &fixture.workspace))
+        .header("mcp-session-id", session.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        elsewhere.status(),
+        404,
+        "a session belongs to the Workspace that opened it"
+    );
+
+    let workspace_url_token = fixture
+        .issuer
+        .issue_access_token(
+            "owner",
+            "untrusted-client",
+            &fixture.urls.resource(&fixture.workspace),
+        )
+        .unwrap()
+        .access_token;
+    let unscoped = fixture
+        .issuer
+        .issue_access_token("owner", "untrusted-client", &organization)
+        .unwrap()
+        .access_token;
+    for (case, token) in [
+        ("a Workspace URL token", workspace_url_token),
+        ("an unscoped token", unscoped),
+    ] {
+        let rejected = fixture
+            .organization_request()
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), 401, "{case}");
+        assert_eq!(
+            challenge(&rejected),
+            format!(
+                "Bearer error=\"invalid_token\", resource_metadata=\"{}\"",
+                fixture
+                    .urls
+                    .endpoint_metadata_url(&McpEndpoint::Organization)
+            ),
+            "{case}: a refused token asks the client to sign in again"
+        );
+    }
+    let misplaced = fixture
+        .request(&fixture.workspace)
+        .bearer_auth(scoped("owner", &fixture.workspace))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        misplaced.status(),
+        401,
+        "a /mcp token does not work at a Workspace URL"
+    );
+    assert_eq!(
+        challenge(&misplaced),
+        format!(
+            "Bearer error=\"invalid_token\", resource_metadata=\"{}\"",
+            fixture.urls.metadata_url(&fixture.workspace)
+        )
+    );
+
+    let private = fixture
+        .workspaces
+        .create(
+            &fixture.other,
+            WorkspaceDisplayName::parse("Private").unwrap(),
+        )
+        .await
+        .unwrap();
+    fixture
+        .workspaces
+        .archive(&fixture.owner, &fixture.other_workspace)
+        .await
+        .unwrap();
+    for (case, workspace) in [
+        ("no Membership", private.id()),
+        ("an archived Workspace", &fixture.other_workspace),
+    ] {
+        let denied = fixture
+            .organization_request()
+            .bearer_auth(scoped("owner", workspace))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), 401, "{case}");
+        assert_eq!(
+            challenge(&denied),
+            format!(
+                "Bearer error=\"invalid_token\", resource_metadata=\"{}\"",
+                fixture
+                    .urls
+                    .endpoint_metadata_url(&McpEndpoint::Organization)
+            ),
+            "{case}: the client signs in again and picks another Workspace"
+        );
+    }
+
+    let issued = fixture
+        .workspaces
+        .create_agent(
+            &fixture.owner,
+            &fixture.workspace,
+            AgentDisplayName::parse("Worker").unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let credential = issued.credential.expose();
+    let accepted = fixture
+        .organization_request()
+        .bearer_auth(credential)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), 200);
+    let session = accepted.headers()["mcp-session-id"].clone();
+    let agent = fixture
+        .auth
+        .authenticate(
+            &McpEndpoint::Workspace(fixture.workspace.clone()),
+            Some(credential),
+        )
+        .await
+        .map(|(principal, _workspace)| principal)
+        .unwrap();
+    fixture
+        .assert_task_principal_at(
+            &fixture.organization_url(),
+            &fixture.workspace,
+            credential,
+            &session,
+            &agent,
+        )
+        .await;
+
+    let metadata = reqwest::get(format!(
+        "http://{}/.well-known/oauth-protected-resource/mcp",
+        fixture.server.local_addr()
+    ))
+    .await
+    .unwrap();
+    assert_eq!(metadata.status(), 200);
+    assert_eq!(
+        metadata
+            .json::<serde_json::Value>()
+            .await
+            .unwrap()
+            .get("resource")
+            .and_then(serde_json::Value::as_str),
+        Some("https://coral.example/mcp")
+    );
+    fixture.server.shutdown().await.unwrap();
+}
+
+/// The one JSON-RPC message of a JSON or SSE response.
+async fn response_message(response: reqwest::Response) -> serde_json::Value {
+    let text = response.text().await.unwrap();
+    serde_json::from_str(&text)
+        .or_else(|_error| {
+            serde_json::from_str(
+                text.lines()
+                    .filter_map(|line| line.strip_prefix("data: "))
+                    .find(|data| !data.is_empty())
+                    .expect("SSE response"),
+            )
+        })
+        .unwrap()
 }
 
 struct Fixture {
@@ -416,10 +667,30 @@ impl Fixture {
         session: &reqwest::header::HeaderValue,
         actor: &coral_workspace::AuthenticatedPrincipal,
     ) {
+        self.assert_task_principal_at(
+            &self.url(&self.workspace),
+            &self.workspace,
+            credential,
+            session,
+            actor,
+        )
+        .await;
+    }
+
+    /// Starts a Task through the MCP endpoint at `url` and checks that it
+    /// belongs to `actor` in `workspace`.
+    async fn assert_task_principal_at(
+        &self,
+        url: &str,
+        workspace: &WorkspaceId,
+        credential: &str,
+        session: &reqwest::header::HeaderValue,
+        actor: &coral_workspace::AuthenticatedPrincipal,
+    ) {
         let client = reqwest::Client::new();
         let request = || {
             client
-                .post(self.url(&self.workspace))
+                .post(url)
                 .bearer_auth(credential)
                 .header("Accept", "application/json, text/event-stream")
                 .header("mcp-session-id", session.clone())
@@ -432,17 +703,7 @@ impl Fixture {
         assert_eq!(response.status(), 202);
         let response = request().json(&serde_json::json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"start_task", "arguments":{"intent":"HTTP Principal attribution"}}})).send().await.unwrap();
         assert_eq!(response.status(), 200);
-        let text = response.text().await.unwrap();
-        let message: serde_json::Value = serde_json::from_str(&text)
-            .or_else(|_error| {
-                serde_json::from_str(
-                    text.lines()
-                        .filter_map(|line| line.strip_prefix("data: "))
-                        .find(|data| !data.is_empty())
-                        .expect("SSE response"),
-                )
-            })
-            .unwrap();
+        let message = response_message(response).await;
         let id = coral_task::TaskId::parse(
             message
                 .pointer("/result/structuredContent/task_id")
@@ -453,11 +714,7 @@ impl Fixture {
         // A User inspects their own Task; an Owner may inspect Workspace Agent
         // work. Agent access to a Task identifier is attribution, not browsing.
         let inspector = coral_workspace::AuthenticatedPrincipal::user(self.owner.actor().clone());
-        let task = self
-            .tasks
-            .get(&inspector, &self.workspace, &id)
-            .await
-            .unwrap();
+        let task = self.tasks.get(&inspector, workspace, &id).await.unwrap();
         assert_eq!(task.principal(), actor.principal());
     }
 
@@ -467,12 +724,22 @@ impl Fixture {
             self.server.local_addr()
         )
     }
+    fn organization_url(&self) -> String {
+        format!("http://{}/mcp", self.server.local_addr())
+    }
+    fn organization_request(&self) -> reqwest::RequestBuilder {
+        initialize_request(&self.organization_url())
+    }
     fn request(&self, workspace: &WorkspaceId) -> reqwest::RequestBuilder {
-        reqwest::Client::new().post(self.url(workspace)).header("Accept", "application/json, text/event-stream").json(&serde_json::json!({
-            "jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":"2025-03-26", "capabilities":{}, "clientInfo":{"name":"organization_owner", "version":"1"}}
-        }))
+        initialize_request(&self.url(workspace))
     }
 }
+fn initialize_request(url: &str) -> reqwest::RequestBuilder {
+    reqwest::Client::new().post(url).header("Accept", "application/json, text/event-stream").json(&serde_json::json!({
+        "jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":"2025-03-26", "capabilities":{}, "clientInfo":{"name":"organization_owner", "version":"1"}}
+    }))
+}
+
 fn change(id: &str, role: OrganizationRole) -> ChangeContext {
     ChangeContext::new(
         AuthenticatedUser::organization_member(UserId::parse(id).unwrap(), role),

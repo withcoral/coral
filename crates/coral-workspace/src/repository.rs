@@ -447,10 +447,11 @@ pub(super) async fn list_memberships(
     Ok(memberships)
 }
 
+/// Each Workspace where the User holds a Membership, with that Membership's role.
 pub(super) async fn list_workspaces(
     database: &Database,
     actor_user_id: &UserId,
-) -> Result<Vec<Workspace>, Error> {
+) -> Result<Vec<(Workspace, WorkspaceRole)>, Error> {
     let mut statement = Query::select();
     statement
         .columns([
@@ -459,6 +460,10 @@ pub(super) async fn list_workspaces(
             (WorkspaceRecords::Table, WorkspaceRecords::State),
             (WorkspaceRecords::Table, WorkspaceRecords::LifecycleVersion),
         ])
+        .expr_as(
+            Expr::col((WorkspaceMemberships::Table, WorkspaceMemberships::Role)),
+            Alias::new("membership_role"),
+        )
         .from(WorkspaceRecords::Table)
         .inner_join(
             WorkspaceMemberships::Table,
@@ -472,12 +477,18 @@ pub(super) async fn list_workspaces(
             Expr::col((WorkspaceMemberships::Table, WorkspaceMemberships::UserId))
                 .eq(actor_user_id.as_str()),
         );
-    let rows: Vec<WorkspaceRow> = database.fetch_all(statement).await?;
+    let rows: Vec<AuthorityRow> = database.fetch_all(statement).await?;
     let mut workspaces = rows
         .into_iter()
-        .map(WorkspaceRow::decode)
+        .map(|row| {
+            let (workspace, role) = row.decode()?;
+            let role = role.ok_or_else(|| {
+                Error::CorruptData("Workspace Membership row has no role".to_string())
+            })?;
+            Ok((workspace, role))
+        })
         .collect::<Result<Vec<_>, Error>>()?;
-    workspaces.sort_by(|left, right| left.id().cmp(right.id()));
+    workspaces.sort_by_cached_key(|(workspace, _)| workspace.listing_key());
     Ok(workspaces)
 }
 

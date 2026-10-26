@@ -76,6 +76,9 @@ message Workspace {
   UserProfile current_user_profile = 11;
   // Canonical non-secret Streamable HTTP endpoint from host configuration.
   string mcp_endpoint = 12;
+  // The deployment's fixed `/mcp` endpoint, where a User picks this or another
+  // Workspace when they sign in. Empty when sign-in is not configured.
+  string organization_mcp_endpoint = 13;
 }
 
 // First-party creation request.

@@ -231,6 +231,19 @@ impl Workspace {
         &self.display_name
     }
 
+    /// Returns the key that orders Workspace lists: the display name
+    /// alphabetically, ignoring case, then the ID so equal names keep one
+    /// order. Pages that resume after a key keep the same order.
+    ///
+    /// Only the name's first 256 characters count, so a page token that
+    /// carries the key stays small however long the name is.
+    #[must_use]
+    pub fn listing_key(&self) -> String {
+        let name: String = self.display_name.as_str().chars().take(256).collect();
+        // A display name has no control characters, so NUL ends it.
+        format!("{}\0{}", name.to_lowercase(), self.id)
+    }
+
     /// Returns the lifecycle state.
     #[must_use]
     pub const fn state(&self) -> WorkspaceState {
@@ -241,6 +254,27 @@ impl Workspace {
     #[must_use]
     pub const fn lifecycle_version(&self) -> i64 {
         self.lifecycle_version
+    }
+}
+
+/// One active Workspace a User can pick at sign-in, with their Membership role.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceChoice {
+    pub(crate) workspace: Workspace,
+    pub(crate) role: WorkspaceRole,
+}
+
+impl WorkspaceChoice {
+    /// Returns the Workspace.
+    #[must_use]
+    pub const fn workspace(&self) -> &Workspace {
+        &self.workspace
+    }
+
+    /// Returns the User's Membership role there.
+    #[must_use]
+    pub const fn role(&self) -> WorkspaceRole {
+        self.role
     }
 }
 
