@@ -135,7 +135,7 @@ it.each([
 it.each<[string, Partial<WorkspaceView>, boolean]>([
   ['in an active workspace', {}, true],
   ['in an archived workspace', { state: 'archived' }, false],
-  ['without an MCP endpoint', { connectEndpoint: '' }, false],
+  ['without a connect endpoint', { connectEndpoint: '' }, false],
 ])('quick start %s', (_, ws, shown) => {
   render({ workspace: ws })
   expect(screen.queryByRole('region', { name: 'Connect your MCP client' }) !== null).toBe(shown)

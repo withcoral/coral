@@ -154,9 +154,11 @@ impl Composed {
         }
     }
 
-    /// Registers a client and walks one person through consent, where it
-    /// comes before sign-in, and the upstream sign-in for `resource`. Returns the client ID and the
-    /// response to the provider's callback.
+    /// Registers a client and walks one person through the upstream sign-in
+    /// for `resource`, approving the client first at a Workspace MCP URL. At
+    /// `/mcp` the approval comes after sign-in, so the callback's response is
+    /// that page. Returns the client ID and the response to the provider's
+    /// callback.
     async fn sign_in(&self, resource: &str) -> (String, reqwest::Response) {
         let (endpoint, http) = (&self.endpoint, &self.http);
         let registered: Value = http
@@ -195,7 +197,7 @@ impl Composed {
             page
         } else {
             assert_eq!(page.status(), 200);
-            let cookie = cookie_pair(&page, "");
+            let cookie = cookie_pair(&page, "__Host-coral_oauth_approval=");
             let ticket = ticket(&page.text().await.unwrap());
             http.post(format!("{endpoint}/oauth/authorize"))
                 .header(ORIGIN, AUTH_ISSUER)
@@ -207,7 +209,7 @@ impl Composed {
                 .unwrap()
         };
         let upstream = location(&approved);
-        let sign_in_cookie = cookie_pair(&approved, "");
+        let sign_in_cookie = cookie_pair(&approved, "__Host-coral_oauth_signin_");
         mount_token(
             &self.provider,
             "upstream-subject",
