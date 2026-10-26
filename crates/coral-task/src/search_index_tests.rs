@@ -428,6 +428,60 @@ async fn deleting_a_function_through_the_task_command_removes_its_row() {
 }
 
 #[tokio::test]
+async fn an_index_write_that_meets_a_delete_waits_for_it_and_writes_nothing() {
+    // The delete removes the function, then its rows cascade. A write that
+    // took the function's row before the function deadlocked with it on
+    // Postgres (#2684); one that meets the deleted function must not fail.
+    let fixture = Fixture::new().await;
+    let index = &fixture.index;
+    let goal = fixture.goal().await;
+    let call = fixture.call(&goal, "Save and delete");
+    let saved = fixture
+        .commands
+        .save_function(&call, "answer", "Answer", SOURCE)
+        .await
+        .unwrap();
+    index.settled().await;
+    let database = fixture.test_database.database();
+    let mut deleting = database.begin().await.unwrap();
+    fixture
+        .functions
+        .delete_in_transaction(
+            &mut deleting,
+            &coral_functions::SavedFunctionChangeContext::new(
+                fixture.actor.clone(),
+                wall_time(),
+                coral_test_support::trace('2'),
+            ),
+            &fixture.workspace,
+            saved.path(),
+        )
+        .await
+        .unwrap();
+
+    let logs = CapturedLogs::default();
+    {
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default().with(logs.clone()),
+        );
+        index.index_function(coral_functions::SavedFunctionEntry::from_saved(&saved));
+        // The write starts and waits for the delete.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        deleting.commit().await.unwrap();
+        index.settled().await;
+    }
+
+    let errors = logs
+        .events()
+        .into_iter()
+        .filter(|event| event.level == tracing::Level::ERROR)
+        .collect::<Vec<_>>();
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(function_rows(&fixture).await.is_empty());
+    assert!(function_states(&fixture).await.is_empty());
+}
+
+#[tokio::test]
 async fn removing_access_removes_the_principals_rows_with_their_functions() {
     let fixture = Fixture::new().await;
     let index = &fixture.index;

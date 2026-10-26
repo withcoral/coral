@@ -971,6 +971,29 @@ pub async fn select_source_in_transaction(
         .map(|function| function.as_ref().map(SavedFunctionSelection::from_current))
 }
 
+/// Holds one Saved Function shared through the caller's write transaction;
+/// `false` means it is gone.
+pub(crate) async fn share_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    id: &SavedFunctionId,
+) -> Result<bool, Error> {
+    let held: Option<(String,)> = transaction
+        .fetch_optional_locked(
+            Query::select()
+                .column(SavedFunctionRecords::Id)
+                .from(SavedFunctionRecords::Table)
+                .and_where(
+                    Expr::col(SavedFunctionRecords::WorkspaceId).eq(workspace_id.to_string()),
+                )
+                .and_where(Expr::col(SavedFunctionRecords::Id).eq(id.to_string()))
+                .to_owned(),
+            coral_db::RowLock::Shared,
+        )
+        .await?;
+    Ok(held.is_some())
+}
+
 /// Holds a selected definition unchanged through the caller's acceptance commit.
 ///
 /// The caller must hold current Workspace authority in this write transaction and

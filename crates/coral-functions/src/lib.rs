@@ -124,6 +124,24 @@ pub async fn all_saved_function_entries_in_transaction(
     repository::list_every_entry_in_transaction(transaction).await
 }
 
+/// Holds one Saved Function shared through the caller's write transaction,
+/// for a write of rows that reference it. `false` means it was deleted.
+///
+/// Take it before writing those rows. A delete removes the function first and
+/// then the rows that reference it, so a writer that holds the rows first can
+/// wait for the delete while the delete waits for it.
+///
+/// # Errors
+///
+/// Returns a persistence failure.
+pub async fn share_saved_function_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    id: &SavedFunctionId,
+) -> Result<bool, Error> {
+    repository::share_in_transaction(transaction, workspace_id, id).await
+}
+
 /// Hydrates one current ranked Saved Function without reading its source.
 ///
 /// # Errors

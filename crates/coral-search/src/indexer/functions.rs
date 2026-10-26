@@ -42,6 +42,9 @@ impl EntityIndexer for SavedFunctionIndexer {
         entry: &SavedFunctionEntry,
         row: &FunctionRow<'_>,
     ) -> Result<(), IndexError> {
+        if !hold_function(transaction, entry).await? {
+            return Ok(());
+        }
         repository::upsert_function_row(transaction, row, now_unix_nanos()?).await?;
         repository::delete_function_state(transaction, entry.workspace_id(), entry.id()).await?;
         repository::refresh_function_length(transaction, entry.workspace_id(), entry.id()).await?;
@@ -124,6 +127,9 @@ pub(crate) async fn record_failed_attempt(
     reconcile_interval: Duration,
 ) -> Result<(), IndexError> {
     repository::lock_workspace(transaction, entry.workspace_id()).await?;
+    if !hold_function(transaction, entry).await? {
+        return Ok(());
+    }
     // A failure of another revision starts the count again.
     let prior = repository::failed_function(transaction, entry.workspace_id(), entry.id())
         .await?
@@ -150,6 +156,21 @@ pub(crate) async fn record_failed_attempt(
     )
     .await?;
     Ok(())
+}
+
+/// Holds the function before any of its rows, in the order its delete takes
+/// them, so the two cannot wait on each other. `false` means the function is
+/// gone, and its rows with it: there is nothing to write.
+async fn hold_function(
+    transaction: &mut Transaction<'_>,
+    entry: &SavedFunctionEntry,
+) -> Result<bool, IndexError> {
+    Ok(coral_functions::share_saved_function_in_transaction(
+        transaction,
+        entry.workspace_id(),
+        entry.id(),
+    )
+    .await?)
 }
 
 fn function_row(entry: &SavedFunctionEntry) -> Result<FunctionRow<'_>, IndexError> {
