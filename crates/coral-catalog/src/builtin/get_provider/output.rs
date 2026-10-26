@@ -41,16 +41,89 @@ pub enum ProviderSourceOutput {
     #[schemars(description = "")]
     OpenapiUrl {
         /// The URL.
-        #[schemars(description = "The URL of the OpenAPI document.")]
+        #[schemars(
+            description = "The URL of the OpenAPI document. A query parameter whose \
+                                  name looks secret, such as api_key, reads [redacted]."
+        )]
         url: String,
     },
     /// A Streamable HTTP MCP server's web URL.
     #[schemars(description = "")]
     McpUrl {
         /// The URL.
-        #[schemars(description = "The URL of the Streamable HTTP MCP server.")]
+        #[schemars(
+            description = "The URL of the Streamable HTTP MCP server. A query parameter \
+                                  whose name looks secret, such as api_key, reads [redacted]."
+        )]
         url: String,
     },
+}
+
+impl ProviderSourceOutput {
+    /// An OpenAPI document's saved web URL, as a Program reads it, or `None`
+    /// when the saved value is not a URL.
+    #[must_use]
+    pub fn openapi_url(saved: &str) -> Option<Self> {
+        let url = shown(url::Url::parse(saved).ok()?);
+        Some(Self::OpenapiUrl { url })
+    }
+
+    /// A Streamable HTTP MCP server's saved web URL, as a Program reads it,
+    /// or `None` when the saved value is not a URL.
+    #[must_use]
+    pub fn mcp_url(saved: &str) -> Option<Self> {
+        let url = shown(url::Url::parse(saved).ok()?);
+        Some(Self::McpUrl { url })
+    }
+}
+
+/// A source URL as Reef shows it, since Run evidence stores the result: no
+/// embedded credentials, no fragment, and `[redacted]` for the value of each
+/// query parameter whose name looks secret. A source URL can carry a key in
+/// its query. Reef's `source-url.ts` hides the same names.
+fn shown(mut url: url::Url) -> String {
+    // The URL has a host, so it takes credentials.
+    let _no_username = url.set_username("");
+    let _no_password = url.set_password(None);
+    url.set_fragment(None);
+    let query = url.query().map(|query| {
+        query
+            .split('&')
+            .map(|pair| match pair.split_once('=') {
+                Some((name, _value)) if secret_parameter(name) => format!("{name}=[redacted]"),
+                _ => pair.to_owned(),
+            })
+            .collect::<Vec<_>>()
+            .join("&")
+    });
+    url.set_query(query.as_deref());
+    url.into()
+}
+
+/// Whether a query parameter's name, as the URL encodes it, looks secret.
+/// Matching parts of names errs toward hiding: `author` hides too.
+fn secret_parameter(encoded: &str) -> bool {
+    let name = url::form_urlencoded::parse(encoded.as_bytes())
+        .next()
+        .map(|(name, _value)| name.to_ascii_lowercase())
+        .unwrap_or_default();
+    name == "code"
+        || [
+            "key",
+            "token",
+            "secret",
+            "pass",
+            "pwd",
+            "auth",
+            "sig",
+            "session",
+            "credential",
+            "cookie",
+            "jwt",
+            "bearer",
+        ]
+        .iter()
+        .any(|part| name.contains(part))
 }
 
 /// One server choice.

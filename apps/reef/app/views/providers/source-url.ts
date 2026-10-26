@@ -1,5 +1,6 @@
 // A parameter whose name holds one of these is treated as secret. Matching
 // parts of names errs toward hiding: `author` hides too, `api_key` never shows.
+// Coral's getProvider hides the same names (coral-catalog get_provider/output.rs).
 const SECRET_PARAMETER =
   /key|token|secret|pass|pwd|auth|sig|session|credential|cookie|jwt|bearer|^code$/i
 
