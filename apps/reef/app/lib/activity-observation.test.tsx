@@ -10,6 +10,8 @@ import type { ActivityObservation } from './activity-live-types'
 import { finalValue } from '@/views/activity/navigation'
 import { activityObservation, activityView, useActivityReader } from './activity-observation'
 import { loadActivityPage } from './activity-page-fetch'
+import { liveTarget } from '@/views/activity/navigation'
+import { runRow, taskRow } from '@/views/activity/fixtures'
 
 const page: ActivityPage = {
   rows: [],
@@ -764,6 +766,141 @@ it('away from the newest records, watches the running records and lets a snapsho
     await vi.advanceTimersByTimeAsync(0)
   }
 })
+
+// Catches: page live mode resting on an old record while a new Task or Search arrives
+// that a snapshot of only the records you watch never adds to the list.
+it('away from the newest records, sends page live mode to a newer record the snapshot names', async () => {
+  vi.useFakeTimers()
+  const streams: ReadableStreamDefaultController<Uint8Array>[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((_url, init) =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(c) {
+              streams.push(c)
+              c.enqueue(snapshot(initial))
+              init.signal.addEventListener('abort', () => c.close(), { once: true })
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      ),
+    ),
+  )
+  // Page live mode shows the end of r1, which ended. Nothing runs.
+  const initial = { ...page, rows: [listed(1), listed(2)], selected: listed(1).name }
+  const store = createStore()
+  const state = activityObservation(initial, '/activity', '?live=latest')
+  const unmount = store.sub(state, () => {})
+  try {
+    await vi.waitFor(() => expect(streams).toHaveLength(1))
+    store.set(state, { kind: 'root', atStart: false })
+    await vi.advanceTimersByTimeAsync(120)
+    await vi.waitFor(() => expect(streams).toHaveLength(2))
+    const newer = 'workspaces/w/tasks/new'
+    await act(async () =>
+      streams[1].enqueue(snapshot({ ...page, rows: [listed(1)], liveLatest: { newest: newer } })),
+    )
+    const view = activityView(store.get(state))
+    expect(view.rows.map((row) => row.name)).not.toContain(newer)
+    expect(liveTarget(view, 'latest')).toEqual({ kind: 'newest' })
+  } finally {
+    unmount()
+    await vi.advanceTimersByTimeAsync(0)
+  }
+})
+
+/** A child window that holds only `row`. */
+const oneChild = (row: ActivityRow) => ({
+  rows: [{ ...row, position: 0 }],
+  total: '1',
+  next: '',
+  unavailable: false,
+  offset: 0,
+})
+// Catches: page live mode reopening a finished Run that the window of a Task still
+// shows running, because a snapshot of only the records you watch never refreshed
+// that window, while another Run runs.
+it.each([
+  { name: 'a Task the snapshot leaves out', ended: false },
+  { name: 'a Task the snapshot says ended', ended: true },
+])(
+  'away from the newest records, passes a Run that a window the snapshot did not refresh says runs, in $name',
+  async ({ ended }) => {
+    vi.useFakeTimers()
+    const streams: ReadableStreamDefaultController<Uint8Array>[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url, init) =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(c) {
+                streams.push(c)
+                c.enqueue(snapshot(initial))
+                init.signal.addEventListener('abort', () => c.close(), { once: true })
+              },
+            }),
+            { headers: { 'Content-Type': 'text/event-stream' } },
+          ),
+        ),
+      ),
+    )
+    const newer = taskRow('newer')
+    const older = taskRow('older')
+    const at = (minute: number) => new Date(Date.parse(older.startedAt) + minute * 60_000)
+    const runs = (task: string, id: string, minute: number, state: ExecutionRow['state']) =>
+      runRow(id, task, { state, endedAt: null, startedAt: at(minute).toISOString() })
+    // `a`, submitted last, runs in the older Task. `b` runs in the newer one.
+    const a = runs(older.name, 'a', 30, 'running')
+    const b = runs(newer.name, 'b', 21, 'running')
+    const initial: ActivityPage = {
+      ...page,
+      rows: [newer, older],
+      expanded: [newer.name, older.name],
+      branches: { [newer.name]: oneChild(b), [older.name]: oneChild(a) },
+    }
+    const store = createStore()
+    const search = `?live=latest&expand=${newer.name}&expand=${older.name}`
+    const state = activityObservation(initial, '/activity', search)
+    const unmount = store.sub(state, () => {})
+    const now = at(31).getTime()
+    try {
+      await vi.waitFor(() => expect(streams).toHaveLength(1))
+      expect(liveTarget(activityView(store.get(state)), 'latest', now)).toMatchObject({
+        run: a.name,
+      })
+      store.set(state, { kind: 'root', atStart: false })
+      await vi.advanceTimersByTimeAsync(120)
+      await vi.waitFor(() => expect(streams).toHaveLength(2))
+      // `a` ended. The snapshot refreshes only the newer Task's window, so the older
+      // Task's window still says `a` runs. The loader read every record.
+      const olderEnded = { ...older, outcome: 'succeeded', endedAt: at(31).toISOString() }
+      await act(async () =>
+        streams[1].enqueue(
+          snapshot({
+            ...initial,
+            rows: ended ? [newer, olderEnded] : [newer],
+            branches: { [newer.name]: oneChild(b) },
+            liveLatest: { running: { [newer.name]: b }, complete: true },
+          }),
+        ),
+      )
+      const view = activityView(store.get(state))
+      expect(view.branches[older.name]?.rows.map((row) => row.name)).toEqual([a.name])
+      expect(liveTarget(view, 'latest', now)).toEqual({
+        kind: 'run',
+        run: b.name,
+        chain: [newer.name, b.name],
+      })
+    } finally {
+      unmount()
+      await vi.advanceTimersByTimeAsync(0)
+    }
+  },
+)
 
 it('loads older records through the Activity loader, keeps them on a failure, and keeps them across a navigation inside the list', async () => {
   vi.stubGlobal(

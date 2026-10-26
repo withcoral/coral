@@ -19,6 +19,7 @@ import {
   invocationRow,
   runRow,
   taskRow,
+  toolRow,
   workspace,
 } from './fixtures'
 import type { ActivityPage, ActivityRow, RequestDetail, RunDetail } from './types'
@@ -30,23 +31,45 @@ import type { ActivityPage, ActivityRow, RequestDetail, RunDetail } from './type
 const at = '2026-09-18T14:02:00.000Z'
 type Run = Extract<ActivityRow, { kind: 'run' }>
 type Operation = Extract<ActivityRow, { kind: 'invocation' }>
+type Tool = Extract<ActivityRow, { kind: 'tool' }>
 interface RunModel {
+  /** Orders it among its Task's records: each new record's is higher. */
+  order: number
   row: Run
   operations: Operation[]
   ended: boolean
+  /** It ended in failure, with no final value. */
+  failed?: boolean
   /** The operation that waits for your approval, if any. */
   waiting: string | null
 }
 type Root =
-  | { kind: 'task'; row: Extract<ActivityRow, { kind: 'task' }>; runs: RunModel[] }
+  | {
+      kind: 'task'
+      row: Extract<ActivityRow, { kind: 'task' }>
+      runs: RunModel[]
+      /** Searches, Describes and exec submissions, ordered with the Runs by `order`. */
+      tools: { order: number; row: Tool }[]
+      /** Exec submissions that Coral accepted as a Run, which then lists in their place. */
+      accepted: Tool[]
+    }
   | { kind: 'run'; run: RunModel }
 
+/** When an operation started, by the number in its name. */
+const startOf = (operation: string) => Number(operation.split('-op-').at(-1))
 const approvalOf = (operation: string) => `${workspace}/approvals/${operation.split('/').at(-1)}`
 const finalOf = (run: string) => `${run}/final`
 
-function newRun(id: string, task = ''): RunModel {
+function newRun(id: string, task = '', order = 0): RunModel {
   return {
-    row: runRow(id, task, { actor: `run ${id}`, intent: `Run ${id}`, state: 'running' }),
+    order,
+    row: runRow(id, task, {
+      actor: `run ${id}`,
+      intent: `Run ${id}`,
+      state: 'running',
+      // Coral accepts each new Run later than the last.
+      startedAt: new Date(Date.parse(at) + order * 1000).toISOString(),
+    }),
     operations: [],
     ended: false,
     waiting: null,
@@ -55,34 +78,121 @@ function newRun(id: string, task = ''): RunModel {
 /** A Task that started `age` milliseconds ago: just now, unless a story says otherwise. */
 function newTask(id: string, runs: RunModel[] = [], age = 0): Root {
   const startedAt = new Date(Date.now() - age).toISOString()
-  return { kind: 'task', row: { ...taskRow(id, `Task ${id}`), startedAt }, runs }
+  return {
+    kind: 'task',
+    row: { ...taskRow(id, `Task ${id}`), startedAt },
+    runs,
+    tools: [],
+    accepted: [],
+  }
 }
 
 /** What Coral holds, newest top-level record first. A play changes it, then revalidates. */
 const world = {
   roots: [] as Root[],
   count: 0,
+  /** By Task, a window of its records that the list keeps although no read refreshes it. */
+  stale: {} as Record<string, ActivityRow[]>,
+  /** Each loader read, in order: the record it opened and the Tasks whose kept window it served. */
+  reads: [] as { record: string | null; kept: string[] }[],
   reset(roots: Root[]) {
     this.roots = roots
     this.count = 0
+    this.stale = {}
+    this.reads = []
   },
   runs(): RunModel[] {
     return this.roots.flatMap((root) => (root.kind === 'task' ? root.runs : [root.run]))
   },
   /** What a play's button changes: a new record, a decision elsewhere, or a Run's end. */
-  change(kind: 'task' | 'standalone' | 'run' | 'operation' | 'approve' | 'end') {
+  change(
+    kind:
+      | 'task'
+      | 'standalone'
+      | 'run'
+      | 'run oldest'
+      | 'ask'
+      | 'search'
+      | 'describe'
+      | 'submit'
+      | 'accept'
+      | 'operation'
+      | 'approve'
+      | 'end'
+      | 'end oldest'
+      | 'complete'
+      | 'end oldest task'
+      | 'fail oldest',
+  ) {
     const runs = this.runs()
     if (kind === 'task') this.roots.unshift(newTask(`t${++this.count}`))
-    if (kind === 'standalone') this.roots.unshift({ kind: 'run', run: newRun(`s${++this.count}`) })
+    if (kind === 'standalone')
+      this.roots.unshift({ kind: 'run', run: newRun(`s${++this.count}`, '', this.count) })
     const task = this.roots.find((root) => root.kind === 'task')
     if (kind === 'run' && task?.kind === 'task')
-      task.runs.push(newRun(`r${++this.count}`, task.row.name))
-    // The latest Run by name: each new one's number is higher.
-    const latest = runs.toSorted((a, b) => a.row.name.localeCompare(b.row.name)).at(-1)
+      task.runs.push(newRun(`r${++this.count}`, task.row.name, this.count))
+    const oldest = this.roots.findLast((root) => root.kind === 'task')
+    if (kind === 'run oldest' && oldest?.kind === 'task')
+      oldest.runs.push(newRun(`r${++this.count}`, oldest.row.name, this.count))
+    if ((kind === 'search' || kind === 'describe') && task?.kind === 'task') {
+      const id = `${kind}-${++this.count}`
+      const row = toolRow(task.row.name, id, { tool: kind, intent: `${kind} ${this.count}` })
+      task.tools.push({ order: this.count, row })
+    }
+    // Coral lists an exec submission while it compiles, without a Run.
+    if (kind === 'submit' && task?.kind === 'task') {
+      const id = `exec-${++this.count}`
+      const row = toolRow(task.row.name, id, {
+        tool: 'exec',
+        intent: `exec ${this.count}`,
+        outcome: 'unknown',
+        completedAt: null,
+      })
+      task.tools.push({ order: this.count, row })
+    }
+    // Then accepts it as a Run that has no record yet, which lists in its place.
+    const submitted = task?.kind === 'task' && task.tools.find(({ row }) => row.tool === 'exec')
+    if (kind === 'accept' && task?.kind === 'task' && submitted) {
+      const model = newRun(`e${++this.count}`, task.row.name, submitted.order)
+      const submission = {
+        ...submitted.row,
+        outcome: 'succeeded',
+        completedAt: at,
+        acceptedRun: model.row.name,
+      }
+      model.row = { ...model.row, submission }
+      task.tools = task.tools.filter((item) => item !== submitted)
+      task.accepted.push(submission)
+      task.runs.push(model)
+    }
+    // The latest Run: each new one's order and number are higher.
+    const latest = runs
+      .toSorted((a, b) => a.order - b.order || a.row.name.localeCompare(b.row.name))
+      .at(-1)
     if (kind === 'operation' && latest) this.operate(latest)
+    const asking = runs
+      .filter((model) => !model.ended)
+      .toSorted((a, b) => a.order - b.order)
+      .at(-1)
+    if (kind === 'ask' && asking) this.operate(asking, true)
     if (kind === 'approve') for (const model of runs) model.waiting = null
     const running = runs.find((model) => !model.ended)
     if (kind === 'end' && running) running.ended = true
+    // The Run that started first: the lowest order, then the lowest name.
+    const first = runs
+      .filter((model) => !model.ended)
+      .toSorted((a, b) => a.order - b.order || a.row.name.localeCompare(b.row.name))[0]
+    if (kind === 'end oldest' && first) first.ended = true
+    if (kind === 'fail oldest' && first) Object.assign(first, { ended: true, failed: true })
+    if (kind === 'complete' && task?.kind === 'task')
+      task.row = { ...task.row, outcome: 'succeeded', endedAt: at }
+    // The oldest Task and its Runs end, while the list keeps its window as it was: a
+    // snapshot of only the records you watch never refreshes it.
+    if (kind === 'end oldest task' && oldest?.kind === 'task') {
+      this.stale[oldest.row.name] = taskRecords(oldest)
+      for (const model of oldest.runs) model.ended = true
+      oldest.row = { ...oldest.row, outcome: 'succeeded', endedAt: at }
+    }
   },
   /** Adds an operation to `run`, which waits for your approval if `waits`. */
   operate(run: RunModel, waits = false) {
@@ -99,16 +209,16 @@ const world = {
 
 const runView = (model: RunModel): Run => ({
   ...model.row,
-  state: model.ended ? 'succeeded' : 'running',
+  state: model.failed ? 'failed' : model.ended ? 'succeeded' : 'running',
   endedAt: model.ended ? at : null,
   requiresAction: Boolean(model.waiting),
-  hasFinalValue: model.ended,
+  hasFinalValue: model.ended && !model.failed,
 })
 function children(model: RunModel): ActivityRow[] {
   const operations = model.operations.map((row): ActivityRow =>
     row.name === model.waiting ? { ...row, state: 'pending', requiresAction: true } : row,
   )
-  if (!model.ended) return operations
+  if (!model.ended || model.failed) return operations
   return [
     ...operations,
     {
@@ -124,6 +234,11 @@ function children(model: RunModel): ActivityRow[] {
     },
   ]
 }
+/** The records of a Task: its Runs and tools, in order. */
+const taskRecords = (root: Extract<Root, { kind: 'task' }>) =>
+  [...root.runs.map((model) => ({ order: model.order, row: runView(model) })), ...root.tools]
+    .toSorted((a, b) => a.order - b.order)
+    .map(({ row }) => row)
 const branch = (rows: ActivityRow[]) => ({
   rows: rows.map((row, position) => ({ ...row, position })),
   total: String(rows.length),
@@ -131,20 +246,69 @@ const branch = (rows: ActivityRow[]) => ({
   unavailable: false,
 })
 
+/** What the loader names for page live mode past the list, across the Runs it may follow. */
+function latestOf(): ActivityPage['liveLatest'] {
+  const recent = (root: Root) =>
+    root.kind === 'run' || Date.now() - Date.parse(root.row.startedAt) <= TAKS_MAX_AGE
+  const roots = world.roots.filter(recent)
+  const asking = roots
+    .flatMap((root) =>
+      (root.kind === 'task' ? root.runs : [root.run]).map((model) => ({ root, model })),
+    )
+    .filter(({ model }) => !model.ended && model.waiting)
+    .toSorted((a, b) => startOf(a.model.waiting!) - startOf(b.model.waiting!))[0]
+  const action = asking && {
+    task: asking.root.kind === 'task' ? asking.root.row.name : '',
+    action: {
+      run: asking.model.row.name,
+      record: asking.model.waiting!,
+      request: approvalOf(asking.model.waiting!),
+    },
+  }
+  // By top-level record, its newest Run that runs. The loader reads every record.
+  const running = Object.fromEntries(
+    roots.flatMap((root) => {
+      const newest = (root.kind === 'task' ? root.runs : [root.run])
+        .filter((model) => !model.ended)
+        .toSorted((a, b) => a.order - b.order)
+        .at(-1)
+      return newest
+        ? [[root.kind === 'task' ? root.row.name : newest.row.name, runView(newest)]]
+        : []
+    }),
+  )
+  if (!world.roots.length) return undefined
+  return {
+    ...(action && { action }),
+    ...(Object.keys(running).length && { running }),
+    complete: true,
+  }
+}
+
 function pageFor(url: URL): ActivityPage {
   const query = url.searchParams
   const record = query.get('record')
   const expanded = query.has('tree') ? query.getAll('expand') : []
   const branches: ActivityPage['branches'] = {}
+  const kept: string[] = []
+  world.reads.push({ record, kept })
   for (const root of world.roots)
-    if (root.kind === 'task' && expanded.includes(root.row.name))
-      branches[root.row.name] = branch(root.runs.map(runView))
+    if (root.kind === 'task' && expanded.includes(root.row.name)) {
+      const stale = world.stale[root.row.name]
+      if (stale) kept.push(root.row.name)
+      branches[root.row.name] = branch(stale ?? taskRecords(root))
+    }
   for (const model of world.runs()) {
     const task = model.row.task ?? ''
     if (expanded.includes(model.row.name) && (!task || expanded.includes(task)))
       branches[model.row.name] = branch(children(model))
   }
   const task = world.roots.find((root) => root.kind === 'task' && root.row.name === record)
+  const tool = world.roots
+    .flatMap((root) =>
+      root.kind === 'task' ? [...root.tools.map(({ row }) => row), ...root.accepted] : [],
+    )
+    .find((row) => row.name === record)
   const owner = world
     .runs()
     .find(
@@ -157,18 +321,24 @@ function pageFor(url: URL): ActivityPage {
   const selectedRow: ActivityRow | null =
     task?.kind === 'task'
       ? task.row
-      : operation
-        ? (children(owner!).find((row) => row.name === record) ?? null)
-        : owner
-          ? runView(owner)
-          : null
+      : tool
+        ? tool
+        : operation
+          ? (children(owner!).find((row) => row.name === record) ?? null)
+          : owner
+            ? runView(owner)
+            : null
   const runDetail = (model: RunModel): RunDetail => ({
     kind: 'run',
     run: runView(model),
     request: null,
     source: 'export default async () => {}',
     linkedFunctions: [],
-    terminal: model.ended ? { kind: 'succeeded', finalValue: '"done"' } : { kind: 'unavailable' },
+    terminal: model.failed
+      ? { kind: 'failed', code: 'program_execution_failed', message: 'Failed', error: null }
+      : model.ended
+        ? { kind: 'succeeded', finalValue: '"done"' }
+        : { kind: 'unavailable' },
   })
   // A waiting operation selected with its approval opens that approval's review.
   const review: RequestDetail | null =
@@ -196,23 +366,29 @@ function pageFor(url: URL): ActivityPage {
       query.has('live') && owner?.waiting
         ? { run: owner.row.name, record: owner.waiting, request: approvalOf(owner.waiting) }
         : undefined,
+    // With no Run that runs open, the loader names the Run whose operation started
+    // waiting first, then each Task's newest Run that runs, among the Runs page live mode
+    // may follow.
+    liveLatest: query.get('live') === 'latest' && (!owner || owner.ended) ? latestOf() : undefined,
     detail:
       task?.kind === 'task'
         ? { kind: 'task', task: task.row }
-        : operation && selectedRow?.kind === 'invocation'
-          ? {
-              kind: 'invocation',
-              invocation: selectedRow,
-              arguments: '{}',
-              result: { kind: 'upstream_outcome', value: '{}' },
-              requests: review ? [{ kind: 'approval', name: review.name }] : [],
-              request: review,
-              requestUnavailable: false,
-              context: runDetail(owner!),
-            }
-          : owner
-            ? runDetail(owner)
-            : null,
+        : tool
+          ? { kind: 'tool', task: tool.task, interaction: tool, evidence: { kind: 'unknown' } }
+          : operation && selectedRow?.kind === 'invocation'
+            ? {
+                kind: 'invocation',
+                invocation: selectedRow,
+                arguments: '{}',
+                result: { kind: 'upstream_outcome', value: '{}' },
+                requests: review ? [{ kind: 'approval', name: review.name }] : [],
+                request: review,
+                requestUnavailable: false,
+                context: runDetail(owner!),
+              }
+            : owner
+              ? runDetail(owner)
+              : null,
   })
 }
 
@@ -247,9 +423,19 @@ function ScopesRoute() {
       {button('Add task', () => world.change('task'))}
       {button('Add standalone run', () => world.change('standalone'))}
       {button('Add run to newest task', () => world.change('run'))}
+      {button('Add run to oldest task', () => world.change('run oldest'))}
+      {button('Ask in newest running run', () => world.change('ask'))}
+      {button('Add search to newest task', () => world.change('search'))}
+      {button('Add describe to newest task', () => world.change('describe'))}
+      {button('Submit exec to newest task', () => world.change('submit'))}
+      {button('Accept submission', () => world.change('accept'))}
       {button('Add operation', () => world.change('operation'))}
       {button('Approve elsewhere', () => world.change('approve'))}
       {button('End first running run', () => world.change('end'))}
+      {button('End oldest running run', () => world.change('end oldest'))}
+      {button('Fail oldest running run', () => world.change('fail oldest'))}
+      {button('Complete newest task', () => world.change('complete'))}
+      {button('End oldest task', () => world.change('end oldest task'))}
       <Activity
         page={page}
         windowKey="live-scopes"
@@ -385,35 +571,196 @@ export const KeepsWhatYouExpanded: Story = {
     const { latest, address, press, selects, idle, canvas } = await surface(context)
     const task = kept
 
-    // The Task's only Run has ended: live mode opens the Task, not that Run.
+    // The Task's newest record is its Run that ended: live mode opens it at its end.
+    // Live mode owns only the Run it expanded.
     await userEvent.click(latest())
-    await selects('Task kept', 'Task kept')
-    await expect(address().getAll('expand')).toEqual([task])
-    await expect(address().has('liveExpanded')).toBe(false)
+    await selects('Run k1', 'final value')
+    await expect(address().getAll('expand')).toEqual([task, runRow('k1', task).name])
+    await expect(address().getAll('liveExpanded')).toEqual([runRow('k1', task).name])
 
-    // The open Task opens its own new Run. Live mode owns only the Run it expanded.
+    // The open Task opens its own new Run, and collapses only the Run it expanded.
     await press('Add run to newest task')
     await selects('Run r1', 'run r1')
     await expect(address().getAll('liveExpanded')).toEqual([runRow('r1', task).name])
 
-    // The Run's end keeps it open on its final value, while newer work arrives.
+    // The Run's end shows its final value. A Run that runs elsewhere then takes over,
+    // although the Task has not ended, and live mode collapses only the Run it expanded.
     await press('End first running run')
     await selects('Run r1', 'final value')
     await press('Add standalone run')
-    await idle()
-    await selects('Run r1', 'final value')
+    await selects('Run s2', 'run s2')
+    await expect(address().get('record')).toBe(runRow('s2', '').name)
+    await expect(address().getAll('expand')).toEqual([task, runRow('s2', '').name])
 
     // A Run you pick opens. As before, picking a record turns live mode off, and keeps
-    // what live mode expanded open.
-    await userEvent.click(canvas.getByRole('link', { name: 'run s2' }))
-    await selects('Run s2', 'run s2')
+    // what live mode expanded open. Later activity never takes the selection back.
+    await userEvent.click(canvas.getByRole('link', { name: 'run r1' }))
+    await selects('Run r1', 'run r1')
     await waitFor(() => expect(address().has('live')).toBe(false))
     await expect(address().has('liveExpanded')).toBe(false)
-    await expect(address().getAll('expand')).toContain(runRow('r1', task).name)
+    await expect(address().getAll('expand')).toContain(runRow('s2', '').name)
+    await press('Add standalone run')
+    await idle()
+    await selects('Run r1', 'run r1')
+    await expect(address().get('record')).toBe(runRow('r1', task).name)
   },
 }
 
-export const WaitsForWorkThatRuns: Story = {
+const alpha = taskRow('alpha').name
+export const MovesOnWithinItsTaskOnceItsRunEnds: Story = {
+  beforeEach: () => {
+    const run = newRun('a1', alpha)
+    world.reset([newTask('alpha', [run])])
+    world.operate(run)
+  },
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, address, press, selects, idle, canvas } = await surface(context)
+    const first = invocationRow('', 'a1-op-1').name
+
+    await userEvent.click(latest())
+    await selects('call.a1-op-1', 'call.a1-op-1')
+
+    // A newer Run of the same Task never takes over a Run that still runs.
+    await press('Add run to newest task')
+    await idle()
+    await selects('call.a1-op-1', 'call.a1-op-1')
+    await expect(address().get('record')).toBe(first)
+
+    // Once that Run ends, live mode follows the Task's Run that runs.
+    await press('End oldest running run')
+    await selects('Run r2', 'run r2')
+    await expect(address().get('record')).toBe(runRow('r2', alpha).name)
+    await expect(address().get('live')).toBe('latest')
+
+    // A newer Search of the Task never takes over the Run either. Once the Run ends,
+    // live mode follows the Search.
+    await press('Add search to newest task')
+    await idle()
+    await selects('Run r2', 'run r2')
+    await press('End oldest running run')
+    await selects('search 3', 'search 3')
+    await expect(address().get('record')).toBe(toolRow(alpha, 'search-3').name)
+    await expect(address().get('live')).toBe('latest')
+
+    // A record you pick turns live mode off. Later activity never takes it back.
+    await userEvent.click(canvas.getByRole('link', { name: 'run r2' }))
+    await selects('Run r2', 'run r2')
+    await waitFor(() => expect(address().has('live')).toBe(false))
+    await press('Add run to newest task')
+    await press('Add describe to newest task')
+    await idle()
+    await selects('Run r2', 'run r2')
+    await expect(address().get('record')).toBe(runRow('r2', alpha).name)
+  },
+}
+
+export const MovesToNewerWorkOnceItsRunEnds: Story = {
+  beforeEach: () => {
+    const old = newRun('old')
+    world.reset([{ kind: 'run', run: old }])
+    world.operate(old)
+  },
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, rail, address, press, selects, closed, idle } = await surface(context)
+
+    await userEvent.click(latest())
+    await selects('call.old-op-1', 'call.old-op-1')
+
+    // A newer Run never takes over a Run that still runs.
+    await press('Add standalone run')
+    await idle()
+    await selects('call.old-op-1', 'call.old-op-1')
+    await expect(address().get('record')).toBe(invocationRow('', 'old-op-1').name)
+
+    // Once it ends, live mode follows the newer Run.
+    await press('End oldest running run')
+    await selects('Run s2', 'run s2')
+    await expect(address().get('record')).toBe(runRow('s2', '').name)
+
+    // With nothing else that runs, live mode stays on and rests on the ended Run.
+    await press('End oldest running run')
+    await selects('Run s2', 'final value')
+    await idle()
+    await expect(address().get('record')).toBe(finalOf(runRow('s2', '').name))
+    await expect(address().get('live')).toBe('latest')
+    await expect(latest()).toHaveAttribute('aria-pressed', 'true')
+
+    // A Run that starts later opens, although the ended Run is still shown.
+    await press('Add standalone run')
+    await selects('Run s3', 'run s3')
+    await expect(address().get('record')).toBe(runRow('s3', '').name)
+
+    // Closing the rail turns live mode off. Later activity never opens it again.
+    await userEvent.click(within(rail()).getByRole('button', { name: 'Close details' }))
+    await closed()
+    await expect(address().has('live')).toBe(false)
+    await press('End oldest running run')
+    await press('Add standalone run')
+    await idle()
+    await closed()
+  },
+}
+
+export const FollowsTheRecordsOfATask: Story = {
+  beforeEach: () => {
+    world.reset([newTask('alpha')])
+    world.change('search')
+    world.change('describe')
+  },
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, address, press, selects, idle } = await surface(context)
+
+    // A Task without a Run opens at its newest record: the Describe after the Search.
+    await userEvent.click(latest())
+    await selects('describe 2', 'describe 2')
+    await expect(address().get('record')).toBe(toolRow(alpha, 'describe-2').name)
+
+    // Its next Search opens, then its new Run itself while the Run has no record yet.
+    await press('Add search to newest task')
+    await selects('search 3', 'search 3')
+    await press('Add run to newest task')
+    await selects('Run r4', 'run r4')
+    await idle()
+    await selects('Run r4', 'run r4')
+    await expect(address().get('record')).toBe(runRow('r4', alpha).name)
+    await expect(address().getAll('expand')).toEqual([alpha, runRow('r4', alpha).name])
+    // Then the Run's first record.
+    await press('Add operation')
+    await selects('call.r4-op-5', 'call.r4-op-5')
+    await expect(address().get('record')).toBe(invocationRow('', 'r4-op-5').name)
+
+    // A newer Search or Describe of the Task never takes over the Run that runs.
+    await press('Add search to newest task')
+    await press('Add describe to newest task')
+    await idle()
+    await selects('call.r4-op-5', 'call.r4-op-5')
+
+    // Once the Run ends, live mode follows the Task's newest record again.
+    await press('End oldest running run')
+    await selects('describe 7', 'describe 7')
+    await expect(address().get('record')).toBe(toolRow(alpha, 'describe-7').name)
+    await expect(address().get('live')).toBe('latest')
+
+    // An exec submission opens while Coral compiles it. Once Coral accepts it, its Run
+    // opens before the Run has any record, then the Run's first record.
+    await press('Submit exec to newest task')
+    await selects('exec 8', 'exec 8')
+    await press('Accept submission')
+    const accepted = runRow('e9', alpha).name
+    await waitFor(() => expect(address().get('record')).toBe(accepted))
+    await idle()
+    await selects('Run e9', 'exec 8')
+    await expect(address().get('record')).toBe(accepted)
+    await press('Add operation')
+    await selects('call.e9-op-10', 'call.e9-op-10')
+    await expect(address().get('record')).toBe(invocationRow('', 'e9-op-10').name)
+  },
+}
+
+export const ShowsTheNewestRecordUntilWorkRuns: Story = {
   beforeEach: () => {
     const done = newRun('done')
     done.ended = true
@@ -425,14 +772,13 @@ export const WaitsForWorkThatRuns: Story = {
   },
   play: async (context) => {
     const { userEvent } = context
-    const { latest, address, press, selects, closed, idle } = await surface(context)
+    const { latest, address, press, selects } = await surface(context)
 
-    // Every Task and Run has ended: live mode opens none of them, and waits.
+    // Every Task and Run has ended: live mode shows the newest record, the end of the
+    // newest Run, and holds nothing.
     await userEvent.click(latest())
-    await waitFor(() => expect(latest()).toHaveAttribute('aria-pressed', 'true'))
-    await idle()
-    await closed()
-    await expect(address().has('expand')).toBe(false)
+    await selects('Run done', 'final value')
+    await expect(latest()).toHaveAttribute('aria-pressed', 'true')
 
     // A new Run that runs opens.
     await press('Add standalone run')
@@ -569,22 +915,223 @@ export const OneScopeAtATime: Story = {
   },
 }
 
-// You expanded 19 records. The newest Task fits, but its Run does not.
+// You expanded 19 records. The newest Task and its Run do not fit together.
 const yours = Array.from({ length: 19 }, (_, index) => `expand=${taskRow(`yours-${index}`).name}`)
 export const StopsAtTheExpansionLimit: Story = {
   parameters: { initialEntry: `${list}?tree=1&${yours.join('&')}` },
   beforeEach: () => world.reset([newTask('alpha', [newRun('a1', taskRow('alpha').name)])]),
   play: async (context) => {
     const { userEvent } = context
-    const { latest, address, canvas, closed, idle } = await surface(context)
+    const { latest, address, closed, idle } = await surface(context)
+    const screen = within(context.canvasElement.ownerDocument.body)
     await userEvent.click(latest())
-    await waitFor(() => expect(address().getAll('expand')).toHaveLength(20))
     await idle()
     await closed()
-    await expect(canvas.getByText('Collapse a record before you expand another.')).toBeVisible()
+    // Live mode expands neither, and its toggle says why.
+    await expect(address().getAll('expand')).toHaveLength(19)
+    await userEvent.hover(latest())
+    await expect(
+      await screen.findByText('Collapse a record before you follow the latest activity.'),
+    ).toBeVisible()
     // Pressed, the toggle still turns live mode off.
     await expect(latest()).toHaveAttribute('aria-pressed', 'true')
     await userEvent.click(latest())
     await waitFor(() => expect(address().has('live')).toBe(false))
   },
 }
+
+export const HoldsOnlyARunThatRuns: Story = {
+  beforeEach: () => {
+    // `b1` waits for your approval. `b2` runs, and is newer.
+    const waits = newRun('b1', alpha)
+    const newer = newRun('b2', alpha, 1)
+    world.reset([newTask('alpha', [waits, newer])])
+    world.operate(waits, true)
+  },
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, address, press, selects, reviews, idle } = await surface(context)
+    const asked = invocationRow('', 'b1-op-1').name
+
+    // The Run that waits for your action opens first, at its review, not the newer Run.
+    await userEvent.click(latest())
+    await waitFor(() => expect(address().get('request')).toBe(approvalOf(asked)))
+    await reviews('call.b1-op-1')
+    await expect(address().get('record')).toBe(asked)
+
+    // Once it is decided, live mode holds that Run while it runs, even against a
+    // newer Run of the Task or a Run elsewhere.
+    await press('Approve elsewhere')
+    await press('Add standalone run')
+    await idle()
+    await selects('call.b1-op-1', 'call.b1-op-1')
+    await expect(address().get('record')).toBe(asked)
+
+    // When it ends, the Run submitted last opens: the one elsewhere, although the Task
+    // has not ended and still runs `b2`.
+    await press('End oldest running run')
+    await selects('Run s2', 'run s2')
+    await expect(address().get('record')).toBe(runRow('s2', '').name)
+    await expect(address().get('live')).toBe('latest')
+  },
+}
+
+const past = taskRow('past').name
+// Page live mode shows an old record, then follows each new piece of work with no
+// further click, and holds only a Run that runs.
+export const FollowsNewWorkFromWhatItShows: Story = {
+  beforeEach: () => {
+    const run = newRun('p1', past)
+    run.ended = true
+    world.reset([newTask('past', [run])])
+  },
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, address, press, selects, reviews, idle } = await surface(context)
+    const pressed = () => expect(latest()).toHaveAttribute('aria-pressed', 'true')
+    const opened = async (heading: string, row: string, record: string) => {
+      await selects(heading, row)
+      await expect(address().get('record')).toBe(record)
+      await expect(address().get('live')).toBe('latest')
+      await pressed()
+    }
+
+    // Nothing runs: live mode shows the newest record, in a Task that has not ended.
+    await userEvent.click(latest())
+    await opened('Run p1', 'final value', finalOf(runRow('p1', past).name))
+
+    // A new Task replaces it. You click nothing more.
+    await press('Add task')
+    const fresh = taskRow('t1').name
+    await opened('Task t1', 'Task t1', fresh)
+    await press('Add search to newest task')
+    await opened('search 2', 'search 2', toolRow(fresh, 'search-2').name)
+    await press('Add describe to newest task')
+    await opened('describe 3', 'describe 3', toolRow(fresh, 'describe-3').name)
+    // Its new Run opens before it has a record, then its first record.
+    await press('Add run to newest task')
+    await opened('Run r4', 'run r4', runRow('r4', fresh).name)
+    await press('Add operation')
+    const call = invocationRow('', 'r4-op-5').name
+    await opened('call.r4-op-5', 'call.r4-op-5', call)
+
+    // The Run holds live mode while it runs: a newer Task, or a Run submitted later in
+    // the old Task, never takes over.
+    await press('Add task')
+    await press('Add run to oldest task')
+    await idle()
+    await opened('call.r4-op-5', 'call.r4-op-5', call)
+
+    // Once it ends, live mode finds the Run that runs in the old Task.
+    await press('End first running run')
+    await opened('Run r7', 'run r7', runRow('r7', past).name)
+
+    // An action elsewhere waits while that Run runs. Once it ends, the action goes
+    // first, before a Run submitted later.
+    await press('Add run to newest task')
+    await press('Ask in newest running run')
+    await press('Add standalone run')
+    await idle()
+    await opened('Run r7', 'run r7', runRow('r7', past).name)
+    await press('End oldest running run')
+    const waits = invocationRow('', 'r8-op-9').name
+    await waitFor(() => expect(address().get('request')).toBe(approvalOf(waits)))
+    await reviews('call.r8-op-9')
+    await expect(address().get('record')).toBe(waits)
+    await pressed()
+  },
+}
+
+/** The older Task, whose window the list keeps once it ends. */
+const keptTask = taskRow('older').name
+/** The newer Task, where the next Run starts. */
+const nextTask = taskRow('newer').name
+// Once a Run and its Task end, the list can keep a window of the Task that still says
+// the Run runs. Page live mode never reopens that Run, and follows the next one.
+export const PassesARunThatAKeptWindowSaysRuns: Story = {
+  // You expanded the older Task.
+  parameters: { initialEntry: `${list}?tree=1&expand=${encodeURIComponent(keptTask)}` },
+  beforeEach: () => {
+    // `a` runs in the older Task, the newer Task has no record yet, and `a` was
+    // submitted after every Run the newer Task will start.
+    world.reset([newTask('newer'), newTask('older', [newRun('a', keptTask, 9)])])
+  },
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, address, press, selects, idle } = await surface(context)
+    const a = runRow('a', keptTask).name
+    await userEvent.click(latest())
+    await selects('Run a', 'run a')
+
+    // `a` and its Task end. The older Task's window still says `a` runs. Nothing runs,
+    // so live mode shows the newest record and stays there.
+    await press('End oldest task')
+    await selects('Task newer', 'Task newer')
+    await idle()
+    await selects('Task newer', 'Task newer')
+    await expect(address().get('record')).toBe(nextTask)
+
+    // A new Run of the newer Task opens, with no further click.
+    await press('Add run to newest task')
+    await selects('Run r1', 'run r1')
+    await expect(address().get('record')).toBe(runRow('r1', nextTask).name)
+    await expect(address().get('live')).toBe('latest')
+    // From the newer Task on, every read served the kept window that says `a` runs,
+    // and live mode never opened `a` again. On screen, a reopened Run gives way at
+    // once, so the loader's reads are what show it.
+    const first = world.reads.findIndex(({ record }) => record === nextTask)
+    await expect(first).toBeGreaterThanOrEqual(0)
+    const reads = world.reads.slice(first)
+    await expect(reads.filter((read) => !read.kept.includes(keptTask))).toEqual([])
+    await expect(reads.filter(({ record }) => record?.startsWith(a))).toEqual([])
+  },
+}
+
+/**
+ * The Run you follow ends, then a new Run of the same Task starts without any record.
+ * Live mode rests on the ended Run's newest record, `rests`, after you `press` the end.
+ * It then opens the new Run itself, then its first record. This is the whole journey;
+ * navigation.test.ts owns the target rule.
+ */
+function endsThenANewRunStarts(press: string, rests: [heading: string, row: string]): Story {
+  return {
+    beforeEach: () => {
+      const run = newRun('a1', alpha)
+      world.reset([newTask('alpha', [run])])
+      world.operate(run)
+    },
+    play: async (context) => {
+      const { userEvent } = context
+      const { latest, address, press: click, selects, idle } = await surface(context)
+      await userEvent.click(latest())
+      await selects('call.a1-op-1', 'call.a1-op-1')
+
+      // The Run ends. Live mode stays on and rests on its newest record.
+      await click(press)
+      await idle()
+      await selects(...rests)
+      await expect(address().get('live')).toBe('latest')
+
+      // A new Run of the same Task opens before it has any record.
+      await click('Add run to newest task')
+      await selects('Run r2', 'run r2')
+      await idle()
+      await selects('Run r2', 'run r2')
+      await expect(address().get('record')).toBe(runRow('r2', alpha).name)
+
+      // Then its first record.
+      await click('Add operation')
+      await selects('call.r2-op-3', 'call.r2-op-3')
+      await expect(address().get('record')).toBe(invocationRow('', 'r2-op-3').name)
+    },
+  }
+}
+// A Run that succeeded rests on its final value; one that failed, on its operation.
+export const ASucceededRunGivesWayToANewRun = endsThenANewRunStarts('End oldest running run', [
+  'Run a1',
+  'final value',
+])
+export const AFailedRunGivesWayToANewRun = endsThenANewRunStarts('Fail oldest running run', [
+  'call.a1-op-1',
+  'call.a1-op-1',
+])
