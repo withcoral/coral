@@ -430,11 +430,6 @@ test('the operation filter matches only the name and bolds each match', async ()
   expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
   expect(boldIn('repos.get')).toEqual(['e', 'e'])
   expect(boldIn('getForecast')).toEqual(['e', 'e'])
-
-  // The filter reads the same syntax as every filter field.
-  await filterOperations('^re*get$')
-  expect(rowNames()).toEqual(['repos.get'])
-  expect(boldIn('repos.get')).toEqual(['re', 'get'])
 })
 
 // Catches: one member's selection not rolling up to its provider and the

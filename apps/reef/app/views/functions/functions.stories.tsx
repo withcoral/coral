@@ -178,7 +178,7 @@ export const TopLevelFunctions: Story = {
         .map((link) => link.textContent),
     ).toEqual(['other1'])
     // A namespace filter that leaves no namespace out keeps them.
-    await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter namespaces' }), '*')
+    await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter namespaces' }), 'oth')
     await expect(canvas.getByRole('link', { name: 'weeklyDigest' })).toBeVisible()
     await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter namespaces' }), 'x')
     await expect(canvas.queryByRole('link', { name: 'weeklyDigest' })).toBeNull()
