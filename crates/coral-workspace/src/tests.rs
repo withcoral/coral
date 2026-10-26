@@ -1055,7 +1055,7 @@ async fn agent_creation_returns_one_credential_and_safe_durable_attribution() {
 }
 
 #[tokio::test]
-async fn sign_in_choices_are_active_memberships_with_their_role() {
+async fn sign_in_choices_are_active_memberships_with_their_role_and_only_they_can_be_picked() {
     let (_database, module) = test_module().await;
     let owner = organization_user(
         module.database.clone(),
@@ -1083,7 +1083,7 @@ async fn sign_in_choices_are_active_memberships_with_their_role() {
             .unwrap()
     };
     let beta = create("Beta").await;
-    create("Alpha").await;
+    let alpha = create("Alpha").await;
     let archived = create("Archived").await;
     module.archive(&context, archived.id()).await.unwrap();
     module
@@ -1122,6 +1122,28 @@ async fn sign_in_choices_are_active_memberships_with_their_role() {
         [],
         "Organization Owner governance is not a Membership"
     );
+
+    let picked = module
+        .sign_in_choice(member.user_id(), beta.id())
+        .await
+        .unwrap();
+    assert_eq!(
+        (picked.workspace().id(), picked.role()),
+        (beta.id(), WorkspaceRole::Member)
+    );
+    for (case, actor, workspace) in [
+        ("no Membership", &member, alpha.id()),
+        ("archived", &owner, archived.id()),
+        ("governance only", &governor, alpha.id()),
+    ] {
+        assert!(
+            matches!(
+                module.sign_in_choice(actor.user_id(), workspace).await,
+                Err(Error::WorkspaceNotFound)
+            ),
+            "{case}"
+        );
+    }
 }
 
 #[tokio::test]

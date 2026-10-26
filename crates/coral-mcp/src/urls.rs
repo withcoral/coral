@@ -2,7 +2,7 @@
 
 use coral_workspace::WorkspaceId;
 
-/// The sole MCP route, parameterized by a stable Workspace identity.
+/// The Workspace MCP route, parameterized by a stable Workspace identity.
 pub const WORKSPACE_MCP_ROUTE: &str = "/workspaces/{workspace_id}/mcp";
 
 /// The Organization MCP Endpoint. It names no Workspace: the credential fixes one.

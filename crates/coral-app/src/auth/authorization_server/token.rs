@@ -99,10 +99,7 @@ pub(super) async fn oauth_token(
     // credential elsewhere, and whatever mints one declares it there.
     let issued = match target.issue(&state.session_tokens, &authorization) {
         Ok(issued) => issued,
-        Err(error) => {
-            tracing::warn!(%error, "token endpoint could not issue an access token");
-            return token_error(TokenError::ServerError);
-        }
+        Err(error) => return token_error(error),
     };
     let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_secs(),
@@ -190,8 +187,8 @@ impl TokenTarget {
         &self,
         issuer: &coral_auth::SessionTokenIssuer,
         authorization: &AuthorizationGrant,
-    ) -> Result<coral_auth::IssuedAccessToken, String> {
-        match self {
+    ) -> Result<coral_auth::IssuedAccessToken, TokenError> {
+        let token = match self {
             Self::Mcp(workspace) => issuer.issue_workspace_access_token(
                 &authorization.user_id,
                 &authorization.client_id,
@@ -209,11 +206,13 @@ impl TokenTarget {
                 &authorization.resource,
             ),
             Self::Organization => {
+                // Only the Workspace picker issues an Organization MCP
+                // Endpoint code, so a code naming no Workspace is not one.
                 let workspace = authorization
                     .workspace_id
                     .as_deref()
                     .and_then(|workspace| coral_workspace::WorkspaceId::parse(workspace).ok())
-                    .ok_or("an Organization MCP Endpoint code names no workspace")?;
+                    .ok_or(TokenError::InvalidGrant)?;
                 issuer.issue_workspace_access_token(
                     &authorization.user_id,
                     &authorization.client_id,
@@ -221,7 +220,11 @@ impl TokenTarget {
                     &workspace,
                 )
             }
-        }
+        };
+        token.map_err(|error| {
+            tracing::warn!(%error, "token endpoint could not issue an access token");
+            TokenError::ServerError
+        })
     }
 }
 
@@ -460,40 +463,36 @@ mod tests {
         let workspace_resource = format!("https://mcp.example.test/workspaces/{workspace}/mcp");
         let organization = "https://mcp.example.test/mcp";
         let picked = Some(workspace.to_string());
-        // (resource, coral_audience, Workspace the sign-in picked, status)
-        for (resource, requested, chosen, expected_status) in [
-            (
-                workspace_resource.as_str(),
-                Some("mcp"),
-                None,
-                StatusCode::OK,
-            ),
+        // (resource, coral_audience, Workspace the sign-in picked, refusal)
+        for (resource, requested, chosen, refusal) in [
+            (workspace_resource.as_str(), Some("mcp"), None, None),
             (
                 workspace_resource.as_str(),
                 Some("reef"),
                 None,
-                StatusCode::BAD_REQUEST,
+                Some("invalid_target"),
             ),
             (
                 workspace_resource.as_str(),
                 Some("unknown"),
                 None,
-                StatusCode::BAD_REQUEST,
+                Some("invalid_target"),
             ),
-            (RESOURCE, Some("reef"), None, StatusCode::OK),
-            (RESOURCE, Some("mcp"), None, StatusCode::BAD_REQUEST),
-            (organization, None, picked.clone(), StatusCode::OK),
+            (RESOURCE, Some("reef"), None, None),
+            (RESOURCE, Some("mcp"), None, Some("invalid_target")),
+            (organization, None, picked.clone(), None),
+            (organization, None, None, Some("invalid_grant")),
             (
                 organization,
                 Some("mcp"),
                 picked.clone(),
-                StatusCode::BAD_REQUEST,
+                Some("invalid_target"),
             ),
             (
                 organization,
                 Some("reef"),
                 picked.clone(),
-                StatusCode::BAD_REQUEST,
+                Some("invalid_target"),
             ),
         ] {
             let (mut state, codes, _, _database) = state().await;
@@ -513,7 +512,7 @@ mod tests {
                         redirect_uri: REDIRECT.into(),
                         code_challenge: URL_SAFE_NO_PAD.encode(Sha256::digest(VERIFIER.as_bytes())),
                         resource: resource.to_owned(),
-                        workspace_id: chosen,
+                        workspace_id: chosen.clone(),
                     },
                     now_unix_nanos(),
                 )
@@ -541,10 +540,13 @@ mod tests {
                 .send()
                 .await
                 .unwrap();
-            let case = format!("{resource} as {requested:?}");
+            let case = format!("{resource} as {requested:?} for {chosen:?}");
+            let expected_status = refusal.map_or(StatusCode::OK, |_| StatusCode::BAD_REQUEST);
             assert_eq!(response.status(), expected_status, "{case}");
             let json: Value = response.json().await.unwrap();
-            if expected_status == StatusCode::OK {
+            if let Some(refusal) = refusal {
+                assert_eq!(json.get("error").unwrap(), refusal, "{case}");
+            } else {
                 let token = json.get("access_token").unwrap().as_str().unwrap();
                 let claims: Value = serde_json::from_slice(
                     &URL_SAFE_NO_PAD
@@ -567,8 +569,6 @@ mod tests {
                 } else {
                     assert!(claims.get("workspace_id").is_none(), "{case}");
                 }
-            } else {
-                assert_eq!(json.get("error").unwrap(), "invalid_target", "{case}");
             }
             server.shutdown().await.unwrap();
         }

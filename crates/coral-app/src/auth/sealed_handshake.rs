@@ -565,6 +565,42 @@ mod tests {
         );
     }
 
+    fn choice() -> PendingWorkspaceChoice {
+        PendingWorkspaceChoice {
+            user_id: "user-1".into(),
+            oidc_state: STATE.into(),
+            client_id: "https://client.example.test/oauth/client.json".into(),
+            redirect_uri: "https://client.example.test/callback".into(),
+            client_state: Some("client-state".into()),
+            code_challenge: "client-challenge".into(),
+            resource: "https://mcp.example.test/mcp".into(),
+        }
+    }
+
+    #[test]
+    fn a_workspace_choice_opens_only_in_its_browser_within_its_lifetime() {
+        const BROWSER: [u8; 32] = [0x42; 32];
+        let sealed = choice().seal(&keys(), &BROWSER, NOW + 300).expect("sealed");
+        assert_eq!(
+            PendingWorkspaceChoice::open(&keys(), &BROWSER, sealed.as_bytes(), NOW),
+            Some(choice())
+        );
+        let approval = approval()
+            .seal(&keys(), &BROWSER, NOW + 300)
+            .expect("sealed");
+        for (case, browser, sealed, now) in [
+            ("another browser", [0x43; 32], sealed.as_bytes(), NOW),
+            ("at expiry", BROWSER, sealed.as_bytes(), NOW + 300),
+            ("an approval", BROWSER, approval.as_bytes(), NOW),
+        ] {
+            assert_eq!(
+                PendingWorkspaceChoice::open(&keys(), &browser, sealed, now),
+                None,
+                "{case}"
+            );
+        }
+    }
+
     #[test]
     fn derived_secrets_are_valid_pkce_and_distinct_per_sign_in_and_purpose() {
         let keys = keys();

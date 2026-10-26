@@ -394,17 +394,32 @@ async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fix
             .await
             .unwrap();
         assert_eq!(rejected.status(), 401, "{case}");
+        assert_eq!(
+            challenge(&rejected),
+            format!(
+                "Bearer error=\"invalid_token\", resource_metadata=\"{}\"",
+                fixture.urls.organization_metadata_url()
+            ),
+            "{case}: a refused token asks the client to sign in again"
+        );
     }
+    let misplaced = fixture
+        .request(&fixture.workspace)
+        .bearer_auth(scoped("owner", &fixture.workspace))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(
-        fixture
-            .request(&fixture.workspace)
-            .bearer_auth(scoped("owner", &fixture.workspace))
-            .send()
-            .await
-            .unwrap()
-            .status(),
+        misplaced.status(),
         401,
         "a /mcp token does not work at a Workspace URL"
+    );
+    assert_eq!(
+        challenge(&misplaced),
+        format!(
+            "Bearer error=\"invalid_token\", resource_metadata=\"{}\"",
+            fixture.urls.metadata_url(&fixture.workspace)
+        )
     );
 
     let private = fixture

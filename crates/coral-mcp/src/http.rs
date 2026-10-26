@@ -331,7 +331,7 @@ async fn mcp(State(state): State<Arc<HttpState>>, request: Request<Body>) -> Res
         .await
     {
         Ok(principal) => principal,
-        Err(error) => return unauthorized(resource, error, false),
+        Err(error) => return unauthorized(resource, error, bearer.is_some()),
     };
     serve(
         &state,
@@ -354,7 +354,7 @@ async fn organization_mcp(State(state): State<Arc<HttpState>>, request: Request<
     let (principal, workspace_id) = match state.authentication.authenticate_credential(bearer).await
     {
         Ok(authenticated) => authenticated,
-        Err(error) => return unauthorized(resource, error, false),
+        Err(error) => return unauthorized(resource, error, bearer.is_some()),
     };
     serve(
         &state,

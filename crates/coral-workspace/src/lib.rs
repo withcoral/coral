@@ -278,6 +278,25 @@ impl WorkspaceModule {
         Ok(choices)
     }
 
+    /// Returns the Workspace the signing-in User picked, if it is still one of
+    /// their [sign-in choices](Self::list_sign_in_choices).
+    ///
+    /// # Errors
+    ///
+    /// Conceals a Workspace the User cannot pick as not found, and returns a
+    /// denial when the User no longer has Organization Membership.
+    pub async fn sign_in_choice(
+        &self,
+        user_id: &UserId,
+        workspace_id: &WorkspaceId,
+    ) -> Result<WorkspaceChoice, Error> {
+        self.list_sign_in_choices(user_id)
+            .await?
+            .into_iter()
+            .find(|choice| choice.workspace.id() == workspace_id)
+            .ok_or(Error::WorkspaceNotFound)
+    }
+
     /// Checks one Workspace-sensitive action and returns current evidence.
     ///
     /// # Errors

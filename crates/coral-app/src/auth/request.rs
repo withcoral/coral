@@ -34,7 +34,7 @@ impl WorkspaceAuthenticator for WorkspaceAuthentication {
         self.authentication
             .authenticate(workspace, bearer, &self.urls.resource(workspace))
             .await
-            .map_err(project)
+            .map_err(into_mcp_error)
     }
     fn oauth_resource(&self, workspace: &WorkspaceId) -> Option<OauthProtectedResource> {
         Some(OauthProtectedResource {
@@ -51,7 +51,7 @@ impl WorkspaceAuthenticator for WorkspaceAuthentication {
             .authenticate_credential(bearer, &self.urls.organization_resource())
             .await
             .map(coral_auth::CredentialWorkspace::into_parts)
-            .map_err(project)
+            .map_err(into_mcp_error)
     }
     fn organization_oauth_resource(&self) -> Option<OauthProtectedResource> {
         Some(OauthProtectedResource {
@@ -62,7 +62,7 @@ impl WorkspaceAuthenticator for WorkspaceAuthentication {
     }
 }
 
-const fn project(error: coral_auth::AuthenticationError) -> AuthenticationError {
+const fn into_mcp_error(error: coral_auth::AuthenticationError) -> AuthenticationError {
     match error {
         coral_auth::AuthenticationError::Unauthenticated => AuthenticationError::Unauthenticated,
         coral_auth::AuthenticationError::Unavailable => AuthenticationError::Unavailable,
