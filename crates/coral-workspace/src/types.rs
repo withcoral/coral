@@ -234,10 +234,14 @@ impl Workspace {
     /// Returns the key that orders Workspace lists: the display name
     /// alphabetically, ignoring case, then the ID so equal names keep one
     /// order. Pages that resume after a key keep the same order.
+    ///
+    /// Only the name's first 256 characters count, so a page token that
+    /// carries the key stays small however long the name is.
     #[must_use]
     pub fn listing_key(&self) -> String {
+        let name: String = self.display_name.as_str().chars().take(256).collect();
         // A display name has no control characters, so NUL ends it.
-        format!("{}\0{}", self.display_name.as_str().to_lowercase(), self.id)
+        format!("{}\0{}", name.to_lowercase(), self.id)
     }
 
     /// Returns the lifecycle state.
