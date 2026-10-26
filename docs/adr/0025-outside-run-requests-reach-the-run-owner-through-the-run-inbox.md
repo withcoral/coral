@@ -54,12 +54,15 @@ the implementation.
   - **Repeats.** A request can be delivered more than once. A request changes nothing if a request for the same
     Approval Request or Run is already Applied or Recorded.
   - **Deletion.** The owner deletes every row it applies, in its next chunk commit. That includes a repeat that
-    changes nothing, so no row is delivered again once the owner has applied it.
-  - **Deadlines.** The owner judges an Approval Request's deadline by its own clock when it applies a decision, as
-    before. A decision applied after the deadline loses to the expiry, and its requester gets the recorded expiry.
-    Delivery can lag by up to 250 ms, or up to the 15 s backstop during a change-signal outage. So a decision made
-    just before the deadline can end as expired. The Dispatch Fence would refuse an approval past its deadline
-    anyway.
+    changes nothing. Once that commit lands, the row is not delivered again. If the owner stops before it lands, the
+    row stays and is delivered again.
+  - **Deadlines.** The owner applies deadlines and decisions in its one order, in its pure `apply`, as before. A
+    deadline's timer decides when its message is applied. A decision or a cancellation applied first, on the owner's
+    clock past the deadline, finds the deadline passed and loses to it. So a decision applied after its Approval
+    Request's deadline loses to the expiry, and its requester gets the recorded expiry. Delivery can lag by up to
+    250 ms, or up to the 15 s backstop during a change-signal outage. So a decision made just before the deadline can
+    end as expired. The Dispatch Fence checks an approved request's deadline at dispatch, and it records no
+    expiry.
   - **Late rows.** A row may be inserted just as the Run ends. It stays until retention deletes the Run. No reader
     reads the rows of a terminal Run.
 - **The answer.**
@@ -80,10 +83,13 @@ the implementation.
   - **Reef.** Reef retries once. It then shows a short status until the activity stream shows the outcome.
 - **Recovery.** This covers the expired-lease sweep.
   - **Order.** A recovered Run Owner applies the Run's passed timers in deadline order, then the requests in its Run
-    Inbox in insert order. Then it ends the Run.
+    Inbox in insert order. Then it ends the Run. The Run ends with the termination it recorded or found. Without
+    one, it ends `timed_out` past its deadline, else `interrupted`.
   - **A waiting cancellation.** Suppose a cancellation was waiting in the Run Inbox when the owning Coral Instance
-    died. The Run then ends `canceled`, not `interrupted`.
-  - **A waiting decision.** It is recorded. Its Invocation does not start: the terminal chunk ends it.
+    died. The Run then ends `canceled`, not `interrupted`, unless the Run deadline passed first. The timers come
+    first, so the Run then ends `timed_out`.
+  - **A waiting decision.** It is recorded unless its Approval Request's deadline passed first, when the expiry
+    stands. Either way its Invocation does not start: the terminal chunk ends it.
   - **The rule.** Every request that reached the Run Inbox before the owning Coral Instance died is applied before
     the sweep ends the Run. Any request kind added to the Run Inbox later follows the same rule.
   - **An owner task that panics.** Its supervisor still ends the Run at once in one chunk, as ADR 0018 says, and
