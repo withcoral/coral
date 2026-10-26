@@ -47,6 +47,7 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
             workspaces.clone(),
         ),
         RuntimeLimits::default(),
+        coral_run::CoralInstanceId::generate(),
     )
     .unwrap();
     // Commit acceptance without launching execution. There can be no authored output,

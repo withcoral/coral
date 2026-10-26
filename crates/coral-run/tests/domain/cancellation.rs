@@ -1505,9 +1505,15 @@ async fn the_sweep_ends_an_abandoned_run_by_its_passed_timers_or_its_recorded_te
             }
         }
 
-        let swept = fixture.next_process().sweep_expired_leases().await;
+        let sweeper = fixture.next_process();
+        let swept = sweeper.sweep_expired_leases().await;
         assert_eq!(swept.unwrap(), 1, "{case:?}");
         let ended = fixture.terminal_record(workspace_id, run_id).await;
+        assert_eq!(
+            ended.holder_instance_id.as_ref(),
+            Some(sweeper.instance()),
+            "{case:?}: the sweeping Coral Instance took the Run over"
+        );
 
         assert_eq!(ended.state, run_end, "{case:?}");
         assert_eq!(
@@ -1839,11 +1845,24 @@ async fn the_sweep_leaves_a_run_alone_until_its_lease_lapses() {
         );
 
         fixture.clock.next.store(lapsed_at, Ordering::SeqCst);
-        assert_eq!(fixture.runs.sweep_expired_leases().await.unwrap(), 1);
+        assert_eq!(
+            fixture.next_process().sweep_expired_leases().await.unwrap(),
+            1
+        );
         let ended = fixture.terminal_record(&workspace_id, &run_id).await;
         assert_eq!(ended.state, RunState::Interrupted, "foreign {foreign}");
         assert_eq!(ended.chunk_sequence, held.chunk_sequence + 1, "one chunk");
         assert_eq!(ended.execution_started_at_unix_nanos, None, "never started");
+        let holder = if foreign {
+            "foreign-process".to_string()
+        } else {
+            fixture.runs.instance().to_string()
+        };
+        assert_eq!(
+            ended.holder_instance_id.as_ref().map(ToString::to_string),
+            Some(holder),
+            "foreign {foreign}: a Run that never started records no new claim, so it keeps its holder"
+        );
         assert!(matches!(
             fixture
                 .events_after(&workspace_id, &run_id, last_sequence(&held))

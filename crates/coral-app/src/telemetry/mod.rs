@@ -90,11 +90,18 @@ fn configured_otlp_endpoint(config: &TelemetryConfig) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
-fn telemetry_resource(service_name: &str) -> Resource {
+/// The process's resource: its service name, and as `service.instance.id`
+/// the id of the Coral Instance whose start initialized telemetry, so every
+/// exported span, log and metric names that Coral Instance.
+fn telemetry_resource(service_name: &str, instance_id: &str) -> Resource {
     Resource::builder()
         .with_attribute(opentelemetry::KeyValue::new(
             "service.name",
             service_name.to_string(),
+        ))
+        .with_attribute(opentelemetry::KeyValue::new(
+            "service.instance.id",
+            instance_id.to_string(),
         ))
         .build()
 }
@@ -260,21 +267,21 @@ fn process_executable_name() -> String {
         .unwrap_or_else(|| "coral".to_string())
 }
 
-pub(crate) fn init_tracing(config: &TelemetryConfig) -> Result<(), AppError> {
-    INIT.get_or_init(|| try_init_tracing(config).map_err(|e| e.to_string()))
+pub(crate) fn init_tracing(config: &TelemetryConfig, instance_id: &str) -> Result<(), AppError> {
+    INIT.get_or_init(|| try_init_tracing(config, instance_id).map_err(|e| e.to_string()))
         .as_ref()
         .map_err(|e| AppError::InvalidInput(e.clone()))?;
     Ok(())
 }
 
-fn try_init_tracing(config: &TelemetryConfig) -> Result<(), AppError> {
+fn try_init_tracing(config: &TelemetryConfig, instance_id: &str) -> Result<(), AppError> {
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
     let endpoint = configured_otlp_endpoint(config);
     let (log_filter, log_filter_error) = build_log_filter(config.otel.log_filter.as_deref());
 
     let mut trace_filter_error = None;
     let otel_trace_layer = if endpoint.is_some() {
-        let resource = telemetry_resource(&config.otel.service_name);
+        let resource = telemetry_resource(&config.otel.service_name, instance_id);
         let mut builder = SdkTracerProvider::builder().with_resource(resource.clone());
 
         if let Some(endpoint) = endpoint {
@@ -372,5 +379,28 @@ pub fn shutdown_tracing() {
         && let Err(error) = provider.shutdown()
     {
         tracing::warn!("OTEL logger provider shutdown error: {error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use opentelemetry::{Key, Value};
+
+    use super::telemetry_resource;
+
+    /// Operators filter exported telemetry by `service.instance.id` to find
+    /// the Coral Instance that produced it.
+    #[test]
+    fn the_resource_names_the_service_and_the_coral_instance() {
+        let resource = telemetry_resource("coral-test", "6f1c2b0e-instance");
+
+        assert_eq!(
+            resource.get(&Key::new("service.name")),
+            Some(Value::from("coral-test"))
+        );
+        assert_eq!(
+            resource.get(&Key::new("service.instance.id")),
+            Some(Value::from("6f1c2b0e-instance"))
+        );
     }
 }

@@ -13,6 +13,11 @@ pub(crate) struct RunRecord {
     pub(crate) deadline_at_unix_nanos: i64,
     pub(crate) worker_claim_id: Option<String>,
     pub(crate) worker_claim_expires_at_unix_nanos: Option<i64>,
+    /// The Coral Instance that minted the claim the row records: at
+    /// acceptance, or at a takeover that recorded a new execution claim.
+    /// Empty for a Run a previous release accepted; a previous release's
+    /// takeover leaves it as it was.
+    pub(crate) holder_instance_id: Option<crate::CoralInstanceId>,
     pub(crate) execution_claim_id: Option<String>,
     pub(crate) execution_started_at_unix_nanos: Option<i64>,
     pub(crate) termination: Option<RunTermination>,

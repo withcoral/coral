@@ -178,6 +178,7 @@ impl Fixture {
             workspaces.clone(),
             providers.clone(),
             coral_run::RuntimeLimits::default(),
+            coral_run::CoralInstanceId::generate(),
         )
         .unwrap()
         .with_accounts(accounts.clone());

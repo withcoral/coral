@@ -120,30 +120,45 @@ pub(crate) async fn finish_termination(
     .await
 }
 
+/// A recovering writer's takeover of a Run: the claim id it mints, and the
+/// Coral Instance it runs in, which the row then records as the holder.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Takeover<'a> {
+    pub(crate) claim_id: &'a str,
+    pub(crate) instance: &'a crate::CoralInstanceId,
+}
+
 /// The one chunk that interrupts a Run its owner can no longer run: the
 /// termination intent and the terminal outcome together, the worker claim
 /// released, the `invocation.ended` Events of its ended Invocations, and
 /// `run.ended`. Predicated on the claim `run` holds (its execution claim, or
-/// the worker claim of a Run that never started). `new_execution_claim_id`
-/// is the claim id a recovering writer mints when it takes the Run over from
-/// a started owner that can no longer write: every commit still in flight
-/// under the old claim then mismatches.
+/// the worker claim of a Run that never started). `takeover` carries the
+/// claim id a recovering writer mints when it takes the Run over from a
+/// started owner that can no longer write: every commit still in flight
+/// under the old claim then mismatches. The row then records the taking
+/// Coral Instance as the holder of that claim.
 pub(crate) async fn interrupt_run(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
     invocation_events: &[OwnedEvent],
     termination: &RunTermination,
-    new_execution_claim_id: Option<&str>,
+    takeover: Option<Takeover<'_>>,
     terminal_at_unix_nanos: i64,
 ) -> Result<(), Error> {
     let mut values = termination_values(termination);
-    // A Run that never started has no execution claim to take over: its
-    // row pairs the execution claim with the start mark, and the released
-    // worker claim is all the fence a late start mark needs.
-    if let (Some(new_claim_id), Some(_started)) =
-        (new_execution_claim_id, run.execution_claim_id.as_deref())
-    {
-        values.push((ProgramRunRecords::ExecutionClaimId, Expr::val(new_claim_id)));
+    // A Run that never started has no execution claim to take over: its row
+    // pairs the execution claim with the start mark, and the released worker
+    // claim is all the fence a late start mark needs. Its holder stays the
+    // Coral Instance that accepted it.
+    if let (Some(takeover), Some(_started)) = (takeover, run.execution_claim_id.as_deref()) {
+        values.push((
+            ProgramRunRecords::ExecutionClaimId,
+            Expr::val(takeover.claim_id),
+        ));
+        values.push((
+            ProgramRunRecords::HolderInstanceId,
+            Expr::val(takeover.instance.as_str()),
+        ));
     }
     finish_terminal_run(
         transaction,

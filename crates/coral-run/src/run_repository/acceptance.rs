@@ -8,6 +8,7 @@ use sqlx::FromRow;
 
 use super::events::{NewEvent, insert_events};
 use super::{ChunkEvent, ProgramRunRecords};
+use crate::CoralInstanceId;
 use crate::engine::ProgramPackage;
 use crate::types::AcceptedRun;
 use crate::{
@@ -62,12 +63,13 @@ impl PackageRow {
     }
 }
 
-/// Inserts the Run row and its package. `false` means a Run with this
-/// identifier already exists and nothing was written: the caller draws a new
-/// identifier.
+/// Inserts the Run row, claimed by `holder`, and its package. `false` means a
+/// Run with this identifier already exists and nothing was written: the
+/// caller draws a new identifier.
 pub(crate) async fn insert_acceptance(
     transaction: &mut Transaction<'_>,
     run: &AcceptedRun,
+    holder: &CoralInstanceId,
     source: &ProgramSource,
     package: &ProgramPackage,
     linked: &[SavedFunctionSelection],
@@ -80,7 +82,7 @@ pub(crate) async fn insert_acceptance(
         i64::try_from(COMPILATION_TIMEOUT.as_millis()).map_err(|_error| {
             Error::CorruptData("compilation timeout exceeds durable range".to_string())
         })?;
-    if !insert_record(transaction, run).await? {
+    if !insert_record(transaction, run, holder).await? {
         return Ok(false);
     }
 
@@ -146,6 +148,7 @@ pub(crate) async fn insert_acceptance(
 async fn insert_record(
     transaction: &mut Transaction<'_>,
     run: &AcceptedRun,
+    holder: &CoralInstanceId,
 ) -> Result<bool, Error> {
     let statement = Query::insert()
         .into_table(ProgramRunRecords::Table)
@@ -160,6 +163,7 @@ async fn insert_record(
             ProgramRunRecords::ShutdownGraceNanos,
             ProgramRunRecords::WorkerClaimId,
             ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
+            ProgramRunRecords::HolderInstanceId,
             ProgramRunRecords::ValueLimitsJson,
             ProgramRunRecords::NextEventSequence,
             ProgramRunRecords::AccumulatedOutputBytes,
@@ -178,6 +182,7 @@ async fn insert_record(
             // running Run is ever unclaimed, and renewed by every chunk.
             Expr::val(run.claim_id.as_str()),
             Expr::val(run.worker_claim_expires_at_unix_nanos),
+            Expr::val(holder.as_str()),
             Expr::val(serde_json::to_string(&run.value_limits).map_err(Error::ProgramValueJson)?),
             // The previous release's Event counter: this release advances it per
             // chunk for that release's writers and never reads it.

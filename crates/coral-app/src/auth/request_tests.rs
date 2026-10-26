@@ -364,6 +364,7 @@ impl Fixture {
                 coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
             ),
             coral_run::RuntimeLimits::default(),
+            coral_run::CoralInstanceId::generate(),
         )
         .unwrap();
         let commands = coral_task::TaskCommands::new(

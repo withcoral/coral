@@ -68,6 +68,7 @@ async fn record_run(
         workspaces,
         providers,
         coral_run::RuntimeLimits::default(),
+        coral_run::CoralInstanceId::generate(),
     )
     .unwrap();
     let run = runs
