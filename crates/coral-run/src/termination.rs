@@ -10,9 +10,10 @@ use tokio::time::Instant;
 
 use crate::approval::{ApprovalId, DecideWork};
 use crate::lifecycle::{RequestedTermination, RunRecord, RunTermination, RunTerminationKind};
+use crate::observation::read_until;
 use crate::observation::validate_cursor;
 use crate::owner::ChunkWork as _;
-use crate::run_inbox::{InboxRequest, read_until};
+use crate::run_inbox::InboxRequest;
 use crate::{
     Error, RunId, RunModule, RunObservation, RunState, RunUpdate, invocation_lifecycle,
     invocation_repository, run_repository,
@@ -73,6 +74,11 @@ impl RunModule {
                 .submit(&mut transaction, &request, self.now()?)
                 .await?;
             transaction.commit().await?;
+            // A local owner gets the request without waiting for the change
+            // signal.
+            if self.owners.contains(run_id) {
+                self.inbox.wake();
+            }
             // The recorded intent gives the dispatches in flight the shutdown
             // grace; the owner ends the Run itself once it is out.
             let until = arrived + crate::nanos_duration(run.shutdown_grace_nanos) + SETTLE_MARGIN;

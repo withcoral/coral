@@ -26,7 +26,7 @@ use coral_workspace::{Principal, WorkspaceId};
 use tokio::sync::{Mutex, Notify};
 use tokio::time::{Instant, sleep_until};
 
-use crate::observation::{OBSERVE_FALLBACK_POLL, OBSERVE_MIN_REREAD_GAP};
+use crate::observation::read_until;
 use crate::owner::{Message, Owners};
 use crate::{CoralInstanceId, Error, RunId, run_repository};
 
@@ -70,18 +70,17 @@ trait Inbox: Send + Sync {
         submitted_at_unix_nanos: i64,
     ) -> Result<(), Error>;
 
-    /// Wakes this Coral Instance's stream at once (a local owner gets the
-    /// request without waiting for the change signal) and waits until
-    /// `until` for the submitted `request` to be Recorded: `true` once it
-    /// is, or once nothing waits for it (the record answers); `false` past
-    /// `until`.
+    /// Waits until `until` for the submitted `request` to be Recorded:
+    /// `true` once it is, or once nothing waits for it (the record answers);
+    /// `false` past `until`.
     async fn recorded(&self, request: &InboxRequest, until: Instant) -> Result<bool, Error>;
 
     /// The next requests addressed to the Runs `instance` holds, in insert
     /// order, once there may be new ones.
     async fn receive(&self, instance: &CoralInstanceId) -> Vec<Delivery>;
 
-    /// Wakes the stream at once.
+    /// Wakes the stream at once: the owner of a request just submitted is
+    /// local, and gets it without waiting for the change signal.
     fn wake(&self);
 
     /// Removes the Run's `rows` inside the chunk commit that records them.
@@ -134,6 +133,10 @@ impl RunInbox {
         until: Instant,
     ) -> Result<bool, Error> {
         self.inbox.recorded(request, until).await
+    }
+
+    pub(crate) fn wake(&self) {
+        self.inbox.wake();
     }
 
     pub(crate) async fn remove(
@@ -270,7 +273,6 @@ impl Inbox for TableInbox {
     }
 
     async fn recorded(&self, request: &InboxRequest, until: Instant) -> Result<bool, Error> {
-        self.wake();
         let database = &self.database;
         read_until(database, until, move || async move {
             run_repository::cancellation_waits(database, &request.workspace_id, &request.run_id)
@@ -305,37 +307,6 @@ impl Inbox for TableInbox {
         rows: &[InboxRow],
     ) -> Result<(), Error> {
         run_repository::delete_inbox_rows(transaction, workspace_id, run_id, rows).await
-    }
-}
-
-/// Reads `settled` again after every ring of the change signal, at most once
-/// per reread gap, until it holds or `until` passes, as `observe` waits:
-/// without the signal it reads again at the fallback poll.
-pub(crate) async fn read_until<Read>(
-    database: &Database,
-    until: Instant,
-    mut settled: impl FnMut() -> Read,
-) -> Result<bool, Error>
-where
-    Read: Future<Output = Result<bool, Error>>,
-{
-    let mut changes = database.subscribe_changes().ok();
-    loop {
-        let read_at = Instant::now();
-        if settled().await? {
-            return Ok(true);
-        }
-        if read_at >= until {
-            return Ok(false);
-        }
-        match &mut changes {
-            Some(subscription) => tokio::select! {
-                result = subscription.changed() => if result.is_err() { changes = None },
-                () = sleep_until(until) => {}
-            },
-            None => sleep_until(until.min(read_at + OBSERVE_FALLBACK_POLL)).await,
-        }
-        sleep_until(until.min(read_at + OBSERVE_MIN_REREAD_GAP)).await;
     }
 }
 

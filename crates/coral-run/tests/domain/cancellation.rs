@@ -1272,6 +1272,11 @@ async fn durable_cancellation_wins_completion_and_preserves_principal_confidenti
         RunState::Running,
         "the denied cancellation changed nothing"
     );
+    assert_eq!(
+        fixture.inbox_rows(workspace.id(), accepted.run_id()).await,
+        0,
+        "the denied cancellation put nothing in the Run Inbox"
+    );
 
     let canceled = fixture
         .runs

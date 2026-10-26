@@ -90,7 +90,7 @@
   only wakes the Invocations parked on it. Do not open a transaction that
   holds the Run row from any of these paths, and do not write a nonterminal
   Run's row from outside its owner. The one exception: the Coral Instance
-  that receives an outside request inserts it into the Run's Run Inbox, and
+  that receives a cancellation inserts it into the Run's Run Inbox, and
   only the owner deletes that row while the Run is nonterminal
   ([ADR 0025](docs/adr/0025-outside-run-requests-reach-the-run-owner-through-the-run-inbox.md)). A Run whose owner retired or whose
   process is gone without ending it gets its owner back from the
@@ -108,7 +108,7 @@
   Interrupted record alone retries every answer but a claim mismatch or an
   ended Run. The worker lease is ownership between processes, renewed by
   every commit: never write a Run whose live lease another process holds,
-  except to insert into its Run Inbox.
+  except to insert a cancellation into its Run Inbox.
   The lease never ends a Run from inside its own process. The owner's
   own bounds do (suspect after one lease without a commit, self-interrupt
   after three, constants in `crates/coral-run/src/execution.rs`), and the
