@@ -354,9 +354,8 @@ struct AuthorizationServerHttpState {
     /// Domain Module that provisions stable User identities after OIDC validation.
     user_directory: UserDirectory,
     /// The Workspaces a User can pick when they sign in at the Organization
-    /// MCP Endpoint. `None` until bootstrap attaches a database; such a
-    /// sign-in then fails closed.
-    workspaces: Option<coral_workspace::WorkspaceModule>,
+    /// MCP Endpoint.
+    workspaces: coral_workspace::WorkspaceModule,
     /// Names each Workspace's Providers on that page; display only.
     providers: Option<WorkspaceProviders>,
 }
@@ -434,10 +433,11 @@ impl AuthorizationServerHttpState {
             user_directory = user_directory.with_bootstrap_owner(issuer, subject);
         }
         let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
+        let providers = WorkspaceProviders::new(&database, &workspaces, outbound_policy);
         Ok(Self {
             settings,
             session_tokens,
-            codes: AuthorizationCodes::new(database.clone()),
+            codes: AuthorizationCodes::new(database),
             provider_client: OidcProviderClient::new(outbound_policy)
                 .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
             authorization_resources,
@@ -445,8 +445,8 @@ impl AuthorizationServerHttpState {
             client_metadata_resolver: Arc::new(clients.clone()),
             clients,
             user_directory,
-            providers: WorkspaceProviders::new(&database, &workspaces, outbound_policy),
-            workspaces: Some(workspaces),
+            workspaces,
+            providers,
         })
     }
 

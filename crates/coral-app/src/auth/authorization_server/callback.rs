@@ -994,21 +994,14 @@ mod tests {
         }
     }
 
-    fn organization_state(issuer: &str, database: &Arc<Database>) -> AuthorizationServerHttpState {
-        let mut state = state_with(issuer, database.clone());
+    fn organization_state(database: &TestDatabase, issuer: &str) -> AuthorizationServerHttpState {
+        let mut state = state(database, issuer);
         state.workspace_resource_family = Some(Arc::new(
             crate::WorkspaceMcpUrls::new(
                 crate::CanonicalOauthUrl::parse("https://mcp.example.test").unwrap(),
             )
             .unwrap(),
         ));
-        let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
-        state.providers = super::super::WorkspaceProviders::new(
-            database,
-            &workspaces,
-            coral_outbound::DestinationPolicy::default(),
-        );
-        state.workspaces = Some(workspaces);
         state
     }
 
@@ -1147,8 +1140,9 @@ mod tests {
     async fn an_organization_sign_in_issues_its_code_for_the_workspace_the_user_picks() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, &nonce()).await;
-        let (db, _temp) = database().await;
-        let app = organization_state(&server.uri(), &db);
+        let fixture = database().await;
+        let db = fixture.database();
+        let app = organization_state(&fixture, &server.uri());
         let user = signed_in_user(&db, &server.uri()).await;
         let beta = create_workspace(&db, &user, "Beta").await;
         let alpha = create_workspace(&db, &user, "Alpha").await;
@@ -1236,8 +1230,9 @@ mod tests {
     async fn roles_show_when_they_tell_the_choices_apart() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, &nonce()).await;
-        let (db, _temp) = database().await;
-        let app = organization_state(&server.uri(), &db);
+        let fixture = database().await;
+        let db = fixture.database();
+        let app = organization_state(&fixture, &server.uri());
         let user = signed_in_user(&db, &server.uri()).await;
         create_workspace(&db, &user, "Owned").await;
         let stranger = stranger(&db).await;
@@ -1266,8 +1261,9 @@ mod tests {
     async fn a_refused_workspace_choice_issues_no_code() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, &nonce()).await;
-        let (db, _temp) = database().await;
-        let app = organization_state(&server.uri(), &db);
+        let fixture = database().await;
+        let db = fixture.database();
+        let app = organization_state(&fixture, &server.uri());
         let user = signed_in_user(&db, &server.uri()).await;
         let kept = create_workspace(&db, &user, "Kept").await;
         let stranger = stranger(&db).await;
@@ -1335,8 +1331,9 @@ mod tests {
     async fn a_user_without_workspaces_is_told_to_create_one() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, &nonce()).await;
-        let (db, _temp) = database().await;
-        let app = organization_state(&server.uri(), &db);
+        let fixture = database().await;
+        let db = fixture.database();
+        let app = organization_state(&fixture, &server.uri());
         let (page, cookie) = picker(organization_callback(&app).await).await;
         assert!(page.contains("No workspace to choose</span></h2>"));
         assert!(

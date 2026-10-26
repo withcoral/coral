@@ -29,7 +29,7 @@ or Agent/Registration state rather than trusting a session's retained role.
 ## Organization MCP Endpoint
 
 `/mcp` serves the Workspace its credential names, for clients that can store
-only one fixed URL ([ADR 0025](../../../../docs/adr/0025-fixed-mcp-endpoint-takes-its-workspace-from-the-credential.md)).
+only one fixed URL.
 
 - A User token for `/mcp` has `aud = {listeners.mcp.public_url}/mcp` and a
   signed `workspace_id`. It does not work at a Workspace MCP endpoint, and a

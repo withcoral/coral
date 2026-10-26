@@ -3,7 +3,7 @@
 //! The identity provider has answered and Coral knows the User, but no code
 //! exists yet. The person approves the client and picks one of their active
 //! Workspaces on one page, and the code its submission issues carries that
-//! Workspace (ADR 0025). Nothing is stored while the page waits: the finished
+//! Workspace. Nothing is stored while the page waits: the finished
 //! sign-in travels sealed in the form, bound to the browser's approval cookie,
 //! like the approval page a Workspace URL shows before sign-in.
 
@@ -15,7 +15,7 @@ use axum::response::Response;
 use coral_auth::authorization_codes::AuthorizationGrant;
 use coral_outbound::{BrowserRedirect, EndpointUrl};
 use coral_provider::{ProviderCallRoot, ProviderState};
-use coral_workspace::{UserId, WorkspaceChoice, WorkspaceId, WorkspaceModule, WorkspaceRole};
+use coral_workspace::{UserId, WorkspaceChoice, WorkspaceId, WorkspaceRole};
 
 use super::super::sealed_handshake::{PendingWorkspaceChoice, SignInSession};
 use super::authorize::confirmation::{self, ApprovalDecision, ApprovalScope, escape_html};
@@ -149,19 +149,13 @@ impl ChoiceFailure {
     }
 }
 
-fn workspaces(state: &AuthorizationServerHttpState) -> Result<&WorkspaceModule, ChoiceFailure> {
-    state.workspaces.as_ref().ok_or_else(|| {
-        tracing::warn!("Workspace picker has no database to list Workspaces from");
-        ChoiceFailure::Unavailable
-    })
-}
-
 async fn choices(
     state: &AuthorizationServerHttpState,
     user_id: &str,
 ) -> Result<Vec<WorkspaceChoice>, ChoiceFailure> {
     let user_id = UserId::parse(user_id).map_err(|_error| ChoiceFailure::Unavailable)?;
-    workspaces(state)?
+    state
+        .workspaces
         .list_sign_in_choices(&user_id)
         .await
         .map_err(|error| ChoiceFailure::from_domain(&error))
@@ -174,7 +168,8 @@ async fn pick(
 ) -> Result<WorkspaceChoice, ChoiceFailure> {
     let user_id = UserId::parse(user_id).map_err(|_error| ChoiceFailure::Unavailable)?;
     let workspace = WorkspaceId::parse(workspace).map_err(|_error| ChoiceFailure::NotAvailable)?;
-    workspaces(state)?
+    state
+        .workspaces
         .sign_in_choice(&user_id, &workspace)
         .await
         .map_err(|error| ChoiceFailure::from_domain(&error))
