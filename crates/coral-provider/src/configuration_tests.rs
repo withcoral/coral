@@ -1521,10 +1521,10 @@ async fn an_update_from_another_kind_of_source_takes_its_servers_and_keeps_every
             .review_setup_configuration(&actor, &owner, setup.id())
             .await
             .unwrap();
-        // Choices no source suggests, so only a kept configuration has them.
+        // A name no source suggests, so only a kept configuration has it. A
+        // new request header would make Coral read the MCP server again.
         let saved = ProviderConfiguration {
             display_name: "Forecasts".into(),
-            request_headers: BTreeMap::from([("x-trace".into(), "on".into())]),
             ..review.document.unwrap().suggested
         };
         h.providers
