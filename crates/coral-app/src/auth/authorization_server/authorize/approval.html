@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Connect an app · Coral</title>
+  <title>Connect · Coral</title>
   <style>@@styles@@</style>
 </head>
 <body>
@@ -37,16 +37,16 @@
           <ul>
             <li>
               <svg class="can" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" /></svg>
-              <span>Find and run operations on the workspace’s providers</span>
+              <span>Use tools from the providers in this workspace</span>
             </li>
             <li>
               <svg class="can" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" /></svg>
-              <span>Act as you, limited by the workspace’s policies and approvals</span>
+              <span>Act as you, limited by the policies and approvals in this workspace</span>
             </li>
           </ul>
           <p class="credentials">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></svg>
-            <span>Your provider credentials stay in Coral.</span>
+            <span><bdi>@@client_name@@</bdi> can't see your provider credentials.</span>
           </p>
         </section>
         <dl class="details">
@@ -62,11 +62,11 @@
       </div>
       <form class="decision" method="post" action="@@form_action@@" autocomplete="off">
         <input type="hidden" name="ticket" value="@@ticket@@">@@account@@
-        <h2 id="decision-title">@@decision_title@@</h2>
-        <!-- Cancel is the safe implicit-submit default. Keep it the first button. -->
-        <button class="cancel" type="submit" name="decision" value="cancel" formnovalidate>@@cancel_label@@</button>@@choices@@
-        <button class="connect connect-any" type="submit" name="decision" value="continue"@@connect_hidden@@>Connect</button>
-        <p class="notice"@@connect_hidden@@>Only connect if you started this in <bdi>@@client_name@@</bdi>.</p>
+        <h2 id="decision-title"><span>@@decision_title@@</span></h2>@@choices@@
+        <div class="actions">
+          <!-- Cancel is the safe implicit-submit default. Keep it the first button. -->
+          <button class="cancel" type="submit" name="decision" value="cancel" formnovalidate>@@cancel_label@@</button>@@primary_action@@
+        </div>
       </form>
     </section>
   </main>

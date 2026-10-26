@@ -10,6 +10,10 @@ const approvalDirectory = new URL(
   import.meta.url,
 )
 
+// Rust renders the Connect button beside Cancel.
+const connect =
+  '<button class="connect" type="submit" name="decision" value="continue">Connect</button>'
+
 test('standalone OAuth page works without scripts under its pinned CSP in both themes', async () => {
   const css = await readFile(new URL('approval.css', approvalDirectory), 'utf8')
   const hash = createHash('sha256').update(css).digest('base64')
@@ -38,7 +42,7 @@ test('standalone OAuth page works without scripts under its pinned CSP in both t
       account: '',
       choices: '',
       cancel_label: 'Cancel',
-      connect_hidden: '',
+      primary_action: connect,
     }
     // Rust owns real substitution and escaping; this fixture supplies known
     // values solely to exercise the hand-authored document in a real browser.
@@ -120,14 +124,12 @@ test('standalone OAuth page works without scripts under its pinned CSP in both t
 const fill = (template: string, values: Record<string, string>) =>
   template.replace(/@@(.*?)@@/g, (_, slot: string) => values[slot])
 
-// Rust renders these cards and their Connect buttons from escaped names; the
-// fixture mirrors that markup.
+// Rust renders these rows from escaped names, and the buttons; the fixture
+// mirrors that markup.
 const option = (id: string, name: string, meta: string) =>
   `<label class="choice"><input type="radio" name="workspace" value="${id}" required>` +
   `<span class="choice-text"><span class="choice-name"><bdi>${name}</bdi></span>` +
-  `<span class="choice-meta">${meta}</span></span></label>` +
-  `<button class="connect connect-for" type="submit" name="decision" value="continue">` +
-  `Connect to <bdi>${name}</bdi></button>`
+  `<span class="choice-meta">${meta}</span></span></label>`
 
 test('the workspace approval page and its empty state work without scripts in both themes', async () => {
   const css = await readFile(new URL('approval.css', approvalDirectory), 'utf8')
@@ -146,14 +148,12 @@ test('the workspace approval page and its empty state work without scripts in bo
     form_action: '/oauth/workspace',
     account: '<p class="account"><span>Signed in as <bdi>person@example.test</bdi></span></p>',
     choices:
+      '<div class="choices" role="radiogroup" aria-labelledby="decision-title">' +
       option('alpha-id', 'Alpha', 'GitHub, Linear') +
-      option(
-        'beta-id',
-        'A workspace with a very long name that wraps on a phone',
-        'No providers yet',
-      ),
+      option('beta-id', 'A workspace with a very long name that wraps on a phone', '') +
+      '</div>',
     cancel_label: 'Cancel',
-    connect_hidden: '',
+    primary_action: connect,
   }
   // With no workspace, the same page offers Coral and the way back instead.
   const empty: Record<string, string> = {
@@ -161,10 +161,9 @@ test('the workspace approval page and its empty state work without scripts in bo
     decision_title: 'No workspace to choose',
     choices:
       '<div class="empty"><p>You are not a member of a workspace.</p>' +
-      '<p>Create a workspace in Coral. Then sign in again.</p></div>' +
-      '<a class="connect" href="https://coral.example.test">Open Coral</a>',
+      '<p>Create a workspace in Coral. Then sign in again.</p></div>',
     cancel_label: 'Back to <bdi>Example client</bdi>',
-    connect_hidden: ' hidden',
+    primary_action: '<a class="connect" href="https://coral.example.test">Open Coral</a>',
   }
   const submissions: string[] = []
   const server = createServer(async (request, response) => {
@@ -212,11 +211,7 @@ test('the workspace approval page and its empty state work without scripts in bo
         true,
       )
       await page.getByRole('radio', { name: /very long name/ }).check()
-      // The one Connect button left names the picked workspace.
-      assert.deepEqual(await page.getByRole('button', { name: /^Connect/ }).allTextContents(), [
-        'Connect to A workspace with a very long name that wraps on a phone',
-      ])
-      await page.getByRole('button', { name: /^Connect to A workspace/ }).click()
+      await page.getByRole('button', { name: 'Connect', exact: true }).click()
       await page.getByText('Submitted', { exact: true }).waitFor()
       assert.equal(
         submissions.at(-1),

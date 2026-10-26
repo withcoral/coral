@@ -1171,12 +1171,12 @@ mod tests {
             "nothing is preselected, so the person must pick"
         );
         assert!(
-            page.contains("<span class=\"choice-meta\">No providers yet</span>"),
-            "a role that every choice shares is not shown, and the Providers are"
+            page.contains("<span class=\"choice-meta\"></span>"),
+            "a role that every choice shares is not shown, and neither is an empty provider list"
         );
         assert!(
-            page.contains("Connect to <bdi>Alpha</bdi></button>"),
-            "each choice brings a Connect button that names it"
+            page.contains("role=\"radiogroup\" aria-labelledby=\"decision-title\""),
+            "the choices are one labelled group"
         );
 
         let ticket = ticket(&page);
@@ -1256,8 +1256,8 @@ mod tests {
             .await
             .unwrap();
         let (page, _cookie) = picker(organization_callback(&app).await).await;
-        assert!(page.contains("<span class=\"choice-meta\">Member · "));
-        assert!(page.contains("<span class=\"choice-meta\">Owner · "));
+        assert!(page.contains("<span class=\"choice-meta\">Member</span>"));
+        assert!(page.contains("<span class=\"choice-meta\">Owner</span>"));
     }
 
     /// The choice is rechecked when it is submitted. A refused choice issues
@@ -1338,7 +1338,7 @@ mod tests {
         let (db, _temp) = database().await;
         let app = organization_state(&server.uri(), &db);
         let (page, cookie) = picker(organization_callback(&app).await).await;
-        assert!(page.contains("No workspace to choose</h2>"));
+        assert!(page.contains("No workspace to choose</span></h2>"));
         assert!(
             page.contains("<p class=\"account\"><span>Signed in as <bdi>"),
             "the account is named, since signing in with another may help"

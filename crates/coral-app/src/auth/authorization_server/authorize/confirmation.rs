@@ -214,7 +214,7 @@ pub(in crate::auth::authorization_server) enum ApprovalScope<'a> {
     Workspace,
     /// At the Organization MCP Endpoint the signed-in person also picks the
     /// Workspace, from `options` that trusted code rendered from escaped names:
-    /// each Workspace's card followed by its own Connect button.
+    /// one radio row per Workspace.
     /// `signed_in_as` names the account they signed in with, when the
     /// identity provider gave one.
     Choice {
@@ -268,29 +268,40 @@ pub(in crate::auth::authorization_server) fn response(
             "Choose a workspace",
             WORKSPACE_CHOICE_PATH,
             account(*signed_in_as),
-            (*options).to_owned(),
+            format!(
+                "\n        <div class=\"choices\" role=\"radiogroup\" \
+                 aria-labelledby=\"decision-title\">{options}\n        </div>"
+            ),
         ),
-        ApprovalScope::NoChoice {
-            signed_in_as,
-            coral_url,
-        } => (
+        ApprovalScope::NoChoice { signed_in_as, .. } => (
             "No workspace to choose",
             WORKSPACE_CHOICE_PATH,
             account(*signed_in_as),
-            no_choice(*coral_url),
+            NO_CHOICE.to_owned(),
         ),
     };
     let access_scope = match scope {
         ApprovalScope::Workspace => "this workspace",
         ApprovalScope::Choice { .. } | ApprovalScope::NoChoice { .. } => "the workspace you choose",
     };
-    // With nothing to connect, Cancel is the way back to the client, and the
-    // Connect button and its warning leave the page.
-    let no_choice = matches!(scope, ApprovalScope::NoChoice { .. });
-    let cancel_label = if no_choice {
-        format!("Back to <bdi>{}</bdi>", escape_html(client_name))
-    } else {
-        "Cancel".to_owned()
+    // With nothing to connect, Cancel is the way back to the client, and
+    // Coral takes Connect's place when its URL is known.
+    let (cancel_label, primary_action) = match scope {
+        ApprovalScope::NoChoice { coral_url, .. } => (
+            format!("Back to <bdi>{}</bdi>", escape_html(client_name)),
+            coral_url.map_or_else(String::new, |url| {
+                format!(
+                    "\n          <a class=\"connect\" href=\"{}\">Open Coral</a>",
+                    escape_html(url)
+                )
+            }),
+        ),
+        ApprovalScope::Workspace | ApprovalScope::Choice { .. } => (
+            "Cancel".to_owned(),
+            "\n          <button class=\"connect\" type=\"submit\" name=\"decision\" \
+             value=\"continue\">Connect</button>"
+                .to_owned(),
+        ),
     };
     // Resolution already validated the identity. A URL has a metadata host;
     // an opaque registration has no verified origin or branding to display.
@@ -325,7 +336,7 @@ pub(in crate::auth::authorization_server) fn response(
             "account" => account.clone(),
             "choices" => choices.clone(),
             "cancel_label" => cancel_label.clone(),
-            "connect_hidden" => if no_choice { " hidden" } else { "" }.to_owned(),
+            "primary_action" => primary_action.clone(),
             _ => return None,
         })
     })?;
@@ -333,18 +344,8 @@ pub(in crate::auth::authorization_server) fn response(
 }
 
 /// What a person with no Workspace reads in place of the choices.
-fn no_choice(coral_url: Option<&str>) -> String {
-    let link = coral_url.map_or_else(String::new, |url| {
-        format!(
-            "\n        <a class=\"connect\" href=\"{}\">Open Coral</a>",
-            escape_html(url)
-        )
-    });
-    format!(
-        "\n        <div class=\"empty\"><p>You are not a member of a workspace.</p>\
-         <p>Create a workspace in Coral. Then sign in again.</p></div>{link}"
-    )
-}
+const NO_CHOICE: &str = "\n        <div class=\"empty\"><p>You are not a member of a workspace.</p>\
+                         <p>Create a workspace in Coral. Then sign in again.</p></div>";
 
 /// Fills a trusted template's `@@slot@@`s, and its `styles`, in one pass.
 ///

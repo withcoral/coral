@@ -215,7 +215,7 @@ async fn provider_summaries(
                     .map(|provider| provider.display_name().to_owned())
                     .collect::<Vec<_>>();
                 names.sort_by_key(|name| name.to_lowercase());
-                *summary = Some(provider_summary(&names));
+                *summary = provider_summary(&names);
             }
             Err(_error) => {
                 tracing::warn!("Workspace choice could not list a Workspace's Providers");
@@ -226,10 +226,11 @@ async fn provider_summaries(
 }
 
 /// The first few Provider names, then how many more: "GitHub, Linear, Slack +2".
-fn provider_summary(names: &[String]) -> String {
+/// A Workspace without Providers shows nothing, so the ones with them stand out.
+fn provider_summary(names: &[String]) -> Option<String> {
     const SHOWN: usize = 3;
     if names.is_empty() {
-        return "No providers yet".to_owned();
+        return None;
     }
     let shown = names
         .iter()
@@ -237,10 +238,10 @@ fn provider_summary(names: &[String]) -> String {
         .map(String::as_str)
         .collect::<Vec<_>>()
         .join(", ");
-    match names.len().saturating_sub(SHOWN) {
+    Some(match names.len().saturating_sub(SHOWN) {
         0 => shown,
         rest => format!("{shown} +{rest}"),
-    }
+    })
 }
 
 fn picker_page(
@@ -269,9 +270,6 @@ fn picker_page(
     let roles_differ = choices
         .iter()
         .any(|choice| Some(choice.role()) != first_role);
-    // Each card is followed by its own Connect button, which the stylesheet
-    // shows only while that card is picked, so the button names the
-    // Workspace without a script.
     let mut options = String::new();
     for (choice, providers) in choices.iter().zip(providers) {
         let role = match choice.role() {
@@ -288,11 +286,9 @@ fn picker_page(
         let name = escape_html(choice.workspace().display_name().as_str());
         write!(
             options,
-            "\n        <label class=\"choice\"><input type=\"radio\" name=\"workspace\" \
+            "\n          <label class=\"choice\"><input type=\"radio\" name=\"workspace\" \
              value=\"{}\" required><span class=\"choice-text\"><span class=\"choice-name\">\
-             <bdi>{name}</bdi></span><span class=\"choice-meta\">{meta}</span></span></label>\
-             \n        <button class=\"connect connect-for\" type=\"submit\" name=\"decision\" \
-             value=\"continue\">Connect to <bdi>{name}</bdi></button>",
+             <bdi>{name}</bdi></span><span class=\"choice-meta\">{meta}</span></span></label>",
             choice.workspace().id(),
         )
         .ok()?;
@@ -331,16 +327,19 @@ mod tests {
     #[test]
     fn a_provider_summary_names_the_first_few_and_counts_the_rest() {
         for (names, summary) in [
-            (&[][..], "No providers yet"),
-            (&["GitHub"][..], "GitHub"),
-            (&["GitHub", "Linear", "Slack"][..], "GitHub, Linear, Slack"),
+            (&[][..], None),
+            (&["GitHub"][..], Some("GitHub")),
+            (
+                &["GitHub", "Linear", "Slack"][..],
+                Some("GitHub, Linear, Slack"),
+            ),
             (
                 &["GitHub", "Linear", "Slack", "Stripe", "Zendesk"][..],
-                "GitHub, Linear, Slack +2",
+                Some("GitHub, Linear, Slack +2"),
             ),
         ] {
             let names = names.iter().map(ToString::to_string).collect::<Vec<_>>();
-            assert_eq!(provider_summary(&names), summary);
+            assert_eq!(provider_summary(&names).as_deref(), summary);
         }
     }
 }

@@ -220,7 +220,7 @@ test('URL-only MCP client connects at /mcp, picks a workspace, and acts only the
         await page.locator(`button[value="${owner.subject}"]`).click()
         await page.getByRole('heading', { name: /^Connect .+ to Coral$/ }).waitFor()
         await page.getByRole('radio', { name: new RegExp(`^Picked ${suffix}`) }).check()
-        await page.getByRole('button', { name: `Connect to Picked ${suffix}`, exact: true }).click()
+        await page.getByRole('button', { name: 'Connect', exact: true }).click()
         await page.waitForURL(
           (url) => url.origin === callbackOrigin && url.pathname === '/fixture/callback',
         )

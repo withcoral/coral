@@ -125,16 +125,21 @@ h2 {
 }
 
 .intro p,
-.notice,
 .account {
   color: var(--muted);
 }
 
+/* One label style on both panes: "Claude Code can", "Requested by". */
+.section-title,
+dt {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
 .section-title {
   margin-bottom: 8px;
-  color: var(--muted);
-  font-size: 0.8125rem;
-  font-weight: 400;
 }
 
 .context {
@@ -241,78 +246,91 @@ h2 {
   border-top: 1px solid var(--border);
 }
 
+/* Two 20px lines: as tall as the buttons opposite, so the rows align. */
 dt {
-  color: var(--muted);
-  font-size: 0.75rem;
+  line-height: 20px;
+}
+
+dd {
+  line-height: 20px;
 }
 
 dd {
   unicode-bidi: isolate;
 }
 
+/* Monospace runs wide, so it steps down to match the sans text beside it. */
 .destination {
   font-family: "DM Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.92em;
   letter-spacing: 0;
 }
 
 /*
- * The decision wraps as one row of full-width items, then Cancel and the
- * Connect button. Source order keeps Cancel the first submit button, for a
- * safe implicit submission; `order` places it beside Connect.
+ * The decision mirrors the left pane: the account beside the icons, the title
+ * beside the heading, the choices beside what the app can do, and the buttons
+ * at the bottom beside the details.
  */
 .decision {
   display: flex;
-  flex-wrap: wrap;
-  align-content: flex-start;
-  gap: 12px;
+  flex-direction: column;
+  gap: 16px;
   padding: 40px;
 }
 
-.decision > * {
-  flex: 0 0 100%;
-  min-width: 0;
+.decision > .account {
+  margin-bottom: 12px;
 }
 
-/* With no choice to make, the short decision sits mid-pane. */
-.decision:not(:has(.choice, .empty)) {
-  align-content: center;
-}
-
+/*
+ * A section heading on the page heading's baseline. The h2 keeps the h1's size,
+ * so its line box and baseline match the h1's in any font; the smaller text
+ * sits on that baseline. The page has one title, on the left.
+ */
 .decision > h2 {
-  margin: 12px 0 4px;
+  font-size: 1.625rem;
 }
 
-.decision > .cancel {
+.decision > h2 > span {
+  font-size: 1rem;
+}
+
+/* Without an account line, the title still starts level with the heading. */
+.decision:not(:has(.account)) > h2 {
+  margin-top: 72px;
+}
+
+.choices {
+  display: grid;
+  gap: 8px;
+}
+
+/* The buttons sit at the bottom, level with the details opposite. */
+.actions {
+  display: flex;
+  gap: 12px;
+  margin-top: auto;
+  padding-top: 24px;
+}
+
+.decision .actions > button,
+.decision .actions > a {
+  height: 40px;
+  min-height: 0;
+  padding-block: 0;
+}
+
+.actions > .cancel {
   flex: 1 1 0;
-  order: 1;
-  margin-top: 20px;
 }
 
-.decision > .connect {
+.actions > .connect {
   flex: 2 1 0;
-  order: 2;
-  margin-top: 20px;
 }
 
 /* "Back to" names the client, so it gets as much room as Open Coral. */
-.decision:has(.empty) > .cancel {
+.decision:has(.empty) .cancel {
   flex-grow: 2;
-}
-
-.decision > .notice {
-  order: 3;
-  font-size: 0.75rem;
-  text-align: center;
-}
-
-/* Each Workspace brings its own Connect button; only the picked one shows. */
-.decision > .connect-for,
-.decision:has(.choice input:checked) > .connect-any {
-  display: none;
-}
-
-.decision > .choice:has(input:checked) + .connect-for {
-  display: block;
 }
 
 /* As tall as the icons opposite, so the two panes' first lines align. */
@@ -328,14 +346,15 @@ dd {
   font-weight: 500;
 }
 
+/* One line per Workspace, like a table row: its name, then its Providers. */
 .choice {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 14px;
-  padding: 14px 16px;
+  gap: 12px;
+  padding: 9px 14px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 10px;
   cursor: pointer;
 }
 
@@ -348,20 +367,28 @@ dd {
   background: color-mix(in srgb, var(--focus) 10%, transparent);
 }
 
+/* A long name wraps; the Providers give way first and end in an ellipsis. */
 .choice-text {
-  display: grid;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
   min-width: 0;
 }
 
 .choice-name {
-  font-size: 0.9375rem;
+  flex: 0 0 auto;
+  max-width: 60%;
   font-weight: 500;
+  overflow-wrap: anywhere;
 }
 
 .choice-meta {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   color: var(--muted);
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -369,8 +396,8 @@ dd {
 /* A drawn radio, so the picked card reads the same in every browser. */
 .choice input {
   appearance: none;
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
   margin: 0;
   border: 1.5px solid var(--muted);
   border-radius: 50%;
@@ -379,7 +406,7 @@ dd {
 
 .choice input:checked {
   border-color: var(--focus);
-  background: radial-gradient(circle, var(--focus) 0 4px, transparent 5px);
+  background: radial-gradient(circle, var(--focus) 0 3px, transparent 4px);
 }
 
 a {
@@ -437,7 +464,7 @@ a.connect {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 48px;
+  min-height: 40px;
   padding: 10px 14px;
   border-radius: 10px;
   background: var(--button);
@@ -467,10 +494,6 @@ button.cancel:hover {
   background: var(--secondary);
 }
 
-.decision button {
-  min-height: 48px;
-}
-
 @media (pointer: coarse) {
   button {
     min-height: 44px;
@@ -498,6 +521,19 @@ button.cancel:hover {
     padding: 0;
   }
 
+  .decision > h2 {
+    margin-top: 0;
+    font-size: 1rem;
+  }
+
+  .decision > .account {
+    margin-bottom: 0;
+  }
+
+  .actions {
+    padding-top: 8px;
+  }
+
   .abilities {
     order: 2;
   }
@@ -522,17 +558,11 @@ button.cancel:hover {
   }
 
   /* Stack the buttons with Connect above Cancel. */
-  .decision > .cancel,
-  .decision > .connect {
-    flex-basis: 100%;
+  .actions {
+    flex-direction: column-reverse;
   }
 
-  .decision > .cancel {
-    order: 2;
-    margin-top: 0;
-  }
-
-  .decision > .connect {
-    order: 1;
+  .decision .actions > * {
+    flex: none;
   }
 }
