@@ -21,7 +21,7 @@ const help = `Usage: ./dev setup              Interactive WorkOS + Tailscale set
        ./dev coral              Run just the backend (rebuilds Rust first)
        ./dev reef               Run just the UI (hot reload)
        ./dev doctor             Check prerequisites, proxy mappings and readiness
-       ./dev proxy [--sudo]     Add missing Serve mappings; preserve existing Serve/Funnel
+       ./dev proxy [--sudo]     Add missing Serve mappings and replace the earlier per-port layout
        ./dev test               Test the development tools without live services
 
 Configuration and disposable data live in this checkout's ignored .dev/.
@@ -105,40 +105,49 @@ function planFor(config) {
 
 function verifyProxy(config) {
   const plan = planFor(config)
-  if (plan.some((mapping) => !mapping.existing))
+  if (plan.some((mapping) => mapping.state !== 'ready'))
     throw new Error(
-      'Tailscale HTTPS mappings are missing. Run ./dev proxy (or ./dev proxy --sudo).',
+      'Tailscale HTTPS mappings are missing or use the earlier per-port layout. Run ./dev proxy (or ./dev proxy --sudo).',
     )
-  const publicMappings = plan.filter((mapping) => mapping.funnel)
-  if (publicMappings.length)
+  for (const { authority, surface, funnel } of plan) {
+    if (!funnel) continue
     console.warn(
-      `Warning: existing Funnel mappings are public: ${publicMappings.map((mapping) => mapping.authority).join(', ')}. Reef's Vite server exposes development source, not just authenticated pages.`,
+      surface === 'Reef'
+        ? `Warning: Reef is public through Funnel at ${authority}. Vite serves development source, not just authenticated pages.`
+        : `Note: ${surface} are public through Funnel at ${authority}.`,
     )
+  }
 }
 
 function applyProxy(config, sudo) {
   const plan = planFor(config) // Validate ALL ports before changing any mapping.
-  for (const { existing, args } of plan) {
-    if (existing) continue
-    console.log(`Configuring: tailscale ${args.join(' ')}`)
-    const result = spawnSync(sudo ? 'sudo' : 'tailscale', sudo ? ['tailscale', ...args] : args, {
-      stdio: 'inherit',
-    })
-    if (result.status !== 0)
-      throw new Error(
-        'Tailscale Serve did not complete. Follow any HTTPS-enablement link it printed, or retry ./dev proxy --sudo if permission was denied.',
-      )
+  for (const { commands } of plan) {
+    for (const args of commands) {
+      console.log(`Configuring: tailscale ${args.join(' ')}`)
+      const result = spawnSync(sudo ? 'sudo' : 'tailscale', sudo ? ['tailscale', ...args] : args, {
+        stdio: 'inherit',
+      })
+      if (result.status !== 0)
+        throw new Error(
+          'Tailscale Serve did not complete. Follow any HTTPS-enablement link it printed, or retry ./dev proxy --sudo if permission was denied.',
+        )
+    }
   }
   verifyProxy(config)
   console.log(
-    'HTTPS mappings are ready. New mappings are tailnet-only; existing visibility was preserved.',
+    'HTTPS mappings are ready. New ports and replaced mappings are tailnet-only; other ports keep their visibility.',
   )
+  if (plan.some((mapping) => mapping.state === 'legacy' && mapping.funnel))
+    console.log(
+      'A replaced mapping used Funnel. To make Coral auth and MCP public again, see "Optional public access with Funnel" in docs/development.md.',
+    )
 }
 
 function healthUrls(config, names) {
   const selected = []
+  // Auth and MCP share one origin, where /readyz reaches MCP; check auth directly.
   if (names.includes('coral'))
-    selected.push(`${config.urls.auth}/readyz`, `${config.urls.mcp}/readyz`)
+    selected.push(`http://127.0.0.1:${ports.auth}/readyz`, `${config.urls.mcp}/readyz`)
   if (names.includes('reef')) selected.push(`${config.urls.web}/readyz`)
   return selected
 }
@@ -246,7 +255,7 @@ async function main(args) {
   if (command === '_urls' && !options.length) {
     const publicUrls = urls(hostname())
     console.log(
-      `Web: ${publicUrls.web}\nCoral auth: ${publicUrls.auth}\nMCP: ${publicUrls.mcp}\nWorkOS Connect callback: ${publicUrls.auth}/auth/oidc/callback`,
+      `Web: ${publicUrls.web}\nCoral auth: ${publicUrls.auth}\nMCP: ${publicUrls.mcp}/mcp\nWorkOS Connect callback: ${publicUrls.auth}/auth/oidc/callback`,
     )
     return
   }

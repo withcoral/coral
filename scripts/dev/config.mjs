@@ -145,7 +145,7 @@ export function readInputs(root) {
 
 export function urls(host) {
   validateField('TAILNET_HOST', host)
-  return { web: `https://${host}`, auth: `https://${host}:8443`, mcp: `https://${host}:10000` }
+  return { web: `https://${host}:8443`, auth: `https://${host}`, mcp: `https://${host}` }
 }
 
 export function configure(root) {
@@ -244,47 +244,87 @@ export function load(root) {
     throw new Error('Development settings changed; run ./dev setup again')
   }
   privateRead(join(root, '.dev/state/config.toml'))
-  return {
-    input,
-    webEnv: parseEnv(privateRead(join(root, '.dev/web.env')).toString()),
-    urls: urls(input.TAILNET_HOST),
-  }
+  const webEnv = parseEnv(privateRead(join(root, '.dev/web.env')).toString())
+  const publicUrls = urls(input.TAILNET_HOST)
+  if (webEnv.CORAL_WEB_PUBLIC_URL !== publicUrls.web)
+    throw new Error('Development URLs changed; run ./dev setup again')
+  return { input, webEnv, urls: publicUrls }
+}
+
+const loopback = (port, path = '') => `http://127.0.0.1:${port}${path}`
+// Claude's hosted connectors do not reach Funnel's ports 8443 and 10000, so the
+// authorization server and MCP share 443, split by path. Reef keeps its own origin:
+// its /workspaces/… pages overlap MCP's routes.
+const authPaths = ['/.well-known/oauth-authorization-server', '/oauth', '/auth/oidc']
+const layout = {
+  443: {
+    surface: 'Coral auth and MCP',
+    handlers: {
+      '/': loopback(ports.mcp),
+      ...Object.fromEntries(authPaths.map((path) => [path, loopback(ports.auth, path)])),
+    },
+  },
+  8443: { surface: 'Reef', handlers: { '/': loopback(ports.web) } },
+}
+// Earlier setups served one surface per port. Only these exact mappings are replaced.
+const legacy = { 443: loopback(ports.web), 8443: loopback(ports.auth), 10000: loopback(ports.mcp) }
+
+function addArgs(verb, port, path, proxy) {
+  return [verb, '--bg', `--https=${port}`, ...(path === '/' ? [] : [`--set-path=${path}`]), proxy]
 }
 
 export function proxyPlan(host, status = {}) {
   validateField('TAILNET_HOST', host)
-  return [
-    [443, ports.web],
-    [8443, ports.auth],
-    [10000, ports.mcp],
-  ].map(([port, target]) => {
+  const plan = []
+  for (const port of [443, 8443, 10000]) {
     const authority = `${host}:${port}`
-    const proxy = `http://127.0.0.1:${target}`
     const tcp = status.TCP?.[port]
     const web = status.Web?.[authority]
+    const funnel = Boolean(status.AllowFunnel?.[authority])
+    const handlers = Object.entries(web?.Handlers ?? {})
+    const isLegacy = handlers.length === 1 && web.Handlers['/']?.Proxy === legacy[port]
+    const wanted = layout[port]
+    if (!wanted && !isLegacy) continue
     const otherHost = Object.keys(status.Web ?? {}).some(
       (key) => key.endsWith(`:${port}`) && key !== authority,
     )
+    const ours = handlers.every(
+      ([path, handler]) =>
+        Object.keys(handler).length === 1 && wanted?.handlers[path] === handler.Proxy,
+    )
     if (
-      (status.AllowFunnel?.[authority] && !web) ||
+      (funnel && !web) ||
       otherHost ||
       (tcp && (tcp.HTTPS !== true || Object.keys(tcp).length !== 1)) ||
-      (web &&
-        (Object.keys(web.Handlers ?? {}).length !== 1 || web.Handlers?.['/']?.Proxy !== proxy)) ||
+      (web && !isLegacy && !ours) ||
       Boolean(tcp) !== Boolean(web)
     ) {
       throw new Error(
         `Tailscale port ${port} has conflicting or incomplete configuration; it was not overwritten`,
       )
     }
-    return {
+    // `tailscale serve` turns Funnel off for the whole port, so a public port
+    // gains its missing paths through `tailscale funnel`. Replacing a legacy
+    // port changes the surface behind it, so it always comes back private.
+    const add = (verb, entries) => entries.map(([path, proxy]) => addArgs(verb, port, path, proxy))
+    const commands = isLegacy
+      ? [
+          ['serve', `--https=${port}`, 'off'],
+          ...add('serve', Object.entries(wanted?.handlers ?? {})),
+        ]
+      : add(
+          funnel ? 'funnel' : 'serve',
+          Object.entries(wanted.handlers).filter(([path]) => !web?.Handlers?.[path]),
+        )
+    plan.push({
       authority,
-      proxy,
-      existing: Boolean(web),
-      funnel: Boolean(status.AllowFunnel?.[authority]),
-      args: ['serve', '--bg', `--https=${port}`, proxy],
-    }
-  })
+      surface: wanted?.surface,
+      state: isLegacy ? 'legacy' : commands.length ? 'missing' : 'ready',
+      funnel,
+      commands,
+    })
+  }
+  return plan
 }
 
 export function shellQuote(value) {

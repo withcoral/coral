@@ -53,16 +53,22 @@ The same private ports are used on every developer's own machine:
 
 | Surface | Loopback address | Tailnet HTTPS |
 | --- | --- | --- |
-| Reef | `127.0.0.1:5173` | `https://<machine>.<tailnet>.ts.net` |
-| Coral auth | `127.0.0.1:9080` | same hostname, port `8443` |
-| Coral MCP | `127.0.0.1:14556` | same hostname, port `10000` |
+| Coral MCP | `127.0.0.1:14556` | `https://<machine>.<tailnet>.ts.net/mcp` |
+| Coral auth | `127.0.0.1:9080` | same origin: `/.well-known/oauth-authorization-server`, `/oauth/…`, `/auth/oidc/…` |
+| Reef | `127.0.0.1:5173` | same hostname, port `8443` |
 | Private gRPC | `127.0.0.1:14555` | not exposed |
+
+Hosted MCP clients such as Claude connect from their provider's servers, and
+Claude does not reach Funnel's other ports, 8443 and 10000. Coral auth and MCP
+therefore share the 443 origin, and
+Tailscale Serve routes each path to its listener. Reef needs its own origin,
+because its `/workspaces/…` pages overlap MCP's routes.
 
 There can be one running stack on these ports per machine. The runner refuses
 occupied ports rather than killing processes. Setup reuses matching Serve or
 Funnel mappings without changing their visibility, but refuses to replace another
-service, path handler, or incomplete configuration. Missing mappings are always
-created with private Serve. Run/proxy/doctor warn when existing mappings use Funnel.
+service, an unexpected path handler, or incomplete configuration. Missing ports are
+always created with private Serve. Run/proxy/doctor warn when existing mappings use Funnel.
 Tailnet access controls should normally restrict the development server to trusted
 contributors: Vite serves development source code, not just authenticated pages.
 
@@ -73,24 +79,42 @@ exposed port. Coral's authentication still applies to protected application rout
 but it does not protect Vite's development source. Only enable public access when
 you accept that exposure; expose only the surfaces external clients need.
 
-To explicitly make all three surfaces public:
+A hosted MCP client such as Claude needs Coral auth and MCP to be public. Run
+`./dev proxy` first, then make port 443 public:
 
 ```bash
-tailscale funnel --bg --https=443 http://127.0.0.1:5173
-tailscale funnel --bg --https=8443 http://127.0.0.1:9080
-tailscale funnel --bg --https=10000 http://127.0.0.1:14556
+tailscale funnel --bg --https=443 http://127.0.0.1:14556
+```
+
+Funnel applies to the whole port, so this one command makes every path on 443
+public. Reef stays tailnet-only. To make Reef public as well:
+
+```bash
+tailscale funnel --bg --https=8443 http://127.0.0.1:5173
 ```
 
 Follow any Tailscale enablement prompts. These public ports are supported by Funnel;
-the backend loopback ports do not change. `./dev proxy` never enables or disables
-Funnel itself. Check visibility with `tailscale funnel status` and test public
+the backend loopback ports do not change. `./dev proxy` never enables Funnel
+itself. Running `tailscale serve` against a public port turns its Funnel off.
+Check visibility with `tailscale funnel status` and test public
 reachability from a device disconnected from Tailscale. Never expose private gRPC.
 
-If upgrading an older setup that used MCP HTTPS port `8444`, run `./dev setup` to
-regenerate the advertised URL and create the `10000` mapping, then restart Coral
-and update MCP clients to the new URL. After verifying it, remove only your old
-`8444` mapping using `tailscale serve --bg --https=8444 off` (or `tailscale funnel`
-with the same flags if it used Funnel). Do not reset all Tailscale mappings.
+### Upgrading from the per-port layout
+
+Earlier setups served Reef on 443, auth on 8443 and MCP on 10000. To move to the
+current layout:
+
+1. Add `https://<machine>.<tailnet>.ts.net/auth/oidc/callback` as a redirect URI
+   on your WorkOS Connect application. Keep the old one until you have verified
+   the new layout.
+2. Run `./dev setup` again. It regenerates the advertised URLs and replaces
+   exactly the mappings the earlier setup created. Replaced mappings come back
+   tailnet-only, even if they used Funnel. Re-enable Funnel as above if you need it.
+3. Restart Coral and Reef. Open Reef at its new address on port `8443`, and
+   reconnect MCP clients at `https://<machine>.<tailnet>.ts.net/mcp`.
+
+`./dev run` refuses to start until the URLs and mappings match the current
+layout. Setup never replaces a mapping that differs from the earlier layout.
 
 ## Run
 
