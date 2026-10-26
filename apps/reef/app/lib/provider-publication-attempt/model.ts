@@ -39,8 +39,6 @@ type UpdateChoices = {
   kind: 'update'
   /** Presentation only; every task uses the same atomic publication. */
   task?: UpdateTask
-  access?: boolean
-  review?: boolean
   etag: string
   allowIncompatibleConfiguration: boolean
   account?: AccountChoice
@@ -156,9 +154,6 @@ export function parseAttempt(
     case 'update': {
       const task = scalar('task', 'refresh')
       if (!['refresh', 'configuration', 'accounts'].includes(task)) throw new InvalidAttempt()
-      const review = scalar('review')
-      const access = scalar('access')
-      if ((review && review !== '1') || (access && access !== '1')) throw new InvalidAttempt()
       const consent = scalar('allowIncompatibleConfiguration', 'no')
       if (consent !== 'yes' && consent !== 'no') throw new InvalidAttempt()
       const version = scalar('etag', state.state === 'draft' ? etag : '')
@@ -168,8 +163,6 @@ export function parseAttempt(
         kind,
         etag: version,
         task: task as UpdateTask,
-        access: access === '1',
-        review: review === '1',
         allowIncompatibleConfiguration: consent === 'yes',
         ...(account ? { account } : {}),
         ...(accountGrant ? { accountGrant } : {}),
@@ -200,8 +193,6 @@ export function attemptParams(attempt: PublicationAttempt): URLSearchParams {
       break
     case 'update':
       if (attempt.task) params.set('task', attempt.task)
-      if (attempt.review) params.set('review', '1')
-      if (attempt.access) params.set('access', '1')
       if (attempt.account) params.set('account', attempt.account)
       if (attempt.accountGrant) params.set('accountGrant', attempt.accountGrant)
       params.set('etag', attempt.etag)
@@ -269,8 +260,6 @@ export function reviseAttempt(
         kind: attempt.kind,
         etag: attempt.etag,
         task: attempt.task,
-        access: edit ? false : attempt.access,
-        review: edit ? false : attempt.review,
         ...(attempt.account ? { account: attempt.account } : {}),
         ...(!edit && attempt.accountGrant ? { accountGrant: attempt.accountGrant } : {}),
         allowIncompatibleConfiguration: false,
@@ -338,22 +327,34 @@ export function automaticApplicationAllowed(
 }
 
 /**
- * Whether an OAuth sign-in cannot start for want of an application: configuration
- * chose none and Coral cannot set one up. A sign-in already started has its
- * application.
+ * Whether Coral says nothing can be connected now for a confirmed configuration
+ * that takes a credential: most often because it names no OAuth application
+ * and Coral cannot set one up.
  */
 export function needsOAuthApplication(setup: SetupView) {
-  return (
-    !setup.authorization &&
-    isOAuthMethod(setup.credentialMethod) &&
-    !setup.configuration?.application &&
-    !automaticApplicationAllowed(setup)
-  )
+  return setup.allowedRoutes.length > 0 && !isCredentialFree(setup) && !setup.connectAvailable
 }
 
-/** Whether the confirmed configuration takes no credential, so nobody signs in. */
-function isCredentialFree(setup: SetupView) {
-  return setup.credentialMethod === 'none' && setup.configuration?.confirmed === true
+/** Whether Coral says the confirmed configuration takes no credential, so nobody signs in. */
+export function isCredentialFree(setup: Pick<SetupView, 'allowedRoutes'>) {
+  return setup.allowedRoutes.includes('none')
+}
+
+/** The account an attempt has settled, or null while the account question is still open. */
+function settledAccount(
+  attempt: PublicationAttempt,
+  setup: SetupView | null,
+  frozen: boolean,
+  credentialFree: boolean,
+) {
+  if (attempt.kind === 'update') return null
+  if (frozen) return attempt.account
+  if (credentialFree) return 'none'
+  if (!attempt.account || attempt.account === 'none') return null
+  // A shared account, and an individual one Coral says cannot connect later,
+  // are settled only by a sign-in in hand.
+  if (attempt.account === 'caller' && setup?.connectLaterAvailable !== false) return attempt.account
+  return setup?.authorized && attempt.accountGrant ? attempt.account : null
 }
 
 /** One presentation decision from Coral progress plus explicit local choices. No lifecycle validation. */
@@ -365,23 +366,11 @@ export function attemptProgress(
   const frozen = attempt.state === 'frozen'
   const replaying = frozen && setup?.state === 'consumed'
   const credentialFree = Boolean(setup && isCredentialFree(setup))
-  const account =
-    attempt.kind === 'update'
-      ? null
-      : frozen
-        ? attempt.account
-        : credentialFree
-          ? 'none'
-          : attempt.account === 'none'
-            ? null
-            : attempt.account !== 'fixed' || (setup?.authorized && attempt.accountGrant)
-              ? attempt.account
-              : null
+  const account = settledAccount(attempt, setup, frozen, credentialFree)
   // A configuration confirmed without an OAuth application has nothing to sign
-  // in with. Coral's createProvider now refuses one, but an older Coral server
-  // can still confirm it. Only Configuration asks for an application.
-  const needsApplication =
-    !frozen && setup?.configuration?.confirmed === true && needsOAuthApplication(setup)
+  // in with. Coral's addProvider now refuses one, but an older Coral server's
+  // createProvider can still confirm it. Only Configuration asks for an application.
+  const needsApplication = !frozen && Boolean(setup && needsOAuthApplication(setup))
   // Why this Setup can go no further. A replay still reaches its publication.
   const ended: AttemptEnd | null =
     setup && !replaying && ATTEMPT_ENDS.includes(setup.state as AttemptEnd)
@@ -462,7 +451,7 @@ export function accountStep(
       : route === 'caller'
         ? held
           ? 'own-keep'
-          : returning || !attempt.account
+          : returning || !attempt.account || !setup.connectLaterAvailable
             ? 'own-connect'
             : 'own-later'
         : held
@@ -485,7 +474,7 @@ export function savesDirectly(setup: SetupView, currentAccount: AccountChoice) {
     setup.configuration?.interruptsAccess === false &&
     !setup.authorized &&
     !setup.authorization &&
-    (setup.credentialMethod === 'none') === (currentAccount === 'none')
+    setup.allowedRoutes.includes(currentAccount)
   )
 }
 

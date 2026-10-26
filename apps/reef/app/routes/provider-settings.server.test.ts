@@ -131,7 +131,7 @@ it('does not read the source of the built-in provider', async () => {
     provider({
       displayName: 'Coral',
       namespace: '',
-      callRoot: 'coral.workspace',
+      builtin: true,
       credentialRoute: { kind: CredentialRoute_Kind.NONE },
     })
   signedInAs('owner')

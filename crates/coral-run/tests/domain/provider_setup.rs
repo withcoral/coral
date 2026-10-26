@@ -1,7 +1,8 @@
-//! `coral.workspace.createProvider` prepares and configures a Provider Setup. Coral
+//! `coral.workspace.addProvider` prepares and configures a Provider Setup. Coral
 //! publishes it when nobody needs to sign in; otherwise the call returns the
 //! Reef page where a person finishes it. The call never waits for that person.
 //! `coral.workspace.listProviders` lists the Providers a Program can check first.
+//! `coral.workspace.getProvider` reads one Provider's Provider Configuration.
 use super::*;
 use coral_provider::{ProviderSetupId, ProviderSetupState};
 
@@ -9,14 +10,14 @@ const DOCUMENT: &str = r#"{"openapi":"3.1.0","info":{"title":"Weather","version"
 /// The same service behind a bearer token, which a person enters.
 const PRIVATE_DOCUMENT: &str = r#"{"openapi":"3.1.0","info":{"title":"Weather","version":"1"},"security":[{"bearer":[]}],"components":{"securitySchemes":{"bearer":{"type":"http","scheme":"bearer"}}},"servers":[{"url":"https://weather.example"}],"paths":{"/forecast":{"get":{"operationId":"getForecast","responses":{"200":{"description":"OK"}}}}}}"#;
 
-/// A Program that calls `createProvider` with exactly `arguments` and returns
+/// A Program that calls `addProvider` with exactly `arguments` and returns
 /// its Operation Result, or the JavaScript expression `caught` for the Coral
 /// Failure it catches, such as `error.code`.
-fn create_provider(arguments: &serde_json::Value, caught: &str) -> RunSubmission {
+fn add_provider(arguments: &serde_json::Value, caught: &str) -> RunSubmission {
     submission(
         &"
         try {
-            return await coral.workspace.createProvider(ARGUMENTS);
+            return await coral.workspace.addProvider(ARGUMENTS);
         } catch (error) {
             if (!(error instanceof coral.OperationError)) throw error;
             return CAUGHT;
@@ -27,7 +28,7 @@ fn create_provider(arguments: &serde_json::Value, caught: &str) -> RunSubmission
     )
 }
 
-/// Arguments that `createProvider` accepts for a source that needs no
+/// Arguments that `addProvider` accepts for a source that needs no
 /// credential, with `extra` replacing or adding fields.
 fn valid_with(extra: serde_json::Value) -> serde_json::Value {
     let mut arguments = serde_json::json!({
@@ -115,7 +116,7 @@ impl AdminScope {
             &mut transaction,
             &self.workspace_id,
             coral_provider::InvocationCaller::new(&self.fixture.workspaces, &self.owner, 12),
-            "coral.workspace.createProvider",
+            "coral.workspace.addProvider",
         )
         .await
         .unwrap()
@@ -133,7 +134,7 @@ impl AdminScope {
                 state,
             )
             .await
-            .expect("set createProvider access");
+            .expect("set addProvider access");
     }
 
     async fn start(&self, actor: &AuthenticatedPrincipal, run: RunSubmission) -> crate::RunId {
@@ -154,13 +155,13 @@ impl AdminScope {
         wait_for_terminal(&self.fixture.runs, actor, &self.workspace_id, run).await
     }
 
-    /// The Owner approves the Run's one pending Invocation.
-    async fn approve(&self, run: &crate::RunId) {
+    /// `actor`, who started the Run, approves its one pending Invocation.
+    async fn approve(&self, actor: &AuthenticatedPrincipal, run: &crate::RunId) {
         let approvals = self.fixture.approvals();
-        let request = wait_for_approval(&approvals, &self.owner, &self.workspace_id, run).await;
+        let request = wait_for_approval(&approvals, actor, &self.workspace_id, run).await;
         approvals
             .decide(
-                &self.owner,
+                actor,
                 &self.workspace_id,
                 &request.id,
                 crate::approval::ApprovalDecision::Approve,
@@ -168,7 +169,7 @@ impl AdminScope {
                 &TraceId::parse(&"d".repeat(32)).unwrap(),
             )
             .await
-            .expect("approve createProvider");
+            .expect("approve addProvider");
     }
 
     /// Provider-domain lifecycle events: Setups, Publications and Providers.
@@ -350,21 +351,21 @@ fn final_value(update: &crate::RunUpdate) -> serde_json::Value {
     value.as_json().clone()
 }
 
-// Catches: createProvider waiting on the person who finishes its Setup, or
+// Catches: addProvider waiting on the person who finishes its Setup, or
 // returning anything but the Reef page for that Setup.
 #[tokio::test]
-async fn create_provider_returns_the_reef_page_that_finishes_its_setup() {
+async fn add_provider_returns_the_reef_page_that_finishes_its_setup() {
     for access in [
         OperationAccessState::ApprovalRequired,
         OperationAccessState::Enabled,
     ] {
-        let scope = AdminScope::new("user:create-provider").await;
+        let scope = AdminScope::new("user:add-provider").await;
         scope.set_access(access).await;
         let server = private_document_server().await;
         let source = url_source(&server);
         let before = scope.created_setups().await;
         let run = scope
-            .start(&scope.owner, create_provider(&serde_json::json!({ "namespace": "weather", "source": source, "credentialRoute": "fixed" }), "error.code"))
+            .start(&scope.owner, add_provider(&serde_json::json!({ "namespace": "weather", "source": source, "credentialRoute": "fixed" }), "error.code"))
             .await;
         if access == OperationAccessState::ApprovalRequired {
             wait_for_approval(
@@ -379,7 +380,7 @@ async fn create_provider_returns_the_reef_page_that_finishes_its_setup() {
                 scope.setups_created_since(&before).await.is_empty(),
                 "no Setup before approval"
             );
-            scope.approve(&run).await;
+            scope.approve(&scope.owner, &run).await;
         }
         let terminal = scope.terminal(&scope.owner, &run).await;
         assert_eq!(terminal.state(), RunState::Succeeded, "{access:?}");
@@ -401,11 +402,13 @@ async fn create_provider_returns_the_reef_page_that_finishes_its_setup() {
             "{access:?}"
         );
         // A Program can find the Setup again while a person finishes it.
-        let listed = scope.start(&scope.owner, list_providers("{}")).await;
+        let listed = scope
+            .start(&scope.owner, workspace_call("listProviders", "{}"))
+            .await;
         assert_eq!(
             final_value(&scope.terminal(&scope.owner, &listed).await).pointer("/data/setups"),
             Some(&serde_json::json!([{
-                "namespace": "weather",
+                "callRoot": "coral.providers.weather",
                 "credentialRoute": "fixed",
                 "state": "ready",
                 "url": url,
@@ -438,7 +441,7 @@ async fn coral_publishes_a_provider_that_needs_nobody_to_sign_in() {
     let run = scope
         .start(
             &scope.owner,
-            create_provider(
+            add_provider(
                 &serde_json::json!({
                     "namespace": "weather",
                     "source": document_source(),
@@ -561,7 +564,7 @@ async fn a_failed_publication_is_a_failure_the_program_catches() {
         let run = scope
             .start(
                 &scope.owner,
-                create_provider(
+                add_provider(
                     &serde_json::json!({
                         "namespace": "weather",
                         "source": document_source(),
@@ -598,7 +601,7 @@ async fn a_configuration_the_source_cannot_take_leaves_no_setup_open() {
     let run = scope
         .start(
             &scope.owner,
-            create_provider(
+            add_provider(
                 &serde_json::json!({
                     "namespace": "weather",
                     "source": { "kind": "openapi_document", "document": PRIVATE_DOCUMENT },
@@ -649,7 +652,7 @@ async fn a_source_that_fails_to_answer_is_not_the_programs_input_to_correct() {
         let run = scope
             .start(
                 &scope.owner,
-                create_provider(
+                add_provider(
                     &serde_json::json!({
                         "namespace": "weather",
                         "source": { "kind": "openapi_url", "url": url },
@@ -709,7 +712,7 @@ async fn a_namespace_in_use_fails_before_any_fetch_or_setup() {
     let run = scope
         .start(
             &scope.owner,
-            create_provider(
+            add_provider(
                 &serde_json::json!({
                     "namespace": "weather",
                     "source": url_source(&server),
@@ -769,7 +772,7 @@ async fn a_namespace_taken_while_coral_publishes_is_a_conflict() {
     let run = scope
         .start(
             &scope.owner,
-            create_provider(
+            add_provider(
                 &serde_json::json!({
                     "namespace": "weather",
                     "source": document_source(),
@@ -785,7 +788,7 @@ async fn a_namespace_taken_while_coral_publishes_is_a_conflict() {
     );
 }
 
-/// Ends the Run just after createProvider prepares its Setup.
+/// Ends the Run just after addProvider prepares its Setup.
 struct RunEndsAfterSetup {
     clock: Arc<TestClock>,
 }
@@ -819,7 +822,7 @@ async fn a_run_ends_before_the_call_returns(route: &str, document: &str) {
     let run = scope
         .start(
             &scope.owner,
-            create_provider(
+            add_provider(
                 &serde_json::json!({
                     "namespace": "weather",
                     "source": { "kind": "openapi_document", "document": document },
@@ -895,7 +898,7 @@ impl coral_provider::WorkspaceProviderPublisher for StallingPublisher {
     }
 }
 
-// Catches: a worker lost while Coral publishes leaving createProvider
+// Catches: a worker lost while Coral publishes leaving addProvider
 // indeterminate, when Coral's own Publication shows what happened, or a
 // Provider deleted since then failing the Run's termination.
 #[tokio::test]
@@ -921,7 +924,7 @@ async fn recovery_settles_a_lost_publication_from_its_publication() {
         let run = scope
             .start(
                 &scope.owner,
-                create_provider(
+                add_provider(
                     &serde_json::json!({
                         "namespace": "weather",
                         "source": document_source(),
@@ -1011,9 +1014,9 @@ async fn invalid_input_fails_before_storage_approval_fetch_or_setup() {
         // A method that takes no settings takes no credential beside it.
         authenticated(serde_json::json!({ "method": "bearer", "token": "secret" })),
     ] {
-        // createProvider waits for approval by default; input it can judge alone never does.
+        // addProvider waits for approval by default; input it can judge alone never does.
         let run = scope
-            .start(&scope.owner, create_provider(&arguments, "error.code"))
+            .start(&scope.owner, add_provider(&arguments, "error.code"))
             .await;
         assert_final_code(&scope.terminal(&scope.owner, &run).await, "invalid_input");
         assert!(
@@ -1163,7 +1166,7 @@ async fn the_program_configures_how_a_person_signs_in() {
             .unwrap()
             .extend(choices.as_object().unwrap().clone());
         let run = scope
-            .start(&scope.owner, create_provider(&arguments, "error.code"))
+            .start(&scope.owner, add_provider(&arguments, "error.code"))
             .await;
         let value = final_value(&scope.terminal(&scope.owner, &run).await);
         if !needs_sign_in {
@@ -1225,6 +1228,234 @@ async fn the_program_configures_how_a_person_signs_in() {
             other => panic!("unexpected method {other:?}"),
         }
     }
+}
+
+/// Serves the credential-free Weather document, but holds each response until
+/// released, so a test can change the Workspace while Coral fetches it.
+struct HeldDocument {
+    entered: Arc<tokio::sync::Notify>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl wiremock::Respond for HeldDocument {
+    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+        self.entered.notify_one();
+        // The mock server answers on its own thread, so this blocks only it.
+        let _released = self.release.lock().unwrap().recv();
+        ResponseTemplate::new(200).set_body_string(DOCUMENT)
+    }
+}
+
+// Catches: an Owner demoted after approving their own addProvider, while Coral
+// fetches the source, still preparing a Setup, or the lost authority reaching
+// the Program as anything but a failure it catches.
+#[tokio::test]
+async fn an_owner_demoted_while_coral_performs_the_call_loses_it() {
+    let scope = AdminScope::new("user:demoting-owner").await;
+    scope
+        .set_access(OperationAccessState::ApprovalRequired)
+        .await;
+    let demoted = scope
+        .fixture
+        .workspace_user(
+            &scope.workspace_id,
+            &scope.owner_user(),
+            "user:demoted-owner",
+            WorkspaceRole::Owner,
+        )
+        .await;
+    let actor = AuthenticatedPrincipal::user(demoted.clone());
+    let server = MockServer::start().await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let (release, released) = mpsc::channel();
+    Mock::given(method("GET"))
+        .and(path("/openapi.json"))
+        .respond_with(HeldDocument {
+            entered: entered.clone(),
+            release: Mutex::new(released),
+        })
+        .mount(&server)
+        .await;
+    let before = scope.lifecycle_events().await;
+    let run = scope
+        .start(
+            &actor,
+            add_provider(
+                &valid_with(serde_json::json!({ "source": {
+                    "kind": "openapi_url",
+                    "url": format!("{}/openapi.json", server.uri()),
+                } })),
+                "error.code",
+            ),
+        )
+        .await;
+    scope.approve(&actor, &run).await;
+    entered.notified().await;
+    scope
+        .fixture
+        .workspaces
+        .set_membership(
+            &change(scope.owner_user(), 30, '6'),
+            &scope.workspace_id,
+            &demoted,
+            WorkspaceRole::Member,
+        )
+        .await
+        .unwrap();
+    release.send(()).unwrap();
+
+    assert_final_code(
+        &scope.terminal(&actor, &run).await,
+        "dispatch_authority_lost",
+    );
+    scope
+        .assert_denial_changed_nothing(&before, "demoted while Coral fetched")
+        .await;
+}
+
+/// An MCP server at `/mcp` that answers every request with `challenge`, and
+/// the protected-resource and authorization-server metadata a sign-in reads.
+/// The resource metadata names `resource` as the server's identity; with no
+/// `resource`, the server publishes none.
+async fn protected_mcp_server(challenge: &str, resource: Option<&str>) -> MockServer {
+    let server = MockServer::start().await;
+    let uri = server.uri();
+    let challenge = challenge.replace("{uri}", &uri);
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(
+            ResponseTemplate::new(401).insert_header("www-authenticate", challenge.as_str()),
+        )
+        .mount(&server)
+        .await;
+    if let Some(resource) = resource {
+        Mock::given(method("GET"))
+            .and(path("/.well-known/oauth-protected-resource/mcp"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "resource": resource.replace("{uri}", &uri),
+                "authorization_servers": [uri],
+            })))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-authorization-server"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issuer": uri,
+            "authorization_endpoint": format!("{uri}/authorize"),
+            "token_endpoint": format!("{uri}/token"),
+            "registration_endpoint": format!("{uri}/register"),
+            "code_challenge_methods_supported": ["S256"],
+        })))
+        .mount(&server)
+        .await;
+    server
+}
+
+// Catches: an OAuth-protected MCP server that Coral publishes unread, or
+// whose sign-in Coral cannot discover reaching the Program as anything but
+// the source to correct.
+#[tokio::test]
+async fn an_oauth_protected_mcp_server_needs_a_person_to_sign_in() {
+    const BEARER: &str =
+        r#"Bearer resource_metadata="{uri}/.well-known/oauth-protected-resource/mcp""#;
+    let scope = AdminScope::new("user:protected-mcp").await;
+    scope.set_access(OperationAccessState::Enabled).await;
+    let discovery = |code: &str| {
+        format!(" at `source`: Coral could not discover how to sign in to the MCP server ({code})")
+    };
+    for (index, (challenge, resource, route, rejected)) in [
+        // A person signs in before Coral can read the server, on either route.
+        (BEARER, Some("{uri}/mcp"), "fixed", None),
+        (BEARER, Some("{uri}/mcp"), "caller", None),
+        // The server publishes no metadata, so nobody can tell how to sign in.
+        (
+            r#"Bearer realm="mcp""#,
+            None,
+            "fixed",
+            Some(
+                " at `authentication`: Choose a supported method. MCP OAuth endpoints are \
+                 read-only."
+                    .to_owned(),
+            ),
+        ),
+        (
+            BEARER,
+            Some("{uri}/mcp"),
+            "none",
+            Some(
+                " at `credentialRoute`: the source needs a credential; use `fixed` or `caller`"
+                    .to_owned(),
+            ),
+        ),
+        // The metadata names another server, so its sign-in is not this one's.
+        (
+            BEARER,
+            Some("{uri}/elsewhere"),
+            "fixed",
+            Some(discovery("resource_mismatch")),
+        ),
+        (
+            r#"Basic realm="mcp""#,
+            Some("{uri}/mcp"),
+            "fixed",
+            Some(discovery("challenge_unsupported")),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let server = protected_mcp_server(challenge, resource).await;
+        let arguments = serde_json::json!({
+            "namespace": format!("tools{index}"),
+            "source": { "kind": "mcp_url", "url": format!("{}/mcp", server.uri()) },
+            "credentialRoute": route,
+        });
+        let before = scope.lifecycle_events().await;
+        let setups = scope.created_setups().await;
+        let run = scope
+            .start(
+                &scope.owner,
+                add_provider(&arguments, "{ code: error.code, message: error.message }"),
+            )
+            .await;
+        let value = final_value(&scope.terminal(&scope.owner, &run).await);
+        if let Some(message) = rejected {
+            assert_eq!(
+                value,
+                serde_json::json!({
+                    "code": "invalid_input",
+                    "message": format!("Operation arguments are invalid{message}"),
+                }),
+                "{arguments}"
+            );
+            scope
+                .assert_denial_changed_nothing(&before, &arguments.to_string())
+                .await;
+            continue;
+        }
+        assert_eq!(
+            value.pointer("/data/status"),
+            Some(&serde_json::json!("needs_sign_in")),
+            "{arguments}: {value}"
+        );
+        let created = scope.setups_created_since(&setups).await;
+        let [setup] = created.as_slice() else {
+            panic!("{arguments}: one new Setup: {created:?}")
+        };
+        assert_eq!(
+            scope
+                .fixture
+                .providers
+                .get_setup(&scope.owner_user(), &scope.workspace_id, setup)
+                .await
+                .unwrap()
+                .state(),
+            ProviderSetupState::AwaitingAuthorization,
+            "{arguments}"
+        );
+    }
+    assert_eq!(scope.upstream.sends.load(Ordering::SeqCst), 0);
 }
 
 /// An `invalid_input` message names each argument to correct and what to write,
@@ -1355,7 +1586,7 @@ async fn an_invalid_argument_names_what_to_correct() {
         let run = scope
             .start(
                 &scope.owner,
-                create_provider(&arguments, "{ code: error.code, message: error.message }"),
+                add_provider(&arguments, "{ code: error.code, message: error.message }"),
             )
             .await;
         assert_eq!(
@@ -1375,7 +1606,7 @@ async fn an_invalid_argument_names_what_to_correct() {
 // Catches: a Built-in Operation's reach that ignores the Workspace action it
 // declares, or a host that performs listProviders only for a User.
 #[tokio::test]
-async fn members_and_agents_list_providers_but_cannot_reach_create_provider() {
+async fn members_and_agents_list_providers_but_cannot_reach_add_or_get_provider() {
     let scope = AdminScope::new("user:admin-owner").await;
     scope.set_access(OperationAccessState::Enabled).await;
     scope.publish_weather().await;
@@ -1400,28 +1631,45 @@ async fn members_and_agents_list_providers_but_cannot_reach_create_provider() {
         registered_agent(&scope.fixture.workspaces, &scope.owner, &scope.workspace_id).await;
     let before = scope.lifecycle_events().await;
     for principal in [AuthenticatedPrincipal::user(member), agent] {
-        let run = scope
-            .start(&principal, create_provider(&serde_json::json!({ "namespace": "other", "source": document_source(), "credentialRoute": "none" }), "error.code"))
-            .await;
-        assert_final_code(
-            &scope.terminal(&principal, &run).await,
-            "operation_not_found",
-        );
+        for (operation, arguments) in [
+            (
+                "addProvider",
+                serde_json::json!({ "namespace": "other", "source": document_source(), "credentialRoute": "none" }),
+            ),
+            ("getProvider", serde_json::json!({ "namespace": "weather" })),
+        ] {
+            let run = scope
+                .start(
+                    &principal,
+                    workspace_call(operation, &arguments.to_string()),
+                )
+                .await;
+            assert_eq!(
+                final_value(&scope.terminal(&principal, &run).await),
+                serde_json::json!({
+                    "code": "operation_not_found",
+                    "message": "Operation Call Path was not found",
+                }),
+                "{operation}"
+            );
+        }
 
-        let run = scope.start(&principal, list_providers("{}")).await;
+        let run = scope
+            .start(&principal, workspace_call("listProviders", "{}"))
+            .await;
         let listed = final_value(&scope.terminal(&principal, &run).await);
-        let namespaces = listed
+        let call_roots = listed
             .pointer("/data/providers")
             .and_then(serde_json::Value::as_array)
             .unwrap_or_else(|| panic!("{principal:?} lists providers: {listed}"))
             .iter()
-            .map(|provider| provider.get("namespace").cloned())
+            .map(|provider| provider.get("callRoot").cloned())
             .collect::<Vec<_>>();
         assert_eq!(
-            namespaces,
+            call_roots,
             [
-                Some(serde_json::Value::Null),
-                Some(serde_json::json!("weather"))
+                Some(serde_json::json!("coral.workspace")),
+                Some(serde_json::json!("coral.providers.weather"))
             ],
             "{principal:?}"
         );
@@ -1459,7 +1707,7 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
         .start(
             &scope.owner,
             &scope.workspace_id,
-            create_provider(&serde_json::json!({ "namespace": "weather", "source": source, "credentialRoute": "fixed" }), "error.code"),
+            add_provider(&serde_json::json!({ "namespace": "weather", "source": source, "credentialRoute": "fixed" }), "error.code"),
         )
         .await
         .unwrap()
@@ -1474,7 +1722,7 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
 
     // A policy that permits loopback fetches the source once and prepares one Setup.
     let run = scope
-        .start(&scope.owner, create_provider(&serde_json::json!({ "namespace": "weather", "source": source, "credentialRoute": "fixed" }), "error.code"))
+        .start(&scope.owner, add_provider(&serde_json::json!({ "namespace": "weather", "source": source, "credentialRoute": "fixed" }), "error.code"))
         .await;
     assert_eq!(
         scope.terminal(&scope.owner, &run).await.state(),
@@ -1484,29 +1732,32 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
     assert_eq!(scope.setups_created_since(&before).await.len(), 1);
 }
 
-/// A Program that calls `listProviders` with `arguments`, the JavaScript
-/// argument list, and returns its Operation Result or the failure it catches.
-fn list_providers(arguments: &str) -> RunSubmission {
+/// A Program that calls the Built-in `operation` with `arguments`, the
+/// JavaScript argument list, and returns its Operation Result or the failure
+/// it catches.
+fn workspace_call(operation: &str, arguments: &str) -> RunSubmission {
     submission(
         &"
         try {
-            return await coral.workspace.listProviders(ARGUMENTS);
+            return await coral.workspace.OPERATION(ARGUMENTS);
         } catch (error) {
             if (!(error instanceof coral.OperationError)) throw error;
             return { code: error.code, message: error.message };
         }
     "
+        .replace("OPERATION", operation)
         .replace("ARGUMENTS", arguments),
     )
 }
 
-// Catches: a result that misleads a Program about taken namespaces, such as
-// the Built-in Provider under a namespace an Owner can take or a disabled
-// Provider not marked disabled, a read that waits for approval, or an
-// argument the call silently ignores.
+// Catches: a result that misleads a Program about taken Call Roots, such as
+// a disabled Provider not marked disabled, an operations count that includes
+// an Operation the Provider's state or policy stops the caller calling, a read
+// that waits for approval, or an argument the call silently ignores.
 #[tokio::test]
 async fn list_providers_lists_every_provider_without_approval() {
     let scope = AdminScope::new("user:list-providers").await;
+    scope.set_access(OperationAccessState::Disabled).await;
     let weather = scope.publish_weather().await;
     scope
         .fixture
@@ -1525,21 +1776,24 @@ async fn list_providers_lists_every_provider_without_approval() {
         "data": {
             "providers": [
                 {
+                    "callRoot": "coral.workspace",
                     "namespace": null,
                     "displayName": "Coral",
                     "state": "active",
                     "credentialRoute": "none",
                     "authentication": "none",
-                    "operations": builtin_operations,
+                    // Policy disables addProvider.
+                    "operations": builtin_operations - 1,
                     "accountRequired": false,
                 },
                 {
+                    "callRoot": "coral.providers.weather",
                     "namespace": "weather",
                     "displayName": "Weather",
                     "state": "disabled",
                     "credentialRoute": "none",
                     "authentication": "none",
-                    "operations": 1,
+                    "operations": 0,
                     "accountRequired": false,
                 },
             ],
@@ -1568,7 +1822,9 @@ async fn list_providers_lists_every_provider_without_approval() {
             }),
         ),
     ] {
-        let run = scope.start(&scope.owner, list_providers(arguments)).await;
+        let run = scope
+            .start(&scope.owner, workspace_call("listProviders", arguments))
+            .await;
         assert_eq!(
             final_value(&scope.terminal(&scope.owner, &run).await),
             expected,
@@ -1585,4 +1841,145 @@ async fn list_providers_lists_every_provider_without_approval() {
             "{arguments}: no approval request"
         );
     }
+}
+
+/// An MCP server that lists one read-only tool to anyone.
+async fn public_mcp_server() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(|request: &wiremock::Request| {
+            let request: serde_json::Value = request.body_json().expect("an MCP request");
+            let result = match request.get("method").and_then(serde_json::Value::as_str) {
+                Some("initialize") => serde_json::json!({
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "forecasts", "title": "Forecasts", "version": "1" },
+                }),
+                Some("tools/list") => serde_json::json!({ "tools": [{
+                    "name": "lookup",
+                    "inputSchema": { "type": "object" },
+                    "annotations": { "readOnlyHint": true },
+                }] }),
+                // A notification has no response body.
+                _ => return ResponseTemplate::new(202),
+            };
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0", "id": request.get("id"), "result": result,
+            }))
+        })
+        .mount(&server)
+        .await;
+    server
+}
+
+// Catches: a read that differs from the configuration a Program saved, or
+// that returns an uploaded document.
+#[tokio::test]
+async fn get_provider_reads_back_the_configuration_a_program_saved() {
+    let scope = AdminScope::new("user:get-provider").await;
+    scope.set_access(OperationAccessState::Enabled).await;
+    let document_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/openapi.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(DOCUMENT))
+        .mount(&document_server)
+        .await;
+    let mcp_server = public_mcp_server().await;
+    let document_url = format!("{}/openapi.json", document_server.uri());
+    let declared = serde_json::json!({
+        "#/servers": { "kind": "declared", "url": "https://weather.example", "variables": {} },
+    });
+    for (namespace, source, read_source, servers, request_headers) in [
+        (
+            "weatherUrl",
+            serde_json::json!({ "kind": "openapi_url", "url": document_url }),
+            serde_json::json!({ "kind": "openapi_url", "url": document_url }),
+            declared.clone(),
+            serde_json::json!({}),
+        ),
+        (
+            "forecasts",
+            serde_json::json!({ "kind": "mcp_url", "url": mcp_server.uri() }),
+            serde_json::json!({ "kind": "mcp_url", "url": mcp_server.uri() }),
+            // Coral saves the inspected server URL in its normalized form.
+            serde_json::json!({
+                "#/servers": { "kind": "custom", "url": format!("{}/", mcp_server.uri()) },
+            }),
+            serde_json::json!({ "x-tenant": "acme" }),
+        ),
+        (
+            "weatherDocument",
+            document_source(),
+            serde_json::json!({ "kind": "openapi_document" }),
+            declared.clone(),
+            serde_json::json!({ "x-trace": "on" }),
+        ),
+    ] {
+        let created = scope
+            .start(
+                &scope.owner,
+                add_provider(
+                    &serde_json::json!({
+                        "namespace": namespace,
+                        "source": source,
+                        "credentialRoute": "none",
+                        "displayName": "Saved weather",
+                        "requestHeaders": request_headers,
+                    }),
+                    "error.code",
+                ),
+            )
+            .await;
+        let created = final_value(&scope.terminal(&scope.owner, &created).await);
+        assert_eq!(
+            created.pointer("/data/status"),
+            Some(&serde_json::json!("published")),
+            "{namespace}: {created}"
+        );
+
+        let run = scope
+            .start(
+                &scope.owner,
+                workspace_call(
+                    "getProvider",
+                    &serde_json::json!({ "namespace": namespace }).to_string(),
+                ),
+            )
+            .await;
+        assert_eq!(
+            final_value(&scope.terminal(&scope.owner, &run).await),
+            serde_json::json!({
+                "data": {
+                    "namespace": namespace,
+                    "state": "active",
+                    "displayName": "Saved weather",
+                    "source": read_source,
+                    "credentialRoute": "none",
+                    "servers": servers,
+                    "authentication": { "method": "none" },
+                    "requestHeaders": request_headers,
+                    "credentialFields": {},
+                },
+                "metadata": { "kind": "builtin" },
+            }),
+            "{namespace}"
+        );
+    }
+}
+
+// Catches: a namespace that no Provider holds read as something other than
+// not found.
+#[tokio::test]
+async fn get_provider_names_an_absent_provider() {
+    let scope = AdminScope::new("user:get-provider-absent").await;
+    let run = scope
+        .start(
+            &scope.owner,
+            workspace_call("getProvider", r#"{ "namespace": "forecasts" }"#),
+        )
+        .await;
+    assert_eq!(
+        final_value(&scope.terminal(&scope.owner, &run).await),
+        serde_json::json!({ "code": "provider_not_found", "message": "Provider was not found" }),
+    );
 }

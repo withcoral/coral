@@ -13,7 +13,8 @@ const ARROW_CONTROLS =
  * field, ↓ reaches the first row; from anywhere else on the page, ↓ reaches
  * the first row and ↑ the last. Enter is the link's own, and the row with the
  * focused link shows it, so Tab and the arrows share one cursor.
- * Pass the returned ref to `Table.Container`.
+ * Pass the returned ref to `Table.Container`, or to an element around several
+ * tables to move through their rows as one list.
  */
 export function useRowCursor({ filterId }: { filterId?: string } = {}) {
   const table = useRef<HTMLDivElement>(null)

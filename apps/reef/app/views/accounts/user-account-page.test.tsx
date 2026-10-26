@@ -1,6 +1,7 @@
 /** @vitest-environment happy-dom */
 import { expect, it } from 'vitest'
-import { markupRoute } from '@/test-support/route'
+import { screen } from '@testing-library/react'
+import { markupRoute, renderRoute } from '@/test-support/route'
 import { workspaceView } from '@/views/providers/fixtures'
 import { UserAccountPage } from './user-account-page'
 import type { UserAccountView } from './types'
@@ -107,4 +108,15 @@ it.each([
   const html = render({ returnTo })
   expect(html).toContain(`>${label}<`)
   expect(html).toContain(`href="${returnTo}"`)
+})
+
+// Catches: a secret reconnect leaving this page for a separate connection page.
+it.each([
+  ['a secret in a dialog', false, 'dialog'],
+  ['OAuth in one click', true, null],
+])('reconnects %s', (_, oauth, popup) => {
+  renderRoute(<UserAccountPage view={{ ...view, ...connected, oauth }} />)
+  const reconnect = screen.getByRole('button', { name: 'Reconnect' })
+  expect(reconnect.getAttribute('aria-haspopup')).toBe(popup)
+  expect(reconnect.closest('form') !== null).toBe(oauth)
 })

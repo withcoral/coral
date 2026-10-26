@@ -161,15 +161,13 @@ async fn hits_hydrate_the_fields_the_stored_generations_entries_index() {
     assert!(
         cities
             .operations()
-            .iter()
-            .all(|operation| !operation.declaration_fields().is_empty()),
+            .all(|operation| !operation.unwrap().declaration_fields().is_empty()),
         "the entries carry declaration fields"
     );
     assert_eq!(
         mixed
             .operations()
-            .iter()
-            .map(|operation| operation.key().as_str())
+            .map(|operation| operation.unwrap().key().as_str())
             .collect::<Vec<_>>(),
         ["lookup", "resources/read"],
         "the unavailable task-only tool has no entry"
@@ -191,6 +189,7 @@ async fn assert_hits_hydrate_their_indexed_fields(
         .find(|active| active.provider().id() == prepared.provider_id())
         .expect("the Provider is active");
     for operation in prepared.operations() {
+        let operation = operation.unwrap();
         let hydrated = crate::hydrate_operation_in_transaction(
             &mut transaction,
             loaded,
@@ -284,8 +283,7 @@ async fn stored_entries_follow_the_providers_active_generation() {
     assert_eq!(
         entries
             .operations()
-            .iter()
-            .map(|operation| operation.key().as_str())
+            .map(|operation| operation.unwrap().key().as_str())
             .collect::<Vec<_>>(),
         ["getCity", "listCities"],
         "the entries are the new Generation's Operations"
@@ -355,8 +353,8 @@ async fn active_provider_reads_skip_disabled_providers_and_other_workspaces() {
     .await
     .unwrap();
     transaction.rollback().await.unwrap();
-    assert_eq!(
-        foreign_entries, None,
+    assert!(
+        foreign_entries.is_none(),
         "another Workspace cannot read this Provider's entries"
     );
 

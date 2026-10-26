@@ -7,18 +7,14 @@ import { authPrivateHeaders, markAuthResponsePrivate } from '@/auth/response.ser
 import { safeInternalPath } from '@/auth/safe-path.server'
 import { readCoralWebSession } from '@/auth/session.server'
 import { runtimeConfigContext } from '@/lib/runtime-config.server'
-import { getMeta } from '@/meta'
 import { routePath } from '@/routing/routemap'
 import { Brand } from '@/wax/components/brand'
 import * as Button from '@/wax/components/button'
 import * as Card from '@/wax/components/card'
+import { PageTitle } from '@/wax/components/page-title'
 import { Typography } from '@/wax/components/typography'
 
 import * as styles from './login.css'
-
-export function meta(_args: Route.MetaArgs) {
-  return getMeta('Sign in')
-}
 
 export function headers() {
   return authPrivateHeaders()
@@ -48,6 +44,7 @@ export default function Login({ loaderData }: Route.ComponentProps) {
   const returnTo = loaderData?.returnTo
   return (
     <main className={styles.page}>
+      <PageTitle>Sign in</PageTitle>
       <section className={styles.content} aria-labelledby="login-title">
         <Brand />
         <Card.Container className={styles.panel}>

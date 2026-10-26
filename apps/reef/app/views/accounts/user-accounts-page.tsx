@@ -6,6 +6,8 @@ import { Pill } from '@/wax/components/pill'
 import type { PillColor } from '@/wax/components/pill/pill'
 import { CatalogFilterMenu, CatalogToolbar, type CatalogFilterOptions } from '@/components/catalog'
 import { EmptyPage } from '@/components/empty-page'
+import { ConnectAccountDialog } from '@/views/management/connect-account-dialog'
+import { useAccountAudience } from '@/views/providers/account-labels'
 import { ManagementLayout, trail } from '@/views/management/layout'
 import type { PersonalAccountState, UserAccountRow, UserAccountsView } from './types'
 import { accountStates } from './account-states'
@@ -136,6 +138,10 @@ export function UserAccountsPage({
   )
 }
 
+/**
+ * Disconnect for a connected account. Otherwise OAuth signs in at the provider
+ * in one click, and a secret opens a dialog on this page.
+ */
 function AccountAction({
   row,
   view,
@@ -145,24 +151,49 @@ function AccountAction({
   view: UserAccountsView
   pending: boolean
 }) {
-  if (row.state === 'connected')
-    return row.canDisconnect && row.accountId ? (
+  const audience = useAccountAudience()
+  const connected = row.state === 'connected'
+  const action = states[row.state].action
+  const disconnect =
+    connected && row.canDisconnect && row.accountId ? (
       <DisconnectAccount form={view.form} action={view.path} size="22">
         <input type="hidden" name="provider" value={row.provider} />
         <input type="hidden" name="account" value={row.accountId} />
       </DisconnectAccount>
     ) : null
-  if (!row.canConnect) return null
+  if (row.oauth)
+    return connected || !row.canConnect ? (
+      disconnect
+    ) : (
+      <ConnectButton
+        action={row.connectPath}
+        csrf={view.form.csrf}
+        requestId={view.form.requestId}
+        label={action}
+        ariaLabel={`${action} ${row.name}`}
+        primary={Boolean(row.waitingUntil)}
+        disabled={pending}
+        size="22"
+      />
+    )
+  // Mounted while connected too, so an open dialog sees the account land.
   return (
-    <ConnectButton
+    <ConnectAccountDialog
+      providerName={row.name}
+      namespace={row.name}
+      form={view.form}
+      connectable={!connected && row.canConnect}
+      reconnect={row.state === 'needs_reconnect'}
+      ready={connected}
+      fallback={disconnect}
+      trigger={{
+        label: action,
+        ariaLabel: `${action} ${row.name}`,
+        variant: row.waitingUntil ? 'primary' : 'secondary',
+        size: '22',
+      }}
       action={row.connectPath}
-      csrf={view.form.csrf}
-      requestId={view.form.requestId}
-      label={states[row.state].action}
-      ariaLabel={`${states[row.state].action} ${row.name}`}
-      primary={Boolean(row.waitingUntil)}
-      disabled={pending}
-      size="22"
+      description={audience.onlyYou}
     />
   )
 }

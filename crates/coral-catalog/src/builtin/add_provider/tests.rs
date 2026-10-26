@@ -1,9 +1,9 @@
-//! The rules `createProvider`'s arguments meet beyond their schema, and the
+//! The rules `addProvider`'s arguments meet beyond their schema, and the
 //! arguments its conformance test starts from.
 
 use serde_json::{Value, json};
 
-use super::CreateProviderArguments;
+use super::AddProviderArguments;
 
 /// A value that must never reach a reason.
 const CANARY: &str = "sk-canary";
@@ -340,8 +340,8 @@ fn each_rejected_argument_names_what_to_correct() {
             ],
         ),
     ] {
-        let problems = CreateProviderArguments::parse(&arguments)
-            .expect_err(&format!("{arguments} is rejected"));
+        let problems =
+            AddProviderArguments::parse(&arguments).expect_err(&format!("{arguments} is rejected"));
         let found = problems
             .iter()
             .map(|problem| (problem.field(), problem.reason()))
@@ -373,7 +373,7 @@ fn a_configuration_field_names_the_argument_to_correct() {
         ("servers_extra", "servers_extra"),
     ] {
         assert_eq!(
-            CreateProviderArguments::argument_for(configuration_field),
+            AddProviderArguments::argument_for(configuration_field),
             argument,
             "{configuration_field}"
         );

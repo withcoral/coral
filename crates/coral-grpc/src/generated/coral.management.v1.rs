@@ -53,6 +53,10 @@ pub struct Provider {
     /// Immutable Workspace-unique Provider Call Root, such as coral.providers.github.
     #[prost(string, tag = "12")]
     pub call_root: ::prost::alloc::string::String,
+    /// Whether this is the Workspace's Built-in Provider, which Coral defines
+    /// and manages under coral.workspace.
+    #[prost(bool, tag = "13")]
+    pub builtin: bool,
 }
 /// Lists Providers owned by one authorized Workspace.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -781,8 +785,21 @@ pub struct ProviderSetup {
     /// What a Program asked this Setup to publish; absent for a Setup a person started.
     #[prost(message, optional, tag = "20")]
     pub request: ::core::option::Option<ProviderSetupRequest>,
+    /// The Credential Routes that suit the confirmed configuration, in the order
+    /// Reef offers them. Empty until the configuration is confirmed.
+    #[prost(message, repeated, tag = "21")]
+    pub allowed_credential_routes: ::prost::alloc::vec::Vec<CredentialRoute>,
+    /// This Setup holds a sign-in, or the inspecting User can start one or enter
+    /// the credential now. False once the Setup has ended, or when nothing can
+    /// be connected.
+    #[prost(bool, tag = "22")]
+    pub connect_available: bool,
+    /// Whether each person can connect their own account after the provider is
+    /// added without a sign-in. False when nothing can be connected.
+    #[prost(bool, tag = "23")]
+    pub connect_later_available: bool,
 }
-/// What a Program asked a Setup to publish when it called createProvider. The
+/// What a Program asked a Setup to publish when it called addProvider. The
 /// person who finishes the Setup can change either.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ProviderSetupRequest {
@@ -6025,10 +6042,11 @@ pub struct ActivityCallOutcomes {
     /// or a rejected destination.
     #[prost(int64, tag = "2")]
     pub blocked: i64,
-    /// A person declined the approval or the Account connection, or let it expire.
+    /// A person declined the approval or the Account connection, or let the approval expire.
     #[prost(int64, tag = "3")]
     pub not_allowed: i64,
-    /// A Provider, Account or credential needs repair.
+    /// A Provider, Account or credential needs repair, or an Account connection expired
+    /// unanswered.
     #[prost(int64, tag = "4")]
     pub needs_setup: i64,
     /// The Program's call or the upstream failed, or the result is unknown.

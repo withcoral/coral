@@ -1691,6 +1691,7 @@ async fn scope_header_and_method_differences_require_confirmation_only_when_owne
             )
             .await
             .unwrap();
+        crate::tests::name_oauth_application(&h.providers, &context, &owner, setup.id()).await;
         let saved = h
             .providers
             .review_setup_configuration(&actor, &owner, setup.id())

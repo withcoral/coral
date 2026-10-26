@@ -50,7 +50,8 @@ lane, and the deprecation flag and the Provider's access mode left searchable te
 
 The two JSON lane columns on the Generation row put search material under coral-catalog's schema and made every query
 re-read and decode it. Rejected: **leaving index storage on the Generation row** and putting an indexer trait over it.
-Instead the owner prepares entries, the committing workflow hands them to search after its commit, and search writes them into its
+Instead the committing workflow tells search after its commit which Generation became active, search prepares the
+entries from the stored Generation ([ADR 0017](0017-universal-search-never-gates-the-catalog.md)) and writes them into its
 own table, where the Provider's active-Generation pointer decides which rows are live with no flag of their own.
 Indexing is no longer atomic with the Generation: between the pointer moving and the rows landing, that Provider is
 absent from relevance and the page reports partial. A Saved Function's row carries a cascading foreign key to the

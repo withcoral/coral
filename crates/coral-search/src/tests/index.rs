@@ -717,7 +717,10 @@ async fn a_generation_without_operations_indexes_only_a_complete_state() {
         .publish_openapi(&world.user, &world.workspace, CALLBACKS_ONLY, "hooks", 40)
         .await;
     let entries = world.stored_entries(&callbacks_only).await;
-    assert!(entries.operations().is_empty(), "no Operation is available");
+    assert!(
+        entries.operations().next().is_none(),
+        "no Operation is available"
+    );
 
     notify(&world.index, &entries);
     world.index.settled().await;
@@ -1006,14 +1009,10 @@ async fn a_rewrite_removes_rows_its_entries_no_longer_hold() {
     world.index.settled().await;
     assert!(!world.operation_rows().await.is_empty());
 
-    let provider = world.active_provider(&world.tracer).await;
+    let generation_id = entries.generation_id().clone();
     world
         .index
-        .write_generation(&GenerationEntries::new(
-            &provider,
-            entries.generation_id().clone(),
-            Vec::new(),
-        ))
+        .write_generation(&entries.without_operations())
         .await;
     world.index.settled().await;
 
@@ -1022,7 +1021,7 @@ async fn a_rewrite_removes_rows_its_entries_no_longer_hold() {
         world.states().await,
         [StateRow::complete(
             &world.tracer,
-            &entries.generation_id().to_string(),
+            &generation_id.to_string(),
             "Weather Tracer"
         )]
     );
@@ -1560,30 +1559,6 @@ impl World {
         .expect("published Provider");
         transaction.rollback().await.unwrap();
         entries
-    }
-
-    /// The Provider as its Workspace's active Providers list it.
-    async fn active_provider(
-        &self,
-        provider: &coral_provider::ProviderId,
-    ) -> coral_provider::Provider {
-        let mut transaction = self
-            .modules
-            .search
-            .database
-            .begin_read_snapshot()
-            .await
-            .unwrap();
-        let active =
-            coral_provider::active_providers_in_transaction(&mut transaction, &self.workspace)
-                .await
-                .unwrap();
-        transaction.rollback().await.unwrap();
-        active
-            .into_iter()
-            .map(|active| active.provider().clone())
-            .find(|candidate| candidate.id() == provider)
-            .expect("active Provider")
     }
 
     /// Each Provider's search index state, as the owner inspects it.

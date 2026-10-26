@@ -681,8 +681,13 @@ async fn workspace_owner_publishes_an_inline_document_and_a_reused_request_id_co
         setup.credential_method(),
         management::CredentialMethod::None
     );
-    assert!(!setup.authorized);
-    assert!(setup.create_time.is_some());
+    // Coral says which routes suit the source and that nothing can be connected.
+    assert_eq!(
+        setup.allowed_credential_routes,
+        vec![route(management::credential_route::Kind::None)]
+    );
+    assert!(!setup.connect_available && !setup.connect_later_available);
+    assert!(!setup.authorized && setup.create_time.is_some());
     let fetched = setups
         .get_provider_setup(request(
             management::GetProviderSetupRequest {
@@ -874,6 +879,8 @@ async fn configuration_review_precedes_credentials_and_refuses_early_authorizati
     );
     assert!(review.discovery_authorization_required);
     assert!(!review.automatic_client_available);
+    // No route suits a configuration nobody has confirmed.
+    assert!(setup.allowed_credential_routes.is_empty());
     assert!(review.issuer.is_none());
     assert!(review.resource.is_none());
     let refused = setups
@@ -1028,6 +1035,8 @@ async fn update_projects_saved_differences_and_requires_exact_interruption_accep
         provider: provider.name,
         etag: provider.etag,
         request_id: "c0000000-0000-4000-8000-000000000002".into(),
+        // A credential-free source takes only the `none` route.
+        credential_route: Some(route(management::credential_route::Kind::None)),
         ..Default::default()
     };
     let refused = providers
@@ -1599,15 +1608,52 @@ async fn provider_route_mutation_requires_reef_user_owner_and_current_provider_e
     let f = Fixture::new().await;
     let owner = f.token(&f.owner, "reef");
     let parent = format!("workspaces/{}", f.workspace.id());
-    let publication = publish_workspace_document(
-        &f,
-        &owner,
-        openapi_document(false),
-        &parent,
-        "b0000000-0000-4000-8000-000000000012",
-    )
-    .await;
+    // A shared Account on a bearer source, so the route can move to `caller`.
+    let mut setups = f.setups();
+    let shared = setups
+        .create_configured_setup(request(
+            setup_request(
+                parent.clone(),
+                Input::OpenapiDocument(openapi_document(true).into()),
+            ),
+            &owner,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let authorized = setups
+        .authorize_provider_setup(request(
+            management::AuthorizeProviderSetupRequest {
+                configuration_revision: 1,
+                name: shared.name.clone(),
+                credential_values: token_values(TOKEN),
+            },
+            &owner,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
     let mut providers = f.providers();
+    let publication = providers
+        .publish_provider(request(
+            management::PublishProviderRequest {
+                configuration_revision: 1,
+                parent: parent.clone(),
+                setup: shared.name,
+                request_id: "b0000000-0000-4000-8000-000000000012".into(),
+                namespace: "weather".into(),
+                account_grant: authorized.provisional_grant_id,
+                credential_route: Some(route(management::credential_route::Kind::Fixed)),
+                ..Default::default()
+            },
+            &owner,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
     let original = providers
         .get_provider(request(
             management::GetProviderRequest {
@@ -1763,14 +1809,18 @@ async fn published_weather(f: &Fixture, token: &str) -> management::Provider {
         .into_inner()
 }
 
+// Catches: Reef told a Provider is Coral's own by anything but the
+// builtin field, or an added Provider marked as Coral's own.
 #[tokio::test]
 async fn list_providers_projects_the_provider_that_get_returns() {
     let f = Fixture::new().await;
     let token = f.token(&f.owner, "reef");
+    f.install_builtin().await;
     let provider = published_weather(&f, &token).await;
     assert_eq!(provider.display_name, "Weather");
     assert_eq!(provider.state(), management::ProviderState::Active);
     assert_eq!(provider.namespace, "weather");
+    assert!(!provider.builtin);
     let listed = f
         .providers()
         .list_providers(request(
@@ -1784,7 +1834,18 @@ async fn list_providers_projects_the_provider_that_get_returns() {
         .await
         .unwrap()
         .into_inner();
-    assert_eq!(listed.providers, vec![provider]);
+    let (builtin, added): (Vec<_>, Vec<_>) = listed
+        .providers
+        .into_iter()
+        .partition(|listed| listed.builtin);
+    assert_eq!(
+        builtin
+            .iter()
+            .map(|builtin| (builtin.call_root.as_str(), builtin.namespace.as_str()))
+            .collect::<Vec<_>>(),
+        [("coral.workspace", "")]
+    );
+    assert_eq!(added, vec![provider]);
 }
 
 /// Pages each Provider once in name order; a token is bound to the caller who got it.

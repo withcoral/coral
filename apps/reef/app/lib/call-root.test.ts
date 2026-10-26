@@ -9,8 +9,8 @@ const providers = [github, builtin, ownerWorkspace]
 describe('operationOwner', () => {
   it.each([
     ['coral.providers.github.repos.get', github, 'repos.get'],
-    ['coral.workspace.createProvider', builtin, 'createProvider'],
-    ['coral.providers.workspace.createProvider', ownerWorkspace, 'createProvider'],
+    ['coral.workspace.addProvider', builtin, 'addProvider'],
+    ['coral.providers.workspace.addProvider', ownerWorkspace, 'addProvider'],
   ])('gives %s to the provider whose Call Root starts it', (callPath, provider, path) => {
     expect(operationOwner(callPath, providers)).toEqual({ provider, relativePath: path })
   })

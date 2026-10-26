@@ -845,9 +845,14 @@ pub(crate) async fn select_route(
     principal: &coral_workspace::Principal,
     contract: ProviderCredentialContract,
 ) -> Result<Option<CredentialEvidence>, Error> {
-    match target_provider.credential_route() {
-        CredentialRoute::None if contract == ProviderCredentialContract::NONE => Ok(None),
-        CredentialRoute::None => Err(Error::AccountRequired),
+    let route = target_provider.credential_route();
+    // A route that does not suit the contract has no credential to select,
+    // and Coral never falls back to another route.
+    if route.fits(&contract) != crate::RouteFit::Fits {
+        return Err(Error::AccountRequired);
+    }
+    match route {
+        CredentialRoute::None => Ok(None),
         CredentialRoute::Caller => caller::select(tx, target_provider, principal, contract)
             .await
             .map(Some),
@@ -1128,7 +1133,7 @@ pub(crate) mod update;
 mod update_repository;
 pub use setup::{
     ProviderSetupInspection, SetupAuthentication, SetupAuthorization, SetupAuthorizationCompletion,
-    SetupAuthorizationState, SetupOAuthClient,
+    SetupAuthorizationState, SetupConnectReadiness, SetupOAuthClient,
 };
 #[cfg(test)]
 mod input;

@@ -86,9 +86,10 @@ test('Connect, reconnect and disconnect retain one exact caller account', async 
       'Explicit reconnect retains the Account ID and records the successful connection',
       async () => {
         await page.getByRole('button', { name: 'Reconnect', exact: true }).click()
-        await page.getByLabel('Token', { exact: true }).fill(`${secret}-replacement`)
-        // Reconnect goes through the authorization page, then lands back here.
-        await page.getByRole('button', { name: 'Connect account', exact: true }).click()
+        // Reconnect opens a dialog on this page, and the account lands back here.
+        const dialog = page.getByRole('dialog')
+        await dialog.getByLabel('Token', { exact: true }).fill(`${secret}-replacement`)
+        await dialog.getByRole('button', { name: 'Connect account', exact: true }).click()
         await page.waitForURL((url) => url.pathname === accountPage)
         const account = (await inspect()).account!
         expect(account.id).toBe(accountId)

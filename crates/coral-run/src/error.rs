@@ -46,6 +46,8 @@ coral_failures! {
     ProviderUnavailable => "provider_unavailable",
     /// Another Provider in the Workspace already uses the requested namespace.
     ProviderNamespaceConflict => "provider_namespace_conflict",
+    /// No Provider in the Workspace holds the requested namespace.
+    ProviderNotFound => "provider_not_found",
     /// Coral attempted the Provider's Publication, and it failed.
     ProviderPublicationFailed => "provider_publication_failed",
     /// Exact Operation policy disables this Invocation.
@@ -113,6 +115,7 @@ impl CoralFailure {
             Self::OperationDisabled => "Operation is disabled",
             Self::ProviderUnavailable => "Provider is unavailable",
             Self::ProviderNamespaceConflict => "Provider namespace is already in use",
+            Self::ProviderNotFound => "Provider was not found",
             Self::ProviderPublicationFailed => "Coral could not publish the Provider",
             Self::CredentialRouteChanged => "Operation credential route changed",
             Self::AccountRequired => "Operation requires a Provider Account",

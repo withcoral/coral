@@ -1,27 +1,27 @@
-//! Performs `coral.workspace.createProvider`, and settles one whose worker was
+//! Performs `coral.workspace.addProvider`, and settles one whose worker was
 //! lost after the Dispatch Fence.
 
 use coral_catalog::{
-    ConfigurationChoices, CreateProviderArguments, CreateProviderResult, ProviderConfiguration,
+    AddProviderArguments, AddProviderResult, ConfigurationChoices, ProviderConfiguration,
     ProviderSourceArgument,
 };
 use coral_db::Transaction;
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::account::AccountModule;
 use coral_provider::{
-    ManagementRequestId, ProviderSetupId, ProviderSetupSource, PublishabilityRejection,
-    PublishedProvider, SetupPublishability, SetupRequest, WorkspaceProviderPublicationRequest,
+    ManagementRequestId, Provider, ProviderSetupId, ProviderSetupSource, PublishabilityRejection,
+    SetupPublishability, SetupRequest, WorkspaceProviderPublicationRequest,
 };
-use coral_workspace::ChangeContext;
+use coral_workspace::{ChangeContext, Principal, WorkspaceId};
 
 use super::{BuiltinHost, authority_error, provider_facts, setup_url};
 use crate::error::InputProblem;
 use crate::lifecycle::RunRecord;
 use crate::{CoralFailure, Error, InvocationId, InvocationResultKind, Rejection};
 
-/// `createProvider`'s arguments in Coral's domain types.
+/// `addProvider`'s arguments in Coral's domain types.
 #[derive(Clone)]
-pub(crate) struct CreateProvider {
+pub(crate) struct AddProvider {
     namespace: ProviderNamespace,
     source: ProviderSetupSource,
     route: CredentialRoute,
@@ -36,10 +36,10 @@ enum Publisher {
     Person,
 }
 
-impl CreateProvider {
+impl AddProvider {
     /// The call for arguments the contract accepted. An MCP server is
     /// discovered with the same non-secret headers it is configured with.
-    pub(super) fn new(arguments: CreateProviderArguments) -> Result<Self, Rejection> {
+    pub(super) fn new(arguments: AddProviderArguments) -> Result<Self, Rejection> {
         // The contract checks the namespace with the same rule, so this does
         // not fail.
         let namespace = ProviderNamespace::parse(&arguments.namespace)
@@ -70,7 +70,7 @@ impl CreateProvider {
     /// when nobody needs to sign in; otherwise the result is the Reef page where
     /// a person finishes it. The call never waits for that person.
     pub(super) async fn perform(&self, host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
-        // Only a User reaches createProvider; an Agent changes no configuration.
+        // Only a User reaches addProvider; an Agent changes no configuration.
         let Some(context) = host.context else {
             return Err(Error::InvocationRejected(
                 CoralFailure::AuthorityLost.into(),
@@ -206,7 +206,7 @@ impl CreateProvider {
 
     /// The Reef page where a person finishes the Setup.
     fn needs_sign_in(&self, host: &BuiltinHost<'_>, setup: &ProviderSetupId) -> serde_json::Value {
-        CreateProviderResult::NeedsSignIn {
+        AddProviderResult::NeedsSignIn {
             url: setup_url(host, setup),
             namespace: self.namespace.as_str().to_owned(),
         }
@@ -261,15 +261,20 @@ impl CreateProvider {
                 .into(),
             ));
         };
-        let details = host
-            .providers
-            .published_provider(host.workspace_id, provider, host.principal)
-            .await?;
-        Ok(published_result(&details))
+        let mut snapshot = host.database.begin_read_snapshot().await?;
+        let result = published_result_in_transaction(
+            &mut snapshot,
+            host.workspace_id,
+            provider,
+            host.principal,
+        )
+        .await?;
+        snapshot.rollback().await?;
+        Ok(result)
     }
 }
 
-/// Settles a `createProvider` whose worker was lost after the dispatch fence,
+/// Settles an `addProvider` whose worker was lost after the dispatch fence,
 /// from the Publication Coral attempted under the Invocation's identity. A
 /// published Provider becomes the Operation Result; otherwise the Run ended
 /// first. A Setup that was never published expires at its deadline.
@@ -292,7 +297,7 @@ pub(super) async fn recover(
     let Some(provider) = published else {
         return Ok((InvocationResultKind::RunTerminated, None));
     };
-    let published = match coral_provider::published_provider_in_transaction(
+    let result = match published_result_in_transaction(
         transaction,
         &run.workspace_id,
         &provider,
@@ -300,15 +305,14 @@ pub(super) async fn recover(
     )
     .await
     {
-        Ok(published) => published,
+        Ok(result) => result,
         // An Owner deleted the Provider since; no result can describe it now.
-        Err(coral_provider::Error::ProviderNotFound) => {
+        Err(Error::Provider(coral_provider::Error::ProviderNotFound)) => {
             return Ok((InvocationResultKind::RunTerminated, None));
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(error),
     };
-    let result =
-        serde_json::to_string(&published_result(&published)).map_err(Error::ProgramValueJson)?;
+    let result = serde_json::to_string(&result).map_err(Error::ProgramValueJson)?;
     Ok((InvocationResultKind::UpstreamOutcome, Some(result)))
 }
 
@@ -358,14 +362,29 @@ async fn end_setup(host: &BuiltinHost<'_>, setup: &ProviderSetupId) {
         .await;
 }
 
-/// The Operation Result for a Provider Coral published. It says what Coral
-/// resolved, so the Program need not guess whether its next call needs a person.
-fn published_result(published: &PublishedProvider) -> serde_json::Value {
-    CreateProviderResult::Published {
+/// The Operation Result for `provider`, which Coral published, read in the
+/// caller's transaction. It says what Coral resolved, so the Program need not
+/// guess whether its next call needs a person.
+async fn published_result_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    provider: &Provider,
+    principal: &Principal,
+) -> Result<serde_json::Value, Error> {
+    let published = coral_provider::published_provider_in_transaction(
+        transaction,
+        workspace_id,
+        provider,
+        principal,
+    )
+    .await?;
+    let rules =
+        coral_policy::exact_operation_rules_in_transaction(transaction, workspace_id).await?;
+    Ok(AddProviderResult::Published {
         namespace: published.provider.call_root().name().to_owned(),
-        facts: provider_facts(published),
+        facts: provider_facts(&published, &rules),
     }
-    .into_operation_result()
+    .into_operation_result())
 }
 
 /// A Publication rejected because its Setup ended or changed, or its request
@@ -434,7 +453,7 @@ fn configuration_rejection(
         .iter()
         .map(|error| {
             InputProblem::new(
-                CreateProviderArguments::argument_for(&error.field),
+                AddProviderArguments::argument_for(&error.field),
                 error.message.clone(),
             )
         })

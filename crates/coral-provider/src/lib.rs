@@ -24,7 +24,7 @@ mod credential_lifecycle_tests;
 mod error;
 mod lifecycle;
 mod management;
-pub use management::ProviderSource;
+pub use management::{ProviderSource, ProviderWithConfiguration};
 #[cfg(test)]
 mod management_tests;
 mod publication;
@@ -95,7 +95,7 @@ pub use types::{
     ProviderSetupState, ProviderState, ResolvedInvocationOperation, SetupRequest,
 };
 
-pub use access::{CredentialRoute, ProviderAccess, ProviderCallRoot, ProviderNamespace};
+pub use access::{CredentialRoute, ProviderAccess, ProviderCallRoot, ProviderNamespace, RouteFit};
 use account::setup as setup_credentials;
 use coral_catalog::{MaterializedOperation, OperationKey, ProviderSetupInput};
 use publication::materialization::{CatalogMaterializer, Materializer};

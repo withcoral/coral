@@ -30,7 +30,7 @@ pub(crate) struct UnfinishedInvocation {
 impl UnfinishedInvocation {
     /// How the Invocation ends with its Run, and the Operation Result recovery
     /// can still establish. A lost send is indeterminate. A lost Built-in
-    /// Operation may not be: a `createProvider`'s own Publication shows what
+    /// Operation may not be: an `addProvider`'s own Publication shows what
     /// happened.
     async fn settle_for_termination(
         &self,

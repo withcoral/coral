@@ -8,7 +8,11 @@ Agent onboarding needs an agent to add a Provider. Earlier designs gave `coral.a
 catalog, policy, approval and records. Coral instead gives every Workspace one **Built-in Provider**: a real Provider
 row with a real Materialized Operation Catalog whose Operations Coral defines in Rust and performs itself. Search,
 describe, Operation Access State, Approval Requests and Operation Invocation records therefore apply unchanged, and
-Coral grows the catalog one Operation at a time, starting with `createProvider`. This supersedes those designs.
+Coral grows the catalog one Operation at a time, starting with `addProvider`. This supersedes those designs.
+
+Each Built-in Operation takes the words Reef uses for the same action, since an Owner reads its name when approving a
+call: `addProvider` for "Add provider" (it was first named `createProvider`), and later `removeProvider` for "Remove
+provider", not `deleteProvider`.
 
 Each Provider row stores its full **Provider Call Root** (`coral.providers.github`, or `coral.workspace` for the Built-in
 Provider) instead of a short namespace that code prefixes with `coral.providers.`. Call Paths come straight from the
@@ -30,6 +34,9 @@ policy.
 Amended by [ADR 0022](0022-coral-updates-the-builtin-catalog-at-boot.md): when Coral boots, it installs the Built-in
 Provider in each Workspace that has none and updates it to the catalog it serves. An Owner still cannot regenerate or
 update it.
+
+[ADR 0024](0024-add-provider-returns-a-link-and-does-not-wait.md) records why `addProvider` returns a Reef link when a
+person must sign in, instead of waiting for them.
 
 Rejected: a separate admin surface, which duplicates catalog, policy and approval; a reserved `workspace` namespace under
 `coral.providers`, which special-cases the call path; and editing `0003` and `0004` in place, which makes Coral refuse

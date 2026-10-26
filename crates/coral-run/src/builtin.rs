@@ -1,6 +1,7 @@
 //! Built-in Provider Operations, which Coral performs itself with no upstream
 //! dispatch. Their input is validated before any other work, and their results
-//! never carry a secret or an OAuth URL.
+//! never carry a secret or the OAuth sign-in link Coral prepares for one
+//! person. A Provider's OAuth endpoints are configuration, not that link.
 //!
 //! coral-catalog owns each Operation's contract: its schemas, how its
 //! arguments are read, and the result it writes. Each module here performs
@@ -11,6 +12,7 @@ use coral_catalog::{
     ArgumentProblem, BuiltinArguments, BuiltinOperation, ExecutionBinding, MaterializedOperation,
     OperationKey, ProviderFacts, ProviderGenerationId,
 };
+use coral_policy::ExactOperationRules;
 use coral_provider::account::AccountModule;
 use coral_provider::{
     ManagementRequestId, ProviderModule, ProviderSetupId, PublishedProvider,
@@ -24,14 +26,16 @@ use crate::{
     CoralFailure, Error, HumanInterfaceUrl, InvocationId, InvocationResultKind, Rejection,
 };
 
-mod create_provider;
+mod add_provider;
+mod get_provider;
 mod list_providers;
 
 /// One admitted Built-in Operation with its validated input.
 #[derive(Clone)]
 pub(crate) enum BuiltinCall {
-    CreateProvider(Box<create_provider::CreateProvider>),
+    AddProvider(Box<add_provider::AddProvider>),
     ListProviders,
+    GetProvider(get_provider::GetProvider),
 }
 
 impl BuiltinCall {
@@ -52,11 +56,14 @@ impl BuiltinCall {
             BuiltinArguments::parse(operation, arguments)
                 .map_err(|problems| rejection(&problems))
                 .and_then(|arguments| match arguments {
-                    BuiltinArguments::CreateProvider(arguments) => {
-                        create_provider::CreateProvider::new(*arguments)
-                            .map(|call| Self::CreateProvider(Box::new(call)))
+                    BuiltinArguments::AddProvider(arguments) => {
+                        add_provider::AddProvider::new(*arguments)
+                            .map(|call| Self::AddProvider(Box::new(call)))
                     }
                     BuiltinArguments::ListProviders => Ok(Self::ListProviders),
+                    BuiltinArguments::GetProvider(arguments) => {
+                        get_provider::GetProvider::new(&arguments).map(Self::GetProvider)
+                    }
                 }),
         )
     }
@@ -64,8 +71,9 @@ impl BuiltinCall {
     /// Performs the Operation and returns its Operation Result.
     pub(crate) async fn perform(&self, host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
         match self {
-            Self::CreateProvider(call) => call.perform(host).await,
+            Self::AddProvider(call) => call.perform(host).await,
             Self::ListProviders => list_providers::perform(host).await,
+            Self::GetProvider(call) => call.perform(host).await,
         }
     }
 }
@@ -90,14 +98,12 @@ pub(crate) async fn recover(
         return Ok(None);
     };
     match binding.operation() {
-        Some(BuiltinOperation::CreateProvider) => {
-            create_provider::recover(transaction, run, invocation)
-                .await
-                .map(Some)
-        }
+        Some(BuiltinOperation::AddProvider) => add_provider::recover(transaction, run, invocation)
+            .await
+            .map(Some),
         // A read leaves nothing behind, and this version cannot read an
         // Operation it does not perform.
-        Some(BuiltinOperation::ListProviders) | None => Ok(None),
+        Some(BuiltinOperation::ListProviders | BuiltinOperation::GetProvider) | None => Ok(None),
     }
 }
 
@@ -122,6 +128,7 @@ pub(crate) trait InvokingRun: Send + Sync {
 /// Run's Workspace, the workflow Reef publishes with, and the Reef origin its
 /// results link to.
 pub(crate) struct BuiltinHost<'a> {
+    pub(crate) database: &'a coral_db::Database,
     pub(crate) providers: &'a ProviderModule,
     /// Where people sign in; without it, nobody can.
     pub(crate) accounts: Option<&'a AccountModule>,
@@ -149,14 +156,19 @@ fn rejection(problems: &[ArgumentProblem]) -> Rejection {
 }
 
 /// What both Operations report about a Provider: how to call it and whether
-/// the Program needs a person first.
-fn provider_facts(published: &PublishedProvider) -> ProviderFacts {
+/// the Program needs a person first. It counts only the Operations that
+/// `rules`, read in the same snapshot as `published`, leave callable.
+fn provider_facts(published: &PublishedProvider, rules: &ExactOperationRules) -> ProviderFacts {
     let provider = &published.provider;
     ProviderFacts {
         display_name: provider.display_name().to_owned(),
         credential_route: provider.access().credential_route().into(),
         authentication: published.authentication,
-        operations: published.available_operations,
+        operations: published
+            .operations
+            .iter()
+            .filter(|operation| !rules.disables(provider.id(), operation))
+            .count(),
         account_required: published.account_required,
     }
 }

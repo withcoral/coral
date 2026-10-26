@@ -26,7 +26,7 @@ import type {
 } from '@/views/providers/types'
 import type { PersonalAccountState } from '@/views/accounts/types'
 import { accountLabels } from '@/views/providers/account-labels'
-import { isBuiltinProvider, operationCallPath } from './call-root'
+import { operationCallPath } from './call-root'
 import { privateHeaders, type ManagementApi } from './management.server'
 import { OPENAPI_DOCUMENT_SIZE_LABEL } from './provider-input-limits'
 
@@ -287,7 +287,7 @@ export async function providerView(
     id,
     displayName: provider.displayName,
     namespace: provider.namespace,
-    builtin: isBuiltinProvider(provider.callRoot),
+    builtin: provider.builtin,
     account: accountLabel(provider.credentialRoute),
     blockers: provider.blockers.map(blockerLabel),
     personalAccountAction: personalAccountAction(provider, personalAccounts),
@@ -322,7 +322,7 @@ export function providerSettingsView(
     displayName: provider.displayName,
     namespace: provider.namespace,
     callRoot: provider.callRoot,
-    builtin: isBuiltinProvider(provider.callRoot),
+    builtin: provider.builtin,
     etag: provider.etag,
     path: providerPath(workspacePath, provider.name),
     enabled: enabled(provider.state),
@@ -351,7 +351,8 @@ const reasons: Record<string, string> = {
   ACCOUNT_REQUIRED: 'This choice needs an account. Sign in first.',
   WORKSPACE_ARCHIVED: 'This workspace is archived. Restore it before you make changes.',
   INVALID_LIFECYCLE_STATE: 'The provider is already in that state. Reload the page.',
-  BUILTIN_PROVIDER_MANAGED: 'Ask your Coral administrator to make this change.',
+  BUILTIN_PROVIDER_MANAGED:
+    'You cannot make this change to a provider Coral manages. Reload the page.',
   REQUEST_ID_CONFLICT:
     'Coral used this request for a different change. Reload the page. Start the change again.',
   SETUP_CONSUMED: 'This setup is complete. Start again to continue.',

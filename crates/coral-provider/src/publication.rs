@@ -643,7 +643,7 @@ impl TerminalContext<'_> {
         promotion: &setup_credentials::Promotion,
     ) -> Result<(Provider, coral_catalog::ProviderGenerationId), Error> {
         let prepared = with_setup_client(prepared, promotion)?;
-        crate::account::oauth_client::require_device_client(&prepared.credential_contract())?;
+        crate::account::oauth_client::require_oauth_application(&prepared.credential_contract())?;
         crate::account::oauth_client::require_configured(
             transaction,
             &owner,
@@ -1228,10 +1228,10 @@ impl ProviderModule {
                 if setting_changed && !request.allows_incompatible_configuration() {
                     return Err(Error::IncompatibleConfigurationConfirmationRequired);
                 }
-                if route == crate::CredentialRoute::None
-                    && replacement_contract != coral_catalog::ProviderCredentialContract::NONE
-                {
-                    return Err(Error::AccountRequired);
+                match route.fits(&replacement_contract) {
+                    crate::RouteFit::Fits => {}
+                    crate::RouteFit::SourceNeedsCredential => return Err(Error::AccountRequired),
+                    crate::RouteFit::SourceNeedsNoCredential => return Err(Error::AccountInput),
                 }
                 let promotion = if request.account_grant().is_some() {
                     if route != crate::CredentialRoute::Fixed {
@@ -1266,7 +1266,7 @@ impl ProviderModule {
                     }
                     None
                 };
-                crate::account::oauth_client::require_device_client(&replacement_contract)?;
+                crate::account::oauth_client::require_oauth_application(&replacement_contract)?;
                 crate::account::oauth_client::require_configured(
                     transaction,
                     request.owner(),

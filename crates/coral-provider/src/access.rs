@@ -114,6 +114,16 @@ impl ProviderCallRoot {
         }
     }
 
+    /// Returns the namespace an Owner gave the Provider; `None` for the
+    /// Built-in Provider, which has none.
+    #[must_use]
+    pub const fn namespace(&self) -> Option<&ProviderNamespace> {
+        match self {
+            Self::Owner(namespace) => Some(namespace),
+            Self::Builtin => None,
+        }
+    }
+
     /// Returns the Call Root's last segment, such as `github` or `workspace`, for
     /// search text and labels. No rule reads it.
     #[must_use]
@@ -141,6 +151,43 @@ pub enum CredentialRoute {
     Caller,
     /// The Provider's single shared Account.
     Fixed,
+}
+
+/// Whether a Credential Route suits a source's credential contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteFit {
+    /// The route sends what the source needs.
+    Fits,
+    /// The source needs a credential, and the route sends none.
+    SourceNeedsCredential,
+    /// The source needs no credential, and the route sends one.
+    SourceNeedsNoCredential,
+}
+
+impl CredentialRoute {
+    /// Every route, in the order Reef offers them.
+    pub const ALL: [Self; 3] = [Self::None, Self::Caller, Self::Fixed];
+
+    /// Whether this route suits `contract`. Setup publishability, Publication
+    /// and Invocation's credential selection all decide by this one rule.
+    #[must_use]
+    pub fn fits(self, contract: &coral_catalog::ProviderCredentialContract) -> RouteFit {
+        let needs_credential = contract != &coral_catalog::ProviderCredentialContract::NONE;
+        match (self, needs_credential) {
+            (Self::None, true) => RouteFit::SourceNeedsCredential,
+            (Self::Fixed | Self::Caller, false) => RouteFit::SourceNeedsNoCredential,
+            (Self::None, false) | (Self::Fixed | Self::Caller, true) => RouteFit::Fits,
+        }
+    }
+
+    /// The routes that suit `contract`, in [`Self::ALL`]'s order.
+    #[must_use]
+    pub fn fitting(contract: &coral_catalog::ProviderCredentialContract) -> Vec<Self> {
+        Self::ALL
+            .into_iter()
+            .filter(|route| route.fits(contract) == RouteFit::Fits)
+            .collect()
+    }
 }
 
 impl From<coral_catalog::BuiltinCredentialRoute> for CredentialRoute {

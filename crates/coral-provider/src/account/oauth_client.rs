@@ -378,22 +378,30 @@ async fn client_secret_missing(
         .is_none_or(|secret| secret.bound_client_id != policy.client_id))
 }
 
-pub(crate) fn require_device_client(
+/// Refuses a contract whose OAuth sign-in names no application. Publication
+/// promotes the application a Setup's sign-in set up, so a contract that still
+/// has none gives an Account's Connect no application to sign in with.
+pub(crate) fn require_oauth_application(
     contract: &coral_catalog::ProviderCredentialContract,
 ) -> Result<(), Error> {
-    if device_client_missing(contract.authentication()) {
+    if oauth_application_missing(contract.authentication()) {
         return Err(Error::OAuthClientConfiguration);
     }
     Ok(())
 }
 
-/// Whether device authorization names no OAuth application. Coral never sets
-/// one up for it, so its sign-in cannot start.
-pub(crate) fn device_client_missing(
+/// Whether an OAuth sign-in names no OAuth application. Nothing that starts a
+/// sign-in from this contract alone sets one up: only a Setup's own sign-in
+/// can, and a device sign-in never does.
+pub(crate) fn oauth_application_missing(
     authentication: &coral_catalog::AuthenticationConfiguration,
 ) -> bool {
     matches!(
         authentication,
         coral_catalog::AuthenticationConfiguration::OAuthDeviceCode { client: None, .. }
+            | coral_catalog::AuthenticationConfiguration::OAuthAuthorizationCode {
+                client: None,
+                ..
+            }
     )
 }

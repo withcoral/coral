@@ -33,16 +33,43 @@ export function SetupFields({ setup, extra }: { setup: SetupView; extra?: ReactN
 }
 
 /**
- * Where typed-in credentials go, shown where you enter them. An agent's
- * createProvider can choose the servers, so you check them here.
+ * The form that takes typed-in credentials for one setup revision. When the
+ * setup knows where they go, it says so: an agent's addProvider can choose the
+ * servers, so you check them here.
  */
-export function CredentialDestination({ setup }: { setup: SetupView }) {
+export function SetupSecretForm({
+  setup,
+  form,
+  pending,
+  id,
+  extra,
+  children,
+}: {
+  setup: SetupView
+  form: FormContext
+  pending: boolean
+  /** Names the form for a submit button outside it, such as in a dialog's actions. */
+  id?: string
+  /** Hidden fields beyond the setup revision's, such as the account choice. */
+  extra?: ReactNode
+  /** Shown after the destination line, such as a submit button or a docs link. */
+  children?: ReactNode
+}) {
   const hosts = credentialHosts(setup)
-  if (!hosts.length) return null
   return (
-    <Typography.BodySmall as="p" variant="tertiary">
-      Coral sends what you enter here to {hosts.join(', ')}.
-    </Typography.BodySmall>
+    <Form id={id} method="post" reloadDocument className={styles.stack} aria-busy={pending}>
+      <Fields form={form} intent="secret" />
+      <SetupFields setup={setup} extra={extra} />
+      <CredentialFields fields={setup.credentialFields}>
+        {(input) => <Inputs.CredentialInput {...input} />}
+      </CredentialFields>
+      {hosts.length > 0 && (
+        <Typography.BodySmall as="p" variant="tertiary">
+          Coral sends what you enter here to {hosts.join(', ')}.
+        </Typography.BodySmall>
+      )}
+      {children}
+    </Form>
   )
 }
 
@@ -257,20 +284,7 @@ export function DiscoveryPrompt({
                   <Dialog.Title>Read the operations</Dialog.Title>
                   <Dialog.Description>{DISCOVERY_ONLY}</Dialog.Description>
                   {bearer && (
-                    <Form
-                      id={formId}
-                      method="post"
-                      reloadDocument
-                      className={styles.stack}
-                      aria-busy={pending}
-                    >
-                      <Fields form={form} intent="secret" />
-                      <SetupFields setup={setup} />
-                      <CredentialFields fields={setup.credentialFields}>
-                        {(input) => <Inputs.CredentialInput {...input} />}
-                      </CredentialFields>
-                      <CredentialDestination setup={setup} />
-                    </Form>
+                    <SetupSecretForm setup={setup} form={form} pending={pending} id={formId} />
                   )}
                   <Dialog.Actions>
                     <Button.TextButton
@@ -406,20 +420,7 @@ export function DiscoveryStep({
       )}
       {setup.credentialMethod === 'bearer' ? (
         <>
-          <Form
-            id={formId}
-            method="post"
-            reloadDocument
-            className={styles.stack}
-            aria-busy={pending}
-          >
-            <Fields form={form} intent="secret" />
-            <SetupFields setup={setup} />
-            <CredentialFields fields={setup.credentialFields}>
-              {(input) => <Inputs.CredentialInput {...input} />}
-            </CredentialFields>
-            <CredentialDestination setup={setup} />
-          </Form>
+          <SetupSecretForm setup={setup} form={form} pending={pending} id={formId} />
           <div className={styles.stepActions}>
             {back}
             <DocumentSubmitButton form={formId} size="36" disabled={pending}>

@@ -1,4 +1,4 @@
-//! `coral.workspace.createProvider`: the schemas a Program is typed from, the
+//! `coral.workspace.addProvider`: the schemas a Program is typed from, the
 //! arguments Coral reads against the input schema, and the result it writes
 //! against the output schema.
 
@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{
-    ArgumentProblem, BuiltinCredentialRoute, BuiltinOperation, Definition, ProviderFacts,
-    derived_schema, operation_result, present,
+    ArgumentProblem, BuiltinCredentialRoute, BuiltinOperation, Definition, NAMESPACE_REASON,
+    ProviderFacts, derived_schema, operation_result, present,
 };
 use crate::{
     AuthenticationConfiguration, CredentialField, OpenApiDocument, OperationHints,
@@ -29,11 +29,11 @@ pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Configure;
 
 pub(super) fn definition() -> Definition {
     Definition {
-        key: BuiltinOperation::CreateProvider.key(),
-        summary: "Create a Provider from an OpenAPI document or URL, or an MCP server URL",
+        key: BuiltinOperation::AddProvider.key(),
+        summary: "Add a Provider from an OpenAPI document or URL, or an MCP server URL",
         presentation: OperationPresentation::new(
-            Some("Create provider".to_string()),
-            "Create a Provider in this Workspace from an OpenAPI document, an OpenAPI \
+            Some("Add provider".to_string()),
+            "Add a Provider to this Workspace from an OpenAPI document, an OpenAPI \
              document URL, or an MCP server URL. Coral publishes it when nobody needs to \
              sign in. Otherwise it returns a Coral UI link where a person finishes \
              and publishes it."
@@ -51,7 +51,9 @@ pub(super) fn definition() -> Definition {
                  caller. Never pass a secret or a literal credential value: Coral stores \
                  your arguments, and Workspace Owners can see them. When Coral cannot \
                  fetch a source URL, the call fails with upstream_incomplete: check that \
-                 the URL is reachable, then call again. When status is \
+                 the URL is reachable, then call again. When credentialRoute is none and \
+                 Coral cannot publish the Provider, the call fails with \
+                 provider_publication_failed and adds nothing: call again. When status is \
                  published, call the Provider's Operations under \
                  coral.providers.<namespace>. When status is needs_sign_in, show the \
                  person the returned url. To check later whether the person published it, \
@@ -62,15 +64,15 @@ pub(super) fn definition() -> Definition {
         // No read-only hint: the default Operation Access State is approval_required.
         hints: OperationHints::default(),
         input: derived_schema::<Arguments>(Contract::Deserialize),
-        output: derived_schema::<CreateProviderResult>(Contract::Serialize),
+        output: derived_schema::<AddProviderResult>(Contract::Serialize),
     }
 }
 
-/// `createProvider`'s arguments, checked by every rule that needs no
+/// `addProvider`'s arguments, checked by every rule that needs no
 /// Workspace state. The Provider's configuration leaves each omitted field to
 /// the source's suggestion.
 #[derive(Debug, Clone)]
-pub struct CreateProviderArguments {
+pub struct AddProviderArguments {
     /// A valid Provider Namespace.
     pub namespace: String,
     /// Where Coral reads the Provider from.
@@ -128,7 +130,7 @@ impl ConfigurationChoices {
     }
 }
 
-/// `createProvider`'s arguments as a Program writes them. The input schema
+/// `addProvider`'s arguments as a Program writes them. The input schema
 /// is derived from these types, so the two cannot disagree on a shape.
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -230,7 +232,7 @@ impl SourceInput {
     }
 }
 
-impl CreateProviderArguments {
+impl AddProviderArguments {
     /// Reads the arguments: the shape first, then the namespace syntax, the
     /// route and the source, without any network call.
     ///
@@ -242,10 +244,7 @@ impl CreateProviderArguments {
         // Each check below stands alone, so the Program learns every problem at once.
         let mut problems = Vec::new();
         if !crate::provider_namespace_is_valid(&arguments.namespace) {
-            problems.push(ArgumentProblem::new(
-                "namespace",
-                "use a JavaScript identifier of at most 128 bytes, such as `weather`",
-            ));
+            problems.push(ArgumentProblem::new("namespace", NAMESPACE_REASON));
         }
         let authentication = arguments
             .authentication
@@ -295,7 +294,7 @@ impl CreateProviderArguments {
     }
 }
 
-impl CreateProviderArguments {
+impl AddProviderArguments {
     /// The argument a Program corrects for a configuration field that Coral
     /// reports when it reads or confirms the configuration, such as
     /// `requestHeaders.Host` for `request_headers.Host`.
@@ -327,11 +326,11 @@ impl CreateProviderArguments {
     }
 }
 
-/// What `createProvider` returns.
+/// What `addProvider` returns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(tag = "status", rename_all = "snake_case")]
 #[schemars(deny_unknown_fields, description = "")]
-pub enum CreateProviderResult {
+pub enum AddProviderResult {
     /// Coral published the Provider, and the Program can call it now.
     #[schemars(description = "Coral published the Provider. You can call it now.")]
     Published {
@@ -356,7 +355,7 @@ pub enum CreateProviderResult {
     },
 }
 
-impl CreateProviderResult {
+impl AddProviderResult {
     /// The Operation Result.
     #[must_use]
     pub fn into_operation_result(self) -> Value {

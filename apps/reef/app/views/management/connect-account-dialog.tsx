@@ -43,9 +43,11 @@ export function ConnectAccountDialog({
   ready,
   fallback,
   trigger,
+  action,
   description = 'Connect this account for the agent. Your personal accounts stay the same.',
 }: {
-  provider: string
+  /** Names the provider to a route that serves several; your account page needs none. */
+  provider?: string
   providerName: string
   /** Its namespace names the trigger, since display names need not be unique. */
   namespace: string
@@ -57,7 +59,15 @@ export function ConnectAccountDialog({
   ready: boolean
   fallback: ReactNode
   /** A labelled button in place of the row's small Connect; the label names the account. */
-  trigger?: { label: string; variant: 'primary' | 'secondary'; size: '22' | '32' | '36' }
+  trigger?: {
+    label: string
+    variant: 'primary' | 'secondary'
+    size: '22' | '32' | '36'
+    /** Names the account when the label alone does not, as in a list. */
+    ariaLabel?: string
+  }
+  /** The route that starts the connection; this page's own by default. */
+  action?: string
   /** Whose account this is, under the title. */
   description?: string
 }) {
@@ -74,9 +84,9 @@ export function ConnectAccountDialog({
         // A fresh attempt each time: the same request ID replays the last one.
         requestId: crypto.randomUUID(),
         intent: 'connectAccount',
-        provider,
+        ...(provider && { provider }),
       },
-      { method: 'post' },
+      { method: 'post', action },
     )
   // Every finished connection reloads this page, so the row says when it is done.
   const [seenReady, setSeenReady] = useState(ready)
@@ -111,7 +121,7 @@ export function ConnectAccountDialog({
               // The name starts with the visible label, so voice control finds it.
               ariaLabel={
                 trigger
-                  ? undefined
+                  ? trigger.ariaLabel
                   : `${reconnect ? 'Reconnect' : 'Connect'} account for ${namespace}`
               }
             />

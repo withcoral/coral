@@ -202,7 +202,6 @@ function AccountSection({
     (link ?? (provider.connection === 'not_connected' && !reconnect ? null : manage))
   ) : (
     <ConnectAccountDialog
-      provider={provider.id}
       providerName={provider.displayName}
       namespace={provider.namespace}
       form={form}
@@ -211,6 +210,8 @@ function AccountSection({
       ready={connected}
       fallback={provider.connection === 'not_connected' && !reconnect ? null : manage}
       trigger={{ label: `${verb ?? 'Connect'} ${whose}`, variant: 'primary', size: '32' }}
+      // Your account page starts it, and its `returnTo` brings sign-in back here.
+      action={accountsPath}
       description={audience.onlyYou}
     />
   )
@@ -329,7 +330,8 @@ function Removal({ provider, form }: { provider: ProviderSettingsView; form: For
             <ul className={styles.bulletList}>
               <Typography.Body as="li">{provider.displayName}</Typography.Body>
               <Typography.Body as="li">
-                The namespace <Typography.CodeInline>{provider.callRoot}</Typography.CodeInline>
+                Every operation under{' '}
+                <Typography.CodeInline>{provider.callRoot}</Typography.CodeInline>
               </Typography.Body>
               <Typography.Body as="li">Every connected account</Typography.Body>
             </ul>

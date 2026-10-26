@@ -479,6 +479,38 @@ async fn challenge_produces_a_resumable_setup_that_consent_and_discovery_make_re
         .unwrap();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let provider = publication.published_provider().unwrap().clone();
+    // The Provider Configuration keeps what discovery found and the application
+    // Coral registered, so an Owner reads both.
+    let saved = harness
+        .providers
+        .inspect_provider_configuration(
+            &owner,
+            workspace.id(),
+            &crate::ProviderNamespace::parse("oauth").unwrap(),
+        )
+        .await
+        .unwrap();
+    let AuthenticationConfiguration::OAuthAuthorizationCode {
+        resource,
+        issuer,
+        client: policy,
+        ..
+    } = &saved.authentication
+    else {
+        panic!("OAuth configuration, got {:?}", saved.authentication);
+    };
+    assert_eq!(
+        (
+            resource.as_deref(),
+            issuer.as_deref(),
+            policy.as_ref().map(|policy| policy.bootstrap),
+        ),
+        (
+            Some(upstream.resource().as_str()),
+            Some(upstream.server.uri().as_str()),
+            Some(OAuthClientBootstrap::DynamicClientRegistration),
+        )
+    );
     let secret = credential_for(
         &harness,
         workspace.id(),
@@ -2072,6 +2104,159 @@ impl OAuthApi {
     }
 }
 
+/// A kind of source a Credential Route must suit, and the state of its open
+/// Setup.
+#[derive(Debug, Clone, Copy)]
+enum Source {
+    /// Takes no credential.
+    Free,
+    /// Takes a bearer token.
+    Bearer,
+    /// Signs in with OAuth, and its configuration names no application.
+    OAuth,
+    /// Signs in with OAuth through an application the Owner named.
+    OAuthApplication,
+    /// An MCP server behind a bearer token: a person typed the token, and
+    /// discovery with it failed, so Coral holds it while discovery waits.
+    HeldBearer,
+    /// An OAuth MCP server whose discovery sign-in used an application Coral
+    /// registered with it.
+    RegisteredOAuth,
+}
+
+impl OAuthApi {
+    /// Prepares an open Setup for `source`. Only [`Source::OAuthApplication`]
+    /// names an application.
+    async fn prepare(
+        &self,
+        harness: &Harness,
+        context: &coral_workspace::ChangeContext,
+        workspace: &WorkspaceId,
+        source: Source,
+    ) -> crate::ProviderSetup {
+        let document = match source {
+            Source::Free => {
+                crate::OpenApiDocument::parse(crate::tests::CREDENTIAL_FREE_OPENAPI).unwrap()
+            }
+            Source::Bearer => self.bearer_document(),
+            Source::OAuth | Source::OAuthApplication => self.document("OAuth"),
+            Source::HeldBearer => return held_bearer_setup(harness, context, workspace).await,
+            Source::RegisteredOAuth => {
+                return registered_sign_in_setup(harness, context, workspace).await;
+            }
+        };
+        let setup = harness
+            .providers
+            .prepare_openapi_fixture(context, workspace, document)
+            .await
+            .unwrap();
+        if let Source::OAuthApplication = source {
+            crate::tests::name_oauth_application(
+                &harness.providers,
+                context,
+                workspace,
+                setup.id(),
+            )
+            .await;
+        }
+        setup
+    }
+}
+
+/// An MCP Setup whose typed bearer token Coral holds while discovery waits:
+/// the server stops answering after the configuration is confirmed.
+async fn held_bearer_setup(
+    harness: &Harness,
+    context: &coral_workspace::ChangeContext,
+    workspace: &WorkspaceId,
+) -> crate::ProviderSetup {
+    const TOKEN: &str = "held-token";
+    let server = super::setup_tests::mcp_server(TOKEN).await;
+    let setup = harness
+        .providers
+        .prepare_setup(
+            context,
+            workspace,
+            crate::tests::mcp_url(server.uri()),
+            None,
+        )
+        .await
+        .unwrap();
+    let review = harness
+        .providers
+        .review_setup_configuration(context.actor(), workspace, setup.id())
+        .await
+        .unwrap();
+    let mut values = review.document.unwrap().suggested;
+    values.authentication = Some(AuthenticationConfiguration::Bearer);
+    let confirmed = harness
+        .providers
+        .confirm_setup_configuration(context, workspace, setup.id(), review.revision, values)
+        .await
+        .unwrap();
+    server.reset().await;
+    let held = harness
+        .accounts
+        .authorize_setup(
+            context,
+            workspace,
+            setup.id(),
+            confirmed.revision,
+            coral_credentials::CredentialValues::token(Secret::new(TOKEN.into()).unwrap()),
+        )
+        .await
+        .unwrap();
+    assert!(held.authorized && held.authorization.is_none());
+    assert_eq!(
+        harness
+            .providers
+            .get_setup(context.actor(), workspace, setup.id())
+            .await
+            .unwrap()
+            .state(),
+        ProviderSetupState::AwaitingDiscovery
+    );
+    setup
+}
+
+/// An OAuth MCP Setup whose discovery sign-in completed through an
+/// application Coral registered, so its configuration names none.
+async fn registered_sign_in_setup(
+    harness: &Harness,
+    context: &coral_workspace::ChangeContext,
+    workspace: &WorkspaceId,
+) -> crate::ProviderSetup {
+    let upstream = OAuthMcp::start().await;
+    let setup = harness
+        .accounts
+        .prepare_remote_fixture(
+            context,
+            workspace,
+            crate::tests::mcp_url(upstream.mcp_url()),
+            None,
+        )
+        .await
+        .unwrap();
+    let started = harness
+        .accounts
+        .start_setup_authorization(context, workspace, setup.id(), 1, client())
+        .await
+        .unwrap();
+    let navigation = started.authorization.unwrap().authorization_url.unwrap();
+    harness
+        .accounts
+        .complete_setup_authorization(
+            context,
+            Some((workspace, setup.id())),
+            &state_of(&navigation),
+            Secret::new(CODE.into()).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(upstream.knobs.registrations.load(Ordering::SeqCst), 1);
+    setup
+}
+
 fn explicit(client_id: &str) -> SetupOAuthClient {
     SetupOAuthClient::new(
         "https://reef.example/provider-setup/oauth/callback".into(),
@@ -2132,129 +2317,164 @@ async fn active_contract(
     contract
 }
 
+/// A Setup's state and configuration revision, which a refused change leaves
+/// as they were.
+async fn setup_progress(
+    harness: &Harness,
+    owner: &coral_workspace::AuthenticatedUser,
+    workspace: &WorkspaceId,
+    setup: &crate::ProviderSetupId,
+) -> (ProviderSetupState, i64) {
+    let state = harness
+        .providers
+        .get_setup(owner, workspace, setup)
+        .await
+        .unwrap()
+        .state();
+    let review = harness
+        .providers
+        .review_setup_configuration(owner, workspace, setup)
+        .await
+        .unwrap();
+    (state, review.revision)
+}
+
+/// Publication without material takes only a route that suits the source,
+/// and never an OAuth source with no application, which nobody could connect.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one journey covers every route against every contract without material"
+    reason = "one table covers what Publication does with each route fit and each kind of source without material"
 )]
-async fn publication_without_material_accepts_caller_for_any_contract_and_none_only_when_free() {
+async fn publication_without_material_takes_only_a_fitting_route_and_an_oauth_application() {
+    #[derive(Debug)]
+    enum Expected {
+        Published,
+        Failed(&'static str),
+        Refused,
+    }
     let api = OAuthApi::start().await;
     let harness = harness(None).await;
     let (owner, workspace) = workspace_owner(&harness, "user:no-material").await;
-    let publish = |setup: crate::ProviderSetupId, namespace: &str, route, at: i64, suffix| {
-        let providers = harness.providers.clone();
-        let owner = owner.clone();
-        let workspace = workspace.id().clone();
-        let namespace = namespace.to_owned();
-        async move {
-            providers
-                .publish_workspace_provider(
-                    &change_context(owner, at, '9'),
-                    publication_request(
-                        &workspace,
-                        &setup,
-                        &namespace,
-                        route,
-                        &format!("e0000000-0000-4000-8000-00000000000{suffix}"),
-                    ),
-                )
-                .await
-                .unwrap()
+    let cases = [
+        (Source::Free, CredentialRoute::None, Expected::Published),
+        // Route fit itself is tested at its owner; one misfit each way shows
+        // Publication applies it.
+        (
+            Source::Free,
+            CredentialRoute::Caller,
+            Expected::Failed("credential_not_accepted"),
+        ),
+        // A bearer document: caller succeeds without a secret; none and fixed do not.
+        (Source::Bearer, CredentialRoute::Caller, Expected::Published),
+        (
+            Source::Bearer,
+            CredentialRoute::None,
+            Expected::Failed("account_required"),
+        ),
+        (
+            Source::Bearer,
+            CredentialRoute::Fixed,
+            Expected::Failed("account_required"),
+        ),
+        // Nobody signed in, so Coral set up no application, and none can
+        // start a sign-in later.
+        (Source::OAuth, CredentialRoute::Caller, Expected::Refused),
+        // A named application lets each person sign in later.
+        (
+            Source::OAuthApplication,
+            CredentialRoute::Caller,
+            Expected::Published,
+        ),
+    ];
+    for (index, (source, route, expected)) in cases.into_iter().enumerate() {
+        let at = i64::try_from(index).unwrap() * 10 + 10;
+        let context = change_context(owner.clone(), at, '1');
+        let setup = api
+            .prepare(&harness, &context, workspace.id(), source)
+            .await;
+        let namespace = format!("case_{index}");
+        let before = setup_progress(&harness, &owner, workspace.id(), setup.id()).await;
+        let published = harness
+            .providers
+            .publish_workspace_provider(
+                &change_context(owner.clone(), at + 1, '9'),
+                publication_request(
+                    workspace.id(),
+                    setup.id(),
+                    &namespace,
+                    route,
+                    &format!("e0000000-0000-4000-8000-0000000000{index:02}"),
+                ),
+            )
+            .await;
+        let case = format!("{source:?} under {route:?}");
+        match expected {
+            Expected::Published => {
+                let publication = published.unwrap();
+                assert_eq!(
+                    publication.outcome(),
+                    ProviderPublicationOutcome::Succeeded,
+                    "{case}: {:?}",
+                    publication.diagnostic()
+                );
+                if route == CredentialRoute::Caller {
+                    // Each person connects their own Account before calling it.
+                    assert!(matches!(
+                        credential_for(
+                            &harness,
+                            workspace.id(),
+                            publication.published_provider().unwrap().id(),
+                            &namespace,
+                            "getData",
+                            &user_principal(&owner),
+                            at + 2,
+                        )
+                        .await,
+                        Err(Error::AccountRequired)
+                    ));
+                }
+            }
+            Expected::Failed(code) => {
+                let publication = published.unwrap();
+                assert_eq!(
+                    publication.outcome(),
+                    ProviderPublicationOutcome::Failed,
+                    "{case}"
+                );
+                assert_eq!(publication.diagnostic().unwrap().code(), code, "{case}");
+            }
+            Expected::Refused => {
+                assert!(
+                    matches!(published, Err(Error::OAuthClientConfiguration)),
+                    "{case}: {published:?}"
+                );
+                // The refusal changed nothing: the Setup stays open, at the
+                // same configuration, for a person to name an application.
+                assert_eq!(
+                    setup_progress(&harness, &owner, workspace.id(), setup.id()).await,
+                    before,
+                    "{case}"
+                );
+            }
         }
-    };
-    // A bearer document: caller succeeds without a secret; none and fixed do not.
-    let bearer = |at: i64| {
-        let providers = harness.providers.clone();
-        let owner = owner.clone();
-        let workspace = workspace.id().clone();
-        let document = api.bearer_document();
-        async move {
-            providers
-                .prepare_openapi_fixture(&change_context(owner, at, '1'), &workspace, document)
-                .await
-                .unwrap()
-        }
-    };
-    let caller = publish(
-        bearer(10).await.id().clone(),
-        "bearer_caller",
-        CredentialRoute::Caller,
-        11,
-        '1',
-    )
-    .await;
-    assert_eq!(caller.outcome(), ProviderPublicationOutcome::Succeeded);
-    let none = publish(
-        bearer(20).await.id().clone(),
-        "bearer_none",
-        CredentialRoute::None,
-        21,
-        '2',
-    )
-    .await;
-    assert_eq!(none.outcome(), ProviderPublicationOutcome::Failed);
-    assert_eq!(none.diagnostic().unwrap().code(), "account_required");
-    let fixed = publish(
-        bearer(30).await.id().clone(),
-        "bearer_fixed",
-        CredentialRoute::Fixed,
-        31,
-        '3',
-    )
-    .await;
-    assert_eq!(fixed.outcome(), ProviderPublicationOutcome::Failed);
-    assert_eq!(fixed.diagnostic().unwrap().code(), "account_required");
-    // An OAuth document: caller succeeds with no sign-in at all.
-    let oauth = harness
-        .providers
-        .prepare_openapi_fixture(
-            &change_context(owner.clone(), 40, '1'),
-            workspace.id(),
-            api.document("OAuth"),
-        )
-        .await
-        .unwrap();
-    let oauth_caller = publish(
-        oauth.id().clone(),
-        "oauth_caller",
-        CredentialRoute::Caller,
-        41,
-        '4',
-    )
-    .await;
-    assert_eq!(
-        oauth_caller.outcome(),
-        ProviderPublicationOutcome::Succeeded
-    );
-    assert_eq!(
-        active_contract(&harness, workspace.id(), "oauth_caller")
+        let listed = blockers(&harness, &owner, workspace.id())
             .await
-            .oauth_client(),
-        None,
-        "no client is promoted without a credential"
-    );
-    // A caller Provider created this way is ready; the adder's own sign-in is personal.
-    let seen = blockers(&harness, &owner, workspace.id()).await;
-    for namespace in ["bearer_caller", "oauth_caller"] {
-        let (_, blockers) = seen
-            .iter()
-            .find(|(name, _)| name.contains(namespace))
-            .unwrap_or_else(|| panic!("{namespace} published"));
-        assert!(blockers.is_empty(), "{namespace}: {blockers:?}");
+            .into_iter()
+            .find(|(name, _)| name.contains(&namespace));
+        match expected {
+            // A caller Provider created this way is ready; the adder's own
+            // sign-in is personal.
+            Expected::Published => assert_eq!(
+                listed.map(|(_, blockers)| blockers),
+                Some(Vec::new()),
+                "{case}"
+            ),
+            Expected::Failed(_) | Expected::Refused => {
+                assert!(listed.is_none(), "{case}: no Provider is published");
+            }
+        }
     }
-    assert!(matches!(
-        credential_for(
-            &harness,
-            workspace.id(),
-            oauth_caller.published_provider().unwrap().id(),
-            "oauth_caller",
-            "getData",
-            &user_principal(&owner),
-            60,
-        )
-        .await,
-        Err(Error::AccountRequired)
-    ));
 }
 
 #[tokio::test]
@@ -3261,7 +3481,7 @@ async fn confidential_setup_authenticates_with_the_organization_owners_applicati
     Box::pin(confidential_application_lifecycle(true)).await;
 }
 
-/// An agent's createProvider confirms a confidential application without its
+/// An agent's addProvider confirms a confidential application without its
 /// secret, which it never sees. Sign-in refuses to start until the person gives
 /// the secret, and then seals it with the flow, as configuration would have.
 #[tokio::test]
@@ -4389,6 +4609,113 @@ async fn configure_publication_application(
     confirmed.revision
 }
 
+// Catches: a confidential application's secret, or a credential a person
+// entered, read back with the Provider Configuration, or the application in
+// use missing from it.
+#[tokio::test]
+async fn a_provider_configuration_holds_no_secret_or_credential_value() {
+    const SECRET: &str = "saved-application-canary";
+    const CREDENTIAL: &str = "header-credential-canary";
+    let api = OAuthApi::start().await;
+    let harness = harness(None).await;
+    let actor = organization_user(
+        harness.database.clone(),
+        "user:saved-application",
+        OrganizationRole::Member,
+    )
+    .await;
+    let context = change_context(actor.clone(), 10, '1');
+    let workspace = harness
+        .workspaces
+        .create(
+            &context,
+            coral_workspace::WorkspaceDisplayName::parse("Saved").unwrap(),
+        )
+        .await
+        .unwrap();
+    let owner = workspace.id().clone();
+    let setup = harness
+        .providers
+        .prepare_setup(
+            &context,
+            &owner,
+            ProviderSetupSource::OpenApiDocument(api.document("Saved")),
+            None,
+        )
+        .await
+        .unwrap();
+    configure_publication_application(&harness, &context, &owner, setup.id(), Some(SECRET)).await;
+    let publication = harness
+        .providers
+        .publish_workspace_provider(
+            &context,
+            publication_request(
+                workspace.id(),
+                setup.id(),
+                "saved",
+                CredentialRoute::Caller,
+                "e0000000-0000-4000-8000-0000000000a1",
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
+    let document = json!({
+        "openapi": "3.1.0", "info": { "title": "Private", "version": "1" },
+        "servers": [{ "url": "https://private.example" }],
+        "security": [{ "apiKeyAuth": [] }],
+        "components": { "securitySchemes": {
+            "apiKeyAuth": { "type": "apiKey", "in": "header", "name": "X-API-Key" },
+        } },
+        "paths": { "/forecast": { "get": { "operationId": "getForecast", "responses": { "200": { "description": "OK" } } } } },
+    });
+    harness
+        .providers
+        .publish_shared_fixture(
+            &change_context(actor.clone(), 20, '2'),
+            &owner,
+            crate::OpenApiDocument::parse(&document.to_string()).unwrap(),
+            "private",
+            &harness.accounts,
+            coral_credentials::CredentialValues::new(std::collections::BTreeMap::from([(
+                "api_key_auth".to_owned(),
+                Secret::new(CREDENTIAL.to_owned()).unwrap(),
+            )]))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let inspect = |namespace: &str| {
+        let namespace = crate::ProviderNamespace::parse(namespace).unwrap();
+        let providers = &harness.providers;
+        let actor = &actor;
+        let owner = &owner;
+        async move {
+            providers
+                .inspect_provider_configuration(actor, owner, &namespace)
+                .await
+                .unwrap()
+        }
+    };
+    let saved = inspect("saved").await;
+    let client = saved
+        .authentication
+        .oauth_client()
+        .expect("the application in use");
+    assert_eq!(
+        (client.client_id.as_str(), client.authentication),
+        (
+            "manual-client",
+            coral_catalog::OAuthClientAuthenticationMethod::ClientSecretPost
+        )
+    );
+    let shown = format!("{saved:?}{:?}", inspect("private").await);
+    for canary in [SECRET, CREDENTIAL] {
+        assert!(!shown.contains(canary), "{canary} leaked: {shown}");
+    }
+}
+
 #[tokio::test]
 async fn publication_enforces_application_secret_expiry_without_inspection() {
     for role in [OrganizationRole::Member, OrganizationRole::Owner] {
@@ -5069,6 +5396,7 @@ async fn consent_issuance_rechecks_dns_on_setup_reads_account_reads_and_request_
             .await
             .unwrap();
         if published {
+            crate::tests::name_oauth_application(&h.providers, &context, scope, setup.id()).await;
             let publication = h
                 .providers
                 .publish_workspace_provider(
@@ -5270,5 +5598,67 @@ async fn mcp_confirmed_scopes_and_format_reach_authorization_without_changing_di
         };
         assert_eq!(issuer.as_deref(), Some(upstream.server.uri().as_str()));
         assert_eq!(resource.as_deref(), Some(upstream.mcp_url().as_str()));
+    }
+}
+
+/// Coral, not Reef, says which routes suit a Setup's source and whether a
+/// person can connect an Account: now, through the Setup's own sign-in, or
+/// later, after an add with no sign-in.
+#[tokio::test]
+async fn a_setup_reports_its_fitting_routes_and_whether_connect_can_start() {
+    let api = OAuthApi::start().await;
+    let harness = harness(None).await;
+    let (owner, workspace) = workspace_owner(&harness, "user:connect-readiness").await;
+    let credential = || vec![CredentialRoute::Caller, CredentialRoute::Fixed];
+    for (index, (source, canceled, routes, now, later)) in [
+        (
+            Source::Free,
+            false,
+            vec![CredentialRoute::None],
+            false,
+            false,
+        ),
+        (Source::Bearer, false, credential(), true, true),
+        // Coral cannot register an application with this service, and the
+        // configuration names none, so nobody can sign in.
+        (Source::OAuth, false, credential(), false, false),
+        (Source::OAuthApplication, false, credential(), true, true),
+        // An ended Setup takes no sign-in, though its application stays named.
+        (Source::OAuthApplication, true, credential(), false, true),
+        // A typed credential Coral holds while discovery waits is a sign-in
+        // in hand, though no OAuth sign-in started.
+        (Source::HeldBearer, false, credential(), true, true),
+        // Publication keeps the application Coral registered for the sign-in,
+        // so each person can connect later through it.
+        (Source::RegisteredOAuth, false, credential(), true, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let at = i64::try_from(index).unwrap() * 10 + 10;
+        let context = change_context(owner.clone(), at, '1');
+        let setup = api
+            .prepare(&harness, &context, workspace.id(), source)
+            .await;
+        if canceled {
+            harness
+                .accounts
+                .cancel_setup(&context, workspace.id(), setup.id())
+                .await
+                .unwrap();
+        }
+        let case = format!("{source:?}, canceled {canceled}");
+        let inspected = harness
+            .providers
+            .inspect_setup(&owner, workspace.id(), setup.id(), at + 1)
+            .await
+            .unwrap();
+        assert_eq!(inspected.configuration.allowed_routes(), routes, "{case}");
+        let readiness = harness
+            .accounts
+            .setup_connect_readiness(&owner, &inspected)
+            .await
+            .unwrap();
+        assert_eq!((readiness.now, readiness.later), (now, later), "{case}");
     }
 }

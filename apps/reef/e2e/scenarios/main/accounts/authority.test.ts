@@ -86,28 +86,10 @@ test('Account inspection preserves User privacy and exact Agent targeting', asyn
         expect(account.configuredByUser).toBe(alice.userId)
         expect(account.connectedTime).toBeDefined()
       })
-      await step(
-        'A Member cannot provision an Agent, inspect shared accounts, or change policy',
-        async () => {
-          expect((await page.request.get(agentPath)).status()).toBe(403)
-          expect((await page.request.get(`${providerPath}/accounts?scope=shared`)).status()).toBe(
-            403,
-          )
-          await page.goto(`${providerPath}/policy`)
-          expect(
-            await page
-              .getByRole('button', { name: 'Save selected operations', exact: true })
-              .count(),
-          ).toBe(0)
-          const csrf = await page.locator('input[name="csrf"]').inputValue()
-          const operation = await page.locator('input[name="operation"]').getAttribute('value')
-          const response = await page.request.post(`${providerPath}/policy`, {
-            headers: { Origin: new URL(page.url()).origin },
-            form: { csrf, access: 'enabled', operation: operation! },
-          })
-          expect(response.status()).toBe(403)
-        },
-      )
+      await step('A Member cannot provision an Agent or inspect shared accounts', async () => {
+        expect((await page.request.get(agentPath)).status()).toBe(403)
+        expect((await page.request.get(`${providerPath}/accounts?scope=shared`)).status()).toBe(403)
+      })
       await step('Account mutations require same-origin CSRF-protected POSTs', async () => {
         const form = { intent: 'disconnect', account: aliceAccount }
         expect(

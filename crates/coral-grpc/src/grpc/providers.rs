@@ -54,10 +54,7 @@ pub(super) fn provider_view(
     blockers: &[domain::access::ProviderBlocker],
     search_index: Option<coral_search::SearchIndexState>,
 ) -> wire::Provider {
-    let namespace = match provider.call_root() {
-        ProviderCallRoot::Owner(namespace) => namespace.as_str().into(),
-        ProviderCallRoot::Builtin => String::new(),
-    };
+    let call_root = provider.call_root();
     wire::Provider {
         name: provider_name(provider),
         display_name: provider.display_name().into(),
@@ -67,8 +64,12 @@ pub(super) fn provider_view(
         }
         .into(),
         etag: provider.etag(),
-        namespace,
-        call_root: provider.call_root().as_str().into(),
+        namespace: call_root
+            .namespace()
+            .map(|namespace| namespace.as_str().into())
+            .unwrap_or_default(),
+        call_root: call_root.as_str().into(),
+        builtin: matches!(call_root, ProviderCallRoot::Builtin),
         credential_route: Some(credential_route(provider.credential_route())),
         account_setting_version: provider.account_setting_version(),
         blockers: blockers
@@ -376,6 +377,21 @@ impl GrpcServices {
         user: &AuthenticatedUser,
         inspected: domain::ProviderSetupInspection,
     ) -> Result<Response<wire::ProviderSetup>, Status> {
+        let allowed_credential_routes = inspected
+            .configuration
+            .allowed_routes()
+            .into_iter()
+            .map(credential_route)
+            .collect();
+        let readiness = match &self.accounts {
+            Some(accounts) => Some(
+                accounts
+                    .setup_connect_readiness(user, &inspected)
+                    .await
+                    .map_err(error)?,
+            ),
+            None => None,
+        };
         let setup = inspected.setup;
         let authentication = inspected.authentication;
         let method = wire_method(authentication.contract.authentication().kind());
@@ -451,6 +467,10 @@ impl GrpcServices {
                 namespace: request.namespace.as_str().to_owned(),
                 credential_route: Some(credential_route(request.route)),
             }),
+            allowed_credential_routes,
+            // Without credential storage, nobody can connect an account.
+            connect_available: readiness.is_some_and(|readiness| readiness.now),
+            connect_later_available: readiness.is_some_and(|readiness| readiness.later),
         }))
     }
 

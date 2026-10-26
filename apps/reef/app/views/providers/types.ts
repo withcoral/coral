@@ -363,11 +363,20 @@ export interface SetupView {
    */
   serverName: string
   /**
-   * What a Program's createProvider call asked this Setup to publish. Absent
+   * What a Program's addProvider call asked this Setup to publish. Absent
    * when a person started the Setup. The person can change either. The route
    * is null when a newer Coral asked for one this Reef does not know.
    */
   request?: { namespace: string; route: AccountChoice | null }
+  /**
+   * The routes Coral says suit the confirmed configuration. Empty until it is
+   * confirmed. A route this Reef does not know is left out.
+   */
+  allowedRoutes: AccountChoice[]
+  /** Coral says the inspecting user can sign in, or enter a credential, now. */
+  connectAvailable: boolean
+  /** Coral says each person can connect their own account after an add with no sign-in. */
+  connectLaterAvailable: boolean
 }
 
 export interface StepperResult extends ActionResult {

@@ -5,7 +5,10 @@ import userEvent from '@testing-library/user-event'
 import { createRoutesStub } from 'react-router'
 import { describe, expect, it } from 'vitest'
 
-import { CredentialDestination, DiscoveryPrompt } from './setup-steps'
+import type { ReactNode } from 'react'
+
+import { DiscoveryPrompt, SetupSecretForm } from './setup-steps'
+import { UpdateAuthorization } from './update-authorization'
 import type { ConfigurationReviewView, SetupView } from './types'
 
 const setup: SetupView = {
@@ -22,12 +25,39 @@ const setup: SetupView = {
   sourceLabel: 'https://raw.example.test/openapi.json',
   sourceHost: 'raw.example.test',
   serverName: '',
+  allowedRoutes: ['caller', 'fixed'],
+  connectAvailable: true,
+  connectLaterAvailable: true,
 }
 
+const form = { csrf: 'test-csrf', requestId: 'test-request' }
+
+function renderForm(element: ReactNode) {
+  const Stub = createRoutesStub([{ path: '/', Component: () => element }])
+  render(<Stub initialEntries={['/']} />)
+}
+
+/** Each form that takes typed-in credentials, for one setup. */
+const credentialForms: [string, (shown: SetupView) => ReactNode][] = [
+  ['a setup step', (shown) => <SetupSecretForm setup={shown} form={form} pending={false} />],
+  [
+    "replacing a provider's credentials",
+    (shown) => (
+      <UpdateAuthorization
+        setup={shown}
+        form={form}
+        pending={false}
+        callbackUrl="https://coral.test/callback"
+      />
+    ),
+  ],
+]
+
 describe('where typed-in credentials go', () => {
-  // Catches: an agent's createProvider pointing credentials at a server the
-  // person never sees before they paste a secret.
-  it.each([
+  // Catches: an agent's addProvider pointing credentials at a server the
+  // person never sees before they paste a secret, or a credential form that
+  // leaves the destination out.
+  const destinations = [
     [
       'every host the operations call, once each',
       {
@@ -46,14 +76,21 @@ describe('where typed-in credentials go', () => {
       { kind: 'mcp' as const, sourceHost: 'mcp.example.test' },
       'Coral sends what you enter here to mcp.example.test.',
     ],
-  ])('names %s', (_, over, expected) => {
-    render(<CredentialDestination setup={{ ...setup, ...over }} />)
+  ] as const
+  it.each(
+    credentialForms.flatMap(([where, renderAt]) =>
+      destinations.map(
+        ([what, over, expected]) => [what, where, renderAt, over, expected] as const,
+      ),
+    ),
+  )('names %s in %s', (_what, _where, renderAt, over, expected) => {
+    renderForm(renderAt({ ...setup, ...over }))
     expect(screen.getByText(expected)).toBeInTheDocument()
   })
 
-  it('says nothing when no destination is known yet', () => {
-    const { container } = render(<CredentialDestination setup={setup} />)
-    expect(container).toBeEmptyDOMElement()
+  it.each(credentialForms)('says nothing in %s when no destination is known yet', (_, renderAt) => {
+    renderForm(renderAt(setup))
+    expect(screen.queryByText(/Coral sends what you enter here/)).not.toBeInTheDocument()
   })
 })
 

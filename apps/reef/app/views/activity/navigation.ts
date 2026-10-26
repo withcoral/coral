@@ -498,6 +498,10 @@ export interface StopPosition {
 /** A Run's final value is its own record, although its Run's detail shows it. */
 export const finalValue = (run: string) => `${run}/final`
 
+/** The record a selection shows: its Run's final value when the URL's `record` names it. */
+export const shownRecordOf = (selected: string | null, record: string | null) =>
+  selected && record === finalValue(selected) ? record : selected
+
 /** Where the keys start from when they rest on `stop`. */
 export const stopPosition = (stop: RecordStop): StopPosition => ({
   name: stop.row.name,

@@ -665,9 +665,10 @@ message ActivityCallOutcomes {
   // A rule stopped the call: a disabled Operation, a required approval, lost access,
   // or a rejected destination.
   int64 blocked = 2;
-  // A person declined the approval or the Account connection, or let it expire.
+  // A person declined the approval or the Account connection, or let the approval expire.
   int64 not_allowed = 3;
-  // A Provider, Account or credential needs repair.
+  // A Provider, Account or credential needs repair, or an Account connection expired
+  // unanswered.
   int64 needs_setup = 4;
   // The Program's call or the upstream failed, or the result is unknown.
   int64 failed = 5;

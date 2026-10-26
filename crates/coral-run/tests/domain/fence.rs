@@ -790,16 +790,7 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
                     .expect("remove Provider before fence");
             }
             FenceRace::CredentialRoute => {
-                fixture
-                    .providers
-                    .change_account_setting_fixture(
-                        &change(operation.user.clone(), 100, 'e'),
-                        &operation.workspace_id,
-                        &operation.provider_id,
-                        CredentialRoute::Caller,
-                    )
-                    .await
-                    .expect("change the credential route before fence");
+                move_to_caller_route(&fixture, &operation).await;
             }
             FenceRace::Policy => {
                 fixture
@@ -1497,16 +1488,7 @@ async fn a_batch_verifies_each_retained_provider_access_not_one_per_operation() 
         .run_record(&operation.workspace_id, run.run_id())
         .await;
     let stale = admitted_invocation(&fixture, &operation, run.run_id()).await;
-    fixture
-        .providers
-        .change_account_setting_fixture(
-            &change(operation.user.clone(), 100, 'f'),
-            &operation.workspace_id,
-            &operation.provider_id,
-            CredentialRoute::Caller,
-        )
-        .await
-        .expect("change the credential route between the admissions");
+    move_to_caller_route(&fixture, &operation).await;
     let current = admitted_invocation(&fixture, &operation, run.run_id()).await;
     assert_ne!(
         stale.target.provider_access().version(),
@@ -1711,4 +1693,22 @@ async fn a_refresh_wait_parked_by_the_fence_resumes_on_the_next_fence_and_never_
             "{case}"
         );
     }
+}
+
+/// Moves the forecast Provider to the `caller` route in storage, as an
+/// earlier Coral could. Its source is credential-free, so Publication now
+/// keeps it on `none`, but the fence still refuses an Invocation that
+/// retained the earlier route.
+async fn move_to_caller_route(fixture: &TestModules, operation: &OperationFixture) {
+    let changed = fixture
+        .test_database
+        .execute_fixture_sql(&format!(
+            "UPDATE provider_records SET credential_route = 'caller', \
+             account_setting_version = account_setting_version + 1 \
+             WHERE workspace_id = '{}' AND id = '{}'",
+            operation.workspace_id, operation.provider_id
+        ))
+        .await
+        .expect("change the credential route");
+    assert_eq!(changed, 1);
 }

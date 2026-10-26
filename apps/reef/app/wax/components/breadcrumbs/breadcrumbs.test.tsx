@@ -15,8 +15,10 @@ const accounts: Segment[] = [
 it('starts every trail with its root, as a link', () => {
   const html = render(accounts, true)
   expect(html).toContain('href="/workspaces/w"')
-  expect(html.indexOf('Demo')).toBeLessThan(html.indexOf('Accounts'))
-  expect(html.indexOf('Accounts')).toBeLessThan(html.indexOf('Linear'))
+  // React hoists the tab title ahead of the trail, so read the order from the nav.
+  const nav = html.slice(html.indexOf('<nav'))
+  expect(nav.indexOf('Demo')).toBeLessThan(nav.indexOf('Accounts'))
+  expect(nav.indexOf('Accounts')).toBeLessThan(nav.indexOf('Linear'))
 })
 
 it('shows the root as the title of a page with no trail of its own', () => {
@@ -35,4 +37,10 @@ it('titles the page with the current segment only when asked', () => {
   expect(render(accounts, true, true)).toMatch(/<h1[^>]*>Linear<\/h1>/)
   expect(render([], true, true)).toMatch(/<h1[^>]*>Demo<\/h1>/)
   expect(render(accounts, true)).not.toContain('<h1')
+})
+
+// Catches: a page that leaves its tab untitled, or names its parents first.
+it('titles the browser tab with the trail, most specific first', () => {
+  expect(render(accounts, true)).toContain('<title>Linear · Accounts · Demo</title>')
+  expect(render([], true)).toContain('<title>Demo</title>')
 })

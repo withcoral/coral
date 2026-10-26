@@ -1,6 +1,6 @@
 //! Focused inspection shares Operation eligibility with discovery, not its mixed
 //! candidate set. Each interface owns one snapshot and its exact inspection scope.
-use crate::{Error, ProviderId, UniversalSearchModule, eligibility};
+use crate::{Error, ProviderId, UniversalSearchModule};
 use coral_db::Transaction;
 use coral_provider::access::{AgentProviderInspection, ProviderReadiness};
 use coral_workspace::{
@@ -138,14 +138,7 @@ async fn operation_ready_providers(
         .filter(|catalog| {
             catalog.operations().iter().any(|operation| {
                 coral_provider::reaches(catalog.access().call_root(), operation.key(), role)
-                    && eligibility::operation_approval(
-                        &rules,
-                        catalog.provider_id(),
-                        operation.key(),
-                        operation.hints(),
-                        operation.http_method(),
-                    )
-                    .is_some()
+                    && !rules.disables(catalog.provider_id(), operation)
             })
         })
         .map(|catalog| catalog.access().id().clone())

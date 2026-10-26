@@ -4,6 +4,7 @@ import { field, mutationForm } from '@/lib/management.server'
 import {
   accountFailure,
   accountHeaders,
+  connectYourAccountAction,
   disconnectUserAccountAction,
   loadUserAccount,
   userAccountAction,
@@ -20,8 +21,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 }
 export async function action({ request, context, params }: Route.ActionArgs) {
   const form = await mutationForm(request, context)
+  const intent = field(form, 'intent')
+  // A connect dialog posts here from any page, and its `returnTo` names that page.
+  if (intent === 'connectAccount') return connectYourAccountAction(request, context, params, form)
   try {
-    return field(form, 'intent') === 'disconnect'
+    return intent === 'disconnect'
       ? await disconnectUserAccountAction(request, context, params)
       : await userAccountAction(request, context, params, form)
   } catch (error) {

@@ -152,6 +152,8 @@ test('The keyboard drives workspace Activity records, sparse child windows and t
       await rail.waitFor()
       await page.waitForURL(() => record(page) === `${run}/final`)
       expect(await tableFocused(page)).toBe(true)
+      // The table keeps the final value revealed, not the Run that its detail shows.
+      expect(await cursor(page)).toMatchObject({ key: `${run}/final`, inView: true })
       await rail.evaluate((element) => (element.dataset.reel = 'opened'))
       const entries = await page.evaluate(() => history.length)
       await page.keyboard.press('ArrowUp')
@@ -159,8 +161,8 @@ test('The keyboard drives workspace Activity records, sparse child windows and t
       expect(await rail.getAttribute('data-reel')).toBe('opened')
       expect(await page.evaluate(() => history.length)).toBe(entries)
       expect(await tableFocused(page)).toBe(true)
-      // The step's window can arrive without the record until the live reader
-      // restores it; the cursor waits for it rather than resting anywhere else.
+      // The address changes before the table renders the step's page; the cursor
+      // waits for that render rather than resting anywhere else.
       await expect
         .poll(async () => (await cursor(page))?.key, { timeout: 10_000 })
         .toBe(record(page))

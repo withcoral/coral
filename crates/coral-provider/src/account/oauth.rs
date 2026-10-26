@@ -173,6 +173,15 @@ impl AccountModule {
         client: Option<OAuthClient>,
     ) -> Result<(Option<String>, Option<String>), Error> {
         match (contract.authentication(), client) {
+            // Coral offers no Connect for a sign-in that names no application.
+            (method, client)
+                if super::oauth_client::oauth_application_missing(method)
+                    && client
+                        .as_ref()
+                        .is_none_or(|client| client.client_id.is_none()) =>
+            {
+                Err(Error::OAuthClientConfiguration)
+            }
             (
                 AuthenticationConfiguration::OAuthDeviceCode {
                     client: Some(policy),

@@ -32,11 +32,15 @@ use crate::{
     SchemaId, SchemaSemantics,
 };
 
-mod create_provider;
+mod add_provider;
+mod get_provider;
 mod list_providers;
 
-pub use create_provider::{
-    ConfigurationChoices, CreateProviderArguments, CreateProviderResult, ProviderSourceArgument,
+pub use add_provider::{
+    AddProviderArguments, AddProviderResult, ConfigurationChoices, ProviderSourceArgument,
+};
+pub use get_provider::{
+    ConfigurationOutput, GetProviderArguments, GetProviderResult, ProviderSourceOutput,
 };
 pub use list_providers::{
     ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup, ListedSetupState,
@@ -87,24 +91,28 @@ impl fmt::Display for BuiltinCatalogIdentity {
 /// One Coral-owned Operation that this Coral version performs itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinOperation {
-    /// Creates a Provider from an OpenAPI document or URL, or an MCP server URL.
+    /// Adds a Provider from an OpenAPI document or URL, or an MCP server URL.
     /// Coral publishes it when nobody needs to sign in; otherwise a person
     /// finishes it in Reef.
-    CreateProvider,
+    AddProvider,
     /// Lists every Provider in the Workspace, so a Program can see which
-    /// namespaces are taken before it creates one.
+    /// namespaces are taken before it adds one.
     ListProviders,
+    /// Reads one Provider's Provider Configuration, so a Program can change some
+    /// of it and send back only those fields.
+    GetProvider,
 }
 
 impl BuiltinOperation {
-    const ALL: [Self; 2] = [Self::CreateProvider, Self::ListProviders];
+    const ALL: [Self; 3] = [Self::AddProvider, Self::ListProviders, Self::GetProvider];
 
     /// Returns the Operation Key, which is also its relative path.
     #[must_use]
     pub const fn key(self) -> &'static str {
         match self {
-            Self::CreateProvider => "createProvider",
+            Self::AddProvider => "addProvider",
             Self::ListProviders => "listProviders",
+            Self::GetProvider => "getProvider",
         }
     }
 
@@ -122,8 +130,9 @@ impl BuiltinOperation {
     #[must_use]
     pub const fn needs(self) -> WorkspaceAction {
         match self {
-            Self::CreateProvider => create_provider::NEEDS,
+            Self::AddProvider => add_provider::NEEDS,
             Self::ListProviders => list_providers::NEEDS,
+            Self::GetProvider => get_provider::NEEDS,
         }
     }
 }
@@ -257,10 +266,12 @@ impl BuiltinExecutionBinding {
 /// checked by every rule that needs no Workspace state.
 #[derive(Debug, Clone)]
 pub enum BuiltinArguments {
-    /// `createProvider`'s arguments.
-    CreateProvider(Box<CreateProviderArguments>),
+    /// `addProvider`'s arguments.
+    AddProvider(Box<AddProviderArguments>),
     /// `listProviders` takes none.
     ListProviders,
+    /// `getProvider`'s arguments.
+    GetProvider(GetProviderArguments),
 }
 
 impl BuiltinArguments {
@@ -275,10 +286,13 @@ impl BuiltinArguments {
         arguments: &Value,
     ) -> Result<Self, Vec<ArgumentProblem>> {
         match operation {
-            BuiltinOperation::CreateProvider => CreateProviderArguments::parse(arguments)
-                .map(|arguments| Self::CreateProvider(Box::new(arguments))),
+            BuiltinOperation::AddProvider => AddProviderArguments::parse(arguments)
+                .map(|arguments| Self::AddProvider(Box::new(arguments))),
             BuiltinOperation::ListProviders => {
                 list_providers::parse(arguments).map(|()| Self::ListProviders)
+            }
+            BuiltinOperation::GetProvider => {
+                GetProviderArguments::parse(arguments).map(Self::GetProvider)
             }
         }
     }
@@ -314,6 +328,10 @@ impl ArgumentProblem {
         &self.reason
     }
 }
+
+/// What to correct in a Provider Namespace that no Provider can hold.
+const NAMESPACE_REASON: &str =
+    "use a JavaScript identifier of at most 128 bytes, such as `weather`";
 
 /// Reads `arguments` as `T`, or names the first argument whose shape is wrong.
 fn read<T: DeserializeOwned>(arguments: &Value) -> Result<T, ArgumentProblem> {
@@ -437,7 +455,7 @@ const AUTHENTICATION_KINDS: [AuthenticationKind; 7] = [
     AuthenticationKind::OAuthAuthorizationCode,
 ];
 
-/// The Program's name for each method, as the `createProvider` input spells
+/// The Program's name for each method, as the `addProvider` input spells
 /// it. Stored configuration has its own encoding, which never becomes the
 /// Program contract.
 const fn authentication_name(kind: AuthenticationKind) -> &'static str {
@@ -473,7 +491,7 @@ fn serialize_authentication<S: Serializer>(
     serializer.serialize_str(authentication_name(*kind))
 }
 
-/// What `createProvider` and `listProviders` report about a Provider: how to
+/// What `addProvider` and `listProviders` report about a Provider: how to
 /// call it and whether the Program needs a person first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -514,8 +532,9 @@ struct Definition {
 
 fn definition(operation: BuiltinOperation) -> Definition {
     match operation {
-        BuiltinOperation::CreateProvider => create_provider::definition(),
+        BuiltinOperation::AddProvider => add_provider::definition(),
         BuiltinOperation::ListProviders => list_providers::definition(),
+        BuiltinOperation::GetProvider => get_provider::definition(),
     }
 }
 

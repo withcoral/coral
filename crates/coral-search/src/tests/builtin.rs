@@ -31,12 +31,12 @@ async fn search_and_describe_show_each_builtin_operation_to_the_principals_it_re
     for (principal, reached) in [
         (
             AuthenticatedPrincipal::user(owner),
-            &["createProvider", "listProviders"][..],
+            &["addProvider", "listProviders"][..],
         ),
         (AuthenticatedPrincipal::user(member), &["listProviders"][..]),
     ] {
         for (key, terms) in [
-            ("createProvider", "create provider"),
+            ("addProvider", "add provider"),
             ("listProviders", "list providers"),
         ] {
             let reaches = reached.contains(&key);

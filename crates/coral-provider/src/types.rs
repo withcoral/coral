@@ -162,7 +162,7 @@ pub struct ProviderSetup {
     request: Option<SetupRequest>,
 }
 
-/// What a Program asked a Setup to publish when it called `createProvider`.
+/// What a Program asked a Setup to publish when it called `addProvider`.
 /// The person who finishes the Setup can still change either.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetupRequest {
@@ -316,6 +316,15 @@ pub enum ProviderState {
     Active,
     /// Rejects new Invocation admission and every pending pre-fence dispatch.
     Disabled,
+}
+
+impl From<ProviderState> for coral_catalog::ListedProviderState {
+    fn from(state: ProviderState) -> Self {
+        match state {
+            ProviderState::Active => Self::Active,
+            ProviderState::Disabled => Self::Disabled,
+        }
+    }
 }
 
 /// Published Workspace-owned Provider.
