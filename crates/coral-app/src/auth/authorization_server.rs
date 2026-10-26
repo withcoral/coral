@@ -46,8 +46,7 @@ pub struct CoralAuthorizationServer {
     session_tokens: SessionTokenIssuer,
     authorization_resources: BTreeSet<String>,
     workspace_resource_family: Option<WorkspaceMcpUrls>,
-    user_directory: Option<UserDirectory>,
-    client_database: Option<Arc<coral_db::Database>>,
+    database: Arc<coral_db::Database>,
     readiness: Option<crate::ListenerReadiness>,
 }
 
@@ -63,9 +62,10 @@ impl CoralAuthorizationServer {
     /// path. Config parsing and the `config.toml` filesystem read remain the
     /// caller's responsibility.
     ///
-    /// The server returned here has no User directory attached and so fails
-    /// every login closed. `ServerBuilder::with_session_auth` is the path that
-    /// attaches the Module built over initialized persistence.
+    /// `database` is the initialized deployment database. The server records
+    /// verified logins, authorization codes, and registered clients in it.
+    /// Processes that share it and the session signing key can each finish a
+    /// sign-in another one started.
     ///
     /// # Errors
     ///
@@ -77,13 +77,15 @@ impl CoralAuthorizationServer {
         config_path: &Path,
         settings: AuthSettings,
         outbound_policy: coral_outbound::DestinationPolicy,
+        database: Arc<coral_db::Database>,
     ) -> Result<Self, AuthServerError> {
         let authorization_resources = settings.allowed_audiences().to_vec();
         let (settings, session_tokens) = settings
             .resolve_runtime_dependencies(config_path, &|name| {
                 crate::bootstrap::env_var(name).map_err(|error| signing_key_env_error(&error))
             })?;
-        let mut server = Self::from_resolved_settings(settings, session_tokens, outbound_policy)?;
+        let mut server =
+            Self::from_resolved_settings(settings, session_tokens, outbound_policy, database)?;
         for resource in authorization_resources {
             server = server
                 .with_authorization_resource(resource)
@@ -96,32 +98,20 @@ impl CoralAuthorizationServer {
         settings: ResolvedAuthSettings,
         session_tokens: SessionTokenIssuer,
         outbound_policy: coral_outbound::DestinationPolicy,
+        database: Arc<coral_db::Database>,
     ) -> Result<Self, AuthServerError> {
         if !settings.matches_session_token_issuer(&session_tokens) {
             return Err(AuthServerError::SessionIssuerMismatch);
         }
-        Ok(Self::from_validated_parts(
-            settings,
-            session_tokens,
-            outbound_policy,
-        ))
-    }
-
-    fn from_validated_parts(
-        settings: ResolvedAuthSettings,
-        session_tokens: SessionTokenIssuer,
-        outbound_policy: coral_outbound::DestinationPolicy,
-    ) -> Self {
-        Self {
+        Ok(Self {
             outbound_policy,
             settings: Arc::new(settings),
             session_tokens,
             authorization_resources: BTreeSet::new(),
             workspace_resource_family: None,
-            user_directory: None,
-            client_database: None,
+            database,
             readiness: None,
-        }
+        })
     }
 
     pub(crate) fn with_readiness(mut self, readiness: crate::ListenerReadiness) -> Self {
@@ -163,22 +153,6 @@ impl CoralAuthorizationServer {
             health_routes(provider_callback::router(accounts), Some(readiness)),
         )
         .await
-    }
-
-    /// Attaches the User directory this server provisions verified logins into.
-    ///
-    /// Application bootstrap constructs the domain Module over its initialized
-    /// database. Until one is attached, the OIDC callback fails login closed
-    /// rather than issuing an authorization code naming an unrecorded identity.
-    pub(crate) fn with_user_directory(mut self, user_directory: UserDirectory) -> Self {
-        self.user_directory = Some(user_directory);
-        self
-    }
-
-    /// Attaches the initialized deployment database for durable OAuth clients.
-    pub(crate) fn with_client_database(mut self, database: Arc<coral_db::Database>) -> Self {
-        self.client_database = Some(database);
-        self
     }
 
     /// Registers a resource identifier that authorization requests may target.
@@ -228,24 +202,15 @@ impl CoralAuthorizationServer {
     /// Returns an error when the listener cannot start.
     pub async fn start(self) -> Result<RunningCoralAuthorizationServer, AuthServerError> {
         let bind_addr = self.settings.bind_addr();
-        let readiness = self
-            .readiness
-            .filter(|_| self.user_directory.is_some() && self.client_database.is_some());
-        let mut state = AuthorizationServerHttpState::new(
+        let state = AuthorizationServerHttpState::new(
             self.settings,
             self.session_tokens,
             Arc::new(self.authorization_resources),
             self.workspace_resource_family,
-            self.user_directory,
+            self.database,
             self.outbound_policy,
         )?;
-        if let Some(database) = self.client_database {
-            state.codes = Some(AuthorizationCodes::new(database.clone()));
-            let clients = OAuthClients::new(database, state.client_metadata_resolver.clone());
-            state.client_metadata_resolver = Arc::new(clients.clone());
-            state.clients = Some(clients);
-        }
-        start_listener(bind_addr, health_routes(auth_router(state), readiness)).await
+        start_listener(bind_addr, health_routes(auth_router(state), self.readiness)).await
     }
 }
 
@@ -375,20 +340,14 @@ struct AuthorizationServerHttpState {
     settings: Arc<ResolvedAuthSettings>,
     session_tokens: SessionTokenIssuer,
     /// Authorization codes awaiting redemption, shared by every process.
-    ///
-    /// `None` until application bootstrap attaches a database; the callback
-    /// and the token endpoint then fail closed rather than issue or redeem.
-    codes: Option<AuthorizationCodes>,
+    codes: AuthorizationCodes,
     provider_client: OidcProviderClient,
     authorization_resources: Arc<BTreeSet<String>>,
     workspace_resource_family: Option<Arc<WorkspaceMcpUrls>>,
     client_metadata_resolver: Arc<dyn ClientMetadataResolver>,
-    clients: Option<OAuthClients>,
+    clients: OAuthClients,
     /// Domain Module that provisions stable User identities after OIDC validation.
-    ///
-    /// `None` until application bootstrap attaches one; the callback treats
-    /// that as a provisioning failure rather than issuing an unprovisioned code.
-    user_directory: Option<UserDirectory>,
+    user_directory: UserDirectory,
 }
 
 impl AuthorizationServerHttpState {
@@ -397,7 +356,7 @@ impl AuthorizationServerHttpState {
         session_tokens: SessionTokenIssuer,
         authorization_resources: Arc<BTreeSet<String>>,
         workspace_resource_family: Option<WorkspaceMcpUrls>,
-        user_directory: Option<UserDirectory>,
+        database: Arc<coral_db::Database>,
         outbound_policy: coral_outbound::DestinationPolicy,
     ) -> Result<Self, AuthServerError> {
         // Preserve local MCP client-ID derivation, but never treat an HTTPS
@@ -428,17 +387,23 @@ impl AuthorizationServerHttpState {
                     ))
                 })?;
         }
-        let client_metadata_resolver = Arc::new(client_metadata_resolver);
+        // Registered clients resolve from the database; every other client ID
+        // falls through to its metadata document.
+        let clients = OAuthClients::new(database.clone(), Arc::new(client_metadata_resolver));
+        let mut user_directory = UserDirectory::new(database.clone());
+        if let Some((issuer, subject)) = settings.bootstrap_owner() {
+            user_directory = user_directory.with_bootstrap_owner(issuer, subject);
+        }
         Ok(Self {
             settings,
             session_tokens,
-            codes: None,
+            codes: AuthorizationCodes::new(database),
             provider_client: OidcProviderClient::new(outbound_policy)
                 .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
             authorization_resources,
             workspace_resource_family: workspace_resource_family.map(Arc::new),
-            client_metadata_resolver,
-            clients: None,
+            client_metadata_resolver: Arc::new(clients.clone()),
+            clients,
             user_directory,
         })
     }
@@ -473,15 +438,25 @@ impl AuthorizationServerHttpState {
 mod test_state {
     use std::sync::Arc;
 
+    use coral_test_support::TestDatabase;
+
     use super::AuthorizationServerHttpState;
     use crate::auth::test_config::{loopback_policy, resolved_settings};
 
-    /// Builds the production state for a provider at `provider_issuer`,
-    /// accepting only the exact `resources`.
+    /// Opens a migrated database for the server to record its sign-ins in.
+    pub(super) async fn database() -> TestDatabase {
+        TestDatabase::new(coral_db::migration_plan())
+            .await
+            .expect("test database")
+    }
+
+    /// Builds the production state over `database` for a provider at
+    /// `provider_issuer`, accepting only the exact `resources`.
     ///
     /// `extra` is passed to [`resolved_settings`]. Tests replace individual
     /// fields, such as the client metadata resolver, on the returned state.
     pub(super) fn http_state(
+        database: &TestDatabase,
         provider_issuer: &str,
         extra: &str,
         resources: &[&str],
@@ -497,7 +472,7 @@ mod test_state {
                     .collect(),
             ),
             None,
-            None,
+            database.database(),
             loopback_policy(),
         )
         .expect("authorization server state")
@@ -517,23 +492,17 @@ async fn authorization_server_metadata(
     State(state): State<AuthorizationServerHttpState>,
 ) -> impl IntoResponse {
     let authorization_server = state.settings.authorization_server();
-    let mut metadata = serde_json::json!({
+    json_response(&serde_json::json!({
         "issuer": authorization_server.issuer,
         "authorization_endpoint": format!("{}/oauth/authorize", authorization_server.issuer),
         "token_endpoint": format!("{}/oauth/token", authorization_server.issuer),
+        "registration_endpoint": format!("{}/oauth/register", authorization_server.issuer),
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
         "client_id_metadata_document_supported": true,
-    });
-    if let Some(object) = metadata.as_object_mut().filter(|_| state.clients.is_some()) {
-        object.insert(
-            "registration_endpoint".into(),
-            serde_json::json!(format!("{}/oauth/register", authorization_server.issuer)),
-        );
-    }
-    json_response(&metadata)
+    }))
 }
 
 fn json_response(value: &serde_json::Value) -> impl IntoResponse + use<> {
@@ -549,8 +518,10 @@ mod tests {
     use std::fs;
     use std::net::SocketAddr;
 
+    use coral_db::Database;
     use serde_json::{Value, json};
 
+    use super::test_state::database;
     use super::{Arc, AuthSettings, CoralAuthorizationServer};
 
     use crate::auth::test_config::{AUTHORIZATION_SERVER, PROVIDER, SESSION};
@@ -568,13 +539,13 @@ mod tests {
         config(&format!("{auth_fields}{AUTHORIZATION_SERVER}\n{PROVIDER}"))
     }
 
-    fn server(dir: &tempfile::TempDir) -> CoralAuthorizationServer {
+    fn server(dir: &tempfile::TempDir, database: Arc<Database>) -> CoralAuthorizationServer {
         let config_path = dir.path().join("config.toml");
         let raw = fs::read_to_string(&config_path).expect("config snapshot");
         let settings = AuthSettings::from_toml(&raw)
             .expect("valid config")
             .expect("auth settings");
-        CoralAuthorizationServer::from_settings(&config_path, settings, loopback_policy())
+        CoralAuthorizationServer::from_settings(&config_path, settings, loopback_policy(), database)
             .expect("valid server dependencies")
     }
 
@@ -584,8 +555,9 @@ mod tests {
         response.json().await.expect("JSON")
     }
 
-    #[test]
-    fn uses_passed_settings_without_reopening_config() {
+    #[tokio::test]
+    async fn uses_passed_settings_without_reopening_config() {
+        let fixture = database().await;
         let dir = authorization_server("");
         let config_path = dir.path().join("config.toml");
         let raw = fs::read_to_string(&config_path).expect("config snapshot");
@@ -594,12 +566,18 @@ mod tests {
             .expect("auth settings");
         fs::remove_file(&config_path).expect("remove config after parsing");
 
-        CoralAuthorizationServer::from_settings(&config_path, settings, loopback_policy())
-            .expect("prepared from snapshot");
+        CoralAuthorizationServer::from_settings(
+            &config_path,
+            settings,
+            loopback_policy(),
+            fixture.database(),
+        )
+        .expect("prepared from snapshot");
     }
 
-    #[test]
-    fn rejects_session_tokens_resolved_from_different_settings() {
+    #[tokio::test]
+    async fn rejects_session_tokens_resolved_from_different_settings() {
+        let fixture = database().await;
         let dir = authorization_server("");
         let config_path = dir.path().join("config.toml");
         let raw = fs::read_to_string(&config_path).expect("config snapshot");
@@ -620,6 +598,7 @@ mod tests {
             settings,
             session_tokens,
             loopback_policy(),
+            fixture.database(),
         ) else {
             panic!("expected mismatched session settings");
         };
@@ -638,15 +617,16 @@ mod tests {
     /// the family in its canonical spelling. This is the acceptance
     /// `authorize` consults, so a regression that dropped the family would
     /// refuse every real MCP login with `invalid_target`.
-    #[test]
-    fn accepts_the_workspace_family_beside_exact_resources() {
+    #[tokio::test]
+    async fn accepts_the_workspace_family_beside_exact_resources() {
         use crate::oauth_resource::CanonicalOauthUrl;
         use crate::workspace_mcp_urls::WorkspaceMcpUrls;
 
+        let fixture = database().await;
         let dir =
             authorization_server("allowed_audiences = ['https://CONFIGURED.example.test/']\n");
         let base = CanonicalOauthUrl::parse("https://mcp.example.test").expect("origin");
-        let prepared = server(&dir)
+        let prepared = server(&dir, fixture.database())
             .with_authorization_resource("https://CORAL-WEB.example.test/")
             .expect("register the exact extra")
             .with_workspace_resource_family(WorkspaceMcpUrls::new(base).expect("Workspace URLs"));
@@ -656,7 +636,7 @@ mod tests {
             prepared.session_tokens,
             Arc::new(prepared.authorization_resources),
             prepared.workspace_resource_family,
-            prepared.user_directory,
+            prepared.database,
             prepared.outbound_policy,
         )
         .expect("authorization server state");
@@ -699,7 +679,7 @@ mod tests {
             "https://mcp.example.test?tenant=one",
             "https://mcp.example.test/#fragment",
         ] {
-            let error = server(&dir)
+            let error = server(&dir, fixture.database())
                 .with_authorization_resource(resource)
                 .err()
                 .expect("invalid resource");
@@ -715,6 +695,7 @@ mod tests {
     /// silently never skips the approval page.
     #[tokio::test]
     async fn trusted_clients_no_request_could_name_fail_startup() {
+        let fixture = database().await;
         for (trusted_client, expected) in [
             (
                 "https://client.example.test/",
@@ -729,7 +710,7 @@ mod tests {
             let dir = config(&format!(
                 "trusted_clients = ['{trusted_client}']\n{AUTHORIZATION_SERVER}{PROVIDER}"
             ));
-            let Err(error) = server(&dir).start().await else {
+            let Err(error) = server(&dir, fixture.database()).start().await else {
                 panic!("started with dead trusted client `{trusted_client}`");
             };
             let error = error.to_string();
@@ -748,7 +729,8 @@ mod tests {
             "trusted_clients = ['{client_id}']\n{AUTHORIZATION_SERVER}{PROVIDER}"
         ));
         let base = CanonicalOauthUrl::parse("https://100.64.0.1").expect("MCP origin");
-        let prepared = server(&dir)
+        let fixture = database().await;
+        let prepared = server(&dir, fixture.database())
             .with_workspace_resource_family(WorkspaceMcpUrls::new(base).expect("MCP family"));
         let Err(error) = prepared.start().await else {
             panic!("MCP origin must not grant private Reef metadata fetching");
@@ -760,6 +742,7 @@ mod tests {
     /// require their exact operator-derived client IDs.
     #[tokio::test]
     async fn trusted_clients_the_topology_can_name_start_and_serve() {
+        let fixture = database().await;
         for (auth_fields, trusted_client) in [
             ("", "https://client.example.test/oauth/client.json"),
             (
@@ -774,7 +757,10 @@ mod tests {
             let dir = config(&format!(
                 "{auth_fields}trusted_clients = ['{trusted_client}']\n{AUTHORIZATION_SERVER}{PROVIDER}"
             ));
-            let server = server(&dir).start().await.expect("start");
+            let server = server(&dir, fixture.database())
+                .start()
+                .await
+                .expect("start");
             server.shutdown().await.expect("shutdown");
         }
     }
@@ -782,11 +768,8 @@ mod tests {
     #[tokio::test]
     async fn serves_metadata_and_stops_cleanly() {
         let dir = authorization_server("");
-        let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
-            .await
-            .unwrap();
-        let server = server(&dir)
-            .with_client_database(fixture.database())
+        let fixture = database().await;
+        let server = server(&dir, fixture.database())
             .start()
             .await
             .expect("start");
@@ -835,11 +818,8 @@ mod tests {
         let dir = authorization_server(
             "trusted_clients = ['https://reef.example.test/.well-known/oauth-client']\n",
         );
-        let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
-            .await
-            .unwrap();
-        let running = server(&dir)
-            .with_client_database(fixture.database())
+        let fixture = database().await;
+        let running = server(&dir, fixture.database())
             .with_authorization_resource("https://resource.example.test")
             .unwrap()
             .start()
@@ -914,8 +894,7 @@ mod tests {
             "temporarily_unavailable"
         );
         running.shutdown().await.unwrap();
-        let restarted = server(&dir)
-            .with_client_database(Arc::new(fixture.connect_peer().await.unwrap()))
+        let restarted = server(&dir, Arc::new(fixture.connect_peer().await.unwrap()))
             .with_authorization_resource("https://resource.example.test")
             .unwrap()
             .start()
@@ -966,9 +945,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_auth_support_has_no_user_oauth_or_registration_routes() {
-        let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
-            .await
-            .unwrap();
+        let fixture = database().await;
         let local = CoralAuthorizationServer::start_local(
             SocketAddr::from(([127, 0, 0, 1], 0)),
             crate::ListenerReadiness::from_database(fixture.database()),
