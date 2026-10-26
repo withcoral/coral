@@ -94,7 +94,7 @@ export function WorkspaceMembersPage({
         rows={rows}
         titleInfo={
           !owner && (
-            <InfoTip>
+            <InfoTip ariaLabel="About members">
               As a member, you see only yourself and the owners. Owners see all members.
             </InfoTip>
           )

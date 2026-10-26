@@ -236,7 +236,7 @@ function WorkspaceProvidersContent({
         <ProvidersTableScreen
           titleInfo={
             !owner && (
-              <InfoTip>
+              <InfoTip ariaLabel="About providers">
                 As a member, you use the providers. Owners add, remove, and change them.
               </InfoTip>
             )
