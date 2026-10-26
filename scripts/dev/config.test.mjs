@@ -287,7 +287,7 @@ test('proxy planning reuses, completes or replaces only the mappings this setup 
           funnel: funnel.includes(443),
           commands: [
             [
-              funnel.length ? 'funnel' : 'serve',
+              funnel.includes(443) ? 'funnel' : 'serve',
               '--bg',
               '--https=443',
               '--set-path=/oauth',

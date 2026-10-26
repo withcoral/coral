@@ -253,7 +253,7 @@ node "$helper" _urls
 say "Local ports: Reef 5173; Coral gRPC 14555; auth 9080; MCP 14556."
 say "Tailscale HTTPS: 443 → auth and MCP (split by path), 8443 → Reef."
 note "New mappings use private Serve; matching existing Serve/Funnel mappings keep their visibility."
-note "Mappings from the earlier per-port layout (443 Reef, 8443 auth, 10000 MCP) are replaced with private Serve."
+note "The earlier per-port layout (443 Reef, 8443 auth, 10000 MCP) is replaced: 443 and 8443 come back as private Serve, and 10000 is removed."
 warn "Existing Funnel mappings remain public. Reef's Vite server exposes development source."
 note "Existing unrelated .env files, data directories, and conflicting mappings are never replaced."
 confirm "Generate this checkout's configuration and configure those HTTPS mappings?" || exit 1

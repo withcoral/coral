@@ -137,9 +137,12 @@ function applyProxy(config, sudo) {
   console.log(
     'HTTPS mappings are ready. New ports and replaced mappings are tailnet-only; other ports keep their visibility.',
   )
-  if (plan.some((mapping) => mapping.state === 'legacy' && mapping.funnel))
+  const wasPublic = plan
+    .filter((mapping) => mapping.state === 'legacy' && mapping.funnel)
+    .map((mapping) => mapping.authority)
+  if (wasPublic.length)
     console.log(
-      'A replaced mapping used Funnel. To make Coral auth and MCP public again, see "Optional public access with Funnel" in docs/development.md.',
+      `These earlier mappings used Funnel and are now tailnet-only: ${wasPublic.join(', ')}. To make a surface public, see "Optional public access with Funnel" in docs/development.md.`,
     )
 }
 
