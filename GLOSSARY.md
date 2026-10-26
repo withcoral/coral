@@ -768,9 +768,9 @@ control-plane, authoring, or approval decisions recorded as Administrative Lifec
 checkpoints. _Avoid_: Administrative Lifecycle Event, stream chunk, workflow checkpoint
 
 **Coral Instance**: One running Coral server process, identified by a random id it generates each time it starts. The
-Coral Instance that holds a Run's claim owns that Run and hosts its Run Owner. While the claim's lease is live, no
-other Coral Instance takes the Run over. Any Coral Instance may receive an outside Run Request for the Run. _Avoid_:
-replica, node, worker, pod, process
+Coral Instance that holds a Run's claim owns that Run. While the claim's lease is live, no other Coral Instance takes
+the Run over. Any Coral Instance may receive an outside Run Request for the Run. _Avoid_: replica, node, worker, pod,
+process
 
 **Run Owner**: The single writer of one Coral Program Run while the Run is not terminal. It exists from Run acceptance
 until the Run ends, receives every Run Request, Invocation outcome, deadline and wake-up for that Run in one order, and
