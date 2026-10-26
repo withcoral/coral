@@ -19,6 +19,10 @@ the real invariant underneath. The decision was charted on
 [map #2389](https://github.com/withcoral/coral/issues/2389), whose decision records hold the reasoning and rejected
 alternatives for each part; this record states the shape and the contract every implementation slice keeps.
 
+Amended by [ADR 0025](0025-outside-run-requests-reach-the-run-owner-through-the-run-inbox.md): outside Run Requests
+reach the Run Owner from any Coral Instance through the Run Inbox. That ADR names the contract lines and bullets it
+changes.
+
 ## Why
 
 The incident that motivated this decision was an admission burst amplified by round-trip latency, not steady-state wait or human decision
