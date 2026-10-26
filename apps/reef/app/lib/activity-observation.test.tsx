@@ -820,78 +820,87 @@ const oneChild = (row: ActivityRow) => ({
   unavailable: false,
   offset: 0,
 })
-// Catches: page live mode reopening a finished Run that the window of an ended Task
-// still shows running, because a snapshot of only the records you watch never
-// refreshed that window, while another Run runs.
-it('away from the newest records, passes a Run that a window the snapshot did not refresh says runs', async () => {
-  vi.useFakeTimers()
-  const streams: ReadableStreamDefaultController<Uint8Array>[] = []
-  vi.stubGlobal(
-    'fetch',
-    vi.fn((_url, init) =>
-      Promise.resolve(
-        new Response(
-          new ReadableStream({
-            start(c) {
-              streams.push(c)
-              c.enqueue(snapshot(initial))
-              init.signal.addEventListener('abort', () => c.close(), { once: true })
-            },
-          }),
-          { headers: { 'Content-Type': 'text/event-stream' } },
+// Catches: page live mode reopening a finished Run that the window of a Task still
+// shows running, because a snapshot of only the records you watch never refreshed
+// that window, while another Run runs.
+it.each([
+  { name: 'a Task the snapshot leaves out', ended: false },
+  { name: 'a Task the snapshot says ended', ended: true },
+])(
+  'away from the newest records, passes a Run that a window the snapshot did not refresh says runs, in $name',
+  async ({ ended }) => {
+    vi.useFakeTimers()
+    const streams: ReadableStreamDefaultController<Uint8Array>[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url, init) =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(c) {
+                streams.push(c)
+                c.enqueue(snapshot(initial))
+                init.signal.addEventListener('abort', () => c.close(), { once: true })
+              },
+            }),
+            { headers: { 'Content-Type': 'text/event-stream' } },
+          ),
         ),
       ),
-    ),
-  )
-  const newer = taskRow('newer')
-  const older = taskRow('older')
-  const at = (minute: number) => new Date(Date.parse(older.startedAt) + minute * 60_000)
-  const runs = (task: string, id: string, minute: number, state: ExecutionRow['state']) =>
-    runRow(id, task, { state, endedAt: null, startedAt: at(minute).toISOString() })
-  // `a`, submitted last, runs in the older Task. `b` runs in the newer one.
-  const a = runs(older.name, 'a', 30, 'running')
-  const b = runs(newer.name, 'b', 21, 'running')
-  const initial: ActivityPage = {
-    ...page,
-    rows: [newer, older],
-    expanded: [newer.name, older.name],
-    branches: { [newer.name]: oneChild(b), [older.name]: oneChild(a) },
-  }
-  const store = createStore()
-  const search = `?live=latest&expand=${newer.name}&expand=${older.name}`
-  const state = activityObservation(initial, '/activity', search)
-  const unmount = store.sub(state, () => {})
-  const now = at(31).getTime()
-  try {
-    await vi.waitFor(() => expect(streams).toHaveLength(1))
-    expect(liveTarget(activityView(store.get(state)), 'latest', now)).toMatchObject({ run: a.name })
-    store.set(state, { kind: 'root', atStart: false })
-    await vi.advanceTimersByTimeAsync(120)
-    await vi.waitFor(() => expect(streams).toHaveLength(2))
-    // `a` ended and the older Task with it. The snapshot holds only the newer Task, so
-    // the older Task's window still says `a` runs. The loader read every record.
-    await act(async () =>
-      streams[1].enqueue(
-        snapshot({
-          ...initial,
-          rows: [newer],
-          branches: { [newer.name]: oneChild(b) },
-          liveLatest: { running: { [newer.name]: b }, complete: true },
-        }),
-      ),
     )
-    const view = activityView(store.get(state))
-    expect(view.branches[older.name]?.rows.map((row) => row.name)).toEqual([a.name])
-    expect(liveTarget(view, 'latest', now)).toEqual({
-      kind: 'run',
-      run: b.name,
-      chain: [newer.name, b.name],
-    })
-  } finally {
-    unmount()
-    await vi.advanceTimersByTimeAsync(0)
-  }
-})
+    const newer = taskRow('newer')
+    const older = taskRow('older')
+    const at = (minute: number) => new Date(Date.parse(older.startedAt) + minute * 60_000)
+    const runs = (task: string, id: string, minute: number, state: ExecutionRow['state']) =>
+      runRow(id, task, { state, endedAt: null, startedAt: at(minute).toISOString() })
+    // `a`, submitted last, runs in the older Task. `b` runs in the newer one.
+    const a = runs(older.name, 'a', 30, 'running')
+    const b = runs(newer.name, 'b', 21, 'running')
+    const initial: ActivityPage = {
+      ...page,
+      rows: [newer, older],
+      expanded: [newer.name, older.name],
+      branches: { [newer.name]: oneChild(b), [older.name]: oneChild(a) },
+    }
+    const store = createStore()
+    const search = `?live=latest&expand=${newer.name}&expand=${older.name}`
+    const state = activityObservation(initial, '/activity', search)
+    const unmount = store.sub(state, () => {})
+    const now = at(31).getTime()
+    try {
+      await vi.waitFor(() => expect(streams).toHaveLength(1))
+      expect(liveTarget(activityView(store.get(state)), 'latest', now)).toMatchObject({
+        run: a.name,
+      })
+      store.set(state, { kind: 'root', atStart: false })
+      await vi.advanceTimersByTimeAsync(120)
+      await vi.waitFor(() => expect(streams).toHaveLength(2))
+      // `a` ended. The snapshot refreshes only the newer Task's window, so the older
+      // Task's window still says `a` runs. The loader read every record.
+      const olderEnded = { ...older, outcome: 'succeeded', endedAt: at(31).toISOString() }
+      await act(async () =>
+        streams[1].enqueue(
+          snapshot({
+            ...initial,
+            rows: ended ? [newer, olderEnded] : [newer],
+            branches: { [newer.name]: oneChild(b) },
+            liveLatest: { running: { [newer.name]: b }, complete: true },
+          }),
+        ),
+      )
+      const view = activityView(store.get(state))
+      expect(view.branches[older.name]?.rows.map((row) => row.name)).toEqual([a.name])
+      expect(liveTarget(view, 'latest', now)).toEqual({
+        kind: 'run',
+        run: b.name,
+        chain: [newer.name, b.name],
+      })
+    } finally {
+      unmount()
+      await vi.advanceTimersByTimeAsync(0)
+    }
+  },
+)
 
 it('loads older records through the Activity loader, keeps them on a failure, and keeps them across a navigation inside the list', async () => {
   vi.stubGlobal(

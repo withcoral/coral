@@ -93,13 +93,13 @@ const world = {
   count: 0,
   /** By Task, a window of its records that the list keeps although no read refreshes it. */
   stale: {} as Record<string, ActivityRow[]>,
-  /** Each record the loader read open, in order. */
-  opened: [] as string[],
+  /** Each loader read, in order: the record it opened and the Tasks whose kept window it served. */
+  reads: [] as { record: string | null; kept: string[] }[],
   reset(roots: Root[]) {
     this.roots = roots
     this.count = 0
     this.stale = {}
-    this.opened = []
+    this.reads = []
   },
   runs(): RunModel[] {
     return this.roots.flatMap((root) => (root.kind === 'task' ? root.runs : [root.run]))
@@ -290,10 +290,14 @@ function pageFor(url: URL): ActivityPage {
   const record = query.get('record')
   const expanded = query.has('tree') ? query.getAll('expand') : []
   const branches: ActivityPage['branches'] = {}
-  if (record) world.opened.push(record)
+  const kept: string[] = []
+  world.reads.push({ record, kept })
   for (const root of world.roots)
-    if (root.kind === 'task' && expanded.includes(root.row.name))
-      branches[root.row.name] = branch(world.stale[root.row.name] ?? taskRecords(root))
+    if (root.kind === 'task' && expanded.includes(root.row.name)) {
+      const stale = world.stale[root.row.name]
+      if (stale) kept.push(root.row.name)
+      branches[root.row.name] = branch(stale ?? taskRecords(root))
+    }
   for (const model of world.runs()) {
     const task = model.row.task ?? ''
     if (expanded.includes(model.row.name) && (!task || expanded.includes(task)))
@@ -1072,10 +1076,14 @@ export const PassesARunThatAKeptWindowSaysRuns: Story = {
     await selects('Run r1', 'run r1')
     await expect(address().get('record')).toBe(runRow('r1', nextTask).name)
     await expect(address().get('live')).toBe('latest')
-    // Once the newer Task opened, live mode never read `a` open again. On screen, a
-    // reopened Run gives way at once, so the loader's reads are what show it.
-    const reads = world.opened.slice(world.opened.indexOf(nextTask))
-    await expect(reads.filter((record) => record.startsWith(a))).toEqual([])
+    // From the newer Task on, every read served the kept window that says `a` runs,
+    // and live mode never opened `a` again. On screen, a reopened Run gives way at
+    // once, so the loader's reads are what show it.
+    const first = world.reads.findIndex(({ record }) => record === nextTask)
+    await expect(first).toBeGreaterThanOrEqual(0)
+    const reads = world.reads.slice(first)
+    await expect(reads.filter((read) => !read.kept.includes(keptTask))).toEqual([])
+    await expect(reads.filter(({ record }) => record?.startsWith(a))).toEqual([])
   },
 }
 

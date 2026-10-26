@@ -1097,8 +1097,8 @@ async function liveLatestWork(
       return !waiting
     })
     newestRunning.set(task, run)
-    // A read cut short still found the newest Run that runs, when it found one.
-    if (!read && !run) tasksRead = false
+    // A read cut short may miss a Run that runs or waits.
+    if (!read) tasksRead = false
   }
 
   /**

@@ -2434,6 +2434,14 @@ describe("Page live's projection past the list", () => {
       named: undefined,
       windows: { [taskName('n')]: ['head', '51', '0'] },
     },
+    {
+      name: 'an older window of a Task, after it found its newest Run that runs',
+      roots: sharing([{ id: 'z' }]),
+      queued,
+      refused: [taskName('n'), 0],
+      named: { running: { [taskName('n')]: runOf('z') } },
+      windows: { [taskName('n')]: ['head', '52', '0'] },
+    },
   ])('never says it read every record when Reef cannot read $name', async (item) => {
     const world = liveWorld(item.roots, item.queued)
     const { api, calls } = coral(world, refusing(world, ...item.refused))
