@@ -220,8 +220,8 @@ async fn a_cancel_during_an_in_flight_fence_is_applied_at_once_and_run_ended_fol
 }
 
 /// A second cancel on an ending Run, sent to another Coral Instance after
-/// the first one's row was deleted, is a repeat: the owner's next chunk
-/// deletes its row and records nothing else, and both receive the recorded
+/// the first one was recorded, is answered from the record: it puts no row
+/// in the Run Inbox and moves nothing, and both cancels receive the recorded
 /// answer once the Run has ended.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_second_cancel_on_an_ending_run_records_nothing_and_leaves_no_row() {
@@ -272,28 +272,20 @@ async fn a_second_cancel_on_an_ending_run_records_nothing_and_leaves_no_row() {
         .run_record(&operation.workspace_id, run.run_id())
         .await;
     let second = cancel(fixture.next_process(), "second");
-    wait_until_async(async || {
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!second.is_finished(), "the Run is still ending");
+    assert_eq!(
         fixture
             .run_record(&operation.workspace_id, run.run_id())
-            .await
-            .chunk_sequence
-            > recorded.chunk_sequence
-    })
-    .await;
+            .await,
+        recorded,
+        "the repeat moves nothing"
+    );
     assert_eq!(
         fixture
             .inbox_rows(&operation.workspace_id, run.run_id())
             .await,
         0
-    );
-    assert!(!second.is_finished(), "the Run is still ending");
-    let repeated = fixture
-        .run_record(&operation.workspace_id, run.run_id())
-        .await;
-    assert_eq!(
-        (repeated.termination, repeated.last_event_sequence),
-        (recorded.termination, recorded.last_event_sequence),
-        "the repeat records nothing but its row's deletion"
     );
     upstream.release.store(true, Ordering::SeqCst);
     let first = first.await.expect("join");

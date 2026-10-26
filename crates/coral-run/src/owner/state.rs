@@ -1053,7 +1053,15 @@ impl OwnerState {
         }
         let mut effects = Vec::new();
         match self.phase {
-            Phase::Completing => self.parked.push(Message::Cancel { requester, row }),
+            // Once per row: the reader delivers it again while it waits.
+            Phase::Completing => {
+                let parked = self.parked.iter().any(
+                    |message| matches!(message, Message::Cancel { row: waiting, .. } if *waiting == row),
+                );
+                if !parked {
+                    self.parked.push(Message::Cancel { requester, row });
+                }
+            }
             Phase::Starting | Phase::Running | Phase::Ending if self.termination.is_none() => {
                 if now_unix_nanos >= self.limits.deadline_at_unix_nanos {
                     effects = self.deadline(now_unix_nanos);

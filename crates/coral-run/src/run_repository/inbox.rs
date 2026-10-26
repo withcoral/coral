@@ -22,11 +22,11 @@ enum ProgramRunInbox {
 }
 
 /// Inserts `request` as a cancellation of its Run, unless the Run is not
-/// running or its cancellation waits already: one row per decided thing,
-/// and the first wins. Reads the Run in the statement itself, holding
-/// nothing.
+/// running, its termination is recorded (the record answers), or its
+/// cancellation waits already: one row per decided thing, and the first
+/// wins. Reads the Run in the statement itself, holding nothing.
 pub(crate) async fn insert_cancellation(
-    database: &Database,
+    transaction: &mut Transaction<'_>,
     request: &InboxRequest,
     inserted_at_unix_nanos: i64,
 ) -> Result<(), Error> {
@@ -40,6 +40,7 @@ pub(crate) async fn insert_cancellation(
         .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(request.workspace_id.to_string()))
         .and_where(Expr::col(ProgramRunRecords::Id).eq(request.run_id.as_str()))
         .and_where(Expr::col(ProgramRunRecords::State).eq(RunState::Running.as_storage_str()))
+        .and_where(Expr::col(ProgramRunRecords::TerminationKind).is_null())
         .to_owned();
     let insert = Query::insert()
         .into_table(ProgramRunInbox::Table)
@@ -55,9 +56,7 @@ pub(crate) async fn insert_cancellation(
         .map_err(|error| Error::CorruptData(error.to_string()))?
         .on_conflict(OnConflict::new().do_nothing().to_owned())
         .to_owned();
-    let mut transaction = database.begin().await?;
     transaction.execute_change(insert).await?;
-    transaction.commit().await?;
     Ok(())
 }
 

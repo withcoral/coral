@@ -60,13 +60,17 @@ async fn a_cancel_sent_to_another_coral_instance_is_recorded_and_ends_the_run() 
 async fn a_cancel_whose_chunk_has_not_landed_is_delivered_again_and_its_repeat_waits() {
     let engine = Arc::new(StopAwareEngine::default());
     let (probe, release) = InboxProbe::holding_the_first_commit();
-    let fixture = TestModules::with_execution_adapters(
+    let mut fixture = TestModules::with_execution_adapters(
         engine.clone(),
         Arc::new(RejectingUpstream),
         Arc::new(NoopInvocationObserver),
         probe.clone(),
     )
     .await;
+    // Each cancel waits a shutdown grace past its arrival: long enough that
+    // only the held chunk decides when it is answered.
+    fixture.runs.execution_policy =
+        crate::execution::ExecutionPolicy::testing_with_shutdown_grace(Duration::from_secs(30));
     let (workspace_id, principal, run_id) =
         running_run(&fixture, &engine, "user:inbox-redelivery").await;
     let owner = fixture.runs.owners.get(&run_id).expect("live owner");

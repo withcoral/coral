@@ -2107,7 +2107,12 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         let (effects, mut during) = decide(&mut state, &approval_id(), 4);
         assert!(deliver(effects).is_empty());
         assert!(deliver(cancel(&mut state, "during", 4)).is_empty());
-        assert_eq!(state.parked_requests(), 2);
+        assert!(deliver(cancel(&mut state, "during", 4)).is_empty());
+        assert_eq!(
+            state.parked_requests(),
+            2,
+            "a row delivered again parks once"
+        );
         let effects = deliver(apply_without_tick(
             &mut state,
             Message::Completed(Ok(None)),

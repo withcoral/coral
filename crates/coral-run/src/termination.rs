@@ -34,7 +34,8 @@ impl RunModule {
     /// `cancellation.requested`, in its next chunk, which deletes the row.
     /// The wait is bounded by the Run's shutdown grace and the settle margin,
     /// from the call: a Run still ending then is shown as recorded. A Run
-    /// already terminal is shown as it is.
+    /// whose termination is recorded already puts nothing in the Run Inbox,
+    /// and a terminal Run is shown as it is.
     ///
     /// # Errors
     ///
@@ -50,19 +51,28 @@ impl RunModule {
     ) -> Result<RunUpdate, Error> {
         let arrived = Instant::now();
         validate_cursor(run_id, observation)?;
+        let request = InboxRequest {
+            workspace_id: workspace_id.clone(),
+            run_id: run_id.clone(),
+            requester: actor.principal().clone(),
+        };
+        // The caller's access and the insert share one transaction, which
+        // holds no Run row.
+        let mut transaction = self.database.begin().await?;
         let run = self
-            .visible_run_snapshot(actor, workspace_id, run_id)
+            .visible_run_in_transaction(&mut transaction, actor, workspace_id, run_id)
             .await?;
+        if !run.state.is_terminal() {
+            self.inbox
+                .submit(&mut transaction, &request, self.now()?)
+                .await?;
+        }
+        transaction.commit().await?;
         if !run.state.is_terminal() {
             // The recorded intent gives the dispatches in flight the shutdown
             // grace; the owner ends the Run itself once it is out.
             let until = arrived + crate::nanos_duration(run.shutdown_grace_nanos) + SETTLE_MARGIN;
-            let request = InboxRequest {
-                workspace_id: workspace_id.clone(),
-                run_id: run_id.clone(),
-                requester: actor.principal().clone(),
-            };
-            if !self.inbox.submit(&request, self.now()?, until).await? {
+            if !self.inbox.recorded(&request, until).await? {
                 return Err(Error::RunRequestNotYetRecorded);
             }
             let database = &self.database;
@@ -76,28 +86,26 @@ impl RunModule {
         self.observe(actor, workspace_id, run_id, observation).await
     }
 
-    /// The Run as `actor` may see it, from a read snapshot.
-    async fn visible_run_snapshot(
+    /// The Run as `actor` may see it, read in `transaction`.
+    async fn visible_run_in_transaction(
         &self,
+        transaction: &mut Transaction<'_>,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         run_id: &RunId,
     ) -> Result<RunRecord, Error> {
-        let mut transaction = self.database.begin_read_snapshot().await?;
         let include_workspace_agents = self
-            .visibility_scope_in_transaction(&mut transaction, actor, workspace_id)
+            .visibility_scope_in_transaction(transaction, actor, workspace_id)
             .await?;
-        let run = run_repository::find_visible_in_transaction(
-            &mut transaction,
+        run_repository::find_visible_in_transaction(
+            transaction,
             workspace_id,
             run_id,
             actor.principal(),
             include_workspace_agents,
         )
         .await?
-        .ok_or(Error::RunNotFound)?;
-        transaction.commit().await?;
-        Ok(run)
+        .ok_or(Error::RunNotFound)
     }
 
     /// One settle attempt of a recorded termination: every nonterminal

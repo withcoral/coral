@@ -24,9 +24,9 @@ use async_trait::async_trait;
 use coral_db::{ChangeSubscription, Database, Transaction};
 use coral_workspace::{Principal, WorkspaceId};
 use tokio::sync::{Mutex, Notify};
-use tokio::time::{Instant, sleep_until, timeout_at};
+use tokio::time::{Instant, sleep_until};
 
-use crate::observation::OBSERVE_MIN_REREAD_GAP;
+use crate::observation::{OBSERVE_FALLBACK_POLL, OBSERVE_MIN_REREAD_GAP};
 use crate::owner::{Message, Owners};
 use crate::{CoralInstanceId, Error, RunId, run_repository};
 
@@ -60,16 +60,22 @@ pub(crate) struct Delivery {
 #[async_trait]
 trait Inbox: Send + Sync {
     /// Puts `request` in its Run's Run Inbox at `submitted_at_unix_nanos`,
-    /// wakes this Coral Instance's stream at once (so a local owner gets it
-    /// without waiting for the change signal), and waits until `until` for
-    /// the request to be Recorded: `true` once it is, or once the Run ended
-    /// without it and the record answers; `false` past `until`.
+    /// in `transaction`, which checked the requester's access: nothing when
+    /// the Run is not running, its termination is recorded, or a request for
+    /// the same decided thing waits already.
     async fn submit(
         &self,
+        transaction: &mut Transaction<'_>,
         request: &InboxRequest,
         submitted_at_unix_nanos: i64,
-        until: Instant,
-    ) -> Result<bool, Error>;
+    ) -> Result<(), Error>;
+
+    /// Wakes this Coral Instance's stream at once (a local owner gets the
+    /// request without waiting for the change signal) and waits until
+    /// `until` for the submitted `request` to be Recorded: `true` once it
+    /// is, or once nothing waits for it (the record answers); `false` past
+    /// `until`.
+    async fn recorded(&self, request: &InboxRequest, until: Instant) -> Result<bool, Error>;
 
     /// The next requests addressed to the Runs `instance` holds, in insert
     /// order, once there may be new ones.
@@ -113,13 +119,21 @@ impl RunInbox {
 
     pub(crate) async fn submit(
         &self,
+        transaction: &mut Transaction<'_>,
         request: &InboxRequest,
         submitted_at_unix_nanos: i64,
+    ) -> Result<(), Error> {
+        self.inbox
+            .submit(transaction, request, submitted_at_unix_nanos)
+            .await
+    }
+
+    pub(crate) async fn recorded(
+        &self,
+        request: &InboxRequest,
         until: Instant,
     ) -> Result<bool, Error> {
-        self.inbox
-            .submit(request, submitted_at_unix_nanos, until)
-            .await
+        self.inbox.recorded(request, until).await
     }
 
     pub(crate) async fn remove(
@@ -248,12 +262,14 @@ impl Cadence {
 impl Inbox for TableInbox {
     async fn submit(
         &self,
+        transaction: &mut Transaction<'_>,
         request: &InboxRequest,
         submitted_at_unix_nanos: i64,
-        until: Instant,
-    ) -> Result<bool, Error> {
-        run_repository::insert_cancellation(&self.database, request, submitted_at_unix_nanos)
-            .await?;
+    ) -> Result<(), Error> {
+        run_repository::insert_cancellation(transaction, request, submitted_at_unix_nanos).await
+    }
+
+    async fn recorded(&self, request: &InboxRequest, until: Instant) -> Result<bool, Error> {
         self.wake();
         let database = &self.database;
         read_until(database, until, move || async move {
@@ -293,8 +309,8 @@ impl Inbox for TableInbox {
 }
 
 /// Reads `settled` again after every ring of the change signal, at most once
-/// per reread gap, until it holds, or until `until`, when it reads it one
-/// last time.
+/// per reread gap, until it holds or `until` passes, as `observe` waits:
+/// without the signal it reads again at the fallback poll.
 pub(crate) async fn read_until<Read>(
     database: &Database,
     until: Instant,
@@ -309,13 +325,17 @@ where
         if settled().await? {
             return Ok(true);
         }
-        let next = async {
-            rung(&mut changes).await;
-            sleep_until(read_at + OBSERVE_MIN_REREAD_GAP).await;
-        };
-        if timeout_at(until, next).await.is_err() {
-            return settled().await;
+        if read_at >= until {
+            return Ok(false);
         }
+        match &mut changes {
+            Some(subscription) => tokio::select! {
+                result = subscription.changed() => if result.is_err() { changes = None },
+                () = sleep_until(until) => {}
+            },
+            None => sleep_until(until.min(read_at + OBSERVE_FALLBACK_POLL)).await,
+        }
+        sleep_until(until.min(read_at + OBSERVE_MIN_REREAD_GAP)).await;
     }
 }
 
