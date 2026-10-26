@@ -109,6 +109,43 @@ impl ExecutionObserver for CommitGate {
     }
 }
 
+/// Holds the first chunk commit like [`CommitGate`] and counts the
+/// requests the Run Inbox reader delivers.
+pub(crate) struct InboxProbe {
+    gate: BlockingGate,
+    delivered: AtomicUsize,
+}
+
+impl InboxProbe {
+    pub(crate) fn holding_the_first_commit() -> (Arc<Self>, oneshot::Sender<()>) {
+        let (gate, release) = BlockingGate::new();
+        let probe = Self {
+            gate,
+            delivered: AtomicUsize::new(0),
+        };
+        (Arc::new(probe), release)
+    }
+
+    pub(crate) fn entered(&self) -> bool {
+        self.gate.entered.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn delivered(&self) -> usize {
+        self.delivered.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl ExecutionObserver for InboxProbe {
+    async fn before_chunk_commit(&self) {
+        let _released = self.gate.hold().await;
+    }
+
+    fn inbox_delivered(&self) {
+        self.delivered.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct FenceObservation {
     pub(crate) permit_returned: bool,

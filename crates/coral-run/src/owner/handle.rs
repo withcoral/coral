@@ -7,12 +7,13 @@ use std::sync::{Arc, Mutex};
 
 use coral_provider::account::ConnectionRequestId;
 use coral_workspace::{Principal, TraceId};
-use tokio::sync::{Notify, mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::approval::{ApprovalDecision, ApprovalId, ApprovalState};
 use crate::engine::{ExecutionCompletion, ProgramPackage};
 use crate::execution::ExecutionStop;
 use crate::invocation::{FenceRequest, ParkedInvocation};
+use crate::run_inbox::InboxRow;
 use crate::termination::ShutdownAction;
 use crate::{Error, ProgramLogLevel, ProgramValue, RunId, SourceLocation};
 
@@ -21,8 +22,8 @@ use super::chunk::ChunkWork;
 /// The answer to one Program request, at Applied or at Recorded.
 pub(crate) type Reply = oneshot::Sender<Result<(), Error>>;
 
-/// The answer to one outside request (a decision, a cancellation), at
-/// Recorded: what its chunk recorded for it.
+/// The answer to one outside decision, at Recorded: what its chunk recorded
+/// for it.
 pub(crate) type RequestReply = oneshot::Sender<Result<DecisionAnswer, Error>>;
 
 /// What a decision request learns once it is recorded: what its chunk's
@@ -34,8 +35,7 @@ pub(crate) enum DecisionAnswer {
         state: ApprovalState,
         decided_at_unix_nanos: i64,
     },
-    /// The record answers: an earlier decision or a closed request for a
-    /// decision, the recorded intent for a cancellation.
+    /// The record answers: an earlier decision, or a closed request.
     FromRecord,
 }
 
@@ -197,14 +197,12 @@ pub(crate) enum Message {
         request: DecisionRequest,
         reply: RequestReply,
     },
-    /// An outside requester cancels the Run: the termination intent and
-    /// `cancellation.requested` ride the next chunk, and the Program is
-    /// terminated at once. A repeat receives the recorded answer. Answered
-    /// once recorded.
-    Cancel {
-        requester: Principal,
-        reply: RequestReply,
-    },
+    /// A cancellation from the Run Inbox, with the row that carried it: the
+    /// termination intent and `cancellation.requested` ride the next chunk,
+    /// and the Program is terminated at once. That chunk deletes the row; a
+    /// repeat changes nothing but has its row deleted too, and a row
+    /// delivered again changes nothing.
+    Cancel { requester: Principal, row: InboxRow },
     /// A timer the owner armed fired: the Run deadline, an Approval
     /// Request's or a connection request's deadline, the idle tick, the
     /// shutdown grace, the periodic precheck, or the end of the wake gap.
@@ -288,9 +286,10 @@ impl fmt::Debug for Message {
                 .field("approval", &request.approval)
                 .field("decision", &request.decision)
                 .finish(),
-            Self::Cancel { requester, .. } => formatter
+            Self::Cancel { requester, row } => formatter
                 .debug_struct("Cancel")
                 .field("requester", requester)
+                .field("row", row)
                 .finish(),
             Self::Timer(timer) => formatter.debug_tuple("Timer").field(timer).finish(),
             Self::Parked(parked) => formatter.debug_tuple("Parked").field(parked).finish(),
@@ -399,12 +398,11 @@ struct Shared {
     sender: mpsc::UnboundedSender<Message>,
     stop: Arc<ExecutionStop>,
     stopped: AtomicBool,
-    stopped_notification: Notify,
 }
 
 /// A handle on one live Run Owner: the Program host and the Invocation tasks
-/// send it Program requests, outside requesters their decisions and
-/// cancellations; the Shutdown Drain asks it to stop.
+/// send it Program requests, outside requesters their decisions, the Run
+/// Inbox reader its cancellations; the Shutdown Drain asks it to stop.
 #[derive(Clone)]
 pub(crate) struct OwnerHandle {
     shared: Arc<Shared>,
@@ -420,7 +418,6 @@ impl OwnerHandle {
                 sender,
                 stop: Arc::new(ExecutionStop::new()),
                 stopped: AtomicBool::new(false),
-                stopped_notification: Notify::new(),
             }),
         };
         (handle, mailbox)
@@ -453,27 +450,13 @@ impl OwnerHandle {
     }
 
     pub(crate) fn mark_stopped(&self) {
-        if !self.shared.stopped.swap(true, Ordering::SeqCst) {
-            self.shared.stopped_notification.notify_waiters();
-        }
+        self.shared.stopped.store(true, Ordering::SeqCst);
     }
 
     /// Whether the owner has retired (or its task ended): nothing it started
     /// needs to keep trying on its behalf.
     pub(crate) fn is_retired(&self) -> bool {
         self.shared.stopped.load(Ordering::SeqCst)
-    }
-
-    /// Returns once the owner has retired: no chunk commit of its own follows.
-    pub(crate) async fn wait_stopped(&self) {
-        if self.shared.stopped.load(Ordering::SeqCst) {
-            return;
-        }
-        let notified = self.shared.stopped_notification.notified();
-        if self.shared.stopped.load(Ordering::SeqCst) {
-            return;
-        }
-        notified.await;
     }
 
     /// Delivers one message; a retired owner has dropped its mailbox and
@@ -556,18 +539,6 @@ impl OwnerHandle {
         self.ask(|reply| Message::Decide { request, reply }).await
     }
 
-    /// Asks the owner to cancel its Run; answers once the termination intent
-    /// is recorded, or the one that won before it.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::OwnerLost`] when the owner stopped first: read the record.
-    pub(crate) async fn cancel(&self, requester: Principal) -> Result<(), Error> {
-        self.ask(|reply| Message::Cancel { requester, reply })
-            .await
-            .map(drop)
-    }
-
     /// Sends one request and waits for its answer; a retired owner, or one
     /// that dropped the reply, answers [`Error::OwnerLost`].
     async fn ask<T>(
@@ -642,6 +613,11 @@ impl Owners {
             .cloned()
     }
 
+    /// The owner live here for `run_id`, whatever its claim.
+    pub(crate) fn get(&self, run_id: &RunId) -> Option<OwnerHandle> {
+        self.lock().get(run_id).cloned()
+    }
+
     /// Whether an owner for `run_id` is live here, whatever its claim.
     pub(crate) fn contains(&self, run_id: &RunId) -> bool {
         self.lock().contains_key(run_id)
@@ -673,7 +649,7 @@ impl Owners {
 
 /// Holds the registry entry; dropping it, also on an unwinding or cancelled
 /// owner task, retires the owner: the Program and its dispatches stop, and
-/// everything waiting for the owner to stop wakes.
+/// every write still retrying on its behalf gives up.
 pub(crate) struct OwnerRegistration {
     owners: Owners,
     handle: OwnerHandle,

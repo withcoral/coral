@@ -1662,18 +1662,15 @@ fn decided(receiver: &mut Decided) -> Option<Result<DecisionAnswer, Error>> {
     receiver.try_recv().ok()
 }
 
-fn cancel(state: &mut OwnerState, now: i64) -> (Vec<Effect>, Decided) {
-    let (reply, receiver) = tokio::sync::oneshot::channel();
-    (
-        apply_without_tick(
-            state,
-            Message::Cancel {
-                requester: requester(),
-                reply,
-            },
-            now,
-        ),
-        receiver,
+/// A cancellation the Run Inbox delivers in `row`.
+fn cancel(state: &mut OwnerState, row: &str, now: i64) -> Vec<Effect> {
+    apply_without_tick(
+        state,
+        Message::Cancel {
+            requester: requester(),
+            row: crate::run_inbox::InboxRow(row.to_string()),
+        },
+        now,
     )
 }
 
@@ -1833,11 +1830,11 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
     }
 
     // A cancel while a fence is in flight: applied at once (the Program is
-    // terminated, the batch in flight is left to return on its own), the
-    // intent and `cancellation.requested` ride the next chunk, and the
-    // requester is answered once that chunk is recorded. A second cancel
-    // waits parked and is answered with it; a third from memory, with no
-    // chunk.
+    // terminated, the batch in flight is left to return on its own), and
+    // the intent, `cancellation.requested` and the deletion of its Run Inbox
+    // row ride the next chunk. The row delivered again changes nothing,
+    // before its deletion lands and after; a later row, a repeat, changes
+    // nothing but has a chunk delete it.
     {
         let mut state = started(LIMITS);
         let (sender, _receiver) = tokio::sync::oneshot::channel();
@@ -1849,36 +1846,34 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         ));
         let batch = committed_chunk(apply_without_tick(&mut state, Message::Drained, 4));
         assert_eq!(batch.fenced, 1);
-        let (effects, mut first) = cancel(&mut state, 5);
-        let effects = deliver(effects);
+        let effects = deliver(cancel(&mut state, "first", 5));
         assert!(stops(&effects), "{effects:?}");
         assert_eq!(
             state.termination().map(|intent| intent.termination.kind),
             Some(RunTerminationKind::Canceled)
         );
         assert_eq!(state.pending_chunks(), 1);
-        let (effects, mut second) = cancel(&mut state, 6);
-        assert!(deliver(effects).is_empty());
-        assert_eq!(state.parked_requests(), 1);
+        assert!(deliver(cancel(&mut state, "first", 6)).is_empty());
+        assert_eq!(state.parked_requests(), 0);
         assert!(
             deliver(apply_without_tick(&mut state, Message::Drained, 7)).is_empty(),
             "the intent waits behind the fence in flight"
         );
         let intent = committed_chunk(apply_without_tick(&mut state, Message::Committed, 8));
         assert_eq!(intent.events, 1, "`cancellation.requested`");
+        assert_eq!(intent.inbox_rows, 1);
         assert_eq!(
             intent.termination.map(|intent| intent.termination.kind),
             Some(RunTerminationKind::Canceled)
         );
-        assert!(decided(&mut first).is_none() && decided(&mut second).is_none());
         let effects = deliver(apply_without_tick(&mut state, Message::Committed, 9));
         assert!(effects.is_empty(), "{effects:?}");
-        assert!(matches!(decided(&mut first), Some(Ok(_))));
-        assert!(matches!(decided(&mut second), Some(Ok(_))));
-        let (effects, mut third) = cancel(&mut state, 10);
-        assert!(deliver(effects).is_empty());
-        assert!(matches!(decided(&mut third), Some(Ok(_))));
+        assert!(deliver(cancel(&mut state, "first", 10)).is_empty());
         assert_eq!(state.pending_chunks(), 0);
+        assert!(deliver(cancel(&mut state, "repeat", 11)).is_empty());
+        let repeat = committed_chunk(apply_without_tick(&mut state, Message::Drained, 12));
+        assert_eq!((repeat.events, repeat.inbox_rows), (0, 1));
+        assert!(repeat.termination.is_none());
         assert_eq!(state.head(), 3);
     }
 
@@ -1947,14 +1942,14 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
     }
 
     // A cancel past the deadline times the Run out: the Program is
-    // terminated, the timeout rides the next chunk, and the requester is
-    // answered from the record once that chunk is recorded.
+    // terminated, and the timeout rides the next chunk with the deletion of
+    // the cancel's row, a repeat of the timeout.
     {
         let mut state = started(LIMITS);
-        let (effects, mut late) = cancel(&mut state, LIMITS.deadline_at_unix_nanos);
+        let effects = cancel(&mut state, "late", LIMITS.deadline_at_unix_nanos);
         assert!(stops(&deliver(effects)));
         assert_eq!(state.pending_chunks(), 1);
-        assert_eq!(state.parked_requests(), 1);
+        assert_eq!(state.parked_requests(), 0);
         let chunk = committed_chunk(apply_without_tick(
             &mut state,
             Message::Drained,
@@ -1964,21 +1959,17 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
             chunk.events, 0,
             "a cancel past the deadline writes no Event"
         );
+        assert_eq!(chunk.inbox_rows, 1);
         assert_eq!(
             chunk.termination.map(|intent| intent.termination.kind),
             Some(RunTerminationKind::TimedOut)
         );
-        assert!(decided(&mut late).is_none());
         let effects = deliver(apply_without_tick(
             &mut state,
             Message::Committed,
             LIMITS.deadline_at_unix_nanos + 2,
         ));
         assert!(effects.is_empty(), "{effects:?}");
-        assert!(matches!(
-            decided(&mut late),
-            Some(Ok(DecisionAnswer::FromRecord))
-        ));
         let effects = apply_without_tick(
             &mut state,
             Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
@@ -2001,11 +1992,9 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
     // end changes nothing.
     {
         let mut state = started(LIMITS);
-        let (effects, mut requester) = cancel(&mut state, 3);
-        deliver(effects);
+        deliver(cancel(&mut state, "cancel", 3));
         committed_chunk(apply_without_tick(&mut state, Message::Drained, 4));
         deliver(apply_without_tick(&mut state, Message::Committed, 5));
-        assert!(matches!(decided(&mut requester), Some(Ok(_))));
         let effects = apply_without_tick(&mut state, Message::Timer(Timer::Grace), 6);
         assert!(
             matches!(
@@ -2028,9 +2017,10 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         );
     }
 
-    // A lost claim answers every outside requester `OwnerLost`: the one on
-    // the chunk in flight, the one parked behind it, and the one on a chunk
-    // not yet committed.
+    // A lost claim answers every outside decision `OwnerLost`: the one on
+    // the chunk in flight and the one parked behind it. A cancellation on a
+    // chunk not yet committed keeps its Run Inbox row, and the row delivered
+    // again changes nothing.
     {
         let mut state = started(LIMITS);
         let approval = approval_id();
@@ -2039,8 +2029,7 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         committed_chunk(apply_without_tick(&mut state, Message::Drained, 4));
         let (effects, mut repeat) = decide(&mut state, &approval, 5);
         assert!(deliver(effects).is_empty());
-        let (effects, mut pending) = cancel(&mut state, 6);
-        deliver(effects);
+        deliver(cancel(&mut state, "pending", 6));
         let effects = deliver(apply_without_tick(
             &mut state,
             Message::CommitRejected(CommitRejection::ClaimMismatch),
@@ -2053,11 +2042,12 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         for answer in [&mut first, &mut repeat] {
             assert!(matches!(decided(answer), Some(Err(Error::OwnerLost))));
         }
-        assert!(matches!(decided(&mut pending), Some(Err(Error::OwnerLost))));
         assert_eq!(
             state.phase(),
             Phase::Stopped(CommitRejection::ClaimMismatch)
         );
+        assert!(deliver(cancel(&mut state, "pending", 8)).is_empty());
+        assert_eq!(state.pending_chunks(), 0);
         let (effects, mut late) = decide(&mut state, &approval_id(), 8);
         let _ = deliver(effects);
         assert!(matches!(decided(&mut late), Some(Err(Error::OwnerLost))));
@@ -2068,8 +2058,7 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
     {
         let mut state = OwnerState::new(LIMITS, 1);
         deliver(apply_without_tick(&mut state, Message::Launch, 1));
-        let (effects, mut early) = cancel(&mut state, 2);
-        assert!(stops(&deliver(effects)));
+        assert!(stops(&deliver(cancel(&mut state, "early", 2))));
         let chunk = committed_chunk(apply_without_tick(
             &mut state,
             Message::Started(Ok(Some(StartedExecution {
@@ -2079,23 +2068,18 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
             3,
         ));
         assert_eq!(state.phase(), Phase::Ending);
-        assert_eq!(chunk.events, 1);
+        assert_eq!((chunk.events, chunk.inbox_rows), (1, 1));
         let effects = apply_without_tick(&mut state, Message::Committed, 4);
         assert!(
             matches!(
                 effects.as_slice(),
-                [
-                    Effect::Answer(..),
-                    Effect::CompleteExecution {
-                        completion: ExecutionCompletion::ProgramHostTerminated,
-                        ..
-                    }
-                ]
+                [Effect::CompleteExecution {
+                    completion: ExecutionCompletion::ProgramHostTerminated,
+                    ..
+                }]
             ),
             "{effects:?}"
         );
-        deliver(effects);
-        assert!(matches!(decided(&mut early), Some(Ok(_))));
         let effects = apply_without_tick(
             &mut state,
             Message::Completed(Ok(Some(ShutdownAction::for_apply_test()))),
@@ -2107,9 +2091,11 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         ));
     }
 
-    // A decision during the terminal write waits for it: the Run ended,
-    // the requester is answered and reads the record; a termination to
-    // settle closes the request in a chunk of the settle.
+    // A decision or a cancel during the terminal write waits for it. The
+    // Run ended: the decision's requester is answered and reads the record,
+    // and the cancel's row stays for the record to answer. A termination to
+    // settle: a chunk of the settle closes the request and deletes the
+    // cancel's row, a repeat.
     {
         let mut state = started(LIMITS);
         deliver(apply_without_tick(
@@ -2120,7 +2106,8 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         assert_eq!(state.phase(), Phase::Completing);
         let (effects, mut during) = decide(&mut state, &approval_id(), 4);
         assert!(deliver(effects).is_empty());
-        assert_eq!(state.parked_requests(), 1);
+        assert!(deliver(cancel(&mut state, "during", 4)).is_empty());
+        assert_eq!(state.parked_requests(), 2);
         let effects = deliver(apply_without_tick(
             &mut state,
             Message::Completed(Ok(None)),
@@ -2140,11 +2127,14 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         ));
         let (effects, mut parked) = decide(&mut state, &approval_id(), 4);
         assert!(deliver(effects).is_empty());
-        committed_chunk(apply_without_tick(
+        assert!(deliver(cancel(&mut state, "settled", 4)).is_empty());
+        let chunk = committed_chunk(apply_without_tick(
             &mut state,
             Message::Completed(Ok(Some(ShutdownAction::for_apply_test()))),
             5,
         ));
+        assert_eq!((chunk.works, chunk.inbox_rows), (1, 1));
+        assert!(chunk.termination.is_none());
         assert_eq!(state.phase(), Phase::Settling);
         assert!(decided(&mut parked).is_none());
         let effects = apply_without_tick(&mut state, Message::Committed, 6);
@@ -2167,8 +2157,7 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
     // the next chunk; the deadline's timer changes nothing.
     {
         let mut state = started(LIMITS);
-        let (effects, mut requester) = cancel(&mut state, 3);
-        assert!(stops(&deliver(effects)));
+        assert!(stops(&deliver(cancel(&mut state, "first", 3))));
         assert!(
             apply_without_tick(
                 &mut state,
@@ -2186,23 +2175,21 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
             Message::Drained,
             LIMITS.deadline_at_unix_nanos + 1,
         ));
-        assert_eq!(chunk.events, 1, "`cancellation.requested`");
+        assert_eq!(
+            (chunk.events, chunk.inbox_rows),
+            (1, 1),
+            "`cancellation.requested`"
+        );
         assert_eq!(
             chunk.termination.map(|intent| intent.termination.kind),
             Some(RunTerminationKind::Canceled)
         );
-        deliver(apply_without_tick(
-            &mut state,
-            Message::Committed,
-            LIMITS.deadline_at_unix_nanos + 2,
-        ));
-        assert!(matches!(decided(&mut requester), Some(Ok(_))));
     }
 
     // The deadline's timer first, both before the deadline on the owner's
-    // clock (the timer fires on the host's): the timeout is the intent, no
-    // chunk carries it, and the cancel waits parked until the terminal
-    // write has recorded the timeout.
+    // clock (the timer fires on the host's): the timeout is the intent, and
+    // the cancel, a repeat, has its row deleted by the chunk that carries
+    // the timeout.
     {
         let mut state = started(LIMITS);
         let effects = deliver(apply_without_tick(
@@ -2211,30 +2198,24 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
             10,
         ));
         assert!(stops(&effects), "{effects:?}");
-        let (effects, mut requester) = cancel(&mut state, 11);
-        assert!(deliver(effects).is_empty());
+        assert!(deliver(cancel(&mut state, "after", 11)).is_empty());
         assert_eq!(
             state.termination().map(|intent| intent.termination.kind),
             Some(RunTerminationKind::TimedOut)
         );
-        assert_eq!(state.parked_requests(), 1);
+        assert_eq!(state.parked_requests(), 0);
         assert_eq!(
             state.pending_chunks(),
             1,
-            "the timeout rides the next chunk; the cancel builds none"
+            "the timeout and the cancel's row ride one chunk"
         );
         let chunk = committed_chunk(apply_without_tick(&mut state, Message::Drained, 12));
-        assert_eq!(chunk.events, 0);
+        assert_eq!((chunk.events, chunk.inbox_rows), (0, 1));
         assert_eq!(
             chunk.termination.map(|intent| intent.termination.kind),
             Some(RunTerminationKind::TimedOut)
         );
-        assert!(decided(&mut requester).is_none());
         deliver(apply_without_tick(&mut state, Message::Committed, 13));
-        assert!(matches!(
-            decided(&mut requester),
-            Some(Ok(DecisionAnswer::FromRecord))
-        ));
         let effects = apply_without_tick(
             &mut state,
             Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),

@@ -28,6 +28,12 @@ pub(super) fn run_error(error: coral_run::Error) -> Status {
         coral_run::Error::OwnedElsewhere => {
             Status::unavailable("run has no live owner in this process; retry")
         }
+        // The request waits in the Run Inbox and its owner has not recorded
+        // it yet. Retryable: a retry reads what was recorded meanwhile.
+        coral_run::Error::RunRequestNotYetRecorded => super::super::workspaces::safe_status(
+            tonic::Code::Unavailable,
+            "RUN_REQUEST_NOT_YET_RECORDED",
+        ),
         // The process is shutting down and accepts no new Run; another
         // process takes the request.
         coral_run::Error::ShuttingDown => Status::unavailable("server is shutting down; retry"),

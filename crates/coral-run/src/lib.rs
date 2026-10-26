@@ -23,11 +23,12 @@
 //!   Principal-filtered required actions and terminal data on the final output page.
 //!   Bounded waiting ignores internal lifecycle records. Initial observation batches
 //!   authored output until human action, terminal state, or the requested deadline.
-//! - [`RunModule::cancel`] asks the Run's owner to cancel it, through the same
-//!   Principal-specific visibility rules: the owner terminates active execution
-//!   at once and records the intent in its next chunk. The call waits up to
-//!   the shutdown grace for the owner to end the Run, then returns the state
-//!   recorded by then.
+//! - [`RunModule::cancel`] puts a cancellation in the Run's Run Inbox, through
+//!   the same Principal-specific visibility rules, whichever Coral Instance
+//!   owns the Run: the owner terminates active execution at once and records
+//!   the intent in its next chunk. The call waits up to the shutdown grace and
+//!   a settle margin for the owner to record it and end the Run, then returns
+//!   the state recorded by then, or answers that it is not yet recorded.
 //! - [`RunModule::activity_entries`] reads bounded chronological child summaries.
 //!   Exact Event/Invocation anchors retain their identities. Upper owners can join
 //!   authorized read snapshots through transaction facets without Task dependencies.
@@ -106,8 +107,10 @@
 //! While a Run is nonterminal its owner is the only writer of its row and its
 //! Events: approval decisions and cancellation reach the owner as requests,
 //! and the Run and Approval Request deadlines are its own timers, applied in
-//! mailbox order with them (see [`owner`]); a request for a nonterminal Run
-//! with no owner in this process is answered `OwnedElsewhere`. The worker
+//! mailbox order with them (see [`owner`]). A cancellation reaches it from
+//! any Coral Instance through the Run Inbox (see [`run_inbox`]); a decision
+//! for a nonterminal Run with no owner in this process is answered
+//! `OwnedElsewhere`. The worker
 //! lease is ownership between processes: a Run whose lease lapsed with no
 //! owner here is the expired-lease sweep's, which recreates its owner, and a
 //! Run whose live lease another process holds is never touched. The clock
@@ -164,6 +167,8 @@ mod recovery;
 mod required_actions;
 mod required_actions_repository;
 pub mod retention;
+mod run_inbox;
+pub use run_inbox::RunInbox;
 mod run_repository;
 mod shutdown;
 mod source_location_repository;
@@ -246,6 +251,8 @@ pub struct RunModule {
     shutdown_drain: ShutdownDrain,
     /// The Coral Instance this module runs in; a Run row it claims records it.
     instance: CoralInstanceId,
+    /// Where outside Run Requests wait for the Run Owner of their Run.
+    inbox: RunInbox,
     owners: Owners,
     admission: shutdown::Admission,
     /// Bounds the recovered owners' writes at once, so a mass recovery after
@@ -261,7 +268,8 @@ impl RunModule {
     /// Builds the runtime with the deployment's outbound policy and runtime limits.
     /// Built-in Operations prepare Setups through `providers`, the bootstrap's
     /// Provider Module. `instance` is the Coral Instance the process runs as,
-    /// which every Run it claims records.
+    /// which every Run it claims records; `inbox` is where outside Run
+    /// Requests wait for their Run Owner.
     /// # Errors
     /// Returns an initialization error when the runtime or HTTP client cannot start.
     pub fn new(
@@ -271,6 +279,7 @@ impl RunModule {
         providers: coral_provider::ProviderModule,
         limits: RuntimeLimits,
         instance: CoralInstanceId,
+        inbox: RunInbox,
     ) -> Result<Self, Error> {
         Ok(Self {
             providers,
@@ -292,6 +301,7 @@ impl RunModule {
             fan_out_limit: limits.fan_out_limit(),
             shutdown_drain: limits.shutdown_drain(),
             instance,
+            inbox,
             owners: Owners::default(),
             admission: shutdown::Admission::default(),
             recovery_writes: recovery::write_permits(),
@@ -312,6 +322,7 @@ impl RunModule {
         clock: Arc<dyn Clock>,
         observers: TestObservers,
     ) -> Self {
+        let inbox = RunInbox::table(database.clone());
         Self {
             providers,
             policies: coral_policy::OperationPolicyModule::new(
@@ -332,6 +343,7 @@ impl RunModule {
             fan_out_limit: FanOutLimit::default(),
             shutdown_drain: ShutdownDrain::default(),
             instance: CoralInstanceId::generate(),
+            inbox,
             owners: Owners::default(),
             admission: shutdown::Admission::default(),
             recovery_writes: recovery::write_permits(),

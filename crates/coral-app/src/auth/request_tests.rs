@@ -365,6 +365,7 @@ impl Fixture {
             ),
             coral_run::RuntimeLimits::default(),
             coral_run::CoralInstanceId::generate(),
+            coral_run::RunInbox::table(database.clone()),
         )
         .unwrap();
         let commands = coral_task::TaskCommands::new(

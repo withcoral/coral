@@ -9,6 +9,7 @@ use coral_db::Transaction;
 
 use crate::invocation::{FenceBatch, FenceRequest, ParkedInvocation};
 use crate::lifecycle::{RequestedTermination, RunRecord};
+use crate::run_inbox::InboxRow;
 use crate::run_repository::OwnedEvent;
 use crate::{CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, Error};
 
@@ -105,6 +106,9 @@ pub(crate) struct ChunkBuild {
     /// its head update beside the `cancellation.requested` Event among the
     /// items.
     pub(crate) termination: Option<RequestedTermination>,
+    /// The Run Inbox rows of the requests this chunk records, deleted in its
+    /// commit.
+    pub(crate) inbox_rows: Vec<InboxRow>,
     /// Events the owner counted at apply time; row work adds its own inside
     /// the transaction.
     pub(crate) events: usize,
@@ -121,6 +125,7 @@ impl ChunkBuild {
             && self.waiters.is_empty()
             && self.requests.is_empty()
             && self.termination.is_none()
+            && self.inbox_rows.is_empty()
     }
 
     /// Whether this chunk records the request `key` names.
@@ -187,6 +192,8 @@ pub(crate) struct ChunkBuildView {
     /// Invocations in the fence batch.
     pub(crate) fenced: usize,
     pub(crate) termination: Option<RequestedTermination>,
+    /// Run Inbox rows the chunk deletes.
+    pub(crate) inbox_rows: usize,
 }
 
 #[cfg(test)]
@@ -201,6 +208,7 @@ impl ChunkBuildView {
             works: chunk.works,
             fenced: chunk.fence.as_ref().map_or(0, |batch| batch.len()),
             termination: chunk.termination.clone(),
+            inbox_rows: chunk.inbox_rows.len(),
         }
     }
 }

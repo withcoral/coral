@@ -179,6 +179,7 @@ impl Fixture {
             providers.clone(),
             coral_run::RuntimeLimits::default(),
             coral_run::CoralInstanceId::generate(),
+            coral_run::RunInbox::table(database.clone()),
         )
         .unwrap()
         .with_accounts(accounts.clone());

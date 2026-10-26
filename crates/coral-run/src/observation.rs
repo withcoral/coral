@@ -14,7 +14,7 @@ use crate::{
 };
 
 /// Minimum spacing between one waiter's rereads.
-const OBSERVE_MIN_REREAD_GAP: Duration = Duration::from_millis(50);
+pub(crate) const OBSERVE_MIN_REREAD_GAP: Duration = Duration::from_millis(50);
 /// Reread cadence for a waiter whose change notifications are unavailable.
 const OBSERVE_FALLBACK_POLL: Duration = Duration::from_millis(500);
 

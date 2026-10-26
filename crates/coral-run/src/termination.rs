@@ -1,4 +1,4 @@
-//! Run termination: a cancellation as a request to the Run Owner, the settle
+//! Run termination: a cancellation through the Run Inbox, the settle
 //! of a recorded termination (the terminal chunk that ends every nonterminal
 //! Invocation and the Run), and the Interrupted record.
 
@@ -6,15 +6,16 @@ use std::time::Duration;
 
 use coral_db::Transaction;
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
-use tokio::time::timeout;
+use tokio::time::Instant;
 
 use crate::approval::{ApprovalId, DecideWork};
 use crate::lifecycle::{RequestedTermination, RunRecord, RunTermination, RunTerminationKind};
 use crate::observation::validate_cursor;
 use crate::owner::ChunkWork as _;
+use crate::run_inbox::{InboxRequest, read_until};
 use crate::{
     Error, RunId, RunModule, RunObservation, RunState, RunUpdate, invocation_lifecycle,
-    invocation_repository, owner, run_repository,
+    invocation_repository, run_repository,
 };
 
 /// How much longer than its shutdown grace a cancellation, or the end of the
@@ -23,23 +24,23 @@ use crate::{
 pub(crate) const SETTLE_MARGIN: Duration = Duration::from_secs(1);
 
 impl RunModule {
-    /// Asks the Run's owner to cancel it, waits for the owner to end the Run
-    /// within the shutdown grace, and returns the Run as recorded.
+    /// Puts a cancellation in the Run's Run Inbox, whichever Coral Instance
+    /// owns the Run, waits for its owner to record it and end the Run, and
+    /// returns the Run as recorded.
     ///
     /// The cancellation is a Run Request identified by the Run: the first
     /// termination wins, and a repeat receives the recorded answer. The owner
     /// terminates the Program at once and records the intent, with
-    /// `cancellation.requested`, in its next chunk; the request is answered
-    /// once that chunk is recorded. A Run already terminal is shown as it is.
+    /// `cancellation.requested`, in its next chunk, which deletes the row.
+    /// The wait is bounded by the Run's shutdown grace and the settle margin,
+    /// from the call: a Run still ending then is shown as recorded. A Run
+    /// already terminal is shown as it is.
     ///
     /// # Errors
     ///
     /// Applies the same concealment and cursor rules as [`Self::observe`].
-    /// [`Error::OwnedElsewhere`] when the Run is nonterminal and no owner for
-    /// it lives in this process (the expired-lease sweep ends it once its
-    /// lease lapses, and a retry is then answered from the record);
-    /// [`Error::OwnerLost`] when the owner stopped before it recorded the
-    /// request (the outcome is unknown: read again).
+    /// [`Error::RunRequestNotYetRecorded`] when the owner has not recorded
+    /// the cancellation within the wait: retry.
     pub async fn cancel(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -47,18 +48,30 @@ impl RunModule {
         run_id: &RunId,
         observation: &RunObservation,
     ) -> Result<RunUpdate, Error> {
+        let arrived = Instant::now();
         validate_cursor(run_id, observation)?;
         let run = self
             .visible_run_snapshot(actor, workspace_id, run_id)
             .await?;
-        if let Some(owner) =
-            owner::local_owner(&self.owners, &self.database, workspace_id, &run).await?
-        {
-            owner.cancel(actor.principal().clone()).await?;
+        if !run.state.is_terminal() {
             // The recorded intent gives the dispatches in flight the shutdown
             // grace; the owner ends the Run itself once it is out.
-            let grace = Duration::from_nanos(u64::try_from(run.shutdown_grace_nanos).unwrap_or(0));
-            let _ended_in_time = timeout(grace + SETTLE_MARGIN, owner.wait_stopped()).await;
+            let until = arrived + crate::nanos_duration(run.shutdown_grace_nanos) + SETTLE_MARGIN;
+            let request = InboxRequest {
+                workspace_id: workspace_id.clone(),
+                run_id: run_id.clone(),
+                requester: actor.principal().clone(),
+            };
+            if !self.inbox.submit(&request, self.now()?, until).await? {
+                return Err(Error::RunRequestNotYetRecorded);
+            }
+            let database = &self.database;
+            read_until(database, until, move || async move {
+                Ok(run_repository::find_exact(database, workspace_id, run_id)
+                    .await?
+                    .is_none_or(|run| run.state.is_terminal()))
+            })
+            .await?;
         }
         self.observe(actor, workspace_id, run_id, observation).await
     }
