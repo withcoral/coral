@@ -50,7 +50,8 @@ pub(super) fn definition() -> Definition {
                  coral.providers.<namespace>. A namespace that no Provider holds fails with \
                  provider_not_found. The result never holds a secret or a credential value: \
                  a credential part with source literal and no value holds a fixed value that \
-                 Coral does not return. Coral sets authentication.issuer, \
+                 Coral does not return, and a source URL reads as its origin alone. Coral \
+                 sets authentication.issuer, \
                  authentication.resource and authentication.client.registration itself; \
                  remove them before you send authentication to addProvider."
                     .to_string(),

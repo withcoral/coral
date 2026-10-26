@@ -41,16 +41,51 @@ pub enum ProviderSourceOutput {
     #[schemars(description = "")]
     OpenapiUrl {
         /// The URL.
-        #[schemars(description = "The URL of the OpenAPI document.")]
+        #[schemars(description = "The origin of the OpenAPI document's URL, such as \
+                           https://api.example.com. Coral does not return its path or query, \
+                           which can hold a key.")]
         url: String,
     },
     /// A Streamable HTTP MCP server's web URL.
     #[schemars(description = "")]
     McpUrl {
         /// The URL.
-        #[schemars(description = "The URL of the Streamable HTTP MCP server.")]
+        #[schemars(
+            description = "The origin of the Streamable HTTP MCP server's URL, such as \
+                           https://mcp.example.com. Coral does not return its path or query, \
+                           which can hold a key."
+        )]
         url: String,
     },
+}
+
+impl ProviderSourceOutput {
+    /// The origin of an OpenAPI document's saved web URL, or `None` when the
+    /// saved value is not a web URL.
+    #[must_use]
+    pub fn openapi_url(saved: &str) -> Option<Self> {
+        Some(Self::OpenapiUrl {
+            url: origin(saved)?,
+        })
+    }
+
+    /// The origin of a Streamable HTTP MCP server's saved web URL, or `None`
+    /// when the saved value is not a web URL.
+    #[must_use]
+    pub fn mcp_url(saved: &str) -> Option<Self> {
+        Some(Self::McpUrl {
+            url: origin(saved)?,
+        })
+    }
+}
+
+/// A source URL's scheme, host and port, since Run evidence stores the
+/// result. Its path and query can carry a key, as `?tavilyApiKey=` does, and
+/// nothing tells a key apart from the rest, so neither reads back.
+fn origin(saved: &str) -> Option<String> {
+    // A URL with no host, such as file:, has no origin to read.
+    let origin = url::Url::parse(saved).ok()?.origin();
+    origin.is_tuple().then(|| origin.ascii_serialization())
 }
 
 /// One server choice.

@@ -1873,7 +1873,7 @@ async fn public_mcp_server() -> MockServer {
 }
 
 // Catches: a read that differs from the configuration a Program saved, or
-// that returns an uploaded document.
+// that returns an uploaded document or a source URL's path or query.
 #[tokio::test]
 async fn get_provider_reads_back_the_configuration_a_program_saved() {
     let scope = AdminScope::new("user:get-provider").await;
@@ -1885,7 +1885,8 @@ async fn get_provider_reads_back_the_configuration_a_program_saved() {
         .mount(&document_server)
         .await;
     let mcp_server = public_mcp_server().await;
-    let document_url = format!("{}/openapi.json", document_server.uri());
+    // A key in a source URL never reads back: only its origin does.
+    let document_url = format!("{}/openapi.json?api_key=sk-canary", document_server.uri());
     let declared = serde_json::json!({
         "#/servers": { "kind": "declared", "url": "https://weather.example", "variables": {} },
     });
@@ -1893,7 +1894,7 @@ async fn get_provider_reads_back_the_configuration_a_program_saved() {
         (
             "weatherUrl",
             serde_json::json!({ "kind": "openapi_url", "url": document_url }),
-            serde_json::json!({ "kind": "openapi_url", "url": document_url }),
+            serde_json::json!({ "kind": "openapi_url", "url": document_server.uri() }),
             declared.clone(),
             serde_json::json!({}),
         ),

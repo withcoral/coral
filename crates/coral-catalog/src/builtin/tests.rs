@@ -190,12 +190,8 @@ fn facts() -> impl Iterator<Item = ProviderFacts> {
 fn configured_providers() -> impl Iterator<Item = GetProviderResult> {
     let sources = [
         ProviderSourceOutput::OpenapiDocument,
-        ProviderSourceOutput::OpenapiUrl {
-            url: "https://weather.example/openapi.json".to_owned(),
-        },
-        ProviderSourceOutput::McpUrl {
-            url: "https://weather.example/mcp".to_owned(),
-        },
+        ProviderSourceOutput::openapi_url("https://weather.example/openapi.json").unwrap(),
+        ProviderSourceOutput::mcp_url("https://weather.example/mcp").unwrap(),
     ];
     super::get_provider::tests::configured_methods()
         .into_iter()
