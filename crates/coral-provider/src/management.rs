@@ -166,6 +166,48 @@ impl ProviderModule {
         Ok(result)
     }
 
+    /// Names the Active Providers an Owner added to each of `workspaces` that
+    /// `actor` may inspect, alphabetically ignoring case, for display. Every
+    /// Principal reaches such a Provider, so no per-Provider check applies; the
+    /// Built-in Provider is left out. A Workspace `actor` cannot inspect is
+    /// absent from the result; one without such Providers maps to no names.
+    ///
+    /// # Errors
+    /// Returns persistence or corrupt-data failures.
+    pub async fn active_provider_names(
+        &self,
+        actor: &AuthenticatedUser,
+        workspaces: &[WorkspaceId],
+    ) -> Result<BTreeMap<WorkspaceId, Vec<String>>, Error> {
+        let mut tx = self.database.begin_read_snapshot().await?;
+        let mut names = BTreeMap::new();
+        for workspace in workspaces {
+            match self.management_authority(&mut tx, actor, workspace).await {
+                Ok(_evidence) => {
+                    names.insert(workspace.clone(), Vec::new());
+                }
+                Err(Error::Workspace(
+                    coral_workspace::Error::WorkspaceNotFound
+                    | coral_workspace::Error::PermissionDenied(_),
+                )) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let inspectable = names.keys().cloned().collect::<Vec<_>>();
+        for (workspace, name) in
+            repository::active_added_provider_names(&mut tx, &inspectable).await?
+        {
+            if let Some(listed) = names.get_mut(&workspace) {
+                listed.push(name);
+            }
+        }
+        tx.rollback().await?;
+        for listed in names.values_mut() {
+            listed.sort_by_cached_key(|name| name.to_lowercase());
+        }
+        Ok(names)
+    }
+
     /// Lists every Workspace Provider that `actor` reaches, in any state and in
     /// creation order, with what each offers `actor`, in the caller's read
     /// snapshot. The Built-in Provider, created with the Workspace, comes first.

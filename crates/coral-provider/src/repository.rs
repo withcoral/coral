@@ -925,6 +925,37 @@ pub(super) async fn management_providers(
         .collect()
 }
 
+/// Reads the display names of the Active Providers an Owner added to each of
+/// `scope`'s Workspaces, in one query. The Built-in Provider is left out.
+pub(super) async fn active_added_provider_names(
+    transaction: &mut Transaction<'_>,
+    scope: &[WorkspaceId],
+) -> Result<Vec<(WorkspaceId, String)>, Error> {
+    if scope.is_empty() {
+        return Ok(Vec::new());
+    }
+    let query = Query::select()
+        .columns([ProviderRecords::WorkspaceId, ProviderRecords::DisplayName])
+        .from(ProviderRecords::Table)
+        .and_where(
+            Expr::col(ProviderRecords::WorkspaceId).is_in(scope.iter().map(ToString::to_string)),
+        )
+        .and_where(Expr::col(ProviderRecords::State).eq(ProviderState::Active.as_storage_str()))
+        .and_where(
+            Expr::col(ProviderRecords::Namespace).ne(crate::ProviderCallRoot::Builtin.as_str()),
+        )
+        .to_owned();
+    let rows: Vec<(Option<String>, String)> = transaction.fetch_all(query).await?;
+    rows.into_iter()
+        .map(|(workspace_id, display_name)| {
+            Ok((
+                decode_owner(workspace_id.as_deref(), "Provider")?,
+                display_name,
+            ))
+        })
+        .collect()
+}
+
 /// Reads every Provider's active Generation across Workspaces, in any state.
 pub(super) async fn active_generations(
     transaction: &mut Transaction<'_>,

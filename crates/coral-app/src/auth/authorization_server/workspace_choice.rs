@@ -14,7 +14,6 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 use coral_auth::authorization_codes::AuthorizationGrant;
 use coral_outbound::{BrowserRedirect, EndpointUrl};
-use coral_provider::{ProviderCallRoot, ProviderState};
 use coral_workspace::{UserId, WorkspaceChoice, WorkspaceId, WorkspaceRole};
 
 use super::super::sealed_handshake::{PendingWorkspaceChoice, SignInSession};
@@ -176,52 +175,46 @@ async fn pick(
 }
 
 /// Each choice's usable Providers, named for display: "GitHub, Linear, Slack". `None` where they cannot be read;
-/// the page then shows the Workspace without them rather than failing.
+/// the page then shows the Workspace without them rather than failing. One read covers every choice.
 async fn provider_summaries(
     state: &AuthorizationServerHttpState,
     user_id: &str,
     choices: &[WorkspaceChoice],
 ) -> Vec<Option<String>> {
-    let mut summaries = vec![None; choices.len()];
+    let unread = || vec![None; choices.len()];
     let Some(lister) = state.providers.as_ref() else {
-        return summaries;
+        return unread();
     };
     let Ok(user_id) = UserId::parse(user_id) else {
-        return summaries;
+        return unread();
     };
     let Ok(actor) = lister.organization.resolve_user_authority(&user_id).await else {
-        return summaries;
+        return unread();
     };
-    for (summary, choice) in summaries.iter_mut().zip(choices) {
-        match lister
-            .providers
-            .inspect_providers(&actor, choice.workspace().id())
-            .await
-        {
-            Ok(providers) => {
-                // The Built-in Provider is in every Workspace, and a Disabled
-                // one runs nothing, so neither tells the choices apart.
-                let mut names = providers
-                    .iter()
-                    .filter(|provider| {
-                        provider.state() == ProviderState::Active
-                            && !matches!(provider.call_root(), ProviderCallRoot::Builtin)
-                    })
-                    .map(|provider| provider.display_name().to_owned())
-                    .collect::<Vec<_>>();
-                names.sort_by_key(|name| name.to_lowercase());
-                *summary = provider_summary(&names);
-            }
-            Err(_error) => {
-                tracing::warn!("Workspace choice could not list a Workspace's Providers");
-            }
+    let workspaces = choices
+        .iter()
+        .map(|choice| choice.workspace().id().clone())
+        .collect::<Vec<_>>();
+    match lister
+        .providers
+        .active_provider_names(&actor, &workspaces)
+        .await
+    {
+        Ok(names) => workspaces
+            .iter()
+            .map(|workspace| {
+                names
+                    .get(workspace)
+                    .and_then(|names| provider_summary(names))
+            })
+            .collect(),
+        Err(_error) => {
+            tracing::warn!("Workspace choice could not list the Workspaces' Providers");
+            unread()
         }
     }
-    summaries
 }
 
-/// The first few Provider names, then how many more: "GitHub, Linear, Slack +2".
-/// A Workspace without Providers shows nothing, so the ones with them stand out.
 fn provider_summary(names: &[String]) -> Option<String> {
     const SHOWN: usize = 3;
     if names.is_empty() {
