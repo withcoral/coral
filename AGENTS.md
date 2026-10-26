@@ -90,8 +90,9 @@
   only wakes the Invocations parked on it. Do not open a transaction that
   holds the Run row from any of these paths, and do not write a nonterminal
   Run's row from outside its owner. The one exception: the Coral Instance
-  that receives a cancellation inserts it into the Run's Run Inbox, and
-  only the owner deletes that row while the Run is nonterminal
+  that receives a cancellation for a running Run with no termination
+  recorded inserts it into the Run's Run Inbox, and only the owner deletes
+  that row while the Run is nonterminal
   ([ADR 0025](docs/adr/0025-outside-run-requests-reach-the-run-owner-through-the-run-inbox.md)). A Run whose owner retired or whose
   process is gone without ending it gets its owner back from the
   expired-lease sweep (the Recovery section of ADR 0018); a panicked owner
