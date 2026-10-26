@@ -98,7 +98,8 @@ pub trait WorkspaceProviderPublisher: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns authority, etag and operational failures, which rename nothing.
+    /// Returns authority, etag, not-found and operational failures, which
+    /// rename nothing.
     async fn rename_provider(
         &self,
         context: &coral_workspace::ChangeContext,

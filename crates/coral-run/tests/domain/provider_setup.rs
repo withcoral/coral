@@ -556,10 +556,10 @@ impl coral_provider::WorkspaceProviderPublisher for FailingPublisher {
 
 /// Cancels the Setup, as an Owner in Reef would, then forwards the request to
 /// the real workflow.
-struct SetupCanceledFirst {
-    workflow: coral_administration::ProviderWorkflow,
-    accounts: coral_provider::account::AccountModule,
-    _vault: tempfile::TempDir,
+pub(super) struct SetupCanceledFirst {
+    pub(super) workflow: coral_administration::ProviderWorkflow,
+    pub(super) accounts: coral_provider::account::AccountModule,
+    pub(super) _vault: tempfile::TempDir,
 }
 
 #[async_trait]
@@ -581,6 +581,9 @@ impl coral_provider::WorkspaceProviderPublisher for SetupCanceledFirst {
         context: &coral_workspace::ChangeContext,
         request: ProviderRegenerationRequest,
     ) -> Result<coral_provider::ProviderRegenerationPublication, coral_provider::Error> {
+        self.accounts
+            .cancel_setup(context, request.owner(), request.setup_id())
+            .await?;
         self.workflow.regenerate_provider(context, request).await
     }
     async fn rename_provider(

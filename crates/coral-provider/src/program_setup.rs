@@ -2,6 +2,7 @@
 //! a Program: who can publish it, for a new Provider or an update, what the
 //! Program learns about the Provider it published, and how Coral ends a Setup
 //! that nobody will finish.
+use coral_catalog::OperationAvailability;
 use coral_db::Transaction;
 use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceAction, WorkspaceId};
 
@@ -103,9 +104,11 @@ impl ProviderModule {
     /// A route the Program asks for must suit the source, as for a new
     /// Provider. Coral publishes an update alone only when its Setup is ready
     /// and the update keeps the route, the credential contract, and every
-    /// Operation Key of the active Generation. A new route or contract needs a person to
+    /// Operation Key of the active Generation, with each Operation that runs
+    /// now still able to run. A new route or contract needs a person to
     /// confirm the incompatible configuration, and nobody can review dropped
-    /// Operations before the source is read, so each of those needs a person.
+    /// or broken Operations before the source is read, so each of those needs
+    /// a person.
     ///
     /// # Errors
     ///
@@ -131,8 +134,7 @@ impl ProviderModule {
         let active = crate::repository::provider_in_transaction(&mut tx, owner, target)
             .await?
             .ok_or(Error::ProviderNotFound)?;
-        let kept =
-            coral_catalog::operation_paths_in_transaction(&mut tx, &active.generation_id).await?;
+        let kept = coral_catalog::operations_in_transaction(&mut tx, &active.generation_id).await?;
         tx.rollback().await?;
         if !loaded.setup.state().is_open() {
             return Err(Error::ProviderSetupNotApplicable);
@@ -155,9 +157,14 @@ impl ProviderModule {
             .iter()
             .map(|operation| operation.key.as_str())
             .collect::<std::collections::HashSet<_>>();
-        let keeps_operations = kept
-            .iter()
-            .all(|path| previewed.contains(path.key().as_str()));
+        // An Operation that cannot run now breaks no Program when it still
+        // cannot.
+        let keeps_operations = kept.iter().all(|operation| {
+            let key = operation.key().as_str();
+            previewed.contains(key)
+                && (operation.availability() == OperationAvailability::Unavailable
+                    || !review.unavailable_operations.contains_key(key))
+        });
         let keeps_route =
             route.is_none_or(|route| route == active.provider.access().credential_route());
         Ok(

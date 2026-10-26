@@ -5,7 +5,8 @@
 //!
 //! coral-catalog owns each Operation's contract: its schemas, how its
 //! arguments are read, and the result it writes. Each module here performs
-//! one Operation, and recovers it when it can.
+//! one Operation, and recovers it when it can, except `setup_operation`: the
+//! Setup flow that addProvider and updateProvider share.
 
 use async_trait::async_trait;
 use coral_catalog::{

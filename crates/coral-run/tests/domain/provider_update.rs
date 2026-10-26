@@ -4,8 +4,8 @@
 //! returns Reef's update page, where a person finishes it. A rename alone keeps
 //! the Generation, as Reef's settings page does.
 use super::provider_setup::{
-    AdminScope, DOCUMENT, PRIVATE_DOCUMENT, StallingPublisher, document_server, document_source,
-    fetches, final_value, url_source, workflow, workspace_call,
+    AdminScope, DOCUMENT, PRIVATE_DOCUMENT, SetupCanceledFirst, StallingPublisher, document_server,
+    document_source, fetches, final_value, url_source, workflow, workspace_call,
 };
 use super::*;
 
@@ -123,6 +123,8 @@ async fn coral_publishes_a_change_nobody_needs_to_act_on() {
 
 /// The Weather document with a second Operation, `getAlerts`.
 const WITH_ALERTS: &str = r#"{"openapi":"3.1.0","info":{"title":"Weather","version":"2"},"security":[],"servers":[{"url":"https://weather.example"}],"paths":{"/forecast":{"get":{"operationId":"getForecast","responses":{"200":{"description":"OK"}}}},"/alerts":{"get":{"operationId":"getAlerts","responses":{"200":{"description":"OK"}}}}}}"#;
+/// [`WITH_ALERTS`] with no responses for `getForecast`, which cannot run then.
+const BROKEN_FORECAST: &str = r#"{"openapi":"3.1.0","info":{"title":"Weather","version":"2"},"security":[],"servers":[{"url":"https://weather.example"}],"paths":{"/forecast":{"get":{"operationId":"getForecast"}},"/alerts":{"get":{"operationId":"getAlerts","responses":{"200":{"description":"OK"}}}}}}"#;
 
 fn openapi_document(document: &str) -> serde_json::Value {
     serde_json::json!({ "kind": "openapi_document", "document": document })
@@ -263,7 +265,7 @@ enum Saved {
 }
 
 // Catches: Coral publishing a change only a person can confirm (a source that
-// drops an Operation Programs call now, a new way to sign in, a new Credential
+// drops or breaks an Operation Programs call now, a new way to sign in, a new Credential
 // Route, or an application's secret), or a link that confirms the change for
 // the person, opens another task than Reef starts for the same change, or
 // loses the route the Program asked for.
@@ -285,6 +287,13 @@ async fn a_change_that_needs_a_person_returns_the_update_page() {
         (
             Saved::WithAlerts,
             serde_json::json!({ "source": document_source() }),
+            "refresh",
+            "",
+        ),
+        // A source that keeps an Operation Programs call now, but breaks it.
+        (
+            Saved::Document,
+            serde_json::json!({ "source": openapi_document(BROKEN_FORECAST) }),
             "refresh",
             "",
         ),
@@ -449,6 +458,42 @@ async fn each_rejection_names_its_cause_and_changes_nothing() {
             .await;
         assert_eq!(saved(&scope, "weather").await, saved_before, "{arguments}");
     }
+}
+
+// Catches: a Publication that fails after Coral decided to publish, here one
+// whose Setup an Owner canceled first, ending the Run or changing the
+// Provider instead of failing the call with a code the Program can catch.
+#[tokio::test]
+async fn a_failed_publication_is_a_failure_the_program_catches() {
+    let mut scope = unattended("user:update-publication-failed").await;
+    create_weather(&scope, document_source()).await;
+    let (vault, accounts) = scope.fixture.accounts();
+    scope.fixture.runs =
+        scope
+            .fixture
+            .runs
+            .clone()
+            .with_provider_publisher(Arc::new(SetupCanceledFirst {
+                workflow: workflow(&scope.fixture),
+                accounts,
+                _vault: vault,
+            }));
+    let before = scope.lifecycle_events().await;
+    let saved_before = saved(&scope, "weather").await;
+    let arguments =
+        serde_json::json!({ "namespace": "weather", "requestHeaders": { "x-trace": "on" } });
+
+    let mut result = call(&scope, "updateProvider", &arguments).await;
+
+    result.as_object_mut().unwrap().remove("message");
+    assert_eq!(
+        result,
+        serde_json::json!({ "code": "provider_publication_failed" })
+    );
+    scope
+        .assert_denial_changed_nothing(&before, &arguments.to_string())
+        .await;
+    assert_eq!(saved(&scope, "weather").await, saved_before);
 }
 
 // Catches: a worker lost while Coral publishes an update leaving the call

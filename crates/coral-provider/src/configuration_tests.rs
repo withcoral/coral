@@ -1521,7 +1521,12 @@ async fn an_update_from_another_kind_of_source_takes_its_servers_and_keeps_every
             .review_setup_configuration(&actor, &owner, setup.id())
             .await
             .unwrap();
-        let saved = review.document.unwrap().suggested;
+        // Choices no source suggests, so only a kept configuration has them.
+        let saved = ProviderConfiguration {
+            display_name: "Forecasts".into(),
+            request_headers: BTreeMap::from([("x-trace".into(), "on".into())]),
+            ..review.document.unwrap().suggested
+        };
         h.providers
             .confirm_setup_configuration(
                 &context,

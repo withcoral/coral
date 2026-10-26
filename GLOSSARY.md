@@ -205,8 +205,8 @@ or `canceled`. Only a
 ready Setup feeds Publication. Every open Setup has a host deadline one hour after it is created; a Setup still open
 then, ready or not, expires, and Publication refuses it. Expiry and explicit cancellation scrub setup-scoped credential
 material. A Setup that `coral.workspace.addProvider` prepares records the Provider Namespace and Credential Route the
-Program asked for; the person who finishes it can change either. A Setup that regenerates a Provider starts from its
-saved Provider Configuration, including one that `coral.workspace.updateProvider` prepares; a source of the other kind,
+Program asked for; the person who finishes it can change either. A Setup that regenerates a Provider, including one
+that `coral.workspace.updateProvider` prepares, starts from the Provider's saved Provider Configuration; a source of the other kind,
 an MCP server for an OpenAPI document or the reverse, brings its own servers. _Avoid_: Provider Definition inspection, live Provider,
 implicit refresh
 _In Reef_: never named; preparation within "Add provider", "Refresh operations", "Edit configuration", and "Change account setting"
