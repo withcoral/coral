@@ -295,9 +295,14 @@ dd {
   font-size: 1rem;
 }
 
-/* Without an account line, the title still starts level with the heading. */
-.decision:not(:has(.account)) > h2 {
-  margin-top: 72px;
+/*
+ * Without an account line, the title still starts level with the heading.
+ * One column has no heading opposite, so this applies beside it only.
+ */
+@media (min-width: 801px) {
+  .decision:not(:has(.account)) > h2 {
+    margin-top: 72px;
+  }
 }
 
 .choices {
@@ -497,6 +502,11 @@ button.cancel:hover {
 @media (pointer: coarse) {
   button {
     min-height: 44px;
+  }
+
+  .decision .actions > button,
+  .decision .actions > a {
+    height: 44px;
   }
 }
 
