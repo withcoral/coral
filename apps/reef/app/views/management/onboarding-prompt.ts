@@ -19,11 +19,13 @@ function recommendedServerName(displayName: string) {
 /**
  * What a new workspace's owner gives their own MCP client. The client acts as that
  * person, since only a workspace owner can add a provider, and an agent cannot. With `signIn`, the MCP server admits that person only after an OAuth sign-in;
- * without it, the server acts as them with no sign-in. The display name and the server
+ * without it, the server acts as them with no sign-in. Either way, a client that can find
+ * and install plugins may add the server through a Coral plugin, with the person's
+ * consent; without one, the client adds it itself. The display name and the server
  * name made from it are quoted as data: anyone who can rename the workspace chooses them.
  */
 export function onboardingPrompt(displayName: string, endpoint: string, signIn: boolean) {
-  const add = `2. Add the MCP server at ${endpoint} with that name.`
+  const add = `2. Add the MCP server at ${endpoint} with that name. If you have tools to find and install plugins, look for a Coral plugin before you add the server. Do not say that one exists until you find it. If you find it, ask me to confirm before you install and use it. Follow your client's consent steps. Then install it. Use it to add the server at that URL with that name. If you cannot find or install a Coral plugin, or I say no, add the server yourself.`
   return [
     `I am excited to start using Coral! Help me set up my Coral workspace ${JSON.stringify(displayName)}.`,
     '',
