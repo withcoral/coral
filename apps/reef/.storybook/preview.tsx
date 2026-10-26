@@ -19,7 +19,7 @@ const withThemeDecorator: Decorator = (Story, context) => {
   useEffect(() => {
     // Apply theme to document.body so the Popover.Portal can access CSS variables
     document.body.classList.add(themeClass)
-    document.body.style.backgroundColor = `${theme.surface.mainContent} !important`
+    document.body.style.setProperty('background-color', theme.surface.mainContent, 'important')
 
     return () => {
       document.body.classList.remove(themeClass)

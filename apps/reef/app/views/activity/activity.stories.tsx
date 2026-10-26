@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from '@storybook/react'
+import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub, useSearchParams } from 'react-router'
 import { expect, fn, waitFor, within } from 'storybook/test'
 import { PageLayout } from '@/wax/components/page-layout'
