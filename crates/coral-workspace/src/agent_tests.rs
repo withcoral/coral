@@ -226,13 +226,13 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
             .await,
         Err(Error::InvalidAgentCredential)
     ));
+    let (principal, resolved) = module
+        .authenticate_agent_credential(issued.credential.expose(), 15)
+        .await
+        .unwrap();
     assert_eq!(
-        module
-            .authenticate_agent_credential(issued.credential.expose(), 15)
-            .await
-            .unwrap()
-            .agent_workspace_id(),
-        Some(workspace.id()),
+        (principal.agent_workspace_id(), &resolved),
+        (Some(workspace.id()), workspace.id()),
         "the credential alone resolves its own Workspace, never another"
     );
     assert!(matches!(

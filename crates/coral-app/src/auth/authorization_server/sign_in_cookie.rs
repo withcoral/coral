@@ -44,9 +44,9 @@ const STATE_TAG_BYTES: usize = 8;
 
 /// Whether the app's inputs that `session` carries fit in one sign-in cookie.
 pub(super) fn app_input_fits(session: &SignInSession) -> bool {
-    session.client_id.len()
-        + session.redirect_uri.len()
-        + session.client_state.as_deref().map_or(0, str::len)
+    session.request.client_id.len()
+        + session.request.redirect_uri.len()
+        + session.request.client_state.as_deref().map_or(0, str::len)
         + session.client_name.as_deref().map_or(0, str::len)
         <= MAX_APP_INPUT_BYTES
 }
@@ -184,6 +184,7 @@ mod tests {
     use axum::http::header;
 
     use super::*;
+    use crate::auth::sealed_handshake::ClientRequest;
 
     fn browser(names: &[String]) -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -233,11 +234,13 @@ mod tests {
     fn full_sign_in(app_bytes: usize, client_name: Option<&str>) -> SignInSession {
         let named = client_name.map_or(0, str::len);
         SignInSession {
-            client_id: "c".repeat(app_bytes - 2 - named),
-            redirect_uri: "r".into(),
-            client_state: Some("s".into()),
-            code_challenge: "x".repeat(43),
-            resource: "u".repeat(350),
+            request: ClientRequest {
+                client_id: "c".repeat(app_bytes - 2 - named),
+                redirect_uri: "r".into(),
+                client_state: Some("s".into()),
+                code_challenge: "x".repeat(43),
+                resource: "u".repeat(350),
+            },
             client_name: client_name.map(str::to_owned),
         }
     }

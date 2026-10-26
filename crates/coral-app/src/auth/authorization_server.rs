@@ -24,6 +24,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+mod approval_page;
 mod authorize;
 mod callback;
 mod client_metadata;
@@ -49,6 +50,7 @@ pub struct CoralAuthorizationServer {
     workspace_resource_family: Option<WorkspaceMcpUrls>,
     database: Arc<coral_db::Database>,
     readiness: Option<crate::ListenerReadiness>,
+    providers: Option<coral_provider::ProviderModule>,
 }
 
 impl CoralAuthorizationServer {
@@ -112,11 +114,19 @@ impl CoralAuthorizationServer {
             workspace_resource_family: None,
             database,
             readiness: None,
+            providers: None,
         })
     }
 
     pub(crate) fn with_readiness(mut self, readiness: crate::ListenerReadiness) -> Self {
         self.readiness = Some(readiness);
+        self
+    }
+
+    /// Names each Workspace's Providers on the Organization MCP Endpoint's
+    /// Workspace picker, from the deployment's Provider Module.
+    pub(crate) fn with_providers(mut self, providers: coral_provider::ProviderModule) -> Self {
+        self.providers = Some(providers);
         self
     }
 
@@ -210,6 +220,7 @@ impl CoralAuthorizationServer {
             self.workspace_resource_family,
             self.database,
             self.outbound_policy,
+            self.providers,
         )?;
         start_listener(bind_addr, health_routes(auth_router(state), self.readiness)).await
     }
@@ -356,36 +367,11 @@ struct AuthorizationServerHttpState {
     /// The Workspaces a User can pick when they sign in at the Organization
     /// MCP Endpoint.
     workspaces: coral_workspace::WorkspaceModule,
-    /// Names each Workspace's Providers on that page; display only.
-    providers: Option<WorkspaceProviders>,
-}
-
-/// What the Workspace choice reads to name each Workspace's Providers.
-#[derive(Clone)]
-pub(super) struct WorkspaceProviders {
+    /// The current authority of a User who signs in there.
     organization: coral_workspace::OrganizationModule,
-    providers: coral_provider::ProviderModule,
-}
-
-impl WorkspaceProviders {
-    /// `None` only when this Coral version's Built-in catalog cannot load,
-    /// which startup already refuses.
-    fn new(
-        database: &Arc<coral_db::Database>,
-        workspaces: &coral_workspace::WorkspaceModule,
-        outbound_policy: coral_outbound::DestinationPolicy,
-    ) -> Option<Self> {
-        let catalog = coral_catalog::BuiltinCatalog::running().ok()?;
-        Some(Self {
-            organization: coral_workspace::OrganizationModule::new(database.clone()),
-            providers: coral_provider::ProviderModule::new(
-                outbound_policy,
-                database.clone(),
-                workspaces.clone(),
-                catalog,
-            ),
-        })
-    }
+    /// Names each Workspace's Providers on that page; display only. Absent
+    /// until the server is composed with the Provider Module.
+    providers: Option<coral_provider::ProviderModule>,
 }
 
 impl AuthorizationServerHttpState {
@@ -396,6 +382,7 @@ impl AuthorizationServerHttpState {
         workspace_resource_family: Option<WorkspaceMcpUrls>,
         database: Arc<coral_db::Database>,
         outbound_policy: coral_outbound::DestinationPolicy,
+        providers: Option<coral_provider::ProviderModule>,
     ) -> Result<Self, AuthServerError> {
         // Preserve local MCP client-ID derivation, but never treat an HTTPS
         // MCP base as an operator-registered Reef metadata destination. Only
@@ -433,7 +420,7 @@ impl AuthorizationServerHttpState {
             user_directory = user_directory.with_bootstrap_owner(issuer, subject);
         }
         let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
-        let providers = WorkspaceProviders::new(&database, &workspaces, outbound_policy);
+        let organization = coral_workspace::OrganizationModule::new(database.clone());
         Ok(Self {
             settings,
             session_tokens,
@@ -446,34 +433,30 @@ impl AuthorizationServerHttpState {
             clients,
             user_directory,
             workspaces,
+            organization,
             providers,
         })
     }
 
-    /// Whether authorization requests may target `resource`.
+    /// What authorization requests that target `resource` reach, or `None`
+    /// when they may not target it.
     ///
     /// A canonical resource is acceptable when it was registered exactly or
-    /// when it is a member of the per-workspace family. Workspace existence is
+    /// when it is one of the MCP endpoints. Workspace existence is
     /// deliberately not consulted: the OAuth flow answers identically for
     /// every well-formed workspace resource, so it discloses nothing about
     /// which workspaces exist.
-    pub(super) fn accepts_authorization_resource(&self, resource: &str) -> bool {
-        self.authorization_resources.contains(resource)
-            || self
-                .workspace_resource_family
-                .as_ref()
-                .is_some_and(|family| {
-                    family.parse_resource(resource).is_some()
-                        || family.is_organization_resource(resource)
-                })
-    }
-
-    /// Whether `resource` is the Organization MCP Endpoint, whose sign-in
-    /// ends with the User picking a Workspace.
-    pub(super) fn is_organization_resource(&self, resource: &str) -> bool {
-        self.workspace_resource_family
+    pub(super) fn authorization_resource(&self, resource: &str) -> Option<AuthorizationResource> {
+        if let Some(endpoint) = self
+            .workspace_resource_family
             .as_ref()
-            .is_some_and(|family| family.is_organization_resource(resource))
+            .and_then(|family| family.parse_endpoint(resource))
+        {
+            return Some(AuthorizationResource::Mcp(endpoint));
+        }
+        self.authorization_resources
+            .contains(resource)
+            .then_some(AuthorizationResource::Registered)
     }
 
     /// Whether the browser cookies this server sets carry `Secure` and the
@@ -483,6 +466,23 @@ impl AuthorizationServerHttpState {
             .authorization_server()
             .issuer()
             .starts_with("https://")
+    }
+}
+
+/// What an acceptable authorization resource names on this server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum AuthorizationResource {
+    /// One of the MCP endpoints.
+    Mcp(coral_mcp::McpEndpoint),
+    /// A resource registered exactly, such as the web interface.
+    Registered,
+}
+
+impl AuthorizationResource {
+    /// Whether a sign-in for it ends with the User picking a Workspace, on
+    /// the page where they also approve the client.
+    pub(super) fn picks_workspace(&self) -> bool {
+        *self == Self::Mcp(coral_mcp::McpEndpoint::Organization)
     }
 }
 
@@ -527,6 +527,12 @@ mod test_state {
             None,
             database.database(),
             loopback_policy(),
+            Some(coral_provider::ProviderModule::new(
+                loopback_policy(),
+                database.database(),
+                coral_workspace::WorkspaceModule::new(database.database()),
+                coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
+            )),
         )
         .expect("authorization server state")
     }
@@ -691,6 +697,7 @@ mod tests {
             prepared.workspace_resource_family,
             prepared.database,
             prepared.outbound_policy,
+            None,
         )
         .expect("authorization server state");
 
@@ -703,7 +710,7 @@ mod tests {
             "https://configured.example.test",
         ] {
             assert!(
-                state.accepts_authorization_resource(accepted),
+                state.authorization_resource(accepted).is_some(),
                 "must accept {accepted}"
             );
         }
@@ -725,7 +732,7 @@ mod tests {
             "https://coral-web.example.test/",
         ] {
             assert!(
-                !state.accepts_authorization_resource(refused),
+                state.authorization_resource(refused).is_none(),
                 "must refuse {refused}"
             );
         }

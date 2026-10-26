@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import { chromium } from 'playwright'
 
 const approvalDirectory = new URL(
-  '../../../crates/coral-app/src/auth/authorization_server/authorize/',
+  '../../../crates/coral-app/src/auth/authorization_server/approval_page/',
   import.meta.url,
 )
 

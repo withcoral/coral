@@ -96,7 +96,11 @@ async fn authentication_rejects_wrong_audience_signature_kind_and_malformed_cred
         assert_eq!(
             fixture
                 .authentication
-                .authenticate(&fixture.workspace, Some(&valid), audience)
+                .authenticate(
+                    WorkspaceFixedBy::Url(&fixture.workspace),
+                    Some(&valid),
+                    audience
+                )
                 .await,
             Err(AuthenticationError::Unauthenticated)
         );
@@ -128,14 +132,15 @@ async fn the_credential_alone_fixes_the_workspace_at_the_organization_endpoint()
     for chosen in [&fixture.workspace, &second] {
         let accepted = fixture
             .authentication
-            .authenticate_credential(
+            .authenticate(
+                WorkspaceFixedBy::Credential,
                 Some(&scoped(ORGANIZATION_AUDIENCE, chosen)),
                 ORGANIZATION_AUDIENCE,
             )
             .await
             .unwrap();
-        assert_eq!(accepted.workspace(), chosen);
-        assert_eq!(accepted.principal().principal().id().as_str(), "owner");
+        assert_eq!(&accepted.1, chosen);
+        assert_eq!(accepted.0.principal().id().as_str(), "owner");
 
         let agent = fixture
             .workspaces
@@ -149,11 +154,15 @@ async fn the_credential_alone_fixes_the_workspace_at_the_organization_endpoint()
             .unwrap();
         let accepted = fixture
             .authentication
-            .authenticate_credential(Some(agent.credential.expose()), ORGANIZATION_AUDIENCE)
+            .authenticate(
+                WorkspaceFixedBy::Credential,
+                Some(agent.credential.expose()),
+                ORGANIZATION_AUDIENCE,
+            )
             .await
             .unwrap();
-        assert_eq!(accepted.workspace(), chosen);
-        assert_eq!(accepted.principal().principal(), agent.agent.principal());
+        assert_eq!(&accepted.1, chosen);
+        assert_eq!(accepted.0.principal(), agent.agent.principal());
     }
 
     let agent_kind = crate::session::test_tokens::scoped_agent_kind_token(
@@ -183,7 +192,11 @@ async fn the_credential_alone_fixes_the_workspace_at_the_organization_endpoint()
         assert_eq!(
             fixture
                 .authentication
-                .authenticate_credential(bearer.as_deref(), ORGANIZATION_AUDIENCE)
+                .authenticate(
+                    WorkspaceFixedBy::Credential,
+                    bearer.as_deref(),
+                    ORGANIZATION_AUDIENCE
+                )
                 .await
                 .map(drop),
             Err(AuthenticationError::Unauthenticated),
@@ -213,7 +226,11 @@ async fn agent_authentication_uses_workspace_registration_not_user_authority() {
     assert_eq!(
         fixture
             .authentication
-            .authenticate(&other_workspace, Some(token), AUDIENCE)
+            .authenticate(
+                WorkspaceFixedBy::Url(&other_workspace),
+                Some(token),
+                AUDIENCE
+            )
             .await,
         Err(AuthenticationError::Unauthenticated)
     );
@@ -329,8 +346,12 @@ impl Fixture {
         token: Option<&str>,
     ) -> Result<AuthenticatedPrincipal, AuthenticationError> {
         self.authentication
-            .authenticate(&self.workspace, token, AUDIENCE)
+            .authenticate(WorkspaceFixedBy::Url(&self.workspace), token, AUDIENCE)
             .await
+            .map(|(principal, workspace)| {
+                assert_eq!(workspace, self.workspace);
+                principal
+            })
     }
 }
 

@@ -1332,7 +1332,11 @@ async fn authenticate_both(
         .await;
     let alone = module
         .authenticate_agent_credential(credential, now_unix_nanos)
-        .await;
+        .await
+        .map(|(principal, resolved)| {
+            assert_eq!(&resolved, workspace);
+            principal
+        });
     assert_eq!(format!("{scoped:?}"), format!("{alone:?}"));
     scoped
 }

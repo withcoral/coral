@@ -1,7 +1,7 @@
 //! MCP projection of transport-neutral Principal authentication.
 use crate::WorkspaceMcpUrls;
-use coral_auth::PrincipalAuthentication;
-use coral_mcp::{AuthenticationError, OauthProtectedResource, WorkspaceAuthenticator};
+use coral_auth::{PrincipalAuthentication, WorkspaceFixedBy};
+use coral_mcp::{AuthenticationError, McpEndpoint, OauthProtectedResource, WorkspaceAuthenticator};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
 /// Authentication Adapter for the exact configured Workspace MCP URL family.
@@ -28,43 +28,28 @@ impl WorkspaceAuthentication {
 impl WorkspaceAuthenticator for WorkspaceAuthentication {
     async fn authenticate(
         &self,
-        workspace: &WorkspaceId,
-        bearer: Option<&str>,
-    ) -> Result<AuthenticatedPrincipal, AuthenticationError> {
-        self.authentication
-            .authenticate(workspace, bearer, &self.urls.resource(workspace))
-            .await
-            .map_err(into_mcp_error)
-    }
-    fn oauth_resource(&self, workspace: &WorkspaceId) -> Option<OauthProtectedResource> {
-        Some(OauthProtectedResource {
-            resource: self.urls.resource(workspace),
-            authorization_server: self.issuer.clone(),
-            metadata_url: self.urls.metadata_url(workspace),
-        })
-    }
-    async fn authenticate_credential(
-        &self,
+        endpoint: &McpEndpoint,
         bearer: Option<&str>,
     ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
+        let fixed_by = match endpoint {
+            McpEndpoint::Workspace(workspace) => WorkspaceFixedBy::Url(workspace),
+            McpEndpoint::Organization => WorkspaceFixedBy::Credential,
+        };
         self.authentication
-            .authenticate_credential(bearer, &self.urls.organization_resource())
+            .authenticate(fixed_by, bearer, &self.urls.endpoint_resource(endpoint))
             .await
-            .map(coral_auth::CredentialWorkspace::into_parts)
-            .map_err(into_mcp_error)
+            .map_err(|error| match error {
+                coral_auth::AuthenticationError::Unauthenticated => {
+                    AuthenticationError::Unauthenticated
+                }
+                coral_auth::AuthenticationError::Unavailable => AuthenticationError::Unavailable,
+            })
     }
-    fn organization_oauth_resource(&self) -> Option<OauthProtectedResource> {
+    fn oauth_resource(&self, endpoint: &McpEndpoint) -> Option<OauthProtectedResource> {
         Some(OauthProtectedResource {
-            resource: self.urls.organization_resource(),
+            resource: self.urls.endpoint_resource(endpoint),
             authorization_server: self.issuer.clone(),
-            metadata_url: self.urls.organization_metadata_url(),
+            metadata_url: self.urls.endpoint_metadata_url(endpoint),
         })
-    }
-}
-
-const fn into_mcp_error(error: coral_auth::AuthenticationError) -> AuthenticationError {
-    match error {
-        coral_auth::AuthenticationError::Unauthenticated => AuthenticationError::Unauthenticated,
-        coral_auth::AuthenticationError::Unavailable => AuthenticationError::Unavailable,
     }
 }

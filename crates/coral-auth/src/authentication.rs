@@ -45,21 +45,23 @@ impl PrincipalAuthentication {
         }
     }
 
-    /// Authenticates one request without provisioning a User or granting resource access.
+    /// Authenticates one request without provisioning a User or granting
+    /// resource access, and returns the Workspace it acts in.
     ///
     /// `expected_audience` is selected by the Adapter, never from unverified claims.
     /// Workspace URL construction and private method reachability remain caller-owned.
     /// Missing credentials do not select the implicit local Owner.
     ///
     /// # Errors
-    /// Returns a bounded rejection or authority-store unavailability.
+    /// Returns a bounded rejection or authority-store unavailability. Where the
+    /// credential must fix the Workspace, unscoped tokens are rejected too.
     pub async fn authenticate(
         &self,
-        workspace: &WorkspaceId,
+        fixed_by: WorkspaceFixedBy<'_>,
         bearer: Option<&str>,
         expected_audience: &str,
-    ) -> Result<AuthenticatedPrincipal, AuthenticationError> {
-        self.authenticate_request(workspace, bearer, expected_audience, false)
+    ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
+        self.authenticate_request(fixed_by, bearer, expected_audience, false)
             .await
     }
 
@@ -74,8 +76,14 @@ impl PrincipalAuthentication {
         bearer: Option<&str>,
         expected_audience: &str,
     ) -> Result<AuthenticatedPrincipal, AuthenticationError> {
-        self.authenticate_request(workspace, bearer, expected_audience, true)
-            .await
+        self.authenticate_request(
+            WorkspaceFixedBy::Url(workspace),
+            bearer,
+            expected_audience,
+            true,
+        )
+        .await
+        .map(|(principal, _workspace)| principal)
     }
 
     /// Authenticates an unscoped human management request (including Workspace creation).
@@ -105,77 +113,49 @@ impl PrincipalAuthentication {
             .map_err(AuthenticationError::from)
     }
 
-    /// Verifies a credential at the Organization MCP Endpoint, which names no
-    /// Workspace, and returns the Workspace the credential fixes: a User token's
-    /// signed `workspace_id`, or an Agent Registration's Workspace.
-    ///
-    /// # Errors
-    /// Rejects unscoped tokens, wrong audiences, Agent-kind tokens, invalid
-    /// Agent credentials, and disabled Users.
-    pub async fn authenticate_credential(
+    async fn authenticate_request(
         &self,
+        fixed_by: WorkspaceFixedBy<'_>,
         bearer: Option<&str>,
         expected_audience: &str,
-    ) -> Result<CredentialWorkspace, AuthenticationError> {
+        require_scope: bool,
+    ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
         let credential = bearer.ok_or(AuthenticationError::Unauthenticated)?;
         if credential.starts_with("coral_agent_") {
-            let principal = self
-                .workspaces
-                .authenticate_agent_credential(credential, now_unix_nanos()?)
-                .await?;
-            let workspace = principal
-                .agent_workspace_id()
-                .ok_or(AuthenticationError::Unavailable)?
-                .clone();
-            return Ok(CredentialWorkspace {
-                principal,
-                workspace,
+            let now = now_unix_nanos()?;
+            return Ok(match fixed_by {
+                WorkspaceFixedBy::Url(workspace) => (
+                    self.workspaces
+                        .authenticate_agent(workspace, credential, now)
+                        .await?,
+                    workspace.clone(),
+                ),
+                WorkspaceFixedBy::Credential => {
+                    self.workspaces
+                        .authenticate_agent_credential(credential, now)
+                        .await?
+                }
             });
         }
         let session = self
             .sessions
             .validate_access_token(credential, &[expected_audience])
             .map_err(|_error| AuthenticationError::Unauthenticated)?;
-        let workspace = session
-            .workspace_id
-            .as_deref()
-            .and_then(|scope| WorkspaceId::parse(scope).ok())
-            .ok_or(AuthenticationError::Unauthenticated)?;
-        let principal = self.user(&session).await?;
-        Ok(CredentialWorkspace {
-            principal,
-            workspace,
-        })
-    }
-
-    async fn authenticate_request(
-        &self,
-        workspace: &WorkspaceId,
-        bearer: Option<&str>,
-        expected_audience: &str,
-        require_scope: bool,
-    ) -> Result<AuthenticatedPrincipal, AuthenticationError> {
-        let credential = bearer.ok_or(AuthenticationError::Unauthenticated)?;
-        if credential.starts_with("coral_agent_") {
-            return self
-                .workspaces
-                .authenticate_agent(workspace, credential, now_unix_nanos()?)
-                .await
-                .map_err(AuthenticationError::from);
-        }
-        let session = self
-            .sessions
-            .validate_access_token(credential, &[expected_audience])
-            .map_err(|_error| AuthenticationError::Unauthenticated)?;
-        if (require_scope && session.workspace_id.is_none())
-            || session
-                .workspace_id
-                .as_deref()
-                .is_some_and(|scope| scope != workspace.to_string())
-        {
-            return Err(AuthenticationError::Unauthenticated);
-        }
-        self.user(&session).await
+        let scope = session.workspace_id.as_deref();
+        let workspace = match fixed_by {
+            WorkspaceFixedBy::Url(workspace) => {
+                if (require_scope && scope.is_none())
+                    || scope.is_some_and(|scope| scope != workspace.to_string())
+                {
+                    return Err(AuthenticationError::Unauthenticated);
+                }
+                workspace.clone()
+            }
+            WorkspaceFixedBy::Credential => scope
+                .and_then(|scope| WorkspaceId::parse(scope).ok())
+                .ok_or(AuthenticationError::Unauthenticated)?,
+        };
+        Ok((self.user(&session).await?, workspace))
     }
 
     /// The current authority of the User a validated User-kind token names.
@@ -196,32 +176,15 @@ impl PrincipalAuthentication {
     }
 }
 
-/// A Principal authenticated at the Organization MCP Endpoint, with the
-/// Workspace its credential fixes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CredentialWorkspace {
-    principal: AuthenticatedPrincipal,
-    workspace: WorkspaceId,
-}
-
-impl CredentialWorkspace {
-    /// Returns the authenticated Principal.
-    #[must_use]
-    pub const fn principal(&self) -> &AuthenticatedPrincipal {
-        &self.principal
-    }
-
-    /// Returns the Workspace the credential fixes.
-    #[must_use]
-    pub const fn workspace(&self) -> &WorkspaceId {
-        &self.workspace
-    }
-
-    /// Splits the Principal and its Workspace.
-    #[must_use]
-    pub fn into_parts(self) -> (AuthenticatedPrincipal, WorkspaceId) {
-        (self.principal, self.workspace)
-    }
+/// What fixes the Workspace a request acts in.
+#[derive(Clone, Copy, Debug)]
+pub enum WorkspaceFixedBy<'a> {
+    /// The request URL names the Workspace. A User token may be unscoped or
+    /// scoped to it; an Agent Registration must belong to it.
+    Url(&'a WorkspaceId),
+    /// Nothing in the request names one, so the credential must: a User
+    /// token's signed `workspace_id`, or an Agent Registration's Workspace.
+    Credential,
 }
 
 fn now_unix_nanos() -> Result<i64, AuthenticationError> {

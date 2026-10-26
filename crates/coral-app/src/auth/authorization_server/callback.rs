@@ -12,6 +12,7 @@ use super::response::{TrustedRedirect, direct_error};
 use super::{AuthorizationServerHttpState, query, sign_in_cookie};
 use coral_auth::authorization_codes::{AuthorizationGrant, CodeIssue};
 use coral_auth::{LoginProvisioning, UserDirectory, VerifiedOidcLogin};
+use coral_workspace::UserId;
 
 pub(super) async fn oidc_callback(
     State(state): State<AuthorizationServerHttpState>,
@@ -109,7 +110,10 @@ async fn complete(
     };
     // At the Organization MCP Endpoint the User picks the Workspace first;
     // the picker's submission issues the code.
-    if state.is_organization_resource(&session.resource) {
+    if state
+        .authorization_resource(&session.request.resource)
+        .is_some_and(|target| target.picks_workspace())
+    {
         let signed_in_as = identity
             .email
             .as_deref()
@@ -125,25 +129,13 @@ async fn complete(
         )
         .await;
     }
-    let grant = AuthorizationGrant {
-        user_id,
-        client_id: session.client_id,
-        redirect_uri: session.redirect_uri,
-        code_challenge: session.code_challenge,
-        resource: session.resource,
-        workspace_id: None,
-    };
-    match issue_code(state, &trusted, oidc_state, &grant).await {
-        CodeOutcome::Issued(response) | CodeOutcome::Refused(response) => response,
-    }
-}
-
-/// The client redirect after an attempt to issue a code.
-pub(super) enum CodeOutcome {
-    /// The redirect carries the new code.
-    Issued(Response),
-    /// The redirect carries an error; nothing was stored.
-    Refused(Response),
+    issue_code(
+        state,
+        &trusted,
+        oidc_state,
+        &session.request.grant(&user_id, None),
+    )
+    .await
 }
 
 /// Stores a new code for `grant`, issued by the sign-in named `oidc_state`,
@@ -155,27 +147,27 @@ pub(super) async fn issue_code(
     trusted: &TrustedRedirect,
     oidc_state: &str,
     grant: &AuthorizationGrant,
-) -> CodeOutcome {
+) -> Response {
     let Ok(authorization_code) = random_code() else {
         tracing::warn!("Sign-in could not generate an authorization code");
-        return CodeOutcome::Refused(trusted.error("server_error", "authorization failed"));
+        return trusted.error("server_error", "authorization failed");
     };
     let Ok(now_unix_nanos) = now_unix_nanos_i64() else {
         tracing::warn!("Sign-in could not read the system clock");
-        return CodeOutcome::Refused(trusted.error("server_error", "authorization failed"));
+        return trusted.error("server_error", "authorization failed");
     };
     match state
         .codes
         .issue(&authorization_code, oidc_state, grant, now_unix_nanos)
         .await
     {
-        Ok(CodeIssue::Issued) => CodeOutcome::Issued(trusted.success(&authorization_code)),
-        Ok(CodeIssue::SignInAlreadyUsed) => CodeOutcome::Refused(
-            trusted.error("invalid_request", "authorization was already completed"),
-        ),
+        Ok(CodeIssue::Issued) => trusted.success(&authorization_code),
+        Ok(CodeIssue::SignInAlreadyUsed) => {
+            trusted.error("invalid_request", "authorization was already completed")
+        }
         Err(error) => {
             tracing::warn!(%error, "Sign-in could not store the authorization code");
-            CodeOutcome::Refused(trusted.error("server_error", "authorization failed"))
+            trusted.error("server_error", "authorization failed")
         }
     }
 }
@@ -218,7 +210,7 @@ impl ProvisioningFailure {
 async fn provision(
     user_directory: &UserDirectory,
     identity: &ValidatedOidcIdentity,
-) -> Result<String, ProvisioningFailure> {
+) -> Result<UserId, ProvisioningFailure> {
     let Ok(now_unix_nanos) = now_unix_nanos_i64() else {
         tracing::warn!("OIDC callback could not read the system clock");
         return Err(ProvisioningFailure::Unavailable);
@@ -241,7 +233,7 @@ async fn provision(
         )
         .await;
     match provisioning {
-        Ok(LoginProvisioning::Provisioned(user_id)) => Ok(user_id.to_string()),
+        Ok(LoginProvisioning::Provisioned(user_id)) => Ok(user_id),
         Ok(LoginProvisioning::Disabled) => Err(ProvisioningFailure::Disabled),
         Ok(LoginProvisioning::IssuerMismatch) => {
             tracing::warn!(
@@ -323,7 +315,10 @@ fn random_code() -> Result<String, ()> {
 /// move where the same policy was applied. [`TrustedRedirect::parse`] carries
 /// the reason the `None` arm is checked rather than unwrapped.
 fn trusted_redirect(session: &SignInSession) -> Option<TrustedRedirect> {
-    TrustedRedirect::parse(&session.redirect_uri, session.client_state.clone())
+    TrustedRedirect::parse(
+        &session.request.redirect_uri,
+        session.request.client_state.clone(),
+    )
 }
 
 #[cfg(test)]
@@ -346,6 +341,7 @@ mod tests {
     use crate::auth::id_token::tests::{
         claims as id_token_claims, rsa_key, set_claim, token as id_token,
     };
+    use crate::auth::sealed_handshake::ClientRequest;
     use crate::auth::test_config::{PROVIDER_SECRET, resolved_settings};
     use coral_auth::authorization_codes::{AuthorizationCodes, CodeRedemption};
     use coral_db::Database;
@@ -391,9 +387,9 @@ mod tests {
             .redeem(
                 code,
                 CodeRedemption {
-                    client_id: &session.client_id,
+                    client_id: &session.request.client_id,
                     redirect_uri: REDIRECT_URI,
-                    code_challenge: &session.code_challenge,
+                    code_challenge: &session.request.code_challenge,
                     resource: RESOURCE,
                 },
                 now_unix_nanos_i64().expect("clock"),
@@ -404,11 +400,13 @@ mod tests {
 
     fn session() -> SignInSession {
         SignInSession {
-            client_id: "https://client.example.test/oauth/client.json".into(),
-            redirect_uri: REDIRECT_URI.into(),
-            client_state: Some(CLIENT_STATE.into()),
-            code_challenge: "client-code-challenge".into(),
-            resource: RESOURCE.into(),
+            request: ClientRequest {
+                client_id: "https://client.example.test/oauth/client.json".into(),
+                redirect_uri: REDIRECT_URI.into(),
+                client_state: Some(CLIENT_STATE.into()),
+                code_challenge: "client-code-challenge".into(),
+                resource: RESOURCE.into(),
+            },
             client_name: None,
         }
     }
@@ -988,9 +986,11 @@ mod tests {
     /// A sign-in at the Organization MCP Endpoint, by a client with markup in its name.
     fn organization_session() -> SignInSession {
         SignInSession {
-            resource: ORGANIZATION_RESOURCE.into(),
+            request: ClientRequest {
+                resource: ORGANIZATION_RESOURCE.into(),
+                ..session().request
+            },
             client_name: Some("Claude <b>".into()),
-            ..session()
         }
     }
 
@@ -1123,9 +1123,9 @@ mod tests {
             .redeem(
                 &code,
                 CodeRedemption {
-                    client_id: &session.client_id,
+                    client_id: &session.request.client_id,
                     redirect_uri: REDIRECT_URI,
-                    code_challenge: &session.code_challenge,
+                    code_challenge: &session.request.code_challenge,
                     resource: ORGANIZATION_RESOURCE,
                 },
                 now_unix_nanos_i64().unwrap(),
@@ -1189,7 +1189,7 @@ mod tests {
             "the client's state comes back"
         );
         let grant = redeem_organization(&db, &chosen).await.expect("code");
-        assert_eq!(grant.workspace_id, Some(beta.to_string()));
+        assert_eq!(grant.workspace_id, Some(beta.clone()));
         assert_eq!(grant.resource, ORGANIZATION_RESOURCE);
 
         let replayed = choose(
@@ -1321,7 +1321,7 @@ mod tests {
             redeem_organization(&db, &chosen)
                 .await
                 .and_then(|grant| grant.workspace_id),
-            Some(kept.to_string())
+            Some(kept.clone())
         );
     }
 

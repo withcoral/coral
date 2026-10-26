@@ -770,7 +770,9 @@ fn public_surface_audiences(
         }
         // A token for `/mcp` must carry the Workspace its User picked; an
         // allowed audience would issue it one that names no Workspace.
-        if mcp_workspace_urls.is_organization_resource(&audience) {
+        if mcp_workspace_urls.parse_endpoint(&audience)
+            == Some(coral_mcp::McpEndpoint::Organization)
+        {
             return Err(AppError::FailedPrecondition(format!(
                 "{label} is the Organization MCP Endpoint, whose tokens name the workspace \
                  picked at sign-in; it is not an audience of its own"

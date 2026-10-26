@@ -2,6 +2,8 @@ use coral_workspace::{
     AuthenticatedPrincipal, WorkspaceId, WorkspaceModule, local_organization_owner,
 };
 
+use crate::McpEndpoint;
+
 /// Bounded authentication failures; no token, claim, or verifier material.
 #[derive(Debug, Clone, Copy, thiserror::Error)]
 pub enum AuthenticationError {
@@ -32,24 +34,16 @@ pub struct OauthProtectedResource {
 /// Implementations validate credentials, never client metadata or MCP sessions.
 #[async_trait::async_trait]
 pub trait WorkspaceAuthenticator: Send + Sync {
-    /// Resolves the presented credential at one exact Workspace URL.
+    /// Resolves the presented credential at `endpoint` and returns the
+    /// Workspace the request acts in: the one a Workspace URL names, or the
+    /// one the credential fixes at the Organization MCP Endpoint.
     async fn authenticate(
         &self,
-        workspace: &WorkspaceId,
-        bearer: Option<&str>,
-    ) -> Result<AuthenticatedPrincipal, AuthenticationError>;
-    /// Optional OAuth discovery. Unknown Workspaces reveal no resource existence.
-    fn oauth_resource(&self, _workspace: &WorkspaceId) -> Option<OauthProtectedResource> {
-        None
-    }
-    /// Resolves the presented credential at the Organization MCP Endpoint and
-    /// returns the Workspace it fixes.
-    async fn authenticate_credential(
-        &self,
+        endpoint: &McpEndpoint,
         bearer: Option<&str>,
     ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError>;
-    /// Optional OAuth discovery for the Organization MCP Endpoint.
-    fn organization_oauth_resource(&self) -> Option<OauthProtectedResource> {
+    /// Optional OAuth discovery. Unknown Workspaces reveal no resource existence.
+    fn oauth_resource(&self, _endpoint: &McpEndpoint) -> Option<OauthProtectedResource> {
         None
     }
 }
@@ -57,36 +51,30 @@ pub trait WorkspaceAuthenticator: Send + Sync {
 pub(crate) struct LocalAuthentication(pub WorkspaceModule);
 #[async_trait::async_trait]
 impl WorkspaceAuthenticator for LocalAuthentication {
+    /// No credential is the implicit local User, who has no sign-in to pick a
+    /// Workspace with, so at `/mcp` only an Agent credential works.
     async fn authenticate(
         &self,
-        workspace: &WorkspaceId,
-        bearer: Option<&str>,
-    ) -> Result<AuthenticatedPrincipal, AuthenticationError> {
-        match bearer {
-            None => Ok(AuthenticatedPrincipal::user(local_organization_owner())),
-            Some(credential) => self
-                .0
-                .authenticate_agent(workspace, credential, now()?)
-                .await
-                .map_err(AuthenticationError::from),
-        }
-    }
-    /// The implicit local User has no sign-in to pick a Workspace with, so
-    /// only an Agent credential works here.
-    async fn authenticate_credential(
-        &self,
+        endpoint: &McpEndpoint,
         bearer: Option<&str>,
     ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
-        let credential = bearer.ok_or(AuthenticationError::WorkspaceUrlRequired)?;
-        let principal = self
-            .0
-            .authenticate_agent_credential(credential, now()?)
-            .await?;
-        let workspace = principal
-            .agent_workspace_id()
-            .ok_or(AuthenticationError::Unavailable)?
-            .clone();
-        Ok((principal, workspace))
+        match (endpoint, bearer) {
+            (McpEndpoint::Workspace(workspace), None) => Ok((
+                AuthenticatedPrincipal::user(local_organization_owner()),
+                workspace.clone(),
+            )),
+            (McpEndpoint::Organization, None) => Err(AuthenticationError::WorkspaceUrlRequired),
+            (McpEndpoint::Workspace(workspace), Some(credential)) => Ok((
+                self.0
+                    .authenticate_agent(workspace, credential, now()?)
+                    .await?,
+                workspace.clone(),
+            )),
+            (McpEndpoint::Organization, Some(credential)) => Ok(self
+                .0
+                .authenticate_agent_credential(credential, now()?)
+                .await?),
+        }
     }
 }
 

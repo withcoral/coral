@@ -38,7 +38,7 @@ pub struct AuthorizationGrant {
     /// The canonical resource the sign-in approved.
     pub resource: String,
     /// The Workspace the User picked, for the Organization MCP Endpoint only.
-    pub workspace_id: Option<String>,
+    pub workspace_id: Option<coral_workspace::WorkspaceId>,
 }
 
 /// The request bindings a redemption presents.

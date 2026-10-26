@@ -10,11 +10,12 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
-use super::AuthorizationServerHttpState;
 use super::query::{MAX_PARAMETER_NAME_BYTES, MAX_PARAMETER_VALUE_BYTES, MAX_PARAMETERS};
 use super::response::security_headers;
+use super::{AuthorizationResource, AuthorizationServerHttpState};
 use coral_auth::PrivateAudience;
 use coral_auth::authorization_codes::{AuthorizationGrant, CodeRedemption};
+use coral_mcp::McpEndpoint;
 
 /// The largest form body this endpoint reads.
 ///
@@ -163,23 +164,23 @@ impl TokenTarget {
         resource: &str,
         audience: Option<&str>,
     ) -> Option<Self> {
-        if state.is_organization_resource(resource) {
-            // Its token must carry the picked Workspace, which only the
-            // public audience does; a private audience would drop or replace it.
-            return audience.is_none().then_some(Self::Organization);
-        }
-        let workspace = state
-            .workspace_resource_family
-            .as_ref()
-            .and_then(|family| family.parse_resource(resource));
+        let target = state.authorization_resource(resource);
         let Some(audience) = audience else {
-            return Some(Self::Public);
+            return Some(match target {
+                Some(AuthorizationResource::Mcp(McpEndpoint::Organization)) => Self::Organization,
+                _ => Self::Public,
+            });
         };
-        match PrivateAudience::parse(audience)? {
-            PrivateAudience::Mcp => workspace.map(Self::Mcp),
-            PrivateAudience::Reef => (workspace.is_none()
-                && state.authorization_resources.contains(resource))
-            .then_some(Self::Reef),
+        // An Organization MCP Endpoint token must carry the picked Workspace,
+        // which only the public audience does; a private audience would drop
+        // or replace it.
+        match (PrivateAudience::parse(audience)?, target?) {
+            (
+                PrivateAudience::Mcp,
+                AuthorizationResource::Mcp(McpEndpoint::Workspace(workspace)),
+            ) => Some(Self::Mcp(workspace)),
+            (PrivateAudience::Reef, AuthorizationResource::Registered) => Some(Self::Reef),
+            _ => None,
         }
     }
 
@@ -210,14 +211,13 @@ impl TokenTarget {
                 // Endpoint code, so a code naming no Workspace is not one.
                 let workspace = authorization
                     .workspace_id
-                    .as_deref()
-                    .and_then(|workspace| coral_workspace::WorkspaceId::parse(workspace).ok())
+                    .as_ref()
                     .ok_or(TokenError::InvalidGrant)?;
                 issuer.issue_workspace_access_token(
                     &authorization.user_id,
                     &authorization.client_id,
                     &authorization.resource,
-                    &workspace,
+                    workspace,
                 )
             }
         };
@@ -462,7 +462,7 @@ mod tests {
             coral_workspace::WorkspaceId::parse(&uuid::Uuid::new_v4().to_string()).unwrap();
         let workspace_resource = format!("https://mcp.example.test/workspaces/{workspace}/mcp");
         let organization = "https://mcp.example.test/mcp";
-        let picked = Some(workspace.to_string());
+        let picked = Some(workspace.clone());
         // (resource, coral_audience, Workspace the sign-in picked, refusal)
         for (resource, requested, chosen, refusal) in [
             (workspace_resource.as_str(), Some("mcp"), None, None),
@@ -899,10 +899,11 @@ mod tests {
             coral_workspace::WorkspaceModule::new(fixture.database()),
         );
         let token = get("access_token").as_str().expect("access token");
-        let principal = authentication
+        let workspace =
+            coral_workspace::WorkspaceId::parse("01234567-89ab-4cde-8fab-0123456789ab").unwrap();
+        let (principal, _workspace) = authentication
             .authenticate(
-                &coral_workspace::WorkspaceId::parse("01234567-89ab-4cde-8fab-0123456789ab")
-                    .unwrap(),
+                coral_auth::WorkspaceFixedBy::Url(&workspace),
                 Some(token),
                 RESOURCE,
             )

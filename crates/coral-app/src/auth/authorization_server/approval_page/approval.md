@@ -1,7 +1,7 @@
 # OAuth approval page
 
 Edit `approval.html` and `approval.css` directly. Every sign-in page shares
-the stylesheet and its CSP hash. `confirmation.rs` embeds these
+the stylesheet and its CSP hash. `../approval_page.rs` embeds these
 hand-authored files in Coral's authorization listener. No frontend build, Reef
 server, JavaScript, bundled fonts, or external assets are required. The page
 uses system fonts and the browser's light/dark preference.
@@ -16,8 +16,11 @@ Before sign-in, the approval page shows no private Workspace or User data.
 
 At the Organization MCP Endpoint (`/mcp`) the approval page shows after the
 identity provider answers instead of before. `account` then names the signed-in
-account when the provider supplies an email or name, and is empty otherwise; `choices` holds a radio group with a row per active Workspace and its Providers, and
-the form posts to `/oauth/workspace` (`../workspace_choice.rs`). For a
+account when the provider supplies an email or name, and is empty otherwise;
+`choices` holds a radio group with a row per active Workspace and its
+Providers, and the form posts to `/oauth/workspace` (`../workspace_choice.rs`).
+`workspace_choice.rs` hands the rows over as plain text; `approval_page.rs`
+writes and escapes all of their markup. For a
 Workspace URL both are empty and the form posts to `/oauth/authorize`. With no
 Workspace, `choices` says how to get one, `cancel_label` reads "Back to …",
 and `primary_action` links to Coral when its URL is known instead of Connect.

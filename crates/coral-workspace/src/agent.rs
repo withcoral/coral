@@ -352,13 +352,12 @@ impl WorkspaceModule {
     ) -> Result<AuthenticatedPrincipal, Error> {
         self.authenticate_agent_in(Some(workspace_id), credential, now_unix_nanos)
             .await
+            .map(|(principal, _workspace)| principal)
     }
 
     /// Verifies an opaque bearer credential and returns the Agent of whichever
-    /// Workspace its Registration belongs to, for the Organization MCP Endpoint.
-    ///
-    /// The returned Principal's `agent_workspace_id` is the Workspace every
-    /// later check must use.
+    /// Workspace its Registration belongs to, with that Workspace, for the
+    /// Organization MCP Endpoint. Every later check must use that Workspace.
     ///
     /// # Errors
     ///
@@ -368,7 +367,7 @@ impl WorkspaceModule {
         &self,
         credential: &str,
         now_unix_nanos: i64,
-    ) -> Result<AuthenticatedPrincipal, Error> {
+    ) -> Result<(AuthenticatedPrincipal, WorkspaceId), Error> {
         self.authenticate_agent_in(None, credential, now_unix_nanos)
             .await
     }
@@ -378,7 +377,7 @@ impl WorkspaceModule {
         workspace_id: Option<&WorkspaceId>,
         credential: &str,
         now_unix_nanos: i64,
-    ) -> Result<AuthenticatedPrincipal, Error> {
+    ) -> Result<(AuthenticatedPrincipal, WorkspaceId), Error> {
         if credential.len() != 55 || !credential.starts_with("coral_agent_") {
             return Err(Error::InvalidAgentCredential);
         }
@@ -401,6 +400,7 @@ impl WorkspaceModule {
             .require_active(&agent, now_unix_nanos)
             .map_err(|_lifecycle_loss| Error::InvalidAgentCredential)?;
         transaction.commit().await?;
-        Ok(AuthenticatedPrincipal::agent(registration))
+        let workspace = registration.workspace_id().clone();
+        Ok((AuthenticatedPrincipal::agent(registration), workspace))
     }
 }

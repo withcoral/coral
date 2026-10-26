@@ -74,7 +74,9 @@ async fn a_code_carries_the_workspace_its_sign_in_chose() {
     let peer = AuthorizationCodes::new(Arc::new(fixture.connect_peer().await.unwrap()));
     let chosen = AuthorizationGrant {
         resource: "https://mcp.example.test/mcp".into(),
-        workspace_id: Some("0199f7a2-6a6e-7c3d-9a51-2f4e8b7d1c06".into()),
+        workspace_id: Some(
+            coral_workspace::WorkspaceId::parse("0199f7a2-6a6e-7c3d-9a51-2f4e8b7d1c06").unwrap(),
+        ),
         ..grant()
     };
     codes.issue("code", "sign-in", &chosen, NOW).await.unwrap();

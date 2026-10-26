@@ -32,7 +32,8 @@ pub use http::{
 };
 pub use server::SUPPORTED_PROTOCOL_VERSIONS;
 pub use urls::{
-    ORGANIZATION_MCP_ROUTE, WORKSPACE_MCP_ROUTE, parse_workspace_mcp_path, workspace_mcp_path,
+    McpEndpoint, ORGANIZATION_MCP_ROUTE, WORKSPACE_MCP_ROUTE, parse_workspace_mcp_path,
+    workspace_mcp_path,
 };
 
 /// Default target size of one encoded `exec`, `wait` or `cancel` result.

@@ -7,18 +7,15 @@
 //! sign-in travels sealed in the form, bound to the browser's approval cookie,
 //! like the approval page a Workspace URL shows before sign-in.
 
-use std::fmt::Write as _;
-
 use axum::extract::{Request, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
-use coral_auth::authorization_codes::AuthorizationGrant;
 use coral_outbound::{BrowserRedirect, EndpointUrl};
 use coral_workspace::{UserId, WorkspaceChoice, WorkspaceId, WorkspaceRole};
 
 use super::super::sealed_handshake::{PendingWorkspaceChoice, SignInSession};
-use super::authorize::confirmation::{self, ApprovalDecision, ApprovalScope, escape_html};
-use super::callback::{self, CodeOutcome};
+use super::approval_page::{self, ApprovalDecision, ApprovalScope, Choice};
+use super::callback;
 use super::response::{TrustedRedirect, direct_error};
 use super::{AuthorizationServerHttpState, sign_in_cookie};
 
@@ -36,25 +33,21 @@ pub(super) async fn offer(
     headers: &HeaderMap,
     trusted: &TrustedRedirect,
     oidc_state: &str,
-    user_id: String,
+    user_id: UserId,
     signed_in_as: Option<&str>,
     session: SignInSession,
 ) -> Response {
-    let choices = match choices(state, &user_id).await {
+    let choices = match state.workspaces.list_sign_in_choices(&user_id).await {
         Ok(choices) => choices,
-        Err(failure) => return failure.into_error(trusted),
+        Err(error) => return ChoiceFailure::from_domain(&error).into_error(trusted),
     };
+    let providers = provider_summaries(state, &user_id, &choices).await;
     let pending = PendingWorkspaceChoice {
         user_id,
         oidc_state: oidc_state.to_owned(),
-        client_id: session.client_id,
-        redirect_uri: session.redirect_uri,
-        client_state: session.client_state,
-        code_challenge: session.code_challenge,
-        resource: session.resource,
+        request: session.request,
     };
     let client_name = session.client_name.as_deref().unwrap_or(UNNAMED_CLIENT);
-    let providers = provider_summaries(state, &pending.user_id, &choices).await;
     picker_page(
         state,
         headers,
@@ -73,7 +66,7 @@ pub(super) async fn oauth_workspace_post(
     State(state): State<AuthorizationServerHttpState>,
     request: Request,
 ) -> Response {
-    let Ok(submission) = confirmation::parse_workspace_submission(
+    let Ok(submission) = approval_page::parse_submission(
         request,
         state.settings.authorization_server().issuer(),
         state.secure_cookies(),
@@ -92,31 +85,35 @@ pub(super) async fn oauth_workspace_post(
     }) else {
         return choice_error();
     };
-    let Some(trusted) = TrustedRedirect::parse(&pending.redirect_uri, pending.client_state.clone())
-    else {
+    let Some(trusted) = TrustedRedirect::parse(
+        &pending.request.redirect_uri,
+        pending.request.client_state.clone(),
+    ) else {
         return direct_error("server_error", "authorization failed");
     };
-    let (ApprovalDecision::Continue, Some(workspace)) = (submission.decision, submission.workspace)
-    else {
-        return trusted.error("access_denied", "authorization was denied");
+    let workspace = match (submission.decision, submission.workspace) {
+        (ApprovalDecision::Continue, Some(workspace)) => workspace,
+        // Connect without a pick is a form the page never sends.
+        (ApprovalDecision::Continue, None) => return choice_error(),
+        (ApprovalDecision::Cancel, _) => {
+            return trusted.error("access_denied", "authorization was denied");
+        }
     };
     // The page may have waited minutes; the choice counts only if the User
     // could still pick it now.
-    let workspace = match pick(&state, &pending.user_id, &workspace).await {
-        Ok(choice) => choice.workspace().id().to_string(),
-        Err(failure) => return failure.into_error(&trusted),
+    let Ok(workspace) = WorkspaceId::parse(&workspace) else {
+        return ChoiceFailure::NotAvailable.into_error(&trusted);
     };
-    let grant = AuthorizationGrant {
-        user_id: pending.user_id,
-        client_id: pending.client_id,
-        redirect_uri: pending.redirect_uri,
-        code_challenge: pending.code_challenge,
-        resource: pending.resource,
-        workspace_id: Some(workspace),
+    let workspace = match state
+        .workspaces
+        .sign_in_choice(&pending.user_id, &workspace)
+        .await
+    {
+        Ok(choice) => choice.workspace().id().clone(),
+        Err(error) => return ChoiceFailure::from_domain(&error).into_error(&trusted),
     };
-    match callback::issue_code(&state, &trusted, &pending.oidc_state, &grant).await {
-        CodeOutcome::Issued(response) | CodeOutcome::Refused(response) => response,
-    }
+    let grant = pending.request.grant(&pending.user_id, Some(workspace));
+    callback::issue_code(&state, &trusted, &pending.oidc_state, &grant).await
 }
 
 enum ChoiceFailure {
@@ -148,58 +145,25 @@ impl ChoiceFailure {
     }
 }
 
-async fn choices(
-    state: &AuthorizationServerHttpState,
-    user_id: &str,
-) -> Result<Vec<WorkspaceChoice>, ChoiceFailure> {
-    let user_id = UserId::parse(user_id).map_err(|_error| ChoiceFailure::Unavailable)?;
-    state
-        .workspaces
-        .list_sign_in_choices(&user_id)
-        .await
-        .map_err(|error| ChoiceFailure::from_domain(&error))
-}
-
-async fn pick(
-    state: &AuthorizationServerHttpState,
-    user_id: &str,
-    workspace: &str,
-) -> Result<WorkspaceChoice, ChoiceFailure> {
-    let user_id = UserId::parse(user_id).map_err(|_error| ChoiceFailure::Unavailable)?;
-    let workspace = WorkspaceId::parse(workspace).map_err(|_error| ChoiceFailure::NotAvailable)?;
-    state
-        .workspaces
-        .sign_in_choice(&user_id, &workspace)
-        .await
-        .map_err(|error| ChoiceFailure::from_domain(&error))
-}
-
 /// Each choice's usable Providers, named for display: "GitHub, Linear, Slack". `None` where they cannot be read;
 /// the page then shows the Workspace without them rather than failing. One query names every choice's Providers.
 async fn provider_summaries(
     state: &AuthorizationServerHttpState,
-    user_id: &str,
+    user_id: &UserId,
     choices: &[WorkspaceChoice],
 ) -> Vec<Option<String>> {
     let unread = || vec![None; choices.len()];
-    let Some(lister) = state.providers.as_ref() else {
+    let Some(providers) = state.providers.as_ref() else {
         return unread();
     };
-    let Ok(user_id) = UserId::parse(user_id) else {
-        return unread();
-    };
-    let Ok(actor) = lister.organization.resolve_user_authority(&user_id).await else {
+    let Ok(actor) = state.organization.resolve_user_authority(user_id).await else {
         return unread();
     };
     let workspaces = choices
         .iter()
         .map(|choice| choice.workspace().id().clone())
         .collect::<Vec<_>>();
-    match lister
-        .providers
-        .active_provider_names(&actor, &workspaces)
-        .await
-    {
+    match providers.active_provider_names(&actor, &workspaces).await {
         Ok(names) => workspaces
             .iter()
             .map(|workspace| {
@@ -242,8 +206,8 @@ fn picker_page(
     providers: &[Option<String>],
 ) -> Option<Response> {
     let secure = state.secure_cookies();
-    let browser_binding = confirmation::browser_binding_for_page(headers, secure).ok()?;
-    let expires_at = sign_in_cookie::now_unix_secs()? + confirmation::APPROVAL_MAX_AGE_SECONDS;
+    let browser_binding = approval_page::browser_binding_for_page(headers, secure).ok()?;
+    let expires_at = sign_in_cookie::now_unix_secs()? + approval_page::APPROVAL_MAX_AGE_SECONDS;
     let ticket = pending
         .seal(
             state.settings.handshake_keys(),
@@ -251,52 +215,43 @@ fn picker_page(
             expires_at,
         )
         .ok()?;
-    // Nothing is preselected, so a quick Allow cannot pick a Workspace the
-    // person never looked at; `required` makes the browser ask for one. A
-    // role tells the rows apart only when they differ.
+    // A role tells the rows apart only when they differ.
     let first_role = choices.first().map(WorkspaceChoice::role);
     let roles_differ = choices
         .iter()
         .any(|choice| Some(choice.role()) != first_role);
-    let mut options = String::new();
-    for (choice, providers) in choices.iter().zip(providers) {
-        let role = match choice.role() {
-            _ if !roles_differ => None,
-            WorkspaceRole::Owner => Some("Owner"),
-            WorkspaceRole::Member => Some("Member"),
-        };
-        let meta = role
-            .map(str::to_owned)
-            .into_iter()
-            .chain(providers.as_deref().map(escape_html))
-            .collect::<Vec<_>>()
-            .join(" · ");
-        let name = escape_html(choice.workspace().display_name().as_str());
-        write!(
-            options,
-            "\n          <label class=\"choice\"><input type=\"radio\" name=\"workspace\" \
-             value=\"{}\" required><span class=\"choice-text\"><span class=\"choice-name\">\
-             <bdi>{name}</bdi></span><span class=\"choice-meta\">{meta}</span></span></label>",
-            choice.workspace().id(),
-        )
-        .ok()?;
-    }
-    let redirect_uri = EndpointUrl::<BrowserRedirect>::parse(&pending.redirect_uri).ok()?;
-    let scope = if choices.is_empty() {
+    let rows = choices
+        .iter()
+        .zip(providers)
+        .map(|(choice, providers)| {
+            let role = match choice.role() {
+                _ if !roles_differ => None,
+                WorkspaceRole::Owner => Some("Owner".to_owned()),
+                WorkspaceRole::Member => Some("Member".to_owned()),
+            };
+            Choice {
+                workspace_id: choice.workspace().id().to_string(),
+                name: choice.workspace().display_name().as_str(),
+                details: role.into_iter().chain(providers.clone()).collect(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let redirect_uri = EndpointUrl::<BrowserRedirect>::parse(&pending.request.redirect_uri).ok()?;
+    let scope = if rows.is_empty() {
         ApprovalScope::NoChoice {
             signed_in_as,
             coral_url: state.settings.authorization_server().web_public_url(),
         }
     } else {
         ApprovalScope::Choice {
-            options: &options,
+            choices: &rows,
             signed_in_as,
         }
     };
-    confirmation::response(
+    approval_page::response(
         &ticket,
         client_name,
-        &pending.client_id,
+        &pending.request.client_id,
         &redirect_uri,
         &scope,
         &browser_binding,

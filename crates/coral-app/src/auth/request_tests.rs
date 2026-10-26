@@ -2,7 +2,7 @@ use super::request::WorkspaceAuthentication;
 use crate::auth::test_config::loopback_policy;
 use crate::{CanonicalOauthUrl, WorkspaceMcpUrls};
 use coral_auth::{PrincipalAuthentication, SessionTokenIssuer};
-use coral_mcp::{McpModules, WorkspaceAuthenticator};
+use coral_mcp::{McpEndpoint, McpModules, WorkspaceAuthenticator};
 use coral_provider::ProviderModule;
 use coral_workspace::{
     AgentDisplayName, AgentState, AuthenticatedUser, ChangeContext, OrganizationModule,
@@ -40,8 +40,12 @@ async fn http_oauth_requests_use_current_user_authority_not_sessions_or_metadata
     let session = accepted.headers()["mcp-session-id"].clone();
     let principal = fixture
         .auth
-        .authenticate(&fixture.workspace, Some(&token.access_token))
+        .authenticate(
+            &McpEndpoint::Workspace(fixture.workspace.clone()),
+            Some(&token.access_token),
+        )
         .await
+        .map(|(principal, _workspace)| principal)
         .unwrap();
     assert_eq!(principal.principal().id().as_str(), "owner");
     assert_eq!(principal.principal().kind(), PrincipalKind::User);
@@ -130,8 +134,12 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
     let credential = issued.credential.expose();
     let actor = fixture
         .auth
-        .authenticate(&fixture.workspace, Some(credential))
+        .authenticate(
+            &McpEndpoint::Workspace(fixture.workspace.clone()),
+            Some(credential),
+        )
         .await
+        .map(|(principal, _workspace)| principal)
         .unwrap();
     assert_eq!(actor.principal(), issued.agent.principal());
     assert_eq!(actor.agent_workspace_id(), Some(&fixture.workspace));
@@ -218,9 +226,13 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
     assert_eq!(
         fixture
             .auth
-            .authenticate(&fixture.workspace, Some(rotated.credential.expose()))
+            .authenticate(
+                &McpEndpoint::Workspace(fixture.workspace.clone()),
+                Some(rotated.credential.expose())
+            )
             .await
             .unwrap()
+            .0
             .principal(),
         actor.principal()
     );
@@ -302,7 +314,7 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
 )]
 async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fixes() {
     let fixture = Fixture::new().await;
-    let organization = fixture.urls.organization_resource();
+    let organization = fixture.urls.endpoint_resource(&McpEndpoint::Organization);
     let scoped = |user: &str, workspace: &WorkspaceId| {
         fixture
             .issuer
@@ -325,7 +337,9 @@ async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fix
         challenge(&missing),
         format!(
             "Bearer resource_metadata=\"{}\"",
-            fixture.urls.organization_metadata_url()
+            fixture
+                .urls
+                .endpoint_metadata_url(&McpEndpoint::Organization)
         )
     );
 
@@ -398,7 +412,9 @@ async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fix
             challenge(&rejected),
             format!(
                 "Bearer error=\"invalid_token\", resource_metadata=\"{}\"",
-                fixture.urls.organization_metadata_url()
+                fixture
+                    .urls
+                    .endpoint_metadata_url(&McpEndpoint::Organization)
             ),
             "{case}: a refused token asks the client to sign in again"
         );
@@ -450,7 +466,9 @@ async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fix
             challenge(&denied),
             format!(
                 "Bearer error=\"invalid_token\", resource_metadata=\"{}\"",
-                fixture.urls.organization_metadata_url()
+                fixture
+                    .urls
+                    .endpoint_metadata_url(&McpEndpoint::Organization)
             ),
             "{case}: the client signs in again and picks another Workspace"
         );
@@ -477,8 +495,12 @@ async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fix
     let session = accepted.headers()["mcp-session-id"].clone();
     let agent = fixture
         .auth
-        .authenticate(&fixture.workspace, Some(credential))
+        .authenticate(
+            &McpEndpoint::Workspace(fixture.workspace.clone()),
+            Some(credential),
+        )
         .await
+        .map(|(principal, _workspace)| principal)
         .unwrap();
     fixture
         .assert_task_principal_at(

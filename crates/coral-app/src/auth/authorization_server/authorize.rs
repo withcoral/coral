@@ -1,5 +1,5 @@
 use super::super::provider_client::OidcAuthorizationRequest;
-use super::super::sealed_handshake::PendingApproval;
+use super::super::sealed_handshake::{ClientRequest, PendingApproval, SignInSession};
 use super::client_metadata::OAuthClientRegistration;
 use super::response::{TrustedRedirect, direct_error, redirect};
 use super::{
@@ -10,9 +10,7 @@ use axum::http::{HeaderMap, header};
 use axum::response::Response;
 use coral_outbound::{BrowserRedirect, EndpointUrl};
 
-pub(super) mod confirmation;
-
-use confirmation::{ApprovalDecision, ApprovalScope};
+use super::approval_page::{self, ApprovalDecision, ApprovalScope};
 
 pub(super) async fn oauth_authorize_get(
     State(state): State<AuthorizationServerHttpState>,
@@ -73,21 +71,23 @@ pub(super) async fn oauth_authorize_get(
     let Ok(resource) = canonical_authorization_resource(resource) else {
         return trusted.error("invalid_target", "resource is invalid");
     };
-    if !state.accepts_authorization_resource(&resource)
-        || web_login.is_some_and(|web| web.public_url != resource)
-    {
+    let Some(target) = state
+        .authorization_resource(&resource)
+        .filter(|_| web_login.is_none_or(|web| web.public_url == resource))
+    else {
         return trusted.error("invalid_target", "resource does not match this server");
-    }
-    let approval = PendingApproval {
-        client_id: client_id.to_string(),
-        client_name,
-        redirect_uri: redirect_uri.to_string(),
-        client_state: query.state,
-        code_challenge,
-        resource,
     };
-    let picks_workspace = state.is_organization_resource(&approval.resource);
-    let sign_in = approval.clone().into_sign_in(picks_workspace);
+    let approval = PendingApproval {
+        request: ClientRequest {
+            client_id: client_id.to_string(),
+            redirect_uri: redirect_uri.to_string(),
+            client_state: query.state,
+            code_challenge,
+            resource,
+        },
+        client_name,
+    };
+    let sign_in = approval.clone().into_sign_in(target.picks_workspace());
     // The sign-in cookie carries these inputs, so they must fit in one.
     if !sign_in_cookie::app_input_fits(&sign_in) {
         let inputs = if sign_in.client_name.is_some() {
@@ -107,13 +107,13 @@ pub(super) async fn oauth_authorize_get(
     // metadata document still had to resolve and name this redirect URI.
     // At the Organization MCP Endpoint the person approves after sign-in, on
     // the page where they pick the Workspace, so no page shows here.
-    if picks_workspace
+    if target.picks_workspace()
         || state
             .settings
             .authorization_server()
             .is_trusted_client(client_id, redirect_uri)
     {
-        return provider_sign_in(&state, approval, &trusted, &headers).await;
+        return provider_sign_in(&state, sign_in, &trusted, &headers).await;
     }
     consent_page(&state, &approval, &callback, &headers)
         .unwrap_or_else(|| trusted.error("server_error", "authorization failed"))
@@ -127,8 +127,8 @@ fn consent_page(
     headers: &HeaderMap,
 ) -> Option<Response> {
     let secure_cookie = state.secure_cookies();
-    let browser_binding = confirmation::browser_binding_for_page(headers, secure_cookie).ok()?;
-    let expires_at = sign_in_cookie::now_unix_secs()? + confirmation::APPROVAL_MAX_AGE_SECONDS;
+    let browser_binding = approval_page::browser_binding_for_page(headers, secure_cookie).ok()?;
+    let expires_at = sign_in_cookie::now_unix_secs()? + approval_page::APPROVAL_MAX_AGE_SECONDS;
     let ticket = approval
         .seal(
             state.settings.handshake_keys(),
@@ -136,10 +136,10 @@ fn consent_page(
             expires_at,
         )
         .ok()?;
-    confirmation::response(
+    approval_page::response(
         &ticket,
         &approval.client_name,
-        &approval.client_id,
+        &approval.request.client_id,
         callback,
         &ApprovalScope::Workspace,
         &browser_binding,
@@ -152,7 +152,14 @@ pub(super) async fn oauth_authorize_post(
     request: Request,
 ) -> Response {
     let headers = request.headers().clone();
-    let Ok((ticket, browser_binding, decision)) = confirmation::parse_submission(
+    // Only the picker after an Organization MCP Endpoint sign-in sends a
+    // Workspace.
+    let Ok(approval_page::Submission {
+        ticket,
+        browser_binding,
+        decision,
+        workspace: None,
+    }) = approval_page::parse_submission(
         request,
         state.settings.authorization_server().issuer(),
         state.secure_cookies(),
@@ -167,18 +174,28 @@ pub(super) async fn oauth_authorize_post(
     }) else {
         return approval_error();
     };
-    let Some(trusted) =
-        TrustedRedirect::parse(&approval.redirect_uri, approval.client_state.clone())
-    else {
+    let Some(trusted) = TrustedRedirect::parse(
+        &approval.request.redirect_uri,
+        approval.request.client_state.clone(),
+    ) else {
         return direct_error("server_error", "authorization failed");
     };
     if decision == ApprovalDecision::Cancel {
         return trusted.error("access_denied", "authorization was denied");
     }
-    provider_sign_in(&state, approval, &trusted, &headers).await
+    let picks_workspace = state
+        .authorization_resource(&approval.request.resource)
+        .is_some_and(|target| target.picks_workspace());
+    provider_sign_in(
+        &state,
+        approval.into_sign_in(picks_workspace),
+        &trusted,
+        &headers,
+    )
+    .await
 }
 
-/// Sends an approved authorization on to the upstream provider.
+/// Sends an approved sign-in on to the upstream provider.
 ///
 /// This is the step an Allow submission continues into and a trusted client
 /// skips to directly. The redirect hands this browser the sign-in cookie that
@@ -187,7 +204,7 @@ pub(super) async fn oauth_authorize_post(
 /// Older sign-ins beyond the per-browser cap are expired on the same response.
 async fn provider_sign_in(
     state: &AuthorizationServerHttpState,
-    approval: PendingApproval,
+    session: SignInSession,
     trusted: &TrustedRedirect,
     headers: &HeaderMap,
 ) -> Response {
@@ -202,8 +219,6 @@ async fn provider_sign_in(
     else {
         return trusted.error("server_error", "authorization failed");
     };
-    let picks_workspace = state.is_organization_resource(&approval.resource);
-    let session = approval.into_sign_in(picks_workspace);
     let secure = state.secure_cookies();
     let Some(cookie) = sign_in_cookie::now_unix_secs().and_then(|now| {
         let sealed = session
@@ -372,7 +387,7 @@ mod tests {
     const BROWSER_BINDING: [u8; 32] = [0x42; 32];
 
     fn approval_page_style_src() -> String {
-        let digest = Sha256::digest(confirmation::APPROVAL_PAGE_STYLES.as_bytes());
+        let digest = Sha256::digest(approval_page::APPROVAL_PAGE_STYLES.as_bytes());
         format!("style-src 'sha256-{}'", STANDARD.encode(digest))
     }
 
@@ -545,15 +560,15 @@ mod tests {
         headers
     }
 
-    fn browser_binding() -> confirmation::BrowserBinding {
-        confirmation::BrowserBinding::from_bytes(BROWSER_BINDING)
+    fn browser_binding() -> approval_page::BrowserBinding {
+        approval_page::BrowserBinding::from_bytes(BROWSER_BINDING)
     }
 
     async fn response_body(response: Response) -> String {
         String::from_utf8(
             to_bytes(
                 response.into_body(),
-                16 * 1024 + confirmation::APPROVAL_PAGE_STYLES.len(),
+                16 * 1024 + approval_page::APPROVAL_PAGE_STYLES.len(),
             )
             .await
             .expect("body")
@@ -723,7 +738,7 @@ mod tests {
             .and_then(|(_, rest)| rest.split_once("</style>"))
             .expect("one embedded stylesheet")
             .0;
-        assert_eq!(styles, confirmation::APPROVAL_PAGE_STYLES);
+        assert_eq!(styles, approval_page::APPROVAL_PAGE_STYLES);
         let ticket = ticket_from_page(&page);
         assert_eq!(
             set_cookie,
@@ -734,12 +749,12 @@ mod tests {
         );
         assert!(!set_cookie.contains(&ticket));
         let approval = opened_approval(&ticket);
-        assert_eq!(approval.client_id, CLIENT_ID);
+        assert_eq!(approval.request.client_id, CLIENT_ID);
         assert_eq!(approval.client_name, "Test Client");
-        assert_eq!(approval.redirect_uri, REDIRECT_URI);
-        assert_eq!(approval.client_state.as_deref(), Some(CLIENT_STATE));
-        assert_eq!(approval.code_challenge, CHALLENGE);
-        assert_eq!(approval.resource, RESOURCE);
+        assert_eq!(approval.request.redirect_uri, REDIRECT_URI);
+        assert_eq!(approval.request.client_state.as_deref(), Some(CLIENT_STATE));
+        assert_eq!(approval.request.code_challenge, CHALLENGE);
+        assert_eq!(approval.request.resource, RESOURCE);
     }
 
     /// RFC 8252 §7.1: a native app such as Raycast names its own URI scheme as
@@ -761,18 +776,18 @@ mod tests {
         assert!(page.contains("Opens app</dt>"));
         assert!(page.contains(">com.raycast</dd>"));
         let approval = opened_approval(&ticket_from_page(&page));
-        assert_eq!(approval.redirect_uri, APP_CALLBACK);
+        assert_eq!(approval.request.redirect_uri, APP_CALLBACK);
     }
 
     #[tokio::test]
     async fn confirmation_page_displays_loopback_destination_and_escapes_client_text() {
-        let loopback = confirmation::response(
+        let loopback = approval_page::response(
             "sealed-approval",
             "Local Test Client",
             CLIENT_ID,
             &EndpointUrl::<BrowserRedirect>::parse("http://127.0.0.1:14554/oauth/callback")
                 .expect("loopback redirect"),
-            &confirmation::ApprovalScope::Workspace,
+            &approval_page::ApprovalScope::Workspace,
             &browser_binding(),
             false,
         )
@@ -794,12 +809,12 @@ mod tests {
         );
         assert!(!loopback_cookie.contains("; Secure"));
 
-        let escaped = confirmation::response(
+        let escaped = approval_page::response(
             "sealed-approval",
             "</bdi><script>alert(\"x\")</script>&' @@ticket@@ @@styles@@",
             CLIENT_ID,
             &EndpointUrl::<BrowserRedirect>::parse(REDIRECT_URI).expect("redirect"),
-            &confirmation::ApprovalScope::Workspace,
+            &approval_page::ApprovalScope::Workspace,
             &browser_binding(),
             true,
         )
@@ -844,7 +859,7 @@ mod tests {
         ];
         for body in malformed {
             let request = submission(body, cookie(), FORM);
-            let Err(()) = confirmation::parse_submission(request, AUTH_ISSUER, true).await else {
+            let Err(()) = approval_page::parse_submission(request, AUTH_ISSUER, true).await else {
                 panic!("accepted malformed approval submission");
             };
         }
@@ -853,7 +868,7 @@ mod tests {
             cookie(),
             "text/plain",
         );
-        let Err(()) = confirmation::parse_submission(request, AUTH_ISSUER, true).await else {
+        let Err(()) = approval_page::parse_submission(request, AUTH_ISSUER, true).await else {
             panic!("accepted approval submission with the wrong content type");
         };
 
@@ -868,10 +883,17 @@ mod tests {
             HeaderValue::from_bytes(stray.as_bytes()).expect("cookie"),
         ] {
             let request = submission(format!("ticket={ticket}&decision=cancel"), cookie, FORM);
-            let (ticket, browser_binding, decision) =
-                confirmation::parse_submission(request, AUTH_ISSUER, true)
-                    .await
-                    .expect("rejected a well-formed approval submission");
+            let approval_page::Submission {
+                ticket,
+                browser_binding,
+                decision,
+                workspace: None,
+            } = approval_page::parse_submission(request, AUTH_ISSUER, true)
+                .await
+                .expect("rejected a well-formed approval submission")
+            else {
+                panic!("an approval submission names no Workspace");
+            };
             assert_eq!(ticket.as_str(), URL_SAFE_NO_PAD.encode([7; 32]));
             assert_eq!(browser_binding.as_bytes(), &BROWSER_BINDING);
             assert!(decision == ApprovalDecision::Cancel);
@@ -1455,11 +1477,15 @@ mod tests {
         let (first_state, second_state) = (oidc_state(&first), oidc_state(&second));
         assert_ne!(first_state, second_state);
         assert_eq!(
-            returned_session(&auth_state, &first, &first_state).client_id,
+            returned_session(&auth_state, &first, &first_state)
+                .request
+                .client_id,
             CLIENT_ID
         );
         assert_eq!(
-            returned_session(&auth_state, &second, &second_state).client_id,
+            returned_session(&auth_state, &second, &second_state)
+                .request
+                .client_id,
             CLIENT_ID
         );
     }
@@ -1502,11 +1528,11 @@ mod tests {
             );
         }
         let session = returned_session(&auth_state, &response, oidc_state);
-        assert_eq!(session.client_id, CLIENT_ID);
-        assert_eq!(session.redirect_uri, REDIRECT_URI);
-        assert_eq!(session.client_state.as_deref(), Some(CLIENT_STATE));
-        assert_eq!(session.code_challenge, CHALLENGE);
-        assert_eq!(session.resource, RESOURCE);
+        assert_eq!(session.request.client_id, CLIENT_ID);
+        assert_eq!(session.request.redirect_uri, REDIRECT_URI);
+        assert_eq!(session.request.client_state.as_deref(), Some(CLIENT_STATE));
+        assert_eq!(session.request.code_challenge, CHALLENGE);
+        assert_eq!(session.request.resource, RESOURCE);
         let keys = auth_state.settings.handshake_keys();
         let verifier = keys.pkce_verifier(oidc_state);
         assert_eq!(
@@ -1708,9 +1734,9 @@ mod tests {
         let page = response_body(response).await;
         assert!(page.contains("to Coral</h1>"));
         let approval = opened_approval(&ticket_from_page(&page));
-        assert_eq!(approval.client_id, WEB_CLIENT);
-        assert_eq!(approval.redirect_uri, SETUP_CALLBACK);
-        assert_eq!(approval.resource, RESOURCE);
+        assert_eq!(approval.request.client_id, WEB_CLIENT);
+        assert_eq!(approval.request.redirect_uri, SETUP_CALLBACK);
+        assert_eq!(approval.request.resource, RESOURCE);
 
         // The web resource is still only one of the registered resources on
         // this path, never a reason to skip the approval page.
@@ -1780,11 +1806,11 @@ mod tests {
                 .collect::<BTreeMap<_, _>>();
             let oidc_state = provider_query.get("state").expect("OIDC state");
             let session = returned_session(&auth_state, &response, oidc_state);
-            assert_eq!(session.client_id, CLIENT_ID);
-            assert_eq!(session.redirect_uri, REDIRECT_URI);
-            assert_eq!(session.client_state.as_deref(), Some(CLIENT_STATE));
-            assert_eq!(session.code_challenge, CHALLENGE);
-            assert_eq!(session.resource, resource);
+            assert_eq!(session.request.client_id, CLIENT_ID);
+            assert_eq!(session.request.redirect_uri, REDIRECT_URI);
+            assert_eq!(session.request.client_state.as_deref(), Some(CLIENT_STATE));
+            assert_eq!(session.request.code_challenge, CHALLENGE);
+            assert_eq!(session.request.resource, resource);
             assert_eq!(session.client_name.as_deref(), client_name, "{case}");
         }
     }

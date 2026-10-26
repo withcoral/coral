@@ -71,7 +71,7 @@ pub(super) async fn insert(
                     grant.redirect_uri.clone().into(),
                     grant.code_challenge.clone().into(),
                     grant.resource.clone().into(),
-                    grant.workspace_id.clone().into(),
+                    grant.workspace_id.as_ref().map(ToString::to_string).into(),
                     expires_at_unix_nanos.into(),
                 ])
                 .on_conflict(
@@ -156,12 +156,21 @@ pub(super) async fn spend(
         )
         .await
         .map_err(|_error| AuthorizationCodeError::Unavailable)?;
-    Ok(row.map(|row| AuthorizationGrant {
-        user_id: row.user_id,
-        client_id: row.client_id,
-        redirect_uri: row.redirect_uri,
-        code_challenge: row.code_challenge,
-        resource: row.resource,
-        workspace_id: row.workspace_id,
-    }))
+    row.map(|row| {
+        let workspace_id = row
+            .workspace_id
+            .as_deref()
+            .map(coral_workspace::WorkspaceId::parse)
+            .transpose()
+            .map_err(|_error| AuthorizationCodeError::Unavailable)?;
+        Ok(AuthorizationGrant {
+            user_id: row.user_id,
+            client_id: row.client_id,
+            redirect_uri: row.redirect_uri,
+            code_challenge: row.code_challenge,
+            resource: row.resource,
+            workspace_id,
+        })
+    })
+    .transpose()
 }
