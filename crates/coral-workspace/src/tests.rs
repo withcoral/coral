@@ -1084,6 +1084,7 @@ async fn sign_in_choices_are_active_memberships_with_their_role_and_only_they_ca
     };
     let beta = create("Beta").await;
     let alpha = create("Alpha").await;
+    create("alpha two").await;
     let archived = create("Archived").await;
     module.archive(&context, archived.id()).await.unwrap();
     module
@@ -1109,9 +1110,21 @@ async fn sign_in_choices_are_active_memberships_with_their_role_and_only_they_ca
         choices(&owner).await,
         [
             ("Alpha".to_owned(), WorkspaceRole::Owner),
+            ("alpha two".to_owned(), WorkspaceRole::Owner),
             ("Beta".to_owned(), WorkspaceRole::Owner),
         ],
-        "archived Workspaces are not offered, and choices sort by name"
+        "archived Workspaces are not offered, and choices sort by name, whatever the case"
+    );
+    assert_eq!(
+        module
+            .list(&owner)
+            .await
+            .unwrap()
+            .iter()
+            .map(|workspace| workspace.display_name().as_str())
+            .collect::<Vec<_>>(),
+        ["Alpha", "alpha two", "Archived", "Beta"],
+        "the Workspace list sorts the same way, archived ones included"
     );
     assert_eq!(
         choices(&member).await,

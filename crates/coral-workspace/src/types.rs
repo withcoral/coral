@@ -231,6 +231,15 @@ impl Workspace {
         &self.display_name
     }
 
+    /// Returns the key that orders Workspace lists: the display name
+    /// alphabetically, ignoring case, then the ID so equal names keep one
+    /// order. Pages that resume after a key keep the same order.
+    #[must_use]
+    pub fn listing_key(&self) -> String {
+        // A display name has no control characters, so NUL ends it.
+        format!("{}\0{}", self.display_name.as_str().to_lowercase(), self.id)
+    }
+
     /// Returns the lifecycle state.
     #[must_use]
     pub const fn state(&self) -> WorkspaceState {

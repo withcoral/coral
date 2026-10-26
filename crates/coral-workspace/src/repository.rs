@@ -488,7 +488,7 @@ pub(super) async fn list_workspaces(
             Ok((workspace, role))
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    workspaces.sort_by(|(left, _), (right, _)| left.id().cmp(right.id()));
+    workspaces.sort_by_cached_key(|(workspace, _)| workspace.listing_key());
     Ok(workspaces)
 }
 

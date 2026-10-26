@@ -232,7 +232,8 @@ impl WorkspaceModule {
         Ok(workspace)
     }
 
-    /// Lists the Workspaces where one authenticated User holds a Membership.
+    /// Lists the Workspaces where one authenticated User holds a Membership,
+    /// in [listing order](Workspace::listing_key).
     ///
     /// # Errors
     ///
@@ -249,7 +250,7 @@ impl WorkspaceModule {
     }
 
     /// Lists the active Workspaces the User signing in at the Organization
-    /// MCP Endpoint can pick, ordered by name. Organization Owner governance
+    /// MCP Endpoint can pick, in [listing order](Workspace::listing_key). Organization Owner governance
     /// is not a Membership, so it offers nothing.
     ///
     /// # Errors
@@ -262,20 +263,12 @@ impl WorkspaceModule {
         let actor = OrganizationModule::new(self.database.clone())
             .resolve_user_authority(user_id)
             .await?;
-        let mut choices = repository::list_workspaces(&self.database, actor.user_id())
+        Ok(repository::list_workspaces(&self.database, actor.user_id())
             .await?
             .into_iter()
             .filter(|(workspace, _role)| workspace.state() == WorkspaceState::Active)
             .map(|(workspace, role)| WorkspaceChoice { workspace, role })
-            .collect::<Vec<_>>();
-        choices.sort_by(|left, right| {
-            left.workspace
-                .display_name()
-                .as_str()
-                .cmp(right.workspace.display_name().as_str())
-                .then_with(|| left.workspace.id().cmp(right.workspace.id()))
-        });
-        Ok(choices)
+            .collect())
     }
 
     /// Returns the Workspace the signing-in User picked, if it is still one of

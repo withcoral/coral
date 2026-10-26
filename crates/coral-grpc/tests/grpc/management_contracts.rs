@@ -514,9 +514,10 @@ async fn management_pagination_replay_and_archived_configuration_are_bounded() {
         .into_inner();
     assert_eq!(second.workspaces.len(), 1);
     assert!(second.next_page_token.is_empty());
-    assert_ne!(
-        first.workspaces.first().unwrap().name,
-        second.workspaces.first().unwrap().name
+    assert_eq!(
+        [&first, &second].map(|page| page.workspaces.first().unwrap().display_name.as_str()),
+        ["private", "Receipt"],
+        "pages follow the alphabetical order, whatever the case"
     );
     assert_eq!(
         client

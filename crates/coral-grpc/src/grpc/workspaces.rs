@@ -330,7 +330,7 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
             input.page_size,
             &input.page_token,
             &format!("{}:workspaces", user.user_id()),
-            |w| w.id().to_string(),
+            coral_workspace::Workspace::listing_key,
         )?;
         let mut workspaces = Vec::new();
         for w in values {
