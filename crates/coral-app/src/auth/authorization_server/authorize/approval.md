@@ -16,12 +16,12 @@ Before sign-in, the approval page shows no private Workspace or User data.
 
 At the Organization MCP Endpoint (`/mcp`) the approval page shows after the
 identity provider answers instead of before. `account` then names the signed-in
-account, `choices` holds a radio group with a row per active Workspace and its Providers, and
+account when the provider supplies an email or name, and is empty otherwise; `choices` holds a radio group with a row per active Workspace and its Providers, and
 the form posts to `/oauth/workspace` (`../workspace_choice.rs`). For a
 Workspace URL both are empty and the form posts to `/oauth/authorize`. With no
 Workspace, `choices` says how to get one, `cancel_label` reads "Back to …",
 and `primary_action` links to Coral when its URL is known instead of Connect.
-The client then gets `access_denied`, and no code is issued.
+Back sends the client `access_denied`. No code is issued.
 
 Rust computes the CSP hash from the embedded CSS once. Keep `<style>@@styles@@</style>`
 without extra whitespace inside the element so the hash matches the served bytes.

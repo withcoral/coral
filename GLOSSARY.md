@@ -101,9 +101,9 @@ Program-selected Workspace, session-selected Workspace
 
 **Organization MCP Endpoint**: The deployment's one fixed MCP endpoint, which names no Workspace. A User picks one of
 their active Workspaces when they sign in, and that sign-in's credential fixes the Workspace until it expires; to use
-another Workspace, the User signs in again. An Agent's Registration fixes its Workspace here as it does everywhere. A
-Workspace MCP endpoint's credential does not work here, and this endpoint's credential does not work at a Workspace
-MCP endpoint. The Workspace MCP endpoint remains for a client that uses two Workspaces at once, for a Provider that
+another Workspace, the User signs in again. An Agent's Registration fixes its Workspace here as it does everywhere,
+so its credential works at both endpoints. A User's credential for a Workspace MCP endpoint does not work here, and a
+User's credential for this endpoint does not work at a Workspace MCP endpoint. The Workspace MCP endpoint remains for a client that uses two Workspaces at once, for a Provider that
 reaches another Workspace, and for the implicit local User, who has no sign-in to pick with. _Avoid_: default
 Workspace, Workspace switcher, deployment endpoint
 

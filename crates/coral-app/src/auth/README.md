@@ -9,9 +9,10 @@ MCP Endpoint is exactly `/mcp`; there the credential fixes the Workspace (see
   local Organization Owner through normal domain authorization. A presented
   credential is never ignored: it must authenticate an Agent Registration.
 - Remote User clients use Coral's OAuth authorization server, backed by the
-  configured OIDC provider. Coral-issued User tokens are bound to the exact
-  Workspace resource URL. Protected-resource metadata and the authentication
-  challenge advertise that URL and the configured authorization server.
+  configured OIDC provider. Coral-issued User tokens for a Workspace MCP
+  endpoint are bound to its exact resource URL. Protected-resource metadata and
+  the authentication challenge advertise that URL and the configured
+  authorization server.
 - Agents present their Registration bearer credential at the same endpoint.
   Agent-kind JWT claims are not Registration authentication.
 
@@ -39,10 +40,13 @@ only one fixed URL.
   approval page also lists the User's active Workspace Memberships, and Coral
   issues the code only when they allow the client with one picked. So the
   approval comes after sign-in at `/mcp`, and a trusted client sees it too. The
-  pending approval is sealed into the form and bound to the approval cookie, so
-  nothing is stored before the pick. The submission rechecks the choice. With no Workspace, Coral issues no code. The page names the
-  account, says to create a workspace, links to the web interface when one is
-  configured, and offers a way back that ends the sign-in with `access_denied`.
+  callback provisions the User as any sign-in does, but the pending approval is
+  sealed into the form and bound to the approval cookie, so no authorization
+  state is stored before the pick. The submission rechecks the choice. The page
+  names the account when the identity provider supplies an email or name. With
+  no Workspace, Coral issues no code. The page says to create a workspace, links
+  to the web interface when one is configured, and offers Back, which ends the
+  sign-in with `access_denied`.
   Nothing is preselected; the browser requires a pick before Connect, and the
   server refuses a submission without one.
 - An Agent Registration credential works at `/mcp`. Coral finds the
