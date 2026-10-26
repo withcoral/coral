@@ -102,7 +102,7 @@ async fn complete(
             return trusted.error("server_error", "authorization failed");
         }
     };
-    let user_id = match provision(state.user_directory.as_ref(), &identity).await {
+    let user_id = match provision(&state.user_directory, &identity).await {
         Ok(user_id) => user_id,
         Err(outcome) => return outcome.into_error(&trusted),
     };
@@ -117,15 +117,12 @@ async fn complete(
         code_challenge: session.code_challenge,
         resource: session.resource,
     };
-    let Some(codes) = state.codes.as_ref() else {
-        tracing::warn!("OIDC callback has no database to store the authorization code in");
-        return trusted.error("server_error", "authorization failed");
-    };
     let Ok(now_unix_nanos) = now_unix_nanos_i64() else {
         tracing::warn!("OIDC callback could not read the system clock");
         return trusted.error("server_error", "authorization failed");
     };
-    match codes
+    match state
+        .codes
         .issue(&authorization_code, oidc_state, &grant, now_unix_nanos)
         .await
     {
@@ -176,13 +173,9 @@ impl ProvisioningFailure {
 /// client redeems — and every token and principal id minted from it — carries
 /// only Coral's own identifier. A login that cannot be recorded issues no code.
 async fn provision(
-    user_directory: Option<&UserDirectory>,
+    user_directory: &UserDirectory,
     identity: &ValidatedOidcIdentity,
 ) -> Result<String, ProvisioningFailure> {
-    let Some(user_directory) = user_directory else {
-        tracing::warn!("OIDC callback has no User directory to provision a verified login into");
-        return Err(ProvisioningFailure::Unavailable);
-    };
     let Ok(now_unix_nanos) = now_unix_nanos_i64() else {
         tracing::warn!("OIDC callback could not read the system clock");
         return Err(ProvisioningFailure::Unavailable);
@@ -305,12 +298,12 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::super::AuthorizationServerHttpState;
-    use super::super::test_state::http_state;
+    use super::super::test_state::{database, http_state};
     use super::*;
     use crate::auth::id_token::tests::{
         claims as id_token_claims, rsa_key, set_claim, token as id_token,
     };
-    use crate::auth::test_config::PROVIDER_SECRET;
+    use crate::auth::test_config::{PROVIDER_SECRET, resolved_settings};
     use coral_auth::authorization_codes::{AuthorizationCodes, CodeRedemption};
     use coral_db::Database;
     use coral_test_support::TestDatabase;
@@ -323,31 +316,15 @@ mod tests {
     const UPSTREAM_SUBJECT: &str = "raw-principal";
     const BOUND_ISSUER: &str = "https://already.bound.example.test";
 
-    fn state(issuer: &str) -> AuthorizationServerHttpState {
-        http_state(issuer, "", &[RESOURCE])
-    }
-
-    fn state_with(issuer: &str, database: Arc<Database>) -> AuthorizationServerHttpState {
-        let mut state = state(issuer);
-        state.user_directory = Some(UserDirectory::new(database.clone()));
-        state.codes = Some(AuthorizationCodes::new(database));
-        state
-    }
-
-    /// Opens the migrated database a callback provisions logins into.
-    async fn database() -> (Arc<Database>, TestDatabase) {
-        let (database, fixture) = database_with(coral_db::migration_plan()).await;
-        (database, fixture)
+    fn state(database: &TestDatabase, issuer: &str) -> AuthorizationServerHttpState {
+        http_state(database, issuer, "", &[RESOURCE])
     }
 
     /// A database with no schema, standing in for one Coral cannot write.
-    async fn unmigrated_database() -> (Arc<Database>, TestDatabase) {
-        database_with(&coral_db::MigrationPlan::shared(&[])).await
-    }
-
-    async fn database_with(plan: &coral_db::MigrationPlan) -> (Arc<Database>, TestDatabase) {
-        let fixture = TestDatabase::new(plan).await.expect("test database");
-        (fixture.database(), fixture)
+    async fn unmigrated_database() -> TestDatabase {
+        TestDatabase::new(&coral_db::MigrationPlan::shared(&[]))
+            .await
+            .expect("test database")
     }
 
     /// Redeems the code a successful callback returned and reports the identity
@@ -394,10 +371,18 @@ mod tests {
 
     /// The nonce Coral expects in the ID token for the sign-in named `OIDC_STATE`.
     fn nonce() -> String {
-        state("https://unused.invalid")
-            .settings
+        resolved_settings("https://unused.invalid", "")
+            .0
             .handshake_keys()
             .nonce(OIDC_STATE)
+    }
+
+    /// The PKCE verifier Coral sends the provider for the sign-in named `OIDC_STATE`.
+    fn pkce_verifier() -> Zeroizing<String> {
+        resolved_settings("https://unused.invalid", "")
+            .0
+            .handshake_keys()
+            .pkce_verifier(OIDC_STATE)
     }
 
     fn query(pairs: &[(&str, &str)]) -> String {
@@ -524,8 +509,9 @@ mod tests {
                 panic!("malformed callback query must be rejected");
             };
         }
+        let database = database().await;
         let response = callback_raw(
-            state("https://provider.invalid"),
+            state(&database, "https://provider.invalid"),
             format!("state={OIDC_STATE}&%73tate=duplicate&code=x"),
         )
         .await;
@@ -546,7 +532,8 @@ mod tests {
     #[tokio::test]
     async fn callback_needs_the_cookie_of_the_browser_that_started_sign_in() {
         let provider = MockServer::start().await;
-        let auth_state = state(&provider.uri());
+        let database = database().await;
+        let auth_state = state(&database, &provider.uri());
         let own = browser_cookie(&auth_state, OIDC_STATE, &session());
         let mut shadowed = HeaderMap::new();
         shadowed.append(header::COOKIE, own.clone());
@@ -583,6 +570,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_errors_are_sanitized_and_end_the_sign_in() {
+        let database = database().await;
         for (index, suffix, expected) in [
             (
                 0,
@@ -597,7 +585,7 @@ mod tests {
         ] {
             let state_key = format!("state-{index}");
             let response = callback_raw(
-                state("https://provider.invalid"),
+                state(&database, "https://provider.invalid"),
                 format!("state={state_key}&{suffix}"),
             )
             .await;
@@ -616,7 +604,7 @@ mod tests {
         ] {
             let state_key = format!("state-{index}");
             let response = callback_raw(
-                state("https://provider.invalid"),
+                state(&database, "https://provider.invalid"),
                 format!("state={state_key}&{suffix}"),
             )
             .await;
@@ -630,15 +618,15 @@ mod tests {
     #[tokio::test]
     async fn upstream_organization_admission_gates_codes_without_importing_roles() {
         let server = MockServer::start().await;
-        let (db, _temp) = database().await;
-        let mut app = http_state(
+        let fixture = database().await;
+        let db = fixture.database();
+        let app = http_state(
+            &fixture,
             &server.uri(),
             "[auth.provider.access_token]\naudience = 'environment'\n\
              [auth.provider.access_token.required_claims]\norg_id = 'org_allowed'",
             &[RESOURCE],
         );
-        app.user_directory = Some(UserDirectory::new(db.clone()));
-        app.codes = Some(AuthorizationCodes::new(db.clone()));
         for (organization, accepted) in [("org_other", false), ("org_allowed", true)] {
             server.reset().await;
             mount_provider(&server, 200, 200, &nonce()).await;
@@ -690,8 +678,9 @@ mod tests {
     async fn success_is_single_use_and_stores_the_internal_identity_with_bindings() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, &nonce()).await;
-        let (db, _temp) = database().await;
-        let app = state_with(&server.uri(), db.clone());
+        let fixture = database().await;
+        let db = fixture.database();
+        let app = state(&fixture, &server.uri());
         let raw = query(&[("state", OIDC_STATE), ("code", PROVIDER_CODE)]);
         // The mock provider accepts its code twice, so only Coral's own
         // one-code-per-sign-in guard stops the replay.
@@ -745,10 +734,7 @@ mod tests {
             Some(coral_workspace::OrganizationRole::Member)
         );
         assert_eq!(authorization.resource, RESOURCE);
-        let verifier = state(&server.uri())
-            .settings
-            .handshake_keys()
-            .pkce_verifier(OIDC_STATE);
+        let verifier = pkce_verifier();
         let requests = server.received_requests().await.expect("requests");
         for token_request in requests
             .iter()
@@ -776,12 +762,39 @@ mod tests {
         }
     }
 
+    /// The configured bootstrap owner reaches the User directory the callback
+    /// provisions into, so its first sign-in makes it the Organization owner.
+    #[tokio::test]
+    async fn the_configured_bootstrap_owner_signs_in_as_the_organization_owner() {
+        let server = MockServer::start().await;
+        mount_provider(&server, 200, 200, &nonce()).await;
+        let fixture = database().await;
+        let app = http_state(
+            &fixture,
+            &server.uri(),
+            &format!("bootstrap_owner_subject = '{UPSTREAM_SUBJECT}'"),
+            &[RESOURCE],
+        );
+
+        let response = callback(app, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await;
+
+        let user_id = stored_user_id(&fixture.database(), &response).await;
+        let authority = coral_workspace::OrganizationModule::new(fixture.database())
+            .resolve_user_authority(&coral_workspace::UserId::parse(&user_id).expect("User ID"))
+            .await
+            .expect("authority");
+        assert_eq!(
+            authority.organization_role(),
+            Some(coral_workspace::OrganizationRole::Owner)
+        );
+    }
+
     #[tokio::test]
     async fn issuer_mismatch_fails_login_without_logging_the_upstream_identity() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, &nonce()).await;
-        let (db, _temp) = database().await;
-        UserDirectory::new(db.clone())
+        let fixture = database().await;
+        UserDirectory::new(fixture.database())
             .provision_login(VerifiedOidcLogin::new(
                 BOUND_ISSUER,
                 UPSTREAM_SUBJECT,
@@ -790,7 +803,7 @@ mod tests {
             ))
             .await
             .expect("seed the directory");
-        let app = state_with(&server.uri(), db);
+        let app = state(&fixture, &server.uri());
 
         let logs = CapturedLogs::default();
         let response = {
@@ -826,20 +839,17 @@ mod tests {
     async fn logins_that_cannot_be_provisioned_issue_no_code() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, &nonce()).await;
-        let (unmigrated, _temp) = unmigrated_database().await;
-        let (codes, _codes_temp) = database().await;
-        for user_directory in [None, Some(UserDirectory::new(unmigrated))] {
-            let mut app = state(&server.uri());
-            app.user_directory = user_directory;
-            app.codes = Some(AuthorizationCodes::new(codes.clone()));
+        let unmigrated = unmigrated_database().await;
+        let fixture = database().await;
+        let mut app = state(&fixture, &server.uri());
+        app.user_directory = UserDirectory::new(unmigrated.database());
 
-            let response = callback(app, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await;
+        let response = callback(app, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await;
 
-            let values = redirect_query(&response);
-            assert!(values.contains(&("error".into(), "server_error".into())));
-            assert!(!values.iter().any(|(key, _value)| key == "code"));
-            assert_security(&response);
-        }
+        let values = redirect_query(&response);
+        assert!(values.contains(&("error".into(), "server_error".into())));
+        assert!(!values.iter().any(|(key, _value)| key == "code"));
+        assert_security(&response);
     }
 
     /// Records events at `info` and above, so a test can prove what a failing
@@ -883,8 +893,9 @@ mod tests {
     async fn assert_provider_failure(token_status: u16, jwks_status: u16, nonce: &str) {
         let server = MockServer::start().await;
         mount_provider(&server, token_status, jwks_status, nonce).await;
+        let database = database().await;
         let response = callback(
-            state(&server.uri()),
+            state(&database, &server.uri()),
             &[("state", OIDC_STATE), ("code", PROVIDER_CODE)],
         )
         .await;
@@ -895,10 +906,7 @@ mod tests {
         let location = response.headers()[header::LOCATION]
             .to_str()
             .expect("location");
-        let verifier = state(&server.uri())
-            .settings
-            .handshake_keys()
-            .pkce_verifier(OIDC_STATE);
+        let verifier = pkce_verifier();
         for secret in [
             verifier.as_str(),
             PROVIDER_SECRET,
@@ -920,10 +928,10 @@ mod tests {
     async fn code_storage_failure_exposes_no_client_code() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, &nonce()).await;
-        let (db, _temp) = database().await;
-        let (unwritable, _unwritable_temp) = unmigrated_database().await;
-        let mut state = state_with(&server.uri(), db);
-        state.codes = Some(AuthorizationCodes::new(unwritable));
+        let fixture = database().await;
+        let unwritable = unmigrated_database().await;
+        let mut state = state(&fixture, &server.uri());
+        state.codes = AuthorizationCodes::new(unwritable.database());
         let response = callback(state, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await;
         let values = redirect_query(&response);
         assert!(values.contains(&("error".into(), "server_error".into())));

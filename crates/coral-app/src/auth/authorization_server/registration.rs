@@ -35,9 +35,6 @@ pub(super) async fn register(
     let Ok(request) = serde_json::from_slice::<RegistrationRequest>(&body) else {
         return failure(RegistrationError::InvalidMetadata);
     };
-    let Some(clients) = &state.clients else {
-        return failure(RegistrationError::Unavailable);
-    };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
@@ -45,7 +42,7 @@ pub(super) async fn register(
     let Some(now) = now else {
         return failure(RegistrationError::Unavailable);
     };
-    match clients.register(request, now).await {
+    match state.clients.register(request, now).await {
         Ok(client) => match serde_json::to_value(client) {
             Ok(value) => response(StatusCode::CREATED, super::json_response(&value)),
             Err(_) => failure(RegistrationError::Unavailable),
