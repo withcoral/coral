@@ -364,35 +364,28 @@ fn a_fact_coral_set_is_rejected_when_sent_back() {
     }
 }
 
-// Catches: a key in a source URL's query, such as api_key, returned to a
-// Program that stores it in Run evidence, or a parameter that holds no secret
-// hidden, so the address no longer reads as itself.
+// Catches: a key in a source URL's path or query, or an embedded credential,
+// returned to a Program that stores it in Run evidence.
 #[test]
-fn a_source_url_reads_without_a_secret_query_value() {
+fn a_source_url_reads_as_its_origin() {
     for (saved, expected) in [
         (
-            "https://api.example.test/openapi.json?api_key=sk-canary&version=2",
-            "https://api.example.test/openapi.json?api_key=[redacted]&version=2",
-        ),
-        // A name hides when it holds a secret word in any case; `code` hides
-        // only as the whole name.
-        (
-            "https://api.example.test/mcp?Access_Token=sk-canary&x-sig=sk-canary&code=sk-canary&codec=mp3",
-            "https://api.example.test/mcp?Access_Token=[redacted]&x-sig=[redacted]&code=[redacted]&codec=mp3",
-        ),
-        // A name reads as the URL encodes it.
-        (
-            "https://api.example.test/mcp?api%5Fkey=sk-canary",
-            "https://api.example.test/mcp?api%5Fkey=[redacted]",
+            "https://mcp.example.test/mcp/?tavilyApiKey=sk-canary",
+            "https://mcp.example.test",
         ),
         (
-            "https://api.example.test/openapi.json",
-            "https://api.example.test/openapi.json",
+            "https://mcp.example.test/api/mcp/s/sk-canary/mcp",
+            "https://mcp.example.test",
+        ),
+        // A port names the origin too.
+        (
+            "http://127.0.0.1:8080/openapi.json?version=2",
+            "http://127.0.0.1:8080",
         ),
         // Coral never saves these, and they never read back.
         (
             "https://user:sk-canary@api.example.test/mcp#sk-canary",
-            "https://api.example.test/mcp",
+            "https://api.example.test",
         ),
     ] {
         for read in [
