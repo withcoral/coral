@@ -56,19 +56,23 @@ impl RunModule {
             run_id: run_id.clone(),
             requester: actor.principal().clone(),
         };
-        // The caller's access and the insert share one transaction, which
-        // holds no Run row.
-        let mut transaction = self.database.begin().await?;
+        // A snapshot answers a caller who may not see the Run, and a terminal
+        // Run, without the write lock.
+        let mut snapshot = self.database.begin_read_snapshot().await?;
         let run = self
-            .visible_run_in_transaction(&mut transaction, actor, workspace_id, run_id)
+            .visible_run_in_transaction(&mut snapshot, actor, workspace_id, run_id)
             .await?;
+        snapshot.commit().await?;
         if !run.state.is_terminal() {
+            // The caller's access is read again in the transaction that
+            // inserts the row, which holds no Run row.
+            let mut transaction = self.database.begin().await?;
+            self.visible_run_in_transaction(&mut transaction, actor, workspace_id, run_id)
+                .await?;
             self.inbox
                 .submit(&mut transaction, &request, self.now()?)
                 .await?;
-        }
-        transaction.commit().await?;
-        if !run.state.is_terminal() {
+            transaction.commit().await?;
             // The recorded intent gives the dispatches in flight the shutdown
             // grace; the owner ends the Run itself once it is out.
             let until = arrived + crate::nanos_duration(run.shutdown_grace_nanos) + SETTLE_MARGIN;
