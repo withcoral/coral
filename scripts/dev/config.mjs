@@ -282,15 +282,18 @@ export function proxyPlan(host, status = {}) {
     const web = status.Web?.[authority]
     const funnel = Boolean(status.AllowFunnel?.[authority])
     const handlers = Object.entries(web?.Handlers ?? {})
-    const isLegacy = handlers.length === 1 && web.Handlers['/']?.Proxy === legacy[port]
+    const onlyProxy = (handler) => Object.keys(handler).length === 1
+    const isLegacy =
+      handlers.length === 1 &&
+      onlyProxy(web.Handlers['/'] ?? {}) &&
+      web.Handlers['/'].Proxy === legacy[port]
     const wanted = layout[port]
     if (!wanted && !isLegacy) continue
     const otherHost = Object.keys(status.Web ?? {}).some(
       (key) => key.endsWith(`:${port}`) && key !== authority,
     )
     const ours = handlers.every(
-      ([path, handler]) =>
-        Object.keys(handler).length === 1 && wanted?.handlers[path] === handler.Proxy,
+      ([path, handler]) => onlyProxy(handler) && wanted?.handlers[path] === handler.Proxy,
     )
     if (
       (funnel && !web) ||

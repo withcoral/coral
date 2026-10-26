@@ -354,6 +354,14 @@ test('proxy planning refuses mappings it does not own and changes nothing', () =
       (s) => (s.Web[`${host}:8443`].Handlers['/'].Proxy = 'http://127.0.0.1:9999'),
     ],
     [
+      'earlier auth mapping with extra handler settings',
+      (s) =>
+        (s.Web[`${host}:8443`].Handlers['/'] = {
+          Proxy: 'http://127.0.0.1:9080',
+          AcceptAppCaps: ['example.com/cap/dev'],
+        }),
+    ],
+    [
       'earlier Reef mapping with an extra path',
       (s) =>
         (s.Web[`${host}:443`].Handlers = {
