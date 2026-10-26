@@ -9,7 +9,8 @@ use super::{
     AUTHENTICATION_KINDS, AddProviderResult, BuiltinAccessState, BuiltinArguments,
     BuiltinCredentialRoute, BuiltinOperation, ConfigurationOutput, GetPolicyResult,
     GetProviderResult, ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup,
-    ListedSetupState, ProviderFacts, ProviderSourceOutput, UpdatePolicyResult, definition,
+    ListedSetupState, ProviderFacts, ProviderSourceOutput, UpdatePolicyResult,
+    UpdateProviderResult, definition,
 };
 use crate::{CredentialField, ServerSelection};
 
@@ -22,6 +23,7 @@ fn valid_arguments(operation: BuiltinOperation) -> Vec<Value> {
         BuiltinOperation::GetProvider => super::get_provider::tests::valid_arguments(),
         BuiltinOperation::GetPolicy => super::get_policy::valid_arguments(),
         BuiltinOperation::UpdatePolicy => super::update_policy::valid_arguments(),
+        BuiltinOperation::UpdateProvider => super::update_provider::tests::valid_arguments(),
     }
 }
 
@@ -242,6 +244,53 @@ fn configured_providers() -> impl Iterator<Item = GetProviderResult> {
         })
 }
 
+/// What each Operation that publishes a Provider returns: the Provider, or
+/// the link where a person finishes it.
+fn publication_results() -> Vec<(BuiltinOperation, serde_json::Value)> {
+    let mut results = facts()
+        .flat_map(|facts| {
+            [
+                (
+                    BuiltinOperation::AddProvider,
+                    AddProviderResult::Published {
+                        namespace: "weather".to_owned(),
+                        facts: facts.clone(),
+                    }
+                    .into_operation_result(),
+                ),
+                (
+                    BuiltinOperation::UpdateProvider,
+                    UpdateProviderResult::Published {
+                        namespace: "weather".to_owned(),
+                        facts,
+                    }
+                    .into_operation_result(),
+                ),
+            ]
+        })
+        .collect::<Vec<_>>();
+    results.extend([
+        (
+            BuiltinOperation::AddProvider,
+            AddProviderResult::NeedsSignIn {
+                url: "https://coral.example/workspaces/w/providers/new?setup=s".to_owned(),
+                namespace: "weather".to_owned(),
+            }
+            .into_operation_result(),
+        ),
+        (
+            BuiltinOperation::UpdateProvider,
+            UpdateProviderResult::NeedsSignIn {
+                url: "https://coral.example/workspaces/w/providers/p/update?setup=s&task=refresh"
+                    .to_owned(),
+                namespace: "weather".to_owned(),
+            }
+            .into_operation_result(),
+        ),
+    ]);
+    results
+}
+
 /// What `getPolicy` reads for a Provider without rules and for one with a
 /// rule of each state, and what `updatePolicy` returns when it sets them.
 fn policies() -> impl Iterator<Item = (BuiltinOperation, Value)> {
@@ -275,26 +324,7 @@ fn policies() -> impl Iterator<Item = (BuiltinOperation, Value)> {
 // Catches: a result that tells a typed Program something its declaration does not.
 #[test]
 fn each_result_meets_its_output_schema() {
-    let mut results = facts()
-        .map(|facts| {
-            (
-                BuiltinOperation::AddProvider,
-                AddProviderResult::Published {
-                    namespace: "weather".to_owned(),
-                    facts,
-                }
-                .into_operation_result(),
-            )
-        })
-        .collect::<Vec<_>>();
-    results.push((
-        BuiltinOperation::AddProvider,
-        AddProviderResult::NeedsSignIn {
-            url: "https://coral.example/workspaces/w/providers/new?setup=s".to_owned(),
-            namespace: "weather".to_owned(),
-        }
-        .into_operation_result(),
-    ));
+    let mut results = publication_results();
     results.push((
         BuiltinOperation::ListProviders,
         ListProvidersResult {

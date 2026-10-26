@@ -41,9 +41,16 @@ async function pauseForApproval(
     credentialRoute: 'fixed',
   }
   const runner = programRunner(page, target, id, { taskIntent: 'Add the weather provider' })
-  const started = await runner.exec(
+  const paused = await pausedForApproval(
+    runner,
     `try { return await coral.workspace.addProvider(${JSON.stringify(call)}); } catch (error) { return error.code; }`,
   )
+  return { workspace, id, call, runner, paused }
+}
+
+/** Starts `program` and returns the Run Update that waits for the invoking User's approval. */
+export async function pausedForApproval(runner: ReturnType<typeof programRunner>, program: string) {
+  const started = await runner.exec(program)
   expect(started.isError).not.toBe(true)
   let paused = started.structuredContent
   for (let pages = 0; pages < 10 && !paused.required_actions.length; pages++)
@@ -51,17 +58,15 @@ async function pauseForApproval(
   expect(paused.required_actions).toEqual([
     expect.objectContaining({ kind: 'invocation_approval', required_actor: 'invoking_user' }),
   ])
-  return { workspace, id, call, runner, paused }
+  return paused
 }
 
-/** Opens the paused call's review from the link the Program got. */
-async function openReview(page: Page, paused: RunUpdate) {
+/** Opens the paused call's review of the Built-in `operation` from the link the Program got. */
+export async function openReview(page: Page, paused: RunUpdate, operation: string) {
   await page.goto(paused.required_actions[0].run_status_url)
-  await page.getByRole('link', { name: 'Review coral.workspace.addProvider', exact: true }).click()
-  const review = page.getByRole('region', {
-    name: 'Review coral.workspace.addProvider',
-    exact: true,
-  })
+  const name = `Review coral.workspace.${operation}`
+  await page.getByRole('link', { name, exact: true }).click()
+  const review = page.getByRole('region', { name, exact: true })
   await review.getByRole('button', { name: 'Approve this call', exact: true }).waitFor()
   return review
 }
@@ -80,7 +85,7 @@ export async function approvedProgramProvider(context: TestContext) {
     })
     const { workspace, id, call, runner, paused } = started
     await step('Review the namespace, route and source, document and all, as sent', async () => {
-      const review = await openReview(page, paused)
+      const review = await openReview(page, paused, 'addProvider')
       // One row per field, each its exact JSON: the whole call as the Program sent it, with the
       // document inside it and no second copy apart.
       expect(await shownArguments(review)).toEqual(call)
@@ -126,7 +131,7 @@ export async function deniedProgramProvider(context: TestContext) {
     })
     const { workspace, runner, paused } = started
     await step('Deny the call, and the Program catches the failure', async () => {
-      const review = await openReview(page, paused)
+      const review = await openReview(page, paused, 'addProvider')
       await review.getByRole('button', { name: 'Deny this call', exact: true }).click()
       await page.getByText('Denied', { exact: true }).waitFor()
       const { update } = await observeRun(runner, await runner.wait(paused))

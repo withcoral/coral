@@ -5,7 +5,8 @@
 //!
 //! coral-catalog owns each Operation's contract: its schemas, how its
 //! arguments are read, and the result it writes. Each module here performs
-//! one Operation, and recovers it when it can.
+//! one Operation, and recovers it when it can, except `setup_operation`: the
+//! Setup flow that addProvider and updateProvider share.
 
 use async_trait::async_trait;
 use coral_catalog::{
@@ -30,7 +31,9 @@ mod add_provider;
 mod get_policy;
 mod get_provider;
 mod list_providers;
+mod setup_operation;
 mod update_policy;
+mod update_provider;
 
 /// One admitted Built-in Operation with its validated input.
 #[derive(Clone)]
@@ -40,6 +43,7 @@ pub(crate) enum BuiltinCall {
     GetProvider(get_provider::GetProvider),
     GetPolicy(get_policy::GetPolicy),
     UpdatePolicy(update_policy::UpdatePolicy),
+    UpdateProvider(Box<update_provider::UpdateProvider>),
 }
 
 impl BuiltinCall {
@@ -74,6 +78,10 @@ impl BuiltinCall {
                     BuiltinArguments::UpdatePolicy(arguments) => {
                         update_policy::UpdatePolicy::new(&arguments).map(Self::UpdatePolicy)
                     }
+                    BuiltinArguments::UpdateProvider(arguments) => {
+                        update_provider::UpdateProvider::new(*arguments)
+                            .map(|call| Self::UpdateProvider(Box::new(call)))
+                    }
                 }),
         )
     }
@@ -86,6 +94,7 @@ impl BuiltinCall {
             Self::GetProvider(call) => call.perform(host).await,
             Self::GetPolicy(call) => call.perform(host).await,
             Self::UpdatePolicy(call) => call.perform(host).await,
+            Self::UpdateProvider(call) => call.perform(host).await,
         }
     }
 }
@@ -113,6 +122,11 @@ pub(crate) async fn recover(
         Some(BuiltinOperation::AddProvider) => add_provider::recover(transaction, run, invocation)
             .await
             .map(Some),
+        Some(BuiltinOperation::UpdateProvider) => {
+            update_provider::recover(transaction, run, invocation)
+                .await
+                .map(Some)
+        }
         // A read leaves nothing behind, a policy change records no call to
         // read, and this version cannot read an Operation it does not perform.
         Some(
@@ -174,9 +188,10 @@ fn rejection(problems: &[ArgumentProblem]) -> Rejection {
     )
 }
 
-/// What both Operations report about a Provider: how to call it and whether
-/// the Program needs a person first. It counts only the Operations that
-/// `rules`, read in the same snapshot as `published`, leave callable.
+/// What `addProvider`, `updateProvider` and `listProviders` report about a
+/// Provider: how to call it and whether the Program needs a person first. It
+/// counts only the Operations that `rules`, read in the same snapshot as
+/// `published`, leave callable.
 fn provider_facts(published: &PublishedProvider, rules: &ExactOperationRules) -> ProviderFacts {
     let provider = &published.provider;
     ProviderFacts {

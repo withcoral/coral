@@ -77,6 +77,7 @@ export function builtinProvider(id: string): ProviderView {
       hints: { readOnly: true, idempotent: true },
       policy: 'enabled' as const,
     })),
+    operation(view, 'updateProvider'),
   ]
   view.readyCount = view.totalCount = view.operations.length
   return view

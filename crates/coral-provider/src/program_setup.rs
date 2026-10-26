@@ -1,11 +1,13 @@
 //! What the Built-in Provider needs from a Provider Setup that it prepares for
-//! a Program: who can publish it, what the Program learns about the Provider it
-//! published, and how Coral ends a Setup that nobody will finish.
+//! a Program: who can publish it, for a new Provider or an update, what the
+//! Program learns about the Provider it published, and how Coral ends a Setup
+//! that nobody will finish.
+use coral_catalog::OperationAvailability;
 use coral_db::Transaction;
 use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceAction, WorkspaceId};
 
 use crate::{
-    CredentialRoute, Error, Provider, ProviderModule, ProviderSetup, ProviderSetupId,
+    CredentialRoute, Error, Provider, ProviderId, ProviderModule, ProviderSetup, ProviderSetupId,
     ProviderSetupState, RouteFit,
 };
 
@@ -66,23 +68,113 @@ impl ProviderModule {
                 ));
             }
         };
-        Ok(match (route.fits(contract), route) {
-            (RouteFit::SourceNeedsCredential, _) => {
-                SetupPublishability::Rejected(PublishabilityRejection::SourceNeedsCredential)
-            }
-            (RouteFit::SourceNeedsNoCredential, _) => {
-                SetupPublishability::Rejected(PublishabilityRejection::SourceNeedsNoCredential)
-            }
+        if let Some(rejection) = route_rejection(contract, route) {
+            return Ok(SetupPublishability::Rejected(rejection));
+        }
+        Ok(match route {
             // Coral publishes nothing that needs an Account: a person signs in
             // first, to the shared Account or to their own.
-            (RouteFit::Fits, CredentialRoute::Fixed | CredentialRoute::Caller) => {
+            CredentialRoute::Fixed | CredentialRoute::Caller => SetupPublishability::Person,
+            CredentialRoute::None if loaded.setup.state().is_pre_ready() => {
                 SetupPublishability::Person
             }
-            (RouteFit::Fits, CredentialRoute::None) if loaded.setup.state().is_pre_ready() => {
-                SetupPublishability::Person
-            }
-            (RouteFit::Fits, CredentialRoute::None) => SetupPublishability::Coral,
+            CredentialRoute::None => SetupPublishability::Coral,
         })
+    }
+}
+
+/// Why `route` cannot carry the credentials `contract` asks for, if it cannot.
+fn route_rejection(
+    contract: &coral_catalog::ProviderCredentialContract,
+    route: CredentialRoute,
+) -> Option<PublishabilityRejection> {
+    match route.fits(contract) {
+        RouteFit::Fits => None,
+        RouteFit::SourceNeedsCredential => Some(PublishabilityRejection::SourceNeedsCredential),
+        RouteFit::SourceNeedsNoCredential => Some(PublishabilityRejection::SourceNeedsNoCredential),
+    }
+}
+
+impl ProviderModule {
+    /// Says who can publish the Update Setup `setup` under `route`, the
+    /// Credential Route a Program asked for, or the Provider's own for `None`.
+    /// A route the Program asks for must suit the source, as for a new
+    /// Provider. Coral publishes an update alone only when its Setup is ready
+    /// and the update keeps the route, the credential contract, and every
+    /// Operation Key of the active Generation, with each Operation that runs
+    /// now still able to run. A new route or contract needs a person to
+    /// confirm the incompatible configuration, and nobody can review dropped
+    /// or broken Operations before the source is read, so each of those needs
+    /// a person.
+    ///
+    /// # Errors
+    ///
+    /// Requires current Workspace Owner authority. Returns
+    /// [`Error::ProviderSetupNotFound`] for an absent Setup,
+    /// [`Error::ProviderSetupNotApplicable`] for one that is not an open
+    /// Update Setup, [`Error::ProviderNotFound`] for an absent target, or a
+    /// persistence or corrupt-evidence failure.
+    pub async fn update_publishability(
+        &self,
+        actor: &AuthenticatedUser,
+        owner: &WorkspaceId,
+        setup: &ProviderSetupId,
+        route: Option<CredentialRoute>,
+    ) -> Result<SetupPublishability, Error> {
+        let mut tx = self.database.begin_read_snapshot().await?;
+        let (loaded, review) = self
+            .reviewed_setup_in_transaction(&mut tx, actor, owner, setup)
+            .await?;
+        let Some(target) = &loaded.update_provider_id else {
+            return Err(Error::ProviderSetupNotApplicable);
+        };
+        let active = crate::repository::provider_in_transaction(&mut tx, owner, target)
+            .await?
+            .ok_or(Error::ProviderNotFound)?;
+        let kept = coral_catalog::operations_in_transaction(&mut tx, &active.generation_id).await?;
+        tx.rollback().await?;
+        if !loaded.setup.state().is_open() {
+            return Err(Error::ProviderSetupNotApplicable);
+        }
+        let contract = match review.confirmed_contract() {
+            Some(contract) if review.configuration_confirmed => contract,
+            _ => {
+                return Ok(SetupPublishability::Rejected(
+                    PublishabilityRejection::NotConfigured,
+                ));
+            }
+        };
+        // A route the Program asks for must suit the source, as for a new
+        // Provider. Without one, a person chooses the route in Reef.
+        if let Some(rejection) = route.and_then(|route| route_rejection(contract, route)) {
+            return Ok(SetupPublishability::Rejected(rejection));
+        }
+        let previewed = review
+            .operations
+            .iter()
+            .map(|operation| operation.key.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        // An Operation that cannot run now breaks no Program when it still
+        // cannot.
+        let keeps_operations = kept.iter().all(|operation| {
+            let key = operation.key().as_str();
+            previewed.contains(key)
+                && (operation.availability() == OperationAvailability::Unavailable
+                    || !review.unavailable_operations.contains_key(key))
+        });
+        let keeps_route =
+            route.is_none_or(|route| route == active.provider.access().credential_route());
+        Ok(
+            if loaded.setup.state() == ProviderSetupState::Ready
+                && keeps_route
+                && review.interrupts_access == Some(false)
+                && keeps_operations
+            {
+                SetupPublishability::Coral
+            } else {
+                SetupPublishability::Person
+            },
+        )
     }
 }
 
@@ -101,8 +193,8 @@ pub struct PublishedProvider {
     pub account_required: bool,
 }
 
-/// Reads what the active Generation of `provider`, which a Publication
-/// created, offers `principal`, in the caller's transaction.
+/// Reads what the active Generation of the Provider `provider`, which a
+/// Publication created, offers `principal`, in the caller's transaction.
 ///
 /// # Errors
 ///
@@ -111,11 +203,11 @@ pub struct PublishedProvider {
 pub async fn published_provider_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    provider: &Provider,
+    provider: &ProviderId,
     principal: &coral_workspace::Principal,
 ) -> Result<PublishedProvider, Error> {
     let active =
-        crate::repository::provider_in_transaction(&mut *transaction, workspace_id, provider.id())
+        crate::repository::provider_in_transaction(&mut *transaction, workspace_id, provider)
             .await?
             .ok_or(Error::ProviderNotFound)?;
     // A Publication creates an Owner-added Provider, whose Operations every

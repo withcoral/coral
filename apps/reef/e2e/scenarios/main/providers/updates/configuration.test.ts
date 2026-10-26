@@ -15,6 +15,7 @@ import {
   openCustomSource,
   openOperation,
   openProviderSettings,
+  operationGroup,
   programRunner,
   discardSettingsChange,
   saveConfirmedSettingsChange,
@@ -35,11 +36,6 @@ const save = async (page: Page) => {
   await page.getByRole('button', { name: 'Save', exact: true }).click()
   await saved(page)
 }
-// An open group's toggle names it.
-const operationGroup = (page: Page, name: string) =>
-  page
-    .getByRole('treeitem')
-    .filter({ has: page.getByRole('button', { name: `Collapse ${name}`, exact: true }) })
 
 test('Change account settings without reading a source or editing configuration', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {

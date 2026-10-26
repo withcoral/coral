@@ -96,6 +96,19 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             ][..],
         ),
         (
+            BuiltinOperation::UpdateProvider,
+            // No read-only hint, so its default Operation Access State requires approval.
+            OperationHints::default(),
+            &[
+                r#""namespace": string"#,
+                r#""refresh"?: true"#,
+                r#""credentialRoute"?: "none" | "fixed" | "caller""#,
+                r#""status": "published""#,
+                r#""status": "needs_sign_in""#,
+                "metadata: { kind: \"builtin\" }",
+            ][..],
+        ),
+        (
             BuiltinOperation::GetPolicy,
             // Read-only, so the default Operation Access State is enabled.
             OperationHints::new(Some(true), None, Some(true), None),
@@ -155,7 +168,8 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             "getPolicy",
             "getProvider",
             "listProviders",
-            "updatePolicy"
+            "updatePolicy",
+            "updateProvider"
         ]
     );
 
