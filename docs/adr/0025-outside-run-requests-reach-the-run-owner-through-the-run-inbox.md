@@ -18,14 +18,16 @@ This decision makes these requests work on every Coral Instance:
 - The Run Owner records the outcome and deletes the row in the same chunk commit.
 - The receiving Coral Instance answers once the request is Recorded.
 
-This amends ADR 0018 in the places named below.
+This amends ADR 0018 in the places named below. Epic [#2676](https://github.com/withcoral/coral/issues/2676) carries
+the implementation.
 
 ## The shape
 
 - **Run Inbox.**
   - **One row per decided thing.** Each outside Run Request is identified by what it decides: the Approval Request
-    for a decision, the Run for a cancellation. Among requests for the same thing, the first insert wins. A later
-    insert for the same thing is a repeat and changes nothing.
+    for a decision, the Run for a cancellation. While a row waits, a second insert for the same thing changes
+    nothing. Once the row is deleted, the record keeps the first answer: a later request for the same thing is a
+    repeat, and the owner answers it from the record.
   - **The insert.** The receiving Coral Instance checks the caller's access as it does today. A caller who may not
     see the Run or the Approval Request gets not-found. The instance then inserts the row in a short transaction. A
     snapshot check confirms the Run is visible and not terminal. The transaction takes no lock on the Run row. If the
@@ -51,7 +53,13 @@ This amends ADR 0018 in the places named below.
     Invocation outcomes, deadlines and wake-ups. The owner applies it as it applied the in-memory request before.
   - **Repeats.** A request can be delivered more than once. A request changes nothing if a request for the same
     Approval Request or Run is already Applied or Recorded.
-  - **Deletion.** The chunk commit that records a request deletes its row.
+  - **Deletion.** The owner deletes every row it applies, in its next chunk commit. That includes a repeat that
+    changes nothing, so no row is delivered again once the owner has applied it.
+  - **Deadlines.** The owner judges an Approval Request's deadline by its own clock when it applies a decision, as
+    before. A decision applied after the deadline loses to the expiry, and its requester gets the recorded expiry.
+    Delivery can lag by up to 250 ms, or up to the 15 s backstop during a change-signal outage. So a decision made
+    just before the deadline can end as expired. The Dispatch Fence would refuse an approval past its deadline
+    anyway.
   - **Late rows.** A row may be inserted just as the Run ends. It stays until retention deletes the Run. No reader
     reads the rows of a terminal Run.
 - **The answer.**
@@ -61,22 +69,26 @@ This amends ADR 0018 in the places named below.
     the request arrives. It waits first for the cancellation to be Recorded, then for the Run to end. If the
     cancellation is Recorded but the Run has not ended in time, the answer is the Run as recorded, as today.
   - **Past the bound.** A request that is still not Recorded gets the answer "not yet recorded". That answer is
-    retryable. A retry finds the row still waiting, or the request Recorded.
+    retryable. A retry finds the row still waiting, the request Recorded, or the Run ended without it. In the last
+    case the answer comes from the record.
   - **`OwnedElsewhere`.** It is retired.
 - **On the wire.**
   - **gRPC.** "Not yet recorded" is `UNAVAILABLE` with the reason `RUN_REQUEST_NOT_YET_RECORDED`.
   - **MCP.** The tool result is an error with the code `run_request_not_yet_recorded`. Sometimes a User answers an
-    action prompt during `exec` or `wait`, and the decision gets "not yet recorded". Coral then reports no error, as
+    Action Prompt during `exec` or `wait`, and the decision gets "not yet recorded". Coral then reports no error, as
     it does for a prompt whose action already ended. The Run update that follows shows the recorded state.
   - **Reef.** Reef retries once. It then shows a short status until the activity stream shows the outcome.
-- **Recovery.**
+- **Recovery.** This covers the expired-lease sweep.
   - **Order.** A recovered Run Owner applies the Run's passed timers in deadline order, then the requests in its Run
     Inbox in insert order. Then it ends the Run.
   - **A waiting cancellation.** Suppose a cancellation was waiting in the Run Inbox when the owning Coral Instance
     died. The Run then ends `canceled`, not `interrupted`.
   - **A waiting decision.** It is recorded. Its Invocation does not start: the terminal chunk ends it.
-  - **The rule.** Every request that reached the Run Inbox before the owner died is applied before the Run ends. Any
-    request kind added to the Run Inbox later follows the same rule.
+  - **The rule.** Every request that reached the Run Inbox before the owning Coral Instance died is applied before
+    the sweep ends the Run. Any request kind added to the Run Inbox later follows the same rule.
+  - **An owner task that panics.** Its supervisor still ends the Run at once in one chunk, as ADR 0018 says, and
+    does not read the Run Inbox. A request waiting then is answered from the record. A waiting cancellation ends with
+    the Run `interrupted`.
 - **The seam.** The Run Inbox sits behind a Rust trait (an interface) in `coral-run`.
   - **Its two halves.** One half submits a request and returns its answer. The other half is the stream of requests
     addressed to Runs this Coral Instance owns.
@@ -102,7 +114,7 @@ This amends ADR 0018 in the places named below.
   An outside request waits in the Run Inbox, so it survives the owner's death.
 - **Recovery.**
   - A recovered owner applies the Run Inbox between the passed timers and "finish the recorded termination" or
-    "interrupt".
+    "interrupt". The supervisor's one-chunk interruption after an owner task panics is unchanged.
   - "No process touches a Run with a live lease it does not hold" gains one exception: any Coral Instance may insert
     into that Run's Run Inbox.
 - **Rollout.**
@@ -122,7 +134,7 @@ This amends ADR 0018 in the places named below.
     agent.
   - Program requests still reach the owner from its Program, never through the Run Inbox. The Run Executor map
     ([#2629](https://github.com/withcoral/coral/issues/2629)) decides how they travel once a Program runs outside the
-    Coral process. The Run Ledger and the Dispatch Fence are still written only in chunk commits.
+    Coral Instance. The Run Ledger and the Dispatch Fence are still written only in chunk commits.
   - No lock on the Run row orders a Run's work, as `hold_run` did.
 
 ## Rollout
