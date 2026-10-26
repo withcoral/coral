@@ -115,7 +115,7 @@
   globally unique. The one exception is Agent authentication at the
   Organization MCP Endpoint: it finds the Registration by credential verifier
   alone, because the credential is a secret, not an ID. The Workspace it
-  returns scopes every later read ([ADR 0025](docs/adr/0025-fixed-mcp-endpoint-takes-its-workspace-from-the-credential.md)).
+  returns scopes every later read.
 - Add every schema migration to `crates/coral-db/migrations`, the one shared
   chain. Write one portable file that both databases run. When SQLite and
   Postgres must perform a step differently, add one file with the same name to

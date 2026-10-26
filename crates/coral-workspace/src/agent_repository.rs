@@ -220,7 +220,7 @@ fn registrations(workspace_id: &WorkspaceId) -> sea_query::SelectStatement {
 }
 
 /// Every Workspace's Registrations. Only [`registration_by_verifier_alone`] reads
-/// this unscoped: authentication there finds out the Workspace (ADR 0025).
+/// this unscoped: authentication there finds out the Workspace.
 fn any_workspace_registrations() -> sea_query::SelectStatement {
     Query::select()
         .columns([

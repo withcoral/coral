@@ -393,7 +393,7 @@ async fn serve(
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     // At `/mcp` a lost Workspace answers 401 `invalid_token`, so the client
-    // signs in again and its User picks another Workspace (ADR 0025).
+    // signs in again and its User picks another Workspace.
     let lost = || match endpoint {
         Endpoint::Workspace => StatusCode::NOT_FOUND.into_response(),
         Endpoint::Organization => unauthorized(
