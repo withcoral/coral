@@ -770,15 +770,21 @@ consumption and audit. It describes Run execution, including cancellation and re
 control-plane, authoring, or approval decisions recorded as Administrative Lifecycle Events. Run Events are not replay
 checkpoints. _Avoid_: Administrative Lifecycle Event, stream chunk, workflow checkpoint
 
+**Coral Instance**: One running Coral server process, identified by a random id it generates each time it starts. The
+Coral Instance that holds a Run's claim owns that Run. While the claim's lease is live, no other Coral Instance takes
+the Run over. Any Coral Instance may receive an outside Run Request for the Run. _Avoid_: replica, node, worker, pod,
+process
+
 **Run Owner**: The single writer of one Coral Program Run while the Run is not terminal. It exists from Run acceptance
 until the Run ends, receives every Run Request, Invocation outcome, deadline and wake-up for that Run in one order, and
 alone appends Program Run Events and the Run-scoped records they describe. It decides the Run's lifecycle and keeps its
 record durable; it does not call upstream or handle credential material, which the Operation Invocations it starts do
 outside it. A requester outside the Run acts on an outcome only once its Run Request is Recorded; the Program may
-continue on an Applied one. A repeat of the same Run Request receives the recorded answer. Workspace- and
-Provider-scoped changes reach it only as wake-ups. When a Run's worker lease lapses and no process owns it, Coral
-recreates its Run Owner; it records any deadline that passed, then the interruption or the termination already decided,
-and retires. Coral never resumes a Run. _Avoid_: Run actor, claim holder, lock holder, sweeper, external writer
+continue on an Applied one. A repeat of the same Run Request receives the recorded answer. Outside Run Requests reach
+it through the Run Inbox. Workspace- and Provider-scoped changes reach it only as wake-ups. When a Run's worker lease
+lapses and no Run Owner renews it, Coral recreates its Run Owner. The recreated owner records any deadline that
+passed, applies the requests in the Run's Run Inbox, records the interruption or the termination already decided, and
+retires. Coral never resumes a Run. _Avoid_: Run actor, claim holder, lock holder, sweeper, external writer
 
 **Run Ledger**: The durable record of one Coral Program Run that its Run Owner appends to in chunks: the Program Run
 Events, the Run-scoped records they describe, and the Run's head. Every chunk advances the head by one and commits only
@@ -798,6 +804,12 @@ twice. When the output the Run Owner has applied but not yet recorded exceeds th
 answers at Recorded instead, so the output a Run can lose or hold in memory stays bounded. Deadlines and changes outside
 the Run reach the Run Owner as wake-ups, not Run Requests. _Avoid_: command, signal, mailbox message, request token,
 idempotency key
+
+**Run Inbox**: The durable place where an outside Run Request (a decision on an Approval Request, or a cancellation)
+waits for the Run Owner of its Run. Any Coral Instance may add a request to a Run's Run Inbox. While the Run is not
+terminal, only its Run Owner removes it, in the commit that records it. A request is identified by the thing it
+decides, so the first one wins. A Run Owner recovered after its lease lapsed applies the requests in the Run's Run
+Inbox before it ends the Run. _Avoid_: mailbox, work queue, outbox, message queue
 
 **Run Output Budget**: The limit on the bytes of Program Emissions, Program Logs, Operation Invocation results, and the
 Final Value that one Coral Program Run may produce. The Run Owner decides every request against the exact total when it
