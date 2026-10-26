@@ -69,7 +69,8 @@ export function provider(
 export function builtinProvider(id: string): ProviderView {
   const view: ProviderView = { ...provider(id, 'Coral', ''), builtin: true }
   view.operations = [
-    ...['addProvider', 'updatePolicy'].map((key) => operation(view, key)),
+    operation(view, 'addProvider'),
+    { ...operation(view, 'updatePolicy'), hints: { idempotent: true } },
     // Read-only, so they start enabled.
     ...['listProviders', 'getProvider', 'getPolicy'].map((key) => ({
       ...operation(view, key),

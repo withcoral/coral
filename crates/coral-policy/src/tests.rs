@@ -1523,10 +1523,23 @@ async fn provider_access_states_set_each_sent_path_and_keep_the_rest() {
         )
         .await
         .expect("create Workspace");
-    for (at, namespace, state, then) in [
-        (410, "enabling", Enabled, ThenProvider::Unchanged),
-        (420, "approving", ApprovalRequired, ThenProvider::Unchanged),
-        (430, "stopped", Disabled, ThenProvider::Disabled),
+    // The two sent paths take different states, so a swap between them shows.
+    for (at, namespace, get, create, then) in [
+        (410, "enabling", Enabled, Disabled, ThenProvider::Unchanged),
+        (
+            420,
+            "approving",
+            ApprovalRequired,
+            Enabled,
+            ThenProvider::Unchanged,
+        ),
+        (
+            430,
+            "stopped",
+            Disabled,
+            ApprovalRequired,
+            ThenProvider::Disabled,
+        ),
     ] {
         let context = change(owner.clone(), at, '2');
         let provider = providers
@@ -1561,8 +1574,8 @@ async fn provider_access_states_set_each_sent_path_and_keep_the_rest() {
             .await
             .expect("list policy Events");
         let sent = BTreeMap::from([
-            ("repos.get".to_owned(), state),
-            ("repos.create".to_owned(), state),
+            ("repos.get".to_owned(), get),
+            ("repos.create".to_owned(), create),
         ]);
         // The second call repeats each state.
         for repeat in 1..=2 {
@@ -1599,8 +1612,8 @@ async fn provider_access_states_set_each_sent_path_and_keep_the_rest() {
                 .map(|decision| (decision.access_state(), decision.is_explicit()))
                 .collect::<Vec<_>>(),
             [
-                (state, true),
-                (state, true),
+                (get, true),
+                (create, true),
                 (Disabled, true),
                 // A POST takes approval by default.
                 (ApprovalRequired, false),
@@ -1636,6 +1649,7 @@ async fn provider_access_states_set_each_sent_path_and_keep_the_rest() {
 /// Each way a change by Call Path is rejected.
 #[derive(Debug, PartialEq, Eq)]
 enum Rejected {
+    InvalidBatch,
     Paths(Vec<String>),
     ProviderNotFound,
     NotAnOwner,
@@ -1644,6 +1658,7 @@ enum Rejected {
 impl Rejected {
     fn of(error: &crate::Error) -> Option<Self> {
         match error {
+            crate::Error::InvalidBatch => Some(Self::InvalidBatch),
             crate::Error::OperationPathsNotFound(paths) => Some(Self::Paths(paths.clone())),
             crate::Error::Provider(coral_provider::Error::ProviderNotFound) => {
                 Some(Self::ProviderNotFound)
@@ -1656,10 +1671,14 @@ impl Rejected {
     }
 }
 
-// Catches: a known path applied beside an unknown one, an unknown path left
-// unnamed, an absent Provider read as one without Operations, or a Member who
-// changes policy.
+// Catches: an empty or oversized change applied, a known path applied beside
+// an unknown one, an unknown path left unnamed, an absent Provider read as one
+// without Operations, or a Member who changes policy.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table covers each way a change is rejected"
+)]
 async fn provider_access_states_change_nothing_when_rejected() {
     use OperationAccessState::{Disabled, Enabled};
     let (fixture, workspaces, providers, policies) = test_modules().await;
@@ -1702,27 +1721,38 @@ async fn provider_access_states_change_nothing_when_rejected() {
         .await
         .expect("publish Provider");
 
+    let paths = |entries: &[(&str, OperationAccessState)]| -> BTreeMap<_, _> {
+        entries
+            .iter()
+            .map(|(path, state)| ((*path).to_owned(), *state))
+            .collect()
+    };
+    let oversized = std::iter::once(("repos.get".to_owned(), Disabled))
+        .chain((0..100).map(|n| (format!("repos.op{n}"), Disabled)))
+        .collect();
     for (at, (actor, namespace, sent, expected)) in (510..).zip([
+        (&owner, "repos", BTreeMap::new(), Rejected::InvalidBatch),
+        (&owner, "repos", oversized, Rejected::InvalidBatch),
         (
             &owner,
             "repos",
-            &[
+            paths(&[
                 ("repos.get", Disabled),
                 ("repos.nope", Disabled),
                 ("nope", Enabled),
-            ][..],
+            ]),
             Rejected::Paths(vec!["nope".to_owned(), "repos.nope".to_owned()]),
         ),
         (
             &owner,
             "absent",
-            &[("repos.get", Disabled)][..],
+            paths(&[("repos.get", Disabled)]),
             Rejected::ProviderNotFound,
         ),
         (
             &member,
             "repos",
-            &[("repos.get", Disabled)][..],
+            paths(&[("repos.get", Disabled)]),
             Rejected::NotAnOwner,
         ),
     ]) {
@@ -1736,10 +1766,7 @@ async fn provider_access_states_change_nothing_when_rejected() {
                 &change(actor.clone(), at, '3'),
                 workspace.id(),
                 &ProviderNamespace::parse(namespace).expect("namespace"),
-                &sent
-                    .iter()
-                    .map(|(path, state)| ((*path).to_owned(), *state))
-                    .collect(),
+                &sent,
             )
             .await;
         assert_eq!(

@@ -173,6 +173,11 @@ mod tests {
             (E::InvalidBatch, Code::InvalidArgument, "INVALID_ARGUMENT"),
             (E::OperationNotFound, Code::NotFound, "NOT_FOUND"),
             (
+                E::OperationPathsNotFound(vec!["repos.nope".to_owned()]),
+                Code::NotFound,
+                "NOT_FOUND",
+            ),
+            (
                 E::Workspace(coral_workspace::Error::PermissionDenied("private detail")),
                 Code::PermissionDenied,
                 "PERMISSION_DENIED",
