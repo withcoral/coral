@@ -67,11 +67,11 @@
     "@modelcontextprotocol/client": "2.3.1",
     "@react-router/dev": "8.4.0",
     "@rolldown/plugin-babel": "^0.2.4",
-    "@storybook/addon-a11y": "^10.6.1",
-    "@storybook/addon-docs": "^10.6.1",
-    "@storybook/addon-vitest": "^10.6.1",
+    "@storybook/addon-a11y": "^10.6.4",
+    "@storybook/addon-docs": "^10.6.4",
+    "@storybook/addon-vitest": "^10.6.4",
     "@storybook/icons": "^2.1.0",
-    "@storybook/react-vite": "^10.6.1",
+    "@storybook/react-vite": "^10.6.4",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
@@ -83,26 +83,26 @@
     "@types/react-dom": "^19.3.0",
     "@vanilla-extract/vite-plugin": "^5.2.6",
     "@vitejs/plugin-react": "^6.1.2",
-    "@vitest/browser-playwright": "^5.0.3",
+    "@vitest/browser-playwright": "^5.0.5",
     "babel-plugin-react-compiler": "^1.0.0",
     "chromatic": "^18.12.0",
     "esbuild": "^0.28.2",
-    "happy-dom": "^21.0.1",
+    "happy-dom": "^21.0.4",
     "oidc-provider": "^9.12.2",
     "oxfmt": "^0.72.0",
     "oxlint": "^1.87.0",
     "playwright": "^1.64.0",
     "react-hook-form": "^7.90.0",
-    "storybook": "^10.6.1",
+    "storybook": "^10.6.4",
     "typescript": "^7.0.2",
     "vite": "^8.3.4",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.5"
   },
   "overrides": {
     "@storybook/addon-vitest": {
-      "vitest": "^5.0.3",
-      "@vitest/browser": "^5.0.0",
-      "@vitest/browser-playwright": "^5.0.3"
+      "vitest": "^5.0.5",
+      "@vitest/browser": "^5.0.5",
+      "@vitest/browser-playwright": "^5.0.5"
     }
   }
 }

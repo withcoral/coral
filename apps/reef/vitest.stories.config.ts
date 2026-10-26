@@ -26,6 +26,9 @@ export default defineConfig({
     },
   },
   test: {
+    // addon-vitest turns these off unless set. `.storybook/browser.ts` needs both for
+    // CDP. The API server listens on localhost only.
+    api: { allowExec: true, allowWrite: true },
     // Renders every story in Chromium and runs its play function.
     browser: {
       enabled: true,
