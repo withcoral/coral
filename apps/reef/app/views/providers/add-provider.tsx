@@ -1,5 +1,6 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Button } from '@/wax/components'
+import type { ButtonVariant } from '@/wax/components/button/button.css'
 import * as Dialog from '@/wax/components/dialog'
 import { sourceSearch, type SourceChoice } from '@/lib/provider-recipes/choice'
 import { ProviderCatalog } from './provider-catalog'
@@ -18,6 +19,10 @@ export interface AddProviderEntryProps {
   recipes?: readonly SourceChoice[]
   /** A source selected by the add page's recipe or URL query parameters. */
   initialRecipe?: SourceChoice | null
+  /** The catalog's search when it opens. */
+  catalogQuery?: string
+  /** The tab the entry opens on. */
+  initialTab?: SourceTab
   /**
    * The caller is a dialog that bounds the entry's height: the source form
    * keeps its size, the catalog scrolls in what is left, and leaving a chosen
@@ -50,11 +55,13 @@ export function AddProviderEntry({
   result,
   recipes = [],
   initialRecipe = null,
+  catalogQuery,
+  initialTab = 'catalog',
   fill = false,
   onReading,
 }: AddProviderEntryProps) {
   const sourceForm = useId()
-  const [tab, setTab] = useState<SourceTab>('catalog')
+  const [tab, setTab] = useState<SourceTab>(initialTab)
   const [chosen, setChosen] = useState<SourceChoice | null>(initialRecipe)
   const { read, reading } = useReadRecipe(form, newPath)
   // The catalog reads a recipe here; the source form reads what it holds itself.
@@ -114,6 +121,7 @@ export function AddProviderEntry({
             onRecipe={(recipe) => (needsSourceDetails(recipe) ? setChosen(recipe) : read(recipe))}
             onCustom={() => setTab('custom')}
             scroll={fill}
+            initialQuery={catalogQuery}
           />
         </section>
       }
@@ -127,11 +135,18 @@ export function AddProviderEntry({
 export function AddProviderLauncher({
   description,
   labelClassName,
+  variant = 'primary',
+  label = 'Add provider',
+  leading = <Button.Icon name="Plus" />,
   ...entry
 }: Omit<AddProviderEntryProps, 'result' | 'onReading'> & {
   description?: string
   /** Styles the button's label, such as a toolbar's `toolbarActionLabel`. */
   labelClassName?: string
+  variant?: ButtonVariant
+  label?: string
+  /** Leads the label: a plus by default, or the logo of the provider it adds. */
+  leading?: ReactNode
 }) {
   const [open, setOpen] = useState(false)
   // A catalog read in flight keeps the dialog open: it moves on by itself when
@@ -145,9 +160,11 @@ export function AddProviderLauncher({
         if (next || !readingRecipe) setOpen(next)
       }}
     >
-      <Dialog.Trigger render={<Button.Container variant="primary" size="32" />}>
-        <Button.Icon name="Plus" />
-        <Button.Text className={labelClassName}>Add provider</Button.Text>
+      <Dialog.Trigger render={<Button.Container variant={variant} size="32" hasPrefix />}>
+        {leading}
+        <Button.Text className={labelClassName} tooltip={label}>
+          {label}
+        </Button.Text>
       </Dialog.Trigger>
       {open && (
         <Dialog.Portal>

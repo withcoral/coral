@@ -24,6 +24,8 @@ export const logoContainer = recipe({
 
   variants: {
     size: {
+      // A button's icon size at Button size 32, so a logo can lead its label.
+      '18': { borderRadius: '4px', height: '18px', width: '18px' },
       '20': { borderRadius: '5px', height: '20px', width: '20px' },
       '32': { borderRadius: '8px', height: '32px', width: '32px' },
       '40': { borderRadius: '10px', height: '40px', width: '40px' },
@@ -69,6 +71,7 @@ export const logoFallback = recipe({
       ...theme.avatarFallback,
     },
     size: {
+      '18': { fontSize: 10 },
       '20': { fontSize: 11 },
       '32': {},
       '40': {},

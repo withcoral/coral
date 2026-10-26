@@ -5,7 +5,7 @@ import { getAvatarColorFromSeed } from '@/wax/components/avatar/utils/get-avatar
 
 import * as styles from './logo.css'
 
-export type LogoSize = '20' | '32' | '40'
+export type LogoSize = '18' | '20' | '32' | '40'
 
 /** Image URLs by theme. `light` serves both themes when `dark` is absent. */
 export interface LogoIcons {

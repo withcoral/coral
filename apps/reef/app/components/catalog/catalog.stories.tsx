@@ -36,8 +36,7 @@ function Catalog({ title, action }: { title?: string; action?: ReactNode }) {
               value: rail,
               onChange: setRail,
             }}
-            empty={listed.length === 0}
-            emptyMessage="No groups match."
+            empty={listed.length === 0 ? { message: 'No groups match.' } : null}
           >
             {listed.map((g) => (
               <CatalogRailItem

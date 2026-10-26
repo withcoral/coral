@@ -8,4 +8,4 @@ export {
   railItem,
   toolbarActionLabel,
 } from './catalog'
-export type { CatalogFilterOption, CatalogFilterOptions } from './catalog'
+export type { CatalogFilterOption, CatalogFilterOptions, CatalogRailEmpty } from './catalog'
