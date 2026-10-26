@@ -16,6 +16,8 @@
 //!   rule for a Workspace Owner.
 //! - [`OperationPolicyModule::set_access_states`] atomically changes 1–100 distinct
 //!   exact decisions in one Workspace with their lifecycle evidence.
+//! - [`OperationPolicyModule::set_provider_access_states`] atomically changes
+//!   1–100 exact decisions of one Provider, each named by its Call Path.
 //! - [`discovery_decision_in_transaction`] reads one exact current decision
 //!   without a lock or a policy write, as when Run inspects an approval.
 //! - [`exact_operation_rules_in_transaction`] reads every exact rule of one
@@ -45,12 +47,12 @@ mod types;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use coral_catalog::{HttpMethod, OperationHints};
+use coral_catalog::{HttpMethod, OperationHints, OperationKey};
 use coral_db::Database;
 use coral_provider::ProviderNamespace;
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, WorkspaceAction, WorkspaceId,
-    WorkspaceModule, WorkspaceRole,
+    AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, WorkspaceAction, WorkspaceEvidence,
+    WorkspaceId, WorkspaceModule, WorkspaceRole,
 };
 
 pub use error::Error;
@@ -250,38 +252,96 @@ impl OperationPolicyModule {
         let mut decisions = Vec::with_capacity(updates.len());
         for (target, access_state) in updates {
             require_operation_in_transaction(&mut transaction, &target).await?;
-            if repository::access_state_in_transaction(
-                &mut transaction,
-                &target,
-                coral_db::RowLock::None,
-            )
-            .await?
-                != Some(access_state)
-            {
-                repository::upsert_access_state(
+            decisions.push(
+                write_access_state_in_transaction(
                     &mut transaction,
-                    &target,
+                    context,
+                    &evidence,
+                    target,
                     access_state,
-                    context.occurred_at_unix_nanos(),
                 )
-                .await?;
-                repository::insert_lifecycle_event(
-                    &mut transaction,
-                    repository::NewLifecycleEvent {
-                        target: &target,
-                        actor_user_id: context.actor().user_id(),
-                        authority_source: evidence.authority_source(),
-                        changed_field_paths: &["access_state"],
-                        occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
-                        trace_id: context.trace_id(),
-                    },
-                )
-                .await?;
-            }
-            decisions.push(OperationPolicyDecision::new(target, access_state, true));
+                .await?,
+            );
         }
         transaction.commit().await?;
         Ok(decisions)
+    }
+
+    /// Atomically sets the exact state of 1–100 Operations of the Provider
+    /// under `coral.providers.<namespace>`, in any state, each named by its
+    /// Call Path relative to that Call Root. Each path resolves to its
+    /// Operation in the transaction that writes its rule, so an update cannot
+    /// give the state to another Operation. A rejected path leaves every
+    /// decision and lifecycle Event unchanged, and a repeated state writes
+    /// nothing. Returns each path's state.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty or oversized batch, lost Owner authority, an absent
+    /// Provider, and every path that names no Operation of its current
+    /// catalog.
+    pub async fn set_provider_access_states(
+        &self,
+        context: &ChangeContext,
+        workspace_id: &WorkspaceId,
+        namespace: &ProviderNamespace,
+        states: &BTreeMap<String, OperationAccessState>,
+    ) -> Result<BTreeMap<String, OperationAccessState>, Error> {
+        if states.is_empty() || states.len() > 100 {
+            return Err(Error::InvalidBatch);
+        }
+        let mut transaction = self.database.begin().await?;
+        // The Workspace hold this takes serializes the change with every
+        // Provider update in the Workspace, which takes it too, so each path
+        // names one Operation until the commit.
+        let evidence = self
+            .workspaces
+            .check_configuration_in_transaction(&mut transaction, context.actor(), workspace_id)
+            .await?;
+        let (provider, paths) = coral_provider::provider_operation_paths_in_transaction(
+            &mut transaction,
+            workspace_id,
+            namespace,
+        )
+        .await?
+        .ok_or(coral_provider::Error::ProviderNotFound)?;
+        let keys: BTreeMap<&str, &OperationKey> = paths
+            .iter()
+            .map(|path| (path.relative_path(), path.key()))
+            .collect();
+        let mut updates = Vec::with_capacity(states.len());
+        let mut missing = Vec::new();
+        for (path, access_state) in states {
+            match keys.get(path.as_str()) {
+                Some(key) => updates.push((
+                    path,
+                    OperationPolicyTarget::new(
+                        workspace_id.clone(),
+                        provider.clone(),
+                        (*key).clone(),
+                    ),
+                    *access_state,
+                )),
+                None => missing.push(path.clone()),
+            }
+        }
+        if !missing.is_empty() {
+            return Err(Error::OperationPathsNotFound(missing));
+        }
+        let mut applied = BTreeMap::new();
+        for (path, target, access_state) in updates {
+            let decision = write_access_state_in_transaction(
+                &mut transaction,
+                context,
+                &evidence,
+                target,
+                access_state,
+            )
+            .await?;
+            applied.insert(path.clone(), decision.access_state());
+        }
+        transaction.commit().await?;
+        Ok(applied)
     }
 
     /// Lists safe Operation-policy Administrative Lifecycle Events.
@@ -316,6 +376,42 @@ impl OperationPolicyModule {
         transaction.rollback().await?;
         Ok(events)
     }
+}
+
+/// Writes one exact rule and its lifecycle Event, unless the rule already
+/// holds `access_state`.
+async fn write_access_state_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    context: &ChangeContext,
+    evidence: &WorkspaceEvidence,
+    target: OperationPolicyTarget,
+    access_state: OperationAccessState,
+) -> Result<OperationPolicyDecision, Error> {
+    if repository::access_state_in_transaction(transaction, &target, coral_db::RowLock::None)
+        .await?
+        != Some(access_state)
+    {
+        repository::upsert_access_state(
+            transaction,
+            &target,
+            access_state,
+            context.occurred_at_unix_nanos(),
+        )
+        .await?;
+        repository::insert_lifecycle_event(
+            transaction,
+            repository::NewLifecycleEvent {
+                target: &target,
+                actor_user_id: context.actor().user_id(),
+                authority_source: evidence.authority_source(),
+                changed_field_paths: &["access_state"],
+                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+                trace_id: context.trace_id(),
+            },
+        )
+        .await?;
+    }
+    Ok(OperationPolicyDecision::new(target, access_state, true))
 }
 
 async fn require_operation_in_transaction(

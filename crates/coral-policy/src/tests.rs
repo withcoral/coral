@@ -1498,6 +1498,298 @@ async fn provider_rules_hold_the_exact_rules_of_current_operations_by_call_path(
     }
 }
 
+// Catches: a sent path that takes another state or another Operation's rule,
+// an Operation the call does not name that loses its state, a repeated state
+// written again, an actor other than the invoking Owner, or a disabled
+// Provider refused.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table covers each state a path can take"
+)]
+async fn provider_access_states_set_each_sent_path_and_keep_the_rest() {
+    use OperationAccessState::{ApprovalRequired, Disabled, Enabled};
+    let (_fixture, workspaces, providers, policies) = test_modules().await;
+    let owner = organization_user(
+        policies.database.clone(),
+        "user:set-paths-owner",
+        OrganizationRole::Member,
+    )
+    .await;
+    let workspace = workspaces
+        .create(
+            &change(owner.clone(), 400, '1'),
+            WorkspaceDisplayName::parse("Set paths").expect("display name"),
+        )
+        .await
+        .expect("create Workspace");
+    // The two sent paths take different states, so a swap between them shows.
+    for (at, namespace, get, create, then) in [
+        (410, "enabling", Enabled, Disabled, ThenProvider::Unchanged),
+        (
+            420,
+            "approving",
+            ApprovalRequired,
+            Enabled,
+            ThenProvider::Unchanged,
+        ),
+        (
+            430,
+            "stopped",
+            Disabled,
+            ApprovalRequired,
+            ThenProvider::Disabled,
+        ),
+    ] {
+        let context = change(owner.clone(), at, '2');
+        let provider = providers
+            .publish_openapi_fixture(
+                &context,
+                workspace.id(),
+                OpenApiDocument::parse(REPOSITORY_OPENAPI).expect("OpenAPI input"),
+                namespace,
+                CredentialRoute::None,
+            )
+            .await
+            .expect("publish Provider");
+        let target = |key: &str| {
+            OperationPolicyTarget::new(
+                workspace.id().clone(),
+                provider.id().clone(),
+                OperationKey::parse(key).expect("Operation Key"),
+            )
+        };
+        policies
+            .set_access_state(&context, target("issues/list"), Disabled)
+            .await
+            .expect("set a rule the call does not name");
+        if matches!(then, ThenProvider::Disabled) {
+            providers
+                .disable_provider(&context, workspace.id(), provider.id())
+                .await
+                .expect("disable Provider");
+        }
+        let before = policies
+            .list_lifecycle_events(&owner, workspace.id())
+            .await
+            .expect("list policy Events");
+        let sent = BTreeMap::from([
+            ("repos.get".to_owned(), get),
+            ("repos.create".to_owned(), create),
+        ]);
+        // The second call repeats each state.
+        for repeat in 1..=2 {
+            assert_eq!(
+                policies
+                    .set_provider_access_states(
+                        &change(owner.clone(), at + repeat, '3'),
+                        workspace.id(),
+                        &ProviderNamespace::parse(namespace).expect("namespace"),
+                        &sent,
+                    )
+                    .await
+                    .expect("set the sent paths"),
+                sent,
+                "{namespace}"
+            );
+        }
+
+        let decisions = policies
+            .decisions(
+                &owner,
+                &[
+                    target("repos/get"),
+                    target("repos/create"),
+                    target("issues/list"),
+                    target("issues/create"),
+                ],
+            )
+            .await
+            .expect("read decisions");
+        assert_eq!(
+            decisions
+                .iter()
+                .map(|decision| (decision.access_state(), decision.is_explicit()))
+                .collect::<Vec<_>>(),
+            [
+                (get, true),
+                (create, true),
+                (Disabled, true),
+                // A POST takes approval by default.
+                (ApprovalRequired, false),
+            ],
+            "{namespace}"
+        );
+        let mut written = policies
+            .list_lifecycle_events(&owner, workspace.id())
+            .await
+            .expect("list policy Events")
+            .into_iter()
+            .filter(|event| !before.contains(event))
+            .map(|event| {
+                (
+                    event.target().operation_key().as_str().to_owned(),
+                    event.actor_user_id().clone(),
+                    event.occurred_at_unix_nanos(),
+                )
+            })
+            .collect::<Vec<_>>();
+        written.sort();
+        assert_eq!(
+            written,
+            [
+                ("repos/create".to_owned(), owner.user_id().clone(), at + 1),
+                ("repos/get".to_owned(), owner.user_id().clone(), at + 1),
+            ],
+            "{namespace}: one Event per change, from the first call"
+        );
+    }
+}
+
+/// Each way a change by Call Path is rejected.
+#[derive(Debug, PartialEq, Eq)]
+enum Rejected {
+    InvalidBatch,
+    Paths(Vec<String>),
+    ProviderNotFound,
+    NotAnOwner,
+}
+
+impl Rejected {
+    fn of(error: &crate::Error) -> Option<Self> {
+        match error {
+            crate::Error::InvalidBatch => Some(Self::InvalidBatch),
+            crate::Error::OperationPathsNotFound(paths) => Some(Self::Paths(paths.clone())),
+            crate::Error::Provider(coral_provider::Error::ProviderNotFound) => {
+                Some(Self::ProviderNotFound)
+            }
+            crate::Error::Workspace(coral_workspace::Error::PermissionDenied(_)) => {
+                Some(Self::NotAnOwner)
+            }
+            _ => None,
+        }
+    }
+}
+
+// Catches: an empty or oversized change applied, a known path applied beside
+// an unknown one, an unknown path left unnamed, an absent Provider read as one
+// without Operations, or a Member who changes policy.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table covers each way a change is rejected"
+)]
+async fn provider_access_states_change_nothing_when_rejected() {
+    use OperationAccessState::{Disabled, Enabled};
+    let (fixture, workspaces, providers, policies) = test_modules().await;
+    let owner = organization_user(
+        policies.database.clone(),
+        "user:reject-paths-owner",
+        OrganizationRole::Member,
+    )
+    .await;
+    let member = organization_user(
+        policies.database.clone(),
+        "user:reject-paths-member",
+        OrganizationRole::Member,
+    )
+    .await;
+    let workspace = workspaces
+        .create(
+            &change(owner.clone(), 500, '1'),
+            WorkspaceDisplayName::parse("Reject paths").expect("display name"),
+        )
+        .await
+        .expect("create Workspace");
+    workspaces
+        .set_membership(
+            &change(owner.clone(), 501, '1'),
+            workspace.id(),
+            &member,
+            coral_workspace::WorkspaceRole::Member,
+        )
+        .await
+        .expect("add Workspace Member");
+    providers
+        .publish_openapi_fixture(
+            &change(owner.clone(), 502, '2'),
+            workspace.id(),
+            OpenApiDocument::parse(REPOSITORY_OPENAPI).expect("OpenAPI input"),
+            "repos",
+            CredentialRoute::None,
+        )
+        .await
+        .expect("publish Provider");
+
+    let paths = |entries: &[(&str, OperationAccessState)]| -> BTreeMap<_, _> {
+        entries
+            .iter()
+            .map(|(path, state)| ((*path).to_owned(), *state))
+            .collect()
+    };
+    let oversized = std::iter::once(("repos.get".to_owned(), Disabled))
+        .chain((0..100).map(|n| (format!("repos.op{n}"), Disabled)))
+        .collect();
+    for (at, (actor, namespace, sent, expected)) in (510..).zip([
+        (&owner, "repos", BTreeMap::new(), Rejected::InvalidBatch),
+        (&owner, "repos", oversized, Rejected::InvalidBatch),
+        (
+            &owner,
+            "repos",
+            paths(&[
+                ("repos.get", Disabled),
+                ("repos.nope", Disabled),
+                ("nope", Enabled),
+            ]),
+            Rejected::Paths(vec!["nope".to_owned(), "repos.nope".to_owned()]),
+        ),
+        (
+            &owner,
+            "absent",
+            paths(&[("repos.get", Disabled)]),
+            Rejected::ProviderNotFound,
+        ),
+        (
+            &member,
+            "repos",
+            paths(&[("repos.get", Disabled)]),
+            Rejected::NotAnOwner,
+        ),
+    ]) {
+        let rules = exact_rules(&fixture, workspace.id()).await;
+        let events = policies
+            .list_lifecycle_events(&owner, workspace.id())
+            .await
+            .expect("list policy Events");
+        let result = policies
+            .set_provider_access_states(
+                &change(actor.clone(), at, '3'),
+                workspace.id(),
+                &ProviderNamespace::parse(namespace).expect("namespace"),
+                &sent,
+            )
+            .await;
+        assert_eq!(
+            result.as_ref().err().and_then(Rejected::of),
+            Some(expected),
+            "{namespace}: {result:?}"
+        );
+        assert_eq!(
+            exact_rules(&fixture, workspace.id()).await,
+            rules,
+            "{namespace}"
+        );
+        assert_eq!(
+            policies
+                .list_lifecycle_events(&owner, workspace.id())
+                .await
+                .expect("list policy Events"),
+            events,
+            "{namespace}"
+        );
+    }
+}
+
 async fn publish_weather_forecast(
     providers: &ProviderModule,
     owner: &AuthenticatedUser,

@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    ArgumentProblem, BuiltinOperation, Definition, NAMESPACE_REASON, derived_schema,
-    operation_result, words_schema,
+    ArgumentProblem, BuiltinAccessState, BuiltinOperation, Definition, NAMESPACE_REASON,
+    derived_schema, operation_result,
 };
 use crate::{OperationHints, OperationPresentation};
 
@@ -123,31 +123,5 @@ impl GetPolicyResult {
     #[must_use]
     pub fn into_operation_result(self) -> Value {
         operation_result(&self)
-    }
-}
-
-/// An Operation Access State, as Built-in Operations spell it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BuiltinAccessState {
-    /// A call runs without approval.
-    Enabled,
-    /// A call waits for a person to approve it.
-    ApprovalRequired,
-    /// A call is refused.
-    Disabled,
-}
-
-impl JsonSchema for BuiltinAccessState {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "OperationAccessState".into()
-    }
-
-    fn inline_schema() -> bool {
-        true
-    }
-
-    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        words_schema(&["enabled", "approval_required", "disabled"])
     }
 }

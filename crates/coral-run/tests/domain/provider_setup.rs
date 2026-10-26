@@ -4,6 +4,7 @@
 //! `coral.workspace.listProviders` lists the Providers a Program can check first.
 //! `coral.workspace.getProvider` reads one Provider's Provider Configuration.
 //! `coral.workspace.getPolicy` reads one Provider's exact Operation rules.
+//! `coral.workspace.updatePolicy` sets them.
 use super::*;
 use coral_provider::{ProviderSetupId, ProviderSetupState};
 
@@ -140,13 +141,34 @@ impl AdminScope {
         )
         .await
         .unwrap()
-        .expect("the Operation resolves");
+        .unwrap_or_else(|| panic!("{call_path} resolves"));
         transaction.rollback().await.unwrap();
         OperationPolicyTarget::new(
             self.workspace_id.clone(),
             target.provider_access().id().clone(),
             target.operation().key().clone(),
         )
+    }
+
+    /// The access state of the Operation under `call_path`, and whether a
+    /// rule sets it.
+    async fn access(&self, call_path: &str) -> (OperationAccessState, bool) {
+        let decision = self
+            .fixture
+            .policies
+            .decision(&self.owner_user(), &self.policy_target(call_path).await)
+            .await
+            .unwrap();
+        (decision.access_state(), decision.is_explicit())
+    }
+
+    /// Operation-policy lifecycle events.
+    async fn policy_events(&self) -> Vec<coral_policy::AdministrativeLifecycleEvent> {
+        self.fixture
+            .policies
+            .list_lifecycle_events(&self.owner_user(), &self.workspace_id)
+            .await
+            .unwrap()
     }
 
     pub(super) async fn start(
@@ -1722,7 +1744,7 @@ async fn an_invalid_argument_names_what_to_correct() {
 // declares, a host that performs listProviders or getPolicy only for a User,
 // or a read that waits for approval.
 #[tokio::test]
-async fn members_and_agents_list_providers_and_get_policy_but_cannot_reach_add_or_get_provider() {
+async fn members_and_agents_list_providers_and_get_policy_but_reach_no_owner_operation() {
     let scope = AdminScope::new("user:admin-owner").await;
     scope.set_access(OperationAccessState::Enabled).await;
     scope.publish_weather().await;
@@ -1746,6 +1768,7 @@ async fn members_and_agents_list_providers_and_get_policy_but_cannot_reach_add_o
     let agent =
         registered_agent(&scope.fixture.workspaces, &scope.owner, &scope.workspace_id).await;
     let before = scope.lifecycle_events().await;
+    let policy_before = scope.policy_events().await;
     for principal in [AuthenticatedPrincipal::user(member), agent] {
         for (operation, arguments) in [
             (
@@ -1753,6 +1776,10 @@ async fn members_and_agents_list_providers_and_get_policy_but_cannot_reach_add_o
                 serde_json::json!({ "namespace": "other", "source": document_source(), "credentialRoute": "none" }),
             ),
             ("getProvider", serde_json::json!({ "namespace": "weather" })),
+            (
+                "updatePolicy",
+                serde_json::json!({ "namespace": "weather", "operations": { "getForecast": "disabled" } }),
+            ),
         ] {
             let run = scope
                 .start(
@@ -1809,6 +1836,7 @@ async fn members_and_agents_list_providers_and_get_policy_but_cannot_reach_add_o
         );
     }
     assert_eq!(scope.lifecycle_events().await, before);
+    assert_eq!(scope.policy_events().await, policy_before);
 }
 
 #[tokio::test]
@@ -2114,4 +2142,142 @@ async fn get_provider_and_get_policy_name_an_absent_provider() {
             "{operation}"
         );
     }
+}
+
+// Catches: an updatePolicy call that runs before an Owner approves it, or a
+// result other than the state each sent path holds.
+#[tokio::test]
+async fn update_policy_sets_the_sent_paths_once_an_owner_approves() {
+    let scope = AdminScope::new("user:update-policy").await;
+    scope.publish_weather().await;
+    let before = scope.policy_events().await;
+    assert_eq!(
+        scope.access("coral.workspace.updatePolicy").await,
+        (OperationAccessState::ApprovalRequired, false),
+        "updatePolicy waits for approval by default"
+    );
+    let run = scope
+        .start(
+            &scope.owner,
+            workspace_call(
+                "updatePolicy",
+                r#"{ namespace: "weather", operations: { getForecast: "disabled" } }"#,
+            ),
+        )
+        .await;
+    wait_for_approval(
+        &scope.fixture.approvals(),
+        &scope.owner,
+        &scope.workspace_id,
+        &run,
+    )
+    .await;
+    assert_eq!(
+        scope.access("coral.providers.weather.getForecast").await,
+        (OperationAccessState::Enabled, false),
+        "nothing changes before approval"
+    );
+
+    scope.approve(&scope.owner, &run).await;
+    assert_eq!(
+        final_value(&scope.terminal(&scope.owner, &run).await),
+        serde_json::json!({
+            "data": { "namespace": "weather", "operations": { "getForecast": "disabled" } },
+            "metadata": { "kind": "builtin" },
+        })
+    );
+    assert_eq!(
+        scope.access("coral.providers.weather.getForecast").await,
+        (OperationAccessState::Disabled, true)
+    );
+    let events = scope.policy_events().await;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| !before.contains(event))
+            .map(coral_policy::AdministrativeLifecycleEvent::actor_user_id)
+            .collect::<Vec<_>>(),
+        [scope.owner_user().user_id()],
+        "one change, by the invoking Owner"
+    );
+}
+
+// Catches: an argument problem that waits for an Owner's approval, or is
+// stored with an Invocation, before it fails. coral-catalog owns each problem.
+#[tokio::test]
+async fn update_policy_rejects_an_argument_problem_before_admission() {
+    let scope = AdminScope::new("user:update-policy-arguments").await;
+    scope.publish_weather().await;
+    let before = scope.policy_events().await;
+    let run = scope
+        .start(
+            &scope.owner,
+            workspace_call(
+                "updatePolicy",
+                r#"{ namespace: "weather", operations: {} }"#,
+            ),
+        )
+        .await;
+    assert_eq!(
+        final_value(&scope.terminal(&scope.owner, &run).await),
+        serde_json::json!({
+            "code": "invalid_input",
+            "message": "Operation arguments are invalid at `operations`: name 1 to 100 Operations",
+        }),
+    );
+    assert!(!scope.recorded_an_invocation(&run).await);
+    assert_eq!(scope.policy_events().await, before);
+}
+
+// Catches: a valid path applied beside one that names no Operation, a failure
+// that does not name the path, or a namespace that reaches a Built-in
+// Operation, updatePolicy's own included.
+#[tokio::test]
+async fn update_policy_changes_nothing_when_a_target_is_missing() {
+    let scope = AdminScope::new("user:update-policy-missing").await;
+    scope.publish_weather().await;
+    scope
+        .set_access_to(
+            "coral.workspace.updatePolicy",
+            OperationAccessState::Enabled,
+        )
+        .await;
+    let before = scope.policy_events().await;
+    for (arguments, expected) in [
+        (
+            serde_json::json!({
+                "namespace": "weather",
+                "operations": { "getForecast": "disabled", "getAlerts": "disabled" },
+            }),
+            serde_json::json!({
+                "code": "operation_not_found",
+                "message": "Operation Call Path was not found at `operations.getAlerts`: no \
+                            Operation of weather has this path",
+            }),
+        ),
+        (
+            serde_json::json!({
+                "namespace": "workspace",
+                "operations": { "updatePolicy": "disabled" },
+            }),
+            serde_json::json!({ "code": "provider_not_found", "message": "Provider was not found" }),
+        ),
+    ] {
+        let run = scope
+            .start(
+                &scope.owner,
+                workspace_call("updatePolicy", &arguments.to_string()),
+            )
+            .await;
+        assert_eq!(
+            final_value(&scope.terminal(&scope.owner, &run).await),
+            expected,
+            "{arguments}"
+        );
+    }
+    assert_eq!(scope.policy_events().await, before);
+    assert_eq!(
+        scope.access("coral.workspace.updatePolicy").await,
+        (OperationAccessState::Enabled, true)
+    );
 }

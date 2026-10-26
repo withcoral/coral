@@ -91,6 +91,16 @@ impl From<OperationAccessState> for coral_catalog::BuiltinAccessState {
     }
 }
 
+impl From<coral_catalog::BuiltinAccessState> for OperationAccessState {
+    fn from(state: coral_catalog::BuiltinAccessState) -> Self {
+        match state {
+            coral_catalog::BuiltinAccessState::Enabled => Self::Enabled,
+            coral_catalog::BuiltinAccessState::ApprovalRequired => Self::ApprovalRequired,
+            coral_catalog::BuiltinAccessState::Disabled => Self::Disabled,
+        }
+    }
+}
+
 /// Every exact Operation rule of one Workspace, read once for discovery.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExactOperationRules {

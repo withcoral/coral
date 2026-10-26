@@ -239,19 +239,22 @@ Operations Coral itself performs, with no upstream dispatch. Its Call Root is `c
 describe, Operation Access State, Approval Requests, and Operation Invocation records with every other Provider. Each of
 its Operations declares the Workspace action it needs, and a Principal discovers, invokes, and inspects only the
 Operations whose action its authority permits: every Principal reaches `listProviders` and `getPolicy`, and only a User
-with effective Workspace Owner authority reaches `addProvider`, `getProvider` and `updateProvider`. An Owner can disable
-and enable it and set its Operation policy, but nobody can rename, reconfigure, or remove it, and it has no Provider
-Accounts. Its Operations add a Provider (`addProvider`), list the Workspace's Providers (`listProviders`), read one
-Owner-created Provider's Provider Configuration in the shapes `addProvider` takes (`getProvider`), read the exact
+with effective Workspace Owner authority reaches `addProvider`, `getProvider`, `updateProvider` and `updatePolicy`. An
+Owner can disable and enable it and set its Operation policy, but nobody can rename, reconfigure, or remove it, and it
+has no Provider Accounts. Its Operations add a Provider (`addProvider`), list the Workspace's Providers
+(`listProviders`), read one Owner-created Provider's Provider Configuration in the shapes `addProvider` takes
+(`getProvider`), change one Owner-created Provider's configuration or source (`updateProvider`), read the exact
 Operation rules a Workspace Owner set for one Owner-created Provider, keyed by each Operation's Call Path relative to
-its Call Root (`getPolicy`), and change one Owner-created Provider's configuration or source (`updateProvider`). When
-Coral boots, it updates every Workspace's Built-in Provider to the catalog it serves; a Workspace whose update fails
-keeps its catalog until the next boot. Coral itself publishes a new Provider only from a ready Setup on the `none`
-route. A credential-requiring Setup, on the `fixed` or the `caller` route, always needs a person to sign in. Coral
-itself publishes an update only from a ready Setup that keeps the Provider's Credential Route, its credential contract,
-and every Operation Key of its active Generation; any other update needs a person to confirm it. If a person must finish
-the Setup and the Run is still current, the Operation returns the Reef page, which names the Setup and, for an update,
-the Provider, and does not wait; `listProviders` reports the open Setups that the invoking User's `addProvider` calls
+its Call Root (`getPolicy`), and set the exact Operation Access State of 1–100 of its Operations by those paths, all or
+none (`updatePolicy`). `updatePolicy` names a Provider under `coral.providers`, so it never reaches a Built-in
+Operation, and a Program cannot loosen the approval on the Operations that change the Workspace. When Coral boots, it
+updates every Workspace's Built-in Provider to the catalog it serves; a Workspace whose update fails keeps its catalog
+until the next boot. Coral itself publishes a new Provider only from a ready Setup on the `none` route. A
+credential-requiring Setup, on the `fixed` or the `caller` route, always needs a person to sign in. Coral itself
+publishes an update only from a ready Setup that keeps the Provider's Credential Route, its credential contract, and
+every Operation Key of its active Generation; any other update needs a person to confirm it. If a person must finish the
+Setup and the Run is still current, the Operation returns the Reef page, which names the Setup and, for an update, the
+Provider, and does not wait; `listProviders` reports the open Setups that the invoking User's `addProvider` calls
 prepared, until each is published, expires or is canceled. Coral ends a Setup it prepared that nobody will finish. Its
 Operations never return a secret, a fixed credential value, or the OAuth sign-in link Coral prepares for one person to
 the Program, and never take a secret from it: a person enters a confidential OAuth application's secret in Reef. A

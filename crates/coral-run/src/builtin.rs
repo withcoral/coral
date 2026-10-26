@@ -32,6 +32,7 @@ mod get_policy;
 mod get_provider;
 mod list_providers;
 mod setup_operation;
+mod update_policy;
 mod update_provider;
 
 /// One admitted Built-in Operation with its validated input.
@@ -41,6 +42,7 @@ pub(crate) enum BuiltinCall {
     ListProviders,
     GetProvider(get_provider::GetProvider),
     GetPolicy(get_policy::GetPolicy),
+    UpdatePolicy(update_policy::UpdatePolicy),
     UpdateProvider(Box<update_provider::UpdateProvider>),
 }
 
@@ -73,6 +75,9 @@ impl BuiltinCall {
                     BuiltinArguments::GetPolicy(arguments) => {
                         get_policy::GetPolicy::new(&arguments).map(Self::GetPolicy)
                     }
+                    BuiltinArguments::UpdatePolicy(arguments) => {
+                        update_policy::UpdatePolicy::new(&arguments).map(Self::UpdatePolicy)
+                    }
                     BuiltinArguments::UpdateProvider(arguments) => {
                         update_provider::UpdateProvider::new(*arguments)
                             .map(|call| Self::UpdateProvider(Box::new(call)))
@@ -88,6 +93,7 @@ impl BuiltinCall {
             Self::ListProviders => list_providers::perform(host).await,
             Self::GetProvider(call) => call.perform(host).await,
             Self::GetPolicy(call) => call.perform(host).await,
+            Self::UpdatePolicy(call) => call.perform(host).await,
             Self::UpdateProvider(call) => call.perform(host).await,
         }
     }
@@ -121,12 +127,13 @@ pub(crate) async fn recover(
                 .await
                 .map(Some)
         }
-        // A read leaves nothing behind, and this version cannot read an
-        // Operation it does not perform.
+        // A read leaves nothing behind, a policy change records no call to
+        // read, and this version cannot read an Operation it does not perform.
         Some(
             BuiltinOperation::ListProviders
             | BuiltinOperation::GetProvider
-            | BuiltinOperation::GetPolicy,
+            | BuiltinOperation::GetPolicy
+            | BuiltinOperation::UpdatePolicy,
         )
         | None => Ok(None),
     }

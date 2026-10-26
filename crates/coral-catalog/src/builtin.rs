@@ -37,10 +37,11 @@ mod get_policy;
 mod get_provider;
 mod list_providers;
 mod provider_input;
+mod update_policy;
 mod update_provider;
 
 pub use add_provider::{AddProviderArguments, AddProviderResult};
-pub use get_policy::{BuiltinAccessState, GetPolicyArguments, GetPolicyResult};
+pub use get_policy::{GetPolicyArguments, GetPolicyResult};
 pub use get_provider::{
     ConfigurationOutput, GetProviderArguments, GetProviderResult, ProviderSourceOutput,
 };
@@ -48,6 +49,7 @@ pub use list_providers::{
     ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup, ListedSetupState,
 };
 pub use provider_input::{ConfigurationChoices, ProviderSourceArgument};
+pub use update_policy::{UpdatePolicyArguments, UpdatePolicyResult};
 pub use update_provider::{
     ConfigurationPatch, SourceChange, UpdateProviderArguments, UpdateProviderResult,
 };
@@ -110,6 +112,9 @@ pub enum BuiltinOperation {
     /// Reads the exact rules a Workspace Owner set for one Provider's
     /// Operations, so a Program can find the ones discovery hides.
     GetPolicy,
+    /// Sets the exact state of 1–100 Operations of one Provider. It never
+    /// reaches a Built-in Operation.
+    UpdatePolicy,
     /// Changes one Owner-created Provider's configuration or source. Coral
     /// publishes the change when nobody needs to act; otherwise a person
     /// finishes it in Reef.
@@ -117,11 +122,12 @@ pub enum BuiltinOperation {
 }
 
 impl BuiltinOperation {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::AddProvider,
         Self::ListProviders,
         Self::GetProvider,
         Self::GetPolicy,
+        Self::UpdatePolicy,
         Self::UpdateProvider,
     ];
 
@@ -133,6 +139,7 @@ impl BuiltinOperation {
             Self::ListProviders => "listProviders",
             Self::GetProvider => "getProvider",
             Self::GetPolicy => "getPolicy",
+            Self::UpdatePolicy => "updatePolicy",
             Self::UpdateProvider => "updateProvider",
         }
     }
@@ -155,6 +162,7 @@ impl BuiltinOperation {
             Self::ListProviders => list_providers::NEEDS,
             Self::GetProvider => get_provider::NEEDS,
             Self::GetPolicy => get_policy::NEEDS,
+            Self::UpdatePolicy => update_policy::NEEDS,
             Self::UpdateProvider => update_provider::NEEDS,
         }
     }
@@ -297,6 +305,8 @@ pub enum BuiltinArguments {
     GetProvider(GetProviderArguments),
     /// `getPolicy`'s arguments.
     GetPolicy(GetPolicyArguments),
+    /// `updatePolicy`'s arguments.
+    UpdatePolicy(UpdatePolicyArguments),
     /// `updateProvider`'s arguments.
     UpdateProvider(Box<UpdateProviderArguments>),
 }
@@ -323,6 +333,9 @@ impl BuiltinArguments {
             }
             BuiltinOperation::GetPolicy => {
                 GetPolicyArguments::parse(arguments).map(Self::GetPolicy)
+            }
+            BuiltinOperation::UpdatePolicy => {
+                UpdatePolicyArguments::parse(arguments).map(Self::UpdatePolicy)
             }
             BuiltinOperation::UpdateProvider => UpdateProviderArguments::parse(arguments)
                 .map(|arguments| Self::UpdateProvider(Box::new(arguments))),
@@ -504,6 +517,32 @@ const fn authentication_name(kind: AuthenticationKind) -> &'static str {
     }
 }
 
+/// An Operation Access State, as Built-in Operations spell it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuiltinAccessState {
+    /// A call runs without approval.
+    Enabled,
+    /// A call waits for a person to approve it.
+    ApprovalRequired,
+    /// A call is refused.
+    Disabled,
+}
+
+impl JsonSchema for BuiltinAccessState {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "OperationAccessState".into()
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> Schema {
+        words_schema(&["enabled", "approval_required", "disabled"])
+    }
+}
+
 /// A string that is one of `words`.
 fn words_schema(words: &[&str]) -> Schema {
     schemars::json_schema!({ "type": "string", "enum": words })
@@ -570,6 +609,7 @@ fn definition(operation: BuiltinOperation) -> Definition {
         BuiltinOperation::ListProviders => list_providers::definition(),
         BuiltinOperation::GetProvider => get_provider::definition(),
         BuiltinOperation::GetPolicy => get_policy::definition(),
+        BuiltinOperation::UpdatePolicy => update_policy::definition(),
         BuiltinOperation::UpdateProvider => update_provider::definition(),
     }
 }

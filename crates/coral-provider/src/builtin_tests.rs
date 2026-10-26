@@ -812,6 +812,7 @@ async fn management_reads_show_each_principal_the_builtin_operations_it_reaches(
                 "getPolicy",
                 "getProvider",
                 "listProviders",
+                "updatePolicy",
                 "updateProvider",
             ][..],
         ),

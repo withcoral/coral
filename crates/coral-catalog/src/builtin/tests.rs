@@ -9,7 +9,8 @@ use super::{
     AUTHENTICATION_KINDS, AddProviderResult, BuiltinAccessState, BuiltinArguments,
     BuiltinCredentialRoute, BuiltinOperation, ConfigurationOutput, GetPolicyResult,
     GetProviderResult, ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup,
-    ListedSetupState, ProviderFacts, ProviderSourceOutput, UpdateProviderResult, definition,
+    ListedSetupState, ProviderFacts, ProviderSourceOutput, UpdatePolicyResult,
+    UpdateProviderResult, definition,
 };
 use crate::{CredentialField, ServerSelection};
 
@@ -21,6 +22,7 @@ fn valid_arguments(operation: BuiltinOperation) -> Vec<Value> {
         BuiltinOperation::ListProviders => super::list_providers::valid_arguments(),
         BuiltinOperation::GetProvider => super::get_provider::tests::valid_arguments(),
         BuiltinOperation::GetPolicy => super::get_policy::valid_arguments(),
+        BuiltinOperation::UpdatePolicy => super::update_policy::valid_arguments(),
         BuiltinOperation::UpdateProvider => super::update_provider::tests::valid_arguments(),
     }
 }
@@ -289,24 +291,34 @@ fn publication_results() -> Vec<(BuiltinOperation, serde_json::Value)> {
     results
 }
 
-/// A Provider without rules, and one with a rule of each state.
-fn policies() -> impl Iterator<Item = GetPolicyResult> {
-    [
-        BTreeMap::new(),
-        BTreeMap::from([
-            ("repos.get".to_owned(), BuiltinAccessState::Disabled),
-            ("issues.create".to_owned(), BuiltinAccessState::Enabled),
-            (
-                "issues.close".to_owned(),
-                BuiltinAccessState::ApprovalRequired,
-            ),
-        ]),
-    ]
-    .into_iter()
-    .map(|rules| GetPolicyResult {
-        namespace: "github".to_owned(),
-        rules,
-    })
+/// What `getPolicy` reads for a Provider without rules and for one with a
+/// rule of each state, and what `updatePolicy` returns when it sets them.
+fn policies() -> impl Iterator<Item = (BuiltinOperation, Value)> {
+    let states = BTreeMap::from([
+        ("repos.get".to_owned(), BuiltinAccessState::Disabled),
+        ("issues.create".to_owned(), BuiltinAccessState::Enabled),
+        (
+            "issues.close".to_owned(),
+            BuiltinAccessState::ApprovalRequired,
+        ),
+    ]);
+    [BTreeMap::new(), states.clone()]
+        .into_iter()
+        .map(|rules| {
+            let read = GetPolicyResult {
+                namespace: "github".to_owned(),
+                rules,
+            };
+            (BuiltinOperation::GetPolicy, read.into_operation_result())
+        })
+        .chain([(
+            BuiltinOperation::UpdatePolicy,
+            UpdatePolicyResult {
+                namespace: "github".to_owned(),
+                operations: states,
+            }
+            .into_operation_result(),
+        )])
 }
 
 // Catches: a result that tells a typed Program something its declaration does not.
@@ -374,9 +386,7 @@ fn each_result_meets_its_output_schema() {
         configured_providers()
             .map(|saved| (BuiltinOperation::GetProvider, saved.into_operation_result())),
     );
-    results.extend(
-        policies().map(|policy| (BuiltinOperation::GetPolicy, policy.into_operation_result())),
-    );
+    results.extend(policies());
     for (operation, result) in results {
         assert_eq!(
             result.get("metadata"),
