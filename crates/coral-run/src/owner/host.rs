@@ -449,6 +449,7 @@ fn start_program(
     let invoker = OperationInvoker::new(
         module.accounts.clone(),
         module.providers.clone(),
+        module.policies.clone(),
         module.provider_publisher.clone(),
         module.human_interface.clone(),
         module.database.clone(),
