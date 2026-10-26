@@ -64,9 +64,9 @@
         <input type="hidden" name="ticket" value="@@ticket@@">@@account@@
         <h2 id="decision-title">@@decision_title@@</h2>
         <!-- Cancel is the safe implicit-submit default. Keep it the first button. -->
-        <button class="cancel" type="submit" name="decision" value="cancel" formnovalidate>Cancel</button>@@choices@@
-        <button class="connect connect-any" type="submit" name="decision" value="continue">Connect</button>
-        <p class="notice">Only connect if you started this in <bdi>@@client_name@@</bdi>.</p>
+        <button class="cancel" type="submit" name="decision" value="cancel" formnovalidate>@@cancel_label@@</button>@@choices@@
+        <button class="connect connect-any" type="submit" name="decision" value="continue"@@connect_hidden@@>Connect</button>
+        <p class="notice"@@connect_hidden@@>Only connect if you started this in <bdi>@@client_name@@</bdi>.</p>
       </form>
     </section>
   </main>

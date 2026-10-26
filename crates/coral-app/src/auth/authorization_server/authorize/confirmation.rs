@@ -221,6 +221,13 @@ pub(in crate::auth::authorization_server) enum ApprovalScope<'a> {
         options: &'a str,
         signed_in_as: Option<&'a str>,
     },
+    /// The signed-in person has no Workspace to pick. The page says how to
+    /// get one, links to Coral at `coral_url` when it is known, and offers
+    /// only the way back to the client.
+    NoChoice {
+        signed_in_as: Option<&'a str>,
+        coral_url: Option<&'a str>,
+    },
 }
 
 /// Renders the approval page for one pending authorization.
@@ -239,29 +246,51 @@ pub(in crate::auth::authorization_server) fn response(
     browser_binding: &BrowserBinding,
     secure_cookie: bool,
 ) -> Option<Response> {
-    let (access_scope, decision_title, form_action, account, choices) = match scope {
+    let account = |signed_in_as: Option<&str>| {
+        signed_in_as.map_or_else(String::new, |account| {
+            format!(
+                "\n        <p class=\"account\"><span>Signed in as <bdi>{}</bdi></span></p>",
+                escape_html(account)
+            )
+        })
+    };
+    let (decision_title, form_action, account, choices) = match scope {
         ApprovalScope::Workspace => (
-            "this workspace",
             "Allow access?",
             AUTHORIZE_PATH,
             String::new(),
-            "",
+            String::new(),
         ),
         ApprovalScope::Choice {
             options,
             signed_in_as,
         } => (
-            "the workspace you choose",
             "Choose a workspace",
             WORKSPACE_CHOICE_PATH,
-            signed_in_as.map_or_else(String::new, |account| {
-                format!(
-                    "\n        <p class=\"account\"><span>Signed in as <bdi>{}</bdi></span></p>",
-                    escape_html(account)
-                )
-            }),
-            *options,
+            account(*signed_in_as),
+            (*options).to_owned(),
         ),
+        ApprovalScope::NoChoice {
+            signed_in_as,
+            coral_url,
+        } => (
+            "No workspace to choose",
+            WORKSPACE_CHOICE_PATH,
+            account(*signed_in_as),
+            no_choice(*coral_url),
+        ),
+    };
+    let access_scope = match scope {
+        ApprovalScope::Workspace => "this workspace",
+        ApprovalScope::Choice { .. } | ApprovalScope::NoChoice { .. } => "the workspace you choose",
+    };
+    // With nothing to connect, Cancel is the way back to the client, and the
+    // Connect button and its warning leave the page.
+    let no_choice = matches!(scope, ApprovalScope::NoChoice { .. });
+    let cancel_label = if no_choice {
+        format!("Back to <bdi>{}</bdi>", escape_html(client_name))
+    } else {
+        "Cancel".to_owned()
     };
     // Resolution already validated the identity. A URL has a metadata host;
     // an opaque registration has no verified origin or branding to display.
@@ -294,11 +323,27 @@ pub(in crate::auth::authorization_server) fn response(
             "decision_title" => decision_title.to_owned(),
             "form_action" => form_action.to_owned(),
             "account" => account.clone(),
-            "choices" => choices.to_owned(),
+            "choices" => choices.clone(),
+            "cancel_label" => cancel_label.clone(),
+            "connect_hidden" => if no_choice { " hidden" } else { "" }.to_owned(),
             _ => return None,
         })
     })?;
     page(body, Some(browser_binding), secure_cookie)
+}
+
+/// What a person with no Workspace reads in place of the choices.
+fn no_choice(coral_url: Option<&str>) -> String {
+    let link = coral_url.map_or_else(String::new, |url| {
+        format!(
+            "\n        <a class=\"connect\" href=\"{}\">Open Coral</a>",
+            escape_html(url)
+        )
+    });
+    format!(
+        "\n        <div class=\"empty\"><p>You are not a member of a workspace.</p>\
+         <p>Create a workspace in Coral. Then sign in again.</p></div>{link}"
+    )
 }
 
 /// Fills a trusted template's `@@slot@@`s, and its `styles`, in one pass.

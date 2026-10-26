@@ -37,6 +37,8 @@ test('standalone OAuth page works without scripts under its pinned CSP in both t
       form_action: '/oauth/authorize',
       account: '',
       choices: '',
+      cancel_label: 'Cancel',
+      connect_hidden: '',
     }
     // Rust owns real substitution and escaping; this fixture supplies known
     // values solely to exercise the hand-authored document in a real browser.
@@ -132,7 +134,6 @@ test('the workspace approval page and its empty state work without scripts in bo
   const hash = createHash('sha256').update(css).digest('base64')
   const policy = `default-src 'none'; base-uri 'none'; frame-ancestors 'none'; style-src 'sha256-${hash}'`
   const approval = await readFile(new URL('approval.html', approvalDirectory), 'utf8')
-  const empty = await readFile(new URL('no_workspace.html', approvalDirectory), 'utf8')
   const values: Record<string, string> = {
     styles: css,
     client_name: 'Example client',
@@ -151,7 +152,19 @@ test('the workspace approval page and its empty state work without scripts in bo
         'A workspace with a very long name that wraps on a phone',
         'No providers yet',
       ),
-    coral_link: '<p class="actions"><a href="https://coral.example.test">Open Coral</a></p>',
+    cancel_label: 'Cancel',
+    connect_hidden: '',
+  }
+  // With no workspace, the same page offers Coral and the way back instead.
+  const empty: Record<string, string> = {
+    ...values,
+    decision_title: 'No workspace to choose',
+    choices:
+      '<div class="empty"><p>You are not a member of a workspace.</p>' +
+      '<p>Create a workspace in Coral. Then sign in again.</p></div>' +
+      '<a class="connect" href="https://coral.example.test">Open Coral</a>',
+    cancel_label: 'Back to <bdi>Example client</bdi>',
+    connect_hidden: ' hidden',
   }
   const submissions: string[] = []
   const server = createServer(async (request, response) => {
@@ -162,9 +175,8 @@ test('the workspace approval page and its empty state work without scripts in bo
       response.end('Submitted')
       return
     }
-    const template = request.url?.includes('empty') ? empty : approval
     response.writeHead(200, { 'Content-Type': 'text/html', 'Content-Security-Policy': policy })
-    response.end(fill(template, values))
+    response.end(fill(approval, request.url?.includes('empty') ? empty : values))
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
@@ -214,6 +226,15 @@ test('the workspace approval page and its empty state work without scripts in bo
       await page.goto(`${origin}/empty`)
       await page.getByRole('heading', { name: 'No workspace to choose' }).waitFor()
       await page.getByRole('link', { name: 'Open Coral' }).waitFor()
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+        true,
+      )
+      // Nothing can be connected, so the only button returns to the client.
+      assert.deepEqual(await page.getByRole('button').allTextContents(), ['Back to Example client'])
+      await page.getByRole('button', { name: 'Back to Example client' }).click()
+      await page.getByText('Submitted', { exact: true }).waitFor()
+      assert.equal(submissions.at(-1), 'ticket=test-only-ticket&decision=cancel')
       assert.deepEqual(errors, [])
       await page.close()
     }

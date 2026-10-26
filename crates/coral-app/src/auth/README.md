@@ -40,8 +40,9 @@ only one fixed URL ([ADR 0025](../../../../docs/adr/0025-fixed-mcp-endpoint-take
   issues the code only when they allow the client with one picked. So the
   approval comes after sign-in at `/mcp`, and a trusted client sees it too. The
   pending approval is sealed into the form and bound to the approval cookie, so
-  nothing is stored before the pick. The submission rechecks the choice. With no Workspace, Coral issues no code and shows a page that
-  says to create one, linking to the web interface when one is configured.
+  nothing is stored before the pick. The submission rechecks the choice. With no Workspace, Coral issues no code. The page names the
+  account, says to create a workspace, links to the web interface when one is
+  configured, and offers a way back that ends the sign-in with `access_denied`.
   Nothing is preselected; the browser requires a pick before Connect, and the
   server refuses a submission without one.
 - An Agent Registration credential works at `/mcp`. Coral finds the

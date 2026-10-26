@@ -1,7 +1,7 @@
 # OAuth approval page
 
-Edit `approval.html`, `no_workspace.html` and `approval.css` directly. The
-pages share the stylesheet and its CSP hash. `confirmation.rs` embeds these
+Edit `approval.html` and `approval.css` directly. Every sign-in page shares
+the stylesheet and its CSP hash. `confirmation.rs` embeds these
 hand-authored files in Coral's authorization listener. No frontend build, Reef
 server, JavaScript, bundled fonts, or external assets are required. The page
 uses system fonts and the browser's light/dark preference.
@@ -17,14 +17,17 @@ identity provider answers instead of before. `account` then names the signed-in
 account, `choices` holds a card per active Workspace with its Providers, and
 the form posts to `/oauth/workspace` (`../workspace_choice.rs`). For a
 Workspace URL both are empty and the form posts to `/oauth/authorize`. With no
-Workspace, `no_workspace.html` shows instead and no code is issued.
+Workspace, `choices` says how to get one and links to Coral when its URL is
+known. `cancel_label` then reads "Back to …" and `connect_hidden` hides Connect
+and its notice, so the only way on is Coral or back to the client, which gets
+`access_denied`. No code is issued.
 
 Rust computes the CSP hash from the embedded CSS once. Keep `<style>@@styles@@</style>`
 without extra whitespace inside the element so the hash matches the served bytes.
 The approval template uses only `styles`, `client_name`, `client_identity`,
 `redirect_label`, `redirect_destination`, `access_scope`, `decision_title`,
-`form_action`, `account`, `choices`, and `ticket` slots. The empty page uses
-`styles` and `coral_link`.
+`form_action`, `account`, `choices`, `cancel_label`, `connect_hidden`, and
+`ticket` slots.
 Rust escapes dynamic values and substitutes slots in one pass; substituted
 client text is never a template.
 Keep Cancel the first submit button in the form so implicit submission does not

@@ -1337,9 +1337,27 @@ mod tests {
         mount_provider(&server, 200, 200, &nonce()).await;
         let (db, _temp) = database().await;
         let app = organization_state(&server.uri(), &db);
-        let (page, _cookie) = picker(organization_callback(&app).await).await;
-        assert!(page.contains("You are not a member of a workspace."));
-        assert!(page.contains("Create a workspace in Coral. Then sign in again."));
-        assert!(!page.contains("name=\"ticket\""));
+        let (page, cookie) = picker(organization_callback(&app).await).await;
+        assert!(page.contains("No workspace to choose</h2>"));
+        assert!(
+            page.contains("<p class=\"account\"><span>Signed in as <bdi>"),
+            "the account is named, since signing in with another may help"
+        );
+        assert!(!page.contains("name=\"workspace\""));
+        assert!(
+            page.contains("formnovalidate>Back to <bdi>Claude &lt;b&gt;</bdi></button>"),
+            "the person can end the sign-in at the client"
+        );
+        let back = choose(
+            &app,
+            &cookie,
+            &[("ticket", &ticket(&page)), ("decision", "cancel")],
+        )
+        .await;
+        assert!(
+            redirect_query(&back).contains(&("error".into(), "access_denied".into())),
+            "the client stops waiting"
+        );
+        assert_eq!(redeem_organization(&db, &back).await, None);
     }
 }

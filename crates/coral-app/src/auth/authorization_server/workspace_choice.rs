@@ -25,7 +25,6 @@ use super::{AuthorizationServerHttpState, sign_in_cookie};
 
 /// Where the picker form posts the person's choice.
 pub(super) const WORKSPACE_CHOICE_PATH: &str = "/oauth/workspace";
-const NO_WORKSPACE_PAGE: &str = include_str!("authorize/no_workspace.html");
 /// Shown when a client registered no name, as registration does.
 const UNNAMED_CLIENT: &str = "Unnamed OAuth client";
 
@@ -46,31 +45,27 @@ pub(super) async fn offer(
         Ok(choices) => choices,
         Err(failure) => return failure.into_error(trusted),
     };
-    let rendered = if choices.is_empty() {
-        no_workspace_page(state)
-    } else {
-        let pending = PendingWorkspaceChoice {
-            user_id,
-            oidc_state: oidc_state.to_owned(),
-            client_id: session.client_id,
-            redirect_uri: session.redirect_uri,
-            client_state: session.client_state,
-            code_challenge: session.code_challenge,
-            resource: session.resource,
-        };
-        let client_name = session.client_name.as_deref().unwrap_or(UNNAMED_CLIENT);
-        let providers = provider_summaries(state, &pending.user_id, &choices).await;
-        picker_page(
-            state,
-            headers,
-            &pending,
-            client_name,
-            signed_in_as,
-            &choices,
-            &providers,
-        )
+    let pending = PendingWorkspaceChoice {
+        user_id,
+        oidc_state: oidc_state.to_owned(),
+        client_id: session.client_id,
+        redirect_uri: session.redirect_uri,
+        client_state: session.client_state,
+        code_challenge: session.code_challenge,
+        resource: session.resource,
     };
-    rendered.unwrap_or_else(|| trusted.error("server_error", "authorization failed"))
+    let client_name = session.client_name.as_deref().unwrap_or(UNNAMED_CLIENT);
+    let providers = provider_summaries(state, &pending.user_id, &choices).await;
+    picker_page(
+        state,
+        headers,
+        &pending,
+        client_name,
+        signed_in_as,
+        &choices,
+        &providers,
+    )
+    .unwrap_or_else(|| trusted.error("server_error", "authorization failed"))
 }
 
 /// Issues the code for the Workspace the person picked, after checking again
@@ -303,36 +298,26 @@ fn picker_page(
         .ok()?;
     }
     let redirect_uri = EndpointUrl::<BrowserRedirect>::parse(&pending.redirect_uri).ok()?;
+    let scope = if choices.is_empty() {
+        ApprovalScope::NoChoice {
+            signed_in_as,
+            coral_url: state.settings.authorization_server().web_public_url(),
+        }
+    } else {
+        ApprovalScope::Choice {
+            options: &options,
+            signed_in_as,
+        }
+    };
     confirmation::response(
         &ticket,
         client_name,
         &pending.client_id,
         &redirect_uri,
-        &ApprovalScope::Choice {
-            options: &options,
-            signed_in_as,
-        },
+        &scope,
         &browser_binding,
         secure,
     )
-}
-
-fn no_workspace_page(state: &AuthorizationServerHttpState) -> Option<Response> {
-    let link = state
-        .settings
-        .authorization_server()
-        .web_public_url()
-        .map(|url| {
-            format!(
-                "<p class=\"actions\"><a href=\"{}\">Open Coral</a></p>",
-                escape_html(url)
-            )
-        })
-        .unwrap_or_default();
-    let body = confirmation::render(NO_WORKSPACE_PAGE, |slot| {
-        (slot == "coral_link").then(|| link.clone())
-    })?;
-    confirmation::page(body, None, state.secure_cookies())
 }
 
 fn choice_error() -> Response {

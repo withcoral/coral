@@ -274,7 +274,7 @@ dd {
 }
 
 /* With no choice to make, the short decision sits mid-pane. */
-.decision:not(:has(.choice)) {
+.decision:not(:has(.choice, .empty)) {
   align-content: center;
 }
 
@@ -292,6 +292,11 @@ dd {
   flex: 2 1 0;
   order: 2;
   margin-top: 20px;
+}
+
+/* "Back to" names the client, so it gets as much room as Open Coral. */
+.decision:has(.empty) > .cancel {
+  flex-grow: 2;
 }
 
 .decision > .notice {
@@ -377,10 +382,6 @@ dd {
   background: radial-gradient(circle, var(--focus) 0 4px, transparent 5px);
 }
 
-.actions {
-  text-align: center;
-}
-
 a {
   color: var(--focus);
   font-weight: 500;
@@ -429,6 +430,32 @@ button[value="continue"]:active {
 button:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
+}
+
+/* With no Workspace to pick, Open Coral is the way on. */
+a.connect {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--button);
+  color: var(--button-text);
+  text-decoration: none;
+}
+
+a.connect:hover {
+  background: var(--button-hover);
+}
+
+a.connect:active {
+  background: var(--button-active);
+}
+
+.empty p + p {
+  margin-top: 4px;
+  color: var(--muted);
 }
 
 button.cancel {
