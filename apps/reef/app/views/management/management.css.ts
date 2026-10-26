@@ -7,6 +7,8 @@ import { theme } from '@/wax/theme/theme.css'
 export const stack = style({ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 })
 // The card shows the prompt's first three lines. Copy prompt copies all of it.
 export const onboardingPrompt = style({ ...utils.boxClamp(3), margin: 0 })
+// A prompt card with its own copy button keeps the button beside the text, as a command does.
+export const promptCopy = style({ alignItems: 'flex-start', flexDirection: 'row' })
 export const intro = style({ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 })
 export const heading = style({
   display: 'flex',

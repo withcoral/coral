@@ -10,6 +10,7 @@ import { ActionDialog, NameInput } from './forms'
 import { ManagementLayout, trail } from './layout'
 import { NameHeading } from './name-heading'
 import { OnboardingDialog } from './onboarding-dialog'
+import { onboardingPrompt } from './onboarding-prompt'
 import { Person } from './person'
 import { WorkspaceQuickStart } from './quick-start'
 import type {
@@ -74,6 +75,10 @@ export function WorkspaceOverview({
   const createTrigger = useRef<HTMLButtonElement>(null)
   // Revalidation reports no onboarding after the first load, so it must not close it.
   const [onboardingOpen, setOnboardingOpen] = useState(onboarding)
+  // One prompt for the onboarding dialog and the quick start's last tab. Coral serves the
+  // implicit local user only when it runs without authentication, and that same runtime
+  // setting serves its MCP server with no sign-in.
+  const prompt = onboardingPrompt(w.displayName, w.mcpEndpoint, !w.profile.local)
   const members = owners?.map((o) => ({ profile: o.profile, user: o.user, enabled: o.enabled }))
   if (members && ownMembership && !members.some((m) => m.user === ownMembership.user))
     members.unshift({
@@ -117,16 +122,14 @@ export function WorkspaceOverview({
       {/* Without an MCP URL there is no prompt to give, so onboarding does not open. */}
       {w.mcpEndpoint && (
         <OnboardingDialog
-          displayName={w.displayName}
-          endpoint={w.mcpEndpoint}
-          // Coral serves the implicit local user only when it runs without authentication,
-          // and that same runtime setting serves its MCP server with no sign-in.
-          signIn={!w.profile.local}
+          prompt={prompt}
           open={onboardingOpen}
           onClose={() => setOnboardingOpen(false)}
         />
       )}
-      {active && w.connectEndpoint && <WorkspaceQuickStart endpoint={w.connectEndpoint} />}
+      {active && w.connectEndpoint && (
+        <WorkspaceQuickStart endpoint={w.connectEndpoint} prompt={prompt} />
+      )}
       <div className={styles.cards}>
         <Card.Container className={styles.panel}>
           <div className={styles.sectionHeading}>

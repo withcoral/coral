@@ -1,6 +1,7 @@
 import { useId } from 'react'
 import { Button, Card, Tabs, Typography } from '@/wax/components'
 import { CodeBlock } from '@/wax/components/code-block'
+import { PromptPreview } from './prompt-preview'
 import * as styles from './management.css'
 
 export type Client = 'claude' | 'codex' | 'other'
@@ -24,6 +25,8 @@ export interface Step {
   shown: string
   /** What else to do, under the value. */
   hint?: string
+  /** Whether the value is a prompt, shown as its first lines; the copy holds all of it. */
+  prose?: boolean
 }
 
 /**
@@ -128,7 +131,11 @@ function StepValue({ step }: { step: Step }) {
         {step.label}
       </Typography.BodySmallStrong>
       <div role="group" aria-labelledby={label}>
-        <CodeBlock value={step.shown} copy={{ text: step.snippet, label: step.copy }} />
+        {step.prose ? (
+          <PromptPreview prompt={step.snippet} copyLabel={step.copy} />
+        ) : (
+          <CodeBlock value={step.shown} copy={{ text: step.snippet, label: step.copy }} />
+        )}
       </div>
       {step.hint && (
         <Typography.BodySmall as="p" variant="tertiary">
@@ -139,8 +146,17 @@ function StepValue({ step }: { step: Step }) {
   )
 }
 
-/** Tabs per MCP client, each with the values to copy. */
-export function ClientSetup({ steps }: { steps: (client: Client) => Step[] }) {
+/** The tab after the clients' with a prompt that has your own MCP client do the setup. */
+const ASK = 'ask'
+
+/** Tabs per MCP client, each with the values to copy, then the prompt when there is one. */
+export function ClientSetup({
+  steps,
+  prompt,
+}: {
+  steps: (client: Client) => Step[]
+  prompt?: string
+}) {
   return (
     <Tabs.Root className={styles.quickStartTabs} defaultValue="claude">
       <Tabs.List aria-label="MCP client" inset="none">
@@ -149,6 +165,7 @@ export function ClientSetup({ steps }: { steps: (client: Client) => Step[] }) {
             {label}
           </Tabs.Tab>
         ))}
+        {prompt && <Tabs.Tab value={ASK}>Ask your agent</Tabs.Tab>}
         <Tabs.Indicator />
       </Tabs.List>
       <div className={styles.quickStartPanels}>
@@ -161,6 +178,22 @@ export function ClientSetup({ steps }: { steps: (client: Client) => Step[] }) {
             </ol>
           </Tabs.Panel>
         ))}
+        {prompt && (
+          <Tabs.Panel value={ASK} keepMounted className={styles.quickStartPanel}>
+            <ol className={styles.quickStartSteps}>
+              <StepValue
+                step={{
+                  label: 'Paste this prompt into your MCP client',
+                  copy: 'Copy prompt',
+                  snippet: prompt,
+                  shown: prompt,
+                  hint: 'Get your agent to connect to Coral and add a provider.',
+                  prose: true,
+                }}
+              />
+            </ol>
+          </Tabs.Panel>
+        )}
       </div>
     </Tabs.Root>
   )
@@ -197,8 +230,18 @@ export function AgentQuickStart({
   )
 }
 
-/** How a person connects their MCP client to the Workspace, until they have activity. */
-export function WorkspaceQuickStart({ endpoint }: { endpoint: string }) {
+/**
+ * How a person connects their MCP client to the Workspace, until they have activity.
+ * Its last tab holds the onboarding prompt, so it outlasts the dialog that first shows it.
+ */
+export function WorkspaceQuickStart({
+  endpoint,
+  prompt,
+}: {
+  endpoint: string
+  /** The workspace's `onboardingPrompt`. */
+  prompt: string
+}) {
   const heading = useId()
   return (
     <Card.Container as="section" className={styles.overviewQuickStart} aria-labelledby={heading}>
@@ -206,7 +249,7 @@ export function WorkspaceQuickStart({ endpoint }: { endpoint: string }) {
         Connect your MCP client
       </Typography.HeadingSmall>
       <Typography.BodySmall as="p">Add this workspace to your MCP client.</Typography.BodySmall>
-      <ClientSetup steps={(client) => personSteps(client, endpoint)} />
+      <ClientSetup steps={(client) => personSteps(client, endpoint)} prompt={prompt} />
     </Card.Container>
   )
 }
