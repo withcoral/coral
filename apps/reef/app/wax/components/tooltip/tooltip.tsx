@@ -1,6 +1,6 @@
 import { Tooltip as BaseTooltip } from '@base-ui/react/tooltip'
 import classNames from 'classnames'
-import { useRef } from 'react'
+import { useState } from 'react'
 
 import { useComposedRefs } from '@/utils/compose-refs'
 import { useTruncationDetection } from '@/utils/use-truncation-detection'
@@ -30,12 +30,12 @@ export function Tooltip({
   side = 'top',
   sideOffset = 8,
 }: TooltipProps) {
-  const triggerRef = useRef<HTMLElement>(null)
-  const isTruncated = useTruncationDetection(triggerRef, showOnlyWhenTruncated)
+  const [trigger, setTrigger] = useState<HTMLElement | null>(null)
+  const isTruncated = useTruncationDetection(trigger, showOnlyWhenTruncated)
   const disabled = showOnlyWhenTruncated && !isTruncated
 
   const composedRef = useComposedRefs(
-    triggerRef,
+    setTrigger,
     (children as React.ReactElement<{ ref?: React.Ref<HTMLElement> }>).props?.ref,
   )
 

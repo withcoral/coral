@@ -18,6 +18,8 @@ export const themeComparisonDecorator: Decorator = (Story, context) => {
         style={{
           backgroundColor: theme.surface.mainContent,
           borderRadius: '8px',
+          // Inherited text resolves its color on body, under body's theme.
+          color: theme.content.primary,
           flex: 1,
           padding: '24px',
         }}
@@ -39,6 +41,8 @@ export const themeComparisonDecorator: Decorator = (Story, context) => {
         style={{
           backgroundColor: theme.surface.mainContent,
           borderRadius: '8px',
+          // Inherited text resolves its color on body, under body's theme.
+          color: theme.content.primary,
           flex: 1,
           padding: '24px',
         }}

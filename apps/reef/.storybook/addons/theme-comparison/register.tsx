@@ -1,22 +1,22 @@
-import { addons, types } from 'storybook/manager-api'
+import { addons, types, useGlobals } from 'storybook/manager-api'
 import { MoonIcon, SunIcon } from '@storybook/icons'
+// The manager compiles addons with the classic JSX runtime, which needs React in scope.
 import React from 'react'
 
 const ADDON_ID = 'theme-comparison'
 const TOOL_ID = `${ADDON_ID}/tool`
 const PARAM_KEY = 'themeComparison'
 
-addons.register(ADDON_ID, (api) => {
+addons.register(ADDON_ID, () => {
   addons.add(TOOL_ID, {
     type: types.TOOL,
     title: 'Theme Comparison',
     render: () => {
-      const [active, setActive] = React.useState(false)
+      const [globals, updateGlobals] = useGlobals()
+      const active = Boolean(globals[PARAM_KEY])
 
       const toggleComparison = () => {
-        const newValue = !active
-        setActive(newValue)
-        api.updateGlobals({ [PARAM_KEY]: newValue })
+        updateGlobals({ [PARAM_KEY]: !active })
       }
 
       return (
