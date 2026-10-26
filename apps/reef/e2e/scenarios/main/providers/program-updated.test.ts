@@ -1,4 +1,4 @@
-import { createServer } from 'node:http'
+import { createServer, type IncomingHttpHeaders } from 'node:http'
 import { expect, test } from 'vitest'
 import { createActors, mcpToken, withOwnerSession } from '../../../support/actors.ts'
 import { withBrowserSession } from '../../../support/browser-session.ts'
@@ -30,6 +30,7 @@ import {
 } from '../../../generated/coral/management/v1/account_pb.ts'
 import { ProviderSetupInputKind } from '../../../generated/coral/management/v1/provider_pb.ts'
 import { WorkspaceRole } from '../../../generated/coral/management/v1/workspace_pb.ts'
+import { openReview, pausedForApproval } from './program-approval.ts'
 
 type Session = Parameters<Parameters<typeof withOwnerSession>[1]>[0]
 
@@ -59,11 +60,19 @@ async function builtinCall(
 
 /**
  * A workspace with the credential-free `weather` provider that the owner's Program added from
- * `source`, and a runner for their Programs, which update providers without approval.
+ * `source` with the configuration `choices`, and a runner for their Programs. They call each
+ * Built-in Operation in `unattended` without approval: by default, they update providers too.
  */
-async function weatherProvider({ page, target, actor, step }: Session, source: object) {
+async function weatherProvider(
+  { page, target, actor, step }: Session,
+  source: object,
+  {
+    choices = {},
+    unattended = ['addProvider', 'updateProvider'],
+  }: { choices?: object; unattended?: string[] } = {},
+) {
   const api = managementClients(actor.accessToken)
-  const workspace = await programWorkspace(api, step, ['addProvider', 'updateProvider'])
+  const workspace = await programWorkspace(api, step, unattended)
   const id = workspace.name.split('/')[1]
   const program = programRunner(page, target, id, {
     accessToken: await mcpToken(page, id),
@@ -74,6 +83,7 @@ async function weatherProvider({ page, target, actor, step }: Session, source: o
       namespace: 'weather',
       source,
       credentialRoute: 'none',
+      ...choices,
     })
     expect(created.status).toBe('published')
   })
@@ -303,21 +313,39 @@ test("A workspace owner's Program adds a scope to an OAuth provider, and you sig
   })
 })
 
-/** An OpenAPI service whose one Operation, `getForecast`, answers with a sunny forecast. */
-async function forecastServer(context: Parameters<typeof listen>[0]) {
-  const counts = { calls: 0 }
+/**
+ * A Weather service that answers each of its `operations` with a sunny forecast, and serves their
+ * credential-free document at /openapi.json. It keeps each call's path and headers.
+ */
+async function weatherService(
+  context: Parameters<typeof listen>[0],
+  operations: Record<string, object> = { getForecast: {} },
+) {
+  const service = {
+    operations,
+    reads: 0,
+    calls: [] as { path: string; headers: IncomingHttpHeaders }[],
+  }
   const fixture = await listen(
     context,
     createServer((request, response) => {
-      if (request.url !== '/getForecast') {
+      const path = request.url ?? ''
+      if (path === '/openapi.json') {
+        service.reads++
+        response
+          .writeHead(200, { 'content-type': 'application/json' })
+          .end(credentialFree(service.operations, fixture.origin).document)
+        return
+      }
+      if (!Object.hasOwn(service.operations, path.slice(1))) {
         response.writeHead(404).end()
         return
       }
-      counts.calls++
+      service.calls.push({ path, headers: request.headers })
       response.writeHead(200, { 'content-type': 'application/json' }).end('{"forecast":"sunny"}')
     }),
   )
-  return { ...fixture, counts }
+  return Object.assign(service, fixture)
 }
 
 /** Runs `program` in a new Run and returns its Final Value as JSON text. */
@@ -367,7 +395,7 @@ test("A workspace owner's Program moves a provider from an OpenAPI document to a
 
 test("A workspace owner's Program moves a provider from an MCP server to an OpenAPI document, and calls reach the document's service", async (context) => {
   const server = await bearerMcpServer(context, '', true)
-  const service = await forecastServer(context)
+  const service = await weatherService(context)
   await withOwnerSession(context, async (session) => {
     const { page, step } = session
     const { api, program, provider } = await weatherProvider(session, {
@@ -404,9 +432,181 @@ test("A workspace owner's Program moves a provider from an MCP server to an Open
       expect(
         await finalValue(program, 'return await coral.providers.weather.getForecast({});'),
       ).toContain('sunny')
-      expect(service.counts.calls).toBe(1)
+      expect(service.calls).toHaveLength(1)
       const operations = (await api.providers.listOperations({ parent: provider.name })).operations
       expect(operations.map((operation) => operation.relativePath)).toEqual(['getForecast'])
+    })
+  })
+})
+
+test("A workspace owner's Program renames a provider, moves it to another server and drops a header, and Coral publishes it with no Reef step", async (context) => {
+  const first = await weatherService(context)
+  const second = await weatherService(context)
+  await withOwnerSession(context, async (session) => {
+    const { step } = session
+    const { api, program, provider } = await weatherProvider(
+      session,
+      credentialFree({ getForecast: {} }, first.origin),
+      { choices: { requestHeaders: { 'x-trace': 'on' } } },
+    )
+    const forecast = 'return await coral.providers.weather.getForecast({});'
+    await step('A call reaches the first server with the header', async () => {
+      expect(await finalValue(program, forecast)).toContain('sunny')
+      expect(first.calls.map((call) => call.headers['x-trace'])).toEqual(['on'])
+    })
+    await step(
+      'The Program changes the name, the server and the header in one call, and Coral publishes it',
+      async () => {
+        const changed = await builtinCall(program, 'updateProvider', {
+          namespace: 'weather',
+          displayName: 'Forecasts',
+          servers: { '#/servers': { kind: 'custom', url: second.origin } },
+          // null removes the saved header.
+          requestHeaders: { 'x-trace': null },
+        })
+        expect(changed.status).toBe('published')
+        const updated = await api.providers.getProvider({ name: provider.name })
+        expect([updated.callRoot, updated.displayName]).toEqual([
+          'coral.providers.weather',
+          'Forecasts',
+        ])
+      },
+    )
+    await step('A call reaches the new server without the header', async () => {
+      expect(await finalValue(program, forecast)).toContain('sunny')
+      expect(first.calls).toHaveLength(1)
+      expect(second.calls.map((call) => call.headers['x-trace'])).toEqual([undefined])
+    })
+  })
+})
+
+test("A workspace owner's Program reads a provider's document URL again, and calls reach the operation it adds", async (context) => {
+  const service = await weatherService(context)
+  await withOwnerSession(context, async (session) => {
+    const { step } = session
+    const { api, program, provider } = await weatherProvider(session, {
+      kind: 'openapi_url',
+      url: `${service.origin}/openapi.json`,
+    })
+    await step(
+      'The service adds an operation, and the Program reads the document again',
+      async () => {
+        service.operations = { getForecast: {}, getAlerts: {} }
+        const reads = service.reads
+        const changed = await builtinCall(program, 'updateProvider', {
+          namespace: 'weather',
+          refresh: true,
+        })
+        // The new document keeps every operation, so nobody needs to act.
+        expect(changed.status).toBe('published')
+        expect(service.reads).toBe(reads + 1)
+      },
+    )
+    await step('A Program calls the new operation', async () => {
+      expect(
+        await finalValue(program, 'return await coral.providers.weather.getAlerts({});'),
+      ).toContain('sunny')
+      expect(service.calls.map((call) => call.path)).toEqual(['/getAlerts'])
+      const operations = (await api.providers.listOperations({ parent: provider.name })).operations
+      expect(operations.map((operation) => operation.relativePath).toSorted()).toEqual([
+        'getAlerts',
+        'getForecast',
+      ])
+    })
+  })
+})
+
+test("A workspace owner's Program asks for a shared API key in a header, and you enter it in the box the Program labels", async (context) => {
+  const service = await weatherService(context)
+  await withOwnerSession(context, async (session) => {
+    const { page, step } = session
+    const { api, workspace, program, provider } = await weatherProvider(
+      session,
+      credentialFree({ getForecast: {} }, service.origin),
+    )
+    let link = ''
+    await step(
+      'The Program asks for a key in a header, and gets a link where you enter it',
+      async () => {
+        const changed = await builtinCall(program, 'updateProvider', {
+          namespace: 'weather',
+          credentialRoute: 'fixed',
+          authentication: {
+            method: 'header_credentials',
+            headers: { 'X-Weather-Key': { source: 'field', field: 'key' } },
+          },
+          credentialFields: { key: { label: 'Weather key', sensitive: true } },
+        })
+        expect(changed.status).toBe('needs_sign_in')
+        link = changed.url
+        expect(await api.providers.getProvider({ name: provider.name })).toEqual(provider)
+      },
+    )
+    await step('Enter the key in the box the Program labelled, and save', async () => {
+      await page.goto(link)
+      const dialog = await openDialog(
+        page,
+        page.getByRole('button', { name: 'Connect the shared account', exact: true }),
+      )
+      await dialog.getByLabel('Weather key', { exact: true }).fill('weather-key')
+      await dialog.getByRole('button', { name: 'Save and share the account', exact: true }).click()
+      // A new account setting breaks access, so Save asks first.
+      await saveConfirmedSettingsChange(page)
+      const { account } = await api.accounts.getProviderAccount({
+        parent: workspace.name,
+        provider: provider.name,
+        scope: ProviderAccountScope.SHARED,
+      })
+      expect(account?.state).toBe(ProviderAccountState.READY)
+    })
+    await step("A Program's call sends the key in the header", async () => {
+      expect(
+        await finalValue(program, 'return await coral.providers.weather.getForecast({});'),
+      ).toContain('sunny')
+      expect(service.calls.map((call) => call.headers['x-weather-key'])).toEqual(['weather-key'])
+    })
+  })
+})
+
+test("A workspace owner denies their Program's rename, then approves it, and the providers page shows the new name", async (context) => {
+  await withOwnerSession(context, async (session) => {
+    const { page, step } = session
+    // Only addProvider runs without approval, so each updateProvider call waits for you.
+    const { api, workspace, program, provider } = await weatherProvider(
+      session,
+      credentialFree({ getForecast: {} }),
+      { unattended: ['addProvider'] },
+    )
+    const rename = `try { return await coral.workspace.updateProvider(${JSON.stringify({
+      namespace: 'weather',
+      displayName: 'Forecasts',
+    })}); } catch (error) { return error.code; }`
+    await step('Deny the rename, and the Program catches the failure', async () => {
+      const paused = await pausedForApproval(program, rename)
+      const review = await openReview(page, paused, 'updateProvider')
+      await review.getByRole('button', { name: 'Deny this call', exact: true }).click()
+      await page.getByText('Denied', { exact: true }).waitFor()
+      const { update } = await observeRun(program, await program.wait(paused))
+      expect(update.final_value).toEqual({ kind: 'value', value: 'approval_declined' })
+      expect(await api.providers.getProvider({ name: provider.name })).toEqual(provider)
+    })
+    await step('Approve the same rename in a new Run, and Coral publishes it', async () => {
+      const paused = await pausedForApproval(program, rename)
+      const review = await openReview(page, paused, 'updateProvider')
+      await review.getByRole('button', { name: 'Approve this call', exact: true }).click()
+      await page.getByText('Approved', { exact: true }).waitFor()
+      const { update } = await observeRun(program, await program.wait(paused))
+      expect(update.final_value).toMatchObject({
+        kind: 'value',
+        value: { data: { status: 'published' } },
+      })
+    })
+    await step('Show the new name on the providers page', async () => {
+      await page.goto(`/workspaces/${workspace.name.split('/')[1]}/providers`)
+      await page
+        .getByRole('navigation', { name: 'installed providers', exact: true })
+        .getByRole('link', { name: 'Forecasts settings', exact: true })
+        .waitFor()
     })
   })
 })
