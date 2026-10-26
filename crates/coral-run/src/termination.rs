@@ -265,7 +265,10 @@ impl RunModule {
             &run,
             &termination,
             &[],
-            takeover_claim_id,
+            takeover_claim_id.map(|claim_id| run_repository::Takeover {
+                claim_id,
+                instance: &self.instance,
+            }),
             now,
         )
         .await?;
@@ -305,14 +308,14 @@ impl RunModule {
 /// Invocation then ends (`run_terminated` before its dispatch,
 /// `indeterminate` once dispatching) with its Approval Request closed; and
 /// `run.ended` follows, the worker claim released and, for a started Run,
-/// the execution claim taken over by `takeover_claim_id`. One head move,
+/// the execution claim taken over by `takeover`. One head move,
 /// predicated on the claim and the head `run` shows.
 pub(crate) async fn end_in_one_chunk(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
     termination: &RunTermination,
     expired: &[ApprovalId],
-    takeover_claim_id: Option<&str>,
+    takeover: Option<run_repository::Takeover<'_>>,
     ended_at_unix_nanos: i64,
 ) -> Result<(), Error> {
     let mut events = Vec::new();
@@ -329,7 +332,7 @@ pub(crate) async fn end_in_one_chunk(
         run,
         &events,
         termination,
-        takeover_claim_id,
+        takeover,
         ended_at_unix_nanos,
     )
     .await

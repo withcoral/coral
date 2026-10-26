@@ -81,6 +81,7 @@ impl Fixture {
                 workspaces.clone(),
             ),
             coral_run::RuntimeLimits::default(),
+            coral_run::CoralInstanceId::generate(),
         )
         .unwrap();
         let index = coral_search::SearchIndex::new(database.clone(), RECONCILE_INTERVAL);

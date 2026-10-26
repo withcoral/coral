@@ -145,6 +145,8 @@ mod history;
 mod human_interface;
 pub use history::{InvocationStatus, InvocationSummary, RunSummary};
 pub use human_interface::{HumanInterfaceUrl, HumanInterfaceUrlError};
+mod instance;
+pub use instance::CoralInstanceId;
 pub mod history_repository;
 mod inspection;
 mod inspection_repository;
@@ -242,6 +244,8 @@ pub struct RunModule {
     applied_output_cap: AppliedOutputCap,
     fan_out_limit: FanOutLimit,
     shutdown_drain: ShutdownDrain,
+    /// The Coral Instance this module runs in; a Run row it claims records it.
+    instance: CoralInstanceId,
     owners: Owners,
     admission: shutdown::Admission,
     /// Bounds the recovered owners' writes at once, so a mass recovery after
@@ -256,7 +260,8 @@ pub struct RunModule {
 impl RunModule {
     /// Builds the runtime with the deployment's outbound policy and runtime limits.
     /// Built-in Operations prepare Setups through `providers`, the bootstrap's
-    /// Provider Module.
+    /// Provider Module. `instance` is the Coral Instance the process runs as,
+    /// which every Run it claims records.
     /// # Errors
     /// Returns an initialization error when the runtime or HTTP client cannot start.
     pub fn new(
@@ -265,6 +270,7 @@ impl RunModule {
         workspaces: WorkspaceModule,
         providers: coral_provider::ProviderModule,
         limits: RuntimeLimits,
+        instance: CoralInstanceId,
     ) -> Result<Self, Error> {
         Ok(Self {
             providers,
@@ -285,6 +291,7 @@ impl RunModule {
             applied_output_cap: limits.applied_output_cap(),
             fan_out_limit: limits.fan_out_limit(),
             shutdown_drain: limits.shutdown_drain(),
+            instance,
             owners: Owners::default(),
             admission: shutdown::Admission::default(),
             recovery_writes: recovery::write_permits(),
@@ -324,6 +331,7 @@ impl RunModule {
             applied_output_cap: AppliedOutputCap::default(),
             fan_out_limit: FanOutLimit::default(),
             shutdown_drain: ShutdownDrain::default(),
+            instance: CoralInstanceId::generate(),
             owners: Owners::default(),
             admission: shutdown::Admission::default(),
             recovery_writes: recovery::write_permits(),
@@ -350,6 +358,12 @@ impl RunModule {
     ) -> Self {
         self.provider_publisher = Some(publisher);
         self
+    }
+
+    /// The Coral Instance this module runs in.
+    #[cfg(test)]
+    pub(crate) const fn instance(&self) -> &CoralInstanceId {
+        &self.instance
     }
 
     /// Names the Reef origin that built-in Operation Results link to. Only the

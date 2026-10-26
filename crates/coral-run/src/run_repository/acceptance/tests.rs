@@ -6,9 +6,9 @@ use coral_workspace::{
 use sea_query::{Expr, ExprTrait as _, Query};
 
 use super::insert_record;
-use crate::RunId;
 use crate::run_repository::ProgramRunRecords;
 use crate::types::AcceptedRun;
+use crate::{CoralInstanceId, RunId};
 
 /// A conflict on the identifier writes nothing and reports `false`; a fresh
 /// identifier in the same transaction still inserts.
@@ -47,32 +47,46 @@ async fn a_taken_run_identifier_is_reported_and_writes_nothing() {
     };
     let taken = "height-word-database-library";
 
+    let (first, second) = (CoralInstanceId::generate(), CoralInstanceId::generate());
+
     let mut transaction = database.begin().await.expect("transaction");
     assert!(
-        insert_record(&mut transaction, &run(taken, 10))
+        insert_record(&mut transaction, &run(taken, 10), &first)
             .await
             .expect("first insert")
     );
     assert!(
-        !insert_record(&mut transaction, &run(taken, 20))
+        !insert_record(&mut transaction, &run(taken, 20), &second)
             .await
             .expect("conflicting insert")
     );
     assert!(
-        insert_record(&mut transaction, &run("random-big-business-store", 30))
-            .await
-            .expect("fresh insert after the conflict")
+        insert_record(
+            &mut transaction,
+            &run("random-big-business-store", 30),
+            &second
+        )
+        .await
+        .expect("fresh insert after the conflict")
     );
     let statement = Query::select()
-        .column(ProgramRunRecords::AcceptedAtUnixNanos)
+        .columns([
+            ProgramRunRecords::AcceptedAtUnixNanos,
+            ProgramRunRecords::HolderInstanceId,
+        ])
         .from(ProgramRunRecords::Table)
         .and_where(Expr::col(ProgramRunRecords::Id).eq(taken))
         .to_owned();
-    let (accepted_at_unix_nanos,): (i64,) = transaction
+    let (accepted_at_unix_nanos, holder): (i64, Option<String>) = transaction
         .fetch_optional(statement)
         .await
         .expect("read the Run row")
         .expect("the first Run row");
     assert_eq!(accepted_at_unix_nanos, 10, "the conflict changed nothing");
+    assert_eq!(
+        holder.as_deref(),
+        Some(first.as_str()),
+        "acceptance records the accepting Coral Instance"
+    );
     transaction.commit().await.expect("commit");
 }

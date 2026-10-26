@@ -1857,6 +1857,7 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
             scope.fixture.workspaces.clone(),
         ),
         crate::RuntimeLimits::default(),
+        crate::CoralInstanceId::generate(),
     )
     .expect("start the real Program runtime")
     .with_human_interface(test_reef());

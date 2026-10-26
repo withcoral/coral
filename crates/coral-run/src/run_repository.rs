@@ -31,7 +31,8 @@ pub(crate) use ledger::{Chunk, ChunkEvent, commit_chunk};
 pub(crate) use retention::{delete_retained_history, hold_terminal_run, retention_activity};
 use run_row::RunRow;
 pub(crate) use termination::{
-    finish_run, finish_termination, finish_unstarted_run, interrupt_run, request_termination,
+    Takeover, finish_run, finish_termination, finish_unstarted_run, interrupt_run,
+    request_termination,
 };
 
 #[derive(Iden)]
@@ -46,6 +47,7 @@ enum ProgramRunRecords {
     DeadlineAtUnixNanos,
     WorkerClaimId,
     WorkerClaimExpiresAtUnixNanos,
+    HolderInstanceId,
     ExecutionClaimId,
     ExecutionStartedAtUnixNanos,
     TerminationKind,
@@ -184,7 +186,7 @@ fn exact_run_statement(workspace_id: &WorkspaceId, run_id: &RunId) -> sea_query:
 }
 
 /// The columns `RunRow` decodes, shared by Run reads and retention's hold.
-const RUN_COLUMNS: [ProgramRunRecords; 26] = [
+const RUN_COLUMNS: [ProgramRunRecords; 27] = [
     ProgramRunRecords::Id,
     ProgramRunRecords::WorkspaceId,
     ProgramRunRecords::PrincipalId,
@@ -194,6 +196,7 @@ const RUN_COLUMNS: [ProgramRunRecords; 26] = [
     ProgramRunRecords::DeadlineAtUnixNanos,
     ProgramRunRecords::WorkerClaimId,
     ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
+    ProgramRunRecords::HolderInstanceId,
     ProgramRunRecords::ExecutionClaimId,
     ProgramRunRecords::ExecutionStartedAtUnixNanos,
     ProgramRunRecords::TerminationKind,

@@ -21,6 +21,7 @@ pub(super) struct RunRow {
     deadline_at_unix_nanos: i64,
     worker_claim_id: Option<String>,
     worker_claim_expires_at_unix_nanos: Option<i64>,
+    holder_instance_id: Option<String>,
     execution_claim_id: Option<String>,
     execution_started_at_unix_nanos: Option<i64>,
     termination_kind: Option<String>,
@@ -185,6 +186,9 @@ impl RunRow {
             deadline_at_unix_nanos: self.deadline_at_unix_nanos,
             worker_claim_id: self.worker_claim_id,
             worker_claim_expires_at_unix_nanos: self.worker_claim_expires_at_unix_nanos,
+            holder_instance_id: self
+                .holder_instance_id
+                .map(crate::CoralInstanceId::from_stored),
             execution_claim_id: self.execution_claim_id,
             execution_started_at_unix_nanos: self.execution_started_at_unix_nanos,
             termination,

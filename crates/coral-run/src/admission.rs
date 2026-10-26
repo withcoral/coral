@@ -202,6 +202,7 @@ impl RunModule {
             if run_repository::insert_acceptance(
                 transaction,
                 &run,
+                &self.instance,
                 submission.source(),
                 &package,
                 &linked,

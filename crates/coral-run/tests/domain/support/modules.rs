@@ -170,6 +170,7 @@ impl TestModules {
             self.workspaces.clone(),
             self.providers.clone(),
             crate::RuntimeLimits::default(),
+            crate::CoralInstanceId::generate(),
         )
         .expect("start the real Program runtime")
         .with_human_interface(test_reef());

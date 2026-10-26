@@ -608,6 +608,14 @@ async fn an_owner_task_that_panics_mid_run_has_the_supervisor_record_interrupted
     let (workspace_id, principal, run_id) = started_run(&fixture, "panic").await;
     let before = fixture.run_record(&workspace_id, &run_id).await;
     let claim_id = before.execution_claim_id.clone().expect("started Run");
+    // Another Coral Instance's, as when a recovered owner panics, so the
+    // takeover's own write is what the row shows after it.
+    fixture
+        .inject_fault(&format!(
+            "UPDATE program_run_records SET holder_instance_id = 'dead-instance' \
+             WHERE id = '{run_id}'"
+        ))
+        .await;
 
     // Once the Program executes, the owner has consumed its start: the
     // Emission's message is the next one its task dequeues.
@@ -631,6 +639,11 @@ async fn an_owner_task_that_panics_mid_run_has_the_supervisor_record_interrupted
             .is_some_and(|claim| claim != claim_id),
         "the supervisor took the claim over: {:?}",
         after.execution_claim_id
+    );
+    assert_eq!(
+        after.holder_instance_id.as_ref(),
+        Some(fixture.runs.instance()),
+        "the supervisor's Coral Instance holds the Run it took over"
     );
     assert_eq!(after.worker_claim_id, None);
     assert_eq!(

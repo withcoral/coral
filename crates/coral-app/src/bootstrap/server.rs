@@ -364,7 +364,11 @@ impl PreparedServerBuilder {
             })
             .transpose()?;
         let reconcile_interval = deployment_config.search_reconcile_interval()?;
-        init_server_telemetry(deployment_config.raw())?;
+        // This start's Coral Instance, recorded on the Runs it claims. The
+        // first start in a process also names it in exported telemetry.
+        let instance = coral_run::CoralInstanceId::generate();
+        init_server_telemetry(deployment_config.raw(), &instance.to_string())?;
+        tracing::info!(coral_instance_id = %instance, "Coral Instance starting");
         let mut server = start_server(
             Arc::clone(&coral_db),
             mode,
@@ -377,6 +381,7 @@ impl PreparedServerBuilder {
             reconcile_interval,
             readiness,
             state_lock,
+            instance,
         )
         .await?;
         server.authorization_server = authorization_server;
@@ -402,9 +407,9 @@ fn build_authorization_server(
     ))
 }
 
-fn init_server_telemetry(raw: &str) -> Result<(), AppError> {
+fn init_server_telemetry(raw: &str, instance_id: &str) -> Result<(), AppError> {
     let config = TelemetryConfig::from_toml(raw)?;
-    crate::telemetry::init_tracing(&config)
+    crate::telemetry::init_tracing(&config, instance_id)
 }
 
 /// Opens the host credential vault from the source the deployment selects:
@@ -695,6 +700,7 @@ pub(crate) async fn start_server(
     reconcile_interval: std::time::Duration,
     readiness: EngineReadiness,
     state_lock: StateLock,
+    instance: coral_run::CoralInstanceId,
 ) -> Result<RunningServer, AppError> {
     let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
     let tasks = coral_task::TaskModule::new(database.clone(), workspaces.clone());
@@ -750,6 +756,7 @@ pub(crate) async fn start_server(
         workspaces.clone(),
         providers.clone(),
         runtime_limits,
+        instance,
     )
     .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
     .with_provider_publisher(Arc::new(provider_workflow.clone()));

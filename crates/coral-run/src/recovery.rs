@@ -238,7 +238,10 @@ impl RunModule {
             &run,
             &termination,
             &expired,
-            Some(recovery.takeover_claim_id),
+            Some(run_repository::Takeover {
+                claim_id: recovery.takeover_claim_id,
+                instance: &self.instance,
+            }),
             now.max(termination.started_at_unix_nanos),
         )
         .await?;
