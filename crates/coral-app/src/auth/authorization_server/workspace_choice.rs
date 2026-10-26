@@ -14,7 +14,8 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 use coral_auth::authorization_codes::AuthorizationGrant;
 use coral_outbound::{BrowserRedirect, EndpointUrl};
-use coral_workspace::{UserId, WorkspaceChoice, WorkspaceRole};
+use coral_provider::{ProviderCallRoot, ProviderState};
+use coral_workspace::{UserId, WorkspaceChoice, WorkspaceId, WorkspaceModule, WorkspaceRole};
 
 use super::super::sealed_handshake::{PendingWorkspaceChoice, SignInSession};
 use super::authorize::confirmation::{self, ApprovalDecision, ApprovalScope, escape_html};
@@ -58,6 +59,7 @@ pub(super) async fn offer(
             resource: session.resource,
         };
         let client_name = session.client_name.as_deref().unwrap_or(UNNAMED_CLIENT);
+        let providers = provider_summaries(state, &pending.user_id, &choices).await;
         picker_page(
             state,
             headers,
@@ -65,6 +67,7 @@ pub(super) async fn offer(
             client_name,
             signed_in_as,
             &choices,
+            &providers,
         )
     };
     rendered.unwrap_or_else(|| trusted.error("server_error", "authorization failed"))
@@ -105,16 +108,10 @@ pub(super) async fn oauth_workspace_post(
     };
     // The page may have waited minutes; the choice counts only if the User
     // could still pick it now.
-    match choices(&state, &pending.user_id).await {
-        Ok(choices)
-            if choices
-                .iter()
-                .any(|choice| choice.workspace().id().to_string() == workspace) => {}
-        Ok(_unavailable) => {
-            return trusted.error("access_denied", "the workspace is not available");
-        }
+    let workspace = match pick(&state, &pending.user_id, &workspace).await {
+        Ok(choice) => choice.workspace().id().to_string(),
         Err(failure) => return failure.into_error(&trusted),
-    }
+    };
     let grant = AuthorizationGrant {
         user_id: pending.user_id,
         client_id: pending.client_id,
@@ -131,6 +128,8 @@ pub(super) async fn oauth_workspace_post(
 enum ChoiceFailure {
     /// The User can no longer sign in, so they can pick nothing.
     Denied,
+    /// The User cannot pick that Workspace now.
+    NotAvailable,
     Unavailable,
 }
 
@@ -138,31 +137,115 @@ impl ChoiceFailure {
     fn into_error(self, trusted: &TrustedRedirect) -> Response {
         match self {
             Self::Denied => trusted.error("access_denied", "access is disabled"),
+            Self::NotAvailable => trusted.error("access_denied", "the workspace is not available"),
             Self::Unavailable => trusted.error("server_error", "authorization failed"),
         }
     }
+
+    fn from_domain(error: &coral_workspace::Error) -> Self {
+        match error {
+            coral_workspace::Error::PermissionDenied(_) => Self::Denied,
+            coral_workspace::Error::WorkspaceNotFound => Self::NotAvailable,
+            _ => {
+                tracing::warn!("Workspace picker could not read the User's Workspaces");
+                Self::Unavailable
+            }
+        }
+    }
+}
+
+fn workspaces(state: &AuthorizationServerHttpState) -> Result<&WorkspaceModule, ChoiceFailure> {
+    state.workspaces.as_ref().ok_or_else(|| {
+        tracing::warn!("Workspace picker has no database to list Workspaces from");
+        ChoiceFailure::Unavailable
+    })
 }
 
 async fn choices(
     state: &AuthorizationServerHttpState,
     user_id: &str,
 ) -> Result<Vec<WorkspaceChoice>, ChoiceFailure> {
-    let Some(workspaces) = state.workspaces.as_ref() else {
-        tracing::warn!("Workspace picker has no database to list Workspaces from");
-        return Err(ChoiceFailure::Unavailable);
-    };
     let user_id = UserId::parse(user_id).map_err(|_error| ChoiceFailure::Unavailable)?;
-    workspaces
+    workspaces(state)?
         .list_sign_in_choices(&user_id)
         .await
-        .map_err(|error| {
-            if matches!(error, coral_workspace::Error::PermissionDenied(_)) {
-                ChoiceFailure::Denied
-            } else {
-                tracing::warn!("Workspace picker could not list the User's Workspaces");
-                ChoiceFailure::Unavailable
+        .map_err(|error| ChoiceFailure::from_domain(&error))
+}
+
+async fn pick(
+    state: &AuthorizationServerHttpState,
+    user_id: &str,
+    workspace: &str,
+) -> Result<WorkspaceChoice, ChoiceFailure> {
+    let user_id = UserId::parse(user_id).map_err(|_error| ChoiceFailure::Unavailable)?;
+    let workspace = WorkspaceId::parse(workspace).map_err(|_error| ChoiceFailure::NotAvailable)?;
+    workspaces(state)?
+        .sign_in_choice(&user_id, &workspace)
+        .await
+        .map_err(|error| ChoiceFailure::from_domain(&error))
+}
+
+/// Each choice's usable Providers, named for display: "GitHub, Linear, Slack". `None` where they cannot be read;
+/// the page then shows the Workspace without them rather than failing.
+async fn provider_summaries(
+    state: &AuthorizationServerHttpState,
+    user_id: &str,
+    choices: &[WorkspaceChoice],
+) -> Vec<Option<String>> {
+    let mut summaries = vec![None; choices.len()];
+    let Some(lister) = state.providers.as_ref() else {
+        return summaries;
+    };
+    let Ok(user_id) = UserId::parse(user_id) else {
+        return summaries;
+    };
+    let Ok(actor) = lister.organization.resolve_user_authority(&user_id).await else {
+        return summaries;
+    };
+    for (summary, choice) in summaries.iter_mut().zip(choices) {
+        match lister
+            .providers
+            .inspect_providers(&actor, choice.workspace().id())
+            .await
+        {
+            Ok(providers) => {
+                // The Built-in Provider is in every Workspace, and a Disabled
+                // one runs nothing, so neither tells the choices apart.
+                let mut names = providers
+                    .iter()
+                    .filter(|provider| {
+                        provider.state() == ProviderState::Active
+                            && !matches!(provider.call_root(), ProviderCallRoot::Builtin)
+                    })
+                    .map(|provider| provider.display_name().to_owned())
+                    .collect::<Vec<_>>();
+                names.sort_by_key(|name| name.to_lowercase());
+                *summary = Some(provider_summary(&names));
             }
-        })
+            Err(_error) => {
+                tracing::warn!("Workspace choice could not list a Workspace's Providers");
+            }
+        }
+    }
+    summaries
+}
+
+/// The first few Provider names, then how many more: "GitHub, Linear, Slack +2".
+fn provider_summary(names: &[String]) -> String {
+    const SHOWN: usize = 3;
+    if names.is_empty() {
+        return "No providers yet".to_owned();
+    }
+    let shown = names
+        .iter()
+        .take(SHOWN)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    match names.len().saturating_sub(SHOWN) {
+        0 => shown,
+        rest => format!("{shown} +{rest}"),
+    }
 }
 
 fn picker_page(
@@ -172,6 +255,7 @@ fn picker_page(
     client_name: &str,
     signed_in_as: Option<&str>,
     choices: &[WorkspaceChoice],
+    providers: &[Option<String>],
 ) -> Option<Response> {
     let secure = state.secure_cookies();
     let browser_binding = confirmation::browser_binding_for_page(headers, secure).ok()?;
@@ -190,23 +274,30 @@ fn picker_page(
     let roles_differ = choices
         .iter()
         .any(|choice| Some(choice.role()) != first_role);
+    // Each card is followed by its own Connect button, which the stylesheet
+    // shows only while that card is picked, so the button names the
+    // Workspace without a script.
     let mut options = String::new();
-    for choice in choices {
+    for (choice, providers) in choices.iter().zip(providers) {
         let role = match choice.role() {
-            _ if !roles_differ => "",
-            WorkspaceRole::Owner => "<span class=\"choice-role\">Owner</span>",
-            WorkspaceRole::Member => "<span class=\"choice-role\">Member</span>",
+            _ if !roles_differ => None,
+            WorkspaceRole::Owner => Some("Owner"),
+            WorkspaceRole::Member => Some("Member"),
         };
-        let name = choice.workspace().display_name().as_str();
-        // The initial is decoration; the name beside it is the label.
-        let initial = name.chars().next().map(char::to_uppercase);
+        let meta = role
+            .map(str::to_owned)
+            .into_iter()
+            .chain(providers.as_deref().map(escape_html))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let name = escape_html(choice.workspace().display_name().as_str());
         write!(
             options,
-            "<label class=\"choice\"><span class=\"choice-initial\" aria-hidden=\"true\">{}</span>\
-             <span class=\"choice-text\"><span class=\"choice-name\"><bdi>{}</bdi></span>{role}</span>\
-             <input type=\"radio\" name=\"workspace\" value=\"{}\" required></label>",
-            escape_html(&initial.map(String::from_iter).unwrap_or_default()),
-            escape_html(name),
+            "\n        <label class=\"choice\"><input type=\"radio\" name=\"workspace\" \
+             value=\"{}\" required><span class=\"choice-text\"><span class=\"choice-name\">\
+             <bdi>{name}</bdi></span><span class=\"choice-meta\">{meta}</span></span></label>\
+             \n        <button class=\"connect connect-for\" type=\"submit\" name=\"decision\" \
+             value=\"continue\">Connect to <bdi>{name}</bdi></button>",
             choice.workspace().id(),
         )
         .ok()?;
@@ -246,4 +337,25 @@ fn no_workspace_page(state: &AuthorizationServerHttpState) -> Option<Response> {
 
 fn choice_error() -> Response {
     direct_error("invalid_request", "workspace choice is invalid or expired")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_summary;
+
+    #[test]
+    fn a_provider_summary_names_the_first_few_and_counts_the_rest() {
+        for (names, summary) in [
+            (&[][..], "No providers yet"),
+            (&["GitHub"][..], "GitHub"),
+            (&["GitHub", "Linear", "Slack"][..], "GitHub, Linear, Slack"),
+            (
+                &["GitHub", "Linear", "Slack", "Stripe", "Zendesk"][..],
+                "GitHub, Linear, Slack +2",
+            ),
+        ] {
+            let names = names.iter().map(ToString::to_string).collect::<Vec<_>>();
+            assert_eq!(provider_summary(&names), summary);
+        }
+    }
 }

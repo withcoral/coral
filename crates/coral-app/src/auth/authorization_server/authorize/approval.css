@@ -20,6 +20,7 @@
   --secondary: rgb(0 0 0 / 5.88%);
   --secondary-hover: rgb(0 0 0 / 9.02%);
   --secondary-active: rgb(0 0 0 / 12.16%);
+  --control-border: rgb(0 0 0 / 14%);
   --focus: #398125;
   --selection: rgb(38 208 0 / 21.18%);
   font-family: "Encode Sans Semi Expanded", ui-sans-serif, system-ui, -apple-system,
@@ -42,6 +43,7 @@
     --secondary: rgb(255 255 255 / 7.06%);
     --secondary-hover: rgb(255 255 255 / 13.33%);
     --secondary-active: rgb(255 255 255 / 13.33%);
+    --control-border: rgb(255 255 255 / 18%);
     --focus: #88cc78;
     --selection: rgb(62 250 13 / 16.47%);
   }
@@ -57,7 +59,7 @@ body {
   color: var(--text);
   font-size: 0.8125rem;
   line-height: 1.65;
-  letter-spacing: 0.325px;
+  letter-spacing: -0.006em;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -88,34 +90,33 @@ main {
   overflow-wrap: anywhere;
 }
 
-/* The approval page: who asks and where the code goes, beside the decision. */
+/* The approval page: what the app asks for, beside the decision. */
 .card.split {
   display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  grid-template-columns: minmax(0, 6fr) minmax(0, 5fr);
   gap: 0;
-  max-width: 920px;
+  max-width: 1040px;
   padding: 0;
   overflow: hidden;
 }
 
-h1, h2, p, dl, dd {
+h1, h2, p, dl, dd, ul {
   margin: 0;
 }
 
 h1,
 h2 {
-  font-weight: 500;
+  font-weight: 600;
   line-height: 1.3;
-  letter-spacing: 0;
+  letter-spacing: -0.02em;
 }
 
 h1 {
   margin-bottom: 8px;
-  font-size: 1.4375rem;
+  font-size: 1.625rem;
 }
 
 h2 {
-  margin-bottom: 6px;
   font-size: 1.25rem;
 }
 
@@ -124,50 +125,116 @@ h2 {
 }
 
 .intro p,
-.decision-intro p {
+.notice,
+.account {
   color: var(--muted);
 }
 
-.decision-intro p bdi {
-  color: var(--text);
-  font-weight: 500;
+.section-title {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 400;
 }
 
 .context {
   display: flex;
   flex-direction: column;
-  gap: 32px;
+  gap: 28px;
   padding: 40px;
   border-right: 1px solid var(--border);
   background: var(--inset);
 }
 
-.brand {
+.connection {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 1rem;
-  font-weight: 500;
+  gap: 12px;
 }
 
+.app-mark,
 .brand-mark {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+}
+
+.app-mark {
+  background: var(--secondary);
+}
+
+.app-mark svg {
+  width: 22px;
+  height: 22px;
+}
+
+.brand-mark {
   background: #ffffff;
   color: #111111;
   box-shadow: 0 0 0 1px var(--border);
 }
 
 .brand-mark svg {
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
+}
+
+.connector {
+  width: 20px;
+  height: 20px;
+  color: var(--muted);
+}
+
+.abilities ul {
+  display: grid;
+  gap: 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.abilities li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+.abilities svg {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  fill: none;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.abilities .can {
+  stroke: var(--focus);
+}
+
+.credentials {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 14px;
+  color: var(--muted);
+}
+
+.credentials svg {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.75;
 }
 
 .details {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 16px;
   margin-top: auto;
   padding-top: 24px;
@@ -176,70 +243,104 @@ h2 {
 
 dt {
   color: var(--muted);
-  font-size: 0.71875rem;
-  font-weight: 500;
-  letter-spacing: 0.23px;
+  font-size: 0.75rem;
 }
 
 dd {
-  font-size: 0.875rem;
   unicode-bidi: isolate;
 }
 
+.destination {
+  font-family: "DM Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  letter-spacing: 0;
+}
+
+/*
+ * The decision wraps as one row of full-width items, then Cancel and the
+ * Connect button. Source order keeps Cancel the first submit button, for a
+ * safe implicit submission; `order` places it beside Connect.
+ */
 .decision {
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 20px;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 12px;
   padding: 40px;
 }
 
-.choices {
+.decision > * {
+  flex: 0 0 100%;
   min-width: 0;
-  margin: 0;
-  padding: 0;
-  border: none;
 }
 
-.choice-list {
-  display: grid;
-  gap: 10px;
+/* With no choice to make, the short decision sits mid-pane. */
+.decision:not(:has(.choice)) {
+  align-content: center;
+}
+
+.decision > h2 {
+  margin: 12px 0 4px;
+}
+
+.decision > .cancel {
+  flex: 1 1 0;
+  order: 1;
+  margin-top: 20px;
+}
+
+.decision > .connect {
+  flex: 2 1 0;
+  order: 2;
+  margin-top: 20px;
+}
+
+.decision > .notice {
+  order: 3;
+  font-size: 0.75rem;
+  text-align: center;
+}
+
+/* Each Workspace brings its own Connect button; only the picked one shows. */
+.decision > .connect-for,
+.decision:has(.choice input:checked) > .connect-any {
+  display: none;
+}
+
+.decision > .choice:has(input:checked) + .connect-for {
+  display: block;
+}
+
+/* As tall as the icons opposite, so the two panes' first lines align. */
+.account {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  font-size: 0.8125rem;
+}
+
+.account bdi {
+  color: var(--text);
+  font-weight: 500;
 }
 
 .choice {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 14px;
-  padding: 12px 16px;
+  padding: 14px 16px;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: var(--inset);
   cursor: pointer;
 }
 
 .choice:hover {
-  background: var(--secondary);
+  background: var(--inset);
 }
 
 .choice:has(input:checked) {
   border-color: var(--focus);
   background: color-mix(in srgb, var(--focus) 10%, transparent);
-}
-
-.choice-initial {
-  display: grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: var(--secondary-active);
-  font-weight: 500;
-}
-
-.choice:has(input:checked) .choice-initial {
-  background: var(--button);
-  color: var(--button-text);
 }
 
 .choice-text {
@@ -248,17 +349,19 @@ dd {
 }
 
 .choice-name {
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
   font-weight: 500;
 }
 
-.choice-role,
-.account-hint {
+.choice-meta {
+  overflow: hidden;
   color: var(--muted);
-  font-size: 0.71875rem;
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-/* A drawn radio, so the selected card reads the same in every browser. */
+/* A drawn radio, so the picked card reads the same in every browser. */
 .choice input {
   appearance: none;
   width: 20px;
@@ -272,49 +375,6 @@ dd {
 .choice input:checked {
   border-color: var(--focus);
   background: radial-gradient(circle, var(--focus) 0 4px, transparent 5px);
-}
-
-.account {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-}
-
-.account-icon {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--secondary);
-  color: var(--muted);
-}
-
-.account-icon svg {
-  width: 18px;
-  height: 18px;
-}
-
-.account p {
-  display: grid;
-  min-width: 0;
-}
-
-.account-name {
-  font-weight: 500;
-}
-
-.buttons {
-  display: flex;
-  gap: 12px;
-}
-
-.buttons button {
-  flex: 1;
 }
 
 .actions {
@@ -371,14 +431,30 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
+button.cancel {
+  border: 1px solid var(--control-border);
+  background: transparent;
+}
+
+button.cancel:hover {
+  background: var(--secondary);
+}
+
+.decision button {
+  min-height: 48px;
+}
+
 @media (pointer: coarse) {
   button {
     min-height: 44px;
   }
 }
 
-/* One column: who asks, then the decision, then the details. */
-@media (max-width: 760px) {
+/*
+ * One column: the heading, then the decision, then what the app can do and
+ * the details. The left pane dissolves so its parts can take that order.
+ */
+@media (max-width: 800px) {
   .card.split {
     grid-template-columns: minmax(0, 1fr);
     gap: 24px;
@@ -395,8 +471,12 @@ button:focus-visible {
     padding: 0;
   }
 
-  .details {
+  .abilities {
     order: 2;
+  }
+
+  .details {
+    order: 3;
     margin-top: 0;
   }
 }
@@ -410,8 +490,22 @@ button:focus-visible {
     padding: 24px;
   }
 
-  .buttons {
-    /* Keep Cancel first in source for safe implicit submission. */
-    flex-direction: column-reverse;
+  .details {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Stack the buttons with Connect above Cancel. */
+  .decision > .cancel,
+  .decision > .connect {
+    flex-basis: 100%;
+  }
+
+  .decision > .cancel {
+    order: 2;
+    margin-top: 0;
+  }
+
+  .decision > .connect {
+    order: 1;
   }
 }

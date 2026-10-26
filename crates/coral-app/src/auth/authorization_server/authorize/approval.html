@@ -10,8 +10,16 @@
   <main>
     <section class="card split" aria-labelledby="approval-title">
       <div class="context">
-        <p class="brand">
-          <span class="brand-mark" aria-hidden="true">
+        <div class="connection" aria-hidden="true">
+          <span class="app-mark">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m5 7 5 5-5 5M12 18h7" />
+            </svg>
+          </span>
+          <svg class="connector" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 12h16m-5-5 5 5-5 5" />
+          </svg>
+          <span class="brand-mark">
             <!-- Coral's mark, embedded from apps/reef/public/coral-light.svg. -->
             <svg viewBox="0 0 32 32" fill="currentColor">
               <g transform="translate(5 5)">
@@ -19,34 +27,46 @@
               </g>
             </svg>
           </span>
-          Coral
-        </p>
+        </div>
         <header class="intro">
-          <h1 id="approval-title"><bdi>@@client_name@@</bdi> wants to connect</h1>
-          <p>Use providers from @@access_scope@@.</p>
+          <h1 id="approval-title">Connect <bdi>@@client_name@@</bdi> to Coral</h1>
+          <p><bdi>@@client_name@@</bdi> uses the providers in @@access_scope@@.</p>
         </header>
-        <dl class="details" aria-label="Details">
+        <section class="abilities" aria-labelledby="abilities-title">
+          <h2 id="abilities-title" class="section-title"><bdi>@@client_name@@</bdi> can</h2>
+          <ul>
+            <li>
+              <svg class="can" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" /></svg>
+              <span>Find and run operations on the workspace’s providers</span>
+            </li>
+            <li>
+              <svg class="can" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" /></svg>
+              <span>Act as you, limited by the workspace’s policies and approvals</span>
+            </li>
+          </ul>
+          <p class="credentials">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></svg>
+            <span>Your provider credentials stay in Coral.</span>
+          </p>
+        </section>
+        <dl class="details">
           <div>
-            <dt>@@client_identity_label@@</dt>
+            <dt>Requested by</dt>
             <dd>@@client_identity@@</dd>
           </div>
           <div>
             <dt>@@redirect_label@@</dt>
-            <dd>@@redirect_destination@@</dd>
+            <dd class="destination">@@redirect_destination@@</dd>
           </div>
         </dl>
       </div>
       <form class="decision" method="post" action="@@form_action@@" autocomplete="off">
-        <input type="hidden" name="ticket" value="@@ticket@@">
-        <header class="decision-intro">
-          <h2 id="decision-title">@@decision_title@@</h2>
-          <p><bdi>@@client_name@@</bdi> @@decision_detail@@</p>
-        </header>@@choices@@
-        <div class="buttons">
-          <!-- Cancel is the safe implicit-submit default. Keep it first. -->
-          <button type="submit" name="decision" value="cancel" formnovalidate>Cancel</button>
-          <button type="submit" name="decision" value="continue">Allow access</button>
-        </div>
+        <input type="hidden" name="ticket" value="@@ticket@@">@@account@@
+        <h2 id="decision-title">@@decision_title@@</h2>
+        <!-- Cancel is the safe implicit-submit default. Keep it the first button. -->
+        <button class="cancel" type="submit" name="decision" value="cancel" formnovalidate>Cancel</button>@@choices@@
+        <button class="connect connect-any" type="submit" name="decision" value="continue">Connect</button>
+        <p class="notice">Only connect if you started this in <bdi>@@client_name@@</bdi>.</p>
       </form>
     </section>
   </main>

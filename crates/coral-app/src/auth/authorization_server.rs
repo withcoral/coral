@@ -357,6 +357,36 @@ struct AuthorizationServerHttpState {
     /// MCP Endpoint. `None` until bootstrap attaches a database; such a
     /// sign-in then fails closed.
     workspaces: Option<coral_workspace::WorkspaceModule>,
+    /// Names each Workspace's Providers on that page; display only.
+    providers: Option<WorkspaceProviders>,
+}
+
+/// What the Workspace choice reads to name each Workspace's Providers.
+#[derive(Clone)]
+pub(super) struct WorkspaceProviders {
+    organization: coral_workspace::OrganizationModule,
+    providers: coral_provider::ProviderModule,
+}
+
+impl WorkspaceProviders {
+    /// `None` only when this Coral version's Built-in catalog cannot load,
+    /// which startup already refuses.
+    fn new(
+        database: &Arc<coral_db::Database>,
+        workspaces: &coral_workspace::WorkspaceModule,
+        outbound_policy: coral_outbound::DestinationPolicy,
+    ) -> Option<Self> {
+        let catalog = coral_catalog::BuiltinCatalog::running().ok()?;
+        Some(Self {
+            organization: coral_workspace::OrganizationModule::new(database.clone()),
+            providers: coral_provider::ProviderModule::new(
+                outbound_policy,
+                database.clone(),
+                workspaces.clone(),
+                catalog,
+            ),
+        })
+    }
 }
 
 impl AuthorizationServerHttpState {
@@ -403,6 +433,7 @@ impl AuthorizationServerHttpState {
         if let Some((issuer, subject)) = settings.bootstrap_owner() {
             user_directory = user_directory.with_bootstrap_owner(issuer, subject);
         }
+        let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
         Ok(Self {
             settings,
             session_tokens,
@@ -414,7 +445,8 @@ impl AuthorizationServerHttpState {
             client_metadata_resolver: Arc::new(clients.clone()),
             clients,
             user_directory,
-            workspaces: Some(coral_workspace::WorkspaceModule::new(database.clone())),
+            providers: WorkspaceProviders::new(&database, &workspaces, outbound_policy),
+            workspaces: Some(workspaces),
         })
     }
 

@@ -29,14 +29,13 @@ test('standalone OAuth page works without scripts under its pinned CSP in both t
       styles: css,
       client_name: 'Example client',
       client_identity: 'client.example.test',
-      client_identity_label: 'App domain',
       redirect_label: 'Returns to',
       redirect_destination: loopback ? '127.0.0.1:4111' : 'client.example.test:443',
       ticket: 'test-only-ticket',
       access_scope: 'this workspace',
       decision_title: 'Allow access?',
-      decision_detail: 'will have access to the providers in this workspace.',
       form_action: '/oauth/authorize',
+      account: '',
       choices: '',
     }
     // Rust owns real substitution and escaping; this fixture supplies known
@@ -68,7 +67,7 @@ test('standalone OAuth page works without scripts under its pinned CSP in both t
         })
         page.on('request', (request) => requests.push(request.url()))
         await page.goto(`${origin}/oauth/authorize${loopback ? '?loopback' : ''}`)
-        await page.getByRole('heading', { name: 'Example client wants to connect' }).waitFor()
+        await page.getByRole('heading', { name: 'Connect Example client to Coral' }).waitFor()
         assert.equal(await page.getByRole('alert').count(), 0)
         await page
           .getByText(loopback ? '127.0.0.1:4111' : 'client.example.test:443', {
@@ -94,7 +93,7 @@ test('standalone OAuth page works without scripts under its pinned CSP in both t
               .evaluate((element) => getComputedStyle(element).backgroundColor),
           )
         const decision = loopback
-          ? { label: 'Allow access', value: 'continue' }
+          ? { label: 'Connect', value: 'continue' }
           : { label: 'Cancel', value: 'cancel' }
         await page.getByRole('button', { name: decision.label, exact: true }).click()
         await page.getByText('Submitted', { exact: true }).waitFor()
@@ -119,38 +118,39 @@ test('standalone OAuth page works without scripts under its pinned CSP in both t
 const fill = (template: string, values: Record<string, string>) =>
   template.replace(/@@(.*?)@@/g, (_, slot: string) => values[slot])
 
-// Rust renders these rows from escaped names; the fixture mirrors that markup.
-const option = (id: string, name: string, role: string) =>
-  `<label class="choice"><span class="choice-initial" aria-hidden="true">${name[0]}</span>` +
+// Rust renders these cards and their Connect buttons from escaped names; the
+// fixture mirrors that markup.
+const option = (id: string, name: string, meta: string) =>
+  `<label class="choice"><input type="radio" name="workspace" value="${id}" required>` +
   `<span class="choice-text"><span class="choice-name"><bdi>${name}</bdi></span>` +
-  `<span class="choice-role">${role}</span></span>` +
-  `<input type="radio" name="workspace" value="${id}" required></label>`
+  `<span class="choice-meta">${meta}</span></span></label>` +
+  `<button class="connect connect-for" type="submit" name="decision" value="continue">` +
+  `Connect to <bdi>${name}</bdi></button>`
 
 test('the workspace approval page and its empty state work without scripts in both themes', async () => {
   const css = await readFile(new URL('approval.css', approvalDirectory), 'utf8')
   const hash = createHash('sha256').update(css).digest('base64')
   const policy = `default-src 'none'; base-uri 'none'; frame-ancestors 'none'; style-src 'sha256-${hash}'`
   const approval = await readFile(new URL('approval.html', approvalDirectory), 'utf8')
-  const choices = await readFile(new URL('workspace_choices.html', approvalDirectory), 'utf8')
   const empty = await readFile(new URL('no_workspace.html', approvalDirectory), 'utf8')
   const values: Record<string, string> = {
     styles: css,
     client_name: 'Example client',
     client_identity: 'client.example.test',
-    client_identity_label: 'App domain',
     redirect_label: 'Returns to',
     redirect_destination: 'client.example.test:443',
     ticket: 'test-only-ticket',
-    access_scope: 'a workspace you choose',
+    access_scope: 'the workspace you choose',
     decision_title: 'Choose a workspace',
-    decision_detail: 'will have access to its providers.',
     form_action: '/oauth/workspace',
-    choices: fill(choices, {
-      options:
-        option('alpha-id', 'Alpha', 'Owner') +
-        option('beta-id', 'A workspace with a very long name that wraps on a phone', 'Member'),
-      signed_in_as: '<span class="account-name"><bdi>person@example.test</bdi></span>',
-    }),
+    account: '<p class="account"><span>Signed in as <bdi>person@example.test</bdi></span></p>',
+    choices:
+      option('alpha-id', 'Alpha', 'GitHub, Linear') +
+      option(
+        'beta-id',
+        'A workspace with a very long name that wraps on a phone',
+        'No providers yet',
+      ),
     coral_link: '<p class="actions"><a href="https://coral.example.test">Open Coral</a></p>',
   }
   const submissions: string[] = []
@@ -181,16 +181,16 @@ test('the workspace approval page and its empty state work without scripts in bo
         if (message.text().includes('Content Security Policy')) errors.push(message.text())
       })
       await page.goto(`${origin}/picker`)
-      await page.getByRole('heading', { name: 'Example client wants to connect' }).waitFor()
+      await page.getByRole('heading', { name: 'Connect Example client to Coral' }).waitFor()
+      await page.getByRole('heading', { name: 'Choose a workspace' }).waitFor()
       await page.getByText('client.example.test:443', { exact: true }).waitFor()
-      await page.getByRole('group', { name: 'Choose a workspace' }).waitFor()
       await page.getByText('person@example.test', { exact: true }).waitFor()
       assert.equal(await page.getByRole('radio', { checked: true }).count(), 0)
       assert.equal(await page.locator('button').first().getAttribute('value'), 'cancel')
-      // With nothing picked, the browser holds Allow back but lets Cancel
+      // With nothing picked, the browser holds Connect back but lets Cancel
       // through: only Cancel's submission arrives.
       const before = submissions.length
-      await page.getByRole('button', { name: 'Allow access', exact: true }).click()
+      await page.getByRole('button', { name: 'Connect', exact: true }).click()
       await page.getByRole('button', { name: 'Cancel', exact: true }).click()
       await page.getByText('Submitted', { exact: true }).waitFor()
       assert.deepEqual(submissions.slice(before), ['ticket=test-only-ticket&decision=cancel'])
@@ -200,7 +200,11 @@ test('the workspace approval page and its empty state work without scripts in bo
         true,
       )
       await page.getByRole('radio', { name: /very long name/ }).check()
-      await page.getByRole('button', { name: 'Allow access', exact: true }).click()
+      // The one Connect button left names the picked workspace.
+      assert.deepEqual(await page.getByRole('button', { name: /^Connect/ }).allTextContents(), [
+        'Connect to A workspace with a very long name that wraps on a phone',
+      ])
+      await page.getByRole('button', { name: /^Connect to A workspace/ }).click()
       await page.getByText('Submitted', { exact: true }).waitFor()
       assert.equal(
         submissions.at(-1),

@@ -56,8 +56,6 @@ static CONTENT_SECURITY_POLICY: LazyLock<String> = LazyLock::new(|| {
 
 pub(super) const APPROVAL_PAGE_STYLES: &str = include_str!("approval.css");
 const APPROVAL_PAGE: &str = include_str!("approval.html");
-/// The Workspace list the approval page carries at the Organization MCP Endpoint.
-const WORKSPACE_CHOICES: &str = include_str!("workspace_choices.html");
 const AUTHORIZE_PATH: &str = "/oauth/authorize";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -215,7 +213,8 @@ pub(in crate::auth::authorization_server) enum ApprovalScope<'a> {
     /// A Workspace URL names its one Workspace, so the page shows before sign-in.
     Workspace,
     /// At the Organization MCP Endpoint the signed-in person also picks the
-    /// Workspace, from `options` that trusted code rendered from escaped names.
+    /// Workspace, from `options` that trusted code rendered from escaped names:
+    /// each Workspace's card followed by its own Connect button.
     /// `signed_in_as` names the account they signed in with, when the
     /// identity provider gave one.
     Choice {
@@ -240,43 +239,37 @@ pub(in crate::auth::authorization_server) fn response(
     browser_binding: &BrowserBinding,
     secure_cookie: bool,
 ) -> Option<Response> {
-    let (access_scope, decision_title, decision_detail, form_action, choices) = match scope {
+    let (access_scope, decision_title, form_action, account, choices) = match scope {
         ApprovalScope::Workspace => (
             "this workspace",
             "Allow access?",
-            "will have access to the providers in this workspace.",
             AUTHORIZE_PATH,
             String::new(),
+            "",
         ),
         ApprovalScope::Choice {
             options,
             signed_in_as,
         } => (
-            "a workspace you choose",
+            "the workspace you choose",
             "Choose a workspace",
-            "will have access to its providers.",
             WORKSPACE_CHOICE_PATH,
-            render(WORKSPACE_CHOICES, |slot| match slot {
-                "options" => Some((*options).to_owned()),
-                "signed_in_as" => Some(signed_in_as.map_or_else(String::new, |account| {
-                    format!(
-                        "<span class=\"account-name\"><bdi>{}</bdi></span>",
-                        escape_html(account)
-                    )
-                })),
-                _ => None,
-            })?,
+            signed_in_as.map_or_else(String::new, |account| {
+                format!(
+                    "\n        <p class=\"account\"><span>Signed in as <bdi>{}</bdi></span></p>",
+                    escape_html(account)
+                )
+            }),
+            *options,
         ),
     };
     // Resolution already validated the identity. A URL has a metadata host;
     // an opaque registration has no verified origin or branding to display.
-    let (client_identity_label, client_identity) = Url::parse(client_id)
+    // The client names itself, so its host stands alone, without that name.
+    let client_identity = Url::parse(client_id)
         .ok()
         .and_then(|url| url.host().as_ref().map(display_host))
-        .map_or_else(
-            || ("App ID", client_id.to_owned()),
-            |host| ("App domain", host),
-        );
+        .unwrap_or_else(|| client_id.to_owned());
     // An app-scheme callback names the app the operating system opens, not a
     // host and port.
     let (redirect_label, redirect_destination) =
@@ -294,15 +287,14 @@ pub(in crate::auth::authorization_server) fn response(
         Some(match slot {
             "client_name" => escape_html(client_name),
             "client_identity" => escape_html(&client_identity),
-            "client_identity_label" => client_identity_label.to_owned(),
             "redirect_label" => redirect_label.to_owned(),
             "redirect_destination" => escape_html(&redirect_destination),
             "ticket" => escape_html(ticket),
             "access_scope" => access_scope.to_owned(),
             "decision_title" => decision_title.to_owned(),
-            "decision_detail" => decision_detail.to_owned(),
             "form_action" => form_action.to_owned(),
-            "choices" => choices.clone(),
+            "account" => account.clone(),
+            "choices" => choices.to_owned(),
             _ => return None,
         })
     })?;

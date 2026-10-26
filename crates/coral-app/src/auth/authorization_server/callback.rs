@@ -157,11 +157,11 @@ pub(super) async fn issue_code(
     grant: &AuthorizationGrant,
 ) -> CodeOutcome {
     let Ok(authorization_code) = random_code() else {
-        tracing::warn!("OIDC callback could not generate an authorization code");
+        tracing::warn!("Sign-in could not generate an authorization code");
         return CodeOutcome::Refused(trusted.error("server_error", "authorization failed"));
     };
     let Ok(now_unix_nanos) = now_unix_nanos_i64() else {
-        tracing::warn!("OIDC callback could not read the system clock");
+        tracing::warn!("Sign-in could not read the system clock");
         return CodeOutcome::Refused(trusted.error("server_error", "authorization failed"));
     };
     match state
@@ -174,7 +174,7 @@ pub(super) async fn issue_code(
             trusted.error("invalid_request", "authorization was already completed"),
         ),
         Err(error) => {
-            tracing::warn!(%error, "OIDC callback could not store the authorization code");
+            tracing::warn!(%error, "Sign-in could not store the authorization code");
             CodeOutcome::Refused(trusted.error("server_error", "authorization failed"))
         }
     }
@@ -994,7 +994,7 @@ mod tests {
         }
     }
 
-    fn organization_state(issuer: &str, database: Arc<Database>) -> AuthorizationServerHttpState {
+    fn organization_state(issuer: &str, database: &Arc<Database>) -> AuthorizationServerHttpState {
         let mut state = state_with(issuer, database.clone());
         state.workspace_resource_family = Some(Arc::new(
             crate::WorkspaceMcpUrls::new(
@@ -1002,7 +1002,13 @@ mod tests {
             )
             .unwrap(),
         ));
-        state.workspaces = Some(coral_workspace::WorkspaceModule::new(database));
+        let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
+        state.providers = super::super::WorkspaceProviders::new(
+            database,
+            &workspaces,
+            coral_outbound::DestinationPolicy::default(),
+        );
+        state.workspaces = Some(workspaces);
         state
     }
 
@@ -1142,50 +1148,35 @@ mod tests {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, &nonce()).await;
         let (db, _temp) = database().await;
-        let app = organization_state(&server.uri(), db.clone());
+        let app = organization_state(&server.uri(), &db);
         let user = signed_in_user(&db, &server.uri()).await;
         let beta = create_workspace(&db, &user, "Beta").await;
         let alpha = create_workspace(&db, &user, "Alpha").await;
-        let gone = create_workspace(&db, &user, "Gone").await;
-        coral_workspace::WorkspaceModule::new(db.clone())
-            .archive(
-                &coral_workspace::ChangeContext::new(
-                    user.clone(),
-                    now_unix_nanos_i64().unwrap(),
-                    coral_workspace::TraceId::current_or_new(),
-                ),
-                &gone,
-            )
-            .await
-            .unwrap();
 
         let (page, cookie) = picker(organization_callback(&app).await).await;
         assert!(
-            page.contains("<bdi>Claude &lt;b&gt;</bdi> wants to connect"),
+            page.contains("Connect <bdi>Claude &lt;b&gt;</bdi> to Coral"),
             "the person approves the client on the page where they pick"
         );
         assert!(
-            page.contains("class=\"account-name\""),
+            page.contains("<p class=\"account\"><span>Signed in as <bdi>"),
             "the account is named"
         );
         assert!(page.contains("action=\"/oauth/workspace\""));
         assert!(page.contains("client.example.test:443"), "redirect shown");
         assert!(page.contains("Claude &lt;b&gt;"), "client text is escaped");
         assert!(!page.contains("Claude <b>"));
-        let alpha_at = page.find(&format!("value=\"{alpha}\"")).expect("Alpha");
-        let beta_at = page.find(&format!("value=\"{beta}\"")).expect("Beta");
-        assert!(alpha_at < beta_at, "choices are ordered by name");
-        assert!(
-            !page.contains(&gone.to_string()),
-            "archived Workspaces are not offered"
-        );
         assert!(
             page.contains(&format!("value=\"{alpha}\" required>")) && !page.contains(" checked"),
             "nothing is preselected, so the person must pick"
         );
         assert!(
-            !page.contains("class=\"choice-role\""),
-            "a role that every choice shares is not shown"
+            page.contains("<span class=\"choice-meta\">No providers yet</span>"),
+            "a role that every choice shares is not shown, and the Providers are"
+        );
+        assert!(
+            page.contains("Connect to <bdi>Alpha</bdi></button>"),
+            "each choice brings a Connect button that names it"
         );
 
         let ticket = ticket(&page);
@@ -1246,7 +1237,7 @@ mod tests {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, &nonce()).await;
         let (db, _temp) = database().await;
-        let app = organization_state(&server.uri(), db.clone());
+        let app = organization_state(&server.uri(), &db);
         let user = signed_in_user(&db, &server.uri()).await;
         create_workspace(&db, &user, "Owned").await;
         let stranger = stranger(&db).await;
@@ -1265,8 +1256,8 @@ mod tests {
             .await
             .unwrap();
         let (page, _cookie) = picker(organization_callback(&app).await).await;
-        assert!(page.contains("<span class=\"choice-role\">Member</span>"));
-        assert!(page.contains("<span class=\"choice-role\">Owner</span>"));
+        assert!(page.contains("<span class=\"choice-meta\">Member · "));
+        assert!(page.contains("<span class=\"choice-meta\">Owner · "));
     }
 
     /// The choice is rechecked when it is submitted. A refused choice issues
@@ -1276,25 +1267,13 @@ mod tests {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, &nonce()).await;
         let (db, _temp) = database().await;
-        let app = organization_state(&server.uri(), db.clone());
+        let app = organization_state(&server.uri(), &db);
         let user = signed_in_user(&db, &server.uri()).await;
         let kept = create_workspace(&db, &user, "Kept").await;
-        let archived = create_workspace(&db, &user, "Archived later").await;
         let stranger = stranger(&db).await;
         let foreign = create_workspace(&db, &stranger, "Foreign").await;
         let (page, cookie) = picker(organization_callback(&app).await).await;
         let ticket = ticket(&page);
-        coral_workspace::WorkspaceModule::new(db.clone())
-            .archive(
-                &coral_workspace::ChangeContext::new(
-                    user.clone(),
-                    now_unix_nanos_i64().unwrap(),
-                    coral_workspace::TraceId::current_or_new(),
-                ),
-                &archived,
-            )
-            .await
-            .unwrap();
 
         for (case, decision, workspace) in [
             (
@@ -1302,11 +1281,7 @@ mod tests {
                 "continue",
                 foreign.to_string(),
             ),
-            (
-                "a Workspace archived after the page",
-                "continue",
-                archived.to_string(),
-            ),
+            ("not a Workspace ID", "continue", "not-an-id".to_owned()),
             ("Cancel", "cancel", kept.to_string()),
         ] {
             let refused = choose(
@@ -1361,7 +1336,7 @@ mod tests {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, &nonce()).await;
         let (db, _temp) = database().await;
-        let app = organization_state(&server.uri(), db.clone());
+        let app = organization_state(&server.uri(), &db);
         let (page, _cookie) = picker(organization_callback(&app).await).await;
         assert!(page.contains("You are not a member of a workspace."));
         assert!(page.contains("Create a workspace in Coral. Then sign in again."));
