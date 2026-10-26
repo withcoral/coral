@@ -63,8 +63,9 @@ impl CoralAuthorizationServer {
     /// caller's responsibility.
     ///
     /// `database` is the initialized deployment database. The server records
-    /// verified logins, authorization codes, and registered clients in it, so
-    /// every process that shares it can finish a sign-in another one started.
+    /// verified logins, authorization codes, and registered clients in it.
+    /// Processes that share it and the session signing key can each finish a
+    /// sign-in another one started.
     ///
     /// # Errors
     ///
