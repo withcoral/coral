@@ -10,10 +10,11 @@ use crate::run_repository::ProgramRunRecords;
 use crate::types::AcceptedRun;
 use crate::{CoralInstanceId, RunId};
 
-/// A conflict on the identifier writes nothing and reports `false`; a fresh
-/// identifier in the same transaction still inserts.
+/// Acceptance records the accepting Coral Instance. A conflict on the
+/// identifier writes nothing and reports `false`; a fresh identifier in the
+/// same transaction still inserts.
 #[tokio::test]
-async fn a_taken_run_identifier_is_reported_and_writes_nothing() {
+async fn acceptance_records_its_coral_instance_and_a_taken_identifier_writes_nothing() {
     let fixture = TestDatabase::new(coral_db::migration_plan())
         .await
         .expect("test database");

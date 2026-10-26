@@ -1853,9 +1853,15 @@ async fn the_sweep_leaves_a_run_alone_until_its_lease_lapses() {
         assert_eq!(ended.state, RunState::Interrupted, "foreign {foreign}");
         assert_eq!(ended.chunk_sequence, held.chunk_sequence + 1, "one chunk");
         assert_eq!(ended.execution_started_at_unix_nanos, None, "never started");
+        let holder = if foreign {
+            "foreign-process".to_string()
+        } else {
+            fixture.runs.instance().to_string()
+        };
         assert_eq!(
-            ended.holder_instance_id, held.holder_instance_id,
-            "foreign {foreign}: a Run that never started records no new claim, so no new holder"
+            ended.holder_instance_id.as_ref().map(ToString::to_string),
+            Some(holder),
+            "foreign {foreign}: a Run that never started records no new claim, so it keeps its holder"
         );
         assert!(matches!(
             fixture

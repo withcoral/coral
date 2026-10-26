@@ -206,10 +206,11 @@ impl TestModules {
 
     /// Hands the Run to `holder`, a process that is not this fixture: the
     /// Run row's claim becomes `holder`'s (its execution claim too once the
-    /// Run started), its lease ending at `lease_until_unix_nanos`, or at the
-    /// Run's acceptance, long lapsed, for `None`: a holder that died. An
-    /// owner of this fixture still live for the Run loses it at its next
-    /// commit and writes nothing more. Returns the Run row as handed over.
+    /// Run started), with `holder` as its Coral Instance, its lease ending at
+    /// `lease_until_unix_nanos`, or at the Run's acceptance, long lapsed, for
+    /// `None`: a holder that died. An owner of this fixture still live for
+    /// the Run loses it at its next commit and writes nothing more. Returns
+    /// the Run row as handed over.
     pub(crate) async fn hand_to(
         &self,
         workspace_id: &coral_workspace::WorkspaceId,
@@ -225,7 +226,8 @@ impl TestModules {
                 "UPDATE program_run_records SET \
                  execution_claim_id = CASE WHEN execution_claim_id IS NULL THEN NULL \
                  ELSE '{holder}' END, \
-                 worker_claim_id = '{holder}', worker_claim_expires_at_unix_nanos = {lease} \
+                 worker_claim_id = '{holder}', worker_claim_expires_at_unix_nanos = {lease}, \
+                 holder_instance_id = '{holder}' \
                  WHERE id = '{run_id}' AND state = '{running}'"
             ))
             .await,
