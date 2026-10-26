@@ -78,13 +78,6 @@ pub(super) async fn oauth_authorize_get(
     {
         return trusted.error("invalid_target", "resource does not match this server");
     }
-    // The sign-in cookie carries these inputs, so they must fit in one.
-    if !sign_in_cookie::app_input_fits(client_id, redirect_uri, query.state.as_deref()) {
-        return trusted.error(
-            "invalid_request",
-            "client_id, redirect_uri and state are too long together",
-        );
-    }
     let approval = PendingApproval {
         client_id: client_id.to_string(),
         client_name,
@@ -94,7 +87,15 @@ pub(super) async fn oauth_authorize_get(
         resource,
     };
     let picks_workspace = state.is_organization_resource(&approval.resource);
-    let sealed_len = approval.clone().into_sign_in(picks_workspace).sealed_len();
+    let sign_in = approval.clone().into_sign_in(picks_workspace);
+    // The sign-in cookie carries these inputs, so they must fit in one.
+    if !sign_in_cookie::app_input_fits(&sign_in) {
+        return trusted.error(
+            "invalid_request",
+            "client_id, redirect_uri, state and client_name are too long together",
+        );
+    }
+    let sealed_len = sign_in.sealed_len();
     if !sealed_len.is_ok_and(|length| sign_in_cookie::sealed_fits(length, state.secure_cookies())) {
         return trusted.error("invalid_request", "authorization request is too large");
     }

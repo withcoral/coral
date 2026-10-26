@@ -20,6 +20,7 @@ use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 use super::cookies;
+use crate::auth::sealed_handshake::SignInSession;
 
 /// As long as a sign-in may take.
 pub(super) const MAX_AGE_SECONDS: u64 = 5 * 60;
@@ -30,8 +31,9 @@ pub(super) const MAX_AGE_SECONDS: u64 = 5 * 60;
 /// stay under the 8 KB per-header limit of nginx's defaults; a test holds this.
 /// A longer configured resource can take three past it.
 const MAX_CONCURRENT_SIGN_INS: usize = 3;
-/// The most bytes of `client_id`, `redirect_uri` and `state` together that
-/// one sign-in carries. Real apps send a few hundred.
+/// The most bytes of `client_id`, `redirect_uri`, `state` and the client's
+/// name, when it rides along, that one sign-in carries. Real apps send a few
+/// hundred.
 const MAX_APP_INPUT_BYTES: usize = 1536;
 /// The largest cookie browsers store, counted with its attributes.
 const MAX_COOKIE_BYTES: usize = 4096;
@@ -40,9 +42,13 @@ const STEM: &str = "coral_oauth_signin_";
 /// concurrent sign-ins never share a tag.
 const STATE_TAG_BYTES: usize = 8;
 
-/// Whether an app's inputs fit in one sign-in cookie.
-pub(super) fn app_input_fits(client_id: &str, redirect_uri: &str, state: Option<&str>) -> bool {
-    client_id.len() + redirect_uri.len() + state.map_or(0, str::len) <= MAX_APP_INPUT_BYTES
+/// Whether the app's inputs that `session` carries fit in one sign-in cookie.
+pub(super) fn app_input_fits(session: &SignInSession) -> bool {
+    session.client_id.len()
+        + session.redirect_uri.len()
+        + session.client_state.as_deref().map_or(0, str::len)
+        + session.client_name.as_deref().map_or(0, str::len)
+        <= MAX_APP_INPUT_BYTES
 }
 
 /// Whether a sealed sign-in of `sealed_len` bytes fits in one cookie.
@@ -222,26 +228,34 @@ mod tests {
         assert!(find(&shadowed, "state", true).is_none());
     }
 
-    /// The bound [`MAX_CONCURRENT_SIGN_INS`] documents: three sign-ins that
-    /// each use the whole app budget, with a 350-byte resource, fit one 8 KB
-    /// `Cookie` header.
-    #[test]
-    fn three_full_sign_ins_fit_an_8_kb_cookie_header() {
-        use crate::auth::sealed_handshake::SignInSession;
-
-        let session = SignInSession {
-            client_id: "c".repeat(MAX_APP_INPUT_BYTES - 2),
+    /// A sign-in that spends `app_bytes` of the app budget on its client ID,
+    /// with a 350-byte resource.
+    fn full_sign_in(app_bytes: usize, client_name: Option<&str>) -> SignInSession {
+        let named = client_name.map_or(0, str::len);
+        SignInSession {
+            client_id: "c".repeat(app_bytes - 2 - named),
             redirect_uri: "r".into(),
             client_state: Some("s".into()),
             code_challenge: "x".repeat(43),
             resource: "u".repeat(350),
-            client_name: None,
-        };
-        let pair = name("state", u64::from(u32::MAX), true).len()
-            + 1
-            + session.sealed_len().expect("sealed length");
-        let header = MAX_CONCURRENT_SIGN_INS * pair + 2 * (MAX_CONCURRENT_SIGN_INS - 1);
-        assert!(header < 8 * 1024, "{header} bytes");
+            client_name: client_name.map(str::to_owned),
+        }
+    }
+
+    /// The bound [`MAX_CONCURRENT_SIGN_INS`] documents: three sign-ins that
+    /// each use the whole app budget, with a 350-byte resource, fit one 8 KB
+    /// `Cookie` header, whether or not they carry the longest client name.
+    #[test]
+    fn three_full_sign_ins_fit_an_8_kb_cookie_header() {
+        for client_name in [None, Some("n".repeat(255))] {
+            let session = full_sign_in(MAX_APP_INPUT_BYTES, client_name.as_deref());
+            assert!(app_input_fits(&session));
+            let pair = name("state", u64::from(u32::MAX), true).len()
+                + 1
+                + session.sealed_len().expect("sealed length");
+            let header = MAX_CONCURRENT_SIGN_INS * pair + 2 * (MAX_CONCURRENT_SIGN_INS - 1);
+            assert!(header < 8 * 1024, "{client_name:?}: {header} bytes");
+        }
     }
 
     #[test]
@@ -251,11 +265,12 @@ mod tests {
             - format!("{name}=; Path=/; Max-Age=300; HttpOnly; Secure; SameSite=Lax").len();
         assert!(set_header(&name, &"a".repeat(largest), true).is_some());
         assert!(set_header(&name, &"a".repeat(largest + 1), true).is_none());
-        assert!(app_input_fits(&"a".repeat(MAX_APP_INPUT_BYTES), "", None));
-        assert!(!app_input_fits(
-            &"a".repeat(MAX_APP_INPUT_BYTES),
-            "",
-            Some("s")
-        ));
+        assert!(app_input_fits(&full_sign_in(MAX_APP_INPUT_BYTES, None)));
+        for client_name in [None, Some("n")] {
+            assert!(
+                !app_input_fits(&full_sign_in(MAX_APP_INPUT_BYTES + 1, client_name)),
+                "{client_name:?}"
+            );
+        }
     }
 }
