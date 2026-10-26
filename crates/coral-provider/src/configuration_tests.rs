@@ -1470,6 +1470,120 @@ async fn update_retains_saved_variables_and_exposes_changed_defaults_and_removed
 }
 
 #[tokio::test]
+async fn an_update_from_another_kind_of_source_takes_its_servers_and_keeps_every_other_choice() {
+    let mcp = || {
+        ProviderSetupSource::McpSnapshot(
+            coral_catalog::McpDiscoverySnapshot::parse(
+                &json!({"protocolVersion": "2025-11-25",
+                "serverInfo": {"name": "weather", "title": "Weather", "version": "1"},
+                "server": {"transport": "streamable_http", "url": "https://mcp.example.test/mcp"},
+                "capabilities": {"tools": {}},
+                "tools": [{"name": "getForecast", "inputSchema": {"type": "object"}}]})
+                .to_string(),
+            )
+            .unwrap(),
+        )
+    };
+    let openapi = || {
+        ProviderSetupSource::OpenApiDocument(
+            OpenApiDocument::parse(
+                &json!({"openapi": "3.1.0", "info": {"title": "Weather", "version": "1"}, "security": [],
+                "servers": [{"url": "https://api.example.test"}],
+                "paths": {"/getForecast": {"get": {"operationId": "getForecast",
+                    "responses": {"200": {"description": "Forecast"}}}}}})
+                .to_string(),
+            )
+            .unwrap(),
+        )
+    };
+    let mcp_server = ServerSelection::Custom {
+        url: "https://mcp.example.test/mcp".into(),
+    };
+    let api_server = ServerSelection::Declared {
+        url: "https://api.example.test".into(),
+        variables: BTreeMap::new(),
+    };
+    for (published, replacement, server, destination) in [
+        (mcp(), openapi(), api_server, "https://api.example.test/"),
+        (openapi(), mcp(), mcp_server, "https://mcp.example.test/mcp"),
+    ] {
+        let h = harness().await;
+        let (actor, workspace) = workspace_owner(&h, "user:source-kind-change").await;
+        let context = change_context(actor.clone(), 10, '1');
+        let owner = workspace.id().clone();
+        let setup = h
+            .providers
+            .prepare_setup(&context, &owner, published, None)
+            .await
+            .unwrap();
+        let review = h
+            .providers
+            .review_setup_configuration(&actor, &owner, setup.id())
+            .await
+            .unwrap();
+        // A name no source suggests, so only a kept configuration has it. A
+        // new request header would make Coral read the MCP server again.
+        let saved = ProviderConfiguration {
+            display_name: "Forecasts".into(),
+            ..review.document.unwrap().suggested
+        };
+        h.providers
+            .confirm_setup_configuration(
+                &context,
+                &owner,
+                setup.id(),
+                review.revision,
+                saved.clone(),
+            )
+            .await
+            .unwrap();
+        let provider = h
+            .providers
+            .publish_setup_fixture(
+                &context,
+                &owner,
+                setup.id(),
+                "weather",
+                CredentialRoute::None,
+            )
+            .await
+            .unwrap()
+            .published_provider()
+            .unwrap()
+            .clone();
+        let update = h
+            .providers
+            .prepare_setup(&context, &owner, replacement, Some(provider.id()))
+            .await
+            .unwrap();
+        let review = h
+            .providers
+            .review_setup_configuration(&actor, &owner, update.id())
+            .await
+            .unwrap();
+        let seeded = ProviderConfiguration {
+            servers: BTreeMap::from([("#/servers".into(), server)]),
+            ..saved
+        };
+        assert_eq!(review.confirmed, Some(seeded.clone()));
+        let confirmation = h
+            .providers
+            .confirm_setup_configuration(&context, &owner, update.id(), review.revision, seeded)
+            .await
+            .unwrap();
+        assert!(confirmation.errors.is_empty(), "{:?}", confirmation.errors);
+        assert_eq!(
+            confirmation
+                .destinations
+                .values()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [destination]
+        );
+    }
+}
+
+#[tokio::test]
 async fn anonymous_and_normalized_destination_updates_do_not_warn_but_new_credential_authority_does()
  {
     use crate::ProviderRegenerationRequest;

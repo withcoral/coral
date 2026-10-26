@@ -137,7 +137,13 @@ const blocked: ProviderView = {
   operations: githubOps('prov-hr', 'hr'),
 }
 // Coral's Built-in Provider, which leads the rail under Coral's mark.
-const coralOperations = ['addProvider', 'listProviders', 'getProvider', 'getPolicy'].map((key) => ({
+const coralOperations = [
+  'addProvider',
+  'listProviders',
+  'getProvider',
+  'getPolicy',
+  'updateProvider',
+].map((key) => ({
   ...weather.operations[0]!,
   name: `providers/prov-coral/operations/${key}`,
   relativePath: key,

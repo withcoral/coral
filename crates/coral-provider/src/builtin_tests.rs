@@ -248,7 +248,7 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider() {
         let context = context.clone().with_etag(&builtin.etag()).unwrap();
         let result = match change {
             BuiltinChange::Rename => providers
-                .update_provider(
+                .rename_provider(
                     &context,
                     workspace.id(),
                     builtin.id(),
@@ -807,7 +807,13 @@ async fn management_reads_show_each_principal_the_builtin_operations_it_reaches(
     for (principal, reached) in [
         (
             AuthenticatedPrincipal::user(arranged.owner.clone()),
-            &["addProvider", "getPolicy", "getProvider", "listProviders"][..],
+            &[
+                "addProvider",
+                "getPolicy",
+                "getProvider",
+                "listProviders",
+                "updateProvider",
+            ][..],
         ),
         (
             AuthenticatedPrincipal::user(member),

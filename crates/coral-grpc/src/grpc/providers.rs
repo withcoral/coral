@@ -940,7 +940,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         let (workspace, id) = resource(&req.name, "providers")?;
         let provider = self
             .provider_workflow
-            .update_provider(
+            .rename_provider(
                 &context,
                 &workspace,
                 &domain::ProviderId::parse(id).map_err(error)?,

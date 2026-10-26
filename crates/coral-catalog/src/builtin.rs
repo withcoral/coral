@@ -36,16 +36,20 @@ mod add_provider;
 mod get_policy;
 mod get_provider;
 mod list_providers;
+mod provider_input;
+mod update_provider;
 
-pub use add_provider::{
-    AddProviderArguments, AddProviderResult, ConfigurationChoices, ProviderSourceArgument,
-};
+pub use add_provider::{AddProviderArguments, AddProviderResult};
 pub use get_policy::{BuiltinAccessState, GetPolicyArguments, GetPolicyResult};
 pub use get_provider::{
     ConfigurationOutput, GetProviderArguments, GetProviderResult, ProviderSourceOutput,
 };
 pub use list_providers::{
     ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup, ListedSetupState,
+};
+pub use provider_input::{ConfigurationChoices, ProviderSourceArgument};
+pub use update_provider::{
+    ConfigurationPatch, SourceChange, UpdateProviderArguments, UpdateProviderResult,
 };
 
 /// Safe display name of the Built-in Provider.
@@ -106,14 +110,19 @@ pub enum BuiltinOperation {
     /// Reads the exact rules a Workspace Owner set for one Provider's
     /// Operations, so a Program can find the ones discovery hides.
     GetPolicy,
+    /// Changes one Owner-created Provider's configuration or source. Coral
+    /// publishes the change when nobody needs to act; otherwise a person
+    /// finishes it in Reef.
+    UpdateProvider,
 }
 
 impl BuiltinOperation {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::AddProvider,
         Self::ListProviders,
         Self::GetProvider,
         Self::GetPolicy,
+        Self::UpdateProvider,
     ];
 
     /// Returns the Operation Key, which is also its relative path.
@@ -124,6 +133,7 @@ impl BuiltinOperation {
             Self::ListProviders => "listProviders",
             Self::GetProvider => "getProvider",
             Self::GetPolicy => "getPolicy",
+            Self::UpdateProvider => "updateProvider",
         }
     }
 
@@ -145,6 +155,7 @@ impl BuiltinOperation {
             Self::ListProviders => list_providers::NEEDS,
             Self::GetProvider => get_provider::NEEDS,
             Self::GetPolicy => get_policy::NEEDS,
+            Self::UpdateProvider => update_provider::NEEDS,
         }
     }
 }
@@ -286,6 +297,8 @@ pub enum BuiltinArguments {
     GetProvider(GetProviderArguments),
     /// `getPolicy`'s arguments.
     GetPolicy(GetPolicyArguments),
+    /// `updateProvider`'s arguments.
+    UpdateProvider(Box<UpdateProviderArguments>),
 }
 
 impl BuiltinArguments {
@@ -311,6 +324,8 @@ impl BuiltinArguments {
             BuiltinOperation::GetPolicy => {
                 GetPolicyArguments::parse(arguments).map(Self::GetPolicy)
             }
+            BuiltinOperation::UpdateProvider => UpdateProviderArguments::parse(arguments)
+                .map(|arguments| Self::UpdateProvider(Box::new(arguments))),
         }
     }
 }
@@ -447,7 +462,9 @@ impl JsonSchema for BuiltinCredentialRoute {
 impl BuiltinCredentialRoute {
     const ALL: [Self; 3] = [Self::None, Self::Fixed, Self::Caller];
 
-    const fn name(self) -> &'static str {
+    /// The route's name, as a Program spells it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::Fixed => "fixed",
@@ -508,7 +525,7 @@ fn serialize_authentication<S: Serializer>(
     serializer.serialize_str(authentication_name(*kind))
 }
 
-/// What `addProvider` and `listProviders` report about a Provider: how to
+/// What `addProvider`, `updateProvider` and `listProviders` report about a Provider: how to
 /// call it and whether the Program needs a person first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -553,6 +570,7 @@ fn definition(operation: BuiltinOperation) -> Definition {
         BuiltinOperation::ListProviders => list_providers::definition(),
         BuiltinOperation::GetProvider => get_provider::definition(),
         BuiltinOperation::GetPolicy => get_policy::definition(),
+        BuiltinOperation::UpdateProvider => update_provider::definition(),
     }
 }
 

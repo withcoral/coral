@@ -193,7 +193,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
     tx.commit().await.unwrap();
 
     let renamed = providers
-        .update_provider(
+        .rename_provider(
             &context(&actor).with_etag(&provider.etag()).unwrap(),
             workspace.id(),
             provider.id(),
@@ -206,7 +206,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
     assert_eq!(renamed.account_setting_version(), 1);
     assert!(matches!(
         providers
-            .update_provider(
+            .rename_provider(
                 &context(&actor).with_etag(&provider.etag()).unwrap(),
                 workspace.id(),
                 provider.id(),
