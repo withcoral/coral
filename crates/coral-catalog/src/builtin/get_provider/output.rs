@@ -61,7 +61,7 @@ pub enum ProviderSourceOutput {
 
 impl ProviderSourceOutput {
     /// The origin of an OpenAPI document's saved web URL, or `None` when the
-    /// saved value is not a URL.
+    /// saved value is not a web URL.
     #[must_use]
     pub fn openapi_url(saved: &str) -> Option<Self> {
         Some(Self::OpenapiUrl {
@@ -70,7 +70,7 @@ impl ProviderSourceOutput {
     }
 
     /// The origin of a Streamable HTTP MCP server's saved web URL, or `None`
-    /// when the saved value is not a URL.
+    /// when the saved value is not a web URL.
     #[must_use]
     pub fn mcp_url(saved: &str) -> Option<Self> {
         Some(Self::McpUrl {
@@ -83,7 +83,9 @@ impl ProviderSourceOutput {
 /// result. Its path and query can carry a key, as `?tavilyApiKey=` does, and
 /// nothing tells a key apart from the rest, so neither reads back.
 fn origin(saved: &str) -> Option<String> {
-    Some(url::Url::parse(saved).ok()?.origin().ascii_serialization())
+    // A URL with no host, such as file:, has no origin to read.
+    let origin = url::Url::parse(saved).ok()?.origin();
+    origin.is_tuple().then(|| origin.ascii_serialization())
 }
 
 /// One server choice.

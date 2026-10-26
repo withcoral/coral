@@ -401,8 +401,14 @@ fn a_source_url_reads_as_its_origin() {
             assert_eq!(url, expected, "{saved}");
         }
     }
-    // A value that is not a URL could hold anything, so none of it reads.
-    assert_eq!(ProviderSourceOutput::mcp_url("sk-canary"), None);
+    // A value that is not a web URL could hold anything, so none of it reads.
+    for saved in [
+        "sk-canary",
+        "file:///sk-canary",
+        "data:text/plain,sk-canary",
+    ] {
+        assert_eq!(ProviderSourceOutput::mcp_url(saved), None, "{saved}");
+    }
 }
 
 // Catches: a namespace no Provider can hold, looked up instead of corrected.
