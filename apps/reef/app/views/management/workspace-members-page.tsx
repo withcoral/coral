@@ -81,13 +81,7 @@ export function WorkspaceMembersPage({
   }))
   return (
     <ManagementLayout breadcrumbs={trail([], 'Members')} titled compact>
-      <PageIntro status={!active ? <Pill color="gray">Archived</Pill> : undefined}>
-        {!owner ? (
-          <InfoTip label="Workspace members">
-            As a member, you see only yourself and the owners. Owners see all members.
-          </InfoTip>
-        ) : undefined}
-      </PageIntro>
+      <PageIntro status={!active ? <Pill color="gray">Archived</Pill> : undefined} />
       {!active && (
         <ArchivedBanner workspace={w}>
           You cannot change access until you restore the workspace.
@@ -98,6 +92,13 @@ export function WorkspaceMembersPage({
         ariaLabel="Members"
         currentUser={w.currentUser}
         rows={rows}
+        titleInfo={
+          !owner && (
+            <InfoTip>
+              As a member, you see only yourself and the owners. Owners see all members.
+            </InfoTip>
+          )
+        }
         action={
           owner && (
             <AddMembersDialog

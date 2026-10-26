@@ -208,11 +208,6 @@ function WorkspaceProvidersContent({
       compact
       header={
         <>
-          {!owner && (
-            <InfoTip label="Workspace providers">
-              As a member, you use the providers. Owners add, remove, and change them.
-            </InfoTip>
-          )}
           {!active && (
             <ArchivedBanner workspace={w}>
               You cannot add or change providers until you restore the workspace.
@@ -239,6 +234,13 @@ function WorkspaceProvidersContent({
         </div>
       ) : (
         <ProvidersTableScreen
+          titleInfo={
+            !owner && (
+              <InfoTip>
+                As a member, you use the providers. Owners add, remove, and change them.
+              </InfoTip>
+            )
+          }
           addButton={
             canChange && <AddProviderLauncher {...entry} labelClassName={toolbarActionLabel} />
           }
@@ -408,6 +410,7 @@ const tableRowHeight = (row: TableRowItem) => {
 }
 
 function ProvidersTableScreen({
+  titleInfo,
   addButton,
   canChange,
   filteredProviders,
@@ -420,6 +423,8 @@ function ProvidersTableScreen({
   selectedOperation,
   setRailFilter,
 }: {
+  /** An info tip beside the title. */
+  titleInfo: ReactNode
   /** The main action, at the end of the toolbar so it shows on every tab. */
   addButton: ReactNode
   canChange: boolean
@@ -920,6 +925,7 @@ function ProvidersTableScreen({
     >
       <CatalogToolbar
         title="Providers"
+        titleInfo={titleInfo}
         action={addButton}
         filter={{
           id: OPERATION_FILTER_ID,
