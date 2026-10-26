@@ -3,6 +3,7 @@
 //! Reef page where a person finishes it. The call never waits for that person.
 //! `coral.workspace.listProviders` lists the Providers a Program can check first.
 //! `coral.workspace.getProvider` reads one Provider's Provider Configuration.
+//! `coral.workspace.getPolicy` reads one Provider's exact Operation rules.
 use super::*;
 use coral_provider::{ProviderSetupId, ProviderSetupState};
 
@@ -1604,9 +1605,10 @@ async fn an_invalid_argument_names_what_to_correct() {
 }
 
 // Catches: a Built-in Operation's reach that ignores the Workspace action it
-// declares, or a host that performs listProviders only for a User.
+// declares, a host that performs listProviders or getPolicy only for a User,
+// or a read that waits for approval.
 #[tokio::test]
-async fn members_and_agents_list_providers_but_cannot_reach_add_or_get_provider() {
+async fn members_and_agents_list_providers_and_get_policy_but_cannot_reach_add_or_get_provider() {
     let scope = AdminScope::new("user:admin-owner").await;
     scope.set_access(OperationAccessState::Enabled).await;
     scope.publish_weather().await;
@@ -1677,6 +1679,19 @@ async fn members_and_agents_list_providers_but_cannot_reach_add_or_get_provider(
             listed.pointer("/data/setups"),
             Some(&serde_json::json!([])),
             "{principal:?}"
+        );
+
+        let run = scope
+            .start(
+                &principal,
+                workspace_call("getPolicy", r#"{ "namespace": "weather" }"#),
+            )
+            .await;
+        let read = final_value(&scope.terminal(&principal, &run).await);
+        assert_eq!(
+            read.pointer("/data/namespace"),
+            Some(&serde_json::json!("weather")),
+            "{principal:?} reads the policy: {read}"
         );
     }
     assert_eq!(scope.lifecycle_events().await, before);
@@ -1970,16 +1985,19 @@ async fn get_provider_reads_back_the_configuration_a_program_saved() {
 // Catches: a namespace that no Provider holds read as something other than
 // not found.
 #[tokio::test]
-async fn get_provider_names_an_absent_provider() {
+async fn get_provider_and_get_policy_name_an_absent_provider() {
     let scope = AdminScope::new("user:get-provider-absent").await;
-    let run = scope
-        .start(
-            &scope.owner,
-            workspace_call("getProvider", r#"{ "namespace": "forecasts" }"#),
-        )
-        .await;
-    assert_eq!(
-        final_value(&scope.terminal(&scope.owner, &run).await),
-        serde_json::json!({ "code": "provider_not_found", "message": "Provider was not found" }),
-    );
+    for operation in ["getProvider", "getPolicy"] {
+        let run = scope
+            .start(
+                &scope.owner,
+                workspace_call(operation, r#"{ "namespace": "forecasts" }"#),
+            )
+            .await;
+        assert_eq!(
+            final_value(&scope.terminal(&scope.owner, &run).await),
+            serde_json::json!({ "code": "provider_not_found", "message": "Provider was not found" }),
+            "{operation}"
+        );
+    }
 }

@@ -104,8 +104,8 @@ pub struct ListedProvider {
     /// The Provider Namespace; `None` for the Built-in Provider, which has
     /// none.
     #[schemars(
-        description = "The Provider Namespace, which getProvider takes. Null for Coral's own \
-                       Provider, which has none."
+        description = "The Provider Namespace, which getProvider and getPolicy take. Null for \
+                       Coral's own Provider, which has none."
     )]
     pub namespace: Option<String>,
     /// Whether the Provider accepts calls.

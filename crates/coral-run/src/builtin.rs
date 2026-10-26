@@ -12,7 +12,7 @@ use coral_catalog::{
     ArgumentProblem, BuiltinArguments, BuiltinOperation, ExecutionBinding, MaterializedOperation,
     OperationKey, ProviderFacts, ProviderGenerationId,
 };
-use coral_policy::ExactOperationRules;
+use coral_policy::{ExactOperationRules, OperationPolicyModule};
 use coral_provider::account::AccountModule;
 use coral_provider::{
     ManagementRequestId, ProviderModule, ProviderSetupId, PublishedProvider,
@@ -27,6 +27,7 @@ use crate::{
 };
 
 mod add_provider;
+mod get_policy;
 mod get_provider;
 mod list_providers;
 
@@ -36,6 +37,7 @@ pub(crate) enum BuiltinCall {
     AddProvider(Box<add_provider::AddProvider>),
     ListProviders,
     GetProvider(get_provider::GetProvider),
+    GetPolicy(get_policy::GetPolicy),
 }
 
 impl BuiltinCall {
@@ -64,6 +66,9 @@ impl BuiltinCall {
                     BuiltinArguments::GetProvider(arguments) => {
                         get_provider::GetProvider::new(&arguments).map(Self::GetProvider)
                     }
+                    BuiltinArguments::GetPolicy(arguments) => {
+                        get_policy::GetPolicy::new(&arguments).map(Self::GetPolicy)
+                    }
                 }),
         )
     }
@@ -74,6 +79,7 @@ impl BuiltinCall {
             Self::AddProvider(call) => call.perform(host).await,
             Self::ListProviders => list_providers::perform(host).await,
             Self::GetProvider(call) => call.perform(host).await,
+            Self::GetPolicy(call) => call.perform(host).await,
         }
     }
 }
@@ -103,7 +109,12 @@ pub(crate) async fn recover(
             .map(Some),
         // A read leaves nothing behind, and this version cannot read an
         // Operation it does not perform.
-        Some(BuiltinOperation::ListProviders | BuiltinOperation::GetProvider) | None => Ok(None),
+        Some(
+            BuiltinOperation::ListProviders
+            | BuiltinOperation::GetProvider
+            | BuiltinOperation::GetPolicy,
+        )
+        | None => Ok(None),
     }
 }
 
@@ -130,6 +141,7 @@ pub(crate) trait InvokingRun: Send + Sync {
 pub(crate) struct BuiltinHost<'a> {
     pub(crate) database: &'a coral_db::Database,
     pub(crate) providers: &'a ProviderModule,
+    pub(crate) policies: &'a OperationPolicyModule,
     /// Where people sign in; without it, nobody can.
     pub(crate) accounts: Option<&'a AccountModule>,
     pub(crate) publisher: Option<&'a dyn WorkspaceProviderPublisher>,

@@ -229,6 +229,7 @@ impl TestObservers {
 pub struct RunModule {
     accounts: Option<coral_provider::account::AccountModule>,
     providers: coral_provider::ProviderModule,
+    policies: coral_policy::OperationPolicyModule,
     provider_publisher: Option<Arc<dyn coral_provider::WorkspaceProviderPublisher>>,
     human_interface: Option<HumanInterfaceUrl>,
     database: Arc<Database>,
@@ -267,6 +268,10 @@ impl RunModule {
     ) -> Result<Self, Error> {
         Ok(Self {
             providers,
+            policies: coral_policy::OperationPolicyModule::new(
+                database.clone(),
+                workspaces.clone(),
+            ),
             provider_publisher: None,
             human_interface: None,
             database,
@@ -302,6 +307,10 @@ impl RunModule {
     ) -> Self {
         Self {
             providers,
+            policies: coral_policy::OperationPolicyModule::new(
+                database.clone(),
+                workspaces.clone(),
+            ),
             provider_publisher: None,
             human_interface: None,
             database,

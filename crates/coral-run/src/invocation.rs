@@ -185,6 +185,7 @@ impl From<Error> for InvocationHostError {
 pub(crate) struct OperationInvoker {
     accounts: Option<coral_provider::account::AccountModule>,
     providers: coral_provider::ProviderModule,
+    policies: coral_policy::OperationPolicyModule,
     provider_publisher: Option<Arc<dyn coral_provider::WorkspaceProviderPublisher>>,
     human_interface: Option<crate::HumanInterfaceUrl>,
     database: Arc<coral_db::Database>,
@@ -216,6 +217,7 @@ impl OperationInvoker {
     pub(crate) fn new(
         accounts: Option<coral_provider::account::AccountModule>,
         providers: coral_provider::ProviderModule,
+        policies: coral_policy::OperationPolicyModule,
         provider_publisher: Option<Arc<dyn coral_provider::WorkspaceProviderPublisher>>,
         human_interface: Option<crate::HumanInterfaceUrl>,
         database: Arc<coral_db::Database>,
@@ -231,6 +233,7 @@ impl OperationInvoker {
         Self {
             accounts,
             providers,
+            policies,
             provider_publisher,
             human_interface,
             database,
@@ -608,6 +611,7 @@ impl OperationInvoker {
         let host = crate::builtin::BuiltinHost {
             database: &self.database,
             providers: &self.providers,
+            policies: &self.policies,
             accounts: self.accounts.as_ref(),
             publisher: self.provider_publisher.as_deref(),
             actor: &self.actor,

@@ -807,10 +807,13 @@ async fn management_reads_show_each_principal_the_builtin_operations_it_reaches(
     for (principal, reached) in [
         (
             AuthenticatedPrincipal::user(arranged.owner.clone()),
-            &["addProvider", "getProvider", "listProviders"][..],
+            &["addProvider", "getPolicy", "getProvider", "listProviders"][..],
         ),
-        (AuthenticatedPrincipal::user(member), &["listProviders"][..]),
-        (agent, &["listProviders"][..]),
+        (
+            AuthenticatedPrincipal::user(member),
+            &["getPolicy", "listProviders"][..],
+        ),
+        (agent, &["getPolicy", "listProviders"][..]),
     ] {
         let providers = &arranged.providers;
         let published = crate::tests::published_providers(providers, &principal, workspace)

@@ -71,7 +71,7 @@ export function builtinProvider(id: string): ProviderView {
   view.operations = [
     operation(view, 'addProvider'),
     // Read-only, so they start enabled.
-    ...['listProviders', 'getProvider'].map((key) => ({
+    ...['listProviders', 'getProvider', 'getPolicy'].map((key) => ({
       ...operation(view, key),
       hints: { readOnly: true, idempotent: true },
       policy: 'enabled' as const,

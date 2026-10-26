@@ -49,7 +49,7 @@ You can add a provider multiple times, each under its own namespace, to give the
 Every [workspace](#workspaces) also has one built-in provider, **Coral**. Coral defines its operations and performs them itself, without an upstream service. It is listed first under **Providers** in the [Coral UI](#coral-ui).
 
 - Its call paths begin with `coral.workspace`, not with a namespace.
-- Only workspace owners can find and call its operations. Members and agents cannot see them.
+- Members and agents can find and call only `coral.workspace.listProviders` and `coral.workspace.getPolicy`. Workspace owners can find and call all its operations.
 - Workspace owners can only disable it, enable it, and set its [policy](#operation-policy). Nobody can rename or remove it. It has no [accounts](#account-setting).
 
 ## Operations

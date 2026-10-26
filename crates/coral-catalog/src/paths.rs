@@ -13,6 +13,10 @@ pub struct OperationPathAssignment {
 }
 
 impl OperationPathAssignment {
+    pub(crate) const fn new(key: OperationKey, relative_path: String) -> Self {
+        Self { key, relative_path }
+    }
+
     pub(crate) fn for_operation(operation: &MaterializedOperation) -> Self {
         Self {
             key: operation.key().clone(),
