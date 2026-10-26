@@ -107,38 +107,54 @@ async fn authentication_rejects_wrong_audience_signature_kind_and_malformed_cred
 async fn the_credential_alone_fixes_the_workspace_at_the_organization_endpoint() {
     let fixture = Fixture::new().await;
     let workspace = fixture.workspace.to_string();
-    let scoped = |audience: &str| {
+    let scoped = |audience: &str, workspace: &WorkspaceId| {
         fixture
             .issuer
-            .issue_workspace_access_token("owner", "client", audience, &fixture.workspace)
+            .issue_workspace_access_token("owner", "client", audience, workspace)
             .unwrap()
             .access_token
     };
-    let accepted = fixture
-        .authentication
-        .authenticate_credential(Some(&scoped(ORGANIZATION_AUDIENCE)), ORGANIZATION_AUDIENCE)
-        .await
-        .unwrap();
-    assert_eq!(accepted.workspace(), &fixture.workspace);
-    assert_eq!(accepted.principal().principal().id().as_str(), "owner");
-
-    let agent = fixture
+    // Two Workspaces, so a credential is seen to fix its own one.
+    let second = fixture
         .workspaces
-        .create_agent(
+        .create(
             &fixture.owner,
-            &fixture.workspace,
-            AgentDisplayName::parse("Worker").unwrap(),
-            None,
+            WorkspaceDisplayName::parse("Second").unwrap(),
         )
         .await
-        .unwrap();
-    let accepted = fixture
-        .authentication
-        .authenticate_credential(Some(agent.credential.expose()), ORGANIZATION_AUDIENCE)
-        .await
-        .unwrap();
-    assert_eq!(accepted.workspace(), &fixture.workspace);
-    assert_eq!(accepted.principal().principal(), agent.agent.principal());
+        .unwrap()
+        .id()
+        .clone();
+    for chosen in [&fixture.workspace, &second] {
+        let accepted = fixture
+            .authentication
+            .authenticate_credential(
+                Some(&scoped(ORGANIZATION_AUDIENCE, chosen)),
+                ORGANIZATION_AUDIENCE,
+            )
+            .await
+            .unwrap();
+        assert_eq!(accepted.workspace(), chosen);
+        assert_eq!(accepted.principal().principal().id().as_str(), "owner");
+
+        let agent = fixture
+            .workspaces
+            .create_agent(
+                &fixture.owner,
+                chosen,
+                AgentDisplayName::parse("Worker").unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        let accepted = fixture
+            .authentication
+            .authenticate_credential(Some(agent.credential.expose()), ORGANIZATION_AUDIENCE)
+            .await
+            .unwrap();
+        assert_eq!(accepted.workspace(), chosen);
+        assert_eq!(accepted.principal().principal(), agent.agent.principal());
+    }
 
     let agent_kind = crate::session::test_tokens::scoped_agent_kind_token(
         &fixture.issuer,
@@ -156,7 +172,7 @@ async fn the_credential_alone_fixes_the_workspace_at_the_organization_endpoint()
         ),
         (
             "a scoped token for a Workspace MCP URL",
-            Some(scoped(AUDIENCE)),
+            Some(scoped(AUDIENCE, &fixture.workspace)),
         ),
         ("an Agent-kind token", Some(agent_kind)),
         (
