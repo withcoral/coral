@@ -52,7 +52,7 @@ export const WithInfoTip: Story = {
       <InfoTip label="Workspace members">
         As a member, you see only yourself and the owners. Owners see all members.
       </InfoTip>
-      <InfoTip>Shows an icon alone when there is no label.</InfoTip>
+      <InfoTip ariaLabel="About the icon">Shows an icon alone when there is no label.</InfoTip>
     </div>
   ),
   // Checks that a touch press opens the explanation. A simulated tap also
@@ -63,6 +63,8 @@ export const WithInfoTip: Story = {
     await userEvent.pointer({ keys: '[TouchA]', target })
     const text = await within(document.body).findByText(/Owners see all members\./)
     await waitFor(() => expect(text).toBeVisible())
+    // An icon-only tip still has a name that says what it explains.
+    await expect(canvas.getByRole('button', { name: 'About the icon' })).toBeInTheDocument()
   },
 }
 

@@ -11,6 +11,11 @@ export interface InfoTipProps {
   children: string
   /** Text before the icon. Without it, only the icon shows. */
   label?: string
+  /**
+   * The name screen readers announce for the icon and the explanation. Give
+   * an icon-only tip one, such as "About members". Defaults to the label.
+   */
+  ariaLabel?: string
   side?: TooltipProps['side']
 }
 
@@ -21,8 +26,8 @@ export interface InfoTipProps {
  * It is a popover, not a tooltip: Base UI disables tooltips on touch devices,
  * and touch users must also read the explanation.
  */
-export function InfoTip({ children, label, side = 'top' }: InfoTipProps) {
-  const name = label || 'More information'
+export function InfoTip({ children, label, ariaLabel, side = 'top' }: InfoTipProps) {
+  const name = ariaLabel || label || 'More information'
   const tip = (
     <Popover.Root>
       <Popover.Trigger openOnHover delay={400} className={styles.infoTip} aria-label={name}>

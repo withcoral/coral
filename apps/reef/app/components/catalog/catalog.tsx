@@ -157,6 +157,7 @@ export function CatalogRailItem({
  */
 export function CatalogToolbar({
   title,
+  titleInfo,
   filter,
   leading,
   children,
@@ -167,6 +168,8 @@ export function CatalogToolbar({
    * `titled`, so its breadcrumb is not a second h1.
    */
   title?: string
+  /** An info tip beside the title, such as what a member can see. */
+  titleInfo?: ReactNode
   filter: FilterFieldProps & {
     /** A shortcut, such as "$mod+f", that focuses the filter from anywhere on the page. */
     shortcut?: string
@@ -212,6 +215,7 @@ export function CatalogToolbar({
               <Typography.HeadingLarge as="h1" truncate>
                 {title}
               </Typography.HeadingLarge>
+              {titleInfo}
             </div>
           )}
           {leading}
