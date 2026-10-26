@@ -90,10 +90,12 @@ pub(super) async fn oauth_authorize_get(
     let sign_in = approval.clone().into_sign_in(picks_workspace);
     // The sign-in cookie carries these inputs, so they must fit in one.
     if !sign_in_cookie::app_input_fits(&sign_in) {
-        return trusted.error(
-            "invalid_request",
-            "client_id, redirect_uri, state and client_name are too long together",
-        );
+        let inputs = if sign_in.client_name.is_some() {
+            "client_id, redirect_uri, state and client_name are too long together"
+        } else {
+            "client_id, redirect_uri and state are too long together"
+        };
+        return trusted.error("invalid_request", inputs);
     }
     let sealed_len = sign_in.sealed_len();
     if !sealed_len.is_ok_and(|length| sign_in_cookie::sealed_fits(length, state.secure_cookies())) {

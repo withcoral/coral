@@ -356,7 +356,8 @@ contacts the identity provider. A proxy in front of Coral must pass this cookie 
 callback.
 
 - A client's `client_id`, `redirect_uri`, and `state` together may be at most
-  1,536 bytes, so that the sign-in fits in one cookie. A longer request, or one
+  1,536 bytes, so that the sign-in fits in one cookie. At `/mcp` the client's
+  name counts too, because the sign-in carries it. A longer request, or one
   whose sign-in does not fit for another reason such as a long resource, fails
   with `invalid_request` before the consent page.
 - A new sign-in ends the browser's oldest sign-ins beyond three. For resources of
