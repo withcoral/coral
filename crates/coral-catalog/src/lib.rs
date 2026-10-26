@@ -21,6 +21,7 @@ pub use builtin::{
     ConfigurationOutput, GetPolicyArguments, GetPolicyResult, GetProviderArguments,
     GetProviderResult, ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup,
     ListedSetupState, ProviderFacts, ProviderSourceArgument, ProviderSourceOutput,
+    UpdatePolicyArguments, UpdatePolicyResult,
 };
 mod configuration;
 pub use configuration::{

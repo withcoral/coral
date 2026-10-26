@@ -101,7 +101,7 @@ test('Coral leads the providers page, offers nothing to change, stops calls whil
         await waitForProviderStatus(page, 'Coral', 'Ready')
         await page.getByRole('link', { name: 'listProviders', exact: true }).waitFor()
         await page.getByRole('link', { name: 'getPolicy', exact: true }).waitFor()
-        for (const hidden of ['addProvider', 'getProvider']) {
+        for (const hidden of ['addProvider', 'getProvider', 'updatePolicy']) {
           expect(await page.getByRole('link', { name: hidden, exact: true }).count()).toBe(0)
         }
       })

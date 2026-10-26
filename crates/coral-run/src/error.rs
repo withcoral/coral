@@ -184,8 +184,8 @@ impl std::fmt::Display for CoralFailure {
     }
 }
 
-/// A Coral Failure and, for `invalid_input`, each argument the Program should
-/// correct. Only the code is durable evidence that later work decodes.
+/// A Coral Failure and each argument the Program should correct, when Coral
+/// knows it. Only the code is durable evidence that later work decodes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rejection {
     failure: CoralFailure,
@@ -220,10 +220,13 @@ impl Rejection {
 
     /// `invalid_input` for each of `problems`, in the order Coral found them.
     pub(crate) fn invalid_inputs(problems: Vec<InputProblem>) -> Self {
-        Self {
-            failure: CoralFailure::InvalidInput,
-            problems,
-        }
+        Self::naming(CoralFailure::InvalidInput, problems)
+    }
+
+    /// `failure` naming each argument that caused it, such as each Call Path
+    /// that names no Operation.
+    pub(crate) const fn naming(failure: CoralFailure, problems: Vec<InputProblem>) -> Self {
+        Self { failure, problems }
     }
 
     /// The durable failure.

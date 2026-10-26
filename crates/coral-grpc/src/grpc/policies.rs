@@ -11,7 +11,7 @@ pub(super) fn error(value: coral_policy::Error) -> Status {
         coral_policy::Error::Workspace(inner) => super::workspaces::error(inner),
         coral_policy::Error::Provider(inner) => super::providers::error(inner),
         coral_policy::Error::InvalidBatch => invalid("invalid policy batch"),
-        coral_policy::Error::OperationNotFound => {
+        coral_policy::Error::OperationNotFound | coral_policy::Error::OperationPathsNotFound(_) => {
             super::workspaces::safe_status(tonic::Code::NotFound, "NOT_FOUND")
         }
         coral_policy::Error::CorruptData(_)

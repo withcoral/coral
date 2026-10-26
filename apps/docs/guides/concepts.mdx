@@ -88,6 +88,8 @@ You can add the same provider multiple times, with different account settings. F
 
 Until you set a policy, an operation is Always allow when it declares itself read-only or uses the HTTP method GET, HEAD, OPTIONS, or TRACE. Every other operation needs approval. Set Needs approval on an operation that changes data through one of these methods.
 
+A program can read a provider's policy with `coral.workspace.getPolicy`. A workspace owner's program can change it with `coral.workspace.updatePolicy`, which needs approval until you set another policy for it. `updatePolicy` cannot change the policy of Coral's own operations.
+
 ## Principals
 
 A **principal** is an authenticated actor that Coral attributes work to. It is a human user or an autonomous agent.

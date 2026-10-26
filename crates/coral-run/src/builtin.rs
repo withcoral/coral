@@ -30,6 +30,7 @@ mod add_provider;
 mod get_policy;
 mod get_provider;
 mod list_providers;
+mod update_policy;
 
 /// One admitted Built-in Operation with its validated input.
 #[derive(Clone)]
@@ -38,6 +39,7 @@ pub(crate) enum BuiltinCall {
     ListProviders,
     GetProvider(get_provider::GetProvider),
     GetPolicy(get_policy::GetPolicy),
+    UpdatePolicy(update_policy::UpdatePolicy),
 }
 
 impl BuiltinCall {
@@ -69,6 +71,9 @@ impl BuiltinCall {
                     BuiltinArguments::GetPolicy(arguments) => {
                         get_policy::GetPolicy::new(&arguments).map(Self::GetPolicy)
                     }
+                    BuiltinArguments::UpdatePolicy(arguments) => {
+                        update_policy::UpdatePolicy::new(&arguments).map(Self::UpdatePolicy)
+                    }
                 }),
         )
     }
@@ -80,6 +85,7 @@ impl BuiltinCall {
             Self::ListProviders => list_providers::perform(host).await,
             Self::GetProvider(call) => call.perform(host).await,
             Self::GetPolicy(call) => call.perform(host).await,
+            Self::UpdatePolicy(call) => call.perform(host).await,
         }
     }
 }
@@ -107,12 +113,13 @@ pub(crate) async fn recover(
         Some(BuiltinOperation::AddProvider) => add_provider::recover(transaction, run, invocation)
             .await
             .map(Some),
-        // A read leaves nothing behind, and this version cannot read an
-        // Operation it does not perform.
+        // A read leaves nothing behind, a policy change records no call to
+        // read, and this version cannot read an Operation it does not perform.
         Some(
             BuiltinOperation::ListProviders
             | BuiltinOperation::GetProvider
-            | BuiltinOperation::GetPolicy,
+            | BuiltinOperation::GetPolicy
+            | BuiltinOperation::UpdatePolicy,
         )
         | None => Ok(None),
     }

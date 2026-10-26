@@ -105,6 +105,16 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 "metadata: { kind: \"builtin\" }",
             ][..],
         ),
+        (
+            BuiltinOperation::UpdatePolicy,
+            // Idempotent only, so the default Operation Access State is approval_required.
+            OperationHints::new(None, None, Some(true), None),
+            &[
+                r#""namespace": string"#,
+                r#""operations": ({} & Record<string, "enabled" | "approval_required" | "disabled">)"#,
+                "metadata: { kind: \"builtin\" }",
+            ][..],
+        ),
     ] {
         let key = operation_key.key();
         let operation = operations
@@ -140,7 +150,13 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     target_keys.sort_unstable();
     assert_eq!(
         target_keys,
-        ["addProvider", "getPolicy", "getProvider", "listProviders"]
+        [
+            "addProvider",
+            "getPolicy",
+            "getProvider",
+            "listProviders",
+            "updatePolicy"
+        ]
     );
 
     let graph = coral_catalog::schema_graph_in_transaction(&mut transaction, &first)
