@@ -521,46 +521,45 @@ function LiveToggle({
 }) {
   const copy = liveToggles[scope]
   const tooltip = blocked ? copy.blocked : on ? copy.on : copy.off
+  const icon = on ? 'LocateFixed' : 'Locate'
   const descriptionId = useId()
-  if (text)
+  const toggle = {
+    size: '22',
+    'aria-pressed': on,
+    // Pressed, it still turns live mode off.
+    disabled: blocked && !on,
+    focusableWhenDisabled: true,
+    onClick: blocked && !on ? undefined : onToggle,
+    [liveToggleAttribute]: '',
+  } as const
+  if (!text)
     return (
-      <>
-        <Tooltip content={tooltip} side="bottom">
-          <Button.TextButton
-            size="22"
-            variant="secondary"
-            icon={on ? 'LocateFixed' : 'Locate'}
-            aria-pressed={on}
-            aria-describedby={descriptionId}
-            // Pressed, it still turns live mode off.
-            disabled={blocked && !on}
-            focusableWhenDisabled
-            onClick={blocked && !on ? undefined : onToggle}
-            {...{ [liveToggleAttribute]: '' }}
-          >
-            Live
-          </Button.TextButton>
-        </Tooltip>
-        <span id={descriptionId} className={visuallyHidden}>
-          {tooltip}
-        </span>
-      </>
+      <Button.IconButton
+        {...toggle}
+        name={icon}
+        variant="bare"
+        ariaLabel={copy.label}
+        tooltipText={tooltip}
+        tooltipSide="bottom"
+      />
     )
   return (
-    <Button.IconButton
-      name={on ? 'LocateFixed' : 'Locate'}
-      size="22"
-      variant="bare"
-      ariaLabel={copy.label}
-      aria-pressed={on}
-      tooltipText={tooltip}
-      tooltipSide="bottom"
-      // Pressed, it still turns live mode off.
-      disabled={blocked && !on}
-      focusableWhenDisabled
-      onClick={blocked && !on ? undefined : onToggle}
-      {...{ [liveToggleAttribute]: '' }}
-    />
+    <>
+      <Tooltip content={tooltip} side="bottom">
+        <Button.TextButton
+          {...toggle}
+          variant="secondary"
+          icon={icon}
+          aria-describedby={descriptionId}
+        >
+          Live
+        </Button.TextButton>
+      </Tooltip>
+      {/* The name is the visible label; the tooltip's text describes the toggle. */}
+      <span id={descriptionId} className={visuallyHidden}>
+        {tooltip}
+      </span>
+    </>
   )
 }
 
