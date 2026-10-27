@@ -172,7 +172,8 @@ test('The keyboard drives workspace Activity records, sparse child windows and t
       const shown = record(page)
       await page.keyboard.press('Escape')
       await page.getByRole('dialog', { name: 'Activity details' }).waitFor({ state: 'hidden' })
-      expect(record(page)).toBeNull()
+      // The rail's exit starts at once; the address drops the record when its navigation lands.
+      await page.waitForURL(() => record(page) === null)
       expect(await tableFocused(page)).toBe(true)
       expect((await cursor(page))?.key).toBe(shown)
     })
