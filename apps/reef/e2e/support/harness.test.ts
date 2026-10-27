@@ -37,6 +37,12 @@ test('Reel defaults to main and reserves database selection for that suite', () 
     database: 'sqlite',
     vitest: [],
   })
+  // Several Coral Instances share one database only on Postgres, so the suite selects it.
+  assert.deepEqual(commandOptions(['--suite', 'multi-instance']), {
+    suite: 'multi-instance',
+    database: 'postgres',
+    vitest: [],
+  })
   for (const args of [
     ['--suite'],
     ['--database'],
@@ -46,6 +52,7 @@ test('Reel defaults to main and reserves database selection for that suite', () 
     ['--database', 'mysql'],
     ['--suite', 'local-mode', '--database', 'postgres'],
     ['--suite', 'desktop', '--database', 'sqlite'],
+    ['--suite', 'multi-instance', '--database', 'postgres'],
     ['--desktop'],
     ['--project', 'local-sqlite'],
     ['--suite', 'local-mode', '--suite', 'main'],
@@ -71,6 +78,18 @@ test('routine setup needs no host provisioning and Postgres remains runner-owned
       E2E_POSTGRES_TEST_URL: 'postgres://fixture@localhost/disposable',
     }).database,
     'postgres',
+  )
+  assert.throws(
+    () => bootstrapConfig({ E2E_SUITE: 'multi-instance' }),
+    /multi-instance suite runs on Postgres/,
+  )
+  assert.equal(
+    bootstrapConfig({
+      E2E_SUITE: 'multi-instance',
+      E2E_DATABASE: 'postgres',
+      E2E_POSTGRES_TEST_URL: 'postgres://fixture@localhost/disposable',
+    }).postgresURL,
+    'postgres://fixture@localhost/disposable',
   )
 })
 

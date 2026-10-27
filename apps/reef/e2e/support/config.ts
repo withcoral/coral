@@ -32,9 +32,25 @@ export interface Target {
   mcpURL?: string
   /** Origins of every listener outside the private gRPC one, in a stack Reel composes. */
   publicOrigins?: string[]
-  name: 'main-sqlite' | 'main-postgres' | 'local-mode' | 'desktop' | 'attached-local' | 'harness'
+  name:
+    | 'main-sqlite'
+    | 'main-postgres'
+    | 'local-mode'
+    | 'desktop'
+    | 'multi-instance'
+    | 'attached-local'
+    | 'harness'
   authentication?: AuthenticationTarget
+  /** The Coral Instances behind the round-robin proxy, on the multi-instance suite. */
+  instances?: InstancesTarget
 }
+
+export interface InstancesTarget {
+  /** The loopback origin of the harness's proxy controls. */
+  controlURL: string
+}
+
+export const SUITES = ['main', 'local-mode', 'desktop', 'multi-instance']
 
 export interface RunConfig {
   runDir: string
@@ -117,19 +133,20 @@ export function commandOptions(args: string[]) {
       if (selected.has(flag)) throw new Error(`Specify ${flag} once`)
       selected.add(flag)
       const value = inline ?? args[++index]
-      const allowed =
-        flag === '--suite' ? ['main', 'local-mode', 'desktop'] : ['sqlite', 'postgres']
+      const allowed = flag === '--suite' ? SUITES : ['sqlite', 'postgres']
       if (!allowed.includes(value)) throw new Error(`${flag} requires ${allowed.join(' or ')}`)
       if (flag === '--suite') suite = value
       else database = value
     } else if (flag === '--desktop' || flag === '--project') {
       throw new Error(
-        'Select --suite main, local-mode or desktop; use --database postgres for main',
+        'Select --suite main, local-mode, desktop or multi-instance; use --database postgres for main',
       )
     } else vitest.push(argument)
   }
   if (suite !== 'main' && selected.has('--database'))
     throw new Error('Only the main suite selects a database')
+  // Several Coral Instances share one database only on Postgres.
+  if (suite === 'multi-instance') database = 'postgres'
   return { suite, database, vitest }
 }
 
@@ -138,10 +155,13 @@ export function bootstrapConfig(env: NodeJS.ProcessEnv) {
   const suite = env.E2E_SUITE || 'main'
   const database = env.E2E_DATABASE || 'sqlite'
   const probes = env.E2E_HARNESS_PROBES === '1'
-  if (!['main', 'local-mode', 'desktop'].includes(suite)) throw new Error('Unknown Reel suite')
+  if (!SUITES.includes(suite)) throw new Error('Unknown Reel suite')
   if (!['sqlite', 'postgres'].includes(database)) throw new Error('Unknown Reel database')
-  if (database === 'postgres' && (suite !== 'main' || probes || attached))
+  const managed = suite === 'main' || suite === 'multi-instance'
+  if (database === 'postgres' && (!managed || probes || attached))
     throw new Error('Postgres requires the managed main suite')
+  if (suite === 'multi-instance' && database !== 'postgres')
+    throw new Error('The multi-instance suite runs on Postgres')
   if (attached && suite !== 'local-mode')
     throw new Error('Attached mode requires --suite local-mode')
   let postgresURL: string | undefined

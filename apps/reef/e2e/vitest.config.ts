@@ -1,13 +1,15 @@
 import { defineConfig } from 'vitest/config'
-import { reefRoot } from './support/config.ts'
+import { reefRoot, SUITES } from './support/config.ts'
 
 const suite = process.env.E2E_SUITE || 'main'
 const database = process.env.E2E_DATABASE || 'sqlite'
 const probes = process.env.E2E_HARNESS_PROBES === '1'
-if (!['main', 'local-mode', 'desktop'].includes(suite)) throw new Error('Unknown Reel suite')
+if (!SUITES.includes(suite)) throw new Error('Unknown Reel suite')
 if (!['sqlite', 'postgres'].includes(database)) throw new Error('Unknown Reel database')
-if (database === 'postgres' && (suite !== 'main' || probes))
+if (database === 'postgres' && ((suite !== 'main' && suite !== 'multi-instance') || probes))
   throw new Error('Only the main suite selects a database')
+if (suite === 'multi-instance' && database !== 'postgres')
+  throw new Error('The multi-instance suite runs on Postgres')
 
 export default defineConfig({
   root: reefRoot,

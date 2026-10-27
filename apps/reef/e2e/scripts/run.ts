@@ -16,16 +16,17 @@ import { validateFixtureTLS } from '../support/provider-fixtures.ts'
 // Only explicit command options select a suite or database, never inherited settings.
 const options = commandOptions(process.argv.slice(2))
 if (options.vitest.includes('--help') || options.vitest.includes('-h')) {
-  console.log(`Reel: the main product suite, plus focused local-mode and Desktop checks.
+  console.log(`Reel: the main product suite, plus focused local-mode, Desktop and multi-instance checks.
 
-npm run test:e2e --prefix apps/reef -- [--suite main|local-mode|desktop] [--database sqlite|postgres] [Vitest filters]
+npm run test:e2e --prefix apps/reef -- [--suite main|local-mode|desktop|multi-instance] [--database sqlite|postgres] [Vitest filters]
 
 Default: main with genuine sign-in and SQLite.
 Postgres runs the same product scenarios in a disposable database.
 Local mode runs the Reef build that Desktop ships, without Electron.
 Desktop packages the Linux app and drives it in Electron; it needs a display.
 E2E_DESKTOP_EXECUTABLE drives an installed app instead, on Linux or Windows.
-Examples: --database postgres accounts/    --suite local-mode    --suite desktop`)
+Multi-instance runs two Coral Instances on one disposable Postgres database.
+Examples: --database postgres accounts/    --suite local-mode    --suite multi-instance`)
   process.exit(0)
 }
 const desktop = options.suite === 'desktop'

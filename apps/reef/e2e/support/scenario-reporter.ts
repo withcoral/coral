@@ -51,7 +51,9 @@ export default class ScenarioReporter implements Reporter {
     for (const project of projects) {
       project.provide('reelBootstrap', {
         ...config,
-        postgresURL: project.name === 'main-postgres' ? config.postgresURL : undefined,
+        postgresURL: ['main-postgres', 'multi-instance'].includes(project.name)
+          ? config.postgresURL
+          : undefined,
         ffmpegBinary: converter.binary,
       })
     }
