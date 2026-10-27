@@ -13,6 +13,15 @@
   --hairline: rgb(0 0 0 / 0.06);
 }
 
+/* Inter set as withcoral.com sets it: a touch tighter, in black at 80%. */
+body {
+  letter-spacing: -0.01em;
+}
+
+.prose {
+  color: rgb(0 0 0 / 0.8);
+}
+
 /* A soft coral pool behind the top of the content, as on the marketing
    hero. It stays narrow enough to clear the sidebar, whose scroll fade
    paints white. */
@@ -94,6 +103,7 @@ code,
 kbd,
 .font-mono {
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace !important;
+  letter-spacing: normal;
 }
 
 .code-block {
