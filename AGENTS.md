@@ -90,11 +90,12 @@
   only wakes the Invocations parked on it. Do not open a transaction that
   holds the Run row from any of these paths, and do not write a nonterminal
   Run's row from outside its owner. The one exception: the Coral Instance
-  that receives a cancellation for a running Run with no termination
-  recorded inserts it into the Run's Run Inbox, and only the owner deletes
+  that receives an outside request for a running Run (a decision on one of
+  its pending Approval Requests, or a cancellation while no termination is
+  recorded) inserts it into the Run's Run Inbox, and only the owner deletes
   that row while the Run is nonterminal
   ([ADR 0025](docs/adr/0025-outside-run-requests-reach-the-run-owner-through-the-run-inbox.md)). A Run whose owner retired or whose
-  process is gone without ending it gets its owner back from the
+  Coral Instance is gone without ending it gets its owner back from the
   expired-lease sweep (the Recovery section of ADR 0018); a panicked owner
   task's supervisor ends its Run at once instead. Retention holds and
   deletes terminal Runs only.
@@ -107,10 +108,10 @@
   the answer comes or the owner has retired, and a definite answer (a
   rejection, a claim mismatch, an ended Run, a corrupt head) stops it; the
   Interrupted record alone retries every answer but a claim mismatch or an
-  ended Run. The worker lease is ownership between processes, renewed by
-  every commit: never write a Run whose live lease another process holds,
-  except to insert a cancellation into its Run Inbox.
-  The lease never ends a Run from inside its own process. The owner's
+  ended Run. The worker lease is ownership between Coral Instances, renewed
+  by every commit: never write a Run whose live lease another Coral Instance
+  holds, except to insert an outside request into its Run Inbox.
+  The lease never ends a Run from inside its own Coral Instance. The owner's
   own bounds do (suspect after one lease without a commit, self-interrupt
   after three, constants in `crates/coral-run/src/execution.rs`), and the
   supervisor of a panicked owner task writes the same one Interrupted chunk.

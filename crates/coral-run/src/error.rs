@@ -361,12 +361,6 @@ pub enum Error {
     /// unknown: read the Run again.
     #[error("Program Run Owner stopped before recording the request")]
     OwnerLost,
-    /// The Run is nonterminal and no Run Owner for it lives in this process:
-    /// its lease is held by another process (a rolling update), or lapsed
-    /// and not yet swept. Nothing was written; the request may be retried,
-    /// and once the Run is terminal it is answered from the durable record.
-    #[error("Program Run has no live owner in this process")]
-    OwnedElsewhere,
     /// An outside Run Request waits in the Run's Run Inbox and its Run Owner
     /// has not recorded it within the wait. Retry: the retry finds it still
     /// waiting, recorded, or the Run ended without it, when the record
@@ -530,7 +524,6 @@ mod tests {
         }
         assert!(!Error::RunNotFound.is_operational());
         assert!(!Error::ClaimMismatch.is_operational());
-        assert!(!Error::OwnedElsewhere.is_operational());
         assert!(!Error::RunRequestNotYetRecorded.is_operational());
     }
 

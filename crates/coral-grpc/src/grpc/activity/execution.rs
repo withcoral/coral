@@ -23,11 +23,6 @@ pub(super) fn run_error(error: coral_run::Error) -> Status {
         coral_run::Error::OwnerLost => {
             Status::aborted("request outcome unknown; read the run again")
         }
-        // No owner for a nonterminal Run in this process: another process
-        // holds it, or the sweep has not ended it yet. Retryable.
-        coral_run::Error::OwnedElsewhere => {
-            Status::unavailable("run has no live owner in this process; retry")
-        }
         // The request waits in the Run Inbox and its owner has not recorded
         // it yet. Retryable: a retry reads what was recorded meanwhile.
         coral_run::Error::RunRequestNotYetRecorded => super::super::workspaces::safe_status(

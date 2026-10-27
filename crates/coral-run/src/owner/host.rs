@@ -356,10 +356,6 @@ fn run_effect(
             // The requester may have stopped waiting; the owner's decision stands.
             let _delivered = reply.send(result);
         }
-        // The requester may have stopped waiting; the record stands.
-        Effect::Answer(reply, recorded) => {
-            let _delivered = reply.send(recorded);
-        }
         Effect::Suspect {
             last_commit_age_nanos,
         } => tracing::warn!(
@@ -693,8 +689,7 @@ impl From<Error> for CommitFailure {
 /// Commits `chunk` until the database answers: the attempt, a reread after
 /// an attempt without an answer (bounded backoff between them), a recommit
 /// of the chunk exactly as built when the reread shows it did not land. Row
-/// work learns the chunk's fate once, when it is known, and what it recorded
-/// for an outside request is reported before the chunk's own answer. `None`
+/// work learns the chunk's fate once, when it is known. `None`
 /// once the owner retired while the chunk was still unanswered: the work is
 /// dropped unsettled, which its waiters read as a lost owner.
 async fn commit_until_answered(
@@ -752,13 +747,10 @@ async fn commit_until_answered(
     }
     if outcome.is_ok() {
         for item in &mut items {
-            if let ChunkItem::Work(work) = item {
-                if let Some(parked) = work.take_parked() {
-                    handle.send(Message::Parked(parked));
-                }
-                if let Some((key, answer)) = work.take_recorded_request() {
-                    handle.send(Message::RequestRecorded { key, answer });
-                }
+            if let ChunkItem::Work(work) = item
+                && let Some(parked) = work.take_parked()
+            {
+                handle.send(Message::Parked(parked));
             }
         }
     }

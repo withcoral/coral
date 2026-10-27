@@ -9,7 +9,7 @@ use coral_provider::account::ConnectionRequestId;
 use coral_workspace::{Principal, TraceId};
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::approval::{ApprovalDecision, ApprovalId, ApprovalState};
+use crate::approval::{ApprovalDecision, ApprovalId};
 use crate::engine::{ExecutionCompletion, ProgramPackage};
 use crate::execution::ExecutionStop;
 use crate::invocation::{FenceRequest, ParkedInvocation};
@@ -21,23 +21,6 @@ use super::chunk::ChunkWork;
 
 /// The answer to one Program request, at Applied or at Recorded.
 pub(crate) type Reply = oneshot::Sender<Result<(), Error>>;
-
-/// The answer to one outside decision, at Recorded: what its chunk recorded
-/// for it.
-pub(crate) type RequestReply = oneshot::Sender<Result<DecisionAnswer, Error>>;
-
-/// What a decision request learns once it is recorded: what its chunk's
-/// work wrote for it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DecisionAnswer {
-    /// This request's decision is the one recorded, as its chunk wrote it.
-    Recorded {
-        state: ApprovalState,
-        decided_at_unix_nanos: i64,
-    },
-    /// The record answers: an earlier decision, or a closed request.
-    FromRecord,
-}
 
 /// A timer the owner arms (an [`Effect::ArmTimer`] the host runs as a sleep
 /// on its own clock). It fires back into the mailbox as [`Message::Timer`],
@@ -122,7 +105,8 @@ pub(crate) struct StartedExecution {
 }
 
 /// One outside request's identity: the entity it decides. The first request
-/// for an entity wins; a repeat receives the recorded answer.
+/// for an entity wins; a repeat changes nothing, and its requester reads the
+/// record.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum RequestKey {
     /// A decision on one Approval Request.
@@ -132,7 +116,8 @@ pub(crate) enum RequestKey {
 }
 
 /// A decision an outside requester asks the owner to record on one Approval
-/// Request of its Run. Authorized and concealed before it reaches the owner.
+/// Request of its Run. Authorized and concealed before it reaches the Run
+/// Inbox.
 #[derive(Debug, Clone)]
 pub(crate) struct DecisionRequest {
     pub(crate) approval: ApprovalId,
@@ -190,12 +175,14 @@ pub(crate) enum Message {
     /// Run is ending. An Invocation that does record a result frees its slot
     /// through [`Self::InvocationResult`] instead.
     DispatchEnded,
-    /// An outside requester decides one Approval Request. The first decision
-    /// on a request wins and rides the next chunk; a repeat receives the
-    /// recorded answer. Answered once recorded.
+    /// A decision on one Approval Request from the Run Inbox, with the row
+    /// that carried it. The first decision on a request rides the next chunk,
+    /// which deletes the row; a repeat, or one the expiry came before,
+    /// changes nothing but has its row deleted too, and a row delivered
+    /// again changes nothing.
     Decide {
         request: DecisionRequest,
-        reply: RequestReply,
+        row: InboxRow,
     },
     /// A cancellation from the Run Inbox, with the row that carried it: the
     /// termination intent and `cancellation.requested` ride the next chunk,
@@ -224,13 +211,6 @@ pub(crate) enum Message {
     ProgramEnded(ExecutionCompletion),
     /// The chunk in flight landed.
     Committed,
-    /// What an outside request's work recorded in the chunk in flight.
-    /// Reaches the owner before that chunk's `Committed`, which answers the
-    /// requester with it.
-    RequestRecorded {
-        key: RequestKey,
-        answer: DecisionAnswer,
-    },
     /// The chunk in flight did not land, definitively: an answer the database
     /// did not give is resolved by the hosting task before it reaches here.
     CommitRejected(CommitRejection),
@@ -281,10 +261,11 @@ impl fmt::Debug for Message {
             Self::Work(work) => formatter.debug_tuple("Work").field(work).finish(),
             Self::Fence(request) => formatter.debug_tuple("Fence").field(request).finish(),
             Self::DispatchEnded => formatter.write_str("DispatchEnded"),
-            Self::Decide { request, .. } => formatter
+            Self::Decide { request, row } => formatter
                 .debug_struct("Decide")
                 .field("approval", &request.approval)
                 .field("decision", &request.decision)
+                .field("row", row)
                 .finish(),
             Self::Cancel { requester, row } => formatter
                 .debug_struct("Cancel")
@@ -304,11 +285,6 @@ impl fmt::Debug for Message {
                 .field(completion)
                 .finish(),
             Self::Committed => formatter.write_str("Committed"),
-            Self::RequestRecorded { key, answer } => formatter
-                .debug_struct("RequestRecorded")
-                .field("key", key)
-                .field("answer", answer)
-                .finish(),
             Self::CommitRejected(rejection) => formatter
                 .debug_tuple("CommitRejected")
                 .field(rejection)
@@ -401,8 +377,8 @@ struct Shared {
 }
 
 /// A handle on one live Run Owner: the Program host and the Invocation tasks
-/// send it Program requests, outside requesters their decisions, the Run
-/// Inbox reader its cancellations; the Shutdown Drain asks it to stop.
+/// send it Program requests, the Run Inbox reader the outside requests; the
+/// Shutdown Drain asks it to stop.
 #[derive(Clone)]
 pub(crate) struct OwnerHandle {
     shared: Arc<Shared>,
@@ -529,22 +505,9 @@ impl OwnerHandle {
         self.send(Message::DispatchEnded);
     }
 
-    /// Asks the owner to decide one Approval Request; answers once the
-    /// decision, or the one that won before it, is recorded.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::OwnerLost`] when the owner stopped first: read the record.
-    pub(crate) async fn decide(&self, request: DecisionRequest) -> Result<DecisionAnswer, Error> {
-        self.ask(|reply| Message::Decide { request, reply }).await
-    }
-
     /// Sends one request and waits for its answer; a retired owner, or one
     /// that dropped the reply, answers [`Error::OwnerLost`].
-    async fn ask<T>(
-        &self,
-        build: impl FnOnce(oneshot::Sender<Result<T, Error>>) -> Message,
-    ) -> Result<T, Error> {
+    async fn ask(&self, build: impl FnOnce(Reply) -> Message) -> Result<(), Error> {
         let (reply, answer) = oneshot::channel();
         self.shared
             .sender
@@ -606,6 +569,7 @@ impl Owners {
     }
 
     /// The owner holding `claim_id` for `run_id`, when one is live here.
+    #[cfg(test)]
     pub(crate) fn find(&self, run_id: &RunId, claim_id: &str) -> Option<OwnerHandle> {
         self.lock()
             .get(run_id)

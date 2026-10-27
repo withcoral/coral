@@ -1633,11 +1633,11 @@ async fn an_abandoned_runs_dispatching_and_waiting_invocations_end_in_one_chunk(
 }
 
 /// A recovered owner takes no outside request until its chunk lands. A
-/// cancel waits in the Run Inbox, which no reader reads for a Run whose
-/// holder is gone, and is answered "not yet recorded" with nothing written
-/// to the Run; a decision is answered `OwnedElsewhere`. Once the chunk
-/// landed, the Run ended without them and the retries are answered from
-/// the record.
+/// cancel and a decision wait in the Run Inbox, which no reader reads for a
+/// Run whose holder is gone, and each is answered "not yet recorded" past
+/// its wait, with nothing written to the Run. Once the chunk landed, the Run
+/// ended without them: a retried decision still waiting is answered from the
+/// record before its own wait is out, and so is the retried cancel.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_request_for_a_run_being_recovered_waits_until_its_chunk_lands() {
     use crate::approval::{ApprovalDecision, ApprovalState};
@@ -1660,46 +1660,61 @@ async fn a_request_for_a_run_being_recovered_waits_until_its_chunk_lands() {
         next.cancel(&held.actor, workspace_id, run_id, &immediate(None, 100))
             .await
     };
-    let decide = async || {
-        next.approvals()
-            .decide(
-                &held.operation.principal,
-                workspace_id,
-                &request.id,
-                ApprovalDecision::Approve,
-                None,
-                &TraceId::parse(&"d".repeat(32)).unwrap(),
-            )
-            .await
+    let decide = || {
+        let approvals = next.approvals();
+        let (actor, workspace_id, id) = (
+            held.operation.principal.clone(),
+            workspace_id.clone(),
+            request.id.clone(),
+        );
+        tokio::spawn(async move {
+            approvals
+                .decide(
+                    &actor,
+                    &workspace_id,
+                    &id,
+                    ApprovalDecision::Approve,
+                    None,
+                    &TraceId::parse(&"d".repeat(32)).unwrap(),
+                )
+                .await
+        })
     };
 
-    let waiting = cancel().await;
+    let (waiting, unrecorded) = tokio::join!(cancel(), decide());
     assert!(
         matches!(waiting, Err(Error::RunRequestNotYetRecorded)),
         "{waiting:?}"
     );
-    assert_eq!(fixture.inbox_rows(workspace_id, run_id).await, 1);
-    let refused = decide().await;
-    assert!(matches!(refused, Err(Error::OwnedElsewhere)), "{refused:?}");
+    let unrecorded = unrecorded.expect("join");
+    assert!(
+        matches!(unrecorded, Err(Error::RunRequestNotYetRecorded)),
+        "{unrecorded:?}"
+    );
+    assert_eq!(fixture.inbox_rows(workspace_id, run_id).await, 2);
     assert_eq!(
         fixture.run_record(workspace_id, run_id).await,
         handed,
         "neither request writes the Run"
     );
+    let deciding = decide();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!deciding.is_finished(), "the retried decision waits");
 
     release
         .send(())
         .expect("release the recovered owner's chunk");
     let ended = fixture.terminal_record(workspace_id, run_id).await;
     assert_eq!(ended.chunk_sequence, handed.chunk_sequence + 1, "one chunk");
+    let decided = deciding
+        .await
+        .expect("join")
+        .expect("the record answers the waiting decision");
+    assert_eq!(decided.state, ApprovalState::Closed);
     let canceled = cancel()
         .await
         .expect("the record answers the retried cancel");
     assert_eq!(canceled.state(), RunState::Interrupted);
-    let decided = decide()
-        .await
-        .expect("the record answers the retried decision");
-    assert_eq!(decided.state, ApprovalState::Closed);
     assert!(
         fixture
             .events_after(workspace_id, run_id, last_sequence(&handed))

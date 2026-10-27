@@ -676,12 +676,6 @@ mod tests {
                 coral_task::Error::Run(coral_run::Error::OwnerLost),
                 Code::Aborted,
             ),
-            // Another process owns the Run, or the sweep has not ended it:
-            // retryable.
-            (
-                coral_task::Error::Run(coral_run::Error::OwnedElsewhere),
-                Code::Unavailable,
-            ),
             (coral_task::Error::Clock, Code::Unavailable),
             (
                 coral_task::Error::CorruptData("private detail".into()),

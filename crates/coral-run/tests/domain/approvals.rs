@@ -1010,10 +1010,10 @@ async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_e
     );
 }
 
-/// A decision applied at the request deadline on the owner's clock, before
-/// the request's timer fired, expires the request instead of approving it:
-/// the owner applies the expiry first, as its timer would have, and the
-/// decision reads the record.
+/// A decision sent to the other Coral Instance and applied at the request
+/// deadline on the owner's clock, before the request's timer fired, expires
+/// the request instead of approving it: the owner applies the expiry first,
+/// as its timer would have, and the decision reads the record.
 #[tokio::test]
 async fn a_decision_at_the_request_deadline_expires() {
     let mut fixture = TestModules::new(Arc::new(
@@ -1045,7 +1045,9 @@ async fn a_decision_at_the_request_deadline_expires() {
         .clock
         .next
         .store(request.deadline_at_unix_nanos, Ordering::SeqCst);
-    let expired = approvals
+    let expired = fixture
+        .next_process()
+        .approvals()
         .decide(
             &operation.principal,
             &operation.workspace_id,
@@ -1461,10 +1463,10 @@ async fn approval_does_not_bypass_a_later_restrictive_policy_at_the_fence() {
 }
 
 /// A definite fault in a decision's write fails the owner's chunk, as any
-/// row work's does: the approver learns `OwnerLost`, nothing of the decision
-/// is written (no decided lifecycle event, no `invocation.ended` of its
-/// own), and the Run ends Interrupted with the request Closed by the
-/// terminal write.
+/// row work's does: nothing of the decision is written (no decided
+/// lifecycle event, no `invocation.ended` of its own), the Run ends
+/// Interrupted with the request Closed by the terminal write, and the
+/// approver's wait ends with the Run, answered from the record.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -1540,7 +1542,7 @@ async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decisi
     )
     .await;
 
-    let lost = approvals
+    let closed = approvals
         .decide(
             &operation.principal,
             &operation.workspace_id,
@@ -1549,8 +1551,8 @@ async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decisi
             None,
             &trace,
         )
-        .await;
-    assert!(matches!(lost, Err(Error::OwnerLost)), "{lost:?}");
+        .await
+        .expect("the record answers once the Run ends");
     let terminal = wait_for_terminal(
         &fixture.runs,
         &operation.principal,
@@ -1559,10 +1561,6 @@ async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decisi
     )
     .await;
     assert_eq!(terminal.state(), RunState::Interrupted);
-    let closed = approvals
-        .get(&operation.principal, &operation.workspace_id, &pending.id)
-        .await
-        .unwrap();
     assert_eq!(closed.state, ApprovalState::Closed);
     assert_eq!(closed.approver, None, "no decision was recorded");
     assert!(
@@ -2209,13 +2207,13 @@ async fn quiet_approval_fixture(
     (fixture, operation, approvals, probe)
 }
 
-/// Two deciders on one Approval Request: the owner applies them in mailbox
-/// order, the first wins and rides one chunk, the second waits for that
-/// chunk and receives the first's recorded answer (the decision, who made
-/// it, when), and a third, after the record, is answered from owner memory
-/// with no chunk. Nothing else changes: one lifecycle event, one dispatch.
+/// Two deciders on one Approval Request, one on each Coral Instance: the
+/// first inserted wins and rides one chunk, the second finds its row
+/// waiting, waits for that chunk and receives the first's recorded answer
+/// (the decision, who made it, when), and so does a third, after the row is
+/// gone. Nothing else changes: one lifecycle event, one dispatch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn two_deciders_on_one_request_are_answered_in_mailbox_order_and_the_loser_learns_the_winner()
+async fn two_deciders_on_one_request_are_answered_in_insert_order_and_the_loser_learns_the_winner()
 {
     let upstream = Arc::new(ScriptedUpstream::json(
         200,
@@ -2245,7 +2243,8 @@ async fn two_deciders_on_one_request_are_answered_in_mailbox_order_and_the_loser
     .await;
     let trace = TraceId::parse(&"a".repeat(32)).unwrap();
     let release = probe.hold_next_commit();
-    let decide = |decision: ApprovalDecision, comment: &'static str| {
+    let elsewhere = fixture.next_process().approvals();
+    let decide = |approvals: &ApprovalModule, decision: ApprovalDecision, comment: &'static str| {
         let approvals = approvals.clone();
         let actor = operation.principal.clone();
         let workspace = operation.workspace_id.clone();
@@ -2257,11 +2256,11 @@ async fn two_deciders_on_one_request_are_answered_in_mailbox_order_and_the_loser
                 .await
         })
     };
-    let first = decide(ApprovalDecision::Approve, "first");
+    let first = decide(&approvals, ApprovalDecision::Approve, "first");
     // The first decision's chunk is held before its transaction: the owner
-    // has applied the first, and the second arrives behind it.
+    // has applied the first, and the second finds its row waiting.
     wait_until(|| probe.held()).await;
-    let second = decide(ApprovalDecision::Decline, "second");
+    let second = decide(&elsewhere, ApprovalDecision::Decline, "second");
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
         !first.is_finished() && !second.is_finished(),
@@ -2281,7 +2280,13 @@ async fn two_deciders_on_one_request_are_answered_in_mailbox_order_and_the_loser
         second, first,
         "the loser receives the winner's recorded answer"
     );
-    let third = approvals
+    assert_eq!(
+        fixture
+            .inbox_rows(&operation.workspace_id, run.run_id())
+            .await,
+        0
+    );
+    let third = elsewhere
         .decide(
             &operation.principal,
             &operation.workspace_id,
@@ -2510,11 +2515,11 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
     }
 }
 
-/// An owner that dies after its decision chunk landed but before it
-/// answered: the requester learns the outcome is unknown, and a reread
-/// shows the decision. The supervisor then interrupts the Run.
+/// An owner that dies right after its decision chunk landed: the requester
+/// reads the decision from the record, and the supervisor interrupts the
+/// Run.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_owner_that_dies_after_recording_a_decision_before_answering_reports_owner_lost() {
+async fn an_owner_that_dies_after_recording_a_decision_leaves_its_requester_the_record() {
     let (fixture, operation, approvals, probe) = quiet_approval_fixture(
         Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
         Arc::new(ScriptedUpstream::json(200, serde_json::json!({}))),
@@ -2560,12 +2565,7 @@ async fn an_owner_that_dies_after_recording_a_decision_before_answering_reports_
     // The next message the owner dequeues is its own commit's answer.
     probe.panic_on_next_message();
     release.send(()).expect("release the decision chunk");
-    let lost = deciding.await.expect("join");
-    assert!(matches!(lost, Err(Error::OwnerLost)), "{lost:?}");
-    let recorded = approvals
-        .get(&operation.principal, &operation.workspace_id, &request.id)
-        .await
-        .unwrap();
+    let recorded = deciding.await.expect("join").expect("the record answers");
     assert_eq!(recorded.state, ApprovalState::Approved);
     assert_eq!(
         recorded.approver.as_ref(),
@@ -2579,88 +2579,4 @@ async fn an_owner_that_dies_after_recording_a_decision_before_answering_reports_
     )
     .await;
     assert_eq!(terminal.state(), RunState::Interrupted);
-}
-
-/// A nonterminal Run with no owner in this process answers `OwnedElsewhere`
-/// and writes nothing: the request stays pending, with no lifecycle event,
-/// and the Run row is untouched.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_decision_for_a_run_owned_elsewhere_is_refused_without_a_write() {
-    let (fixture, operation, approvals, _probe) = quiet_approval_fixture(
-        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-        Arc::new(ScriptedUpstream::json(200, serde_json::json!({}))),
-        "owned-elsewhere",
-    )
-    .await;
-    let run = fixture
-        .runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("invoke"),
-        )
-        .await
-        .unwrap();
-    let request = wait_for_approval(
-        &approvals,
-        &operation.principal,
-        &operation.workspace_id,
-        run.run_id(),
-    )
-    .await;
-    let before = fixture
-        .run_record(&operation.workspace_id, run.run_id())
-        .await;
-    // Another process: the same database, none of this process's owners.
-    let elsewhere = ApprovalModule::new(
-        fixture.database.clone(),
-        fixture.workspaces.clone(),
-        crate::owner::Owners::default(),
-    )
-    .with_clock(fixture.clock.clone());
-    let trace = TraceId::parse(&"e".repeat(32)).unwrap();
-    let refused = elsewhere
-        .decide(
-            &operation.principal,
-            &operation.workspace_id,
-            &request.id,
-            ApprovalDecision::Approve,
-            None,
-            &trace,
-        )
-        .await;
-    assert!(matches!(refused, Err(Error::OwnedElsewhere)), "{refused:?}");
-    assert_eq!(
-        approvals
-            .get(&operation.principal, &operation.workspace_id, &request.id)
-            .await
-            .unwrap(),
-        request
-    );
-    assert!(
-        approvals
-            .list_lifecycle_events(&operation.principal, &operation.workspace_id, &request.id)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        fixture
-            .run_record(&operation.workspace_id, run.run_id())
-            .await,
-        before
-    );
-    // The owning process decides it.
-    let approved = approvals
-        .decide(
-            &operation.principal,
-            &operation.workspace_id,
-            &request.id,
-            ApprovalDecision::Approve,
-            None,
-            &trace,
-        )
-        .await
-        .unwrap();
-    assert_eq!(approved.state, ApprovalState::Approved);
 }

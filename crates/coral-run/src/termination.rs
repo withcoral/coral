@@ -13,7 +13,7 @@ use crate::lifecycle::{RequestedTermination, RunRecord, RunTermination, RunTermi
 use crate::observation::read_until;
 use crate::observation::validate_cursor;
 use crate::owner::ChunkWork as _;
-use crate::run_inbox::InboxRequest;
+use crate::run_inbox::{InboxRequest, OutsideRequest};
 use crate::{
     Error, RunId, RunModule, RunObservation, RunState, RunUpdate, invocation_lifecycle,
     invocation_repository, run_repository,
@@ -55,7 +55,7 @@ impl RunModule {
         let request = InboxRequest {
             workspace_id: workspace_id.clone(),
             run_id: run_id.clone(),
-            requester: actor.principal().clone(),
+            request: OutsideRequest::Cancel(actor.principal().clone()),
         };
         // A snapshot answers a caller who may not see the Run, and a terminal
         // Run, without the write lock.
@@ -74,11 +74,7 @@ impl RunModule {
                 .submit(&mut transaction, &request, self.now()?)
                 .await?;
             transaction.commit().await?;
-            // A local owner gets the request without waiting for the change
-            // signal.
-            if self.owners.contains(run_id) {
-                self.inbox.wake();
-            }
+            self.inbox.wake_for(run_id);
             // The recorded intent gives the dispatches in flight the shutdown
             // grace; the owner ends the Run itself once it is out.
             let until = arrived + crate::nanos_duration(run.shutdown_grace_nanos) + SETTLE_MARGIN;

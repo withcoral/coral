@@ -29,7 +29,8 @@ pub(crate) use events::{
     NewEvent, OwnedEvent, OwnedEventKind, event_page_in_transaction, output_page_in_transaction,
 };
 pub(crate) use inbox::{
-    cancellation_waits, delete as delete_inbox_rows, held_by, insert_cancellation,
+    delete as delete_inbox_rows, held_by, insert as insert_inbox_request,
+    waits as inbox_request_waits,
 };
 pub(crate) use ledger::{Chunk, ChunkEvent, commit_chunk};
 pub(crate) use retention::{delete_retained_history, hold_terminal_run, retention_activity};
