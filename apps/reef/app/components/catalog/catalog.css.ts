@@ -39,6 +39,28 @@ export const railList = style({
   gap: 4,
   minWidth: 0,
 })
+// The empty rail's message, centered below the entries, with any action
+// below it at the rail's width, so every action button has one size.
+export const railEmpty = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  paddingBlock: 24,
+  paddingInline: 8,
+  // A long filter breaks inside the message rather than past the rail.
+  overflowWrap: 'anywhere',
+  textAlign: 'center',
+  textWrap: 'balance',
+})
+export const railEmptyAction = style({
+  alignSelf: 'stretch',
+  display: 'grid',
+  marginBlockStart: 12,
+  minWidth: 0,
+})
+// The action shrinks to the rail, where a long label truncates.
+globalStyle(`${railEmptyAction} > *`, { maxWidth: '100%', minWidth: 0 })
 // One entry in the rail: the link that scrolls the table to it, and any
 // trailing control, which a caller can reveal on hover, focus, or current.
 export const railItem = style({

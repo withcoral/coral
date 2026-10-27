@@ -254,6 +254,42 @@ export const TreeAddProviderLauncher: Story = {
     await expect(dialog.getByRole('button', { name: 'Add GitHub API' })).toBeVisible()
   },
 }
+// A rail filter that matches no installed provider points to the catalog.
+export const TreeFilterFindsCatalogProvider: Story = {
+  render: () => <WorkspaceProvidersPage {...treeProps} />,
+  play: async ({ canvas }) => {
+    await userEvent.type(canvas.getByLabelText('Filter providers'), 'stripe')
+  },
+}
+// A long name breaks inside the message and truncates on the button.
+export const TreeFilterFindsLongCatalogName: Story = {
+  render: () => (
+    <WorkspaceProvidersPage
+      {...treeProps}
+      recipes={[
+        ...catalogRecipes,
+        {
+          ...stripeRecipe,
+          id: 'enterprise_resource_planning_and_procurement_suite_for_global_operations',
+          displayName:
+            'Enterprise Resource Planning and Procurement Suite for Global Operations and Multinational Finance Teams',
+        },
+      ]}
+    />
+  ),
+  play: async ({ canvas }) => {
+    await userEvent.type(
+      canvas.getByLabelText('Filter providers'),
+      'enterprise_resource_planning_and_procurement_suite_for_global_operations',
+    )
+  },
+}
+export const TreeFilterFindsNothing: Story = {
+  render: () => <WorkspaceProvidersPage {...treeProps} />,
+  play: async ({ canvas }) => {
+    await userEvent.type(canvas.getByLabelText('Filter providers'), 'notion')
+  },
+}
 export const EmptyTree: Story = {
   render: () => <WorkspaceProvidersPage {...treeProps} providers={[]} />,
 }
@@ -1253,9 +1289,9 @@ export const SourcePickerFiltered: Story = {
     await userEvent.type(canvas.getByRole('searchbox'), 'stripe')
     await expect(canvas.getByRole('button', { name: 'Add Stripe API' })).toBeVisible()
     await expect(canvas.queryByRole('button', { name: 'Add GitHub API' })).not.toBeInTheDocument()
-    // The search reads the filter syntax, and a service matches by any recipe's id.
+    // A service matches by any recipe's id.
     await userEvent.clear(canvas.getByRole('searchbox'))
-    await userEvent.type(canvas.getByRole('searchbox'), '^git*mcp$')
+    await userEvent.type(canvas.getByRole('searchbox'), 'github_mcp')
     await expect(canvas.getByRole('button', { name: 'Add GitHub MCP' })).toBeVisible()
     await expect(canvas.queryByRole('button', { name: 'Add Stripe API' })).not.toBeInTheDocument()
   },

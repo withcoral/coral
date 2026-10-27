@@ -253,6 +253,8 @@ export const catalogList = style({
   margin: 0,
   padding: 0,
 })
+// The buttons that add a catalog service from the providers rail, one per source.
+export const railSources = style({ display: 'grid', gap: 8, minWidth: 0 })
 // Wax cards in a grid: each fills its cell, so a row's cards share one height.
 export const catalogItem = style({ display: 'flex', minWidth: 0 })
 export const catalogCard = style({ height: '100%', minWidth: 0 })

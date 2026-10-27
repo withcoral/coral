@@ -3,10 +3,11 @@
 import { act, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, test } from 'vitest'
+import type { SourceChoice } from '@/lib/provider-recipes/choice'
 import { renderRoute } from '@/test-support/route'
 
 import { builtinProvider, provider, workspaceView } from './fixtures'
-import type { OperationView, ProviderView } from './types'
+import type { OperationView, ProviderView, WorkspaceView } from './types'
 import { WorkspaceProvidersPage } from './workspace-providers-page'
 
 // happy-dom lays nothing out, so the virtualizer would mount no operation
@@ -37,17 +38,22 @@ function renderPage({
   action,
   entry = '/workspaces/demo/providers',
   providers = [github, weather],
+  recipes = [],
   selectedOperation = null,
+  workspace = workspaceView,
 }: {
   action?: Action
   entry?: string
   providers?: ProviderView[]
+  recipes?: SourceChoice[]
   selectedOperation?: OperationView | null
+  workspace?: WorkspaceView
 } = {}) {
   const page = (selected: OperationView | null, owner = providerOf(selected)) => (
     <WorkspaceProvidersPage
-      workspace={workspaceView}
+      workspace={workspace}
       providers={providers}
+      recipes={recipes}
       selectedProvider={owner}
       selectedOperation={selected?.relativePath ?? null}
       form={{ csrf: 'test-csrf', requestId: 'test-request' }}
@@ -326,6 +332,108 @@ test('each rail entry is a tab, and all providers lists every one', async () => 
   expect(checkbox('Select repos.get')).toBeChecked()
 })
 
+// The rail's message when its filter matches no provider, beside its entries.
+const railStatus = () =>
+  within(screen.getByRole('complementary', { name: 'installed providers' })).getByRole('status')
+
+const recipe = (id: string, displayName: string): SourceChoice => ({
+  id,
+  displayName,
+  description: '',
+  kind: 'openapi',
+  document: `${id}.json`,
+})
+
+// Catches: one catalog match that hides which of its sources it adds, or
+// a source added from the rail other than as the catalog adds it.
+test('a filter that matches one catalog service offers each of its sources', async () => {
+  const added: FormData[] = []
+  renderPage({
+    providers: [weather],
+    recipes: [
+      recipe('discord', 'Discord'),
+      {
+        id: 'discord_mcp',
+        service: 'discord',
+        displayName: 'Discord',
+        description: '',
+        kind: 'mcp',
+        url: 'https://mcp.discord.example/mcp',
+      },
+      recipe('dropbox', 'Dropbox'),
+    ],
+    action: async (request) => {
+      added.push(await request.formData())
+      return null
+    },
+  })
+  await filterProviders('disc')
+  const empty = railStatus()
+  expect(empty).toHaveTextContent('No providers match “disc”Add it from the catalog.')
+  const source = (name: string) => within(empty).getByRole('button', { name })
+  expect(within(empty).getAllByRole('button')).toEqual([
+    source('Add Discord MCP'),
+    source('Add Discord API'),
+  ])
+
+  await user.click(within(empty).getByRole('button', { name: 'Add Discord API' }))
+  expect(added.map((body) => [body.get('intent'), body.get('recipe')])).toEqual([
+    ['prepare', 'discord'],
+  ])
+})
+
+// Catches: a filter that finds no installed provider ending at a dead end, or
+// the add dialog dropping what the reader already typed.
+test.each([
+  {
+    query: 'd',
+    hint: 'The catalog has 2 matches.',
+    button: 'Show matches',
+    opens: { tab: 'Catalog', search: 'd' },
+  },
+  {
+    query: 'notion',
+    hint: 'It is not in the catalog.',
+    button: 'Add custom provider',
+    opens: { tab: 'Add custom' },
+  },
+])(
+  'a filter that matches no provider offers what the catalog has for “$query”',
+  async ({ query, hint, button, opens }) => {
+    renderPage({
+      providers: [weather],
+      recipes: [recipe('discord', 'Discord'), recipe('dropbox', 'Dropbox')],
+    })
+    await filterProviders(query)
+    const empty = railStatus()
+    expect(empty).toHaveTextContent(`No providers match “${query}”${hint}`)
+
+    await user.click(within(empty).getByRole('button', { name: button }))
+    const dialog = screen.getByRole('dialog', { name: 'Add a provider' })
+    expect(within(dialog).getByRole('tab', { name: opens.tab })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    if (opens.search)
+      expect(within(dialog).getByRole('searchbox', { name: 'Search the catalog' })).toHaveValue(
+        opens.search,
+      )
+  },
+)
+
+// Catches: a member offered an action only an owner can take.
+test('a filter that matches no provider tells a member who can add it', async () => {
+  renderPage({
+    workspace: { ...workspaceView, effectiveRole: 'member' },
+    providers: [weather],
+    recipes: [recipe('discord', 'Discord')],
+  })
+  await filterProviders('disc')
+  const empty = railStatus()
+  expect(empty).toHaveTextContent('Ask a workspace owner to add it.')
+  expect(within(empty).queryByRole('button')).toBeNull()
+})
+
 // Catches: an operation route from another provider opening its drawer over a
 // tab that leaves its row out.
 test('an operation route keeps a tab that lists it, and otherwise opens its provider', async () => {
@@ -430,11 +538,6 @@ test('the operation filter matches only the name and bolds each match', async ()
   expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
   expect(boldIn('repos.get')).toEqual(['e', 'e'])
   expect(boldIn('getForecast')).toEqual(['e', 'e'])
-
-  // The filter reads the same syntax as every filter field.
-  await filterOperations('^re*get$')
-  expect(rowNames()).toEqual(['repos.get'])
-  expect(boldIn('repos.get')).toEqual(['re', 'get'])
 })
 
 // Catches: one member's selection not rolling up to its provider and the

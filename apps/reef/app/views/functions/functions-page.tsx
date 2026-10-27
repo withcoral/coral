@@ -137,8 +137,15 @@ export function FunctionsPage({ workspace: w, functions, children }: FunctionsPa
                 value: railFilterInput,
                 onChange: setRailFilterInput,
               }}
-              empty={listed.length === 0}
-              emptyMessage={railQuery.text ? 'No namespaces match.' : 'No namespaces yet.'}
+              empty={
+                listed.length > 0
+                  ? null
+                  : {
+                      message: railQuery.text
+                        ? `No namespaces match “${railQuery.text}”`
+                        : 'No namespaces yet.',
+                    }
+              }
             >
               {listed.map((n) => (
                 <CatalogRailItem

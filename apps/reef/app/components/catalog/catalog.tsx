@@ -63,22 +63,26 @@ function FilterInput({
   )
 }
 
-/**
- * The rail: its filter, then one entry per group, or `emptyMessage` when none
- * match.
- */
+/** What the rail says when no group matches. */
+export interface CatalogRailEmpty {
+  message: string
+  /** What the reader can do instead, such as add the group they looked for. */
+  description?: string
+  action?: ReactNode
+}
+
+/** The rail: its filter, then one entry per group, or `empty` when none match. */
 export function CatalogRail({
   label,
   filter,
   empty,
-  emptyMessage,
   children,
 }: {
   /** Names the rail and its list for assistive technology. */
   label: string
   filter: FilterFieldProps
-  empty: boolean
-  emptyMessage: string
+  /** Null while a group matches. */
+  empty: CatalogRailEmpty | null
   children: ReactNode
 }) {
   return (
@@ -93,8 +97,24 @@ export function CatalogRail({
       >
         <nav className={styles.railList} aria-label={label}>
           {children}
-          {empty && <Typography.BodySmall as="p">{emptyMessage}</Typography.BodySmall>}
         </nav>
+        {/* Mounted while groups match too: a live region that arrives with
+            its message is not reliably announced. */}
+        <div className={empty ? styles.railEmpty : undefined} role="status">
+          {empty && (
+            <>
+              <Typography.BodyStrong as="p" variant="primary">
+                {empty.message}
+              </Typography.BodyStrong>
+              {empty.description && (
+                <Typography.BodySmall as="p" variant="tertiary">
+                  {empty.description}
+                </Typography.BodySmall>
+              )}
+              {empty.action && <div className={styles.railEmptyAction}>{empty.action}</div>}
+            </>
+          )}
+        </div>
       </ScrollArea.Container>
     </aside>
   )

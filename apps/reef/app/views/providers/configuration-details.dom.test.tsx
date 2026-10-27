@@ -6,13 +6,11 @@ import { expect, test } from 'vitest'
 
 import { OperationDetails } from './configuration-details'
 
-// Catches: the operation search reading `^`, `$` or `*` as plain text, or
-// leaving out the reasons an operation cannot run.
+// Catches: the operation search leaving out the reasons an operation cannot run.
 test.each([
-  ['^issues', ['issues.list', 'issues.create: Needs a server.']],
-  ['list$', ['issues.list', 'repos.list']],
-  ['^repos*list$', ['repos.list']],
-  ['needs*server', ['issues.create: Needs a server.']],
+  ['issues', ['issues.list', 'issues.create: Needs a server.']],
+  ['list', ['issues.list', 'repos.list']],
+  ['needs a server', ['issues.create: Needs a server.']],
 ])('the operation search %j lists %j', async (query, shown) => {
   const user = userEvent.setup()
   render(

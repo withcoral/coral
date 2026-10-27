@@ -24,6 +24,7 @@ import {
   CatalogRailItem,
   CatalogToolbar,
   toolbarActionLabel,
+  type CatalogRailEmpty,
 } from '@/components/catalog'
 import { filterQuery, type FilterQuery } from '@/utils/filter-query'
 import { EmptyPage } from '@/components/empty-page'
@@ -33,13 +34,20 @@ import {
   policyOptions,
   type PolicyState,
 } from '@/components/policy-toggle'
-import type { RecipeIcons } from '@/lib/provider-recipes/choice'
+import {
+  byService,
+  sourceSearch,
+  type RecipeIcons,
+  type ServiceChoices,
+} from '@/lib/provider-recipes/choice'
 import { ActionNotice, Fields } from '@/views/management/forms'
 import { ArchivedBanner, trail } from '@/views/management/layout'
 
-import { AddProviderLauncher } from './add-provider'
+import { AddProviderLauncher, needsSourceDetails, type AddProviderEntryProps } from './add-provider'
 import { countLabel } from './configuration-details'
+import { catalogMatches } from './provider-catalog'
 import { PolicyMutations, usePolicyMutations } from './policy-mutations'
+import { useReadRecipe } from './read-recipe'
 import {
   encodeSelectedOperation,
   parseSelectionKey,
@@ -200,6 +208,11 @@ function WorkspaceProvidersContent({
     const query = filterQuery(deferredRailFilter)
     return sortedProviders.filter((i) => query.matches(providerLabel(i)))
   }, [sortedProviders, deferredRailFilter])
+  const catalog = useMemo(() => byService(recipes), [recipes])
+  const railEmpty =
+    filteredProviders.length === 0
+      ? railEmptyState({ query: deferredRailFilter, catalog, entry, canChange, owner })
+      : null
   return (
     <PageLayout
       variant="split"
@@ -244,6 +257,7 @@ function WorkspaceProvidersContent({
           addButton={
             canChange && <AddProviderLauncher {...entry} labelClassName={toolbarActionLabel} />
           }
+          railEmpty={railEmpty}
           canChange={canChange}
           filteredProviders={filteredProviders}
           form={form}
@@ -257,6 +271,121 @@ function WorkspaceProvidersContent({
         />
       )}
     </PageLayout>
+  )
+}
+
+/**
+ * A rail filter that matches no installed provider looks for it in the
+ * catalog, and offers what the reader can add: the one service it found, the
+ * catalog filtered to what it found, or a custom provider.
+ */
+function railEmptyState({
+  query,
+  catalog,
+  entry,
+  canChange,
+  owner,
+}: {
+  query: string
+  catalog: readonly ServiceChoices[]
+  entry: Omit<AddProviderEntryProps, 'result' | 'onReading'>
+  canChange: boolean
+  owner: boolean
+}): CatalogRailEmpty {
+  const message = `No providers match “${query.trim()}”`
+  if (!canChange)
+    return {
+      message,
+      description: owner
+        ? 'Restore the workspace before you add a provider.'
+        : 'Ask a workspace owner to add it.',
+    }
+  const matches = catalogMatches(catalog, filterQuery(query))
+  if (matches.length === 1)
+    return {
+      message,
+      description: 'Add it from the catalog.',
+      action: <CatalogMatch service={matches[0]} form={entry.form} newPath={entry.newPath} />,
+    }
+  if (matches.length > 1)
+    return {
+      message,
+      description: `The catalog has ${matches.length} matches.`,
+      action: (
+        <AddProviderLauncher
+          {...entry}
+          variant="secondary"
+          catalogQuery={query}
+          label="Show matches"
+          leading={<Button.Icon name="Search" />}
+        />
+      ),
+    }
+  return {
+    message,
+    description: 'It is not in the catalog.',
+    action: (
+      <AddProviderLauncher
+        {...entry}
+        variant="secondary"
+        initialTab="custom"
+        label="Add custom provider"
+      />
+    ),
+  }
+}
+
+/**
+ * The one catalog service a rail filter found: a button for each of its
+ * sources, MCP before API, as the catalog orders them. A source that needs
+ * details opens the add page on it; any other is read at once, as the catalog
+ * reads it.
+ */
+function CatalogMatch({
+  service: { shown, choices },
+  form,
+  newPath,
+}: {
+  service: ServiceChoices
+  form: FormContext
+  newPath: string
+}) {
+  const navigate = useNavigate()
+  const { read, reading } = useReadRecipe(form, newPath)
+  const sources = choices.toSorted((a, b) => Number(b.kind === 'mcp') - Number(a.kind === 'mcp'))
+  return (
+    <div className={styles.railSources}>
+      {sources.map((choice) => {
+        const label =
+          sources.length > 1
+            ? `Add ${shown.displayName} ${choice.kind === 'mcp' ? 'MCP' : 'API'}`
+            : `Add ${shown.displayName}`
+        const busy = reading?.id === choice.id
+        return (
+          <Button.Container
+            key={choice.id}
+            type="button"
+            variant="secondary"
+            size="32"
+            hasPrefix
+            disabled={Boolean(reading)}
+            aria-busy={busy ? true : undefined}
+            onClick={() =>
+              needsSourceDetails(choice)
+                ? navigate(`${newPath}?${sourceSearch(choice)}`)
+                : read(choice)
+            }
+          >
+            {busy ? (
+              <Button.SpinningButtonIcon name="Loader" />
+            ) : (
+              <Logo name={shown.displayName} icons={shown.icons} size="18" />
+            )}
+            <Button.Text tooltip={label}>{label}</Button.Text>
+          </Button.Container>
+        )
+      })}
+    </div>
   )
 }
 
@@ -418,6 +547,7 @@ function ProvidersTableScreen({
   providers,
   providersPath,
   providerIcons,
+  railEmpty,
   railFilter,
   selectedProvider,
   selectedOperation,
@@ -435,6 +565,8 @@ function ProvidersTableScreen({
   providersPath: string
   /** Recipe logos by namespace, for providers that kept the recipe's id. */
   providerIcons: (provider: ProviderView) => RecipeIcons | undefined
+  /** What the rail shows when its filter matches no provider; null while one matches. */
+  railEmpty: CatalogRailEmpty | null
   railFilter: string
   /** The provider the URL names, if any. */
   selectedProvider: ProviderView | null
@@ -875,8 +1007,7 @@ function ProvidersTableScreen({
             value: railFilter,
             onChange: setRailFilter,
           }}
-          empty={filteredProviders.length === 0}
-          emptyMessage="No providers match."
+          empty={railEmpty}
         >
           <CatalogRailItem
             to={providersPath}

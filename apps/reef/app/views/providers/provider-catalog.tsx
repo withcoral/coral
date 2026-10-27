@@ -1,9 +1,14 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { Button, Card, Inputs, ScrollArea, Typography } from '@/wax/components'
 import { Logo } from '@/wax/components/logo'
-import { byService, type RecipeIcons, type SourceChoice } from '@/lib/provider-recipes/choice'
+import {
+  byService,
+  type RecipeIcons,
+  type ServiceChoices,
+  type SourceChoice,
+} from '@/lib/provider-recipes/choice'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
-import { filterQuery } from '@/utils/filter-query'
+import { filterQuery, type FilterQuery } from '@/utils/filter-query'
 import * as styles from './providers.css'
 
 /**
@@ -101,6 +106,17 @@ function Rows({ scroll, children }: { scroll: boolean; children: React.ReactNode
   )
 }
 
+/**
+ * The catalog's services that `query` matches. Only what the card shows, so
+ * every match explains itself: a service matches by any of its recipes' names
+ * and ids, and then offers them all.
+ */
+export function catalogMatches(services: readonly ServiceChoices[], query: FilterQuery) {
+  return services.filter(({ choices }) =>
+    query.matches(...choices.flatMap((recipe) => [recipe.displayName, recipe.id])),
+  )
+}
+
 function providerCount(count: number) {
   return `${count} ${count === 1 ? 'provider' : 'providers'}`
 }
@@ -112,6 +128,7 @@ export function ProviderCatalog({
   onRecipe,
   onCustom,
   scroll = false,
+  initialQuery = '',
 }: {
   recipes: readonly SourceChoice[]
   /** The recipe Coral is reading; every row waits for it. */
@@ -121,16 +138,14 @@ export function ProviderCatalog({
   onCustom?: () => void
   /** Take the height the caller leaves and scroll the rows inside it. */
   scroll?: boolean
+  /** The search the catalog opens with, such as a filter that found no installed provider. */
+  initialQuery?: string
 }) {
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(initialQuery)
   const search = useRef<HTMLInputElement>(null)
   const catalogQuery = filterQuery(query)
-  // Only what the card shows, so every match explains itself.
-  // A service matches by any of its recipes' names and ids, and then offers them all.
   const services = byService(recipes)
-  const serviceMatches = services.filter(({ choices }) =>
-    catalogQuery.matches(...choices.flatMap((recipe) => [recipe.displayName, recipe.id])),
-  )
+  const serviceMatches = catalogMatches(services, catalogQuery)
   const nothingMatches = serviceMatches.length === 0
   // Find-in-page cannot reach rows the catalog is scrolling past, so the
   // shortcut people already press goes to the search that can.

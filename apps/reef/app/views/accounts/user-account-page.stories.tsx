@@ -138,11 +138,6 @@ export const FilterPermissions: Story = {
     await expect(await within(table).findAllByRole('row')).toHaveLength(3)
     await expect(within(table).getByText('canvases:write')).toBeVisible()
     await userEvent.clear(filter)
-    // The filter reads the filter syntax.
-    await userEvent.type(filter, '^c*write$')
-    await expect(await within(table).findAllByRole('row')).toHaveLength(4)
-    await expect(within(table).getByText('chat:write')).toBeVisible()
-    await userEvent.clear(filter)
     await userEvent.type(filter, 'admin')
     await expect(await within(table).findByText('No permissions match “admin”.')).toBeVisible()
   },

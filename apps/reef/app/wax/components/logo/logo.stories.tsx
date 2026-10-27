@@ -43,6 +43,9 @@ export const Sizes: Story = {
       <Logo name="Notion" icons={{ light: transparentLogo }} size="20" />
       <Logo name="Slack" icons={{ light: fullBleedLogo }} size="20" />
       <Logo name="Linear" size="20" />
+      <Logo name="Notion" icons={{ light: transparentLogo }} size="18" />
+      <Logo name="Slack" icons={{ light: fullBleedLogo }} size="18" />
+      <Logo name="Linear" size="18" />
     </div>
   ),
 }
