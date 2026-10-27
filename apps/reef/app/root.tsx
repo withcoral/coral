@@ -27,12 +27,10 @@ export const links = () => [
   })),
   // Keep @font-face rules loaded when development hydration removes critical CSS.
   { rel: 'stylesheet', href: resetStylesheet },
+  // Link only the SVG, as withcoral.com does. Chrome prefers an icon that
+  // declares its size, so a linked favicon.ico would replace the SVG, which
+  // follows the color scheme. Browsers that cannot show it fetch /favicon.ico.
   { href: '/favicon.svg', rel: 'icon', type: 'image/svg+xml' },
-  {
-    href: '/favicon.ico',
-    rel: 'alternate icon',
-    sizes: '48x48 32x32 16x16',
-  },
 ]
 
 export function Layout({ children }: { children: React.ReactNode }) {
