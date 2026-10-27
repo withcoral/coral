@@ -91,7 +91,7 @@
   holds the Run row from any of these paths, and do not write a nonterminal
   Run's row from outside its owner. The one exception: the Coral Instance
   that receives an outside request for a running Run (a decision on one of
-  its Approval Requests, or a cancellation while no termination is
+  its pending Approval Requests, or a cancellation while no termination is
   recorded) inserts it into the Run's Run Inbox, and only the owner deletes
   that row while the Run is nonterminal
   ([ADR 0025](docs/adr/0025-outside-run-requests-reach-the-run-owner-through-the-run-inbox.md)). A Run whose owner retired or whose

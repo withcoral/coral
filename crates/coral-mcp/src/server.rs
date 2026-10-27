@@ -462,8 +462,9 @@ impl McpServer {
                 .await
             {
                 // The action ended or was resolved elsewhere while the User
-                // considered it, or its Run Owner has not recorded the answer
-                // yet: the reread update shows the recorded state.
+                // considered it, or the answer still waits in the Run Inbox
+                // for its Run Owner: the reread update shows what is recorded
+                // so far, which may still be the open action.
                 Ok(())
                 | Err(
                     coral_run::Error::ApprovalNotFound | coral_run::Error::RunRequestNotYetRecorded,

@@ -459,7 +459,8 @@ impl OwnerState {
     /// Stops the Program and settles everything it waits on with the error
     /// `lost` makes: the request on the chunk in flight, every pending
     /// request and work item. An outside request's row stays in the Run
-    /// Inbox. The caller decides the phase that follows.
+    /// Inbox unless the chunk in flight, which may still land, deletes it.
+    /// The caller decides the phase that follows.
     fn stop_pending(&mut self, lost: impl Fn() -> Error) -> Vec<Effect> {
         let mut effects = Vec::new();
         if let Some(flight) = self.in_flight.take() {

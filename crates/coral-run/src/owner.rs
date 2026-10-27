@@ -36,7 +36,8 @@
 //! the head update that asserts the owner's claim and the head it tracks in
 //! memory, carries the termination intent, and renews its lease.
 //!
-//! Every outside request (a cancellation, a decision on an Approval Request)
+//! An outside request the record does not answer already (a cancellation
+//! with no termination recorded, a decision on a pending Approval Request)
 //! reaches the owner through the Run Inbox, whose reader hands it over as
 //! [`Message::Cancel`] or [`Message::Decide`] with the row that carried it.
 

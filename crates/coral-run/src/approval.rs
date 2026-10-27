@@ -17,8 +17,8 @@
 //! Fence judges the approval when the Invocation dispatches. A request's
 //! deadline is the owner's timer: it expires the request in a chunk of its
 //! own, in mailbox order with the decisions that race it, and only the owner
-//! compares its clock with the deadline. The first terminal transition and its safe
-//! lifecycle event commit together; a lost response can be recovered by
+//! records an expiry. The first terminal transition and its safe lifecycle
+//! event commit together; a lost response can be recovered by
 //! reading or deciding again. Invocation owns live gate ordering and Promise
 //! settlement. Approval owns only request validity, decisions and evidence,
 //! not required-action projections or UI.
