@@ -76,7 +76,12 @@ async fn user_and_agent_cancellation_wait_for_started_program_execution_to_stop(
             )
             .await
         });
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        let owner = fixture
+            .runs
+            .owners
+            .get(accepted.run_id())
+            .expect("live owner");
+        wait_until(|| owner.is_stopping()).await;
         assert!(
             !cancel.is_finished(),
             "{caller:?} cancellation made a started Run terminal before execution stopped"
@@ -100,87 +105,14 @@ async fn user_and_agent_cancellation_wait_for_started_program_execution_to_stop(
     }
 }
 
-/// A nonterminal Run with no owner in this process answers `OwnedElsewhere`
-/// and writes nothing: no intent, no Event, no head move, the Program
-/// running on. The owning process then cancels it.
-#[tokio::test]
-async fn a_cancel_for_a_run_owned_elsewhere_is_refused_without_a_write() {
-    let engine = Arc::new(StopAwareEngine::default());
-    let mut fixture = TestModules::new(engine.clone()).await;
-    fixture.runs.execution_policy =
-        crate::execution::ExecutionPolicy::testing_with_claim_lease(Duration::from_secs(60));
-    let (workspace_id, principal) = fixture
-        .user_scope("user:remote-cancel", "Cancel from another process")
-        .await;
-    let accepted = fixture
-        .runs
-        .start(&principal, &workspace_id, submission("remote-cancel"))
-        .await
-        .expect("accept Program");
-    wait_until(|| engine.started.load(Ordering::SeqCst)).await;
-    wait_until_started(&fixture, &workspace_id, accepted.run_id()).await;
-    let before = fixture.run_record(&workspace_id, accepted.run_id()).await;
-    // Another process: the same database, none of this process's owners.
-    let elsewhere = RunModule::with_adapters(
-        fixture.database.clone(),
-        fixture.workspaces.clone(),
-        fixture.providers.clone(),
-        engine.clone(),
-        fixture.upstream.clone(),
-        fixture.clock.clone(),
-        crate::TestObservers::new(
-            Arc::new(NoopInvocationObserver),
-            Arc::new(NoopExecutionObserver),
-        ),
-    );
-
-    let refused = elsewhere
-        .cancel(
-            &principal,
-            &workspace_id,
-            accepted.run_id(),
-            &immediate(None, 100),
-        )
-        .await;
-    assert!(matches!(refused, Err(Error::OwnedElsewhere)), "{refused:?}");
-    assert_eq!(
-        fixture.run_record(&workspace_id, accepted.run_id()).await,
-        before,
-        "a refused request writes nothing"
-    );
-    assert!(!engine.stopped.load(Ordering::SeqCst));
-    assert!(
-        retained_events(&fixture.runs, &principal, &workspace_id, accepted.run_id())
-            .await
-            .iter()
-            .all(|event| !matches!(event.kind(), RunEventKind::CancellationRequested { .. }))
-    );
-
-    let canceled = fixture
-        .runs
-        .cancel(
-            &principal,
-            &workspace_id,
-            accepted.run_id(),
-            &immediate(None, 100),
-        )
-        .await
-        .expect("the owning process cancels");
-    assert_eq!(canceled.state(), RunState::Canceled);
-    assert!(engine.stopped.load(Ordering::SeqCst));
-    assert_eq!(engine.executions.load(Ordering::SeqCst), 1);
-}
-
 /// A cancel that reaches the owner while a Dispatch Fence is in flight is
 /// applied at once: the Program is terminated before the fence returns, and
-/// nothing is recorded until it has. Then `cancellation.requested` is
+/// nothing is recorded until it has. The Run Inbox reader delivers it as it
+/// would a row inserted before the fence's transaction began (on SQLite an
+/// insert waits behind that transaction). Then `cancellation.requested` is
 /// recorded, every Invocation the fence permitted ends `run_terminated`
 /// instead of sending, and `run.ended` follows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one journey: the cancel applied under a held fence, then the recorded order"
-)]
 async fn a_cancel_during_an_in_flight_fence_is_applied_at_once_and_run_ended_follows_the_fence() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
     let latch = FenceLatch::holding_both();
@@ -211,14 +143,6 @@ async fn a_cancel_during_an_in_flight_fence_is_applied_at_once_and_run_ended_fol
     let before = fixture
         .run_record(&operation.workspace_id, run.run_id())
         .await;
-    let runs = fixture.runs.clone();
-    let actor = operation.principal.clone();
-    let workspace = operation.workspace_id.clone();
-    let run_id = run.run_id().clone();
-    let cancel = tokio::spawn(async move {
-        runs.cancel(&actor, &workspace, &run_id, &immediate(None, 100))
-            .await
-    });
     let owner = fixture
         .runs
         .owners
@@ -227,6 +151,10 @@ async fn a_cancel_during_an_in_flight_fence_is_applied_at_once_and_run_ended_fol
             before.execution_claim_id.as_deref().expect("started"),
         )
         .expect("the owner is live");
+    owner.send(crate::owner::Message::Cancel {
+        requester: operation.principal.principal().clone(),
+        row: crate::run_inbox::InboxRow("delivered".to_string()),
+    });
     wait_until(|| owner.is_stopping()).await;
     assert_eq!(
         fixture
@@ -236,8 +164,10 @@ async fn a_cancel_during_an_in_flight_fence_is_applied_at_once_and_run_ended_fol
         "the intent waits behind the fence in flight"
     );
     latch.release_loaded();
-    let canceled = cancel.await.expect("join").expect("cancel");
-    assert_eq!(canceled.state(), RunState::Canceled);
+    let canceled = fixture
+        .terminal_record(&operation.workspace_id, run.run_id())
+        .await;
+    assert_eq!(canceled.state, RunState::Canceled);
     let events = fixture
         .events_after(
             &operation.workspace_id,
@@ -289,11 +219,12 @@ async fn a_cancel_during_an_in_flight_fence_is_applied_at_once_and_run_ended_fol
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
 }
 
-/// A second cancel on an ending Run joins no chunk: the first intent is
-/// recorded once, the head does not move for the repeat, and both receive
-/// the recorded answer once the Run has ended.
+/// A second cancel on an ending Run, sent to another Coral Instance after
+/// the first one was recorded, is answered from the record: it puts no row
+/// in the Run Inbox and moves nothing, and both cancels receive the recorded
+/// answer once the Run has ended.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_second_cancel_on_an_ending_run_joins_no_chunk() {
+async fn a_second_cancel_on_an_ending_run_records_nothing_and_leaves_no_row() {
     let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
         200,
         serde_json::json!({"temperature": 21}),
@@ -318,8 +249,7 @@ async fn a_second_cancel_on_an_ending_run_joins_no_chunk() {
         .await
         .unwrap();
     wait_until(|| upstream.entered.load(Ordering::SeqCst)).await;
-    let cancel = |label: &'static str| {
-        let runs = fixture.runs.clone();
+    let cancel = |runs: RunModule, label: &'static str| {
         let actor = operation.principal.clone();
         let workspace = operation.workspace_id.clone();
         let run_id = run.run_id().clone();
@@ -329,7 +259,7 @@ async fn a_second_cancel_on_an_ending_run_joins_no_chunk() {
                 .unwrap_or_else(|error| panic!("{label}: {error}"))
         })
     };
-    let first = cancel("first");
+    let first = cancel(fixture.runs.clone(), "first");
     wait_until_async(async || {
         fixture
             .run_record(&operation.workspace_id, run.run_id())
@@ -341,7 +271,7 @@ async fn a_second_cancel_on_an_ending_run_joins_no_chunk() {
     let recorded = fixture
         .run_record(&operation.workspace_id, run.run_id())
         .await;
-    let second = cancel("second");
+    let second = cancel(fixture.next_process(), "second");
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!second.is_finished(), "the Run is still ending");
     assert_eq!(
@@ -350,6 +280,12 @@ async fn a_second_cancel_on_an_ending_run_joins_no_chunk() {
             .await,
         recorded,
         "the repeat moves nothing"
+    );
+    assert_eq!(
+        fixture
+            .inbox_rows(&operation.workspace_id, run.run_id())
+            .await,
+        0
     );
     upstream.release.store(true, Ordering::SeqCst);
     let first = first.await.expect("join");
@@ -410,6 +346,12 @@ async fn queued_user_and_agent_cancellation_record_intent_without_starting_javas
             .await
         });
         tokio::time::sleep(Duration::from_millis(20)).await;
+        let owner = fixture
+            .runs
+            .owners
+            .get(accepted.run_id())
+            .expect("live owner");
+        wait_until(|| owner.is_stopping()).await;
         assert!(
             !cancel.is_finished(),
             "{caller:?}: answered only once recorded"
@@ -1330,6 +1272,11 @@ async fn durable_cancellation_wins_completion_and_preserves_principal_confidenti
         RunState::Running,
         "the denied cancellation changed nothing"
     );
+    assert_eq!(
+        fixture.inbox_rows(workspace.id(), accepted.run_id()).await,
+        0,
+        "the denied cancellation put nothing in the Run Inbox"
+    );
 
     let canceled = fixture
         .runs
@@ -1685,12 +1632,14 @@ async fn an_abandoned_runs_dispatching_and_waiting_invocations_end_in_one_chunk(
     );
 }
 
-/// A recovered owner takes no outside request: until its chunk lands, a
-/// cancel and a decision for the Run are answered `OwnedElsewhere`, as for
-/// any Run with no owner here, and write nothing. Once the chunk landed, the
-/// retried requests are answered from the record.
+/// A recovered owner takes no outside request until its chunk lands. A
+/// cancel waits in the Run Inbox, which no reader reads for a Run whose
+/// holder is gone, and is answered "not yet recorded" with nothing written
+/// to the Run; a decision is answered `OwnedElsewhere`. Once the chunk
+/// landed, the Run ended without them and the retries are answered from
+/// the record.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_request_for_a_run_being_recovered_is_owned_elsewhere_until_its_chunk_lands() {
+async fn a_request_for_a_run_being_recovered_waits_until_its_chunk_lands() {
     use crate::approval::{ApprovalDecision, ApprovalState};
     let held = HeldApproval::new("user:recovered-request").await;
     let (fixture, workspace_id, run_id) = (&held.fixture, &held.operation.workspace_id, &held.run);
@@ -1724,14 +1673,18 @@ async fn a_request_for_a_run_being_recovered_is_owned_elsewhere_until_its_chunk_
             .await
     };
 
-    let refused = cancel().await;
-    assert!(matches!(refused, Err(Error::OwnedElsewhere)), "{refused:?}");
+    let waiting = cancel().await;
+    assert!(
+        matches!(waiting, Err(Error::RunRequestNotYetRecorded)),
+        "{waiting:?}"
+    );
+    assert_eq!(fixture.inbox_rows(workspace_id, run_id).await, 1);
     let refused = decide().await;
     assert!(matches!(refused, Err(Error::OwnedElsewhere)), "{refused:?}");
     assert_eq!(
         fixture.run_record(workspace_id, run_id).await,
         handed,
-        "a refused request writes nothing"
+        "neither request writes the Run"
     );
 
     release

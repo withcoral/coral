@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use coral_db::Transaction;
+use coral_db::{Database, Transaction};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
 use crate::lifecycle::RunRecord;
@@ -17,6 +17,37 @@ use crate::{
 const OBSERVE_MIN_REREAD_GAP: Duration = Duration::from_millis(50);
 /// Reread cadence for a waiter whose change notifications are unavailable.
 const OBSERVE_FALLBACK_POLL: Duration = Duration::from_millis(500);
+
+/// Reads `settled` again after every ring of the change signal, at most once
+/// per reread gap, until it holds or `until` passes, as [`RunModule::observe`]
+/// waits: without the signal it reads again at the fallback poll.
+pub(crate) async fn read_until<Read>(
+    database: &Database,
+    until: tokio::time::Instant,
+    mut settled: impl FnMut() -> Read,
+) -> Result<bool, Error>
+where
+    Read: Future<Output = Result<bool, Error>>,
+{
+    let mut changes = database.subscribe_changes().ok();
+    loop {
+        let read_at = tokio::time::Instant::now();
+        if settled().await? {
+            return Ok(true);
+        }
+        if read_at >= until {
+            return Ok(false);
+        }
+        match &mut changes {
+            Some(subscription) => tokio::select! {
+                result = subscription.changed() => if result.is_err() { changes = None },
+                () = tokio::time::sleep_until(until) => {}
+            },
+            None => tokio::time::sleep_until(until.min(read_at + OBSERVE_FALLBACK_POLL)).await,
+        }
+        tokio::time::sleep_until(until.min(read_at + OBSERVE_MIN_REREAD_GAP)).await;
+    }
+}
 
 impl RunModule {
     /// Returns a non-consuming observation of an authorized Run, optionally waiting.

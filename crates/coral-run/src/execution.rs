@@ -131,6 +131,9 @@ pub(crate) trait ExecutionObserver: Send + Sync {
     /// The owner's task dequeued one message; a test may panic here.
     fn owner_message_dequeued(&self) {}
 
+    /// The Run Inbox reader handed one request to its Run's owner.
+    fn inbox_delivered(&self) {}
+
     /// The owner armed `timer` to fire after `after_nanos` on the host clock.
     fn timer_armed(&self, _timer: &crate::owner::Timer, _after_nanos: i64) {}
 

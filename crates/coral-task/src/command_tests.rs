@@ -82,6 +82,7 @@ impl Fixture {
             ),
             coral_run::RuntimeLimits::default(),
             coral_run::CoralInstanceId::generate(),
+            coral_run::RunInbox::table(database.clone()),
         )
         .unwrap();
         let index = coral_search::SearchIndex::new(database.clone(), RECONCILE_INTERVAL);
@@ -969,11 +970,13 @@ async fn a_begun_attempt_can_accept_after_closure_and_lost_handoff_keeps_the_run
             .await
             .unwrap()
     );
-    // The lost handoff left the Run with no owner: a cancel is refused
-    // without a write, and once its lease lapsed the expired-lease sweep
-    // ends it, timed out past its deadline. Identified
-    // Run access needs no live or open Task and grants no replay permission.
-    let refused = fixture
+    // The lost handoff left the Run with no owner: once its lease lapsed the
+    // expired-lease sweep ends it, timed out past its deadline, and a cancel
+    // is answered from that record. Identified Run access needs no live or
+    // open Task and grants no replay permission.
+    let timed_out = fixture.recover_at_deadline(&run).await;
+    assert_eq!(timed_out.state(), coral_run::RunState::TimedOut);
+    let canceled = fixture
         .runs
         .cancel(
             &fixture.actor,
@@ -981,13 +984,9 @@ async fn a_begun_attempt_can_accept_after_closure_and_lost_handoff_keeps_the_run
             &run,
             &coral_run::RunObservation::immediate(None, 100).unwrap(),
         )
-        .await;
-    assert!(
-        matches!(refused, Err(coral_run::Error::OwnedElsewhere)),
-        "{refused:?}"
-    );
-    let timed_out = fixture.recover_at_deadline(&run).await;
-    assert_eq!(timed_out.state(), coral_run::RunState::TimedOut);
+        .await
+        .expect("the record answers");
+    assert_eq!(canceled.state(), coral_run::RunState::TimedOut);
     assert!(
         !fixture
             .tasks

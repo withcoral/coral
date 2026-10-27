@@ -48,6 +48,7 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
         ),
         RuntimeLimits::default(),
         coral_run::CoralInstanceId::generate(),
+        coral_run::RunInbox::table(database.clone()),
     )
     .unwrap();
     // Commit acceptance without launching execution. There can be no authored output,
@@ -148,13 +149,18 @@ async fn omitted_null_and_zero_wait_observe_immediately_but_positive_wait_waits(
     }
 }
 
-/// A Run Owner that stopped before answering, and a Run owned by another
-/// process, each project one stable code; neither is an internal error.
+/// A Run Owner that stopped before answering, a Run owned by another
+/// process, and a request not yet recorded by its owner each project one
+/// stable code; none is an internal error.
 #[test]
-fn owner_lost_and_owned_elsewhere_project_stable_retryable_codes() {
+fn owner_lost_owned_elsewhere_and_not_yet_recorded_project_stable_retryable_codes() {
     let cases = [
         (coral_run::Error::OwnerLost, "run_owner_lost"),
         (coral_run::Error::OwnedElsewhere, "run_owned_elsewhere"),
+        (
+            coral_run::Error::RunRequestNotYetRecorded,
+            "run_request_not_yet_recorded",
+        ),
     ];
     for (error, code) in cases {
         let label = format!("{error:?}");

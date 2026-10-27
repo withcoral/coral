@@ -64,11 +64,12 @@ async fn record_run(
     );
     let runs = coral_run::RunModule::new(
         coral_outbound::DestinationPolicy::default(),
-        database,
+        database.clone(),
         workspaces,
         providers,
         coral_run::RuntimeLimits::default(),
         coral_run::CoralInstanceId::generate(),
+        coral_run::RunInbox::table(database.clone()),
     )
     .unwrap();
     let run = runs

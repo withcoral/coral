@@ -48,8 +48,8 @@ impl RunModule {
     /// lease lapsed, or with no claim and accepted more than one lease ago,
     /// and recreates its Run Owner. Returns once those owners exist, with how
     /// many it recreated; each ends its Run in one chunk of its own. Until
-    /// that chunk lands a request for the Run is answered `OwnedElsewhere`,
-    /// and a retry reads the record.
+    /// that chunk lands a decision for the Run is answered `OwnedElsewhere`
+    /// and a cancellation waits in the Run Inbox; a retry reads the record.
     ///
     /// Bootstrap runs the first pass before any listener binds, then on a
     /// fixed cadence of [`Self::sweep_interval`].

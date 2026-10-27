@@ -32,6 +32,12 @@ impl RunModule {
     pub(crate) fn schedule_execution(&self, run: AcceptedRun, actor: AuthenticatedPrincipal) {
         let (handle, mailbox) = OwnerHandle::new(run.id.clone(), run.claim_id.clone());
         let registration = self.owners.register(handle.clone());
+        self.inbox.owner_registered(
+            &self.owners,
+            &self.instance,
+            #[cfg(test)]
+            &self.execution_observer,
+        );
         let supervised = run.clone();
         let owner_task = tokio::spawn(owner::host(
             self.clone(),

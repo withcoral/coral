@@ -367,6 +367,12 @@ pub enum Error {
     /// and once the Run is terminal it is answered from the durable record.
     #[error("Program Run has no live owner in this process")]
     OwnedElsewhere,
+    /// An outside Run Request waits in the Run's Run Inbox and its Run Owner
+    /// has not recorded it within the wait. Retry: the retry finds it still
+    /// waiting, recorded, or the Run ended without it, when the record
+    /// answers.
+    #[error("Program Run request is not yet recorded; retry")]
+    RunRequestNotYetRecorded,
     /// The process is shutting down and accepts no new Run: its Shutdown
     /// Drain lets the live ones end. No Run was written (a Task records the
     /// refusal as its attempt's rejection); the caller may retry, and during
@@ -525,6 +531,7 @@ mod tests {
         assert!(!Error::RunNotFound.is_operational());
         assert!(!Error::ClaimMismatch.is_operational());
         assert!(!Error::OwnedElsewhere.is_operational());
+        assert!(!Error::RunRequestNotYetRecorded.is_operational());
     }
 
     #[test]

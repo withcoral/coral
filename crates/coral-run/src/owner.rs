@@ -36,9 +36,11 @@
 //! the head update that asserts the owner's claim and the head it tracks in
 //! memory, carries the termination intent, and renews its lease.
 //!
-//! An outside request reaches the owner of a nonterminal Run through
-//! [`local_owner`]; a nonterminal Run with no owner in this process is owned
-//! elsewhere, and a terminal Run is answered from its record.
+//! A cancellation reaches the owner through the Run Inbox, whose reader
+//! hands it over as [`Message::Cancel`]. A decision reaches the owner of a
+//! nonterminal Run through [`local_owner`]; a nonterminal Run with no owner
+//! in this process is owned elsewhere, and a terminal Run is answered from
+//! its record.
 
 mod chunk;
 mod handle;
@@ -64,7 +66,7 @@ pub(crate) use host::{OwnerStart, host};
 #[cfg(test)]
 pub(crate) use state::{Effect, OwnerLimits, OwnerState, Phase, apply};
 
-/// The owner of `run` in this process, for an outside request: `None` when
+/// The owner of `run` in this process, for a decision: `None` when
 /// the Run is terminal (the request is answered from the record), the
 /// owner holding the Run's claim when one is live here.
 ///

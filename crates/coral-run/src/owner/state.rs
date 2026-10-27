@@ -13,6 +13,8 @@
 //!   one to end;
 //! - the outside requests, keyed by the entity they decide: the first rides
 //!   the next chunk, a repeat waits for its answer or reads it from memory;
+//!   a cancellation comes from the Run Inbox, and the chunk that records it,
+//!   or finds it a repeat, deletes its row;
 //! - the termination intent (a cancellation, the deadline): applied at
 //!   once, recorded by the next chunk's head update;
 //! - the timers: the Run deadline, each Approval Request's and connection
@@ -41,9 +43,10 @@
 //!   Approval Request timer that passed, in deadline order, then the end),
 //!   and the owner
 //!   records the expiries, the timeout or the interruption, or the
-//!   termination already recorded, in one chunk, then retires. No outside
-//!   request reaches it: until the chunk lands a request for the Run is
-//!   answered `OwnedElsewhere`, and a retry reads the record.
+//!   termination already recorded, in one chunk, then retires. It applies
+//!   no outside request: until the chunk lands a decision for the Run is
+//!   answered `OwnedElsewhere` and a cancellation waits in the Run Inbox,
+//!   and a retry reads the record.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
@@ -53,6 +56,7 @@ use crate::approval::{ApprovalId, DecideWork};
 use crate::engine::{ExecutionCompletion, ProgramPackage};
 use crate::invocation::{FenceBatch, FenceRequest, ParkedInvocation, PrecheckBatch};
 use crate::lifecycle::{RequestedTermination, RunTerminationKind};
+use crate::run_inbox::InboxRow;
 use crate::run_repository::{OwnedEvent, OwnedEventKind};
 use crate::termination::ShutdownAction;
 use crate::{CoralFailure, Error};
@@ -264,9 +268,14 @@ pub(crate) struct OwnerState {
     /// Outside requests whose chunk is recorded: a repeat is answered from
     /// here, with no chunk.
     recorded_requests: HashSet<RequestKey>,
-    /// Outside requests (`Decide`, `Cancel`) waiting for the chunk in flight
-    /// or the terminal write, applied again once it has answered.
+    /// Outside requests waiting to be applied again once what they wait for
+    /// has answered: a decision, the chunk in flight or the terminal write;
+    /// a cancellation, the terminal write.
     parked: Vec<Message>,
+    /// The Run Inbox rows the owner applied, each riding a chunk that deletes
+    /// it. The reader delivers a row again until that chunk lands, and may
+    /// deliver it once more from a read made before; either changes nothing.
+    inbox_rows: HashSet<InboxRow>,
     /// The exact Run Output Budget total: recorded plus applied.
     output_total: usize,
     /// The total the last committed chunk recorded.
@@ -314,6 +323,7 @@ impl OwnerState {
             head: 0,
             recorded_requests: HashSet::new(),
             parked: Vec::new(),
+            inbox_rows: HashSet::new(),
             output_total: 0,
             recorded_total: 0,
             last_commit_at_unix_nanos: accepted_at_unix_nanos,
@@ -1030,56 +1040,58 @@ impl OwnerState {
         }
     }
 
-    /// A cancellation: applied at once when no termination is recorded or in
-    /// flight (the Program is terminated, the intent rides the next chunk),
-    /// answered from memory once one is; past the Run deadline the Run times
-    /// out instead, as a cancel found on the record would.
-    fn cancel(
-        &mut self,
-        requester: Principal,
-        reply: RequestReply,
-        now_unix_nanos: i64,
-    ) -> Vec<Effect> {
-        let key = RequestKey::Termination;
-        let reply = match self.answer_from_memory(&key, reply) {
-            Ok(effects) => return effects,
-            Err(reply) => reply,
-        };
-        if self.must_park(&key) {
-            self.parked.push(Message::Cancel { requester, reply });
+    /// A cancellation from the Run Inbox: applied at once while no
+    /// termination is applied (the Program is terminated, the intent rides
+    /// the next chunk with the row's deletion), a repeat otherwise, whose
+    /// row the next chunk deletes; past the Run deadline the Run times out
+    /// instead, as its timer would have decided first. During the terminal
+    /// write it waits for that write's answer. An owner that commits nothing
+    /// more leaves the row to be delivered again.
+    fn cancel(&mut self, requester: Principal, row: InboxRow, now_unix_nanos: i64) -> Vec<Effect> {
+        if self.inbox_rows.contains(&row) {
             return Vec::new();
         }
+        let mut effects = Vec::new();
         match self.phase {
-            // The terminal write recorded a termination of its own; this
-            // changes nothing.
-            Phase::Settling => vec![Effect::Answer(reply, Ok(DecisionAnswer::FromRecord))],
-            Phase::Starting | Phase::Running | Phase::Ending => {
-                // Past the Run deadline on the owner's clock the Run times
-                // out, as its timer would have decided first.
-                let mut effects = Vec::new();
+            // Once per row: the reader delivers it again while it waits.
+            Phase::Completing => {
+                let parked = self.parked.iter().any(
+                    |message| matches!(message, Message::Cancel { row: waiting, .. } if *waiting == row),
+                );
+                if !parked {
+                    self.parked.push(Message::Cancel { requester, row });
+                }
+            }
+            Phase::Starting | Phase::Running | Phase::Ending if self.termination.is_none() => {
                 if now_unix_nanos >= self.limits.deadline_at_unix_nanos {
                     effects = self.deadline(now_unix_nanos);
                 }
-                // A timeout applied first decides the kind: the request is
-                // answered from the record once the chunk carrying it, or
-                // the terminal write, has recorded it.
-                if self.termination.is_some() {
-                    self.parked.push(Message::Cancel { requester, reply });
-                    return effects;
+                if self.termination.is_none() {
+                    effects.extend(self.terminate(
+                        RunTerminationKind::Canceled,
+                        Some(requester),
+                        Some(row),
+                        now_unix_nanos,
+                    ));
+                } else {
+                    self.acknowledge(row);
                 }
-                self.terminate(
-                    RunTerminationKind::Canceled,
-                    Some(requester),
-                    Some(reply),
-                    now_unix_nanos,
-                )
             }
-            Phase::Completing
-            | Phase::Stopped(_)
-            | Phase::Interrupting
-            | Phase::Recovering
-            | Phase::Retired => vec![Effect::Answer(reply, Err(Error::OwnerLost))],
+            // A termination is applied, or recorded and settling: a repeat.
+            Phase::Starting | Phase::Running | Phase::Ending | Phase::Settling => {
+                self.acknowledge(row);
+            }
+            // Nothing the owner applies commits any more, and a recovered
+            // owner applies no outside request.
+            Phase::Stopped(_) | Phase::Interrupting | Phase::Recovering | Phase::Retired => {}
         }
+        effects
+    }
+
+    /// The next chunk deletes `row`, a repeat that changes nothing else.
+    fn acknowledge(&mut self, row: InboxRow) {
+        self.inbox_rows.insert(row.clone());
+        self.open.inbox_rows.push(row);
     }
 
     /// The Run deadline passed: the timeout is applied like a cancellation
@@ -1112,13 +1124,13 @@ impl OwnerState {
 
     /// Applies a termination intent: it rides the next chunk's head update,
     /// a cancellation's `cancellation.requested` Event among that chunk's
-    /// items in arrival order, and the Program is terminated at once. The
-    /// requester, if any, is answered once that chunk is recorded.
+    /// items in arrival order with the deletion of its Run Inbox `row`, and
+    /// the Program is terminated at once.
     fn terminate(
         &mut self,
         kind: RunTerminationKind,
         requester: Option<Principal>,
-        reply: Option<RequestReply>,
+        row: Option<InboxRow>,
         now_unix_nanos: i64,
     ) -> Vec<Effect> {
         let intent = match RequestedTermination::new(
@@ -1128,17 +1140,15 @@ impl OwnerState {
             self.limits.shutdown_grace_nanos,
         ) {
             Ok(intent) => intent,
-            // An intent the row cannot hold: a requester learns it; the
-            // owner's own timeout still stops the Program, and the terminal
-            // write records the timeout it finds passed.
-            Err(error) => {
-                return match reply {
-                    Some(reply) => vec![Effect::Answer(reply, Err(error))],
-                    None => self.stop(),
-                };
-            }
+            // An intent the row cannot hold: the Program still stops, the
+            // terminal write records what it finds, and a cancellation's
+            // row stays until the Run ends.
+            Err(_unholdable) => return self.stop(),
         };
         self.termination = Some(intent.clone());
+        if let Some(row) = &row {
+            self.inbox_rows.insert(row.clone());
+        }
         let chunk = match &intent.requester {
             Some(requester) => self.push(
                 ChunkItem::Event(OwnedEvent::new(
@@ -1151,11 +1161,7 @@ impl OwnerState {
             None => &mut self.open,
         };
         chunk.termination = Some(intent);
-        chunk.requests.extend(reply.map(|reply| PendingRequest {
-            key: RequestKey::Termination,
-            reply: Some(reply),
-            answer: None,
-        }));
+        chunk.inbox_rows.extend(row);
         self.stop()
     }
 
@@ -1168,14 +1174,14 @@ impl OwnerState {
             .collect()
     }
 
-    /// Answers every parked outside request with `answer`.
+    /// Answers every parked decision with `answer`; a parked cancellation's
+    /// row stays in the Run Inbox.
     fn answer_parked(&mut self, answer: impl Fn() -> Result<DecisionAnswer, Error>) -> Vec<Effect> {
         std::mem::take(&mut self.parked)
             .into_iter()
-            .map(|message| match message {
-                Message::Decide { reply, .. } | Message::Cancel { reply, .. } => {
-                    Effect::Answer(reply, answer())
-                }
+            .filter_map(|message| match message {
+                Message::Decide { reply, .. } => Some(Effect::Answer(reply, answer())),
+                Message::Cancel { .. } => None,
                 _ => unreachable!("only outside requests are parked"),
             })
             .collect()
@@ -1520,8 +1526,8 @@ impl OwnerState {
     /// queued every Approval Request timer that passed, in deadline order,
     /// then [`Message::Recover`], which writes the expiries and the Run's end
     /// in one chunk. The write's answer, or a stop (the Shutdown Drain is
-    /// out), retires the owner. No Program runs here and no outside request
-    /// finds the owner, so nothing else reaches it.
+    /// out), retires the owner. No Program runs here, no decision finds the
+    /// owner, and it applies no cancellation the Run Inbox reader hands it.
     fn recovering(&mut self, message: Message) -> Vec<Effect> {
         match message {
             Message::Timer(Timer::Approval(approval)) => {
@@ -1672,7 +1678,7 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         Message::Fence(request) => state.fence(request, now_unix_nanos),
         Message::DispatchEnded => state.dispatch_ended(now_unix_nanos),
         Message::Decide { request, reply } => state.decide(request, reply, now_unix_nanos),
-        Message::Cancel { requester, reply } => state.cancel(requester, reply, now_unix_nanos),
+        Message::Cancel { requester, row } => state.cancel(requester, row, now_unix_nanos),
         Message::Timer(timer) => state.timer(timer, now_unix_nanos),
         Message::Parked(parked) => state.park(parked, now_unix_nanos),
         Message::Changed => state.changed(),

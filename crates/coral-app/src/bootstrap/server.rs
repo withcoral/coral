@@ -758,6 +758,7 @@ pub(crate) async fn start_server(
         providers.clone(),
         runtime_limits,
         instance,
+        coral_run::RunInbox::table(database.clone()),
     )
     .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
     .with_provider_publisher(Arc::new(provider_workflow.clone()));

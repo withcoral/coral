@@ -653,6 +653,15 @@ impl Written {
     }
 }
 
+/// What a chunk records beside its items: the termination intent and the
+/// Run Output Budget total its head update writes, and the Run Inbox rows
+/// it deletes.
+struct Records {
+    termination: Option<crate::lifecycle::RequestedTermination>,
+    inbox_rows: Vec<crate::run_inbox::InboxRow>,
+    output_total: usize,
+}
+
 /// How one commit attempt ended.
 enum Attempt {
     Landed,
@@ -697,7 +706,11 @@ async fn commit_until_answered(
 ) -> Option<Result<(), CommitRejection>> {
     let mut items = chunk.items;
     let mut fence = chunk.fence;
-    let termination = chunk.termination;
+    let records = Records {
+        termination: chunk.termination,
+        inbox_rows: chunk.inbox_rows,
+        output_total,
+    };
     let mut written = Written {
         head_before: chunk.head,
         lease_until_unix_nanos: None,
@@ -709,8 +722,7 @@ async fn commit_until_answered(
             accepted,
             &mut items,
             &mut fence,
-            termination.as_ref(),
-            output_total,
+            &records,
             &mut written,
         )
         .await
@@ -825,7 +837,8 @@ fn refusal(run: &RunRecord, claim_id: &str, head: u64) -> Option<CommitRejection
 }
 
 /// One attempt to commit the chunk, in one transaction that holds no Run
-/// row: the row work, then the fence, then the head update predicated on
+/// row: the row work, then the fence, the deletion of the Run Inbox rows it
+/// records, then the head update predicated on
 /// the owner's claim and the head it tracks. A recommit first checks whether
 /// the attempt it repeats landed; a head update that matches no row is
 /// classified from the row read again.
@@ -834,8 +847,7 @@ async fn commit_once(
     accepted: &AcceptedRun,
     items: &mut [ChunkItem],
     fence: &mut Option<Box<FenceBatch>>,
-    termination: Option<&crate::lifecycle::RequestedTermination>,
-    output_total: usize,
+    records: &Records,
     written: &mut Written,
 ) -> Attempt {
     let claim_id = accepted.claim_id.as_str();
@@ -879,6 +891,16 @@ async fn commit_once(
         if let Some(batch) = fence.as_mut() {
             batch.run(&mut transaction, &run, now).await?;
         }
+        // The requests this chunk records leave the Run Inbox with it.
+        module
+            .inbox
+            .remove(
+                &mut transaction,
+                &run.workspace_id,
+                &run.id,
+                &records.inbox_rows,
+            )
+            .await?;
         let mut produced_by_work = produced.iter();
         let mut events: Vec<&OwnedEvent> = Vec::new();
         for item in items.iter() {
@@ -898,9 +920,9 @@ async fn commit_once(
             &mut transaction,
             Chunk::new(&run, Some(claim_id))
                 .owned_events(events)
-                .output_bytes(output_total)
+                .output_bytes(records.output_total)
                 .renew_lease(lease_until)
-                .termination(termination),
+                .termination(records.termination.as_ref()),
         )
         .await?;
         transaction.commit().await.map_err(Error::from)?;

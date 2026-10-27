@@ -1858,6 +1858,7 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
         ),
         crate::RuntimeLimits::default(),
         crate::CoralInstanceId::generate(),
+        crate::RunInbox::table(scope.fixture.database.clone()),
     )
     .expect("start the real Program runtime")
     .with_human_interface(test_reef());

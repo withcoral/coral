@@ -171,6 +171,7 @@ impl TestModules {
             self.providers.clone(),
             crate::RuntimeLimits::default(),
             crate::CoralInstanceId::generate(),
+            crate::RunInbox::table(self.database.clone()),
         )
         .expect("start the real Program runtime")
         .with_human_interface(test_reef());
@@ -388,6 +389,27 @@ impl TestModules {
             )
             .await
             .expect("require approval for the fixture Operation");
+    }
+
+    /// The rows waiting in the Run's Run Inbox.
+    pub(crate) async fn inbox_rows(
+        &self,
+        workspace_id: &coral_workspace::WorkspaceId,
+        run_id: &crate::RunId,
+    ) -> usize {
+        let rows: Vec<(String,)> = self
+            .database
+            .fetch_all(
+                Query::select()
+                    .column(Alias::new("id"))
+                    .from(Alias::new("program_run_inbox"))
+                    .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace_id.to_string()))
+                    .and_where(Expr::col(Alias::new("run_id")).eq(run_id.as_str()))
+                    .to_owned(),
+            )
+            .await
+            .expect("read the Run Inbox");
+        rows.len()
     }
 
     /// Installs or removes a persistence fault, such as a constraint that rejects

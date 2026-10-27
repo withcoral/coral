@@ -1,5 +1,5 @@
 //! Run record persistence. Children own the package, claim, Run Ledger,
-//! termination, Event, and retention statements; callers reach all of them
+//! termination, Event, Run Inbox, and retention statements; callers reach all of them
 //! through this module.
 
 #[cfg(test)]
@@ -14,6 +14,7 @@ use crate::{Error, RunId, RunState};
 mod acceptance;
 mod claims;
 mod events;
+mod inbox;
 mod ledger;
 mod retention;
 mod run_row;
@@ -26,6 +27,9 @@ pub(crate) use claims::start_execution;
 use events::last_event_sequence;
 pub(crate) use events::{
     NewEvent, OwnedEvent, OwnedEventKind, event_page_in_transaction, output_page_in_transaction,
+};
+pub(crate) use inbox::{
+    cancellation_waits, delete as delete_inbox_rows, held_by, insert_cancellation,
 };
 pub(crate) use ledger::{Chunk, ChunkEvent, commit_chunk};
 pub(crate) use retention::{delete_retained_history, hold_terminal_run, retention_activity};

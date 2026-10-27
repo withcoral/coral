@@ -264,6 +264,7 @@ impl Tracer {
             providers.clone(),
             coral_run::RuntimeLimits::default(),
             coral_run::CoralInstanceId::generate(),
+            coral_run::RunInbox::table(db.clone()),
         )
         .expect("start real Program runtime");
         let search = UniversalSearchModule::new(db.clone(), workspaces.clone());
@@ -1579,11 +1580,12 @@ async fn start_lost_worker(
                 ProviderModule::with_running_catalog(policy, database.clone(), workspaces.clone());
             let runs = RunModule::new(
                 policy,
-                database,
+                database.clone(),
                 workspaces,
                 providers,
                 coral_run::RuntimeLimits::default(),
                 coral_run::CoralInstanceId::generate(),
+                coral_run::RunInbox::table(database),
             )
             .expect("the lost worker's own Program runtime");
             let actor = coral_workspace::AuthenticatedPrincipal::user(user);

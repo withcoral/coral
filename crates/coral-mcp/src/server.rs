@@ -742,6 +742,10 @@ fn run_failure(error: coral_run::Error) -> DispatchError {
             "run_owned_elsewhere",
             "Program Run has no live owner in this process; retry",
         ),
+        coral_run::Error::RunRequestNotYetRecorded => ToolFailure::stable(
+            "run_request_not_yet_recorded",
+            "Program Run request is not yet recorded; retry",
+        ),
         coral_run::Error::Functions(error) => return functions_failure(error),
         coral_run::Error::ProgramValueTooLarge => ToolFailure::stable(
             "program_value_too_large",
