@@ -43,6 +43,7 @@ export const hostedRuntimeConfig: CoralWebRuntimeConfig = {
   auth: requiredAuthConfig,
   endpoint: { authenticatedCleartextOrigin: null, baseUrl: 'https://coral.example.test' },
   upstreamOAuthCallbackUrl: '',
+  agentsWithAvailablePlugins: [],
 }
 
 /** Stubs `hostedEnv(overrides)` into `process.env`. Pair it with `vi.unstubAllEnvs()`. */

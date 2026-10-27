@@ -48,6 +48,8 @@ export interface WorkspaceOverviewProps {
   summary?: ReactNode
   /** Whether this visit follows the workspace's creation, so onboarding opens. */
   onboarding?: boolean
+  /** The MCP clients this deployment says may have a Coral plugin. The prompt asks them to look for it. */
+  agentsWithAvailablePlugins: readonly string[]
 }
 
 /**
@@ -64,6 +66,7 @@ export function WorkspaceOverview({
   recipes,
   summary,
   onboarding = false,
+  agentsWithAvailablePlugins,
 }: WorkspaceOverviewProps) {
   const owner = w.effectiveRole === 'owner'
   const active = w.state === 'active'
@@ -78,7 +81,12 @@ export function WorkspaceOverview({
   // One prompt for the onboarding dialog and the quick start's last tab. Coral serves the
   // implicit local user only when it runs without authentication, and that same runtime
   // setting serves its MCP server with no sign-in.
-  const prompt = onboardingPrompt(w.displayName, w.mcpEndpoint, !w.profile.local)
+  const prompt = onboardingPrompt(
+    w.displayName,
+    w.mcpEndpoint,
+    !w.profile.local,
+    agentsWithAvailablePlugins,
+  )
   const members = owners?.map((o) => ({ profile: o.profile, user: o.user, enabled: o.enabled }))
   if (members && ownMembership && !members.some((m) => m.user === ownMembership.user))
     members.unshift({
