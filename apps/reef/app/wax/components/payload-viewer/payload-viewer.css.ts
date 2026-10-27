@@ -33,20 +33,49 @@ export const find = style({
 
 export const findInput = style({ flex: 1, minWidth: 0 })
 
-export const body = style({
-  ...theme.typography.code,
+const frame = {
   background: theme.surface.onMainContentSubtle,
   border: `1px solid ${theme.stroke.secondary}`,
   borderRadius: 8,
+}
+
+export const body = style({
+  ...theme.typography.code,
   color: theme.content.primary,
   margin: 0,
   minWidth: 0,
   padding: 12,
   tabSize: 2,
 })
+export const framedBody = style(frame)
 
-/** Unwrapped lines scroll sideways here; the detail pane still owns vertical scroll. */
-export const sideways = style({ overflowX: 'auto', overflowY: 'hidden' })
+/** The inline card: a compact row of actions at the top right, then the payload, which uses
+ * the card's full width and scrolls under that row, which stays in view. */
+export const card = style({
+  ...frame,
+  display: 'flex',
+  flexDirection: 'column',
+  minWidth: 0,
+  overflow: 'hidden',
+})
+export const actions = style({ alignItems: 'center', display: 'flex', gap: 2 })
+export const cardActions = style({ alignSelf: 'flex-end', padding: '4px 4px 0' })
+
+/** Inline, a payload shows at most 320px, or half the screen on a short one, then scrolls
+ * inside its card. Folding still sets how much there is to scroll. */
+export const INLINE_MAX_HEIGHT = 'min(320px, 50vh)'
+export const inlineBody = style({
+  maxHeight: INLINE_MAX_HEIGHT,
+  overflow: 'auto',
+  // Room for the first row's focus outline, under the action row.
+  paddingTop: 4,
+  selectors: {
+    '&:focus-visible': { outline: `2px solid ${theme.stroke.focused}`, outlineOffset: -2 },
+  },
+})
+
+/** In the expanded viewer, unwrapped lines scroll sideways. */
+export const sideways = style({ overflowX: 'auto' })
 export const expandedBody = style({ flex: 1, minHeight: 0, overflow: 'auto' })
 
 export const wrapped = style({ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' })

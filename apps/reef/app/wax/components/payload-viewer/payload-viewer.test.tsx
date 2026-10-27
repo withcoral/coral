@@ -10,6 +10,39 @@ const view = (value: string, format: 'json' | 'text' = 'json', label = 'Provider
   return screen.getByRole('region', { name: label })
 }
 const structure = (region: HTMLElement) => within(region).getByRole('group', { name: 'Structure' })
+/** The expanded viewer, where every inspection control is. */
+const inspect = async (
+  value: string,
+  format: 'json' | 'text' = 'json',
+  label = 'Provider response',
+) => {
+  const region = view(value, format, label)
+  await userEvent.setup().click(within(region).getByRole('button', { name: `Expand ${label}` }))
+  return screen.findByRole('dialog', { name: label })
+}
+
+// Catches: an inline payload that repeats the expanded viewer's tools, or loses its actions.
+it.each([
+  ['JSON', '{"a":1}', 'json'],
+  ['text', 'line', 'text'],
+] as const)('keeps only Copy, Download and Expand in an inline %s payload', (_, value, format) => {
+  const region = view(value, format)
+  const actions = within(region).getByRole('group', { name: 'Payload actions' })
+  expect(
+    within(actions)
+      .getAllByRole('button')
+      .map((button) => button.getAttribute('aria-label')),
+  ).toEqual(['Copy Provider response', 'Download Provider response', 'Expand Provider response'])
+  for (const gone of ['searchbox', 'radiogroup', 'status'] as const)
+    expect(within(region).queryByRole(gone)).toBeNull()
+  expect(within(region).queryByRole('button', { name: 'Wrap' })).toBeNull()
+  expect(region.textContent).not.toMatch(/JSON ·|Text ·|\d B\b/)
+  // The payload scrolls inside the card, and you reach it with the keyboard.
+  expect(within(region).getByRole('group', { name: 'Payload content' })).toHaveAttribute(
+    'tabindex',
+    '0',
+  )
+})
 
 // Catches: a renderer that reparses and reserializes JSON, which rounds large integers,
 // respells numbers, drops duplicate keys and rewrites escapes.
@@ -93,7 +126,7 @@ it('keeps every long string open in a small payload, and lets each fold alone', 
 // Catches: a Find that searches only what is unfolded, or finds a match it never shows.
 it('finds matches in folded content and unfolds each one it moves to', async () => {
   const user = userEvent.setup()
-  const region = view(large)
+  const region = await inspect(large)
   const tree = structure(region)
   const find = within(region).getByRole('searchbox', { name: 'Find in Provider response' })
   await user.type(find, 'row-11')
@@ -133,16 +166,20 @@ it.each([
   ['a scalar', '  "spaced"\n'],
 ])('shows %s exactly as retained in Raw', async (_, value) => {
   const user = userEvent.setup()
-  const region = view(value)
+  const region = await inspect(value)
   await user.click(within(region).getByRole('radio', { name: 'Raw' }))
   expect(within(region).queryByRole('group', { name: 'Structure' })).toBeNull()
   expect(within(region).getByRole('group', { name: 'Raw' }).textContent).toBe(value)
 })
 
 // Catches: malformed JSON that is reformatted, hidden, or offered a structure it does not have.
-it('shows malformed JSON as retained, and says it is not valid JSON', () => {
+it('shows malformed JSON as retained, and says it is not valid JSON', async () => {
   const value = '{"status": 200, "data": [1, 2'
-  const region = view(value)
+  const region = await inspect(value)
+  // Inline too, it shows as retained.
+  // The modal hides the page behind it from assistive technology.
+  const inline = screen.getByRole('region', { name: 'Provider response', hidden: true })
+  expect(within(inline).getByRole('group', { name: 'Raw', hidden: true }).textContent).toBe(value)
   expect(within(region).getByRole('group', { name: 'Raw' }).textContent).toBe(value)
   expect(within(region).queryByRole('radiogroup', { name: 'View' })).toBeNull()
   expect(within(region).getByRole('group', { name: 'Payload tools' })).toHaveTextContent(
@@ -159,7 +196,12 @@ it('shows JSON null as a value, not as nothing', () => {
 it('shows a text log as numbered lines, its whitespace kept, with a wrap toggle', async () => {
   const user = userEvent.setup()
   const value = 'first  line\n\tindented\n\nlast {"not":"json"}'
-  const region = view(value, 'text', 'Log message')
+  const region = await inspect(value, 'text', 'Log message')
+  // The modal hides the page behind it from assistive technology.
+  const inline = screen.getByRole('region', { name: 'Log message', hidden: true })
+  expect(within(inline).getByRole('group', { name: 'Lines', hidden: true }).textContent).toBe(
+    `1first  line2\tindented34last {"not":"json"}`,
+  )
   const lines = within(region).getByRole('group', { name: 'Lines' })
   expect(lines.textContent).toBe(`1first  line2\tindented34last {"not":"json"}`)
   expect(within(region).queryByRole('radiogroup', { name: 'View' })).toBeNull()
@@ -207,8 +249,8 @@ it.each([
   ['{"a":1}', '7 B'],
   ['"é"', '4 B'],
   [JSON.stringify('x'.repeat(1498)), '1.5 kB'],
-])('states the retained size of %s', (value, size) => {
-  const tools = within(view(value)).getByRole('group', { name: 'Payload tools' })
+])('states the retained size of %s in the expanded viewer', async (value, size) => {
+  const tools = within(await inspect(value)).getByRole('group', { name: 'Payload tools' })
   expect(tools).toHaveTextContent(`JSON · ${size}`)
 })
 
@@ -231,7 +273,7 @@ it.each([
   ['row-11', 'Raw', '1 of 11'],
 ])('finds %j in the %s view as other searches do', async (query, mode, status) => {
   const user = userEvent.setup()
-  const region = view(large)
+  const region = await inspect(large)
   if (mode === 'Raw') await user.click(within(region).getByRole('radio', { name: 'Raw' }))
   await user.type(
     within(region).getByRole('searchbox', { name: 'Find in Provider response' }),
@@ -243,7 +285,7 @@ it.each([
 // Catches: a view switch that keeps a match index but leaves the match folded away.
 it('reveals the current match after you switch views', async () => {
   const user = userEvent.setup()
-  const region = view(large)
+  const region = await inspect(large)
   await user.click(within(region).getByRole('radio', { name: 'Raw' }))
   await user.type(
     within(region).getByRole('searchbox', { name: 'Find in Provider response' }),
@@ -256,9 +298,9 @@ it('reveals the current match after you switch views', async () => {
 })
 
 // Catches: JSON nested deep enough to exhaust the stack when its structure is walked.
-it('shows very deeply nested JSON exactly as retained, in Raw only', () => {
+it('shows very deeply nested JSON exactly as retained, in Raw only', async () => {
   const value = '['.repeat(5000) + ']'.repeat(5000)
-  const region = view(value)
+  const region = await inspect(value)
   expect(within(region).queryByRole('radiogroup', { name: 'View' })).toBeNull()
   expect(within(region).getByRole('group', { name: 'Raw' }).textContent).toBe(value)
   expect(within(region).getByRole('group', { name: 'Payload tools' })).toHaveTextContent(
@@ -269,7 +311,7 @@ it('shows very deeply nested JSON exactly as retained, in Raw only', () => {
 it('keeps line terminators exact in Raw and finds per line', async () => {
   const user = userEvent.setup()
   const value = '{"a":\r\n"x",\r"b":\n"x"}'
-  const region = view(value)
+  const region = await inspect(value)
   await user.click(within(region).getByRole('radio', { name: 'Raw' }))
   expect(within(region).getByRole('group', { name: 'Raw' }).textContent).toBe(value)
   await user.type(

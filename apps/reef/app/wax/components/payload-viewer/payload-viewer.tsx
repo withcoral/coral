@@ -45,10 +45,11 @@ export interface PayloadViewerProps {
 }
 
 /**
- * One retained payload, exact, with what inspecting it needs: its type and retained size,
- * Find, Copy, Download and an expanded viewer. JSON shows as a foldable structure built from
- * its own tokens, or exactly as retained in Raw; text keeps its lines, numbered, and wraps or
- * not. The page scrolls the payload: folding, not a nested scroll box, bounds its height.
+ * One retained payload, exact. Inline, a card shows it, foldable, and scrolls it past a
+ * maximum height; Copy, Download and Expand sit in the card's top-right corner. Expand opens
+ * the viewer with every inspection tool: type and retained size, Structured or Raw, Find and
+ * Wrap. JSON shows as a foldable structure built from its own tokens, or exactly as retained
+ * in Raw; text keeps its lines, numbered.
  */
 export function PayloadViewer(props: PayloadViewerProps) {
   return <Viewer {...props} expanded={false} />
@@ -163,6 +164,54 @@ function Viewer({
     : matches.length
       ? `${Math.min(current, matches.length - 1) + 1} of ${matches.length}`
       : 'No matches'
+  // Copy, Download and, inline, Expand: compact, in the card's corner or the viewer's toolbar.
+  const actions = (
+    <div className={styles.actions} role="group" aria-label="Payload actions">
+      <CopyButton
+        size="22"
+        variant="bare"
+        ariaLabel={`Copy ${label}`}
+        tooltipText="Copy"
+        textToCopy={value}
+      />
+      <Button.IconButton
+        name="Download"
+        size="22"
+        variant="bare"
+        ariaLabel={`Download ${label}`}
+        tooltipText="Download"
+        onClick={download}
+      />
+      {!expanded && (
+        <Dialog.Root>
+          <Dialog.Trigger
+            render={<Button.Container size="22" variant="bare" ariaLabel={`Expand ${label}`} />}
+          >
+            <Button.Icon name="Maximize2" />
+          </Dialog.Trigger>
+          <Dialog.Portal>
+            <Dialog.Backdrop />
+            <Dialog.Popup size="xxl" className={styles.expandedPopup}>
+              <Dialog.Header>
+                <Dialog.Title>{label}</Dialog.Title>
+                <Dialog.Close inline />
+              </Dialog.Header>
+              <Viewer
+                value={value}
+                format={format}
+                label={label}
+                truncated={truncated}
+                fileName={fileName}
+                expanded
+                initial={{ mode, wrap, folded, query, current }}
+              />
+            </Dialog.Popup>
+          </Dialog.Portal>
+        </Dialog.Root>
+      )}
+    </div>
+  )
+  // The expanded viewer's tools; the inline card keeps only its actions.
   const toolbar = (
     <div className={styles.toolbar} role="group" aria-label="Payload tools">
       <Typography.BodySmall variant="tertiary" className={styles.facts}>
@@ -233,48 +282,7 @@ function Viewer({
           onClick={() => step(1)}
         />
       </div>
-      <CopyButton
-        size="22"
-        variant="bare"
-        ariaLabel={`Copy ${label}`}
-        tooltipText="Copy"
-        textToCopy={value}
-      />
-      <Button.IconButton
-        name="Download"
-        size="22"
-        variant="bare"
-        ariaLabel={`Download ${label}`}
-        tooltipText="Download"
-        onClick={download}
-      />
-      {!expanded && (
-        <Dialog.Root>
-          <Dialog.Trigger
-            render={<Button.Container size="22" variant="bare" ariaLabel={`Expand ${label}`} />}
-          >
-            <Button.Icon name="Maximize2" />
-          </Dialog.Trigger>
-          <Dialog.Portal>
-            <Dialog.Backdrop />
-            <Dialog.Popup size="xxl" className={styles.expandedPopup}>
-              <Dialog.Header>
-                <Dialog.Title>{label}</Dialog.Title>
-                <Dialog.Close inline />
-              </Dialog.Header>
-              <Viewer
-                value={value}
-                format={format}
-                label={label}
-                truncated={truncated}
-                fileName={fileName}
-                expanded
-                initial={{ mode, wrap, folded, query, current }}
-              />
-            </Dialog.Popup>
-          </Dialog.Portal>
-        </Dialog.Root>
-      )}
+      {actions}
     </div>
   )
   const content = structured ? (
@@ -310,22 +318,39 @@ function Viewer({
       </pre>
     </div>
   )
+  const notice = truncated && (
+    <Typography.BodySmall>This is only the start of the value.</Typography.BodySmall>
+  )
+  if (!expanded)
+    return (
+      <section className={styles.viewer} aria-label={label}>
+        {notice}
+        <div className={styles.card}>
+          <div className={styles.cardActions}>{actions}</div>
+          {/* A long payload scrolls here, under its actions; Tab reaches it to scroll by key. */}
+          <div
+            ref={body}
+            role="group"
+            aria-label="Payload content"
+            tabIndex={0}
+            className={classNames(styles.body, styles.inlineBody)}
+          >
+            {content}
+          </div>
+        </div>
+      </section>
+    )
   return (
-    <section
-      className={classNames(styles.viewer, expanded && styles.expandedViewer)}
-      // The expanded viewer's dialog names it.
-      aria-label={expanded ? undefined : label}
-    >
+    <section className={classNames(styles.viewer, styles.expandedViewer)}>
       {toolbar}
-      {truncated && (
-        <Typography.BodySmall>This is only the start of the value.</Typography.BodySmall>
-      )}
+      {notice}
       <div
         ref={body}
         className={classNames(
           styles.body,
+          styles.framedBody,
           !structured && !wrap && styles.sideways,
-          expanded && styles.expandedBody,
+          styles.expandedBody,
         )}
       >
         {content}

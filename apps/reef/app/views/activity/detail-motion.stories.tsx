@@ -381,8 +381,8 @@ const viewports = (root: Element) =>
   [...root.querySelectorAll<HTMLElement>('*')].filter(
     (element) =>
       /auto|scroll/.test(getComputedStyle(element).overflowY) &&
-      // A segmented control scrolls its options sideways; it is no record's viewport.
-      !element.matches('[role="radiogroup"]'),
+      // A payload scrolls inside its own card; it is no record's viewport.
+      !element.matches('[aria-label="Payload content"]'),
   )
 
 /**
