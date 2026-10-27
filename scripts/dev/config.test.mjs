@@ -57,9 +57,9 @@ test('setup creates portable private state and preserves keys, credentials and d
   initialize(root)
   saveInputs(root)
   assert.deepEqual(configure(root), {
-    web: 'https://developer.example.ts.net',
-    auth: 'https://developer.example.ts.net:8443',
-    mcp: 'https://developer.example.ts.net:10000',
+    web: 'https://developer.example.ts.net:8443',
+    auth: 'https://developer.example.ts.net',
+    mcp: 'https://developer.example.ts.net',
   })
   const keyPath = join(root, '.dev/secrets/session.pk8')
   const key = readFileSync(keyPath)
@@ -75,8 +75,17 @@ test('setup creates portable private state and preserves keys, credentials and d
   const config = readFileSync(join(root, '.dev/state/config.toml'), 'utf8')
   assert.match(config, /\[listeners.web\]/)
   assert.match(config, /\[listeners.auth\]/)
-  assert.match(config, /public_url = "https:\/\/developer\.example\.ts\.net:10000"/)
-  assert.equal(load(root).urls.mcp, 'https://developer.example.ts.net:10000')
+  assert.match(
+    config,
+    /\[listeners.mcp\]\nbind = "127.0.0.1:14556"\npublic_url = "https:\/\/developer\.example\.ts\.net"\n/,
+  )
+  assert.match(
+    config,
+    /\[listeners.auth\]\nbind = "127.0.0.1:9080"\npublic_url = "https:\/\/developer\.example\.ts\.net"\n/,
+  )
+  assert.equal(webEnv.CORAL_WEB_PUBLIC_URL, 'https://developer.example.ts.net:8443')
+  assert.equal(webEnv.CORAL_WEB_AUTH_ISSUER, 'https://developer.example.ts.net')
+  assert.equal(load(root).urls.mcp, 'https://developer.example.ts.net')
   assert.match(config, /signing_key_file = "\.\.\/secrets\/session.pk8"/)
   assert.ok(
     !config.includes('access_token_ttl_seconds'),
@@ -108,6 +117,26 @@ test('setup creates portable private state and preserves keys, credentials and d
   ]) {
     assert.equal(lstatSync(join(root, '.dev', file)).mode & 0o077, 0, file)
   }
+})
+
+test('run refuses configuration generated for the earlier per-port layout', (t) => {
+  const root = fixture(t)
+  initialize(root)
+  saveInputs(root)
+  configure(root)
+  const webEnvPath = join(root, '.dev/web.env')
+  const current = readFileSync(webEnvPath, 'utf8')
+  writeFileSync(
+    webEnvPath,
+    current.replace(
+      'CORAL_WEB_PUBLIC_URL=https://developer.example.ts.net:8443',
+      'CORAL_WEB_PUBLIC_URL=https://developer.example.ts.net',
+    ),
+  )
+  assert.throws(() => load(root), /Development URLs changed; run \.\/dev setup again/)
+  configure(root)
+  assert.equal(readFileSync(webEnvPath, 'utf8'), current)
+  assert.equal(load(root).urls.web, 'https://developer.example.ts.net:8443')
 })
 
 test('run without setup has no filesystem side effects', (t) => {
@@ -180,73 +209,183 @@ test('input validation and env parsing never evaluate shell text or echo secrets
   )
 })
 
-test('proxy planning preserves exact Serve/Funnel mappings and creates only private mappings', () => {
-  const host = input.TAILNET_HOST
-  const fresh = proxyPlan(host, {})
-  assert.deepEqual(
-    fresh.map((m) => m.args),
-    [
-      ['serve', '--bg', '--https=443', 'http://127.0.0.1:5173'],
-      ['serve', '--bg', '--https=8443', 'http://127.0.0.1:9080'],
-      ['serve', '--bg', '--https=10000', 'http://127.0.0.1:14556'],
-    ],
-  )
-  const configured = { TCP: {}, Web: {} }
-  for (const mapping of fresh) {
-    configured.TCP[mapping.authority.split(':')[1]] = { HTTPS: true }
-    configured.Web[mapping.authority] = { Handlers: { '/': { Proxy: mapping.proxy } } }
+const host = input.TAILNET_HOST
+const auth = (path) => [path, `http://127.0.0.1:9080${path}`]
+const shared = Object.fromEntries([
+  ['/', 'http://127.0.0.1:14556'],
+  auth('/.well-known/oauth-authorization-server'),
+  auth('/oauth'),
+  auth('/auth/oidc'),
+])
+function serveStatus(byPort, funnel = []) {
+  const status = { TCP: {}, Web: {}, AllowFunnel: {} }
+  for (const [port, handlers] of Object.entries(byPort)) {
+    status.TCP[port] = { HTTPS: true }
+    status.Web[`${host}:${port}`] = {
+      Handlers: Object.fromEntries(
+        Object.entries(handlers).map(([path, proxy]) => [path, { Proxy: proxy }]),
+      ),
+    }
   }
-  assert.ok(proxyPlan(host, configured).every((m) => m.existing && !m.funnel))
-  // Every mix of private and public mappings is reused without changing visibility.
-  for (let mask = 0; mask < 8; mask++) {
-    const status = structuredClone(configured)
-    status.AllowFunnel = Object.fromEntries(
-      fresh.map((m, i) => [m.authority, Boolean(mask & (1 << i))]),
-    )
-    const snapshot = JSON.stringify(status)
-    const plan = proxyPlan(host, status)
-    assert.ok(plan.every((m) => m.existing))
-    assert.deepEqual(plan.map((m) => m.funnel), fresh.map((_, i) => Boolean(mask & (1 << i))))
-    assert.equal(JSON.stringify(status), snapshot)
-  }
-  const partial = structuredClone(configured)
-  partial.AllowFunnel = { [`${host}:443`]: true }
-  delete partial.TCP['10000']
-  delete partial.Web[`${host}:10000`]
-  const missing = proxyPlan(host, partial).filter((m) => !m.existing)
-  assert.deepEqual(missing.map((m) => m.args), [fresh[2].args])
-  assert.ok(missing.every((m) => !m.funnel))
+  for (const port of funnel) status.AllowFunnel[`${host}:${port}`] = true
+  return status
+}
+const current = { 443: shared, 8443: { '/': 'http://127.0.0.1:5173' } }
+const legacy = {
+  443: { '/': 'http://127.0.0.1:5173' },
+  8443: { '/': 'http://127.0.0.1:9080' },
+  10000: { '/': 'http://127.0.0.1:14556' },
+}
+const sharedArgs = (verb) => [
+  [verb, '--bg', '--https=443', 'http://127.0.0.1:14556'],
+  ...['/.well-known/oauth-authorization-server', '/oauth', '/auth/oidc'].map((path) => [
+    verb,
+    '--bg',
+    '--https=443',
+    `--set-path=${path}`,
+    `http://127.0.0.1:9080${path}`,
+  ]),
+]
+const reefArgs = (verb) => [[verb, '--bg', '--https=8443', 'http://127.0.0.1:5173']]
+const summary = (plan) =>
+  plan.map(({ authority, state, funnel, commands }) => ({ authority, state, funnel, commands }))
 
-  for (const mutate of [
-    (s) => {
-      s.Web[`${host}:443`].Handlers['/'].Proxy = 'http://127.0.0.1:9999'
-    },
-    (s) => {
-      s.Web[`${host}:443`].Handlers['/oauth'] = { Proxy: 'http://127.0.0.1:9999' }
-    },
-    (s) => {
-      s.AllowFunnel = { [`${host}:8443`]: true }
-      delete s.Web[`${host}:8443`]
-      delete s.TCP['8443']
-    },
-    (s) => {
-      s.AllowFunnel = { [`${host}:10000`]: true }
-      s.Web[`${host}:10000`].Handlers['/'].Proxy = 'http://127.0.0.1:9999'
-    },
-    (s) => {
-      delete s.TCP['443']
-    },
-    (s) => {
-      s.TCP['443'] = { TCPForward: '127.0.0.1:9999' }
-    },
-    (s) => {
-      s.Web['another.example.ts.net:443'] = s.Web[`${host}:443`]
-    },
+test('proxy planning reuses, completes or replaces only the mappings this setup owns', () => {
+  const partialShared = { ...shared }
+  delete partialShared['/oauth']
+  for (const [name, status, expected] of [
+    [
+      'fresh machine gets private Serve',
+      {},
+      [
+        {
+          authority: `${host}:443`,
+          state: 'missing',
+          funnel: false,
+          commands: sharedArgs('serve'),
+        },
+        { authority: `${host}:8443`, state: 'missing', funnel: false, commands: reefArgs('serve') },
+      ],
+    ],
+    ...[[], [443], [8443], [443, 8443]].map((funnel) => [
+      `current layout is reused with Funnel on [${funnel}]`,
+      serveStatus(current, funnel),
+      [443, 8443].map((port) => ({
+        authority: `${host}:${port}`,
+        state: 'ready',
+        funnel: funnel.includes(port),
+        commands: [],
+      })),
+    ]),
+    ...[[], [443]].map((funnel) => [
+      `a missing path is added without changing Funnel [${funnel}]`,
+      serveStatus({ ...current, 443: partialShared }, funnel),
+      [
+        {
+          authority: `${host}:443`,
+          state: 'missing',
+          funnel: funnel.includes(443),
+          commands: [
+            [
+              funnel.includes(443) ? 'funnel' : 'serve',
+              '--bg',
+              '--https=443',
+              '--set-path=/oauth',
+              'http://127.0.0.1:9080/oauth',
+            ],
+          ],
+        },
+        { authority: `${host}:8443`, state: 'ready', funnel: false, commands: [] },
+      ],
+    ]),
+    [
+      'earlier per-port layout is replaced with private Serve, even from Funnel',
+      serveStatus(legacy, [443, 8443, 10000]),
+      [
+        {
+          authority: `${host}:443`,
+          state: 'legacy',
+          funnel: true,
+          commands: [['serve', '--https=443', 'off'], ...sharedArgs('serve')],
+        },
+        {
+          authority: `${host}:8443`,
+          state: 'legacy',
+          funnel: true,
+          commands: [['serve', '--https=8443', 'off'], ...reefArgs('serve')],
+        },
+        {
+          authority: `${host}:10000`,
+          state: 'legacy',
+          funnel: true,
+          commands: [['serve', '--https=10000', 'off']],
+        },
+      ],
+    ],
+    [
+      'port 10000 is ignored unless it holds the earlier MCP mapping',
+      serveStatus({ ...current, 10000: { '/': 'http://127.0.0.1:9999' } }, [10000]),
+      [443, 8443].map((port) => ({
+        authority: `${host}:${port}`,
+        state: 'ready',
+        funnel: false,
+        commands: [],
+      })),
+    ],
   ]) {
-    const status = structuredClone(configured)
+    const snapshot = JSON.stringify(status)
+    assert.deepEqual(summary(proxyPlan(host, status)), expected, name)
+    assert.equal(JSON.stringify(status), snapshot, name)
+  }
+})
+
+test('proxy planning refuses mappings it does not own and changes nothing', () => {
+  for (const [name, mutate] of [
+    [
+      '443 path to another service',
+      (s) => (s.Web[`${host}:443`].Handlers['/oauth'].Proxy = 'http://127.0.0.1:9999'),
+    ],
+    [
+      '443 extra path',
+      (s) => (s.Web[`${host}:443`].Handlers['/auth'] = { Proxy: 'http://127.0.0.1:9080/auth' }),
+    ],
+    [
+      'Reef port to another service',
+      (s) => (s.Web[`${host}:8443`].Handlers['/'].Proxy = 'http://127.0.0.1:9999'),
+    ],
+    [
+      'earlier auth mapping with extra handler settings',
+      (s) =>
+        (s.Web[`${host}:8443`].Handlers['/'] = {
+          Proxy: 'http://127.0.0.1:9080',
+          AcceptAppCaps: ['example.com/cap/dev'],
+        }),
+    ],
+    [
+      'earlier Reef mapping with an extra path',
+      (s) =>
+        (s.Web[`${host}:443`].Handlers = {
+          '/': { Proxy: 'http://127.0.0.1:5173' },
+          '/oauth': { Proxy: 'http://127.0.0.1:9080/oauth' },
+        }),
+    ],
+    [
+      'Funnel without a handler',
+      (s) => {
+        delete s.Web[`${host}:8443`]
+        delete s.TCP['8443']
+        s.AllowFunnel[`${host}:8443`] = true
+      },
+    ],
+    ['TCP without a handler', (s) => delete s.Web[`${host}:443`]],
+    ['handler without TCP', (s) => delete s.TCP['443']],
+    ['TCP forwarding', (s) => (s.TCP['443'] = { TCPForward: '127.0.0.1:9999' })],
+    ['another hostname', (s) => (s.Web['another.example.ts.net:443'] = s.Web[`${host}:443`])],
+  ]) {
+    const status = serveStatus(current)
     mutate(status)
     const snapshot = JSON.stringify(status)
-    assert.throws(() => proxyPlan(host, status), /not overwritten/)
-    assert.equal(JSON.stringify(status), snapshot)
+    assert.throws(() => proxyPlan(host, status), /not overwritten/, name)
+    assert.equal(JSON.stringify(status), snapshot, name)
   }
 })
