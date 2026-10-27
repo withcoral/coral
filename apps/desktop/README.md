@@ -147,8 +147,12 @@ workflow also drives the installed Windows app. See
 The Release workflow (`.github/workflows/release.yml`) builds signed release
 packages and publishes them to the v1 update feed, GitHub releases in
 `withcoral/coral-releases`. It never publishes to `withcoral/coral`, whose
-releases the 0.x app polls.
-[ADR 0013](../../docs/adr/0013-desktop-release-channel.md) records why.
+releases the 0.x app polls: that app has another app id and data folder, and
+would update itself into this one.
+
+An installed app accepts only an update signed by the publisher in its
+`app-update.yml`. Changing the Windows signing certificate's subject
+(`AZURE_TRUSTED_SIGNING_PUBLISHER_NAME`) leaves installed apps on their version.
 
 Each platform job stages and builds with no credentials. Then
 `xtask release-desktop-package` packages with `CORAL_DESKTOP_RELEASE=1`:

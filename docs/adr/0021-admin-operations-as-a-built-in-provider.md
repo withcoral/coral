@@ -5,39 +5,26 @@ status: accepted
 # Admin operations are a Built-in Provider
 
 Agent onboarding needs an agent to add a Provider. Earlier designs gave `coral.admin` a separate surface with its own
-catalog, policy, approval and records. Coral instead gives every Workspace one **Built-in Provider**: a real Provider
-row with a real Materialized Operation Catalog whose Operations Coral defines in Rust and performs itself. Search,
-describe, Operation Access State, Approval Requests and Operation Invocation records therefore apply unchanged, and
-Coral grows the catalog one Operation at a time, starting with `addProvider`. This supersedes those designs.
+catalog, policy, approval and records. Instead every Workspace has one **Built-in Provider**: a real Provider with a
+real Materialized Operation Catalog, called at `coral.workspace`, whose Operations Coral defines in Rust and performs
+itself. Search, describe, Operation Access State, Approval Requests and Invocation records apply unchanged, and the
+catalog grows one Operation at a time. Each Operation takes the words Reef uses for the same action, such as
+`addProvider` for "Add provider", because an Owner reads that name when approving a call.
 
-Each Built-in Operation takes the words Reef uses for the same action, since an Owner reads its name when approving a
-call: `addProvider` for "Add provider" (it was first named `createProvider`), and later `removeProvider` for "Remove
-provider", not `deleteProvider`.
+Each Provider row stores its full Provider Call Root (`coral.providers.github`, `coral.workspace`), so Call Paths come
+straight from the row and no Provider can clash with the Built-in one.
 
-Each Provider row stores its full **Provider Call Root** (`coral.providers.github`, or `coral.workspace` for the Built-in
-Provider) instead of a short namespace that code prefixes with `coral.providers.`. Call Paths come straight from the
-row, Workspace uniqueness applies to the Call Root, and a Provider named `workspace` cannot clash with the Built-in
-Provider. Migration `0028` prefixes the namespace of every existing row, so Providers from an earlier release keep their
-Call Paths.
+Rejected: a separate admin surface, which duplicates catalog, policy and approval; and a reserved `workspace`
+namespace under `coral.providers`, which special-cases the call path.
 
-The catalog tables only accept the known input kinds and protocols, and the Provider lifecycle table only accepts the
-known actions. Migration `0026` widens the catalog rules to accept `builtin`. Migration `0027` adds the
-`provider.builtin_installed` action, so installing the Built-in Provider records its own action instead of a
-Publication that never happened. Postgres can replace a CHECK constraint and SQLite cannot, so each of the two has one
-file per database: Postgres replaces the constraint, and SQLite rebuilds the table. A database from an earlier release
-upgrades in place.
+## Owners cannot change it; Coral updates it at boot
 
-The Built-in Provider is immutable apart from its access state. The server rejects rename, reconfiguration,
-regeneration, account work and removal for it, and an Owner can only disable or enable it and set its Operations'
-policy.
+Owners can only enable or disable the Built-in Provider and set its Operations' policy. Rename, reconfiguration,
+regeneration, account work and removal are rejected. When a Coral process boots, before it takes requests, it installs
+the Built-in Provider in any Workspace that has none and moves every Workspace's Built-in Provider to the catalog it
+serves, with Coral as the recorded actor. New Operations simply appear, at the Access State their hints give.
 
-Amended by [ADR 0022](0022-coral-updates-the-builtin-catalog-at-boot.md): when Coral boots, it installs the Built-in
-Provider in each Workspace that has none and updates it to the catalog it serves. An Owner still cannot regenerate or
-update it.
-
-[ADR 0024](0024-add-provider-returns-a-link-and-does-not-wait.md) records why `addProvider` returns a Reef link when a
-person must sign in, instead of waiting for them.
-
-Rejected: a separate admin surface, which duplicates catalog, policy and approval; a reserved `workspace` namespace under
-`coral.providers`, which special-cases the call path; and editing `0003` and `0004` in place, which makes Coral refuse
-every database from an earlier release.
+Catalogs are not ordered. An older Coral that boots after a newer one, in a rollback or a rolling deploy, moves
+Workspaces back to its own catalog, and the next newer boot moves them forward. Rejected: Owners reviewing and applying
+each update, which leaves Workspaces stale until someone acts; and ordering catalogs by version, which needs a manual
+bump or release parsing and leaves a rolled-back Coral serving Operations it cannot perform.
