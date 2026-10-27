@@ -356,8 +356,9 @@ impl ApprovalModule {
                 trace: trace.clone(),
             }),
         };
-        // The caller's access is read again in the transaction that inserts
-        // the row, which holds no Run row.
+        // The Run's visibility to the caller is read again in the transaction
+        // that inserts the row, which holds no Run row. The snapshot's
+        // inspection and Agent-owner checks are not repeated.
         let mut tx = self.database.begin().await?;
         self.visible_run(&mut tx, actor, workspace, &run.id).await?;
         self.inbox
