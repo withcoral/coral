@@ -101,3 +101,59 @@ export const BoundedText: Story = {
   play: bounded,
 }
 export const BoundedTextNarrow: Story = { ...BoundedText, ...narrow }
+
+/**
+ * Catches: an expanded viewer whose close control leaves the standard Wax header: it sits on
+ * the title's row at the top right, the title at the left. Escape and the close control both
+ * close it, and focus returns to Expand.
+ */
+const expandedHeader: Story['play'] = async ({ canvasElement, userEvent, globals }) => {
+  const page = within(canvasElement.ownerDocument.body)
+  if (globals.viewport?.value === 'mobile1')
+    await expect(canvasElement.ownerDocument.defaultView!.innerWidth).toBeLessThanOrEqual(360)
+  const expand = within(canvasElement).getByRole('button', { name: 'Expand Provider response' })
+  expand.focus()
+  await userEvent.keyboard('{Enter}')
+  const dialog = await page.findByRole('dialog', { name: 'Provider response' })
+  const title = within(dialog).getByRole('heading', { name: 'Provider response' })
+  const close = within(dialog).getByRole('button', { name: 'Close' })
+  await waitFor(() => expect(close).toBeVisible())
+  const [dialogBox, titleBox, closeBox] = [dialog, title, close].map((element) =>
+    element.getBoundingClientRect(),
+  )
+  // One row: the close control's centre falls within the title's line.
+  const middle = closeBox.top + closeBox.height / 2
+  await expect(middle).toBeGreaterThanOrEqual(titleBox.top)
+  await expect(middle).toBeLessThanOrEqual(titleBox.bottom)
+  // Title at the left, close control at the right, apart.
+  await expect(titleBox.left - dialogBox.left).toBeLessThan(40)
+  await expect(dialogBox.right - closeBox.right).toBeLessThan(40)
+  await expect(closeBox.left).toBeGreaterThan(titleBox.right)
+  // Above the tools.
+  const tools = within(dialog).getByRole('group', { name: 'Payload tools' })
+  await expect(closeBox.bottom).toBeLessThanOrEqual(tools.getBoundingClientRect().top)
+  // Tab and Shift+Tab cycle inside the dialog; focus never reaches the page behind it.
+  const focusables = dialog.querySelectorAll('button, input, [tabindex="0"]').length
+  for (const key of ['{Tab}', '{Shift>}{Tab}{/Shift}'])
+    for (let press = 0; press <= focusables; press++) {
+      await userEvent.keyboard(key)
+      // Base UI's focus guard at either end hands focus back into the dialog.
+      await waitFor(() =>
+        expect(dialog).toContainElement(canvasElement.ownerDocument.activeElement as HTMLElement),
+      )
+    }
+  await userEvent.keyboard('{Escape}')
+  await waitFor(() => expect(page.queryByRole('dialog')).toBeNull())
+  await waitFor(() => expect(expand).toHaveFocus())
+  // The close control closes it too, and focus returns the same way.
+  await userEvent.click(expand)
+  await userEvent.click(
+    within(await page.findByRole('dialog', { name: 'Provider response' })).getByRole('button', {
+      name: 'Close',
+    }),
+  )
+  await waitFor(() => expect(page.queryByRole('dialog')).toBeNull())
+  await waitFor(() => expect(expand).toHaveFocus())
+}
+export const ExpandedHeader: Story = { args: { value: largeJson }, play: expandedHeader }
+export const ExpandedHeaderNarrow: Story = { ...ExpandedHeader, ...narrow }

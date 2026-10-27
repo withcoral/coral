@@ -192,9 +192,10 @@ function Viewer({
           <Dialog.Portal>
             <Dialog.Backdrop />
             <Dialog.Popup size="xxl" className={styles.expandedPopup}>
+              {/* Wax's standard header: the title, and its close control at the top right. */}
               <Dialog.Header>
                 <Dialog.Title>{label}</Dialog.Title>
-                <Dialog.Close inline />
+                <Dialog.Close />
               </Dialog.Header>
               <Viewer
                 value={value}
