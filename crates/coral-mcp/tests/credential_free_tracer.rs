@@ -218,6 +218,8 @@ struct Tracer {
     runs: RunModule,
     policies: ToolPolicyModule,
     approvals: coral_run::approval::ApprovalModule,
+    /// Reads what Coral recorded about Saved Function changes.
+    saved_functions: SavedFunctionModule,
     /// The search index. The Task save notifies it; the tracer Provider is
     /// published without the Provider workflow, so `start` indexes it with one
     /// reconcile pass.
@@ -295,7 +297,7 @@ impl Tracer {
             .expect("register tracer Agent");
         let commands = coral_task::TaskCommands::new(
             tasks.clone(),
-            saved_functions,
+            saved_functions.clone(),
             search,
             index.clone(),
             runs.clone(),
@@ -332,6 +334,7 @@ impl Tracer {
             runs,
             policies,
             approvals,
+            saved_functions,
             index,
         }
     }

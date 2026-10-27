@@ -198,3 +198,85 @@ async fn caller_text_cannot_set_a_failures_trace_id() {
         session.close().await;
     }
 }
+
+/// What Coral records about a call carries the trace of that call's request:
+/// the inbound trace when one is valid, else the trace of the request and
+/// tool spans Coral exported for it. Its failures name the same trace.
+#[tokio::test(flavor = "multi_thread")]
+async fn records_carry_the_trace_of_their_request() {
+    let capture = capture();
+    let tracer = Tracer::start().await;
+    let owner = coral_workspace::AuthenticatedPrincipal::user(tracer.local_user.clone());
+    let mut saved = Vec::new();
+    for (version_index, version) in SUPPORTED_PROTOCOL_VERSIONS.iter().enumerate() {
+        let session = RawSession::open(&tracer.endpoint(), version).await;
+        let task = session
+            .tool(
+                "start_task",
+                json!({"intent": "Correlate records by trace"}),
+            )
+            .await["structuredContent"]["task_id"]
+            .clone();
+        let save = |path: String, headers: Vec<(&'static str, String)>| {
+            let session = &session;
+            let task = task.clone();
+            async move {
+                let headers = headers
+                    .iter()
+                    .map(|(name, value)| (*name, value.as_str()))
+                    .collect::<Vec<_>>();
+                let saved = session
+                    .tool_with_headers(
+                        "save_function",
+                        json!({
+                            "task_id": task, "intent": "Save a traced function",
+                            "path": path, "description": "Return one",
+                            "source": "export default function one(): number { return 1; }",
+                        }),
+                        &headers,
+                    )
+                    .await;
+                assert_ne!(saved["isError"], true, "{saved}");
+            }
+        };
+        let parent = format!("{:032x}", 0xc0_a200 + version_index);
+        let continued = format!("traced.continued{version_index}");
+        save(
+            continued.clone(),
+            vec![("traceparent", format!("00-{parent}-00f067aa0ba902b7-01"))],
+        )
+        .await;
+        let started = format!("traced.started{version_index}");
+        save(started.clone(), Vec::new()).await;
+        saved.push((format!("{version} continued"), continued, Some(parent)));
+        saved.push((format!("{version} started"), started, None));
+        session.close().await;
+    }
+
+    capture
+        .provider
+        .force_flush()
+        .expect("flush test telemetry");
+    let spans = capture.spans.get_finished_spans().expect("captured spans");
+    let events = tracer
+        .saved_functions
+        .list_lifecycle_events(&owner, &tracer.workspace_a)
+        .await
+        .expect("lifecycle events");
+    let workspace = tracer.workspace_a.to_string();
+    for (context, path, parent) in saved {
+        let recorded = events
+            .iter()
+            .find(|event| event.target_path().as_str() == path)
+            .unwrap_or_else(|| panic!("{context}: the save is recorded"))
+            .trace_id()
+            .as_str();
+        if let Some(parent) = parent {
+            assert_eq!(
+                recorded, parent,
+                "{context}: the record continues the trace"
+            );
+        }
+        assert_spans_in_trace(&spans, &context, recorded, "save_function", &workspace);
+    }
+}
