@@ -22,6 +22,7 @@ npm run test:e2e --prefix apps/reef -- --database postgres
 # Small suites for deployment differences, not repeated product journeys.
 npm run test:e2e --prefix apps/reef -- --suite local-mode
 npm run test:e2e --prefix apps/reef -- --suite desktop
+npm run test:e2e --prefix apps/reef -- --suite multi-instance
 # Remaining arguments reach Vitest unchanged; select a file or test name.
 npm run test:e2e --prefix apps/reef -- providers/catalog/
 E2E_FILM=1 npm run test:e2e --prefix apps/reef -- shell/navigation
@@ -36,18 +37,20 @@ npm run e2e:serve --prefix apps/reef
 
 ### One product suite, plus small tests for the differences
 
-| Suite            | What it proves                                                                                         | Discovery                           |
-| ---------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------- |
-| `main` (default) | Provider, Account, Workspace, Agent, activity, identity and permission journeys, with genuine sign-in  | `scenarios/main/**/*.test.ts`       |
-| `local-mode`     | No sign-in ceremony, implicit Owner Membership, lifecycle fences, loopback access and parity scenarios | `scenarios/local-mode/**/*.test.ts` |
-| `desktop`        | The packaged Desktop app: its supervisor, its window, background, quit and relaunch                    | `scenarios/desktop/**/*.test.ts`    |
+| Suite            | What it proves                                                                                           | Discovery                               |
+| ---------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `main` (default) | Provider, Account, Workspace, Agent, activity, identity and permission journeys, with genuine sign-in    | `scenarios/main/**/*.test.ts`           |
+| `local-mode`     | No sign-in ceremony, implicit Owner Membership, lifecycle fences, loopback access and parity scenarios   | `scenarios/local-mode/**/*.test.ts`     |
+| `desktop`        | The packaged Desktop app: its supervisor, its window, background, quit and relaunch                      | `scenarios/desktop/**/*.test.ts`        |
+| `multi-instance` | Two Coral Instances on one Postgres database: a pending request through either one reaches the Run Owner | `scenarios/multi-instance/**/*.test.ts` |
 
 `main` is the default; `--suite main` selects it explicitly. `local-mode` means the
 no-sign-in deployment, not tests running on your machine.
 
 `--database sqlite` is the main suite's default. `--database postgres` changes its
 storage configuration, not its scenario selection. Both run all discovered product
-files. Database selection is unavailable for the focused local and Desktop suites.
+files. Database selection is unavailable for the focused suites: local and Desktop
+use SQLite, and multi-instance uses Postgres.
 Single-User and multi-User stories belong together. Provider OAuth is ordinary
 product coverage, separate from the Coral sign-in used to arrange actors.
 
@@ -209,7 +212,8 @@ container and network. Browser, application, identity provider, fixture listener
 and (when selected) Postgres all run inside it. No daemon socket is mounted, no
 host ports are published, and no host networking mode is used. The browser's OAuth
 hops resolve the same fixture hostname as Coral; MCP streaming and cancellation
-use ordinary direct connections, without a reverse proxy.
+use ordinary direct connections, without a reverse proxy, except on the
+multi-instance suite.
 
 Cargo registry/git/target and npm build caches survive image rebuilds. Reef builds
 inside each run. The cost is a Linux build even on macOS; native builds cannot be reused. Linux
@@ -299,9 +303,49 @@ SQLite instance; it never shares the product target's database or Organization.
 `make postgres-tests` remains the Rust repository gate and owns its own disposable
 database through `scripts/postgres.ts`. Repository tests alone do not prove product
 journeys. Native macOS and Windows 11 Desktop checks remain separate acceptance work.
-Coral runs as one process, so Reel has no multi-worker variant; multi-process parity
-belongs to the work that introduces multi-process Coral. The restart scenario for boot
-recovery is separate, open work.
+The restart scenario for boot recovery is separate, open work.
+
+## Several Coral Instances
+
+`--suite multi-instance` runs two Coral Instances on one disposable Postgres
+database behind a round-robin proxy. It proves that an outside request made
+through one Coral Instance reaches the Run Owner on the other, when the record
+does not already answer it
+([ADR 0025](../../../docs/adr/0025-outside-run-requests-reach-the-run-owner-through-the-run-inbox.md)).
+It signs in as the main suite does. Postgres is the suite's only database, so it
+takes no `--database`.
+
+- The proxy fronts Coral's gRPC, MCP and auth listeners. Reef, MCP clients and
+  browser sign-in reach Coral only through it. Both instances advertise the
+  proxy's origins as their public URLs.
+- It balances each request, not each connection. Reef keeps one HTTP/2
+  connection to Coral, so a per-connection balancer would never move Reef's
+  requests between instances.
+- A request in a 2025-11-25 MCP session goes to the instance that issued the
+  session, which holds it in memory. A 2026-07-28 request has no session.
+- The instances share the configuration, the session signing key and the
+  credential key (`[credentials] key_env`). Only their listener ports and state
+  roots differ. The second instance starts once the first is ready, so it never
+  reads a half-migrated database. Each writes `coral-1.log` or `coral-2.log`.
+
+A scenario steers the proxy with `coralInstances()` from `support/instances.ts`:
+
+- `startOn(i, start)` starts a Run through instance `i`. The instance that
+  accepts a Run holds it.
+- `holder(run)` reads the Run row's `holder_instance_id` with `psql` and returns
+  the instance's index. Coral shows an instance's id only there, so the harness
+  learns each id from the first Run started through that instance.
+- `on(i, act)` sends every request outside an MCP session to instance `i` while
+  `act` runs.
+- `during(act)` returns the requests forwarded meanwhile, each with its client
+  connection, the instance that served it and its gRPC status.
+- `expectNoUnavailable(requests)` fails on any HTTP 503 or gRPC UNAVAILABLE.
+
+Each cross-instance journey is one file in `scenarios/multi-instance/`: an Account
+connected through one instance continues a Run that the other owns; Reef cancels
+such a Run over its one connection; Reef approves a call on one; and an MCP client
+on 2026-07-28 answers an approval prompt through the instance that does not own
+the Run. A native run needs `psql` on `PATH`; the container has it.
 
 ## Authenticated multi-User fixture
 
@@ -404,6 +448,7 @@ scenarios/
   local-mode/
     parity/
   desktop/
+  multi-instance/
 ```
 
 Group `scenarios/main/` by the product behavior being proved:
@@ -426,7 +471,7 @@ their entry files; `support/` contains harness code, fixtures, and helpers.
 
 Every `*.test.ts` under `scenarios/main/` belongs to the main suite on both databases.
 New or renamed files need no registry edit. Keep the few deployment-difference
-checks in `scenarios/local-mode/` and `scenarios/desktop/`; do not add capability tags
+checks in `scenarios/local-mode/`, `scenarios/desktop/` and `scenarios/multi-instance/`; do not add capability tags
 or per-database lists. `configuration.test.ts` retains the formerly shared assertions;
 `oauth-configuration.test.ts` retains the formerly local-only configuration assertions.
 

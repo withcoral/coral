@@ -13,7 +13,8 @@ export default async function setup(project: TestProject) {
   const config = project.getProvidedContext().reelBootstrap
   if (!config) throw new Error('Reel requires the run-level reporter bootstrap')
   const name = config.attached ? 'attached-local' : project.name
-  const authenticated = config.suite === 'main' && !config.probes
+  const multiInstance = config.suite === 'multi-instance'
+  const authenticated = (config.suite === 'main' || multiInstance) && !config.probes
   // Authenticated Coral denies loopback, so the container advertises a private
   // host. Local Coral reaches loopback services, as Desktop's users run them.
   const fixtures = authenticated ? (config.fixtures ?? loopbackFixtures) : loopbackFixtures
@@ -68,6 +69,7 @@ export default async function setup(project: TestProject) {
             postgresURL: config.postgresURL,
             fixtures,
             probes: config.probes,
+            multiInstance,
           })).target
     if (config.attached) await ready(target.baseURL)
     metadata.state = 'ready'

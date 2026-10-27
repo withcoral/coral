@@ -233,12 +233,21 @@ jobs:
     with:
       suite: local-mode
 
+  # Two Coral Instances on one Postgres database, behind a round-robin proxy.
+  reel-multi-instance:
+    name: Reel
+    needs: changes
+    if: ${{ needs.changes.outputs.code != 'false' }}
+    uses: ./.github/workflows/reel.yml
+    with:
+      suite: multi-instance
+
   # The one check to require. It passes when every gate passed or its paths
   # did not change. A skipped job passes a required check by itself, so
   # requiring the gates one by one would also pass when `changes` fails.
   required:
     name: Required
-    needs: [changes, rust, rust-embedded-js, postgres, rust-windows, reef, dev, desktop, reel-desktop, reel-main, reel-local-mode]
+    needs: [changes, rust, rust-embedded-js, postgres, rust-windows, reef, dev, desktop, reel-desktop, reel-main, reel-local-mode, reel-multi-instance]
     if: ${{ always() }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5

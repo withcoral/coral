@@ -17,7 +17,9 @@ import {
   connectSharedAccount,
   observeRun,
   openDialog,
+  openReview,
   operationGroup,
+  pausedForApproval,
   programRunner,
   programWorkspace,
   saveConfirmedSettingsChange,
@@ -30,7 +32,6 @@ import {
 } from '../../../generated/coral/management/v1/account_pb.ts'
 import { ProviderSetupInputKind } from '../../../generated/coral/management/v1/provider_pb.ts'
 import { WorkspaceRole } from '../../../generated/coral/management/v1/workspace_pb.ts'
-import { openReview, pausedForApproval } from './program-approval.ts'
 
 type Session = Parameters<Parameters<typeof withOwnerSession>[1]>[0]
 

@@ -28,7 +28,16 @@ export async function reservePort() {
   }
 }
 
-export async function prepareAuthenticatedTarget(stateDir: string) {
+/**
+ * Prepares sign-in for the Coral Instances whose state roots are `stateDirs`.
+ * Each gets the same session key and configuration; only its auth listener's
+ * port differs. Behind a proxy, `front` names the public auth and MCP origins
+ * every instance advertises, and each binds MCP to a free port of its own.
+ */
+export async function prepareAuthenticatedTarget(
+  stateDirs: string[],
+  front?: { authURL: string; mcpURL: string },
+) {
   const reservations: Awaited<ReturnType<typeof reservePort>>[] = []
   let provider: Awaited<ReturnType<typeof startIdentityProvider>> | undefined
   const close = async () => {
@@ -43,63 +52,72 @@ export async function prepareAuthenticatedTarget(stateDir: string) {
         'Authenticated fixture cleanup failed',
       )
   }
+  const reserve = async () => {
+    const reservation = await reservePort()
+    reservations.push(reservation)
+    return reservation
+  }
   try {
-    const auth = await reservePort()
-    reservations.push(auth)
-    const web = await reservePort()
-    reservations.push(web)
-    const mcp = await reservePort()
-    reservations.push(mcp)
-    provider = await startIdentityProvider(`${auth.url}/auth/oidc/callback`, web.url)
+    const auth: Awaited<ReturnType<typeof reservePort>>[] = []
+    while (auth.length < stateDirs.length) auth.push(await reserve())
+    const web = await reserve()
+    const mcp = front ? undefined : await reserve()
+    const authURL = front?.authURL ?? auth[0].url
+    const mcpURL = front?.mcpURL ?? mcp!.url
+    const idp = (provider = await startIdentityProvider(`${authURL}/auth/oidc/callback`, web.url))
     const { privateKey } = generateKeyPairSync('ec', {
       namedCurve: 'prime256v1',
       privateKeyEncoding: { format: 'der', type: 'pkcs8' },
       publicKeyEncoding: { format: 'pem', type: 'spki' },
     })
-    await writeFile(join(stateDir, 'session.pk8'), privateKey, { mode: 0o600 })
+    for (const stateDir of stateDirs)
+      await writeFile(join(stateDir, 'session.pk8'), privateKey, { mode: 0o600 })
     const q = JSON.stringify
-    const config = `
+    const config = (index: number) => `
 [listeners.grpc]
 bind = '127.0.0.1:0'
 [listeners.auth]
-bind = '127.0.0.1:${auth.port}'
-public_url = ${q(auth.url)}
+bind = '127.0.0.1:${auth[index].port}'
+public_url = ${q(authURL)}
 [listeners.mcp]
-bind = '127.0.0.1:${mcp.port}'
-public_url = ${q(mcp.url)}
+bind = '127.0.0.1:${mcp?.port ?? 0}'
+public_url = ${q(mcpURL)}
 [listeners.web]
 public_url = ${q(web.url)}
 [auth]
 # Loopback web navigation does not confer HTTPS metadata client trust.
 # OAuth resources and trusted clients remain explicit.
-allowed_audiences = [${q(web.url)}, ${q(provider.origin)}]
-trusted_clients = [${q(`${web.url}/.well-known/oauth-client`)}, ${q(`${provider.origin}/.well-known/oauth-client`)}]
+allowed_audiences = [${q(web.url)}, ${q(idp.origin)}]
+trusted_clients = [${q(`${web.url}/.well-known/oauth-client`)}, ${q(`${idp.origin}/.well-known/oauth-client`)}]
 [auth.session]
 signing_key_file = 'session.pk8'
 access_token_ttl_seconds = 3600
 [auth.provider]
-issuer = ${q(provider.origin)}
-client_id = ${q(provider.clientId)}
+issuer = ${q(idp.origin)}
+client_id = ${q(idp.clientId)}
 client_secret_env = 'E2E_OIDC_CLIENT_SECRET'
-bootstrap_owner_subject = ${q(provider.owner.subject)}
+bootstrap_owner_subject = ${q(idp.owner.subject)}
 `
     const authentication: AuthenticationTarget = {
-      issuerURL: auth.url,
-      oidcURL: provider.origin,
-      owner: provider.owner,
+      issuerURL: authURL,
+      oidcURL: idp.origin,
+      owner: idp.owner,
     }
     return {
       config,
       authentication,
-      coralEnv: { E2E_OIDC_CLIENT_SECRET: provider.clientSecret },
+      coralEnv: { E2E_OIDC_CLIENT_SECRET: idp.clientSecret },
       webEnv: {
         PORT: String(web.port),
         CORAL_WEB_AUTH_MODE: 'required',
         CORAL_WEB_PUBLIC_URL: web.url,
-        CORAL_WEB_AUTH_ISSUER: auth.url,
+        CORAL_WEB_AUTH_ISSUER: authURL,
         CORAL_WEB_SESSION_SECRET: randomBytes(32).toString('hex'),
       },
-      releaseCoralPorts: () => Promise.all([auth.release(), mcp.release()]),
+      /** Each instance's own auth listener origin, which the proxy forwards to. */
+      authOrigins: auth.map((reservation) => reservation.url),
+      releaseCoralPorts: (index: number) =>
+        Promise.all([auth[index].release(), ...(mcp ? [mcp.release()] : [])]),
       releaseWebPort: () => web.release(),
       close,
     }

@@ -32,8 +32,48 @@ export interface Target {
   mcpURL?: string
   /** Origins of every listener outside the private gRPC one, in a stack Reel composes. */
   publicOrigins?: string[]
-  name: 'main-sqlite' | 'main-postgres' | 'local-mode' | 'desktop' | 'attached-local' | 'harness'
+  name:
+    | 'main-sqlite'
+    | 'main-postgres'
+    | 'local-mode'
+    | 'desktop'
+    | 'multi-instance'
+    | 'attached-local'
+    | 'harness'
   authentication?: AuthenticationTarget
+  /** The Coral Instances behind the round-robin proxy, on the multi-instance suite. */
+  instances?: InstancesTarget
+}
+
+export interface InstancesTarget {
+  /** The loopback origin of the harness's proxy controls. */
+  controlURL: string
+}
+
+/**
+ * Each suite's database. Only main selects one; several Coral Instances share
+ * one database only on Postgres.
+ */
+const SUITE_DATABASE: Record<string, 'sqlite' | 'postgres' | undefined> = {
+  main: undefined,
+  'local-mode': 'sqlite',
+  desktop: 'sqlite',
+  'multi-instance': 'postgres',
+}
+export const SUITES = Object.keys(SUITE_DATABASE)
+
+/** Rejects a suite, or a database the suite does not run on. Harness probes run on SQLite. */
+export function checkSuiteDatabase(suite: string, database: string, probes = false) {
+  if (!SUITES.includes(suite)) throw new Error('Unknown Reel suite')
+  if (!['sqlite', 'postgres'].includes(database)) throw new Error('Unknown Reel database')
+  const fixed = SUITE_DATABASE[suite]
+  if (fixed && database !== fixed)
+    throw new Error(
+      fixed === 'postgres'
+        ? `The ${suite} suite runs on Postgres`
+        : 'Only the main suite selects a database',
+    )
+  if (probes && database !== 'sqlite') throw new Error('Harness probes run on SQLite')
 }
 
 export interface RunConfig {
@@ -117,20 +157,19 @@ export function commandOptions(args: string[]) {
       if (selected.has(flag)) throw new Error(`Specify ${flag} once`)
       selected.add(flag)
       const value = inline ?? args[++index]
-      const allowed =
-        flag === '--suite' ? ['main', 'local-mode', 'desktop'] : ['sqlite', 'postgres']
+      const allowed = flag === '--suite' ? SUITES : ['sqlite', 'postgres']
       if (!allowed.includes(value)) throw new Error(`${flag} requires ${allowed.join(' or ')}`)
       if (flag === '--suite') suite = value
       else database = value
     } else if (flag === '--desktop' || flag === '--project') {
       throw new Error(
-        'Select --suite main, local-mode or desktop; use --database postgres for main',
+        'Select --suite main, local-mode, desktop or multi-instance; use --database postgres for main',
       )
     } else vitest.push(argument)
   }
-  if (suite !== 'main' && selected.has('--database'))
+  if (SUITE_DATABASE[suite] && selected.has('--database'))
     throw new Error('Only the main suite selects a database')
-  return { suite, database, vitest }
+  return { suite, database: SUITE_DATABASE[suite] ?? database, vitest }
 }
 
 export function bootstrapConfig(env: NodeJS.ProcessEnv) {
@@ -138,10 +177,7 @@ export function bootstrapConfig(env: NodeJS.ProcessEnv) {
   const suite = env.E2E_SUITE || 'main'
   const database = env.E2E_DATABASE || 'sqlite'
   const probes = env.E2E_HARNESS_PROBES === '1'
-  if (!['main', 'local-mode', 'desktop'].includes(suite)) throw new Error('Unknown Reel suite')
-  if (!['sqlite', 'postgres'].includes(database)) throw new Error('Unknown Reel database')
-  if (database === 'postgres' && (suite !== 'main' || probes || attached))
-    throw new Error('Postgres requires the managed main suite')
+  checkSuiteDatabase(suite, database, probes)
   if (attached && suite !== 'local-mode')
     throw new Error('Attached mode requires --suite local-mode')
   let postgresURL: string | undefined

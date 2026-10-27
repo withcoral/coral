@@ -37,6 +37,12 @@ test('Reel defaults to main and reserves database selection for that suite', () 
     database: 'sqlite',
     vitest: [],
   })
+  // Several Coral Instances share one database only on Postgres, so the suite selects it.
+  assert.deepEqual(commandOptions(['--suite', 'multi-instance']), {
+    suite: 'multi-instance',
+    database: 'postgres',
+    vitest: [],
+  })
   for (const args of [
     ['--suite'],
     ['--database'],
@@ -46,6 +52,7 @@ test('Reel defaults to main and reserves database selection for that suite', () 
     ['--database', 'mysql'],
     ['--suite', 'local-mode', '--database', 'postgres'],
     ['--suite', 'desktop', '--database', 'sqlite'],
+    ['--suite', 'multi-instance', '--database', 'postgres'],
     ['--desktop'],
     ['--project', 'local-sqlite'],
     ['--suite', 'local-mode', '--suite', 'main'],
@@ -71,6 +78,18 @@ test('routine setup needs no host provisioning and Postgres remains runner-owned
       E2E_POSTGRES_TEST_URL: 'postgres://fixture@localhost/disposable',
     }).database,
     'postgres',
+  )
+  assert.throws(
+    () => bootstrapConfig({ E2E_SUITE: 'multi-instance' }),
+    /multi-instance suite runs on Postgres/,
+  )
+  assert.equal(
+    bootstrapConfig({
+      E2E_SUITE: 'multi-instance',
+      E2E_DATABASE: 'postgres',
+      E2E_POSTGRES_TEST_URL: 'postgres://fixture@localhost/disposable',
+    }).postgresURL,
+    'postgres://fixture@localhost/disposable',
   )
 })
 
@@ -117,13 +136,17 @@ test('remote bootstrap selects only the explicit disposable DB and HTTPS fixture
       .postgresURL,
     undefined,
   )
-  for (const extra of [
-    { E2E_SUITE: 'desktop' },
-    { E2E_SUITE: 'local-mode' },
-    { E2E_HARNESS_PROBES: '1' },
-    { E2E_BASE_URL: 'http://127.0.0.1:3000', E2E_ALLOW_ATTACHED: '1' },
-  ]) {
-    assert.throws(() => bootstrapConfig({ ...env, ...extra }), /managed main suite/)
+  for (const [extra, message] of [
+    [{ E2E_SUITE: 'desktop' }, /Only the main suite selects a database/],
+    [{ E2E_SUITE: 'local-mode' }, /Only the main suite selects a database/],
+    [{ E2E_HARNESS_PROBES: '1' }, /Harness probes run on SQLite/],
+    [{ E2E_SUITE: 'multi-instance', E2E_HARNESS_PROBES: '1' }, /Harness probes run on SQLite/],
+    [
+      { E2E_BASE_URL: 'http://127.0.0.1:3000', E2E_ALLOW_ATTACHED: '1' },
+      /Attached mode requires --suite local-mode/,
+    ],
+  ] as const) {
+    assert.throws(() => bootstrapConfig({ ...env, ...extra }), message)
   }
   for (const url of [
     'not-a-url-with-secret',

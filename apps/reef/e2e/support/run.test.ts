@@ -64,8 +64,12 @@ test('product discovery includes new and renamed scenarios on both databases wit
     const next = await discover('sqlite')
     assert.ok(next.some(({ file }) => file === renamed))
     assert.ok(!next.some(({ file }) => file === original))
-    for (const suite of ['local-mode', 'desktop']) {
-      const focused = await discover('sqlite', suite)
+    for (const [suite, database] of [
+      ['local-mode', 'sqlite'],
+      ['desktop', 'sqlite'],
+      ['multi-instance', 'postgres'],
+    ]) {
+      const focused = await discover(database, suite)
       assert.ok(focused.length > 0)
       assert.ok(
         focused.every(

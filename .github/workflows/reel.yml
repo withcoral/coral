@@ -22,12 +22,12 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: Product journeys, focused local-mode checks, or the packaged Desktop app
+        description: Product journeys, focused local-mode checks, the packaged Desktop app, or two Coral Instances
         type: choice
-        options: [main, local-mode, desktop]
+        options: [main, local-mode, desktop, multi-instance]
         default: main
       database:
-        description: Main suite database (the other suites require sqlite)
+        description: Main suite database (multi-instance always uses postgres; local-mode and desktop require sqlite)
         type: choice
         options: [sqlite, postgres]
         default: sqlite
@@ -69,6 +69,8 @@ jobs:
           if [ -n "$REEL_SHARD" ]; then args+=("--shard=${REEL_SHARD/of//}"); fi
           if [ "$REEL_SUITE" = main ]; then
             args+=(--database "$REEL_DATABASE")
+          elif [ "$REEL_SUITE" = multi-instance ]; then
+            : # It always runs on Postgres and takes no --database.
           elif [ "$REEL_DATABASE" != sqlite ]; then
             echo 'Only the main suite selects a database'
             exit 1
@@ -80,7 +82,7 @@ jobs:
         if: ${{ always() && github.event.repository.private }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: reel-${{ inputs.suite }}-${{ inputs.database }}${{ inputs.shard && format('-{0}', inputs.shard) || '' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: reel-${{ inputs.suite }}-${{ inputs.suite == 'multi-instance' && 'postgres' || inputs.database }}${{ inputs.shard && format('-{0}', inputs.shard) || '' }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: apps/reef/e2e/runs/
           if-no-files-found: warn
           retention-days: 7
