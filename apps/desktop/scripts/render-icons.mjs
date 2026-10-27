@@ -8,12 +8,12 @@ import { join, resolve } from 'node:path'
 const desktopRoot = resolve(import.meta.dirname, '..')
 const directory = join(desktopRoot, 'resources', 'icons')
 const source = await readFile(join(desktopRoot, '..', 'reef', 'public', 'favicon.svg'), 'utf8')
+// Reef's favicon places its 20-unit mark at 16 of the tile's 32 units, centered.
+const placement = 'translate(8 8) scale(0.8)'
+if (!source.includes(placement))
+  throw new Error(`Reef's favicon no longer places its mark with ${placement}; update this script`)
 // Enlarge the mark by 35% around the tile's center without changing the tile.
-if (!source.includes('translate(5 5)'))
-  throw new Error(
-    "Reef's favicon no longer places its mark with translate(5 5); update this script",
-  )
-const favicon = source.replace('translate(5 5)', 'translate(1.15 1.15) scale(1.35)')
+const favicon = source.replace(placement, 'translate(5.2 5.2) scale(1.08)')
 const darkFavicon = favicon.replace(
   /fill="(#FFFFFF|#111111)"/g,
   (_, color) => `fill="${color === '#FFFFFF' ? '#111111' : '#FFFFFF'}"`,
@@ -24,7 +24,7 @@ const darkFavicon = favicon.replace(
 // as the system's own items do.
 const trayTemplate = favicon
   .replace(/\s*<rect[^>]*\/>/, '')
-  .replace('translate(1.15 1.15) scale(1.35)', 'translate(0.45 -0.13) scale(1.46)')
+  .replace('translate(5.2 5.2) scale(1.08)', 'translate(3.33 3.33) scale(1.2667)')
   .replace('fill="#111111"', 'fill="#000000"')
 const macArtwork = (svg) =>
   svg

@@ -27,18 +27,7 @@ export const links = () => [
   })),
   // Keep @font-face rules loaded when development hydration removes critical CSS.
   { rel: 'stylesheet', href: resetStylesheet },
-  {
-    href: '/coral-light.svg',
-    media: '(prefers-color-scheme: light)',
-    rel: 'icon',
-    type: 'image/svg+xml',
-  },
-  {
-    href: '/coral-dark.svg',
-    media: '(prefers-color-scheme: dark)',
-    rel: 'icon',
-    type: 'image/svg+xml',
-  },
+  { href: '/coral-mark.svg', rel: 'icon', type: 'image/svg+xml' },
   {
     href: '/favicon.ico',
     rel: 'alternate icon',
