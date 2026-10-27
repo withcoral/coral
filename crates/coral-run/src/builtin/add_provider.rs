@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 use coral_catalog::{AddProviderArguments, AddProviderResult, ConfigurationChoices};
 use coral_db::Transaction;
-use coral_policy::ExactOperationRules;
+use coral_policy::ExactToolRules;
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::{
     Provider, ProviderPublication, ProviderSetup, ProviderSetupId, ProviderSetupSource,
@@ -13,9 +13,8 @@ use coral_provider::{
 };
 use coral_workspace::ChangeContext;
 
-use super::setup_operation::{
-    self, Publisher, SetupOperation, configuration_rejection, recover_published, request_id,
-    setup_error,
+use super::setup_tool::{
+    self, Publisher, SetupTool, configuration_rejection, recover_published, request_id, setup_error,
 };
 use super::{BuiltinHost, provider_facts, setup_url};
 use crate::lifecycle::RunRecord;
@@ -43,7 +42,7 @@ impl AddProvider {
             .request_headers
             .clone()
             .unwrap_or_default();
-        let source = setup_operation::setup_source(arguments.source, request_headers);
+        let source = setup_tool::setup_source(arguments.source, request_headers);
         Ok(Self {
             namespace,
             source,
@@ -73,12 +72,12 @@ impl AddProvider {
                 CoralFailure::ProviderNamespaceConflict.into(),
             ));
         }
-        setup_operation::perform(self, host, context).await
+        setup_tool::perform(self, host, context).await
     }
 }
 
 #[async_trait]
-impl SetupOperation for AddProvider {
+impl SetupTool for AddProvider {
     type Configured = ();
     type Publication = ProviderPublication;
 
@@ -144,7 +143,7 @@ impl SetupOperation for AddProvider {
             .setup_publishability(context.actor(), host.workspace_id, setup.id(), self.route)
             .await
             .map_err(setup_error)?;
-        let publisher = setup_operation::publisher(
+        let publisher = setup_tool::publisher(
             host,
             context,
             setup.id(),
@@ -165,7 +164,7 @@ impl SetupOperation for AddProvider {
             url: setup_url(host, setup),
             namespace: self.namespace.as_str().to_owned(),
         }
-        .into_operation_result()
+        .into_tool_result()
     }
 
     async fn publish(
@@ -205,13 +204,13 @@ impl SetupOperation for AddProvider {
                 .into(),
             ));
         };
-        setup_operation::published_result(host, provider.id(), published_result).await
+        setup_tool::published_result(host, provider.id(), published_result).await
     }
 }
 
 /// Settles an `addProvider` whose worker was lost after the dispatch fence,
 /// from the Publication Coral attempted under the Invocation's identity. A
-/// published Provider becomes the Operation Result; otherwise the Run ended
+/// published Provider becomes the Tool Result; otherwise the Run ended
 /// first. A Setup that was never published expires at its deadline.
 pub(super) async fn recover(
     transaction: &mut Transaction<'_>,
@@ -231,14 +230,11 @@ pub(super) async fn recover(
     recover_published(transaction, run, provider, published_result).await
 }
 
-/// The Operation Result for a Provider Coral published.
-fn published_result(
-    published: &PublishedProvider,
-    rules: &ExactOperationRules,
-) -> serde_json::Value {
+/// The Tool Result for a Provider Coral published.
+fn published_result(published: &PublishedProvider, rules: &ExactToolRules) -> serde_json::Value {
     AddProviderResult::Published {
         namespace: published.provider.call_root().name().to_owned(),
         facts: provider_facts(published, rules),
     }
-    .into_operation_result()
+    .into_tool_result()
 }

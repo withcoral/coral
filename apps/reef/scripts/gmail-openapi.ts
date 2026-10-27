@@ -3,7 +3,7 @@
 // bundles this conversion. It is mechanical: every method, parameter and schema
 // is carried over unchanged apart from what OpenAPI and Coral's importer need:
 // - Discovery gives no status codes, so each method's response becomes `2XX`.
-// - Coral requires every operation to share one credential, while Discovery
+// - Coral requires every tool to share one credential, while Discovery
 //   lists the scopes each method accepts. The per-method lists become one root
 //   requirement: the smallest scope set that satisfies every method, which the
 //   script fails on if it is not unique.
@@ -308,5 +308,5 @@ const document = {
 const target = new URL('../recipes/gmail/openapi.json', import.meta.url)
 await writeFile(target, `${JSON.stringify(document, stable, 2)}\n`)
 console.log(
-  `Wrote ${everyMethod.length} operations from Discovery revision ${discovery.revision} to ${target.pathname}`,
+  `Wrote ${everyMethod.length} tools from Discovery revision ${discovery.revision} to ${target.pathname}`,
 )

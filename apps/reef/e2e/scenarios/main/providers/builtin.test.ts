@@ -22,7 +22,7 @@ function mark(page: Page, provider: string) {
   return rail(page).locator(`a[href="/${provider}"] img`).filter({ visible: true })
 }
 
-test('Coral leads the providers page, offers nothing to change, stops calls while disabled, and shows members only the operations they can call', async (context) => {
+test('Coral leads the providers page, offers nothing to change, stops calls while disabled, and shows members only the tools they can call', async (context) => {
   const { alice, bob } = await createActors(context)
   const api = managementClients(alice.accessToken)
   const workspace = await api.workspaces.createWorkspace({
@@ -84,7 +84,7 @@ test('Coral leads the providers page, offers nothing to change, stops calls whil
         await setProviderEnabled(alice.accessToken, `/${coral.name}`, false)
         await page.reload()
         await waitForProviderStatus(page, 'Coral', 'Provider disabled')
-        expect(await listProviders()).toEqual({ kind: 'value', value: 'operation_not_found' })
+        expect(await listProviders()).toEqual({ kind: 'value', value: 'tool_not_found' })
       })
       await step('A Program calls Coral again once it is restored', async () => {
         await setProviderEnabled(alice.accessToken, `/${coral.name}`, true)

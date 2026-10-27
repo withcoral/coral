@@ -4,10 +4,10 @@
 //! The `input` object's members appear inline one level deep. A nested
 //! object appears as `{…}`, and a named type appears by name, unless it is a
 //! shallow alias: an alias of scalars, literals, or arrays of those, which is
-//! inlined, so an Operation's generated parameter aliases do not hide plain
+//! inlined, so a Tool's generated parameter aliases do not hide plain
 //! types.
 //!
-//! An Operation's result is its envelope with the `data` types of its
+//! A Tool's result is its envelope with the `data` types of its
 //! success responses, by name. A Saved Function's result is shown as its
 //! input is: an object's members one level deep, named or not. The line
 //! looks inside the result's `Promise` and one level of array. The compiler
@@ -44,10 +44,10 @@ pub(crate) const SIGNATURE_LINE_MAX_BYTES: usize = 512;
 /// last segment of its Call Path.
 #[derive(Clone, Copy)]
 pub(crate) enum Callable<'a> {
-    /// A catalog-projected Operation: its result is a union of envelopes,
+    /// A catalog-projected Tool: its result is a union of envelopes,
     /// one per declared success: `{ data; metadata }` objects, or
-    /// `HttpResult` for an HTTP Operation.
-    Operation { leaf: &'a str },
+    /// `HttpResult` for an HTTP Tool.
+    Tool { leaf: &'a str },
     /// A Saved Function's compiler-emitted declaration with one default
     /// callable export.
     SavedFunction { leaf: &'a str },
@@ -56,7 +56,7 @@ pub(crate) enum Callable<'a> {
 impl Callable<'_> {
     const fn leaf(&self) -> &str {
         match self {
-            Self::Operation { leaf } | Self::SavedFunction { leaf } => leaf,
+            Self::Tool { leaf } | Self::SavedFunction { leaf } => leaf,
         }
     }
 }

@@ -191,7 +191,7 @@ pub(super) fn resolve_reference_object(
         let target = canonical_document_pointer(reference).map_err(|error| match error {
             PointerError::External => diagnostic(
                 "unsupported_external_openapi_reference",
-                "an Operation depends on an external or unsupported OpenAPI reference",
+                "a Tool depends on an external or unsupported OpenAPI reference",
             ),
             PointerError::Scope | PointerError::Invalid => {
                 diagnostic("invalid_openapi_operation", invalid_description)
@@ -206,7 +206,7 @@ pub(super) fn resolve_reference_object(
         ) {
             return Err(diagnostic(
                 "unsupported_external_openapi_reference",
-                "an Operation depends on an external or unsupported OpenAPI reference",
+                "a Tool depends on an external or unsupported OpenAPI reference",
             ));
         }
         if !resolving.insert(target.clone()) {
@@ -720,7 +720,7 @@ fn analyze_schema_dependencies(
                     }
                 }
             }
-            Some(_) => local_failure = Some(invalid_operation_schema()),
+            Some(_) => local_failure = Some(invalid_tool_schema()),
         }
         analyses.push(NodeAnalysis {
             dependencies,
@@ -914,14 +914,14 @@ fn push_schema_children<'a>(
             pending.extend(
                 children
                     .as_object()
-                    .ok_or_else(invalid_operation_schema)?
+                    .ok_or_else(invalid_tool_schema)?
                     .values(),
             );
         }
     }
     for keyword in SCHEMA_ARRAY_KEYWORDS {
         if let Some(children) = object.get(keyword) {
-            pending.extend(children.as_array().ok_or_else(invalid_operation_schema)?);
+            pending.extend(children.as_array().ok_or_else(invalid_tool_schema)?);
         }
     }
     for keyword in SCHEMA_VALUE_KEYWORDS {
@@ -991,12 +991,12 @@ fn normalize_provider_schema(
                         )?)));
                     } else if SCHEMA_MAP_KEYWORDS.contains(&key.as_str()) {
                         tasks.push(CopyTask::SchemaMap {
-                            object: child.as_object().ok_or_else(invalid_operation_schema)?,
+                            object: child.as_object().ok_or_else(invalid_tool_schema)?,
                             source: child_pointer(&source, key),
                         });
                     } else if SCHEMA_ARRAY_KEYWORDS.contains(&key.as_str()) {
                         tasks.push(CopyTask::SchemaArray {
-                            array: child.as_array().ok_or_else(invalid_operation_schema)?,
+                            array: child.as_array().ok_or_else(invalid_tool_schema)?,
                             source: child_pointer(&source, key),
                         });
                     } else if SCHEMA_VALUE_KEYWORDS.contains(&key.as_str()) {
@@ -1051,7 +1051,7 @@ fn normalize_provider_schema(
                 let start = values
                     .len()
                     .checked_sub(length)
-                    .ok_or_else(invalid_operation_schema)?;
+                    .ok_or_else(invalid_tool_schema)?;
                 let children = values.split_off(start);
                 values.push(Value::Array(children));
             }
@@ -1059,13 +1059,13 @@ fn normalize_provider_schema(
                 let start = values
                     .len()
                     .checked_sub(keys.len())
-                    .ok_or_else(invalid_operation_schema)?;
+                    .ok_or_else(invalid_tool_schema)?;
                 let children = values.split_off(start);
                 values.push(Value::Object(keys.into_iter().zip(children).collect()));
             }
         }
     }
-    values.pop().ok_or_else(invalid_operation_schema)
+    values.pop().ok_or_else(invalid_tool_schema)
 }
 
 fn package_reference(
@@ -1208,9 +1208,9 @@ fn unsupported_schema_dialect() -> CatalogDiagnostic {
     )
 }
 
-fn invalid_operation_schema() -> CatalogDiagnostic {
+fn invalid_tool_schema() -> CatalogDiagnostic {
     diagnostic(
-        "invalid_operation_schema",
+        "invalid_tool_schema",
         "an OpenAPI Operation contains an invalid JSON Schema",
     )
 }

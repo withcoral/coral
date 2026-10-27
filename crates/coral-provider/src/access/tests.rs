@@ -199,7 +199,7 @@ fn call_root_parsing_accepts_owner_namespaces_and_only_the_builtin_coral_root() 
         ("coral.billing", Parsed::Rejected),
         ("coral.functions", Parsed::Rejected),
         ("coral.emit", Parsed::Rejected),
-        ("coral.OperationError", Parsed::Rejected),
+        ("coral.ToolError", Parsed::Rejected),
         (&format!("{long}a"), Parsed::Rejected),
         ("coral.workspace.", Parsed::Rejected),
         ("coral.workspace.tools", Parsed::Rejected),
@@ -295,7 +295,7 @@ async fn workspace_uniqueness_and_invocation_follow_the_stored_call_root() {
         let mut transaction = database.begin().await.unwrap();
         for (namespace, publication) in [(first, &earlier), (second, &later)] {
             let call_path = format!("coral.providers.{namespace}.getForecast");
-            let resolved = crate::resolve_owner_operation_in_transaction(
+            let resolved = crate::resolve_owner_tool_in_transaction(
                 &mut transaction,
                 workspace.id(),
                 &call_path,
@@ -355,17 +355,15 @@ async fn exact_provider_reads_report_an_unparseable_stored_call_root_as_corrupt(
 
 /// A database from before one upgrade, holding a Provider an Owner added:
 /// the upgrade keeps the Provider and its catalog, so it loads and its
-/// Operations keep their Call Paths. `0026` rebuilds the catalog tables on
-/// SQLite to accept `builtin`; `0028` prefixes each stored namespace.
+/// Tools keep their Call Paths. `0028` prefixes each stored namespace.
+/// `0026`, which rebuilds the catalog tables on SQLite, names the tables
+/// that `0045` renamed, so it cannot run after the current schema.
 #[tokio::test]
 async fn upgrade_keeps_each_provider_an_owner_added() {
-    for (version, before) in [
-        (26, None),
-        (
-            28,
-            Some("UPDATE provider_records SET namespace = 'weather' WHERE id = '{provider}'"),
-        ),
-    ] {
+    for (version, before) in [(
+        28,
+        Some("UPDATE provider_records SET namespace = 'weather' WHERE id = '{provider}'"),
+    )] {
         // Every migration but the one under test: the code arranging the rows
         // runs against the current schema, less that upgrade.
         let before_upgrade = coral_test_support::edited_migration_plan(|migrations| {
@@ -421,7 +419,7 @@ async fn upgrade_keeps_each_provider_an_owner_added() {
             "upgrade {version}"
         );
         let mut transaction = database.begin().await.unwrap();
-        let resolved = crate::resolve_owner_operation_in_transaction(
+        let resolved = crate::resolve_owner_tool_in_transaction(
             &mut transaction,
             workspace.id(),
             "coral.providers.weather.getForecast",

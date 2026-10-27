@@ -127,7 +127,7 @@ fn context_impact(workspace: &SimpleExpr, run: &SimpleExpr) -> SimpleExpr {
             )),
         )
     };
-    sum("program_run_events", "output_bytes").sub(sum("operation_invocations", "result_bytes"))
+    sum("program_run_events", "output_bytes").sub(sum("tool_invocations", "result_bytes"))
 }
 
 /// Whether retained Invocation evidence is incomplete. No payloads leave the repository.
@@ -136,7 +136,7 @@ fn incomplete_context(workspace: SimpleExpr, run: SimpleExpr) -> SimpleExpr {
         Query::select()
             .expr(Expr::val(1_i64))
             .from_as(
-                Alias::new("operation_invocations"),
+                Alias::new("tool_invocations"),
                 Alias::new("context_invocation"),
             )
             .and_where(col("context_invocation", "workspace_id").eq(workspace))
@@ -156,7 +156,7 @@ fn run_action() -> SimpleExpr {
     Expr::exists(
         Query::select()
             .expr(Expr::val(1_i64))
-            .from_as(Alias::new("operation_invocations"), Alias::new("i"))
+            .from_as(Alias::new("tool_invocations"), Alias::new("i"))
             .and_where(col("i", "workspace_id").eq(col("r", "workspace_id")))
             .and_where(col("i", "run_id").eq(col("r", "id")))
             .and_where(invocation_action())
@@ -292,7 +292,7 @@ struct InvocationRow {
     workspace_id: String,
     run_id: String,
     provider_id: String,
-    operation_key: String,
+    tool_key: String,
     call_path: String,
     state: String,
     result_kind: Option<String>,
@@ -312,7 +312,7 @@ pub(crate) async fn exact_invocation(
     now: i64,
 ) -> Result<InvocationSummary, Error> {
     let query = Query::select()
-        .from_as(Alias::new("operation_invocations"), Alias::new("i"))
+        .from_as(Alias::new("tool_invocations"), Alias::new("i"))
         .join_as(
             JoinType::InnerJoin,
             Alias::new("program_run_records"),
@@ -328,7 +328,7 @@ pub(crate) async fn exact_invocation(
                 "workspace_id",
                 "run_id",
                 "provider_id",
-                "operation_key",
+                "tool_key",
                 "call_path",
                 "state",
                 "result_kind",
@@ -369,7 +369,7 @@ pub(crate) async fn exact_invocation(
         id: crate::InvocationId::parse(&row.id)?,
         run: crate::RunId::parse(&row.run_id)?,
         provider: coral_provider::ProviderId::parse(&row.provider_id)?,
-        operation: row.operation_key,
+        tool: row.tool_key,
         call_path: row.call_path,
         state: match row.state.as_str() {
             "pending" => InvocationStatus::Pending,

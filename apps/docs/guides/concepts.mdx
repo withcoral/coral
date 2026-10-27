@@ -28,35 +28,35 @@ Workspaces have owners. They can perform some operations at the workspace level:
 
 - Manage [members](#principals)
 - Manage [providers](#providers) and [accounts](#account-setting)
-- Manage [policy](#operation-policy)
+- Manage [policy](#tool-policy)
 
 Workspace [members](#principals) share its [providers](#providers) and policy.
 
 ## Providers
 
-A **provider** is a workspace-owned set of [operations](#operations) for an upstream service such as GitHub or Linear. Add one from Coral's provider catalog, or from your own OpenAPI document or MCP server.
+A **provider** is a workspace-owned set of [tools](#tools) for an upstream service such as GitHub or Linear. Add one from Coral's provider catalog, or from your own OpenAPI document or MCP server.
 
 Each provider you add carries:
 
-- an immutable **namespace**, unique in the workspace, that prefixes every [call path](#operations)
+- an immutable **namespace**, unique in the workspace, that prefixes every [call path](#tools)
 - an [**account setting**](#account-setting)
-- per-operation [**policy**](#operation-policy)
+- per-tool [**policy**](#tool-policy)
 
-You can add a provider multiple times, each under its own namespace, to give the same operations a different account setting and policy.
+You can add a provider multiple times, each under its own namespace, to give the same tools a different account setting and policy.
 
 ### Built-in provider
 
-Every [workspace](#workspaces) also has one built-in provider, **Coral**. Coral defines its operations and performs them itself, without an upstream service. It is listed first under **Providers** in the [Coral UI](#coral-ui).
+Every [workspace](#workspaces) also has one built-in provider, **Coral**. Coral defines its tools and performs them itself, without an upstream service. It is listed first under **Providers** in the [Coral UI](#coral-ui).
 
 - Its call paths begin with `coral.workspace`, not with a namespace.
-- Members and agents can find and call only `coral.workspace.listProviders` and `coral.workspace.getPolicy`. Workspace owners can find and call all its operations.
-- Workspace owners can only disable it, enable it, and set its [policy](#operation-policy). Nobody can rename or remove it. It has no [accounts](#account-setting).
+- Members and agents can find and call only `coral.workspace.listProviders` and `coral.workspace.getPolicy`. Workspace owners can find and call all its tools.
+- Workspace owners can only disable it, enable it, and set its [policy](#tool-policy). Nobody can rename or remove it. It has no [accounts](#account-setting).
 
-## Operations
+## Tools
 
-An **operation** is a single action exposed by a [provider](#providers). It has named inputs and returns one result.
+A **tool** is a single action exposed by a [provider](#providers). It has named inputs and returns one result.
 
-[Programs](#programs) call an operation by its **call path**, which begins with `coral.providers` and the [provider](#providers) namespace:
+[Programs](#programs) call a tool by its **call path**, which begins with `coral.providers` and the [provider](#providers) namespace:
 
 ```ts
 await coral.providers.github.actions.addRepoAccess({ repo, user });
@@ -78,17 +78,17 @@ An **account setting** decides whose account a provider uses.
 
 You can add the same provider multiple times, with different account settings. For example, you could have one GitHub provider with a shared readonly account used by every user, and another GitHub provider with individual accounts, so that users can create PRs as themselves through Coral.
 
-## Operation policy
+## Tool policy
 
-**Policy** is set by workspace owners on a [provider](#providers), and decides whether an [operation](#operations) is:
+**Policy** is set by workspace owners on a [provider](#providers), and decides whether a [tool](#tools) is:
 
-- Always allow, the operation runs
+- Always allow, the tool runs
 - Needs approval, the call pauses until a person decides. A user approves their own calls. A [workspace](#workspaces) owner approves an agent's calls.
-- Disabled, the operation cannot be called, and is hidden from the agent altogether
+- Disabled, the tool cannot be called, and is hidden from the agent altogether
 
-Until you set a policy, an operation is Always allow when it declares itself read-only or uses the HTTP method GET, HEAD, OPTIONS, or TRACE. Every other operation needs approval. Set Needs approval on an operation that changes data through one of these methods.
+Until you set a policy, a tool is Always allow when it declares itself read-only or uses the HTTP method GET, HEAD, OPTIONS, or TRACE. Every other tool needs approval. Set Needs approval on a tool that changes data through one of these methods.
 
-A program can read an added provider's policy with `coral.workspace.getPolicy`. A workspace owner's program can change it with `coral.workspace.updatePolicy`, which needs approval until you set another policy for it. `updatePolicy` cannot change the policy of Coral's own operations.
+A program can read an added provider's policy with `coral.workspace.getPolicy`. A workspace owner's program can change it with `coral.workspace.updatePolicy`, which needs approval until you set another policy for it. `updatePolicy` cannot change the policy of the built-in provider's tools.
 
 ## Principals
 
@@ -97,13 +97,13 @@ A **principal** is an authenticated actor that Coral attributes work to. It is a
 - A **user** signs in through OAuth and can be part of many workspaces.
 - An **agent** belongs to one [workspace](#workspaces) only, and uses its own API key.
 
-Coral attributes a [run](#runs) to the principal that submitted it, even when a workspace owner approves an operation or the provider uses a [shared account](#account-setting).
+Coral attributes a [run](#runs) to the principal that submitted it, even when a workspace owner approves a tool or the provider uses a [shared account](#account-setting).
 
 ## Programs
 
 A **program** is TypeScript that a [principal](#principals) submits for Coral to execute.
 
-A program reaches upstream services (e.g. GitHub, Linear) only through [operations](#operations):
+A program reaches upstream services (e.g. GitHub, Linear) only through [tools](#tools):
 
 ```ts
 const issues = await coral.providers.github.issues.list({ state: "open" });
@@ -120,15 +120,15 @@ Submitting a program creates a [run](#runs).
 
 A **run** is one execution of a [program](#programs).
 
-A run executes on the Coral server, not in your agent. If your agent disconnects, the run continues, and its operations still take effect.
+A run executes on the Coral server, not in your agent. If your agent disconnects, the run continues, and its tool calls still take effect.
 
-Coral never retries an [operation](#operations).
+Coral never retries a [tool](#tools).
 
 ## Coral UI
 
 The **Coral UI** is Coral's web interface. The desktop app and a shared server both include it.
 
-Use the Coral UI to add [providers](#providers), connect [accounts](#account-setting), set [policy](#operation-policy), approve operations, and inspect [runs](#runs). A workspace's overview summarizes your recent activity over the last 24 hours, 7 days or 30 days: how your calls ended, which operations were called or stopped, approval decisions, and how many bytes your runs added to or saved from your context. In a workspace you own, it includes your agents' runs. Your agents do not use the Coral UI. They reach a workspace through its MCP endpoint.
+Use the Coral UI to add [providers](#providers), connect [accounts](#account-setting), set [policy](#tool-policy), approve tool calls, and inspect [runs](#runs). A workspace's overview summarizes your recent activity over the last 24 hours, 7 days or 30 days: how your calls ended, which tools were called or stopped, approval decisions, and how many bytes your runs added to or saved from your context. In a workspace you own, it includes your agents' runs. Your agents do not use the Coral UI. They reach a workspace through its MCP endpoint.
 
 ## Saved functions
 
@@ -138,6 +138,6 @@ A **saved function** is reusable TypeScript that a [principal](#principals) save
 await coral.functions.triage.staleIssues({ days: 30 });
 ```
 
-A [program](#programs) calls one the same way it calls an [operation](#operations). It can hold local types, helpers, and top-level setup, but no packages and no Node APIs.
+A [program](#programs) calls one the same way it calls a [tool](#tools). It can hold local types, helpers, and top-level setup, but no packages and no Node APIs.
 
 A user's saved functions are private to that user.

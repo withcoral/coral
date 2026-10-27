@@ -115,17 +115,17 @@ export const Search: Story = {
     const [value, setValue] = useState('issues')
     return (
       <TextInput
-        ariaLabel="Find an operation"
+        ariaLabel="Find a tool"
         icon="Search"
         onChange={setValue}
-        placeholder="Find an operation"
+        placeholder="Find a tool"
         type="search"
         value={value}
       />
     )
   },
   play: async ({ canvas }) => {
-    const input = canvas.getByRole('searchbox', { name: 'Find an operation' })
+    const input = canvas.getByRole('searchbox', { name: 'Find a tool' })
     await userEvent.click(canvas.getByRole('button', { name: 'Clear search' }))
 
     await expect(input).toHaveValue('')

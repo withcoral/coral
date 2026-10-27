@@ -1,4 +1,4 @@
-//! Focused inspection shares Operation eligibility with discovery, not its mixed
+//! Focused inspection shares Tool eligibility with discovery, not its mixed
 //! candidate set. Each interface owns one snapshot and its exact inspection scope.
 use crate::{Error, ProviderId, UniversalSearchModule};
 use coral_db::Transaction;
@@ -65,13 +65,12 @@ impl UniversalSearchModule {
         .await?;
         if evidence.workspace().state() != WorkspaceState::Archived {
             // The Agent's own reach decides; it holds no Workspace role.
-            let ready = operation_ready_providers(&mut tx, workspace, None, None).await?;
+            let ready = tool_ready_providers(&mut tx, workspace, None, None).await?;
             inspections = inspections
                 .into_iter()
                 .map(|mut inspection| {
-                    let has_operation = ready.contains(inspection.readiness.provider.id());
-                    inspection.readiness =
-                        inspection.readiness.with_operation_readiness(has_operation);
+                    let has_tool = ready.contains(inspection.readiness.provider.id());
+                    inspection.readiness = inspection.readiness.with_tool_readiness(has_tool);
                     inspection
                 })
                 .collect();
@@ -99,7 +98,7 @@ impl UniversalSearchModule {
         )
         .await?;
         if evidence.workspace().state() != WorkspaceState::Archived {
-            let ready = operation_ready_providers(
+            let ready = tool_ready_providers(
                 &mut tx,
                 workspace,
                 provider_filter,
@@ -109,8 +108,8 @@ impl UniversalSearchModule {
             inspections = inspections
                 .into_iter()
                 .map(|inspection| {
-                    let has_operation = ready.contains(inspection.provider.id());
-                    inspection.with_operation_readiness(has_operation)
+                    let has_tool = ready.contains(inspection.provider.id());
+                    inspection.with_tool_readiness(has_tool)
                 })
                 .collect();
         }
@@ -119,9 +118,9 @@ impl UniversalSearchModule {
     }
 }
 
-/// The Providers with at least one Operation that a Principal whose role is
+/// The Providers with at least one Tool that a Principal whose role is
 /// `role` reaches and that policy and structure leave ready.
-async fn operation_ready_providers(
+async fn tool_ready_providers(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
     provider_filter: Option<&ProviderId>,
@@ -130,15 +129,15 @@ async fn operation_ready_providers(
     let catalogs =
         coral_provider::provider_search_catalogs_in_transaction(tx, workspace, provider_filter)
             .await?;
-    let rules = coral_policy::exact_operation_rules_in_transaction(tx, workspace).await?;
+    let rules = coral_policy::exact_tool_rules_in_transaction(tx, workspace).await?;
     // Missing credentials must not hide configuration blockers. Discovery shares
     // this exact policy/structural decision after its Credential Route gate.
     Ok(catalogs
         .iter()
         .filter(|catalog| {
-            catalog.operations().iter().any(|operation| {
-                coral_provider::reaches(catalog.access().call_root(), operation.key(), role)
-                    && !rules.disables(catalog.provider_id(), operation)
+            catalog.tools().iter().any(|tool| {
+                coral_provider::reaches(catalog.access().call_root(), tool.key(), role)
+                    && !rules.disables(catalog.provider_id(), tool)
             })
         })
         .map(|catalog| catalog.access().id().clone())

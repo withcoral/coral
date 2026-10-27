@@ -7,15 +7,15 @@
 use coral_db::Database;
 use coral_workspace::WorkspaceId;
 
-/// One Operation row of the index, as a test observes it: membership, never
+/// One Tool row of the index, as a test observes it: membership, never
 /// counts or scores.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IndexedOperation {
-    /// The Provider that owns the Operation.
+pub struct IndexedTool {
+    /// The Provider that owns the Tool.
     pub provider_id: String,
     /// The Generation the row belongs to.
     pub generation_id: String,
-    /// The Operation's Call Path.
+    /// The Tool's Call Path.
     pub call_path: String,
     /// The Provider namespace and display name the row holds.
     pub provider_name: String,
@@ -34,22 +34,22 @@ pub struct IndexedGeneration {
     pub display_name: Option<String>,
 }
 
-/// Reads a Workspace's indexed Operations, in Call Path order.
+/// Reads a Workspace's indexed Tools, in Call Path order.
 ///
 /// # Errors
 ///
 /// Returns database failures.
-pub async fn indexed_operations(
+pub async fn indexed_tools(
     database: &Database,
     workspace_id: &WorkspaceId,
-) -> Result<Vec<IndexedOperation>, coral_db::Error> {
+) -> Result<Vec<IndexedTool>, coral_db::Error> {
     let mut transaction = database.begin_read_snapshot().await?;
-    let rows = crate::indexer::operation_rows_in_workspace(&mut transaction, workspace_id).await?;
+    let rows = crate::indexer::tool_rows_in_workspace(&mut transaction, workspace_id).await?;
     transaction.rollback().await?;
     Ok(rows
         .into_iter()
         .map(
-            |(provider_id, generation_id, call_path, provider_name)| IndexedOperation {
+            |(provider_id, generation_id, call_path, provider_name)| IndexedTool {
                 provider_id,
                 generation_id,
                 call_path,

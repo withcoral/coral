@@ -574,7 +574,7 @@ impl OwnerState {
                 Effect::Reply(
                     reply,
                     Err(Error::InvocationPersistence(
-                        "Program Run no longer accepts Operations".to_string(),
+                        "Program Run no longer accepts Tools".to_string(),
                     )),
                 ),
             ];

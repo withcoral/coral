@@ -1,4 +1,4 @@
-//! Public Streamable HTTP MCP tracer for local credential-free Operations.
+//! Public Streamable HTTP MCP tracer for local credential-free Tools.
 
 use coral_outbound::DestinationPolicy;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -10,10 +10,10 @@ use axum::Router;
 use axum::extract::State;
 use axum::http::header;
 use axum::routing::get;
-use coral_catalog::{OpenApiDocument, OperationKey};
+use coral_catalog::{OpenApiDocument, ToolKey};
 use coral_functions::SavedFunctionModule;
 use coral_mcp::{McpHttpConfig, McpModules, SUPPORTED_PROTOCOL_VERSIONS, start_local};
-use coral_policy::{OperationAccessState, OperationPolicyModule, OperationPolicyTarget};
+use coral_policy::{ToolAccessState, ToolPolicyModule, ToolPolicyTarget};
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::{ManagementRequestId, ProviderModule, WorkspaceProviderPublicationRequest};
 use coral_run::RunModule;
@@ -215,7 +215,7 @@ struct Tracer {
     agent_credential: String,
     workspaces: WorkspaceModule,
     runs: RunModule,
-    policies: OperationPolicyModule,
+    policies: ToolPolicyModule,
     approvals: coral_run::approval::ApprovalModule,
     /// The search index. The Task save notifies it; the tracer Provider is
     /// published without the Provider workflow, so `start` indexes it with one
@@ -250,7 +250,7 @@ impl Tracer {
             db.clone(),
             workspaces.clone(),
         );
-        let policies = OperationPolicyModule::new(db.clone(), workspaces.clone());
+        let policies = ToolPolicyModule::new(db.clone(), workspaces.clone());
         let saved_functions = SavedFunctionModule::new(
             db.clone(),
             workspaces.clone(),
@@ -272,7 +272,7 @@ impl Tracer {
         let approvals = runs.approvals();
         let workspace_a = create_workspace(&workspaces, &local_user, "Tracer A", 10, '1').await;
         let workspace_b = create_workspace(&workspaces, &local_user, "Tracer B", 11, '2').await;
-        let provider_id = publish_operations(
+        let provider_id = publish_tools(
             &providers,
             &policies,
             &local_user,
@@ -379,12 +379,12 @@ impl Tracer {
         self.policies
             .set_access_state(
                 &change(self.local_user.clone(), 50, 'a'),
-                OperationPolicyTarget::new(
+                ToolPolicyTarget::new(
                     self.workspace_a.clone(),
                     self.provider_id.clone(),
-                    OperationKey::parse("getForecast").expect("Operation Key"),
+                    ToolKey::parse("getForecast").expect("Tool Key"),
                 ),
-                OperationAccessState::ApprovalRequired,
+                ToolAccessState::ApprovalRequired,
             )
             .await
             .expect("require approval");
@@ -771,7 +771,7 @@ async fn check_raw_oversized_items(endpoint: &str, task: &str, version: &Protoco
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::too_many_lines,
-    reason = "one table of failure projections: Program, Operation, aggregate, and Saved Function errors"
+    reason = "one table of failure projections: Program, Tool, aggregate, and Saved Function errors"
 )]
 async fn program_failures_are_run_updates_with_existing_error_facts() {
     let tracer = Tracer::start().await;
@@ -844,23 +844,28 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
     );
 
     for program in [
-        "await coral.providers.missing.operation();",
-        "void coral.providers.missing.operation();",
-        "const pending = Array.from({length: 16}, () => coral.providers.missing.operation()); void coral.providers.missing.operation(); await coral.providers.missing.operation().catch(() => {}); await Promise.all(pending.map(p => p.catch(() => {})));",
+        "await coral.providers.missing.tool();",
+        "void coral.providers.missing.tool();",
+        "const pending = Array.from({length: 16}, () => coral.providers.missing.tool()); void coral.providers.missing.tool(); await coral.providers.missing.tool().catch(() => {}); await Promise.all(pending.map(p => p.catch(() => {})));",
     ] {
-        let failed = call(&client_a, "exec", json!({
-            "task_id": task_id, "intent": "Expose the existing Operation error", "wait_ms": 5000,
-            "program": program
-        })).await;
+        let failed = call(
+            &client_a,
+            "exec",
+            json!({
+                "task_id": task_id, "intent": "Expose the existing Tool error", "wait_ms": 5000,
+                "program": program
+            }),
+        )
+        .await;
         let error = &structured(&failed)
             .pointer("/failure/error")
             .unwrap_or(&Value::Null);
-        assert_eq!(error["name"], "OperationError");
+        assert_eq!(error["name"], "ToolError");
         assert_eq!(
-            error.pointer("/operation/code").unwrap_or(&Value::Null),
-            "operation_not_found"
+            error.pointer("/tool/code").unwrap_or(&Value::Null),
+            "tool_not_found"
         );
-        assert_eq!(error["message"], "Operation Call Path was not found");
+        assert_eq!(error["message"], "Tool Call Path was not found");
         assert_eq!(
             error.pointer("/frames/0/source").unwrap_or(&Value::Null),
             "Program"
@@ -961,8 +966,8 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
             json!(true),
         ),
         (
-            "throw Object.assign(new Error('authored'), {name:'OperationError', code:'account_required', credential:'attached-canary'});",
-            "/operation",
+            "throw Object.assign(new Error('authored'), {name:'ToolError', code:'account_required', credential:'attached-canary'});",
+            "/tool",
             Value::Null,
         ),
         (
@@ -1009,13 +1014,13 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
     );
 
     let forged_trace = call(&client_a, "exec", json!({
-        "task_id":task_id, "intent":"Preserve host-issued Operation fields", "wait_ms":5000,
-        "program":"try { await coral.providers.missing.operation(); } catch(e) {e.traceId = 'forged'.repeat(10000); throw e;}"
+        "task_id":task_id, "intent":"Preserve host-issued Tool fields", "wait_ms":5000,
+        "program":"try { await coral.providers.missing.tool(); } catch(e) {e.traceId = 'forged'.repeat(10000); throw e;}"
     })).await;
     assert_eq!(forged_trace.is_error, Some(false));
     assert!(
         structured(&forged_trace)
-            .pointer("/failure/error/operation/trace_id")
+            .pointer("/failure/error/tool/trace_id")
             .unwrap_or(&Value::Null)
             .is_null()
     );
@@ -1084,7 +1089,7 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
         "search",
         json!({
             "task_id": task_id,
-            "intent": "Find the weather Operation",
+            "intent": "Find the weather Tool",
             "query": "getForecast"
         }),
     )
@@ -1434,7 +1439,7 @@ async fn an_abandoned_exec_request_does_not_cancel_accepted_work() {
         tracer.upstream.signals.second_arrived.notified(),
     )
     .await
-    .expect("accepted Run continues to its second Operation after request loss");
+    .expect("accepted Run continues to its second Tool after request loss");
 }
 
 /// Private Program content reaches authorized readers only, never telemetry.
@@ -1449,7 +1454,7 @@ async fn private_program_content_stays_out_of_traces_and_logs() {
     for program in [
         "throw new TypeError('Customer address is missing');",
         "return {toJSON() { throw new Error('Invoice cannot be serialized'); }};",
-        "throw Object.assign(new Error('authored'), {name:'OperationError', code:'account_required', credential:'attached-canary'});",
+        "throw Object.assign(new Error('authored'), {name:'ToolError', code:'account_required', credential:'attached-canary'});",
     ] {
         let failed = call(&client, "exec", json!({
             "task_id": task_id, "intent": "Fail with private content", "wait_ms": 5000, "program": program
@@ -2764,17 +2769,17 @@ async fn create_workspace(
         .clone()
 }
 
-async fn publish_operations(
+async fn publish_tools(
     providers: &ProviderModule,
-    policies: &OperationPolicyModule,
+    policies: &ToolPolicyModule,
     user: &AuthenticatedUser,
     workspace_id: &WorkspaceId,
     upstream_url: &str,
 ) -> coral_provider::ProviderId {
-    let operation = |id: &str, property: &str| {
+    let tool = |id: &str, property: &str| {
         json!({
             "operationId": id,
-            "summary": format!("Tracer Operation {id}"),
+            "summary": format!("Tracer Tool {id}"),
             "responses": {
                 "200": {
                     "description": "Tracer response",
@@ -2797,10 +2802,10 @@ async fn publish_operations(
         "servers": [{"url": upstream_url}],
         "security": [],
         "paths": {
-            "/forecast": {"get": operation("getForecast", "temperatureC")},
-            "/disconnected-first": {"get": operation("disconnectedFirst", "first")},
-            "/disconnected-second": {"get": operation("disconnectedSecond", "second")},
-            "/lost-worker": {"get": operation("lostWorker", "released")}
+            "/forecast": {"get": tool("getForecast", "temperatureC")},
+            "/disconnected-first": {"get": tool("disconnectedFirst", "first")},
+            "/disconnected-second": {"get": tool("disconnectedSecond", "second")},
+            "/lost-worker": {"get": tool("lostWorker", "released")}
         }
     });
     let setup = providers
@@ -2830,7 +2835,7 @@ async fn publish_operations(
         .expect("successful Provider publication")
         .id()
         .clone();
-    for (index, operation_key) in [
+    for (index, tool_key) in [
         "getForecast",
         "disconnectedFirst",
         "disconnectedSecond",
@@ -2847,15 +2852,15 @@ async fn publish_operations(
                     char::from_digit(u32::try_from(index + 5).expect("trace digit"), 10)
                         .expect("trace digit character"),
                 ),
-                OperationPolicyTarget::new(
+                ToolPolicyTarget::new(
                     workspace_id.clone(),
                     provider_id.clone(),
-                    OperationKey::parse(operation_key).expect("Operation Key"),
+                    ToolKey::parse(tool_key).expect("Tool Key"),
                 ),
-                OperationAccessState::Enabled,
+                ToolAccessState::Enabled,
             )
             .await
-            .expect("enable tracer Operation");
+            .expect("enable tracer Tool");
     }
     provider_id
 }

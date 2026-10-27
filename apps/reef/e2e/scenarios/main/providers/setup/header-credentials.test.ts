@@ -4,13 +4,13 @@ import { expect, inject, test } from 'vitest'
 import { withOwnerSession } from '../../../../support/actors.ts'
 import { listen, openApiDocument } from '../../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   chooseAccount,
   chooseFile,
   chooseSignIn,
   confirmConfiguration,
   createWorkspace,
-  enableOperation,
+  enableTool,
   observeRun,
   programRunner,
   type SignInMethod,
@@ -114,7 +114,7 @@ const placements: Placement[] = [
   },
 ]
 
-test.for(placements)('Set up $name by hand, then call an operation', async (placement, context) => {
+test.for(placements)('Set up $name by hand, then call a tool', async (placement, context) => {
   const { target } = inject('reel')
   const accepted: boolean[] = []
   const upstream = await listen(
@@ -146,7 +146,7 @@ test.for(placements)('Set up $name by hand, then call an operation', async (plac
       await placement.describe(page)
       await page.getByLabel('Namespace', { exact: true }).fill('keys')
       await confirmConfiguration(page)
-      await acceptOperations(page)
+      await acceptTools(page)
     })
 
     await step('Connect one shared account with a box for each credential', async () => {
@@ -160,7 +160,7 @@ test.for(placements)('Set up $name by hand, then call an operation', async (plac
       await dialog.getByRole('button', { name: 'Save and share the account', exact: true }).click()
       await page.getByRole('button', { name: 'Add provider', exact: true }).click()
       await waitForPublication(page)
-      await enableOperation(page, 'me')
+      await enableTool(page, 'me')
     })
 
     await step(

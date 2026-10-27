@@ -13,6 +13,18 @@ pub fn migration_plan_with(extra: impl IntoIterator<Item = Migration>) -> Migrat
     })
 }
 
+/// Coral's migration plan up to, but not including, `version`: the schema an
+/// earlier release left, for an upgrade test to fill before it migrates.
+#[must_use]
+pub fn migration_plan_before(version: i64) -> MigrationPlan {
+    edited_migration_plan(|migrations| {
+        migrations
+            .into_iter()
+            .filter(|migration| migration.version < version)
+            .collect()
+    })
+}
+
 /// Coral's migration plan with each database's migrations passed through
 /// `edit`, such as a plan that stops before one version.
 #[must_use]

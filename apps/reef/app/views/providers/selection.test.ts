@@ -1,30 +1,30 @@
 import { describe, expect, it } from 'vitest'
 
-import { decodeSelectedOperations } from './selection'
+import { decodeSelectedTools } from './selection'
 
-const a = { provider: 'prov-a', operation: 'providers/prov-a/operations/one' }
-const b = { provider: 'prov-b', operation: 'providers/prov-b/operations/two' }
+const a = { provider: 'prov-a', tool: 'providers/prov-a/tools/one' }
+const b = { provider: 'prov-b', tool: 'providers/prov-b/tools/two' }
 
-describe('decodeSelectedOperations', () => {
-  it('reads every selected operation in order', () => {
+describe('decodeSelectedTools', () => {
+  it('reads every selected tool in order', () => {
     const data = new FormData()
-    data.append('selectedOperation', JSON.stringify(a))
-    data.append('selectedOperation', JSON.stringify(b))
-    expect(decodeSelectedOperations(data)).toEqual([a, b])
+    data.append('selectedTool', JSON.stringify(a))
+    data.append('selectedTool', JSON.stringify(b))
+    expect(decodeSelectedTools(data)).toEqual([a, b])
   })
 
   // Catches: a malformed entry silently dropped, so the action updates fewer
-  // operations than the reader selected without saying so.
-  it('rejects the whole submission when one entry is not a provider and operation', () => {
+  // tools than the reader selected without saying so.
+  it('rejects the whole submission when one entry is not a provider and tool', () => {
     for (const bad of [
       '{not json',
       JSON.stringify({ provider: 'x' }),
       JSON.stringify(['x', 'y']),
     ]) {
       const data = new FormData()
-      data.append('selectedOperation', JSON.stringify(a))
-      data.append('selectedOperation', bad)
-      expect(decodeSelectedOperations(data)).toBeNull()
+      data.append('selectedTool', JSON.stringify(a))
+      data.append('selectedTool', bad)
+      expect(decodeSelectedTools(data)).toBeNull()
     }
   })
 })

@@ -15,16 +15,14 @@ async fn context_impact_counts_utf8_payloads_once_across_child_pages() {
         Arc::new(ConcurrentUpstream(tokio::sync::Barrier::new(2))),
     )
     .await;
-    let operation = fixture
-        .user_operation("context-impact", "Context impact")
-        .await;
-    let accepted = fixture.runs.start(&operation.principal, &operation.workspace_id, submission(
+    let tool = fixture.user_tool("context-impact", "Context impact").await;
+    let accepted = fixture.runs.start(&tool.principal, &tool.workspace_id, submission(
         "console.log('é'); await coral.emit('é'); await Promise.all([1,2].map(() => coral.providers.weather.getForecast({city:'Paris'}))); return 'é';"
     )).await.unwrap();
     wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
@@ -34,8 +32,8 @@ async fn context_impact_counts_utf8_payloads_once_across_child_pages() {
         let page = fixture
             .runs
             .activity_entries(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 accepted.run_id(),
                 &window,
                 1,
@@ -43,7 +41,7 @@ async fn context_impact_counts_utf8_payloads_once_across_child_pages() {
             )
             .await
             .unwrap();
-        // Two 150-byte Operation Results; log 2, emission 4, final value 4.
+        // Two 150-byte Tool Results; log 2, emission 4, final value 4.
         assert_eq!(page.run.context_impact_bytes, Some(-290));
         assert_eq!(
             page.total, 5,
@@ -67,8 +65,8 @@ async fn context_impact_counts_utf8_payloads_once_across_child_pages() {
     let page = fixture
         .runs
         .activity_entries(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
             &crate::RunEntryWindow::Viewport {
                 offset: 2,
@@ -83,13 +81,13 @@ async fn context_impact_counts_utf8_payloads_once_across_child_pages() {
     assert_eq!(page.offset, 2);
     assert_eq!(page.entries.len(), 2);
     let crate::RunEntry::Invocation(invocation) = page.entries.first().unwrap() else {
-        panic!("operation row")
+        panic!("tool row")
     };
     let anchored = fixture
         .runs
         .activity_entries(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
             &crate::RunEntryWindow::Viewport {
                 offset: 0,
@@ -157,7 +155,7 @@ async fn many_emissions_share_a_byte_budget_with_logs_and_survive_limit_failure(
 /// Two Invocation results reach the Run Owner before its next commit: the
 /// owner decides each against its exact in-memory total, so the second is
 /// admitted or refused by the byte, and the recorded total is exactly what
-/// was admitted. Operation arguments never count.
+/// was admitted. Tool arguments never count.
 #[tokio::test]
 async fn invocation_results_share_the_output_budget_by_the_byte_but_arguments_do_not() {
     let fixture = TestModules::with_upstream(
@@ -168,8 +166,8 @@ async fn invocation_results_share_the_output_budget_by_the_byte_but_arguments_do
         Arc::new(ConcurrentUpstream(tokio::sync::Barrier::new(2))),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:invocation-output-budget", "Bound Invocation output")
+    let tool = fixture
+        .user_tool("user:invocation-output-budget", "Bound Invocation output")
         .await;
     // Each scripted HTTP result retains 150 JSON bytes, including its metadata.
     // The log and Emission retain six more bytes. Arguments exceed the entire budget.
@@ -182,8 +180,8 @@ async fn invocation_results_share_the_output_budget_by_the_byte_but_arguments_do
             .with_value_limits(ValueLimits::new(5, 1024, 4096, budget).expect("limits"));
         let accepted = runs
             .start(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 submission(
                     r"
                         console.log('é');
@@ -197,15 +195,15 @@ async fn invocation_results_share_the_output_budget_by_the_byte_but_arguments_do
             .expect("accepted");
         let terminal = wait_for_terminal(
             &runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
         )
         .await;
         let results = super::retained_events(
             &runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             terminal.run_id(),
         )
         .await
@@ -235,7 +233,7 @@ async fn invocation_results_share_the_output_budget_by_the_byte_but_arguments_do
                 matches!(terminal.terminal_outcome(),
                 Some(RunTerminalOutcome::Failed(failure))
                     if failure.code() == RunFailureCode::ProgramRejected
-                        && failure.message() == "OperationError: Run output exceeds its limit"),
+                        && failure.message() == "ToolError: Run output exceeds its limit"),
                 "{budget}: {terminal:?}"
             );
             assert_eq!(
@@ -249,7 +247,7 @@ async fn invocation_results_share_the_output_budget_by_the_byte_but_arguments_do
         }
         assert_eq!(
             fixture
-                .run_record(&operation.workspace_id, terminal.run_id())
+                .run_record(&tool.workspace_id, terminal.run_id())
                 .await
                 .accumulated_output_bytes,
             recorded_bytes,
@@ -288,8 +286,8 @@ async fn rejected_invocation_output_leaves_the_remaining_budget_for_program_outp
         Arc::new(ScriptedUpstream::json(200, json!(null))),
     )
     .await;
-    let operation = fixture
-        .user_operation(
+    let tool = fixture
+        .user_tool(
             "user:remaining-output-budget",
             "Retain admitted output only",
         )
@@ -301,8 +299,8 @@ async fn rejected_invocation_output_leaves_the_remaining_budget_for_program_outp
         .with_value_limits(ValueLimits::new(5, 1024, 4096, 157).expect("limits"));
     let accepted = runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             submission(
                 r"
                     await coral.providers.weather.getForecast({city: 'London'});
@@ -323,8 +321,8 @@ async fn rejected_invocation_output_leaves_the_remaining_budget_for_program_outp
         .expect("accepted");
     let terminal = wait_for_terminal(
         &runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
@@ -337,8 +335,8 @@ async fn rejected_invocation_output_leaves_the_remaining_budget_for_program_outp
     assert!(
         super::retained_events(
             &runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             terminal.run_id()
         )
         .await

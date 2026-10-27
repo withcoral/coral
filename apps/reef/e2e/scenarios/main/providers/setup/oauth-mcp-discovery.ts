@@ -9,7 +9,7 @@ import { inspectRunEvents, managementClients } from '../../../../support/managem
 import { oauthMcpServer } from '../../../../support/provider-fixtures.ts'
 import {
   addedProviders,
-  acceptOperations,
+  acceptTools,
   accountQuestion,
   chooseAccount,
   collectDataResponses,
@@ -20,7 +20,7 @@ import {
   observeRun,
   openCustomSource,
   programRunner,
-  signInToReadOperations,
+  signInToReadTools,
   waitForProviderStatus,
   waitForPublication,
   signInAndShareAccount,
@@ -68,7 +68,7 @@ export async function protectedDiscovery(choice: 'retain' | 'different', context
           name: `workspaces/${workspace}/providerSetups/${new URL(page.url()).searchParams.get('setup')}`,
         })
       ).provisionalGrantId
-    await step('Sign in to discover the protected operations', async () => {
+    await step('Sign in to discover the protected tools', async () => {
       workspace = await createWorkspace(accessToken, `OAuth MCP ${crypto.randomUUID()}`)
       await page.goto(`/workspaces/${workspace}/providers/new`)
       await openCustomSource(page)
@@ -79,15 +79,15 @@ export async function protectedDiscovery(choice: 'retain' | 'different', context
       await page.getByLabel('Namespace', { exact: true }).fill('oauthmcp')
       await confirmConfiguration(page)
       expect(await accountQuestion(page).count()).toBe(0)
-      await signInToReadOperations(page)
+      await signInToReadTools(page)
       await page.getByRole('link', { name: 'Approve fixture access', exact: true }).waitFor()
       expect(new URL(page.url()).searchParams.get('client_id')).toBe('dcr-client')
       await approveConsent()
-      await page.getByText('Coral cannot read the operations', { exact: true }).waitFor()
+      await page.getByText('Coral cannot read the tools', { exact: true }).waitFor()
       expect(upstream.counts.tokens).toBe(1)
       upstream.knobs.discoveryBroken = false
       await page.getByRole('button', { name: 'Try again', exact: true }).click()
-      await acceptOperations(page)
+      await acceptTools(page)
       await chooseAccount(page, 'shared')
       discoveryGrant = await setupGrant()
       expect(discoveryGrant).not.toBe('')

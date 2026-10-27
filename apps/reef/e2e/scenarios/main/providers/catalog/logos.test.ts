@@ -46,7 +46,7 @@ test('A recipe logo with a dark-theme variant reads in both themes', async (cont
       .getByRole('listitem')
       .filter({ has: page.getByRole('button', { name: 'Add GitHub API', exact: true }) })
     const heading = page
-      .getByRole('table', { name: 'Operations', exact: true })
+      .getByRole('table', { name: 'Tools', exact: true })
       .locator('[role="row"][aria-level="1"]')
       .filter({ hasText: 'Logo fixture' })
     let workspace = ''

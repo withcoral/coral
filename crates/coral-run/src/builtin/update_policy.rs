@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use coral_catalog::{UpdatePolicyArguments, UpdatePolicyResult};
-use coral_policy::OperationAccessState;
+use coral_policy::ToolAccessState;
 use coral_provider::access::ProviderNamespace;
 
 use super::BuiltinHost;
@@ -14,7 +14,7 @@ use crate::{CoralFailure, Error, Rejection};
 #[derive(Clone)]
 pub(crate) struct UpdatePolicy {
     namespace: ProviderNamespace,
-    operations: BTreeMap<String, OperationAccessState>,
+    tools: BTreeMap<String, ToolAccessState>,
 }
 
 impl UpdatePolicy {
@@ -26,8 +26,8 @@ impl UpdatePolicy {
             .map_err(|_error| Rejection::from(CoralFailure::InvalidInput))?;
         Ok(Self {
             namespace,
-            operations: arguments
-                .operations()
+            tools: arguments
+                .tools()
                 .iter()
                 .map(|(path, state)| (path.clone(), (*state).into()))
                 .collect(),
@@ -44,29 +44,21 @@ impl UpdatePolicy {
         };
         let states = host
             .policies
-            .set_provider_access_states(
-                context,
-                host.workspace_id,
-                &self.namespace,
-                &self.operations,
-            )
+            .set_provider_access_states(context, host.workspace_id, &self.namespace, &self.tools)
             .await
             .map_err(|error| match error {
                 coral_policy::Error::Provider(coral_provider::Error::ProviderNotFound) => {
                     Error::InvocationRejected(CoralFailure::ProviderNotFound.into())
                 }
-                coral_policy::Error::OperationPathsNotFound(paths) => {
+                coral_policy::Error::ToolPathsNotFound(paths) => {
                     Error::InvocationRejected(Rejection::naming(
-                        CoralFailure::OperationNotFound,
+                        CoralFailure::ToolNotFound,
                         paths
                             .into_iter()
                             .map(|path| {
                                 InputProblem::new(
-                                    format!("operations.{path}"),
-                                    format!(
-                                        "no Operation of {} has this path",
-                                        self.namespace.as_str()
-                                    ),
+                                    format!("tools.{path}"),
+                                    format!("no Tool of {} has this path", self.namespace.as_str()),
                                 )
                             })
                             .collect(),
@@ -79,11 +71,11 @@ impl UpdatePolicy {
             })?;
         Ok(UpdatePolicyResult {
             namespace: self.namespace.as_str().to_owned(),
-            operations: states
+            tools: states
                 .into_iter()
                 .map(|(path, state)| (path, state.into()))
                 .collect(),
         }
-        .into_operation_result())
+        .into_tool_result())
     }
 }

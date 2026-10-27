@@ -7,7 +7,7 @@ import { managementClients } from '../../../../support/management.ts'
 import { listen, openApiDocument } from '../../../../support/provider-fixtures.ts'
 import {
   addedProviders,
-  acceptOperations,
+  acceptTools,
   accountQuestion,
   backToConfiguration,
   chooseAccount,
@@ -19,7 +19,7 @@ import {
   waitForPublication,
 } from '../../../../support/providers.ts'
 
-test('Setup reviews operations before accounts and preserves the draft until one publication', async (context) => {
+test('Setup reviews tools before accounts and preserves the draft until one publication', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {
     const workspace = await createWorkspace(actor.accessToken, `Setup flow ${crypto.randomUUID()}`)
     const api = managementClients(actor.accessToken)
@@ -58,18 +58,18 @@ test('Setup reviews operations before accounts and preserves the draft until one
       await page.getByLabel('Display name', { exact: true }).fill('Records (uploaded)')
       await page.getByLabel('Namespace', { exact: true }).fill('records')
       await confirmConfiguration(page, 'Bearer token')
-      await page.getByRole('heading', { name: 'Operations', exact: true }).waitFor()
+      await page.getByRole('heading', { name: 'Tools', exact: true }).waitFor()
       expect(await accountQuestion(page).count()).toBe(0)
-      expect(new URL(page.url()).searchParams.has('operationsAccepted')).toBe(false)
+      expect(new URL(page.url()).searchParams.has('toolsAccepted')).toBe(false)
       await noProvider()
-      await acceptOperations(page)
+      await acceptTools(page)
       await page.reload()
       await accountQuestion(page).waitFor()
-      expect(new URL(page.url()).searchParams.get('operationsAccepted')).toBe('1')
+      expect(new URL(page.url()).searchParams.get('toolsAccepted')).toBe('1')
       await page.getByRole('link', { name: 'Back', exact: true }).click()
-      await page.getByRole('heading', { name: 'Operations', exact: true }).waitFor()
-      expect(new URL(page.url()).searchParams.has('operationsAccepted')).toBe(false)
-      await acceptOperations(page)
+      await page.getByRole('heading', { name: 'Tools', exact: true }).waitFor()
+      expect(new URL(page.url()).searchParams.has('toolsAccepted')).toBe(false)
+      await acceptTools(page)
       expect(new URL(page.url()).searchParams.get('namespace')).toBe('records')
       await chooseAccount(page, 'own-later')
       await noProvider()
@@ -77,13 +77,13 @@ test('Setup reviews operations before accounts and preserves the draft until one
       expect(await page.getByLabel('Namespace', { exact: true }).count()).toBe(0)
       await noProvider()
     })
-    await step('Revise the namespace, relist operations, and reload the review', async () => {
+    await step('Revise the namespace, relist tools, and reload the review', async () => {
       await setNamespace(page, 'records_reviewed')
       await backToConfiguration(page)
       await page.waitForURL((url) => url.searchParams.get('configure') === '1')
-      expect(new URL(page.url()).searchParams.has('operationsAccepted')).toBe(false)
+      expect(new URL(page.url()).searchParams.has('toolsAccepted')).toBe(false)
       await confirmConfiguration(page, 'Bearer token')
-      await acceptOperations(page)
+      await acceptTools(page)
       await page.reload()
       await chooseAccount(page, 'own-later')
       await page.getByRole('button', { name: 'Add provider', exact: true }).waitFor()
@@ -166,7 +166,7 @@ test('Start an ended setup again from the URL you typed', async (context) => {
         expect(setupId()).not.toBe(ended)
         expect(reads).toBe(before + 1)
         await confirmConfiguration(page, 'No authentication')
-        await acceptOperations(page)
+        await acceptTools(page)
         await page.getByRole('button', { name: 'Add provider', exact: true }).click()
         await waitForPublication(page)
       },

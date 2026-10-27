@@ -6,7 +6,7 @@ const WAIT_FOR_ACCOUNT: &str = "await coral.providers.weather.getForecast({});";
 /// A Run that waited on its User's Account connection request.
 struct RetainedConnection {
     fixture: TestModules,
-    operation: OperationFixture,
+    tool: ToolFixture,
     _directory: tempfile::TempDir,
     accounts: coral_provider::account::AccountModule,
     runs: RunModule,
@@ -20,17 +20,16 @@ impl RetainedConnection {
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
         ))
         .await;
-        let operation = fixture
-            .user_operation("user:retained-connection", "Retained connection selection")
+        let tool = fixture
+            .user_tool("user:retained-connection", "Retained connection selection")
             .await;
         let (directory, accounts) =
-            configure_user_caller(&fixture, &operation, "https://upstream.example").await;
+            configure_user_caller(&fixture, &tool, "https://upstream.example").await;
         let runs = fixture.runs.clone().with_accounts(accounts.clone());
-        let (run, original) =
-            Self::waiting_run(&runs, &operation.principal, &operation.workspace_id).await;
+        let (run, original) = Self::waiting_run(&runs, &tool.principal, &tool.workspace_id).await;
         Self {
             fixture,
-            operation,
+            tool,
             _directory: directory,
             accounts,
             runs,
@@ -64,8 +63,8 @@ impl RetainedConnection {
     async fn end_original(&self) {
         self.runs
             .cancel(
-                &self.operation.principal,
-                &self.operation.workspace_id,
+                &self.tool.principal,
+                &self.tool.workspace_id,
                 &self.run,
                 &immediate(None, 1),
             )
@@ -73,8 +72,8 @@ impl RetainedConnection {
             .unwrap();
         self.accounts
             .decline_connection(
-                &change(self.operation.user.clone(), 50, '5'),
-                &self.operation.workspace_id,
+                &change(self.tool.user.clone(), 50, '5'),
+                &self.tool.workspace_id,
                 self.original,
             )
             .await
@@ -91,7 +90,7 @@ impl RetainedConnection {
         self.runs
             .inspect_run(
                 actor,
-                &self.operation.workspace_id,
+                &self.tool.workspace_id,
                 run,
                 &crate::RunInspection {
                     account_connection: Some(request),
@@ -106,7 +105,7 @@ impl RetainedConnection {
         run: &crate::RunId,
         request: coral_provider::account::ConnectionRequestId,
     ) -> Option<coral_provider::account::ConnectionRequestId> {
-        self.select(&self.operation.principal, run, request)
+        self.select(&self.tool.principal, run, request)
             .await
             .unwrap()
             .account_connection
@@ -118,19 +117,10 @@ impl RetainedConnection {
 #[tokio::test(flavor = "multi_thread")]
 async fn connection_selection_survives_detachment_and_resolution() {
     let retained = RetainedConnection::new().await;
-    let (user, run, original) = (
-        &retained.operation.principal,
-        &retained.run,
-        retained.original,
-    );
+    let (user, run, original) = (&retained.tool.principal, &retained.run, retained.original);
     retained
         .runs
-        .cancel(
-            user,
-            &retained.operation.workspace_id,
-            run,
-            &immediate(None, 1),
-        )
+        .cancel(user, &retained.tool.workspace_id, run, &immediate(None, 1))
         .await
         .unwrap();
     let detached = retained.select(user, run, original).await.unwrap();
@@ -149,10 +139,7 @@ async fn connection_selection_survives_detachment_and_resolution() {
 #[tokio::test(flavor = "multi_thread")]
 async fn connection_selection_matches_only_the_run_that_waited_on_it() {
     let retained = RetainedConnection::new().await;
-    let (user, workspace) = (
-        &retained.operation.principal,
-        &retained.operation.workspace_id,
-    );
+    let (user, workspace) = (&retained.tool.principal, &retained.tool.workspace_id);
     let unrelated = retained
         .runs
         .start(user, workspace, submission("return 42;"))
@@ -174,7 +161,7 @@ async fn connection_selection_matches_only_the_run_that_waited_on_it() {
         .fixture
         .workspaces
         .set_membership(
-            &change(retained.operation.user.clone(), 60, '6'),
+            &change(retained.tool.user.clone(), 60, '6'),
             workspace,
             &other_user,
             WorkspaceRole::Member,
@@ -205,10 +192,7 @@ async fn connection_selection_matches_only_the_run_that_waited_on_it() {
 async fn connection_selection_never_retargets_to_a_replacement_request() {
     let retained = RetainedConnection::new().await;
     retained.end_original().await;
-    let (user, workspace) = (
-        &retained.operation.principal,
-        &retained.operation.workspace_id,
-    );
+    let (user, workspace) = (&retained.tool.principal, &retained.tool.workspace_id);
     let (replacement_run, replacement) =
         RetainedConnection::waiting_run(&retained.runs, user, workspace).await;
     assert_ne!(replacement, retained.original);
@@ -249,7 +233,7 @@ async fn connection_selection_never_retargets_to_a_replacement_request() {
         retained
             .accounts
             .get_connection_request(
-                &change(retained.operation.user.clone(), deadline, '7'),
+                &change(retained.tool.user.clone(), deadline, '7'),
                 workspace,
                 replacement,
             )
@@ -288,26 +272,20 @@ async fn required_actions_show_pending_approval_and_clear_without_a_run_event() 
         Arc::new(ApprovalWaitGate(gate.clone())),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:actions", "Required actions")
-        .await;
-    fixture.require_approval(&operation).await;
+    let tool = fixture.user_tool("user:actions", "Required actions").await;
+    fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
     let accepted = fixture
         .runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("invoke"),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission("invoke"))
         .await
         .unwrap();
     wait_until(|| gate.entered()).await;
     let waiting = fixture
         .runs
         .observe(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
             &immediate(None, 100),
         )
@@ -317,43 +295,35 @@ async fn required_actions_show_pending_approval_and_clear_without_a_run_event() 
     assert_eq!(waiting.required_actions().len(), 1);
     let queue = fixture
         .runs
-        .required_actions(&operation.principal, None, None, 1)
+        .required_actions(&tool.principal, None, None, 1)
         .await
         .unwrap();
     assert_eq!(queue.action_count, 1);
     assert_eq!(queue.actions.first().unwrap().run.id, *accepted.run_id());
     assert!(queue.next.is_none());
     let requests = approvals
-        .list_for_run(
-            &operation.principal,
-            &operation.workspace_id,
-            accepted.run_id(),
-        )
+        .list_for_run(&tool.principal, &tool.workspace_id, accepted.run_id())
         .await
         .unwrap();
     let observation = immediate(Some(waiting.next_cursor().clone()), 100)
         .with_wait(Duration::from_secs(2))
         .unwrap();
     let pending = fixture.runs.observe(
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
         &observation,
     );
     tokio::pin!(pending);
-    let activity_before = retained_activity(
-        &fixture.database,
-        &operation.workspace_id,
-        accepted.run_id(),
-    )
-    .await;
+    let activity_before =
+        retained_activity(&fixture.database, &tool.workspace_id, accepted.run_id()).await;
     tokio::time::timeout(Duration::from_millis(20), &mut pending)
         .await
         .expect_err("unchanged actions keep observation waiting");
     approvals
         .decide(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             &requests.first().unwrap().id,
             ApprovalDecision::Approve,
             None,
@@ -361,20 +331,16 @@ async fn required_actions_show_pending_approval_and_clear_without_a_run_event() 
         )
         .await
         .unwrap();
-    let activity_after = retained_activity(
-        &fixture.database,
-        &operation.workspace_id,
-        accepted.run_id(),
-    )
-    .await;
+    let activity_after =
+        retained_activity(&fixture.database, &tool.workspace_id, accepted.run_id()).await;
     assert!(
         activity_after > activity_before,
         "approval decisions count without fabricating Run Events"
     );
     approvals
         .decide(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             &requests.first().unwrap().id,
             ApprovalDecision::Decline,
             None,
@@ -383,12 +349,7 @@ async fn required_actions_show_pending_approval_and_clear_without_a_run_event() 
         .await
         .unwrap();
     assert_eq!(
-        retained_activity(
-            &fixture.database,
-            &operation.workspace_id,
-            accepted.run_id()
-        )
-        .await,
+        retained_activity(&fixture.database, &tool.workspace_id, accepted.run_id()).await,
         activity_after,
         "reads and repeated no-op decisions do not renew retention"
     );
@@ -400,7 +361,7 @@ async fn required_actions_show_pending_approval_and_clear_without_a_run_event() 
     assert_eq!(
         fixture
             .runs
-            .required_actions(&operation.principal, None, None, 1)
+            .required_actions(&tool.principal, None, None, 1)
             .await
             .unwrap()
             .action_count,
@@ -414,8 +375,8 @@ async fn required_actions_show_pending_approval_and_clear_without_a_run_event() 
     let deadline_update = fixture
         .runs
         .observe(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
             &no_change,
         )
@@ -435,8 +396,8 @@ async fn required_actions_show_pending_approval_and_clear_without_a_run_event() 
     let changed = tokio::time::timeout(
         Duration::from_secs(1),
         fixture.runs.observe(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
             &terminal_wait,
         ),
@@ -451,8 +412,8 @@ async fn required_actions_show_pending_approval_and_clear_without_a_run_event() 
     assert!(changed.events().is_empty());
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
@@ -464,22 +425,22 @@ async fn required_actions_show_pending_approval_and_clear_without_a_run_event() 
 #[tokio::test]
 async fn activity_observation_rereads_do_not_renew_retention() {
     let held = HeldApproval::new("user:retention").await;
-    let (fixture, operation) = (&held.fixture, &held.operation);
+    let (fixture, tool) = (&held.fixture, &held.tool);
     let retained =
-        async || retained_activity(&fixture.database, &operation.workspace_id, &held.run).await;
+        async || retained_activity(&fixture.database, &tool.workspace_id, &held.run).await;
     let before = retained().await;
     let mut observation = fixture
         .runs
-        .observe_activity(&operation.principal)
+        .observe_activity(&tool.principal)
         .await
         .unwrap();
     // A committed policy change wakes the observer, which reschedules deadlines.
     fixture
         .policies
         .set_access_state(
-            &change(operation.user.clone(), 41, '4'),
-            operation.policy_target.clone(),
-            OperationAccessState::Enabled,
+            &change(tool.user.clone(), 41, '4'),
+            tool.policy_target.clone(),
+            ToolAccessState::Enabled,
         )
         .await
         .unwrap();
@@ -501,11 +462,11 @@ async fn action_window_cursor_survives_resolution_of_its_anchor_and_predecessor(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
-    let operation = fixture
-        .user_operation("user:action-window", "Action window")
+    let tool = fixture
+        .user_tool("user:action-window", "Action window")
         .await;
-    publish_approval_provider(&fixture, &operation).await;
-    let (actor, workspace) = (&operation.principal, &operation.workspace_id);
+    publish_approval_provider(&fixture, &tool).await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
     // Settle each call independently so resolved approvals leave the Run running.
     let accepted = fixture
         .runs
@@ -594,11 +555,9 @@ async fn a_run_action_window_is_bounded_but_counts_every_request() {
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
-    let operation = fixture
-        .user_operation("user:action-bound", "Action bound")
-        .await;
-    publish_approval_provider(&fixture, &operation).await;
-    let (actor, workspace) = (&operation.principal, &operation.workspace_id);
+    let tool = fixture.user_tool("user:action-bound", "Action bound").await;
+    publish_approval_provider(&fixture, &tool).await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
     let accepted = fixture
         .runs
         .start(
@@ -675,7 +634,7 @@ async fn a_run_action_window_is_bounded_but_counts_every_request() {
 /// Account connection request and two wait for approval.
 struct MixedActions {
     fixture: TestModules,
-    operation: OperationFixture,
+    tool: ToolFixture,
     _directory: tempfile::TempDir,
     accounts: coral_provider::account::AccountModule,
     runs: RunModule,
@@ -691,30 +650,23 @@ impl MixedActions {
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
         ))
         .await;
-        let operation = fixture
-            .user_operation("user:concurrent-actions", "Concurrent human actions")
+        let tool = fixture
+            .user_tool("user:concurrent-actions", "Concurrent human actions")
             .await;
         let (directory, accounts) =
-            configure_user_caller(&fixture, &operation, "https://upstream.example").await;
-        publish_approval_provider(&fixture, &operation).await;
-        fixture.require_approval(&operation).await;
+            configure_user_caller(&fixture, &tool, "https://upstream.example").await;
+        publish_approval_provider(&fixture, &tool).await;
+        fixture.require_approval(&tool).await;
         let runs = fixture.runs.clone().with_accounts(accounts.clone());
-        let accepted = runs.start(&operation.principal, &operation.workspace_id, submission("await Promise.all([coral.providers.weather.getForecast({}), coral.providers.weather.getForecast({}), coral.providers.public.getForecast({}), coral.providers.public.getForecast({})]);"
+        let accepted = runs.start(&tool.principal, &tool.workspace_id, submission("await Promise.all([coral.providers.weather.getForecast({}), coral.providers.weather.getForecast({}), coral.providers.public.getForecast({}), coral.providers.public.getForecast({})]);"
         )).await.unwrap();
         let run = accepted.run_id().clone();
-        let waiting = wait_for_actions(
-            &runs,
-            &operation.principal,
-            &operation.workspace_id,
-            &run,
-            3,
-            4,
-        )
-        .await;
-        let request = wait_for_connection(&accounts, &operation).await;
+        let waiting =
+            wait_for_actions(&runs, &tool.principal, &tool.workspace_id, &run, 3, 4).await;
+        let request = wait_for_connection(&accounts, &tool).await;
         Self {
             fixture,
-            operation,
+            tool,
             _directory: directory,
             accounts,
             runs,
@@ -725,11 +677,11 @@ impl MixedActions {
     }
 
     fn user(&self) -> &AuthenticatedPrincipal {
-        &self.operation.principal
+        &self.tool.principal
     }
 
     fn scope(&self) -> &coral_workspace::WorkspaceId {
-        &self.operation.workspace_id
+        &self.tool.workspace_id
     }
 
     /// Activity rows once every Invocation, including the second Account
@@ -768,13 +720,13 @@ impl MixedActions {
 
     /// The User connects; both Account waiters then wait for approval.
     async fn connect(&self) -> crate::RunUpdate {
-        let context = change(self.operation.user.clone(), 50, '5');
+        let context = change(self.tool.user.clone(), 50, '5');
         let authorization = self
             .accounts
             .start_user_authorization(
                 &context,
                 self.scope(),
-                &self.operation.provider_id,
+                &self.tool.provider_id,
                 ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                 None,
             )
@@ -945,7 +897,7 @@ async fn human_actions_are_concealed_from_owners_and_agents() {
             .fixture
             .workspace_user(
                 scope,
-                &mixed.operation.user,
+                &mixed.tool.user,
                 "user:action-outsider",
                 WorkspaceRole::Owner,
             )
@@ -1020,7 +972,7 @@ async fn connecting_hands_waiting_invocations_to_approval_without_a_run_event() 
     assert_eq!(
         mixed
             .accounts
-            .list_connection_requests(&change(mixed.operation.user.clone(), 50, '5'), scope)
+            .list_connection_requests(&change(mixed.tool.user.clone(), 50, '5'), scope)
             .await
             .unwrap(),
         vec![],
@@ -1091,7 +1043,7 @@ async fn cancellation_clears_actions_but_keeps_each_invocations_requests() {
     let mut retained_connections = 0;
     for entry in rows.entries {
         let crate::RunEntry::Invocation(row) = entry else {
-            panic!("operation row")
+            panic!("tool row")
         };
         let exact = runs.inspect_invocation(user, scope, &row.id).await.unwrap();
         assert!(!exact.summary.requires_action);
@@ -1112,7 +1064,7 @@ async fn cancellation_clears_actions_but_keeps_each_invocations_requests() {
         mixed
             .accounts
             .get_connection_request(
-                &change(mixed.operation.user.clone(), 50, '5'),
+                &change(mixed.tool.user.clone(), 50, '5'),
                 scope,
                 mixed.request.id
             )
@@ -1133,25 +1085,20 @@ async fn required_actions_disclose_owner_work_to_agents_without_granting_approva
         "coral.providers.weather.getForecast",
     )))
     .await;
-    let operation = fixture
-        .user_operation("user:agent-owner", "Agent required actions")
+    let tool = fixture
+        .user_tool("user:agent-owner", "Agent required actions")
         .await;
-    fixture.require_approval(&operation).await;
-    let agent = registered_agent(
-        &fixture.workspaces,
-        &operation.principal,
-        &operation.workspace_id,
-    )
-    .await;
+    fixture.require_approval(&tool).await;
+    let agent = registered_agent(&fixture.workspaces, &tool.principal, &tool.workspace_id).await;
     let accepted = fixture
         .runs
-        .start(&agent, &operation.workspace_id, submission("invoke"))
+        .start(&agent, &tool.workspace_id, submission("invoke"))
         .await
         .unwrap();
     wait_for_actions(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
         1,
         1,
@@ -1161,7 +1108,7 @@ async fn required_actions_disclose_owner_work_to_agents_without_granting_approva
         .runs
         .observe(
             &agent,
-            &operation.workspace_id,
+            &tool.workspace_id,
             accepted.run_id(),
             &immediate(None, 100),
         )
@@ -1186,7 +1133,7 @@ async fn required_actions_disclose_owner_work_to_agents_without_granting_approva
     );
     let queue = fixture
         .runs
-        .required_actions(&operation.principal, None, None, 10)
+        .required_actions(&tool.principal, None, None, 10)
         .await
         .unwrap();
     assert_eq!(queue.actions.len(), 1);
@@ -1194,7 +1141,7 @@ async fn required_actions_disclose_owner_work_to_agents_without_granting_approva
     assert_eq!(
         fixture
             .runs
-            .required_action_count(&operation.principal, Some(&operation.workspace_id))
+            .required_action_count(&tool.principal, Some(&tool.workspace_id))
             .await
             .unwrap(),
         1
@@ -1210,14 +1157,14 @@ async fn required_actions_disclose_owner_work_to_agents_without_granting_approva
     );
     let approvals = fixture.approvals();
     assert!(matches!(
-        approvals.get(&agent, &operation.workspace_id, id).await,
+        approvals.get(&agent, &tool.workspace_id, id).await,
         Err(Error::ApprovalNotFound)
     ));
     assert!(matches!(
         approvals
             .decide(
                 &agent,
-                &operation.workspace_id,
+                &tool.workspace_id,
                 id,
                 ApprovalDecision::Approve,
                 None,
@@ -1228,21 +1175,21 @@ async fn required_actions_disclose_owner_work_to_agents_without_granting_approva
     ));
     let second_owner = fixture
         .workspace_user(
-            &operation.workspace_id,
-            &operation.user,
+            &tool.workspace_id,
+            &tool.user,
             "user:second-owner",
             WorkspaceRole::Owner,
         )
         .await;
     for owner in [
-        &operation.principal,
+        &tool.principal,
         &AuthenticatedPrincipal::user(second_owner.clone()),
     ] {
         let update = fixture
             .runs
             .observe(
                 owner,
-                &operation.workspace_id,
+                &tool.workspace_id,
                 accepted.run_id(),
                 &immediate(None, 100),
             )
@@ -1257,8 +1204,8 @@ async fn required_actions_disclose_owner_work_to_agents_without_granting_approva
         .with_wait(Duration::from_secs(2))
         .unwrap();
     let observing = fixture.runs.observe(
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
         &observation,
     );
@@ -1270,8 +1217,8 @@ async fn required_actions_disclose_owner_work_to_agents_without_granting_approva
         .workspaces
         .set_membership(
             &change(second_owner, 50, '5'),
-            &operation.workspace_id,
-            &operation.user,
+            &tool.workspace_id,
+            &tool.user,
             WorkspaceRole::Member,
         )
         .await
@@ -1288,7 +1235,7 @@ async fn required_actions_disclose_owner_work_to_agents_without_granting_approva
     assert_eq!(
         fixture
             .runs
-            .required_action_count(&operation.principal, None)
+            .required_action_count(&tool.principal, None)
             .await
             .unwrap(),
         0
@@ -1296,7 +1243,7 @@ async fn required_actions_disclose_owner_work_to_agents_without_granting_approva
     assert_eq!(
         fixture
             .runs
-            .required_actions(&operation.principal, None, None, 10)
+            .required_actions(&tool.principal, None, None, 10)
             .await
             .unwrap()
             .action_count,
@@ -1306,7 +1253,7 @@ async fn required_actions_disclose_owner_work_to_agents_without_granting_approva
         .runs
         .cancel(
             &agent,
-            &operation.workspace_id,
+            &tool.workspace_id,
             accepted.run_id(),
             &immediate(Some(waiting.next_cursor().clone()), 100),
         )
@@ -1328,11 +1275,11 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
                 crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
             ))
             .await;
-            let operation = fixture
-                .user_operation("user:shared-actions", "Shared action cleanup")
+            let tool = fixture
+                .user_tool("user:shared-actions", "Shared action cleanup")
                 .await;
             let (_directory, accounts) =
-                configure_user_caller(&fixture, &operation, "https://upstream.example").await;
+                configure_user_caller(&fixture, &tool, "https://upstream.example").await;
             let mut runs = fixture.runs.clone().with_accounts(accounts.clone());
             runs.execution_policy = crate::execution::ExecutionPolicy::testing_with_claim_lease(
                 Duration::from_secs(30),
@@ -1340,8 +1287,8 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
             let source = "try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }";
             let first = runs
                 .start(
-                    &operation.principal,
-                    &operation.workspace_id,
+                    &tool.principal,
+                    &tool.workspace_id,
                     RunSubmission::new(
                         ProgramSource::parse(source).unwrap(),
                         RunTimeout::from_millis(10_000).unwrap(),
@@ -1350,17 +1297,13 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
                 .await
                 .unwrap();
             let second = runs
-                .start(
-                    &operation.principal,
-                    &operation.workspace_id,
-                    submission(source),
-                )
+                .start(&tool.principal, &tool.workspace_id, submission(source))
                 .await
                 .unwrap();
             let first_waiting = wait_for_actions(
                 &runs,
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 first.run_id(),
                 1,
                 1,
@@ -1368,8 +1311,8 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
             .await;
             let second_waiting = wait_for_actions(
                 &runs,
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 second.run_id(),
                 1,
                 1,
@@ -1386,7 +1329,7 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
                 panic!("Account connection action")
             };
             let page = runs
-                .required_actions(&operation.principal, Some(&operation.workspace_id), None, 1)
+                .required_actions(&tool.principal, Some(&tool.workspace_id), None, 1)
                 .await
                 .unwrap();
             let [queued] = page.actions.as_slice() else {
@@ -1395,9 +1338,9 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
             assert_eq!(queued.action.request, action.request);
             assert!(page.next.is_none());
             assert_eq!(page.action_count, 1, "one connection spans both Runs");
-            let context = change(operation.user.clone(), 50, '5');
+            let context = change(tool.user.clone(), 50, '5');
             let request = accounts
-                .get_connection_request(&context, &operation.workspace_id, id)
+                .get_connection_request(&context, &tool.workspace_id, id)
                 .await
                 .unwrap();
             let cancel_observation = immediate(Some(first_waiting.next_cursor().clone()), 1);
@@ -1407,8 +1350,8 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
                     fixture.clock.next.store(20_000_000_000, Ordering::SeqCst);
                 }
                 runs.cancel(
-                    &operation.principal,
-                    &operation.workspace_id,
+                    &tool.principal,
+                    &tool.workspace_id,
                     first.run_id(),
                     &cancel_observation,
                 )
@@ -1420,18 +1363,18 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
                     accounts
                         .get_connection_request(
                             &change(
-                                operation.user.clone(),
+                                tool.user.clone(),
                                 request.expires_at_unix_nanos + 1_000_000_000,
                                 '6',
                             ),
-                            &operation.workspace_id,
+                            &tool.workspace_id,
                             id,
                         )
                         .await
                         .unwrap()
                 } else {
                     accounts
-                        .decline_connection(&context, &operation.workspace_id, id)
+                        .decline_connection(&context, &tool.workspace_id, id)
                         .await
                         .unwrap()
                 }
@@ -1439,7 +1382,7 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
             let (terminal, resolved) = tokio::join!(stop, resolve);
             if expire {
                 let events = accounts
-                    .list_user_lifecycle_events(&context, &operation.workspace_id)
+                    .list_user_lifecycle_events(&context, &tool.workspace_id)
                     .await
                     .unwrap();
                 let event = events
@@ -1465,29 +1408,25 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
             let mut cleanup = fixture.database.begin().await.unwrap();
             crate::retention::delete_in_transaction(
                 &mut cleanup,
-                &operation.workspace_id,
+                &tool.workspace_id,
                 first.run_id(),
-                operation.principal.principal(),
+                tool.principal.principal(),
             )
             .await
             .unwrap();
             cleanup.commit().await.unwrap();
             assert_eq!(
                 accounts
-                    .get_connection_request(&context, &operation.workspace_id, id)
+                    .get_connection_request(&context, &tool.workspace_id, id)
                     .await
                     .unwrap()
                     .state,
                 resolved.state,
                 "Run cleanup must retain the other Run's shared Account connection workflow"
             );
-            let second_terminal = wait_for_terminal(
-                &runs,
-                &operation.principal,
-                &operation.workspace_id,
-                second.run_id(),
-            )
-            .await;
+            let second_terminal =
+                wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, second.run_id())
+                    .await;
             assert!(second_terminal.required_actions().is_empty());
             assert_eq!(second_terminal.state(), RunState::Succeeded);
             let Some(RunTerminalOutcome::Succeeded {
@@ -1509,9 +1448,9 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
 }
 
 /// Publishes `public.getForecast` as POST, so it needs approval by default.
-async fn publish_approval_provider(fixture: &TestModules, operation: &OperationFixture) {
-    let context = change(operation.user.clone(), 40, '4');
-    let setup = fixture.providers.prepare_openapi_fixture(&context, &operation.workspace_id,
+async fn publish_approval_provider(fixture: &TestModules, tool: &ToolFixture) {
+    let context = change(tool.user.clone(), 40, '4');
+    let setup = fixture.providers.prepare_openapi_fixture(&context, &tool.workspace_id,
         OpenApiDocument::parse(r#"{"openapi":"3.1.0","info":{"title":"Public weather","version":"1"},"servers":[{"url":"https://upstream.example"}],"paths":{"/forecast":{"post":{"operationId":"getForecast","responses":{"200":{"description":"Forecast"}}}}}}"#).unwrap(),
     ).await.unwrap();
     fixture
@@ -1520,7 +1459,7 @@ async fn publish_approval_provider(fixture: &TestModules, operation: &OperationF
             &context,
             WorkspaceProviderPublicationRequest::new(
                 ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
-                operation.workspace_id.clone(),
+                tool.workspace_id.clone(),
                 setup.id().clone(),
                 ProviderNamespace::parse("public").unwrap(),
                 CredentialRoute::None,
@@ -1553,11 +1492,9 @@ async fn the_queue_lists_each_request_most_urgent_first_across_runs() {
         "coral.providers.weather.getForecast",
     )))
     .await;
-    let operation = fixture
-        .user_operation("user:queue-order", "Queue order")
-        .await;
-    fixture.require_approval(&operation).await;
-    let (user, workspace) = (&operation.principal, &operation.workspace_id);
+    let tool = fixture.user_tool("user:queue-order", "Queue order").await;
+    fixture.require_approval(&tool).await;
+    let (user, workspace) = (&tool.principal, &tool.workspace_id);
     let mut runs = Vec::new();
     for timeout in [60_000, 10_000, 30_000_u64] {
         let accepted = fixture

@@ -30,7 +30,7 @@ export const NeedsApproval: Story = {
       'Coral asks before each use.',
     )
     await expect(canvas.getByRole('radio', { name: 'Disabled' })).toHaveAccessibleDescription(
-      'Coral blocks every call. Search results do not show this operation.',
+      'Coral blocks every call. Search results do not show this tool.',
     )
   },
 }

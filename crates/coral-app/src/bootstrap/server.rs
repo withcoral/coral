@@ -777,10 +777,7 @@ pub(crate) async fn start_server(
                 database.clone(),
                 workspaces.clone(),
             ),
-            policies: coral_policy::OperationPolicyModule::new(
-                database.clone(),
-                workspaces.clone(),
-            ),
+            policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
             access_lifecycle: coral_administration::AccessLifecycleModule::new(
                 database.clone(),
                 workspaces.clone(),

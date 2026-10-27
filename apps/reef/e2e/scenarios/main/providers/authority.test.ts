@@ -7,7 +7,7 @@ import { joinAsOwner, managementClients } from '../../../support/management.ts'
 import { openApiDocument } from '../../../support/provider-fixtures.ts'
 import {
   addedProviders,
-  acceptOperations,
+  acceptTools,
   chooseFile,
   confirmConfiguration,
   publishWorkspaceProvider,
@@ -45,7 +45,7 @@ test('A frozen publication request grants no authority after its owner is demote
         await chooseFile(page, 'authority.json', openApiDocument('Authority API', { hello: {} }))
         await page.getByRole('button', { name: 'Read', exact: true }).click()
         await confirmConfiguration(page)
-        await acceptOperations(page)
+        await acceptTools(page)
         await setNamespace(page, 'authority')
         frozenUrl = new URL(
           (await page.locator('form:has(input[value="publish"])').getAttribute('action'))!,
@@ -112,7 +112,7 @@ test('Members get 403 on Owner-only pages; malformed identifiers get 404', async
   const hidden = await publishWorkspaceProvider(
     owner.accessToken,
     hiddenWorkspace.name,
-    openApiDocument('Private provider canary', { privateOperation: {} }),
+    openApiDocument('Private provider canary', { privateTool: {} }),
     'private_provider',
   )
   const ws = workspace.name.split('/').at(-1)
@@ -149,7 +149,7 @@ test('Members get 403 on Owner-only pages; malformed identifiers get 404', async
           `/workspaces/${ws}/providers/${providerId}/update`,
         ])
           expect((await page.request.get(path)).status(), path).toBe(403)
-        // The operations view offers a Member no provider actions.
+        // The tools view offers a Member no provider actions.
         await page.goto(`/workspaces/${ws}/providers/${providerId}`)
         await page.getByRole('rowgroup', { name: 'Team API', exact: true }).waitFor()
         expect(await page.getByRole('button', { name: /^Disable|^Enable/ }).count()).toBe(0)
@@ -195,7 +195,7 @@ test('Members get 403 on Owner-only pages; malformed identifiers get 404', async
           await expect(member.providers.getProvider({ name })).rejects.toMatchObject({
             code: Code.NotFound,
           })
-          await expect(member.providers.listOperations({ parent: name })).rejects.toMatchObject({
+          await expect(member.providers.listTools({ parent: name })).rejects.toMatchObject({
             code: Code.NotFound,
           })
         }

@@ -9,7 +9,7 @@ import {
 import { inspectRunEvents, managementClients } from '../../../support/management.ts'
 import { oauthMcpServer } from '../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   chooseAccount,
   collectDataResponses,
   confirmConfiguration,
@@ -17,7 +17,7 @@ import {
   nextPublication,
   openCustomSource,
   programRunner,
-  signInToReadOperations,
+  signInToReadTools,
   waitForPublication,
 } from '../../../support/providers.ts'
 import { withOwner } from '../../../support/topology.ts'
@@ -48,7 +48,7 @@ export async function separateUserAccount(choice: 'connect' | 'retry', context: 
         provider,
         scope: ProviderAccountScope.USER,
       })
-    await step('Discover operations and choose individual accounts explicitly', async () => {
+    await step('Discover tools and choose individual accounts explicitly', async () => {
       workspace = await createWorkspace(accessToken, `User account ${crypto.randomUUID()}`)
       await page.goto(`/workspaces/${workspace}/providers/new`)
       await openCustomSource(page)
@@ -56,9 +56,9 @@ export async function separateUserAccount(choice: 'connect' | 'retry', context: 
       await page.getByRole('button', { name: 'Connect', exact: true }).click()
       await page.getByLabel('Namespace', { exact: true }).fill('personal')
       await confirmConfiguration(page)
-      await signInToReadOperations(page)
+      await signInToReadTools(page)
       await approveConsent()
-      await acceptOperations(page)
+      await acceptTools(page)
       await chooseAccount(page, 'own')
       grant = (
         await api.setups.getProviderSetup({
@@ -69,14 +69,14 @@ export async function separateUserAccount(choice: 'connect' | 'retry', context: 
       originalGrant = grant
       if (choice === 'retry') {
         await page.getByRole('link', { name: 'Back', exact: true }).click()
-        await page.getByRole('heading', { name: 'Operations', exact: true }).waitFor()
+        await page.getByRole('heading', { name: 'Tools', exact: true }).waitFor()
         await page.getByRole('link', { name: 'Back', exact: true }).click()
         upstream.knobs.discoveryBroken = true
         await page.getByLabel('Client ID', { exact: true }).fill('personal-client')
         await confirmConfiguration(page)
-        await signInToReadOperations(page)
+        await signInToReadTools(page)
         await approveConsent()
-        await page.getByText('Coral cannot read the operations', { exact: true }).waitFor()
+        await page.getByText('Coral cannot read the tools', { exact: true }).waitFor()
         upstream.knobs.discoveryBroken = false
         await page.getByRole('button', { name: 'Try again', exact: true }).click()
         grant = (
@@ -86,7 +86,7 @@ export async function separateUserAccount(choice: 'connect' | 'retry', context: 
         ).provisionalGrantId
         expect(grant).not.toBe(originalGrant)
         const rediscovered = grant
-        await acceptOperations(page)
+        await acceptTools(page)
         // Individual accounts can start with a new sign-in: the outcome names
         // the grant it replaces, and never shares the account it produces.
         // That sign-in answers the question, so it adds the provider.
@@ -126,7 +126,7 @@ export async function separateUserAccount(choice: 'connect' | 'retry', context: 
       'Continue the original MCP invocation through the private Reef OAuth request',
       async () => {
         const run = programRunner(page, target, workspace, { waitMs: 100 })
-        // A first-time User discovers the Operation before connecting; the
+        // A first-time User discovers the Tool before connecting; the
         // Invocation, not discovery, asks for the account.
         for (const found of [await run.search(), await run.search('lookup')]) {
           expect(found.isError).not.toBe(true)

@@ -7,7 +7,7 @@
 //! `run.started` and the Run's worker claim, and gives every launched Run one
 //! Run Owner (ADR 0018): the in-process actor that alone appends the Run
 //! Ledger on every path the Program takes, in chunks, and runs the Run-bound
-//! Operation Invocation and dispatch-fence choreography inside its commits. A
+//! Tool Invocation and dispatch-fence choreography inside its commits. A
 //! Run accepted in a caller's transaction and never launched keeps its claim
 //! until the expired-lease sweep ends it.
 //!
@@ -32,7 +32,7 @@
 //! - [`RunModule::activity_entries`] reads bounded chronological child summaries.
 //!   Exact Event/Invocation anchors retain their identities. Upper owners can join
 //!   authorized read snapshots through transaction facets without Task dependencies.
-//!   Context impact subtracts retained Operation Result UTF-8 bytes from Emission,
+//!   Context impact subtracts retained Tool Result UTF-8 bytes from Emission,
 //!   Log-message, and Final Value bytes. Counts commit with their evidence; summaries
 //!   never load those payloads. Final Value bytes appear on the terminal child row.
 //!   Running or indeterminate work has no complete total. This estimates payload
@@ -56,7 +56,7 @@
 //! - [`approval::ApprovalModule`] exposes human-only exact Invocation decisions;
 //!   request validity and lifecycle evidence stay behind that separate Interface.
 //!
-//! The private Run-bound `OperationInvoker` is the sole Program-to-host Operation
+//! The private Run-bound `ToolInvoker` is the sole Program-to-host Tool
 //! seam. It retains exact Run, Workspace, Principal, claim, deadline, and
 //! limit context; callers do not coordinate Invocation persistence or dispatch.
 //!
@@ -89,7 +89,7 @@
 //! it, decides each Invocation in memory against those facts, the Run row as
 //! the chunk read it and the approval its gate recorded, at one clock sample after
 //! the last read, and records every permitted dispatch start in the same
-//! commit; it reads the retained Operation by its Generation id and never
+//! commit; it reads the retained Tool by its Generation id and never
 //! the Account's material. Decryption and the upstream send run outside
 //! every lock, after the pre-send check; a stop that reaches the owner first
 //! ends a fenced Invocation as `run_terminated` instead of sending, and a
@@ -184,7 +184,7 @@ use coral_workspace::{
     AuthenticatedPrincipal, WorkspaceAction, WorkspaceId, WorkspaceModule, WorkspaceRole,
 };
 
-pub use coral_v8::{IsolateLimits, ProgramError, ProgramOperationError};
+pub use coral_v8::{IsolateLimits, ProgramError, ProgramToolError};
 pub use coral_value::ValueLimits;
 use engine::{Clock, ProgramEngine, SystemClock, V8ProgramEngine};
 pub use error::{CoralFailure, Error, Rejection};
@@ -200,8 +200,8 @@ pub use required_actions::{
     RequiredActionRequest, RequiredActions, RequiredActor,
 };
 pub use summary::{
-    ActivitySummary, ActorContext, ApprovalDecisions, CallOutcomes, MAX_SUMMARY_DAYS,
-    OperationCalls, StoppedOperation,
+    ActivitySummary, ActorContext, ApprovalDecisions, CallOutcomes, MAX_SUMMARY_DAYS, StoppedTool,
+    ToolCalls,
 };
 pub use types::{
     AppliedOutputCap, CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, COMBINED_TYPESCRIPT_MAX_BYTES,
@@ -234,7 +234,7 @@ impl TestObservers {
 pub struct RunModule {
     accounts: Option<coral_provider::account::AccountModule>,
     providers: coral_provider::ProviderModule,
-    policies: coral_policy::OperationPolicyModule,
+    policies: coral_policy::ToolPolicyModule,
     provider_publisher: Option<Arc<dyn coral_provider::WorkspaceProviderPublisher>>,
     human_interface: Option<HumanInterfaceUrl>,
     database: Arc<Database>,
@@ -264,7 +264,7 @@ pub struct RunModule {
 
 impl RunModule {
     /// Builds the runtime with the deployment's outbound policy and runtime limits.
-    /// Built-in Operations prepare Setups through `providers`, the bootstrap's
+    /// Built-in Tools prepare Setups through `providers`, the bootstrap's
     /// Provider Module. `instance` is the Coral Instance the process runs as,
     /// which every Run it claims records; `inbox` is where outside Run
     /// Requests wait for their Run Owner.
@@ -281,10 +281,7 @@ impl RunModule {
     ) -> Result<Self, Error> {
         Ok(Self {
             providers,
-            policies: coral_policy::OperationPolicyModule::new(
-                database.clone(),
-                workspaces.clone(),
-            ),
+            policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
             provider_publisher: None,
             human_interface: None,
             database,
@@ -323,10 +320,7 @@ impl RunModule {
         let inbox = RunInbox::table(database.clone());
         Self {
             providers,
-            policies: coral_policy::OperationPolicyModule::new(
-                database.clone(),
-                workspaces.clone(),
-            ),
+            policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
             provider_publisher: None,
             human_interface: None,
             database,
@@ -360,7 +354,7 @@ impl RunModule {
 
     /// Lets `coral.workspace.addProvider` publish a Provider that needs nobody to
     /// sign in, through the workflow Reef publishes with. Without it, such a
-    /// call fails with `operation_unavailable`.
+    /// call fails with `tool_unavailable`.
     #[must_use]
     pub fn with_provider_publisher(
         mut self,
@@ -376,9 +370,9 @@ impl RunModule {
         &self.instance
     }
 
-    /// Names the Reef origin that built-in Operation Results link to. Only the
+    /// Names the Reef origin that built-in Tool Results link to. Only the
     /// runtime that launches Programs needs it; without it, a built-in
-    /// Operation fails as `operation_unavailable`.
+    /// Tool fails as `tool_unavailable`.
     #[must_use]
     pub fn with_human_interface(mut self, human_interface: HumanInterfaceUrl) -> Self {
         self.human_interface = Some(human_interface);

@@ -7,26 +7,23 @@ import {
   SearchIndexFailureReason,
   SearchIndexState,
   type CredentialRoute,
-  type OperationHints,
+  type ToolHints,
   type Provider,
-  type ProviderOperation,
+  type ProviderTool,
 } from '@/generated/coral/management/v1/provider_pb'
-import {
-  OperationAccessState,
-  type OperationPolicy,
-} from '@/generated/coral/management/v1/policy_pb'
+import { ToolAccessState, type ToolPolicy } from '@/generated/coral/management/v1/policy_pb'
 import type {
   AccountChoice,
   AccountLabel,
-  OperationHintsView,
-  OperationView,
+  ToolHintsView,
+  ToolView,
   ProviderSettingsView,
   ProviderView,
   SearchIndexView,
 } from '@/views/providers/types'
 import type { PersonalAccountState } from '@/views/accounts/types'
 import { accountLabels } from '@/views/providers/account-labels'
-import { operationCallPath } from './call-root'
+import { toolCallPath } from './call-root'
 import { privateHeaders, type ManagementApi } from './management.server'
 import { OPENAPI_DOCUMENT_SIZE_LABEL } from './provider-input-limits'
 
@@ -58,19 +55,19 @@ export async function listAllProviders(api: Pick<ManagementApi, 'providers'>, pa
   } while (pageToken)
   return providers
 }
-export async function listAllOperations(api: Pick<ManagementApi, 'providers'>, parent: string) {
-  const operations: ProviderOperation[] = []
+export async function listAllTools(api: Pick<ManagementApi, 'providers'>, parent: string) {
+  const tools: ProviderTool[] = []
   let pageToken = ''
   do {
-    const page = await api.providers.listOperations({
+    const page = await api.providers.listTools({
       parent,
       pageSize: 100,
       pageToken,
     })
-    operations.push(...page.operations)
+    tools.push(...page.tools)
     pageToken = page.nextPageToken
   } while (pageToken)
-  return operations
+  return tools
 }
 export function accountLabel(route: CredentialRoute | undefined): AccountLabel {
   switch (route?.kind) {
@@ -119,7 +116,7 @@ const blockerLabels: Partial<Record<ProviderBlocker, string>> = {
   [ProviderBlocker.CALLER_ACCOUNT_REQUIRED]: 'Connect an account for this agent',
   [ProviderBlocker.SHARED_ACCOUNT_REQUIRED]: 'Connect the shared account',
   [ProviderBlocker.ACCOUNT_SETTING_INCOMPATIBLE]: 'Change the account setting',
-  [ProviderBlocker.NO_OPERATIONS_READY]: 'No operations ready',
+  [ProviderBlocker.NO_TOOLS_READY]: 'No tools ready',
 }
 export function blockerLabel(blocker: ProviderBlocker) {
   const label = blockerLabels[blocker]
@@ -145,8 +142,8 @@ export function personalAccountAction(
 }
 
 /** Only the hints the provider declared; Coral never assumes a default. */
-export function operationHints(hints: OperationHints | undefined): OperationHintsView {
-  const view: OperationHintsView = {}
+export function toolHints(hints: ToolHints | undefined): ToolHintsView {
+  const view: ToolHintsView = {}
   if (hints?.readOnly !== undefined) view.readOnly = hints.readOnly
   if (hints?.destructive !== undefined) view.destructive = hints.destructive
   if (hints?.idempotent !== undefined) view.idempotent = hints.idempotent
@@ -154,13 +151,13 @@ export function operationHints(hints: OperationHints | undefined): OperationHint
   return view
 }
 
-function accessState(value: OperationAccessState): OperationView['policy'] {
+function accessState(value: ToolAccessState): ToolView['policy'] {
   switch (value) {
-    case OperationAccessState.ENABLED:
+    case ToolAccessState.ENABLED:
       return 'enabled'
-    case OperationAccessState.APPROVAL_REQUIRED:
+    case ToolAccessState.APPROVAL_REQUIRED:
       return 'approval_required'
-    case OperationAccessState.DISABLED:
+    case ToolAccessState.DISABLED:
       return 'disabled'
     default:
       return 'approval_required'
@@ -171,44 +168,38 @@ function accessState(value: OperationAccessState): OperationView['policy'] {
  * Groups by the first tag, else the dotted prefix; a flat list otherwise. The
  * setup review groups its own preview by the same rule, so it lives here.
  */
-export function operationGroup(o: { tags: readonly string[]; relativePath: string }) {
+export function toolGroup(o: { tags: readonly string[]; relativePath: string }) {
   if (o.tags[0]) return o.tags[0]
   const dot = o.relativePath.lastIndexOf('.')
   return dot > 0 ? o.relativePath.slice(0, dot) : ''
 }
 
-export function operationView(
-  o: ProviderOperation,
-  options: { callRoot: string; basePath: string; policy: OperationPolicy },
-): OperationView {
-  const hints = operationHints(o.hints)
+export function toolView(
+  o: ProviderTool,
+  options: { callRoot: string; basePath: string; policy: ToolPolicy },
+): ToolView {
+  const hints = toolHints(o.hints)
   return {
     name: o.name,
     relativePath: o.relativePath,
-    callPath: options.callRoot
-      ? operationCallPath(options.callRoot, o.relativePath)
-      : o.relativePath,
+    callPath: options.callRoot ? toolCallPath(options.callRoot, o.relativePath) : o.relativePath,
     summary: o.summary,
     description: o.description,
     hints,
     policy: accessState(options.policy.accessState),
     available: o.available,
     reasons: o.diagnostics.map((d) => d.message),
-    group: operationGroup(o),
-    path: `${options.basePath}/ops/${encodeURIComponent(o.relativePath)}`,
+    group: toolGroup(o),
+    path: `${options.basePath}/tools/${encodeURIComponent(o.relativePath)}`,
   }
 }
 
-async function operationPolicies(
-  api: ManagementApi,
-  parent: string,
-  operations: readonly ProviderOperation[],
-) {
-  if (operations.length === 0) return []
+async function toolPolicies(api: ManagementApi, parent: string, tools: readonly ProviderTool[]) {
+  if (tools.length === 0) return []
   return (
-    await api.policies.getOperationPolicies({
+    await api.policies.getToolPolicies({
       parent,
-      operations: operations.map((o) => o.name),
+      tools: tools.map((o) => o.name),
     })
   ).policies
 }
@@ -226,15 +217,15 @@ function enabled(state: ProviderState) {
 
 // Each kind of indexing error, never its message, which can hold internal detail.
 const searchIndexFailureReasons: Partial<Record<SearchIndexFailureReason, string>> = {
-  [SearchIndexFailureReason.INVALID_ENTRY]: 'One of the operations cannot become a search entry.',
+  [SearchIndexFailureReason.INVALID_ENTRY]: 'One of the tools cannot become a search entry.',
   [SearchIndexFailureReason.TIMED_OUT]: 'Indexing took too long.',
   [SearchIndexFailureReason.CLOCK]: 'The server clock is wrong.',
   [SearchIndexFailureReason.CORRUPT]: 'The search index is damaged.',
-  [SearchIndexFailureReason.PROVIDER]: "Search cannot read the provider's operations.",
+  [SearchIndexFailureReason.PROVIDER]: "Search cannot read the provider's tools.",
   [SearchIndexFailureReason.DATABASE]: 'Search cannot use its database.',
 }
 
-/** Whether search can find the provider's operations; null when it can, or Coral sent no state. */
+/** Whether search can find the provider's tools; null when it can, or Coral sent no state. */
 export function searchIndexView(provider: Provider): SearchIndexView | null {
   switch (provider.searchIndexState) {
     case SearchIndexState.PENDING:
@@ -258,28 +249,28 @@ export async function providerView(
   personalAccounts: ReadonlyMap<string, PersonalAccountState>,
 ): Promise<ProviderView> {
   const path = providerPath(workspacePath, provider.name)
-  const operations: ProviderOperation[] = []
-  const policies = new Map<string, OperationPolicy>()
+  const tools: ProviderTool[] = []
+  const policies = new Map<string, ToolPolicy>()
   const readPage = (pageToken: string) =>
-    api.providers.listOperations({ parent: provider.name, pageSize: 100, pageToken })
+    api.providers.listTools({ parent: provider.name, pageSize: 100, pageToken })
   let page = await readPage('')
   while (page) {
     // Keep at most one policy read and one catalog read in flight per provider.
     // Both promises are observed together, so either failure rejects the load.
     const [decisions, next] = await Promise.all([
-      operationPolicies(api, provider.name, page.operations),
+      toolPolicies(api, provider.name, page.tools),
       page.nextPageToken ? readPage(page.nextPageToken) : undefined,
     ])
-    operations.push(...page.operations)
-    for (const policy of decisions) policies.set(policy.operation, policy)
+    tools.push(...page.tools)
+    for (const policy of decisions) policies.set(policy.tool, policy)
     if (!next) break
     page = next
   }
-  const ops = operations.map((o) => {
-    // Coral decides every requested operation, so a gap is a broken response.
-    const policy = policies.get(o.name)
-    if (!policy) throw new Error(`Coral returned no policy for ${o.name}`)
-    return operationView(o, { callRoot: provider.callRoot, basePath: path, policy })
+  const toolViews = tools.map((tool) => {
+    // Coral decides every requested tool, so a gap is a broken response.
+    const policy = policies.get(tool.name)
+    if (!policy) throw new Error(`Coral returned no policy for ${tool.name}`)
+    return toolView(tool, { callRoot: provider.callRoot, basePath: path, policy })
   })
   const id = provider.name.split('/').at(-1)!
   const isEnabled = enabled(provider.state)
@@ -292,12 +283,12 @@ export async function providerView(
     blockers: provider.blockers.map(blockerLabel),
     personalAccountAction: personalAccountAction(provider, personalAccounts),
     searchIndex: searchIndexView(provider),
-    readyCount: ops.filter((o) => o.available).length,
-    totalCount: ops.length,
+    readyCount: toolViews.filter((tool) => tool.available).length,
+    totalCount: toolViews.length,
     etag: provider.etag,
     path,
     enabled: isEnabled,
-    operations: ops,
+    tools: toolViews,
   }
 }
 
@@ -326,7 +317,7 @@ export function providerSettingsView(
     etag: provider.etag,
     path: providerPath(workspacePath, provider.name),
     enabled: enabled(provider.state),
-    operationsReady: !provider.blockers.includes(ProviderBlocker.NO_OPERATIONS_READY),
+    toolsReady: !provider.blockers.includes(ProviderBlocker.NO_TOOLS_READY),
     account,
     // Blockers report the shared account, but not a User's own account.
     connection:
@@ -384,7 +375,7 @@ const statuses: Partial<Record<Code, number>> = {
   [Code.Aborted]: 409,
 }
 /** Maps a failed Provider mutation to one safe sentence and a status the form can show. */
-export function providerFailure(error: unknown, operation = 'Coral could not apply this change. ') {
+export function providerFailure(error: unknown, tool = 'Coral could not apply this change. ') {
   if (error instanceof Response) throw error
   if (!(error instanceof ConnectError)) console.error('Unexpected failure in a Reef action:', error)
   const status = error instanceof ConnectError ? (statuses[error.code] ?? 503) : 503
@@ -405,7 +396,7 @@ export function providerFailure(error: unknown, operation = 'Coral could not app
           : 'Check the form fields. Correct any errors before you try again.')
   return data(
     {
-      error: reason ? message : `${operation}${message}`,
+      error: reason ? message : `${tool}${message}`,
       credential: null,
     },
     { status, headers: privateHeaders },

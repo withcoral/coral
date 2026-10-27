@@ -78,13 +78,13 @@ impl TokenEndpoint {
 
 pub(crate) async fn oauth_account(
     fixture: &TestModules,
-    operation: &OperationFixture,
+    tool: &ToolFixture,
     server: &MockServer,
     token_url: &str,
 ) -> (tempfile::TempDir, AccountModule) {
-    let (directory, accounts) = configure_user_caller(fixture, operation, &server.uri()).await;
-    let context = change(operation.user.clone(), 40, '4');
-    let workspace = &operation.workspace_id;
+    let (directory, accounts) = configure_user_caller(fixture, tool, &server.uri()).await;
+    let context = change(tool.user.clone(), 40, '4');
+    let workspace = &tool.workspace_id;
     let document = serde_json::json!({
         "openapi":"3.1.0", "info":{"title":"Renewal","version":"1"},
         "servers":[{"url":server.uri()}], "security":[{"oauth":["read"]}],
@@ -104,7 +104,7 @@ pub(crate) async fn oauth_account(
         .unwrap();
     let review = fixture
         .providers
-        .review_setup_configuration(&operation.user, workspace, setup.id())
+        .review_setup_configuration(&tool.user, workspace, setup.id())
         .await
         .unwrap();
     let review = accounts
@@ -131,7 +131,7 @@ pub(crate) async fn oauth_account(
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                 workspace.clone(),
-                operation.provider_id.clone(),
+                tool.provider_id.clone(),
                 setup.id().clone(),
                 review.revision,
             )
@@ -143,7 +143,7 @@ pub(crate) async fn oauth_account(
         .start_user_authorization(
             &context,
             workspace,
-            &operation.provider_id,
+            &tool.provider_id,
             ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
             Some(
                 OAuthClient::new(

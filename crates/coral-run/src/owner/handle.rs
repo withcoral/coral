@@ -171,7 +171,7 @@ pub(crate) enum Message {
     /// A fenced Invocation gave back its slot under the Fan-out Limit
     /// without an upstream result: the fence denied it, another writer ended
     /// it, it stopped to refresh a token, its dispatch failed before a result
-    /// was recorded (the credentials, the send, a Built-in Operation), or the
+    /// was recorded (the credentials, the send, a Built-in Tool), or the
     /// Run is ending. An Invocation that does record a result frees its slot
     /// through [`Self::InvocationResult`] instead.
     DispatchEnded,

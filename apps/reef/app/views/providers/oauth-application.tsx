@@ -260,7 +260,7 @@ export function hostOf(url = '') {
   }
 }
 
-/** Where Coral sends a credential: each host the operations call, or the MCP server. */
+/** Where Coral sends a credential: each host the tools call, or the MCP server. */
 export function credentialHosts(setup: SetupView) {
   return [
     ...new Set(

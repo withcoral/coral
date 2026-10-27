@@ -2,7 +2,7 @@ use coral_workspace::WorkspaceId;
 use std::fmt;
 
 use coral_catalog::{
-    CatalogSearchTarget, MaterializedOperation, ProviderGenerationId, ProviderSetupInputDigest,
+    CatalogSearchTarget, MaterializedTool, ProviderGenerationId, ProviderSetupInputDigest,
     ProviderSetupInputKind,
 };
 use coral_telemetry::TraceId;
@@ -440,21 +440,21 @@ pub(crate) fn check_etag(expected: Option<&str>, current: &str) -> Result<(), Er
 
 /// One active Provider catalog and its execution configuration before ranking.
 ///
-/// Complete Operation descriptions, Execution Bindings, and credential evidence
+/// Complete Tool descriptions, Execution Bindings, and credential evidence
 /// are omitted. Universal Search hydrates descriptions only for ranked page
 /// candidates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderSearchCatalog {
     active: crate::ActiveProvider,
-    operations: Vec<CatalogSearchTarget>,
+    tools: Vec<CatalogSearchTarget>,
 }
 
 impl ProviderSearchCatalog {
     pub(crate) const fn new(
         active: crate::ActiveProvider,
-        operations: Vec<CatalogSearchTarget>,
+        tools: Vec<CatalogSearchTarget>,
     ) -> Self {
-        Self { active, operations }
+        Self { active, tools }
     }
 
     /// Returns the Provider with its active Generation, as the cheap
@@ -482,51 +482,51 @@ impl ProviderSearchCatalog {
         self.active.provider().access()
     }
 
-    /// Returns minimal structurally available Operation targets.
+    /// Returns minimal structurally available Tool targets.
     #[must_use]
-    pub fn operations(&self) -> &[CatalogSearchTarget] {
-        &self.operations
+    pub fn tools(&self) -> &[CatalogSearchTarget] {
+        &self.tools
     }
 }
 
-/// Secret-free current Operation material supplied to Universal Search.
+/// Secret-free current Tool material supplied to Universal Search.
 ///
 /// This narrow projection carries the exact policy address and public authoring
 /// fields, but no Provider Generation, Credential Route, Execution Binding,
 /// schema authority, account metadata, or credential evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OperationAuthoringMaterial {
+pub struct ToolAuthoringMaterial {
     provider_call_root: ProviderCallRoot,
     provider_id: ProviderId,
     provider_display_name: String,
-    operation_key: coral_catalog::OperationKey,
+    tool_key: coral_catalog::ToolKey,
     relative_path: String,
     summary: String,
-    presentation: coral_catalog::OperationPresentation,
-    hints: coral_catalog::OperationHints,
+    presentation: coral_catalog::ToolPresentation,
+    hints: coral_catalog::ToolHints,
     http_method: Option<coral_catalog::HttpMethod>,
     typescript_declaration: String,
 }
 
-impl OperationAuthoringMaterial {
-    /// `typescript_declaration` is the Operation's complete declaration, from
+impl ToolAuthoringMaterial {
+    /// `typescript_declaration` is the Tool's complete declaration, from
     /// [`coral_catalog::authoring_declaration_in_transaction`].
     pub(crate) fn new(
         provider_access: &ProviderAccess,
         provider: &Provider,
-        operation: &MaterializedOperation,
+        tool: &MaterializedTool,
         typescript_declaration: String,
     ) -> Self {
         Self {
             provider_call_root: provider_access.call_root().clone(),
             provider_id: provider.id().clone(),
             provider_display_name: provider.display_name().to_string(),
-            operation_key: operation.key().clone(),
-            relative_path: operation.relative_path().to_string(),
-            summary: operation.summary().to_string(),
-            presentation: operation.presentation().clone(),
-            hints: operation.hints(),
-            http_method: operation.http_method(),
+            tool_key: tool.key().clone(),
+            relative_path: tool.relative_path().to_string(),
+            summary: tool.summary().to_string(),
+            presentation: tool.presentation().clone(),
+            hints: tool.hints(),
+            http_method: tool.http_method(),
             typescript_declaration,
         }
     }
@@ -549,13 +549,13 @@ impl OperationAuthoringMaterial {
         &self.provider_display_name
     }
 
-    /// Returns the current Provider-scoped Operation Key.
+    /// Returns the current Provider-scoped Tool Key.
     #[must_use]
-    pub const fn operation_key(&self) -> &coral_catalog::OperationKey {
-        &self.operation_key
+    pub const fn tool_key(&self) -> &coral_catalog::ToolKey {
+        &self.tool_key
     }
 
-    /// Returns the collision-free Operation-relative JavaScript path.
+    /// Returns the collision-free Tool-relative JavaScript path.
     #[must_use]
     pub fn relative_path(&self) -> &str {
         &self.relative_path
@@ -569,17 +569,17 @@ impl OperationAuthoringMaterial {
 
     /// Returns complete safe Provider-authored presentation metadata.
     #[must_use]
-    pub const fn presentation(&self) -> &coral_catalog::OperationPresentation {
+    pub const fn presentation(&self) -> &coral_catalog::ToolPresentation {
         &self.presentation
     }
 
     /// Returns the declared effect hints.
     #[must_use]
-    pub const fn hints(&self) -> coral_catalog::OperationHints {
+    pub const fn hints(&self) -> coral_catalog::ToolHints {
         self.hints
     }
 
-    /// Returns the method of an HTTP Operation; `None` for other protocols.
+    /// Returns the method of an HTTP Tool; `None` for other protocols.
     #[must_use]
     pub const fn http_method(&self) -> Option<coral_catalog::HttpMethod> {
         self.http_method
@@ -594,35 +594,35 @@ impl OperationAuthoringMaterial {
 
 /// Result of rechecking exact retained Provider dispatch evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InvocationOperationVerification {
+pub enum InvocationToolVerification {
     /// Every retained authority-bearing fact is still current.
     Current,
     /// The exact Provider still exists but its route version changed.
     CredentialRouteChanged,
-    /// Provider, Generation, or Operation authority was lost.
+    /// Provider, Generation, or Tool authority was lost.
     AuthorityLost,
 }
 
-/// Exact secret-free Operation evidence retained by Invocation admission.
+/// Exact secret-free Tool evidence retained by Invocation admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedInvocationOperation {
+pub struct ResolvedInvocationTool {
     provider_access: ProviderAccess,
     provider_generation_id: ProviderGenerationId,
-    operation: MaterializedOperation,
+    tool: MaterializedTool,
     schema_graph: coral_catalog::SchemaGraph,
 }
 
-impl ResolvedInvocationOperation {
+impl ResolvedInvocationTool {
     pub(crate) const fn new(
         provider_access: ProviderAccess,
         provider_generation_id: ProviderGenerationId,
-        operation: MaterializedOperation,
+        tool: MaterializedTool,
         schema_graph: coral_catalog::SchemaGraph,
     ) -> Self {
         Self {
             provider_access,
             provider_generation_id,
-            operation,
+            tool,
             schema_graph,
         }
     }
@@ -639,13 +639,13 @@ impl ResolvedInvocationOperation {
         &self.provider_generation_id
     }
 
-    /// Returns the immutable secret-free Operation definition.
+    /// Returns the immutable secret-free Tool definition.
     #[must_use]
-    pub const fn operation(&self) -> &MaterializedOperation {
-        &self.operation
+    pub const fn tool(&self) -> &MaterializedTool {
+        &self.tool
     }
 
-    /// Returns the authoritative schema graph selected with the Operation.
+    /// Returns the authoritative schema graph selected with the Tool.
     #[must_use]
     pub const fn schema_graph(&self) -> &coral_catalog::SchemaGraph {
         &self.schema_graph

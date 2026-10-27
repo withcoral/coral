@@ -7,7 +7,7 @@ import { withBrowserSession } from '../../../../support/browser-session.ts'
 import { listen, oauthApiServer } from '../../../../support/provider-fixtures.ts'
 import { startStack } from '../../../../support/stack.ts'
 import {
-  acceptOperations,
+  acceptTools,
   chooseAccount,
   chooseFile,
   confirmConfiguration,
@@ -75,7 +75,7 @@ test('Consent uses private HTTP independently of HTTPS-only server requests and 
         await page.getByLabel('Display name', { exact: true }).fill(`Consent ${++attempts}`)
         await page.getByLabel('Namespace', { exact: true }).fill(`consent_${attempts}`)
         await confirmConfiguration(page)
-        await acceptOperations(page)
+        await acceptTools(page)
         await chooseAccount(page, 'shared')
         const resume = page.url()
         await signInAndShareAccount(page)

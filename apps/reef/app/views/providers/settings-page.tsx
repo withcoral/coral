@@ -41,7 +41,7 @@ export function ProviderSettingsPage({
 }: ProviderSettingsPageProps) {
   const owner = w.effectiveRole === 'owner'
   const active = w.state === 'active'
-  // Coral manages the Built-in Provider: owners read it and set its operations' policy only.
+  // Coral manages the Built-in Provider: owners read it and set its tools' policy only.
   const canChange = owner && active && !provider.builtin
   return (
     <PageLayout
@@ -122,9 +122,9 @@ function ProviderNameHeading({
           Disabled
         </Pill>
       )}
-      {!provider.operationsReady && (
-        <Pill color="amber" data-provider-state="no-operations">
-          No operations ready
+      {!provider.toolsReady && (
+        <Pill color="amber" data-provider-state="no-tools">
+          No tools ready
         </Pill>
       )}
     </NameHeading>
@@ -330,8 +330,7 @@ function Removal({ provider, form }: { provider: ProviderSettingsView; form: For
             <ul className={styles.bulletList}>
               <Typography.Body as="li">{provider.displayName}</Typography.Body>
               <Typography.Body as="li">
-                Every operation under{' '}
-                <Typography.CodeInline>{provider.callRoot}</Typography.CodeInline>
+                Every tool under <Typography.CodeInline>{provider.callRoot}</Typography.CodeInline>
               </Typography.Body>
               <Typography.Body as="li">Every connected account</Typography.Body>
             </ul>

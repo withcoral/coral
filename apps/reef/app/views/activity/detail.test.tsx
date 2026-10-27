@@ -155,7 +155,7 @@ it.each([true, false])(
       dispatchedAt: null,
       waitingNanos: '0',
       provider: 'workspaces/finance/providers/mail',
-      operation: 'send',
+      tool: 'send',
       callPath: 'coral.providers.mail.send',
     }
     const html = markup({
@@ -213,7 +213,7 @@ it.each([true, false])(
       dispatchedAt: '2026-09-22T09:00:06Z',
       waitingNanos: '1000000',
       provider: `${workspace}/providers/mail`,
-      operation: 'send',
+      tool: 'send',
       callPath: 'coral.providers.mail.send',
     }
     const container = document.createElement('div')
@@ -273,9 +273,9 @@ it.each([true, false])(
   },
 )
 
-// Catches: an operation badge that shows Coral's internal outcome name, or that calls a response
+// Catches: a tool badge that shows Coral's internal outcome name, or that calls a response
 // a success or failure that its retained evidence does not prove. Coral classes a 2xx against
-// the statuses the Operation declares, which Reef never receives, so nothing here proves success.
+// the statuses the Tool declares, which Reef never receives, so nothing here proves success.
 it.each([
   [
     'an HTTP status outside 2xx',
@@ -307,14 +307,14 @@ it.each([
   expect(within(container).getByRole('region', { name: 'Provider response' })).toBeTruthy()
 })
 
-// Catches: an operation badge that shows Coral's outcome names instead of words you read. The
+// Catches: a tool badge that shows Coral's outcome names instead of words you read. The
 // card under the header keeps the exact distinction.
 it.each([
   [
     'coral_failure',
-    { kind: 'coral_failure', code: 'operation_disabled', message: 'Disabled.' },
+    { kind: 'coral_failure', code: 'tool_disabled', message: 'Disabled.' },
     'failed',
-    'Coral failure: operation_disabled',
+    'Coral failure: tool_disabled',
   ],
   [
     'run_terminated',
@@ -372,11 +372,11 @@ it.each([
           name: 'TypeError',
           message: 'exact-error',
           frames: [{ source: 'program.ts', line: 3, column: 7 }],
-          operationCode: 'upstream_rejected',
-          operationTraceId: 'exact-trace',
-          operationStatus: 0,
-          operationBody: '',
-          operationBodyTruncated: false,
+          toolCode: 'upstream_rejected',
+          toolTraceId: 'exact-trace',
+          toolStatus: 0,
+          toolBody: '',
+          toolBodyTruncated: false,
           cause: null,
           errors: [],
           truncated: false,
@@ -422,7 +422,7 @@ it('keeps the supplied Run evidence and source beside a selected call, apart fro
     dispatchedAt: failed.startedAt,
     waitingNanos: '0',
     provider: `${workspace}/providers/mail`,
-    operation: 'send',
+    tool: 'send',
     callPath: 'coral.providers.mail.send',
   }
   const submission = `${workspace}/tasks/one/interactions/exec`
@@ -513,7 +513,7 @@ it.each([
       startedAt: '2026-09-22T09:00:00Z',
       endedAt: outcome === 'open' ? '' : '2026-09-22T09:05:00Z',
     }
-    const feedback = 'No export operation.\nSearch returned nothing.'
+    const feedback = 'No export tool.\nSearch returned nothing.'
     const container = document.createElement('div')
     container.innerHTML = markup({
       ...pendingPage,
@@ -684,7 +684,7 @@ const interaction: InteractionRow = {
   agent: '',
   name: `${workspace}/tasks/one/interactions/one`,
   tool: 'search',
-  intent: 'Find mail operations',
+  intent: 'Find mail tools',
   outcome: 'succeeded',
   startedAt: run.startedAt,
   completedAt: run.startedAt,
@@ -723,7 +723,7 @@ const invocationPanel = (overrides: Partial<InvocationRow>): InvocationDetail =>
     dispatchedAt: run.startedAt,
     waitingNanos: '0',
     provider: `${workspace}/providers/mail`,
-    operation: 'send',
+    tool: 'send',
     callPath: 'coral.providers.mail.send',
     ...overrides,
   },
@@ -754,13 +754,8 @@ it.each<[string, Detail, string, string]>([
     'Program run',
     'program run',
   ],
-  [
-    'an operation call by its call path',
-    invocationPanel({}),
-    'coral.providers.mail.send',
-    'operation',
-  ],
-  ['an operation call without a call path', invocationPanel({ callPath: '' }), 'send', 'operation'],
+  ['a tool call by its call path', invocationPanel({}), 'coral.providers.mail.send', 'tool'],
+  ['a tool call without a call path', invocationPanel({ callPath: '' }), 'send', 'tool'],
   ['a search by its intent', tool({}, searched('mail send')), interaction.intent, 'search'],
   [
     'a search without an intent, by its query',
@@ -858,53 +853,53 @@ it.each<[string, Detail, string, string]>([
     'run event',
   ],
   [
-    'an operation call start',
+    'a tool call start',
     event({ ...at, kind: 'invocation.started', invocation: `${workspace}/invocations/one` }),
-    'Operation call started',
+    'Tool call started',
     'run event',
   ],
   [
-    'an operation call that got a response, in plain words',
+    'a tool call that got a response, in plain words',
     event({
       ...at,
       kind: 'invocation.ended',
       invocation: `${workspace}/invocations/one`,
       outcome: 'upstream_outcome',
     }),
-    'Operation call ended: completed',
+    'Tool call ended: completed',
     'run event',
   ],
   [
-    'an operation call the Run ended, in plain words',
+    'a tool call the Run ended, in plain words',
     event({
       ...at,
       kind: 'invocation.ended',
       invocation: `${workspace}/invocations/one`,
       outcome: 'run_terminated',
     }),
-    'Operation call ended: run ended',
+    'Tool call ended: run ended',
     'run event',
   ],
   [
-    'an operation call with no complete result, in plain words',
+    'a tool call with no complete result, in plain words',
     event({
       ...at,
       kind: 'invocation.ended',
       invocation: `${workspace}/invocations/one`,
       outcome: 'indeterminate',
     }),
-    'Operation call ended: result unknown',
+    'Tool call ended: result unknown',
     'run event',
   ],
   [
-    'an operation call end by its outcome',
+    'a tool call end by its outcome',
     event({
       ...at,
       kind: 'invocation.ended',
       invocation: `${workspace}/invocations/one`,
       outcome: 'coral_failure',
     }),
-    'Operation call ended: failed',
+    'Tool call ended: failed',
     'run event',
   ],
   ['an unknown event', event({ ...at, kind: 'unknown' }), 'Unknown run event', 'run event'],
@@ -1065,7 +1060,7 @@ it('leads a search with what it asked, then its intent and timing, and only its 
   expect(container.textContent).not.toContain('More results were available')
 })
 
-/** A stored trimmed search page with `count` operation hits. */
+/** A stored trimmed search page with `count` tool hits. */
 const trimmedPage = (count: number, more: boolean, statuses?: unknown[]) =>
   JSON.stringify({
     hits: Array.from({ length: count }, (_, index) => ({
@@ -1076,8 +1071,8 @@ const trimmedPage = (count: number, more: boolean, statuses?: unknown[]) =>
     has_more: more,
     ...(statuses && { retriever_statuses: statuses }),
   })
-const failedOperations = {
-  retriever: 'operation',
+const failedTools = {
+  retriever: 'provider_tool',
   state: 'error',
   coverage: {
     eligible_units: 3,
@@ -1117,7 +1112,7 @@ it.each<[string, string, typeof searchContext | undefined, string, string[]]>([
   ],
   [
     'an empty page whose search failed',
-    trimmedPage(0, false, [failedOperations]),
+    trimmedPage(0, false, [failedTools]),
     undefined,
     'Results (0)',
     ['could not search', 'Results are missing.'],
@@ -1156,7 +1151,7 @@ it.each<[string, string, typeof searchContext | undefined, string, string[]]>([
 
 /** Today's catalog page for each result, except the second, which is gone. */
 const catalogHref = (index: number) =>
-  index === 1 ? null : `/${workspace}/providers/github/ops/pulls.${index}`
+  index === 1 ? null : `/${workspace}/providers/github/tools/pulls.${index}`
 it("links a result to today's catalog with a labelled icon beside its call path, or not at all", () => {
   const container = searchPanel(stored.complete, catalogHref)
   const hits = container.querySelectorAll('[aria-label="Results in rank order"] > li')
@@ -1169,18 +1164,18 @@ it("links a result to today's catalog with a labelled icon beside its call path,
       return
     }
     expect(link).toHaveAttribute('href', catalogHref(index))
-    expect(link).toHaveAttribute('aria-label', `Open current operation ${path}`)
+    expect(link).toHaveAttribute('aria-label', `Open current tool ${path}`)
     expect(link).not.toHaveAttribute('target')
     // The icon sits beside the exact call path, not in a text line of its own.
     expect(link!.parentElement!.textContent).toBe(path)
     expect(link!.querySelector('svg')).not.toBeNull()
   })
-  expect(container.textContent).not.toContain('Open current operation')
+  expect(container.textContent).not.toContain('Open current tool')
 })
 
 it.each([
-  ['operations', stored.complete],
-  ['operations and saved functions', stored.mixed],
+  ['tools', stored.complete],
+  ['tools and saved functions', stored.mixed],
 ])('shows each %s result as one compact row in its retained order', (_, response) => {
   const view = discoveryView(searchContext, response)
   if (view.kind !== 'search') throw new Error('expected a search page')
@@ -1193,22 +1188,22 @@ it.each([
   rows.forEach((row, index) => {
     const hit = hits[index]
     expect(row).toHaveTextContent(hit.title)
-    expect(row).toHaveTextContent(hit.kind === 'operation' ? 'operation' : 'saved function')
+    expect(row).toHaveTextContent(hit.kind === 'provider_tool' ? 'tool' : 'saved function')
     if (hit.matched.fields.length + hit.matched.tags.length > 0)
       expect(row).toHaveTextContent('Matched in')
     // Approval shows as the Providers page's Needs approval hand, named, never as a text badge.
     const approval = row.querySelector('[role="img"][aria-label^="Needs approval"]')
-    expect(Boolean(approval)).toBe(Boolean(hit.operation?.approvalRequired))
+    expect(Boolean(approval)).toBe(Boolean(hit.tool?.approvalRequired))
     if (approval) expect(approval.querySelector('svg')).not.toBeNull()
     expect(row.textContent).not.toContain('approval required')
-    if (hit.operation?.deprecated) expect(row).toHaveTextContent('deprecated')
+    if (hit.tool?.deprecated) expect(row).toHaveTextContent('deprecated')
     for (const [hint, label] of [
       ['readOnly', 'read-only'],
       ['destructive', 'destructive'],
       ['idempotent', 'idempotent'],
       ['openWorld', 'open world'],
     ] as const) {
-      const declared = hit.operation?.hints[hint]
+      const declared = hit.tool?.hints[hint]
       if (declared !== undefined) expect(row).toHaveTextContent(declared ? label : `not ${label}`)
     }
     // Matched paths show as a count chip; the paths themselves stay with the data.
@@ -1284,7 +1279,7 @@ it('shows a search stored in an earlier shape as stored', () => {
 })
 
 type Described = Extract<DiscoveryContext, { kind: 'describe' }>
-const describedOperation: Described = {
+const describedTool: Described = {
   kind: 'describe',
   callPath: 'coral.providers.github.issues.create',
   types: [],
@@ -1313,12 +1308,12 @@ const detailsOf = (container: HTMLElement) =>
 // retained documentation when it folds it away.
 it.each([
   {
-    case: 'an operation',
-    context: describedOperation,
-    response: stored.describeOperation,
+    case: 'a tool',
+    context: describedTool,
+    response: stored.describeTool,
     asked: ['Call path', 'Provider', 'Intent'],
     title: 'Create an issue',
-    kind: 'operation',
+    kind: 'tool',
     summary: ['issues'],
     folded: ['namespace issues', 'Any user with pull access', 'API method documentation'],
   },
@@ -1387,15 +1382,15 @@ it.each([
   expect(container.querySelectorAll('details')).toHaveLength(1)
 })
 
-it('keeps every retained operation fact when it folds the documentation away', () => {
-  const evidence = discovered(describedOperation, stored.describeOperation)
+it('keeps every retained tool fact when it folds the documentation away', () => {
+  const evidence = discovered(describedTool, stored.describeTool)
   if (evidence.kind !== 'discovery' || evidence.view.kind !== 'describe') throw new Error()
   const { container } = describePanel(evidence)
   const description = evidence.view.description
   const details = detailsOf(container)
   expect(details.querySelector('pre')!.textContent).toBe(description.declaration)
   expect(factIn(container.querySelector('dl')!, 'Provider')).toHaveTextContent(
-    description.operation!.providerLabel,
+    description.tool!.providerLabel,
   )
 })
 
@@ -1425,7 +1420,7 @@ it.each<[string, InteractionEvidence, Partial<InteractionRow>, string[]]>([
   ],
   [
     'a describe stored in an earlier shape',
-    discovered(describedOperation, '{"opaque":true}'),
+    discovered(describedTool, '{"opaque":true}'),
     {},
     ['Stored in an earlier shape', 'Reef cannot show this response in the current layout.'],
   ],
@@ -1754,7 +1749,7 @@ it.each<[string, Detail, string | null]>([
     '12345678901234567890',
   ],
   [
-    "an operation call's Run that returned a value",
+    "a tool call's Run that returned a value",
     { ...invocationPanel({}), context: succeeded('{"total":18450.70}') },
     '18450.70',
   ],
@@ -1775,7 +1770,7 @@ it.each<[string, Detail, string | null]>([
 const owner = `${workspace}/tasks/one`
 it.each<[string, Detail, ActivityRow | null]>([
   ['a Run', runPanel({ task: owner }), null],
-  ['an operation call', invocationPanel({ task: owner }), null],
+  ['a tool call', invocationPanel({ task: owner }), null],
   [
     'a tool call',
     tool({ tool: 'exec' }, { kind: 'run', reference: run.name }),
@@ -2453,7 +2448,7 @@ describe('an account connection the Run waits on', () => {
       dispatchedAt: null,
       waitingNanos: '0',
       provider: connection.provider,
-      operation: 'list',
+      tool: 'list',
       callPath: 'coral.providers.linear.list',
     }
     renderRoute(
@@ -2532,7 +2527,7 @@ describe('an account connection the Run waits on', () => {
       dispatchedAt: null,
       waitingNanos: '0',
       provider: connection.provider,
-      operation: 'list',
+      tool: 'list',
       callPath: 'coral.providers.linear.list',
     }
     renderRoute(
@@ -2790,11 +2785,11 @@ describe('each record states only what helps, once', () => {
           name: 'TypeError',
           message: 'invoices is not iterable',
           frames: [{ source: 'program.ts', line: 3, column: 7 }],
-          operationCode: '',
-          operationTraceId: '',
-          operationStatus: 0,
-          operationBody: '',
-          operationBodyTruncated: false,
+          toolCode: '',
+          toolTraceId: '',
+          toolStatus: 0,
+          toolBody: '',
+          toolBodyTruncated: false,
           truncated: false,
           circular: false,
           causeOmitted: false,
@@ -2831,12 +2826,12 @@ describe('each record states only what helps, once', () => {
     for (const text of shown) expect(card!.textContent).toContain(text)
   })
 
-  // Catches: an operation call that buries its controls, shows raw IDs, or hides its error.
+  // Catches: a tool call that buries its controls, shows raw IDs, or hides its error.
   it.each<[string, InvocationDetail['result'], string[], string[]]>([
     [
       'a Coral failure',
-      { kind: 'coral_failure', code: 'operation_disabled', message: 'The operation is disabled.' },
-      ['Coral failure: operation_disabled', 'The operation is disabled.'],
+      { kind: 'coral_failure', code: 'tool_disabled', message: 'The tool is disabled.' },
+      ['Coral failure: tool_disabled', 'The tool is disabled.'],
       [],
     ],
     [
@@ -2852,50 +2847,47 @@ describe('each record states only what helps, once', () => {
       ['External effects may be uncertain.'],
       [],
     ],
-  ])(
-    'shows an operation call with %s, its controls in view and no raw IDs',
-    (_, result, shown, gone) => {
-      const live = { ...run, state: 'running' as const, endedAt: null }
-      const detail: InvocationDetail = {
-        ...invocationPanel({}),
-        result,
-        context: {
-          ...runPanel(live, {
-            ...interaction,
-            tool: 'exec',
-            name: `${workspace}/tasks/one/interactions/exec`,
-          }),
-          source: 'exact-accepted-source',
-        },
-      }
-      const container = show(detail)
-      expectNoScaffolding(container)
-      for (const id of [detail.invocation.name, run.name])
-        expect(container.textContent).not.toContain(id)
-      for (const text of [...gone, 'Run ID', 'Invocation ID', 'Whole-run controls'])
-        expect(container.textContent).not.toContain(text)
-      // One list, its times last.
-      const lists = [...container.querySelectorAll('dl')].filter((list) => !list.closest('details'))
-      expect(lists).toHaveLength(1)
-      const times = ['Duration', 'Started', ...(detail.invocation.endedAt ? ['Ended'] : [])]
-      expect(terms(lists[0]).slice(-times.length)).toEqual(times)
-      // The whole-run controls stay in view; the accepted source folds into Details.
-      expect(
-        within(container).getByRole('button', { name: 'Cancel run' }).closest('details'),
-      ).toBeNull()
-      expect(
-        within(container).getByRole('link', { name: 'View in history' }).closest('details'),
-      ).toBeNull()
-      const details = within(container)
-        .getByText('Details', { selector: 'summary' })
-        .closest('details')!
-      expect(details).toHaveTextContent('exact-accepted-source')
-      for (const text of shown) {
-        expect(container.textContent).toContain(text)
-        expect(details.textContent).not.toContain(text)
-      }
-    },
-  )
+  ])('shows a tool call with %s, its controls in view and no raw IDs', (_, result, shown, gone) => {
+    const live = { ...run, state: 'running' as const, endedAt: null }
+    const detail: InvocationDetail = {
+      ...invocationPanel({}),
+      result,
+      context: {
+        ...runPanel(live, {
+          ...interaction,
+          tool: 'exec',
+          name: `${workspace}/tasks/one/interactions/exec`,
+        }),
+        source: 'exact-accepted-source',
+      },
+    }
+    const container = show(detail)
+    expectNoScaffolding(container)
+    for (const id of [detail.invocation.name, run.name])
+      expect(container.textContent).not.toContain(id)
+    for (const text of [...gone, 'Run ID', 'Invocation ID', 'Whole-run controls'])
+      expect(container.textContent).not.toContain(text)
+    // One list, its times last.
+    const lists = [...container.querySelectorAll('dl')].filter((list) => !list.closest('details'))
+    expect(lists).toHaveLength(1)
+    const times = ['Duration', 'Started', ...(detail.invocation.endedAt ? ['Ended'] : [])]
+    expect(terms(lists[0]).slice(-times.length)).toEqual(times)
+    // The whole-run controls stay in view; the accepted source folds into Details.
+    expect(
+      within(container).getByRole('button', { name: 'Cancel run' }).closest('details'),
+    ).toBeNull()
+    expect(
+      within(container).getByRole('link', { name: 'View in history' }).closest('details'),
+    ).toBeNull()
+    const details = within(container)
+      .getByText('Details', { selector: 'summary' })
+      .closest('details')!
+    expect(details).toHaveTextContent('exact-accepted-source')
+    for (const text of shown) {
+      expect(container.textContent).toContain(text)
+      expect(details.textContent).not.toContain(text)
+    }
+  })
 
   // Catches: an approval review that keeps raw IDs, the program body or the Run's controls, or
   // that dates the request by its Run or its deadline.

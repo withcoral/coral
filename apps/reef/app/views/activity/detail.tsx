@@ -37,7 +37,7 @@ import * as styles from './task-activity.css'
 const seconds = (milliseconds: number) => duration(milliseconds * 1_000_000)
 
 /** The Run whose accepted source a selected record shows beside its own detail, if any.
- * An operation or an output carries it as context; it never replaces the record's detail. */
+ * A tool or an output carries it as context; it never replaces the record's detail. */
 export function runContextOf(detail: ActivityPage['detail']): RunDetail | undefined {
   if (detail?.kind === 'run') return detail
   if (detail?.kind === 'invocation' || detail?.kind === 'output') return detail.context
@@ -61,8 +61,8 @@ export function ActivityDetail({
   const context =
     detail.kind === 'run' ? detail : detail.kind === 'invocation' ? detail.context : undefined
   if (context) {
-    const operation = detail.kind === 'invocation' ? detail : null
-    return <ExecutionDetail page={page} detail={context} operation={operation} />
+    const tool = detail.kind === 'invocation' ? detail : null
+    return <ExecutionDetail page={page} detail={context} tool={tool} />
   }
   return <RecordDetail page={page} sourceShown={sourceShown} />
 }
@@ -70,15 +70,15 @@ export function ActivityDetail({
 function ExecutionDetail({
   page,
   detail,
-  operation,
+  tool,
 }: {
   page: ActivityPage
   detail: RunDetail
-  operation: InvocationDetail | null
+  tool: InvocationDetail | null
 }) {
   const { href } = useActivityNavigation(page)
   const connected = useActivityConnected()
-  const request = operation?.request ?? detail.request
+  const request = tool?.request ?? detail.request
   const running = detail.run.state === 'running'
   // An approval review names the call and decides only it: no program, history or Run cancel.
   const review = request?.kind === 'approval'
@@ -144,18 +144,18 @@ function ExecutionDetail({
       )}
       <RunActions
         context={detail}
-        callStartedAt={operation?.invocation.startedAt}
+        callStartedAt={tool?.invocation.startedAt}
         connectionContext={runContext}
         page={detail.run.actionPage}
         request={request}
-        unavailable={operation?.requestUnavailable ?? detail.requestUnavailable}
+        unavailable={tool?.requestUnavailable ?? detail.requestUnavailable}
         href={(name) => href({ record: detail.run.name, request: name })}
         pageHref={(cursor) =>
           href({ record: detail.run.name, request: null, actionsAfter: cursor })
         }
         returnTo={href({})}
       />
-      {operation && <InvocationOutcome detail={operation} />}
+      {tool && <InvocationOutcome detail={tool} />}
       {/* An approval states its own status; a connection request shows its Run's state, unless
           the Run waits on you, which its actions already say. */}
       {connection && !(detail.run.requiresAction && running) && (
@@ -229,7 +229,7 @@ function InvocationDetailView({
   return (
     <Panel>
       <DetailHeader
-        title={detail.invocation.callPath || detail.invocation.operation}
+        title={detail.invocation.callPath || detail.invocation.tool}
         status={
           detail.invocation.state !== 'ended'
             ? detail.invocation.state
@@ -244,7 +244,7 @@ function InvocationDetailView({
               ? answeredStatus(detail.result)
               : invocationOutcomeLabels[detail.invocation.outcome]
         }
-        kind="operation"
+        kind="tool"
       />
       {/* What the call belongs to and how it waited, then its times together, last. */}
       <DescriptionList.List>
@@ -367,7 +367,7 @@ function InvocationDetailView({
 }
 
 /** Records without a Run context. An approval always has one, so none is reviewed here.
- * A selected operation invocation leads with itself, so none is reviewed here either. */
+ * A selected tool invocation leads with itself, so none is reviewed here either. */
 function RecordDetail({ page, sourceShown }: { page: ActivityPage; sourceShown: boolean }) {
   const { recordHref, revealHref } = useActivityNavigation(page)
   const connected = useActivityConnected()
@@ -561,7 +561,7 @@ function RecordDetail({ page, sourceShown }: { page: ActivityPage; sourceShown: 
         <>
           <EventEvidence event={detail.event} recordHref={recordHref} />
           {/* Inside its Run's split, an emitted output leads back to history itself, as an
-              operation does. A program log ends at its payload. */}
+              tool does. A program log ends at its payload. */}
           {sourceShown && row && detail.event.kind !== 'program.logged' && (
             <Link to={revealHref(row, { select: false })} preventScrollReset>
               View in history
@@ -615,11 +615,11 @@ function eventHeading(event: RunEvent): { title: string; kind: string } {
     case 'run.cancellation_requested':
       return { title: 'Cancellation requested', kind: 'run event' }
     case 'invocation.started':
-      return { title: 'Operation call started', kind: 'run event' }
+      return { title: 'Tool call started', kind: 'run event' }
     case 'invocation.ended':
       return {
         // The event holds no response to tell, so a complete one reads only as completed.
-        title: `Operation call ended: ${invocationOutcomeLabels[event.outcome]}`,
+        title: `Tool call ended: ${invocationOutcomeLabels[event.outcome]}`,
         kind: 'run event',
       }
     default:
@@ -629,7 +629,7 @@ function eventHeading(event: RunEvent): { title: string; kind: string } {
 /**
  * How a call that got a complete response reads. The response proves a failure only through
  * HTTP: Coral counts any status outside 2xx as the provider's error. Nothing in it proves
- * success: Coral classes a 2xx against the statuses the Operation declares, which Reef does not
+ * success: Coral classes a 2xx against the statuses the Tool declares, which Reef does not
  * receive, and an MCP `isError` counts only for a tool call, which the response does not record.
  * So the rest reads as completed: a response came back. A property in the provider's own data
  * never decides it.
@@ -807,7 +807,7 @@ function EventEvidence({
         </Typography.Body>
       )}
       {(event.kind === 'invocation.started' || event.kind === 'invocation.ended') && (
-        <Link to={recordHref(event.invocation)}>Open operation call</Link>
+        <Link to={recordHref(event.invocation)}>Open tool call</Link>
       )}
       {event.kind === 'invocation.ended' && (
         <Typography.Body>{event.outcome.replaceAll('_', ' ')}</Typography.Body>
@@ -864,19 +864,19 @@ function ErrorDetail({ error }: { error: ProgramError }) {
           {frame.source}:{frame.line}:{frame.column}
         </Typography.Code>
       ))}
-      {error.operationCode && (
+      {error.toolCode && (
         <Typography.Body>
-          Coral operation code: {error.operationCode} · Trace: {error.operationTraceId}
+          Coral tool code: {error.toolCode} · Trace: {error.toolTraceId}
         </Typography.Body>
       )}
-      {error.operationStatus > 0 && (
-        <Typography.Body>Upstream HTTP status: {error.operationStatus}</Typography.Body>
+      {error.toolStatus > 0 && (
+        <Typography.Body>Upstream HTTP status: {error.toolStatus}</Typography.Body>
       )}
-      {error.operationBody && (
+      {error.toolBody && (
         <>
           <Typography.BodySmallStrong>Upstream response data</Typography.BodySmallStrong>
-          <Native value={error.operationBody} format="json" />
-          {error.operationBodyTruncated && (
+          <Native value={error.toolBody} format="json" />
+          {error.toolBodyTruncated && (
             <Typography.Body>This is the start of the data.</Typography.Body>
           )}
         </>

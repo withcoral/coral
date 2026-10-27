@@ -166,7 +166,7 @@ async fn authenticated_sse_discovery_materializes_large_catalog_without_truncati
         .mount(&server)
         .await;
     // Above both the former cap and a plausible replacement cap: only the byte
-    // budget, not the number of Operations, bounds this small valid catalog.
+    // budget, not the number of Tools, bounds this small valid catalog.
     let tools: Vec<Value> = (0..1025)
         .map(|i| json!({"name": format!("operation_{i}"), "inputSchema": {"type": "object"}}))
         .collect();
@@ -184,20 +184,20 @@ async fn authenticated_sse_discovery_materializes_large_catalog_without_truncati
         &AuthenticationConfiguration::Bearer.into(),
     )
     .await
-    .expect("a byte-bounded catalog has no Operation-count cap");
+    .expect("a byte-bounded catalog has no Tool-count cap");
     let pinned: Value = serde_json::from_str(snapshot.as_str()).unwrap();
     assert_eq!(pinned["tools"].as_array().unwrap().len(), 1025);
     assert!(!snapshot.as_str().contains(TOKEN));
     let MaterializationOutcome::Ready(prepared) =
         coral_catalog::materialize(loopback(), &ProviderSetupInput::from(snapshot), &[])
     else {
-        panic!("every discovered Operation must also reach the materialized catalog");
+        panic!("every discovered Tool must also reach the materialized catalog");
     };
-    assert_eq!(prepared.operations().len(), 1025);
+    assert_eq!(prepared.tools().len(), 1025);
     for i in 0..1025 {
         assert!(
             prepared
-                .operations()
+                .tools()
                 .iter()
                 .any(|operation| { operation.key().as_str() == format!("operation_{i}") })
         );

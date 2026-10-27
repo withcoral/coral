@@ -26,7 +26,7 @@ export interface ProviderSummary {
   displayName: string
   namespace: string
   path: string
-  /** Why its operations cannot run now; empty when ready. */
+  /** Why its tools cannot run now; empty when ready. */
   blockers: string[]
   icons?: RecipeIcons
 }

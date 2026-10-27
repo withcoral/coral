@@ -11,7 +11,7 @@ import {
 } from '../../support/desktop-app.ts'
 import { oauthApiServer } from '../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   chooseAccount,
   chooseDeviceSignIn,
   chooseFile,
@@ -39,7 +39,7 @@ test('Desktop opens a device sign-in in the system browser and keeps the code on
       await page.getByLabel('Namespace', { exact: true }).fill('device')
       await chooseDeviceSignIn(page, upstream.origin)
       await page.getByRole('button', { name: 'Next', exact: true }).click()
-      await acceptOperations(page)
+      await acceptTools(page)
       await chooseAccount(page, 'shared')
       await signInAndShareAccount(page)
       await page.getByText('ABCD-EFGH', { exact: true }).waitFor()

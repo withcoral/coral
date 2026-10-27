@@ -162,21 +162,21 @@ async fn oversized_http_output_ends_one_invocation_without_a_partial_result_or_r
     let runs = fixture
         .live_runs(None)
         .with_value_limits(ValueLimits::new(5, 1024, 4096, 4096).expect("limits"));
-    let operation = fixture
-        .user_operation_at(
+    let tool = fixture
+        .user_tool_at(
             "user:oversized-result",
             "Bound upstream output",
             &server.uri(),
         )
         .await;
-    let accepted = runs.start(&operation.principal, &operation.workspace_id, submission(r#"
+    let accepted = runs.start(&tool.principal, &tool.workspace_id, submission(r#"
         try { await coral.providers.weather.getForecast({city:"London"}); return "unexpected partial result"; }
         catch (error) { return error.message; }
     "#)).await.expect("accepted");
     let terminal = wait_for_terminal(
         &runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
@@ -186,8 +186,8 @@ async fn oversized_http_output_ends_one_invocation_without_a_partial_result_or_r
     assert_eq!(
         retained_events(
             &runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             terminal.run_id()
         )
         .await

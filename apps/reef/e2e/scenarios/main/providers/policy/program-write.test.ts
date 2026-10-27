@@ -8,7 +8,7 @@ import {
   programRunner,
   publishWorkspaceProvider,
   type RunUpdate,
-  setOperationPolicy,
+  setToolPolicy,
 } from '../../../../support/providers.ts'
 
 /** Waits until the provider page shows `name` with `state` chosen. */
@@ -42,7 +42,7 @@ test("An owner's Program changes an added provider's policy once the owner appro
     let paused!: RunUpdate
     await step('The Run waits for the owner to approve updatePolicy', async () => {
       const started = await runner.exec(
-        'return (await coral.workspace.updatePolicy({ namespace: "alpha", operations: { lookup: "disabled", remove: "enabled" } })).data;',
+        'return (await coral.workspace.updatePolicy({ namespace: "alpha", tools: { lookup: "disabled", remove: "enabled" } })).data;',
       )
       expect(started.isError).not.toBe(true)
       paused = started.structuredContent
@@ -65,7 +65,7 @@ test("An owner's Program changes an added provider's policy once the owner appro
       const { update } = await observeRun(runner, await runner.wait(paused))
       expect(update.final_value).toEqual({
         kind: 'value',
-        value: { namespace: 'alpha', operations: { lookup: 'disabled', remove: 'enabled' } },
+        value: { namespace: 'alpha', tools: { lookup: 'disabled', remove: 'enabled' } },
       })
     })
     await step('The provider page shows the policy the Program set', async () => {
@@ -76,7 +76,7 @@ test("An owner's Program changes an added provider's policy once the owner appro
   })
 })
 
-test("An owner's Program cannot change the policy of Coral's own operations", async (context) => {
+test("An owner's Program cannot change the policy of the built-in provider's tools", async (context) => {
   await withOwnerSession(context, async ({ page, target, actor, step }) => {
     const api = managementClients(actor.accessToken)
     const workspace = await api.workspaces.createWorkspace({
@@ -91,15 +91,15 @@ test("An owner's Program cannot change the policy of Coral's own operations", as
     })
     await step('The owner lets updatePolicy run without approval', async () => {
       await page.goto(`/${coral.name}`)
-      await setOperationPolicy(page, 'updatePolicy', 'Always allow')
+      await setToolPolicy(page, 'updatePolicy', 'Always allow')
       await expectPolicy(page, 'addProvider', 'Needs approval')
     })
     await step('No namespace reaches Coral, so the Program gets provider_not_found', async () => {
-      // Coral's own Operations are called under coral.workspace.
+      // The Built-in Provider's tools are called under coral.workspace.
       const { update } = await observeRun(
         runner,
         await runner.exec(
-          'try { return await coral.workspace.updatePolicy({ namespace: "workspace", operations: { updatePolicy: "disabled", addProvider: "enabled" } }); } catch (error) { return error.code; }',
+          'try { return await coral.workspace.updatePolicy({ namespace: "workspace", tools: { updatePolicy: "disabled", addProvider: "enabled" } }); } catch (error) { return error.code; }',
         ),
       )
       expect(update.final_value).toEqual({ kind: 'value', value: 'provider_not_found' })

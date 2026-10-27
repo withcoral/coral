@@ -7,23 +7,23 @@ import { managementClients } from '../../../../support/management.ts'
 import { bearerMcpServer } from '../../../../support/provider-fixtures.ts'
 import {
   addedProviders,
-  acceptOperations,
+  acceptTools,
   chooseAccount,
   closeProviderSettings,
   collectDataResponses,
   confirmConfiguration,
   createWorkspace,
   openCustomSource,
-  openOperation,
+  openTool,
   openProviderSettings,
   programRunner,
-  readOperations,
+  readTools,
   waitForProviderStatus,
   waitForPublication,
 } from '../../../../support/providers.ts'
 import { withOwner } from '../../../../support/topology.ts'
 
-/** Add an MCP server that needs a bearer token before it lists its Operations. */
+/** Add an MCP server that needs a bearer token before it lists its Tools. */
 export async function bearerDiscovery(context: TestContext) {
   const token = `fixture-bearer-${crypto.randomUUID()}`
   const upstream = await bearerMcpServer(context, token)
@@ -41,8 +41,8 @@ export async function bearerDiscovery(context: TestContext) {
       await page.getByRole('button', { name: 'Connect', exact: true }).click()
       await page.getByLabel('Namespace', { exact: true }).fill('greetings')
       await confirmConfiguration(page, 'Bearer token')
-      await readOperations(page, token)
-      await acceptOperations(page)
+      await readTools(page, token)
+      await acceptTools(page)
       // Explicit retention promotes the discovery grant; no second secret entry is needed.
       await chooseAccount(page, 'shared')
       expect(await page.getByLabel('Token', { exact: true }).count()).toBe(0)
@@ -89,7 +89,7 @@ export async function bearerDiscovery(context: TestContext) {
         ).account,
       ).toBeUndefined()
       await closeProviderSettings(page)
-      const drawer = await openOperation(page, 'hello')
+      const drawer = await openTool(page, 'hello')
       await drawer.getByText('coral.providers.greetings.hello', { exact: true }).waitFor()
     })
     await step('A Program run uses the credential', async () => {
@@ -168,8 +168,8 @@ export async function discoveryCredentialScope(
       await page.getByRole('button', { name: 'Connect', exact: true }).click()
       await page.getByLabel('Namespace', { exact: true }).fill('reviewed')
       await confirmConfiguration(page, 'Bearer token')
-      await readOperations(page, token)
-      await acceptOperations(page)
+      await readTools(page, token)
+      await acceptTools(page)
       await chooseAccount(page, choice === 'caller' ? 'own-later' : 'shared')
       const setupName = `${parent}/providerSetups/${new URL(page.url()).searchParams.get('setup')}`
       const setup = await api.setups.getProviderSetup({ name: setupName })

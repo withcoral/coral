@@ -75,7 +75,7 @@ pub(crate) struct StartedTask {
     #[schemars(schema_with = "crate::arguments::identifier_schema")]
     pub(crate) task_id: String,
     /// The namespaces of the Providers you can search, and coral.workspace for
-    /// Coral's own operations: the values `search` accepts as `provider`.
+    /// the Built-in Provider's tools: the values `search` accepts as `provider`.
     pub(crate) providers: Vec<String>,
 }
 

@@ -88,7 +88,7 @@ async fn a_transient_failure_waits_twice_as_long_after_each_attempt() {
     world.allow_complete_states().await;
     world.index.reconcile().await;
     assert!(
-        world.operation_rows().await.is_empty(),
+        world.tool_rows().await.is_empty(),
         "a pass before the retry time leaves the failure"
     );
     world.make_retries_due().await;
@@ -417,7 +417,7 @@ async fn a_pass_reindexes_a_renamed_provider_under_its_new_name() {
         .to_string();
     assert_eq!(
         world
-            .operation_rows()
+            .tool_rows()
             .await
             .into_iter()
             .map(|row| row.provider_name)
@@ -453,14 +453,14 @@ async fn a_pass_reindexes_a_generation_that_an_older_indexer_revision_wrote() {
         let upstream = MockServer::start().await;
         let world = World::publish_tracer(&upstream).await;
         world.index.reconcile().await;
-        let indexed = world.operation_rows().await;
+        let indexed = world.tool_rows().await;
         world.leave_rows_as_written_by(revision).await;
-        let left = world.operation_rows().await;
+        let left = world.tool_rows().await;
 
         world.index.reconcile().await;
 
         if reindexed {
-            assert_eq!(world.operation_rows().await, indexed, "{writer}");
+            assert_eq!(world.tool_rows().await, indexed, "{writer}");
             world.assert_exact_statistics().await;
             // The rewrite records this revision, so the next pass finds
             // nothing to index.
@@ -472,7 +472,7 @@ async fn a_pass_reindexes_a_generation_that_an_older_indexer_revision_wrote() {
                 "{writer}: a second pass"
             );
         } else {
-            assert_eq!(world.operation_rows().await, left, "{writer}");
+            assert_eq!(world.tool_rows().await, left, "{writer}");
         }
     }
 }
@@ -620,7 +620,7 @@ fn statistics_work(recorded: &[CapturedSpan]) -> (u64, u64, bool) {
 }
 
 #[tokio::test]
-async fn a_published_generation_indexes_its_operations_and_a_complete_state() {
+async fn a_published_generation_indexes_its_tools_and_a_complete_state() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let entries = world.stored_entries(&world.tracer).await;
@@ -630,12 +630,12 @@ async fn a_published_generation_indexes_its_operations_and_a_complete_state() {
 
     let generation = entries.generation_id().to_string();
     assert_eq!(
-        world.operation_rows().await,
-        [OperationRow {
+        world.tool_rows().await,
+        [ToolRow {
             doc_id: format!("{generation}:getForecast"),
             provider_id: world.tracer.to_string(),
             generation_id: generation.clone(),
-            operation_key: "getForecast".to_string(),
+            tool_key: "getForecast".to_string(),
             call_path: "coral.providers.weather.getForecast".to_string(),
             qualified_name: "getForecast".to_string(),
             title: "Get one weather forecast".to_string(),
@@ -660,7 +660,7 @@ async fn a_published_generation_indexes_its_operations_and_a_complete_state() {
     );
 }
 
-/// One Operation whose response reaches the shared `Run` schema by two
+/// One Tool whose response reaches the shared `Run` schema by two
 /// paths. The tags and the enum values repeat words in another case.
 const RUNS: &str = r##"{
   "openapi": "3.1.0",
@@ -692,11 +692,11 @@ async fn schema_text_holds_each_word_once_in_its_first_spelling() {
     world.index.reconcile().await;
 
     let text = world
-        .operation_rows()
+        .tool_rows()
         .await
         .into_iter()
         .find(|row| row.call_path == "coral.providers.bench.listRuns")
-        .expect("the Operation row")
+        .expect("the Tool row")
         .searchable_text;
     // The words split as the query planner splits them, so `_` stays in a
     // word and `-` ends one. Each word appears once: the second path to
@@ -709,7 +709,7 @@ async fn schema_text_holds_each_word_once_in_its_first_spelling() {
 }
 
 #[tokio::test]
-async fn a_generation_without_operations_indexes_only_a_complete_state() {
+async fn a_generation_without_tools_indexes_only_a_complete_state() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let callbacks_only = world
@@ -717,15 +717,12 @@ async fn a_generation_without_operations_indexes_only_a_complete_state() {
         .publish_openapi(&world.user, &world.workspace, CALLBACKS_ONLY, "hooks", 40)
         .await;
     let entries = world.stored_entries(&callbacks_only).await;
-    assert!(
-        entries.operations().next().is_none(),
-        "no Operation is available"
-    );
+    assert!(entries.tools().next().is_none(), "no Tool is available");
 
     notify(&world.index, &entries);
     world.index.settled().await;
 
-    assert!(world.operation_rows().await.is_empty());
+    assert!(world.tool_rows().await.is_empty());
     assert_eq!(
         world.states().await,
         [StateRow::complete(
@@ -762,12 +759,12 @@ async fn a_notice_for_a_replaced_generation_writes_nothing() {
     notify(&world.index, &replaced);
     world.index.settled().await;
 
-    assert!(world.operation_rows().await.is_empty());
+    assert!(world.tool_rows().await.is_empty());
     assert!(world.states().await.is_empty());
 }
 
 #[tokio::test]
-async fn a_bounded_walk_indexes_the_operation_and_logs_a_warning() {
+async fn a_bounded_walk_indexes_the_tool_and_logs_a_warning() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let properties = (0..8_300)
@@ -811,10 +808,10 @@ async fn a_bounded_walk_indexes_the_operation_and_logs_a_warning() {
 
     assert_eq!(
         world
-            .operation_rows()
+            .tool_rows()
             .await
             .iter()
-            .map(|row| row.operation_key.as_str())
+            .map(|row| row.tool_key.as_str())
             .collect::<Vec<_>>(),
         ["wide"]
     );
@@ -830,8 +827,8 @@ async fn a_bounded_walk_indexes_the_operation_and_logs_a_warning() {
         ("workspace_id", world.workspace.to_string()),
         ("provider_id", wide.to_string()),
         ("generation_id", entries.generation_id().to_string()),
-        ("operation_key", "wide".to_string()),
-        ("code", "operation_search_material_truncated".to_string()),
+        ("tool_key", "wide".to_string()),
+        ("code", "tool_search_material_truncated".to_string()),
     ] {
         assert_eq!(event.fields.get(field), Some(&value), "{field}");
     }
@@ -849,7 +846,7 @@ async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
         if indexed_before {
             notify(&world.index, &entries);
             world.index.settled().await;
-            assert!(!world.operation_rows().await.is_empty());
+            assert!(!world.tool_rows().await.is_empty());
         }
         world.reject_complete_states().await;
 
@@ -863,7 +860,7 @@ async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
         world.index.settled().await;
 
         assert!(
-            world.operation_rows().await.is_empty(),
+            world.tool_rows().await.is_empty(),
             "indexed before: {indexed_before}"
         );
         let [state] = world.states().await.try_into().expect("one state row");
@@ -929,9 +926,9 @@ async fn a_failed_preparation_after_a_notice_leaves_a_failed_state() {
         world
             .modules
             .fixture
-            .execute_fixture_sql("ALTER TABLE materialized_operations RENAME TO hidden_operations")
+            .execute_fixture_sql("ALTER TABLE materialized_tools RENAME TO hidden_tools")
             .await
-            .expect("hide the catalog's Operations");
+            .expect("hide the catalog's Tools");
 
         if by_generation {
             world.index.index_generation(
@@ -963,11 +960,11 @@ async fn a_no_op_regeneration_keeps_the_indexed_generation_and_a_rewrite_leaves_
     let indexed = world.stored_entries(&ledger).await;
     notify(&world.index, &indexed);
     world.index.settled().await;
-    let rows = world.operation_rows().await;
+    let rows = world.tool_rows().await;
     let states = world.states().await;
     assert_eq!(
         rows.iter()
-            .map(|row| row.operation_key.as_str())
+            .map(|row| row.tool_key.as_str())
             .collect::<Vec<_>>(),
         ["listEntries"]
     );
@@ -987,13 +984,13 @@ async fn a_no_op_regeneration_keeps_the_indexed_generation_and_a_rewrite_leaves_
         indexed.generation_id(),
         "an unchanged document reuses the active Generation, so nothing is notified"
     );
-    assert_eq!(world.operation_rows().await, rows);
+    assert_eq!(world.tool_rows().await, rows);
     assert_eq!(world.states().await, states);
 
     notify(&world.index, &regenerated);
     world.index.settled().await;
     assert_eq!(
-        world.operation_rows().await,
+        world.tool_rows().await,
         rows,
         "a rewrite leaves the same rows"
     );
@@ -1007,16 +1004,13 @@ async fn a_rewrite_removes_rows_its_entries_no_longer_hold() {
     let entries = world.stored_entries(&world.tracer).await;
     notify(&world.index, &entries);
     world.index.settled().await;
-    assert!(!world.operation_rows().await.is_empty());
+    assert!(!world.tool_rows().await.is_empty());
 
     let generation_id = entries.generation_id().clone();
-    world
-        .index
-        .write_generation(&entries.without_operations())
-        .await;
+    world.index.write_generation(&entries.without_tools()).await;
     world.index.settled().await;
 
-    assert!(world.operation_rows().await.is_empty());
+    assert!(world.tool_rows().await.is_empty());
     assert_eq!(
         world.states().await,
         [StateRow::complete(
@@ -1052,7 +1046,7 @@ async fn a_renamed_provider_rewrites_its_generation_under_the_new_name() {
     world.index.settled().await;
 
     let generation = entries.generation_id().to_string();
-    let rows = world.operation_rows().await;
+    let rows = world.tool_rows().await;
     assert_eq!(
         rows.iter()
             .map(|row| (
@@ -1087,7 +1081,7 @@ async fn notified_writes_land_in_notification_order() {
     }
     world.index.settled().await;
 
-    assert!(world.operation_rows().await.is_empty());
+    assert!(world.tool_rows().await.is_empty());
     assert!(world.states().await.is_empty());
 }
 
@@ -1242,7 +1236,7 @@ async fn a_write_stalled_past_its_limit_rolls_back_and_frees_later_writes() {
     index.settled().await;
     blocker.rollback().await.expect("release the writer");
 
-    assert!(world.operation_rows().await.is_empty());
+    assert!(world.tool_rows().await.is_empty());
     let first = logs
         .events()
         .into_iter()
@@ -1312,7 +1306,7 @@ async fn a_failure_waits_for_a_busy_writer_to_record_its_state() {
     );
 }
 
-/// A small Provider with one Operation and no credentials.
+/// A small Provider with one Tool and no credentials.
 const LEDGER: &str = r#"{
   "openapi": "3.1.0",
   "info": { "title": "Ledger", "version": "1.0.0" },
@@ -1329,8 +1323,8 @@ const LEDGER: &str = r#"{
   }
 }"#;
 
-/// An OpenAPI document whose one Operation declares callbacks, which Coral
-/// cannot call, so its Generation has no available Operation.
+/// An OpenAPI document whose one Tool declares callbacks, which Coral
+/// cannot call, so its Generation has no available Tool.
 const CALLBACKS_ONLY: &str = r#"{
   "openapi": "3.1.0",
   "info": { "title": "Callbacks", "version": "1.0.0" },
@@ -1580,10 +1574,10 @@ impl World {
             .await
     }
 
-    /// The Generations that have Operation rows, in order.
+    /// The Generations that have Tool rows, in order.
     async fn indexed_generations(&self) -> Vec<String> {
         let mut generations = self
-            .operation_rows()
+            .tool_rows()
             .await
             .into_iter()
             .map(|row| row.generation_id)
@@ -1777,7 +1771,7 @@ impl World {
     }
 
     /// Makes every `complete` state row fail to insert, so an attempt fails
-    /// after it wrote its Operation rows.
+    /// after it wrote its Tool rows.
     async fn reject_complete_states(&self) {
         let sql = match self.modules.search.database.system() {
             DatabaseSystem::Sqlite => format!(
@@ -1853,9 +1847,9 @@ impl World {
             .expect("remove the index fault");
     }
 
-    /// The Workspace's Operation rows, in document order.
-    async fn operation_rows(&self) -> Vec<OperationRow> {
-        let rows: Vec<OperationColumns> = self
+    /// The Workspace's Tool rows, in document order.
+    async fn tool_rows(&self) -> Vec<ToolRow> {
+        let rows: Vec<ToolColumns> = self
             .modules
             .search
             .database
@@ -1866,7 +1860,7 @@ impl World {
                             "doc_id",
                             "provider_id",
                             "provider_generation_id",
-                            "operation_key",
+                            "tool_key",
                             "call_path",
                             "qualified_name",
                             "title",
@@ -1880,18 +1874,18 @@ impl World {
                     )
                     .from(Alias::new("search_entities"))
                     .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
-                    .and_where(Expr::col(Alias::new("kind")).eq("operation"))
+                    .and_where(Expr::col(Alias::new("kind")).eq("provider_tool"))
                     .order_by(Alias::new("doc_id"), Order::Asc)
                     .to_owned(),
             )
             .await
-            .expect("read the Operation rows");
-        rows.into_iter().map(OperationRow::from).collect()
+            .expect("read the Tool rows");
+        rows.into_iter().map(ToolRow::from).collect()
     }
 
     /// Leaves the Workspace's Generations as an indexer of `revision` would
     /// have written them, `None` for a Coral without indexer revisions: each
-    /// Operation row holds other text, and each state row names `revision`.
+    /// Tool row holds other text, and each state row names `revision`.
     async fn leave_rows_as_written_by(&self, revision: Option<i64>) {
         self.modules
             .search
@@ -1901,11 +1895,11 @@ impl World {
                     .table(Alias::new("search_entities"))
                     .value(Alias::new("searchable_text"), "text of an older indexer")
                     .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
-                    .and_where(Expr::col(Alias::new("kind")).eq("operation"))
+                    .and_where(Expr::col(Alias::new("kind")).eq("provider_tool"))
                     .to_owned(),
             )
             .await
-            .expect("rewrite the Operation rows");
+            .expect("rewrite the Tool rows");
         self.modules
             .search
             .database
@@ -1914,7 +1908,7 @@ impl World {
                     .table(Alias::new("search_index_states"))
                     .value(Alias::new("indexer_revision"), revision)
                     .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
-                    .and_where(Expr::col(Alias::new("kind")).eq("operation"))
+                    .and_where(Expr::col(Alias::new("kind")).eq("provider_tool"))
                     .to_owned(),
             )
             .await
@@ -1963,7 +1957,7 @@ impl World {
                     )
                     .from(Alias::new("search_index_states"))
                     .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
-                    .and_where(Expr::col(Alias::new("kind")).eq("operation"))
+                    .and_where(Expr::col(Alias::new("kind")).eq("provider_tool"))
                     .order_by(Alias::new("provider_generation_id"), Order::Asc)
                     .to_owned(),
             )
@@ -2030,7 +2024,7 @@ impl World {
                     )
                     .from(Alias::new("search_index_states"))
                     .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
-                    .and_where(Expr::col(Alias::new("kind")).eq("operation"))
+                    .and_where(Expr::col(Alias::new("kind")).eq("provider_tool"))
                     .order_by(Alias::new("provider_generation_id"), Order::Asc)
                     .to_owned(),
             )
@@ -2058,7 +2052,7 @@ type StateColumns = (String, String, String, Option<String>, Option<String>);
 /// term order, and the statistics row's document count and mean length.
 type Statistics = (Vec<(String, i32)>, Option<(i64, f64)>);
 
-type OperationColumns = (
+type ToolColumns = (
     String,
     String,
     String,
@@ -2074,11 +2068,11 @@ type OperationColumns = (
 );
 
 #[derive(Debug, PartialEq, Eq)]
-struct OperationRow {
+struct ToolRow {
     doc_id: String,
     provider_id: String,
     generation_id: String,
-    operation_key: String,
+    tool_key: String,
     call_path: String,
     qualified_name: String,
     title: String,
@@ -2089,13 +2083,13 @@ struct OperationRow {
     fingerprint: String,
 }
 
-impl From<OperationColumns> for OperationRow {
+impl From<ToolColumns> for ToolRow {
     fn from(
         (
             doc_id,
             provider_id,
             generation_id,
-            operation_key,
+            tool_key,
             call_path,
             qualified_name,
             title,
@@ -2104,13 +2098,13 @@ impl From<OperationColumns> for OperationRow {
             searchable_text,
             deprecated,
             fingerprint,
-        ): OperationColumns,
+        ): ToolColumns,
     ) -> Self {
         Self {
             doc_id,
             provider_id,
             generation_id,
-            operation_key,
+            tool_key,
             call_path,
             qualified_name,
             title,

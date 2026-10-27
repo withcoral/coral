@@ -62,7 +62,7 @@ const columnAlignSelectors: Record<string, { vars: Record<string, string> }> = O
   ]),
 )
 
-// The provider operations table's chrome and scroll behavior, shared by inspectors.
+// The provider tools table's chrome and scroll behavior, shared by inspectors.
 // The reading controller owns anchoring; native anchoring otherwise competes with sparse windows.
 export const anchoredTable = style({ overflowAnchor: 'none' })
 

@@ -1,8 +1,8 @@
-//! Private Provider Generation and Materialized Operation Catalog semantics.
+//! Private Provider Generation and Materialized Tool Catalog semantics.
 //!
 //! This Module owns OpenAPI and credential-free normalized MCP materialization,
-//! immutable Provider Generation packages, Operation availability, typed HTTP
-//! and MCP Execution Binding facts, exact Operation Key and relative-path
+//! immutable Provider Generation packages, Tool availability, typed HTTP
+//! and MCP Execution Binding facts, exact Tool Key and relative-path
 //! resolution, and Provider-scoped catalog persistence independent of any
 //! installation Workspace. OpenAPI and MCP are private materialization profiles
 //! behind [`materialize`], and callers inspect their recipes through one
@@ -17,7 +17,7 @@ mod builtin;
 pub use builtin::{
     AddProviderArguments, AddProviderResult, ArgumentProblem, BUILTIN_PROVIDER_DISPLAY_NAME,
     BuiltinAccessState, BuiltinArguments, BuiltinCatalog, BuiltinCatalogIdentity,
-    BuiltinCredentialRoute, BuiltinExecutionBinding, BuiltinOperation, ConfigurationChoices,
+    BuiltinCredentialRoute, BuiltinExecutionBinding, BuiltinTool, ConfigurationChoices,
     ConfigurationOutput, ConfigurationPatch, GetPolicyArguments, GetPolicyResult,
     GetProviderArguments, GetProviderResult, ListProvidersResult, ListedProvider,
     ListedProviderState, ListedSetup, ListedSetupState, ProviderFacts, ProviderSourceArgument,
@@ -113,7 +113,7 @@ use coral_catalog as _;
 pub use binding::ExecutionBinding;
 pub use declaration_path::{DECLARATION_PATH_MAX_BYTES, DeclarationPath};
 pub use error::Error;
-pub use inspection::OperationSummary;
+pub use inspection::ToolSummary;
 pub use mcp::{
     MCP_DISCOVERY_SNAPSHOT_MAX_BYTES, McpDiscoverySnapshot, McpExecutionBinding,
     McpInvocationMethod, McpTaskSupport, McpToolAnnotations, McpTransport,
@@ -124,41 +124,40 @@ pub use openapi::{
     HttpRedirectPolicy, HttpRequestBodyBinding, HttpResponseBinding, HttpResponseStatus,
     OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument, SuccessSelection, validate_openapi_configuration,
 };
-pub use paths::{
-    OperationPathAssignment, call_path_segment_is_reserved, provider_namespace_is_valid,
-};
+pub use paths::{ToolPathAssignment, call_path_segment_is_reserved, provider_namespace_is_valid};
 pub use search::{DeclarationIndexEntry, PreparedDeclarationFields, StoredDeclarationFields};
 pub use types::{
     CatalogDiagnostic, CatalogDiagnosticSeverity, CatalogSearchTarget, MaterializationOutcome,
-    MaterializedOperation, OPERATION_AUTHORING_DESCRIPTION_MAX_BYTES, OperationAvailability,
-    OperationHints, OperationKey, OperationPresentation, PreparedProviderCatalog,
-    ProviderGenerationFingerprint, ProviderGenerationId, ProviderSetupInput,
-    ProviderSetupInputDigest, ProviderSetupInputKind, SchemaGraph, SchemaId, SchemaSemantics,
-    SearchableOperation,
+    MaterializedTool, PreparedProviderCatalog, ProviderGenerationFingerprint, ProviderGenerationId,
+    ProviderSetupInput, ProviderSetupInputDigest, ProviderSetupInputKind, SchemaGraph, SchemaId,
+    SchemaSemantics, SearchableTool, TOOL_AUTHORING_DESCRIPTION_MAX_BYTES, ToolAvailability,
+    ToolHints, ToolKey, ToolPresentation,
 };
 
 /// Materializes one pinned Provider Setup input with the deployment-selected policy.
 ///
-/// Active Operation-relative paths are carried forward only for Operation Keys
+/// Active Tool-relative paths are carried forward only for Tool Keys
 /// that remain present in the replacement catalog.
 #[must_use]
 pub fn materialize(
     policy: coral_outbound::DestinationPolicy,
     setup_input: &ProviderSetupInput,
-    previous_paths: &[OperationPathAssignment],
+    previous_paths: &[ToolPathAssignment],
 ) -> MaterializationOutcome {
     let outcome = match setup_input {
         ProviderSetupInput::OpenApi(document) => openapi::materialize(document, previous_paths),
         ProviderSetupInput::Mcp(snapshot) => mcp::materialize(snapshot, previous_paths),
     };
     if let MaterializationOutcome::Ready(catalog) = &outcome {
-        let destinations = catalog.operations().iter().filter_map(|operation| {
-            match operation.execution_binding() {
-                ExecutionBinding::Http(binding) => binding.server_url(),
-                ExecutionBinding::Mcp(binding) => Some(binding.server_url()),
-                ExecutionBinding::Builtin(_) => None,
-            }
-        });
+        let destinations =
+            catalog
+                .tools()
+                .iter()
+                .filter_map(|tool| match tool.execution_binding() {
+                    ExecutionBinding::Http(binding) => binding.server_url(),
+                    ExecutionBinding::Mcp(binding) => Some(binding.server_url()),
+                    ExecutionBinding::Builtin(_) => None,
+                });
         if let Err(diagnostic) =
             validate_provider_destinations(policy, destinations, &catalog.credential_contract())
         {
@@ -223,7 +222,7 @@ pub const fn materializer_version(kind: ProviderSetupInputKind) -> &'static str 
 /// # Errors
 ///
 /// Returns a persistence failure; dropping the transaction removes every
-/// Generation and Operation row written by this call.
+/// Generation and Tool row written by this call.
 pub async fn publish_generation_in_transaction(
     transaction: &mut Transaction<'_>,
     setup_input: &ProviderSetupInput,
@@ -307,18 +306,18 @@ pub async fn generation_fingerprint_in_transaction(
     repository::generation_fingerprint(transaction, generation_id).await
 }
 
-/// Loads each Operation's Operation-relative path, in Operation Key order,
+/// Loads each Tool's Tool-relative path, in Tool Key order,
 /// without loading its definition or schemas. Regeneration carries them
-/// forward, and an Operation's rules are read by them.
+/// forward, and a Tool's rules are read by them.
 ///
 /// # Errors
 ///
 /// Returns a persistence or corrupt-package failure.
-pub async fn operation_paths_in_transaction(
+pub async fn tool_paths_in_transaction(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-) -> Result<Vec<OperationPathAssignment>, Error> {
-    repository::load_operation_paths(transaction, generation_id).await
+) -> Result<Vec<ToolPathAssignment>, Error> {
+    repository::load_tool_paths(transaction, generation_id).await
 }
 
 /// Verifies one active private Generation and complete Catalog package.
@@ -345,7 +344,7 @@ pub async fn schema_graph_in_transaction(
     repository::load_schema_graph(transaction, generation_id).await
 }
 
-/// Loads only structurally available Operation identities needed before ranking.
+/// Loads only structurally available Tool identities needed before ranking.
 ///
 /// This facet deliberately omits presentation metadata, TypeScript declarations,
 /// schemas, and Execution Bindings so complete descriptions remain lazy.
@@ -361,49 +360,49 @@ pub async fn available_search_targets_in_transaction(
 }
 
 /// Loads what the search index reads of each structurally available
-/// Operation, in Operation Key order: presentation, binding and input schema,
+/// Tool, in Tool Key order: presentation, binding and input schema,
 /// without separately materialized schemas, declarations or diagnostics.
 ///
 /// # Errors
 ///
 /// Returns a persistence or corrupt-package failure.
-pub async fn searchable_operations_in_transaction(
+pub async fn searchable_tools_in_transaction(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-) -> Result<Vec<SearchableOperation>, Error> {
-    repository::searchable_operations(transaction, generation_id).await
+) -> Result<Vec<SearchableTool>, Error> {
+    repository::searchable_tools(transaction, generation_id).await
 }
 
-/// Whether the exact private Generation still holds the Operation, by one
+/// Whether the exact private Generation still holds the Tool, by one
 /// existence read of its row: a Generation's package is immutable, so a row
 /// that exists is the one admission retained.
 ///
 /// # Errors
 ///
 /// Returns a persistence failure.
-pub async fn operation_exists_in_transaction(
+pub async fn tool_exists_in_transaction(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-    operation_key: &OperationKey,
+    tool_key: &ToolKey,
 ) -> Result<bool, Error> {
-    repository::operation_exists(transaction, generation_id, operation_key).await
+    repository::tool_exists(transaction, generation_id, tool_key).await
 }
 
-/// Loads one Operation from an exact private Generation package.
+/// Loads one Tool from an exact private Generation package.
 ///
 /// # Errors
 ///
 /// Returns a persistence or corrupt-package failure. `Ok(None)` means the
-/// Generation has no matching Operation Key.
-pub async fn operation_in_transaction(
+/// Generation has no matching Tool Key.
+pub async fn tool_in_transaction(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-    operation_key: &OperationKey,
-) -> Result<Option<MaterializedOperation>, Error> {
-    repository::load_operation(transaction, generation_id, operation_key).await
+    tool_key: &ToolKey,
+) -> Result<Option<MaterializedTool>, Error> {
+    repository::load_tool(transaction, generation_id, tool_key).await
 }
 
-/// Loads an Operation's complete self-contained declaration: its own
+/// Loads a Tool's complete self-contained declaration: its own
 /// declaration and every shared type of the Generation that it reaches.
 ///
 /// # Errors
@@ -412,9 +411,9 @@ pub async fn operation_in_transaction(
 pub async fn authoring_declaration_in_transaction(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-    operation: &MaterializedOperation,
+    tool: &MaterializedTool,
 ) -> Result<String, Error> {
-    let mut closure = schema::TypeClosure::new(operation.type_references());
+    let mut closure = schema::TypeClosure::new(tool.type_references());
     loop {
         let names = closure.pending();
         if names.is_empty() {
@@ -423,72 +422,70 @@ pub async fn authoring_declaration_in_transaction(
         let found = repository::load_shared_types(transaction, generation_id, &names).await?;
         closure.reach(&names, found)?;
     }
-    Ok(closure.compose(operation.typescript_declaration()))
+    Ok(closure.compose(tool.typescript_declaration()))
 }
 
 /// Reads hints and the HTTP method for 1–100 exact keys without loading
 /// executable definitions or schemas. The method is `None` for other protocols.
-/// Absent keys are omitted; structurally unavailable Operations remain included.
+/// Absent keys are omitted; structurally unavailable Tools remain included.
 /// # Errors
 /// Returns invalid-size, persistence or corrupt-generation failures.
-pub async fn operation_hints_and_methods_in_transaction(
+pub async fn tool_hints_and_methods_in_transaction(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-    keys: &[OperationKey],
-) -> Result<std::collections::BTreeMap<OperationKey, (OperationHints, Option<HttpMethod>)>, Error> {
+    keys: &[ToolKey],
+) -> Result<std::collections::BTreeMap<ToolKey, (ToolHints, Option<HttpMethod>)>, Error> {
     if !(1..=100).contains(&keys.len()) {
-        return Err(Error::InvalidInput(
-            "invalid Operation hints batch size".into(),
-        ));
+        return Err(Error::InvalidInput("invalid Tool hints batch size".into()));
     }
-    repository::load_operation_hints_and_methods(transaction, generation_id, keys).await
+    repository::load_tool_hints_and_methods(transaction, generation_id, keys).await
 }
 
-/// Reads one summary page in Operation Key order, plus at most one lookahead row.
+/// Reads one summary page in Tool Key order, plus at most one lookahead row.
 ///
 /// The caller owns authority and continuation encoding. `after` is exclusive;
 /// `page_size` must be 1..=100. Definitions, schemas, and declarations stay lazy.
 ///
 /// # Errors
 /// Returns an invalid size, persistence, or summary corruption failure.
-pub async fn operation_summaries_in_transaction(
+pub async fn tool_summaries_in_transaction(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-    after: Option<&OperationKey>,
+    after: Option<&ToolKey>,
     page_size: u32,
-) -> Result<Vec<OperationSummary>, Error> {
+) -> Result<Vec<ToolSummary>, Error> {
     if !(1..=100).contains(&page_size) {
         return Err(Error::InvalidInput("invalid catalog page size".into()));
     }
-    repository::load_operation_summaries(transaction, generation_id, after, page_size).await
+    repository::load_tool_summaries(transaction, generation_id, after, page_size).await
 }
 
 /// Loads the bounded current catalog for authorized administrative inspection.
 ///
-/// Unavailable Operations remain visible with their structural diagnostics.
+/// Unavailable Tools remain visible with their structural diagnostics.
 ///
 /// # Errors
 /// Returns persistence or corrupt-package failures.
-pub async fn operations_in_transaction(
+pub async fn tools_in_transaction(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-) -> Result<Vec<MaterializedOperation>, Error> {
-    repository::load_catalog_operations(transaction, generation_id).await
+) -> Result<Vec<MaterializedTool>, Error> {
+    repository::load_catalog_tools(transaction, generation_id).await
 }
 
-/// Loads one Operation by its exact Generation-relative Call Path projection.
+/// Loads one Tool by its exact Generation-relative Call Path projection.
 ///
 /// This transaction-compatible facet supports atomic Invocation admission;
-/// callers still retain the returned Operation Key as the callable address.
+/// callers still retain the returned Tool Key as the callable address.
 ///
 /// # Errors
 ///
 /// Returns a persistence or corrupt-package failure. `Ok(None)` means the
 /// Generation has no matching active projection.
-pub async fn operation_by_relative_path_in_transaction(
+pub async fn tool_by_relative_path_in_transaction(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
     relative_path: &str,
-) -> Result<Option<MaterializedOperation>, Error> {
-    repository::load_operation_by_relative_path(transaction, generation_id, relative_path).await
+) -> Result<Option<MaterializedTool>, Error> {
+    repository::load_tool_by_relative_path(transaction, generation_id, relative_path).await
 }

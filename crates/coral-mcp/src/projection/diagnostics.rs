@@ -78,8 +78,8 @@ pub(super) struct ProgramError<'a> {
     message: &'a str,
     frames: Vec<Frame<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "OperationError<'a>")]
-    operation: Option<OperationError<'a>>,
+    #[schemars(with = "ToolError<'a>")]
+    tool: Option<ToolError<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Self")]
     cause: Option<Box<Self>>,
@@ -108,7 +108,7 @@ struct Frame<'a> {
 
 #[derive(Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct OperationError<'a> {
+struct ToolError<'a> {
     code: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "str")]
@@ -141,12 +141,12 @@ impl<'a> TryFrom<&'a coral_run::ProgramError> for ProgramError<'a> {
                     column: frame.column,
                 })
                 .collect(),
-            operation: error.operation.as_ref().map(|operation| OperationError {
-                code: &operation.code,
-                trace_id: operation.trace_id.as_deref(),
-                status: operation.status,
-                body: operation.body.as_deref(),
-                body_truncated: operation.body_truncated,
+            tool: error.tool.as_ref().map(|tool| ToolError {
+                code: &tool.code,
+                trace_id: tool.trace_id.as_deref(),
+                status: tool.status,
+                body: tool.body.as_deref(),
+                body_truncated: tool.body_truncated,
             }),
             cause: error
                 .cause
@@ -178,12 +178,12 @@ impl<'a> TryFrom<&'a coral_run::ProgramError> for ProgramError<'a> {
 mod tests {
     use super::ProgramError;
 
-    fn rejected(operation: coral_run::ProgramOperationError) -> serde_json::Value {
+    fn rejected(tool: coral_run::ProgramToolError) -> serde_json::Value {
         let error = coral_run::ProgramError {
-            name: "OperationError".to_string(),
+            name: "ToolError".to_string(),
             message: "The upstream service returned an error".to_string(),
             frames: Vec::new(),
-            operation: Some(operation),
+            tool: Some(tool),
             cause: None,
             errors: Vec::new(),
             truncated: false,
@@ -196,15 +196,15 @@ mod tests {
         };
         serde_json::to_value(projected)
             .expect("JSON")
-            .get("operation")
+            .get("tool")
             .cloned()
             .unwrap_or_default()
     }
 
     #[test]
-    fn an_upstream_operation_error_projects_its_status_and_body() {
+    fn an_upstream_tool_error_projects_its_status_and_body() {
         assert_eq!(
-            rejected(coral_run::ProgramOperationError {
+            rejected(coral_run::ProgramToolError {
                 code: "error_response".to_string(),
                 trace_id: None,
                 status: Some(404),
@@ -220,14 +220,14 @@ mod tests {
         );
         // A Coral Failure has no upstream evidence to project.
         assert_eq!(
-            rejected(coral_run::ProgramOperationError {
-                code: "operation_not_found".to_string(),
+            rejected(coral_run::ProgramToolError {
+                code: "tool_not_found".to_string(),
                 trace_id: None,
                 status: None,
                 body: None,
                 body_truncated: false,
             }),
-            serde_json::json!({"code": "operation_not_found"})
+            serde_json::json!({"code": "tool_not_found"})
         );
     }
 }

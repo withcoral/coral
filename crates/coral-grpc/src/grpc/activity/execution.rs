@@ -167,17 +167,17 @@ pub(super) fn summary(value: coral_run::ActivitySummary) -> wire::SummarizeActiv
         stopped: value
             .stopped
             .into_iter()
-            .map(|op| wire::ActivityStoppedOperation {
+            .map(|op| wire::ActivityStoppedTool {
                 call_path: op.call_path,
                 blocked: op.blocked,
                 not_allowed: op.not_allowed,
                 needs_setup: op.needs_setup,
             })
             .collect(),
-        operations: value
-            .operations
+        tools: value
+            .tools
             .into_iter()
-            .map(|op| wire::ActivityOperationCalls {
+            .map(|op| wire::ActivityToolCalls {
                 call_path: op.call_path,
                 calls: op.calls,
             })
@@ -224,7 +224,7 @@ pub(super) fn invocation(value: &coral_run::InvocationSummary) -> wire::Activity
             "workspaces/{}/providers/{}",
             value.workspace, value.provider
         ),
-        operation: value.operation.clone(),
+        tool: value.tool.clone(),
         call_path: value.call_path.clone(),
         actor: value.principal.id().to_string(),
         agent: agent(&value.workspace, &value.principal),
@@ -280,28 +280,28 @@ fn program_error(value: &coral_run::ProgramError) -> wire::ActivityProgramError 
                 column: f.column,
             })
             .collect(),
-        operation_code: value
-            .operation
+        tool_code: value
+            .tool
             .as_ref()
             .map(|o| o.code.clone())
             .unwrap_or_default(),
-        operation_trace_id: value
-            .operation
+        tool_trace_id: value
+            .tool
             .as_ref()
             .and_then(|o| o.trace_id.clone())
             .unwrap_or_default(),
-        operation_status: value
-            .operation
+        tool_status: value
+            .tool
             .as_ref()
             .and_then(|o| o.status)
             .map(u32::from)
             .unwrap_or_default(),
-        operation_body: value
-            .operation
+        tool_body: value
+            .tool
             .as_ref()
             .and_then(|o| o.body.clone())
             .unwrap_or_default(),
-        operation_body_truncated: value.operation.as_ref().is_some_and(|o| o.body_truncated),
+        tool_body_truncated: value.tool.as_ref().is_some_and(|o| o.body_truncated),
         cause: value.cause.as_ref().map(|c| Box::new(program_error(c))),
         errors: value.errors.iter().map(program_error).collect(),
         truncated: value.truncated,

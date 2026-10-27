@@ -21,13 +21,13 @@ use coral_workspace::{AuthenticatedUser, ChangeContext, WorkspaceAction};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
-/// One previewed Operation and the safe labels a setup step lists it by.
-/// Availability is not repeated here; `unavailable_operations` carries it by Key.
+/// One previewed Tool and the safe labels a setup step lists it by.
+/// Availability is not repeated here; `unavailable_tools` carries it by Key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
-pub struct ReviewedOperation {
-    /// Operation Key in the previewed catalog.
+pub struct ReviewedTool {
+    /// Tool Key in the previewed catalog.
     pub key: String,
-    /// Collision-free Operation-relative path.
+    /// Collision-free Tool-relative path.
     pub relative_path: String,
     /// Safe authoring summary; empty when the Provider authored none.
     pub summary: String,
@@ -55,7 +55,7 @@ pub struct SetupConfigurationReview {
     pub interrupts_access: Option<bool>,
     /// Supported choices; MCP never exposes unsupported metadata overrides.
     pub authentication_methods: Vec<coral_catalog::AuthenticationKind>,
-    /// Whether sign-in is necessary to obtain the Operation catalog.
+    /// Whether sign-in is necessary to obtain the Tool catalog.
     pub discovery_authorization_required: bool,
     /// Discovered OAuth issuer, never owner-supplied metadata.
     pub issuer: Option<String>,
@@ -63,12 +63,12 @@ pub struct SetupConfigurationReview {
     pub resource: Option<String>,
     /// Validated device endpoint advertised by the MCP authorization server.
     pub device_authorization_url: Option<String>,
-    /// Resolved destinations by Operation Key.
+    /// Resolved destinations by Tool Key.
     pub destinations: BTreeMap<String, String>,
-    /// Every previewed Operation, in catalog order, with the labels steps list it by.
-    pub operations: Vec<ReviewedOperation>,
-    /// Operations omitted from callable discovery after final validation.
-    pub unavailable_operations: BTreeMap<String, Vec<coral_catalog::CatalogDiagnostic>>,
+    /// Every previewed Tool, in catalog order, with the labels steps list it by.
+    pub tools: Vec<ReviewedTool>,
+    /// Tools omitted from callable discovery after final validation.
+    pub unavailable_tools: BTreeMap<String, Vec<coral_catalog::CatalogDiagnostic>>,
     /// Safe structural diagnostic if materialization cannot produce a catalog.
     pub diagnostic: Option<String>,
     /// Recoverable field errors, without rejected values or credentials.
@@ -637,7 +637,7 @@ pub(crate) fn review_with_active(
 ) -> Result<SetupConfigurationReview, Error> {
     let mut result = review(policy, loaded)?;
     // Protected MCP already pins its destination and discovered authority before
-    // listing operations. Compare that confirmed contract before offering sign-in,
+    // listing tools. Compare that confirmed contract before offering sign-in,
     // rather than treating absent catalog material as unknown compatibility.
     let candidate = if result.configuration_confirmed
         && result.discovery_authorization_required
@@ -682,8 +682,8 @@ fn review(
         resource: None,
         device_authorization_url: None,
         destinations: BTreeMap::new(),
-        operations: Vec::new(),
-        unavailable_operations: BTreeMap::new(),
+        tools: Vec::new(),
+        unavailable_tools: BTreeMap::new(),
         diagnostic: None,
         errors: Vec::new(),
         preview_contract: None,
@@ -738,10 +738,10 @@ fn review(
             .is_none()
             .then(|| preview.contract.clone());
         result.destinations.clone_from(&preview.destinations);
-        result.operations.clone_from(&preview.operations);
+        result.tools.clone_from(&preview.tools);
         result
-            .unavailable_operations
-            .clone_from(&preview.unavailable_operations);
+            .unavailable_tools
+            .clone_from(&preview.unavailable_tools);
         if preview.diagnostic.is_some() {
             result.diagnostic.clone_from(&preview.diagnostic);
         }

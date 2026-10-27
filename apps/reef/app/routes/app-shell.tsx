@@ -62,7 +62,7 @@ export function shouldRevalidate({
   defaultShouldRevalidate,
 }: ShouldRevalidateFunctionArgs) {
   if ((formMethod && formMethod.toUpperCase() !== 'GET') || actionStatus !== undefined) return true
-  const providerPath = /^(\/workspaces\/[^/]+\/providers\/[^/]+)(?:\/ops\/[^/]+)?$/
+  const providerPath = /^(\/workspaces\/[^/]+\/providers\/[^/]+)(?:\/tools\/[^/]+)?$/
   const current = providerPath.exec(currentUrl.pathname)
   const next = providerPath.exec(nextUrl.pathname)
   if (current && next && current[1] === next[1] && currentUrl.search === nextUrl.search)

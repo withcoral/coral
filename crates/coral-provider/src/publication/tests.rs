@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use coral_catalog::{
-    ExecutionBinding, HttpExecutionBinding, HttpResponseStatus, MaterializedOperation,
-    McpExecutionBinding, McpInvocationMethod, McpTaskSupport, OperationAvailability, OperationKey,
-    ProviderSetupInputKind,
+    ExecutionBinding, HttpExecutionBinding, HttpResponseStatus, MaterializedTool,
+    McpExecutionBinding, McpInvocationMethod, McpTaskSupport, ProviderSetupInputKind,
+    ToolAvailability, ToolKey,
 };
 pub(super) use coral_test_support::provision_user as organization_user;
 use coral_workspace::{AuthenticatedUser, OrganizationRole, WorkspaceDisplayName, WorkspaceModule};
@@ -24,15 +24,15 @@ use crate::{
     WorkspaceId, WorkspaceProviderPublicationRequest,
 };
 
-fn http_binding(operation: &MaterializedOperation) -> &HttpExecutionBinding {
-    let ExecutionBinding::Http(binding) = operation.execution_binding() else {
+fn http_binding(tool: &MaterializedTool) -> &HttpExecutionBinding {
+    let ExecutionBinding::Http(binding) = tool.execution_binding() else {
         panic!("OpenAPI materialization must produce an HTTP Execution Binding");
     };
     binding
 }
 
-fn mcp_binding(operation: &MaterializedOperation) -> &McpExecutionBinding {
-    let ExecutionBinding::Mcp(binding) = operation.execution_binding() else {
+fn mcp_binding(tool: &MaterializedTool) -> &McpExecutionBinding {
+    let ExecutionBinding::Mcp(binding) = tool.execution_binding() else {
         panic!("MCP materialization must produce an MCP Execution Binding");
     };
     binding
@@ -250,22 +250,22 @@ async fn publishes_workspace_provider_catalog_and_access_atomically() {
         .expect("successful Provider resources");
     assert_eq!(published.owner(), &workspace.id().clone());
     assert_eq!(published.display_name(), "Weather");
-    let operation = providers
-        .inspect_operation(
+    let tool = providers
+        .inspect_tool(
             &owner,
             workspace.id(),
             published.id(),
-            &OperationKey::parse("getForecast").expect("Operation Key"),
+            &ToolKey::parse("getForecast").expect("Tool Key"),
         )
         .await
-        .expect("inspect active tracer Operation without private Generation data");
-    assert_eq!(operation.key().as_str(), "getForecast");
-    assert_eq!(operation.relative_path(), "getForecast");
-    let binding = http_binding(&operation);
+        .expect("inspect active tracer Tool without private Generation data");
+    assert_eq!(tool.key().as_str(), "getForecast");
+    assert_eq!(tool.relative_path(), "getForecast");
+    let binding = http_binding(&tool);
     assert_eq!(binding.method().as_str(), "get");
     assert_eq!(binding.path_template(), "/forecast");
     assert_eq!(binding.server_url(), Some("https://weather.example/"));
-    assert_eq!(operation.availability(), OperationAvailability::Available);
+    assert_eq!(tool.availability(), ToolAvailability::Available);
     assert_eq!(
         binding
             .responses()
@@ -275,8 +275,8 @@ async fn publishes_workspace_provider_catalog_and_access_atomically() {
         HttpResponseStatus::Code(200),
         "the typed HTTP binding survives the SQLite/Postgres repository round trip"
     );
-    assert_eq!(operation.hints(), coral_catalog::OperationHints::default());
-    let declaration = operation.typescript_declaration();
+    assert_eq!(tool.hints(), coral_catalog::ToolHints::default());
+    let declaration = tool.typescript_declaration();
     assert_eq!(
         declaration.lines().last(),
         Some("export default function (): Promise<HttpResult<unknown, 200, string | null>>;")
@@ -349,7 +349,7 @@ async fn successful_regeneration_atomically_activates_current_material_and_retai
         "14000000-0000-4000-8000-000000000010",
     )
     .await;
-    let retained = retained_operation(
+    let retained = retained_tool(
         &providers,
         &fixture.workspace_id,
         fixture.provider_access.call_root(),
@@ -394,30 +394,30 @@ async fn successful_regeneration_atomically_activates_current_material_and_retai
     );
     assert!(matches!(
         providers
-            .inspect_operation(
+            .inspect_tool(
                 &fixture.owner,
                 &fixture.workspace_id,
                 &fixture.provider_id,
-                &OperationKey::parse("getForecast").expect("old Operation Key"),
+                &ToolKey::parse("getForecast").expect("old Tool Key"),
             )
             .await,
-        Err(crate::Error::OperationNotFound)
+        Err(crate::Error::ToolNotFound)
     ));
     assert_eq!(
         providers
-            .inspect_operation(
+            .inspect_tool(
                 &fixture.owner,
                 &fixture.workspace_id,
                 &fixture.provider_id,
-                &OperationKey::parse("getCurrentWeather").expect("new Operation Key"),
+                &ToolKey::parse("getCurrentWeather").expect("new Tool Key"),
             )
             .await
-            .expect("inspect replacement Operation")
+            .expect("inspect replacement Tool")
             .summary(),
         "Get current weather"
     );
     assert_eq!(
-        operation_authoring_paths(&providers, &fixture.workspace_id).await,
+        tool_authoring_paths(&providers, &fixture.workspace_id).await,
         ["coral.providers.weather.getCurrentWeather"],
         "later discovery reads only the atomically activated material"
     );
@@ -434,8 +434,8 @@ async fn successful_regeneration_atomically_activates_current_material_and_retai
         "regeneration preserves namespace, credential route, and account-setting version"
     );
     assert_eq!(
-        verify_retained_operation(&providers, &fixture.workspace_id, &retained).await,
-        crate::InvocationOperationVerification::Current,
+        verify_retained_tool(&providers, &fixture.workspace_id, &retained).await,
+        crate::InvocationToolVerification::Current,
         "an admitted Invocation keeps its selected executable Generation"
     );
     assert_eq!(
@@ -508,7 +508,7 @@ async fn regeneration_reuses_the_active_generation_only_for_an_unchanged_package
             "14000000-0000-4000-8000-000000000028",
         )
         .await;
-        let before = retained_operation(
+        let before = retained_tool(
             &providers,
             &fixture.workspace_id,
             fixture.provider_access.call_root(),
@@ -524,7 +524,7 @@ async fn regeneration_reuses_the_active_generation_only_for_an_unchanged_package
             )
             .await
             .expect("record regeneration");
-        let after = retained_operation(
+        let after = retained_tool(
             &providers,
             &fixture.workspace_id,
             fixture.provider_access.call_root(),
@@ -579,8 +579,7 @@ async fn regeneration_carries_active_collision_paths_and_releases_removed_claims
         )
         .await
         .expect("publish first collision catalog");
-    let first =
-        current_operation_paths(&providers, &fixture, &["foo-bar", "foo_bar", "stable"]).await;
+    let first = current_tool_paths(&providers, &fixture, &["foo-bar", "foo_bar", "stable"]).await;
 
     let replacement_setup = fixture
         .replacement_setup(
@@ -600,7 +599,7 @@ async fn regeneration_carries_active_collision_paths_and_releases_removed_claims
         )
         .await
         .expect("publish replacement collision catalog");
-    let replacement = current_operation_paths(
+    let replacement = current_tool_paths(
         &providers,
         &fixture,
         &["foo-bar", "foo_bar", "stable", "foo bar"],
@@ -626,7 +625,7 @@ async fn regeneration_carries_active_collision_paths_and_releases_removed_claims
         .await
         .expect("publish catalog after removal");
     let after_removal =
-        current_operation_paths(&providers, &fixture, &["foo_bar", "stable", "foo@bar"]).await;
+        current_tool_paths(&providers, &fixture, &["foo_bar", "stable", "foo@bar"]).await;
     assert_eq!(after_removal.get("foo_bar"), replacement.get("foo_bar"));
     assert_eq!(after_removal.get("foo@bar"), first.get("foo-bar"));
 }
@@ -680,19 +679,19 @@ async fn failed_regeneration_consumes_setup_and_leaves_active_material_and_provi
     );
     assert_eq!(
         providers
-            .inspect_operation(
+            .inspect_tool(
                 &fixture.owner,
                 &fixture.workspace_id,
                 &fixture.provider_id,
-                &OperationKey::parse("getForecast").expect("Operation Key"),
+                &ToolKey::parse("getForecast").expect("Tool Key"),
             )
             .await
-            .expect("inspect unchanged active Operation")
+            .expect("inspect unchanged active Tool")
             .summary(),
         "Get forecast"
     );
     assert_eq!(
-        operation_authoring_paths(&providers, &fixture.workspace_id).await,
+        tool_authoring_paths(&providers, &fixture.workspace_id).await,
         ["coral.providers.weather.getForecast"],
         "failed replacement changes no active search material"
     );
@@ -764,11 +763,11 @@ async fn regeneration_materialization_holds_no_transaction_and_preserves_indepen
 
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         providers
-            .inspect_operation(
+            .inspect_tool(
                 &fixture.owner,
                 &fixture.workspace_id,
                 &fixture.provider_id,
-                &OperationKey::parse("getForecast").expect("active Operation Key"),
+                &ToolKey::parse("getForecast").expect("active Tool Key"),
             )
             .await
             .expect("old active Generation stays usable during materialization");
@@ -803,7 +802,7 @@ async fn regeneration_materialization_holds_no_transaction_and_preserves_indepen
         2
     );
     assert_eq!(
-        operation_authoring_paths(&providers, &fixture.workspace_id).await,
+        tool_authoring_paths(&providers, &fixture.workspace_id).await,
         [
             "coral.providers.weather.getCurrentWeather",
             "coral.providers.weather_team.getForecast",
@@ -885,7 +884,7 @@ async fn active_generation_race_records_no_outcome_and_leaves_setup_reusable() {
         Err(crate::Error::ProviderPublicationNotFound)
     ));
     assert_eq!(
-        operation_authoring_paths(&raced_providers, &fixture.workspace_id).await,
+        tool_authoring_paths(&raced_providers, &fixture.workspace_id).await,
         ["coral.providers.weather.getLatestWeather"],
         "the losing package never replaces the winning active Generation"
     );
@@ -899,7 +898,7 @@ async fn active_generation_race_records_no_outcome_and_leaves_setup_reusable() {
         .expect("retry against the current active Generation");
     assert_eq!(retried.outcome(), ProviderPublicationOutcome::Succeeded);
     assert_eq!(
-        operation_authoring_paths(&raced_providers, &fixture.workspace_id).await,
+        tool_authoring_paths(&raced_providers, &fixture.workspace_id).await,
         ["coral.providers.weather.getCurrentWeather"]
     );
 }
@@ -974,7 +973,7 @@ async fn regeneration_request_id_reuse_returns_conflict_without_changing_state()
         ProviderSetupState::Ready
     );
     assert_eq!(
-        operation_authoring_paths(&providers, &fixture.workspace_id).await,
+        tool_authoring_paths(&providers, &fixture.workspace_id).await,
         ["coral.providers.weather.getCurrentWeather"]
     );
 
@@ -1000,7 +999,7 @@ async fn regeneration_request_id_reuse_returns_conflict_without_changing_state()
         ProviderSetupState::Consumed(independent.id().clone())
     );
     assert_eq!(
-        operation_authoring_paths(&providers, &other_fixture.workspace_id).await,
+        tool_authoring_paths(&providers, &other_fixture.workspace_id).await,
         ["coral.providers.weather.getLatestWeather"]
     );
 }
@@ -1137,11 +1136,11 @@ async fn archived_workspace_permits_exact_replay_and_safe_inspection() {
         ProviderSetupState::Consumed(_)
     ));
     providers
-        .inspect_operation(
+        .inspect_tool(
             &owner,
             workspace.id(),
             &provider_id,
-            &OperationKey::parse("getForecast").expect("Operation Key"),
+            &ToolKey::parse("getForecast").expect("Tool Key"),
         )
         .await
         .expect("inspect archived Catalog");
@@ -1158,7 +1157,7 @@ async fn archived_workspace_permits_exact_replay_and_safe_inspection() {
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one test contrasts root failure, malformed Operation failure, and unavailable sibling behavior"
+    reason = "one test contrasts root failure, malformed Tool failure, and unavailable sibling behavior"
 )]
 async fn malformed_openapi_records_terminal_structural_failures() {
     let (fixture, workspaces, providers) = test_modules().await;
@@ -1208,48 +1207,48 @@ async fn malformed_openapi_records_terminal_structural_failures() {
         "unsupported_openapi_version"
     );
 
-    let malformed_operation_setup = providers
+    let malformed_tool_setup = providers
         .prepare_openapi_fixture(
             &change_context(owner.clone(), 80, '8'),
             workspace.id(),
             OpenApiDocument::parse(MISSING_RESPONSES_OPENAPI).expect("accepted exact input"),
         )
         .await
-        .expect("create malformed-Operation Setup");
-    let malformed_operation = providers
+        .expect("create malformed-Tool Setup");
+    let malformed_tool = providers
         .publish_workspace_provider(
             &change_context(owner.clone(), 90, '9'),
             publication_request(
                 workspace.id(),
-                malformed_operation_setup.id(),
+                malformed_tool_setup.id(),
                 "missing_responses",
                 CredentialRoute::None,
                 "15000000-0000-4000-8000-000000000002",
             ),
         )
         .await
-        .expect("record malformed Operation failure");
+        .expect("record malformed Tool failure");
     assert_eq!(
-        malformed_operation.outcome(),
+        malformed_tool.outcome(),
         ProviderPublicationOutcome::Succeeded
     );
-    let malformed_provider = malformed_operation
+    let malformed_provider = malformed_tool
         .published_provider()
-        .expect("catalog containing malformed Operation");
+        .expect("catalog containing malformed Tool");
     let malformed = providers
-        .inspect_operation(
+        .inspect_tool(
             &owner,
             workspace.id(),
             malformed_provider.id(),
-            &OperationKey::parse("missingResponsesForecast").expect("Operation Key"),
+            &ToolKey::parse("missingResponsesForecast").expect("Tool Key"),
         )
         .await
-        .expect("inspect malformed Operation");
-    assert_eq!(malformed.availability(), OperationAvailability::Unavailable);
+        .expect("inspect malformed Tool");
+    assert_eq!(malformed.availability(), ToolAvailability::Unavailable);
     assert_eq!(
         malformed
             .diagnostic()
-            .expect("malformed Operation diagnostic")
+            .expect("malformed Tool diagnostic")
             .code(),
         "invalid_openapi_operation"
     );
@@ -1261,7 +1260,7 @@ async fn malformed_openapi_records_terminal_structural_failures() {
             OpenApiDocument::parse(UNSUPPORTED_INPUT_OPENAPI).expect("accepted exact input"),
         )
         .await
-        .expect("create unsupported-Operation Setup");
+        .expect("create unsupported-Tool Setup");
     let publication = providers
         .publish_workspace_provider(
             &change_context(owner.clone(), 92, 'b'),
@@ -1274,41 +1273,38 @@ async fn malformed_openapi_records_terminal_structural_failures() {
             ),
         )
         .await
-        .expect("publish catalog with unavailable Operation");
+        .expect("publish catalog with unavailable Tool");
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let provider_id = publication
         .published_provider()
         .expect("published catalog")
         .id();
-    let operation = providers
-        .inspect_operation(
+    let tool = providers
+        .inspect_tool(
             &owner,
             workspace.id(),
             provider_id,
-            &OperationKey::parse("forecastWithInput").expect("Operation Key"),
+            &ToolKey::parse("forecastWithInput").expect("Tool Key"),
         )
         .await
-        .expect("inspect unavailable Operation");
-    assert_eq!(operation.availability(), OperationAvailability::Unavailable);
+        .expect("inspect unavailable Tool");
+    assert_eq!(tool.availability(), ToolAvailability::Unavailable);
     assert_eq!(
-        operation
-            .diagnostic()
-            .expect("unavailability diagnostic")
-            .code(),
+        tool.diagnostic().expect("unavailability diagnostic").code(),
         "unsupported_parameter_serialization"
     );
     assert_eq!(
         providers
-            .inspect_operation(
+            .inspect_tool(
                 &owner,
                 workspace.id(),
                 provider_id,
-                &OperationKey::parse("getHealth").expect("Operation Key"),
+                &ToolKey::parse("getHealth").expect("Tool Key"),
             )
             .await
-            .expect("valid sibling Operation remains published")
+            .expect("valid sibling Tool remains published")
             .availability(),
-        OperationAvailability::Available
+        ToolAvailability::Available
     );
 }
 
@@ -2350,7 +2346,7 @@ async fn interrupted_publications_leave_no_outcome_or_replay_the_committed_one()
                     .await
                     .expect("inspect the Setup")
                     .state(),
-                paths: operation_authoring_paths(providers, &fixture.workspace_id).await,
+                paths: tool_authoring_paths(providers, &fixture.workspace_id).await,
                 events: lifecycle_actions(&fixture.events(providers).await),
             }
         };
@@ -2410,7 +2406,7 @@ async fn interrupted_publications_leave_no_outcome_or_replay_the_committed_one()
     clippy::too_many_lines,
     reason = "one public Module sequence proves the mixed package commits as a unit"
 )]
-async fn mixed_mcp_publication_atomically_persists_valid_unsupported_and_resource_operations() {
+async fn mixed_mcp_publication_atomically_persists_valid_unsupported_and_resource_tools() {
     let (fixture, workspaces, providers) = test_modules().await;
     let owner = organization_user(
         fixture.database(),
@@ -2454,18 +2450,18 @@ async fn mixed_mcp_publication_atomically_persists_valid_unsupported_and_resourc
         .id();
 
     let lookup = providers
-        .inspect_operation(
+        .inspect_tool(
             &owner,
             workspace.id(),
             provider_id,
-            &OperationKey::parse("lookup").expect("lookup key"),
+            &ToolKey::parse("lookup").expect("lookup key"),
         )
         .await
-        .expect("persisted valid MCP Operation");
-    assert_eq!(lookup.availability(), OperationAvailability::Available);
+        .expect("persisted valid MCP-backed Tool");
+    assert_eq!(lookup.availability(), ToolAvailability::Available);
     assert_eq!(
         lookup.hints(),
-        coral_catalog::OperationHints::new(Some(true), None, None, None)
+        coral_catalog::ToolHints::new(Some(true), None, None, None)
     );
     let lookup_binding = mcp_binding(&lookup);
     assert_eq!(
@@ -2489,18 +2485,15 @@ async fn mixed_mcp_publication_atomically_persists_valid_unsupported_and_resourc
     );
 
     let unsupported = providers
-        .inspect_operation(
+        .inspect_tool(
             &owner,
             workspace.id(),
             provider_id,
-            &OperationKey::parse("task_only").expect("task key"),
+            &ToolKey::parse("task_only").expect("task key"),
         )
         .await
         .expect("persisted unsupported sibling");
-    assert_eq!(
-        unsupported.availability(),
-        OperationAvailability::Unavailable
-    );
+    assert_eq!(unsupported.availability(), ToolAvailability::Unavailable);
     assert_eq!(
         unsupported.diagnostic().expect("safe diagnostic").code(),
         "upstream_mcp_task_required"
@@ -2516,14 +2509,14 @@ async fn mixed_mcp_publication_atomically_persists_valid_unsupported_and_resourc
     );
 
     let resource_read = providers
-        .inspect_operation(
+        .inspect_tool(
             &owner,
             workspace.id(),
             provider_id,
-            &OperationKey::parse("resources/read").expect("resource key"),
+            &ToolKey::parse("resources/read").expect("resource key"),
         )
         .await
-        .expect("persisted synthesized resource Operation");
+        .expect("persisted synthesized resource Tool");
     assert_eq!(resource_read.relative_path(), "resources.read");
     assert_eq!(
         mcp_binding(&resource_read).invocation_method(),
@@ -2881,23 +2874,23 @@ impl WorkspaceRegenerationFixture {
     }
 }
 
-async fn current_operation_paths(
+async fn current_tool_paths(
     providers: &ProviderModule,
     fixture: &WorkspaceRegenerationFixture,
     keys: &[&str],
 ) -> BTreeMap<String, String> {
     let mut paths = BTreeMap::new();
     for key in keys {
-        let operation = providers
-            .inspect_operation(
+        let tool = providers
+            .inspect_tool(
                 &fixture.owner,
                 &fixture.workspace_id,
                 &fixture.provider_id,
-                &OperationKey::parse(key).expect("Operation Key"),
+                &ToolKey::parse(key).expect("Tool Key"),
             )
             .await
-            .expect("inspect current Operation");
-        paths.insert((*key).to_string(), operation.relative_path().to_string());
+            .expect("inspect current Tool");
+        paths.insert((*key).to_string(), tool.relative_path().to_string());
     }
     paths
 }
@@ -2912,7 +2905,7 @@ fn collision_openapi(operation_ids: &[&str]) -> String {
         .enumerate()
         .map(|(index, operation_id)| {
             format!(
-                "  /operation-{index}:\n    get:\n      operationId: {operation_id}\n      responses:\n        \"200\":\n          description: ok\n"
+                "  /tool-{index}:\n    get:\n      operationId: {operation_id}\n      responses:\n        \"200\":\n          description: ok\n"
             )
         })
         .collect::<String>();

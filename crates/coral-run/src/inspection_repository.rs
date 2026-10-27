@@ -10,31 +10,29 @@ pub(crate) async fn approval_labels(
 ) -> Result<(Option<String>, Option<String>), Error> {
     let mut select = Query::select();
     select
-        .from(Alias::new("operation_invocations"))
+        .from(Alias::new("tool_invocations"))
         .join_as(
             sea_query::JoinType::InnerJoin,
             Alias::new("program_run_records"),
             Alias::new("r"),
             Expr::col(column("r", "workspace_id"))
-                .eq(Expr::col(column("operation_invocations", "workspace_id")))
+                .eq(Expr::col(column("tool_invocations", "workspace_id")))
                 .and(
                     Expr::col(column("r", "id"))
-                        .eq(Expr::col(column("operation_invocations", "run_id"))),
+                        .eq(Expr::col(column("tool_invocations", "run_id"))),
                 ),
         )
         .expr(coral_provider::history_repository::display_label(
-            column("operation_invocations", "workspace_id"),
-            column("operation_invocations", "provider_id"),
+            column("tool_invocations", "workspace_id"),
+            column("tool_invocations", "provider_id"),
         ))
         .expr(coral_workspace::history_repository::agent_label(
             column("r", "workspace_id"),
             column("r", "principal_id"),
         ));
     select
-        .and_where(
-            Expr::col(column("operation_invocations", "workspace_id")).eq(workspace.to_string()),
-        )
-        .and_where(Expr::col(column("operation_invocations", "id")).eq(invocation.to_string()));
+        .and_where(Expr::col(column("tool_invocations", "workspace_id")).eq(workspace.to_string()))
+        .and_where(Expr::col(column("tool_invocations", "id")).eq(invocation.to_string()));
     tx.fetch_optional(select).await?.ok_or(Error::RunNotFound)
 }
 
@@ -57,12 +55,7 @@ pub(crate) async fn has_account_connection(
     run: &RunId,
     request: coral_provider::account::ConnectionRequestId,
 ) -> Result<bool, Error> {
-    let mut select = scoped(
-        "operation_invocations",
-        workspace,
-        "run_id",
-        run.to_string(),
-    );
+    let mut select = scoped("tool_invocations", workspace, "run_id", run.to_string());
     select
         .expr(Expr::val(1_i64))
         .and_where(
@@ -119,7 +112,7 @@ pub(crate) async fn invocation_run(
     workspace: &WorkspaceId,
     id: &InvocationId,
 ) -> Result<Option<RunId>, Error> {
-    let mut select = scoped("operation_invocations", workspace, "id", id.to_string());
+    let mut select = scoped("tool_invocations", workspace, "id", id.to_string());
     select.column(Alias::new("run_id"));
     tx.fetch_optional::<(String,)>(select)
         .await?
@@ -143,12 +136,7 @@ pub(crate) async fn invocation(
     let summary =
         crate::history_repository::exact_invocation(tx, &run.workspace_id, &run.id, id, now)
             .await?;
-    let mut select = scoped(
-        "operation_invocations",
-        &run.workspace_id,
-        "id",
-        id.to_string(),
-    );
+    let mut select = scoped("tool_invocations", &run.workspace_id, "id", id.to_string());
     select
         .and_where(Expr::col(Alias::new("run_id")).eq(run.id.to_string()))
         .columns([

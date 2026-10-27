@@ -160,14 +160,14 @@ async fn hits_hydrate_the_fields_the_stored_generations_entries_index() {
     };
     assert!(
         cities
-            .operations()
-            .all(|operation| !operation.unwrap().declaration_fields().is_empty()),
+            .tools()
+            .all(|tool| !tool.unwrap().declaration_fields().is_empty()),
         "the entries carry declaration fields"
     );
     assert_eq!(
         mixed
-            .operations()
-            .map(|operation| operation.unwrap().key().as_str())
+            .tools()
+            .map(|tool| tool.unwrap().key().as_str())
             .collect::<Vec<_>>(),
         ["lookup", "resources/read"],
         "the unavailable task-only tool has no entry"
@@ -188,22 +188,18 @@ async fn assert_hits_hydrate_their_indexed_fields(
         .into_iter()
         .find(|active| active.provider().id() == prepared.provider_id())
         .expect("the Provider is active");
-    for operation in prepared.operations() {
-        let operation = operation.unwrap();
-        let hydrated = crate::hydrate_operation_in_transaction(
-            &mut transaction,
-            loaded,
-            &active,
-            operation.key(),
-        )
-        .await
-        .unwrap()
-        .expect("an indexed Operation hydrates");
+    for tool in prepared.tools() {
+        let tool = tool.unwrap();
+        let hydrated =
+            crate::hydrate_tool_in_transaction(&mut transaction, loaded, &active, tool.key())
+                .await
+                .unwrap()
+                .expect("an indexed Tool hydrates");
         assert_eq!(
             hydrated.declaration_fields(),
-            operation.declaration_fields(),
+            tool.declaration_fields(),
             "a hit hydrates the fields its entry indexed: {}",
-            operation.key().as_str()
+            tool.key().as_str()
         );
     }
     transaction.rollback().await.unwrap();
@@ -282,11 +278,11 @@ async fn stored_entries_follow_the_providers_active_generation() {
     );
     assert_eq!(
         entries
-            .operations()
-            .map(|operation| operation.unwrap().key().as_str())
+            .tools()
+            .map(|tool| tool.unwrap().key().as_str())
             .collect::<Vec<_>>(),
         ["getCity", "listCities"],
-        "the entries are the new Generation's Operations"
+        "the entries are the new Generation's Tools"
     );
 }
 

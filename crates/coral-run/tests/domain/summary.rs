@@ -1,11 +1,11 @@
 use super::*;
 use crate::approval::ApprovalDecision;
-use crate::{ActivitySummary, ApprovalDecisions, CallOutcomes, OperationCalls, StoppedOperation};
+use crate::{ActivitySummary, ApprovalDecisions, CallOutcomes, StoppedTool, ToolCalls};
 
 const DAY: i64 = 86_400 * 1_000_000_000;
 const CALL: &str = "try { await coral.providers.weather.getForecast({}); return 'sent'; } catch (e) { return e.code; }";
 
-async fn forecast_fixture() -> (TestModules, OperationFixture) {
+async fn forecast_fixture() -> (TestModules, ToolFixture) {
     let fixture = TestModules::with_upstream(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         Arc::new(ScriptedUpstream::json(
@@ -14,10 +14,10 @@ async fn forecast_fixture() -> (TestModules, OperationFixture) {
         )),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:summary", "Summarize activity")
+    let tool = fixture
+        .user_tool("user:summary", "Summarize activity")
         .await;
-    (fixture, operation)
+    (fixture, tool)
 }
 
 async fn finish(
@@ -72,16 +72,12 @@ async fn decide(
     wait_for_terminal(&fixture.runs, actor, workspace, run).await;
 }
 
-async fn set_access(
-    fixture: &TestModules,
-    operation: &OperationFixture,
-    state: OperationAccessState,
-) {
+async fn set_access(fixture: &TestModules, tool: &ToolFixture, state: ToolAccessState) {
     fixture
         .policies
         .set_access_state(
-            &change(operation.user.clone(), 40, '4'),
-            operation.policy_target.clone(),
+            &change(tool.user.clone(), 40, '4'),
+            tool.policy_target.clone(),
             state,
         )
         .await
@@ -122,14 +118,14 @@ fn added(after: CallOutcomes, before: CallOutcomes) -> CallOutcomes {
 /// and the context totals agree with each other.
 #[tokio::test(flavor = "multi_thread")]
 async fn summary_counts_each_ended_call_once_and_splits_who_stopped_it() {
-    let (fixture, operation) = forecast_fixture().await;
-    let (actor, workspace) = (&operation.principal, &operation.workspace_id);
+    let (fixture, tool) = forecast_fixture().await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
     let before = summary(&fixture, actor, workspace).await;
     finish(&fixture, actor, workspace, CALL).await;
     finish(&fixture, actor, workspace, CALL).await;
-    set_access(&fixture, &operation, OperationAccessState::Disabled).await;
+    set_access(&fixture, &tool, ToolAccessState::Disabled).await;
     finish(&fixture, actor, workspace, CALL).await;
-    fixture.require_approval(&operation).await;
+    fixture.require_approval(&tool).await;
     let waiting = waiting_run(&fixture, actor, workspace).await;
     decide(
         &fixture,
@@ -152,15 +148,15 @@ async fn summary_counts_each_ended_call_once_and_splits_who_stopped_it() {
     );
     let call_path = "coral.providers.weather.getForecast";
     assert_eq!(
-        after.operations,
-        [OperationCalls {
+        after.tools,
+        [ToolCalls {
             call_path: call_path.into(),
             calls: 4,
         }]
     );
     assert_eq!(
         after.stopped,
-        [StoppedOperation {
+        [StoppedTool {
             call_path: call_path.into(),
             blocked: 1,
             not_allowed: 1,
@@ -196,14 +192,14 @@ async fn summary_counts_each_ended_call_once_and_splits_who_stopped_it() {
 /// Work outside the caller's attribution adds nothing.
 #[tokio::test(flavor = "multi_thread")]
 async fn summary_counts_only_the_callers_attribution() {
-    let (fixture, operation) = forecast_fixture().await;
-    let (owner, workspace) = (&operation.principal, &operation.workspace_id);
+    let (fixture, tool) = forecast_fixture().await;
+    let (owner, workspace) = (&tool.principal, &tool.workspace_id);
     let agent = registered_agent(&fixture.workspaces, owner, workspace).await;
     let member = AuthenticatedPrincipal::user(
         fixture
             .workspace_user(
                 workspace,
-                &operation.user,
+                &tool.user,
                 "user:summary-member",
                 WorkspaceRole::Member,
             )
@@ -240,10 +236,10 @@ async fn summary_counts_only_the_callers_attribution() {
 /// began before the window still counts, and nothing counts once it ended before.
 #[tokio::test(flavor = "multi_thread")]
 async fn summary_dates_each_fact_by_when_it_ended() {
-    let (fixture, operation) = forecast_fixture().await;
-    let (actor, workspace) = (&operation.principal, &operation.workspace_id);
+    let (fixture, tool) = forecast_fixture().await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
     fixture.clock.next.fetch_add(10 * DAY, Ordering::SeqCst);
-    fixture.require_approval(&operation).await;
+    fixture.require_approval(&tool).await;
     let waiting = waiting_run(&fixture, actor, workspace).await;
     decide(
         &fixture,
@@ -256,7 +252,7 @@ async fn summary_dates_each_fact_by_when_it_ended() {
     let run = &waiting.0;
     for (table, began, run_column) in [
         ("program_run_records", "accepted_at_unix_nanos", "id"),
-        ("operation_invocations", "admitted_at_unix_nanos", "run_id"),
+        ("tool_invocations", "admitted_at_unix_nanos", "run_id"),
         ("invocation_approvals", "created_at_unix_nanos", "run_id"),
     ] {
         let rewritten = fixture
@@ -276,7 +272,7 @@ async fn summary_dates_each_fact_by_when_it_ended() {
     let stale = summary(&fixture, actor, workspace).await;
     assert_eq!(stale.calls, CallOutcomes::default());
     assert_eq!(stale.approvals, ApprovalDecisions::default());
-    assert!(stale.operations.is_empty() && stale.actors.is_empty());
+    assert!(stale.tools.is_empty() && stale.actors.is_empty());
     assert_eq!(stale.context_impact_bytes, None);
 }
 
@@ -284,9 +280,9 @@ async fn summary_dates_each_fact_by_when_it_ended() {
 /// partial, not silently smaller.
 #[tokio::test(flavor = "multi_thread")]
 async fn summary_marks_the_total_partial_while_a_run_is_unmeasured() {
-    let (fixture, operation) = forecast_fixture().await;
-    let (actor, workspace) = (&operation.principal, &operation.workspace_id);
-    fixture.require_approval(&operation).await;
+    let (fixture, tool) = forecast_fixture().await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+    fixture.require_approval(&tool).await;
     let waiting = waiting_run(&fixture, actor, workspace).await;
     let running = summary(&fixture, actor, workspace).await;
     assert!(
@@ -310,7 +306,7 @@ async fn summary_marks_the_total_partial_while_a_run_is_unmeasured() {
     assert!(!measured.context_impact_partial);
     assert!(measured.context_impact_bytes.is_some());
 
-    set_access(&fixture, &operation, OperationAccessState::Enabled).await;
+    set_access(&fixture, &tool, ToolAccessState::Enabled).await;
     let unmeasured = fixture
         .runs
         .start(actor, workspace, submission(CALL))
@@ -319,7 +315,7 @@ async fn summary_marks_the_total_partial_while_a_run_is_unmeasured() {
     wait_for_terminal(&fixture.runs, actor, workspace, unmeasured.run_id()).await;
     fixture
         .inject_fault(&format!(
-            "UPDATE operation_invocations SET result_kind = 'indeterminate', result_json = NULL \
+            "UPDATE tool_invocations SET result_kind = 'indeterminate', result_json = NULL \
              WHERE run_id = '{}'",
             unmeasured.run_id()
         ))

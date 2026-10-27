@@ -5,8 +5,7 @@
 )]
 
 use coral_catalog::{
-    BuiltinCatalog, BuiltinOperation, Error, ExecutionBinding, OperationAvailability,
-    OperationHints, OperationKey,
+    BuiltinCatalog, BuiltinTool, Error, ExecutionBinding, ToolAvailability, ToolHints, ToolKey,
 };
 use coral_test_support::TestDatabase;
 use sea_query::{Alias, Expr, ExprTrait as _, Query};
@@ -16,7 +15,7 @@ use std::fmt::Write as _;
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one table checks each Built-in Operation's retained contract"
+    reason = "one table checks each Built-in Tool's retained contract"
 )]
 async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
@@ -38,19 +37,19 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     coral_catalog::verify_generation_in_transaction(&mut transaction, &first)
         .await
         .unwrap();
-    let operations = coral_catalog::operations_in_transaction(&mut transaction, &first)
+    let tools = coral_catalog::tools_in_transaction(&mut transaction, &first)
         .await
         .unwrap();
     let targets = coral_catalog::available_search_targets_in_transaction(&mut transaction, &first)
         .await
         .unwrap();
-    // Each declared contract: hints, so the default Operation Access State
+    // Each declared contract: hints, so the default Tool Access State
     // follows, and the declaration a Program reads.
-    for (operation_key, hints, declared) in [
+    for (tool_key, hints, declared) in [
         (
-            BuiltinOperation::AddProvider,
-            // No read-only hint, so the default Operation Access State is approval_required.
-            OperationHints::default(),
+            BuiltinTool::AddProvider,
+            // No read-only hint, so the default Tool Access State is approval_required.
+            ToolHints::default(),
             &[
                 "type ProviderSourceInput =",
                 "\"openapi_document\"",
@@ -61,15 +60,15 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 r#""displayName"?: string"#,
                 r#""namespace": string"#,
                 r#""source": ProviderSourceInput"#,
-                r#"{ "accountRequired": boolean; "authentication": "none" | "bearer" | "header_credentials" | "basic_auth" | "query_credentials" | "oauth_device_code" | "oauth_authorization_code"; "credentialRoute": "none" | "fixed" | "caller"; "displayName": string; "namespace": string; "operations": number; "status": "published" }"#,
+                r#"{ "accountRequired": boolean; "authentication": "none" | "bearer" | "header_credentials" | "basic_auth" | "query_credentials" | "oauth_device_code" | "oauth_authorization_code"; "credentialRoute": "none" | "fixed" | "caller"; "displayName": string; "namespace": string; "status": "published"; "tools": number }"#,
                 r#"{ "namespace": string; "status": "needs_sign_in"; "url": string }"#,
                 "metadata: { kind: \"builtin\" }",
             ][..],
         ),
         (
-            BuiltinOperation::ListProviders,
-            // Read-only, so the default Operation Access State is enabled.
-            OperationHints::new(Some(true), None, Some(true), None),
+            BuiltinTool::ListProviders,
+            // Read-only, so the default Tool Access State is enabled.
+            ToolHints::new(Some(true), None, Some(true), None),
             &[
                 "export default function (input: Record<string, never>)",
                 r#"{ "providers": Array<Provider>; "setups": Array<ProviderSetup> }"#,
@@ -83,9 +82,9 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             ][..],
         ),
         (
-            BuiltinOperation::GetProvider,
-            // Read-only, so the default Operation Access State is enabled.
-            OperationHints::new(Some(true), None, Some(true), None),
+            BuiltinTool::GetProvider,
+            // Read-only, so the default Tool Access State is enabled.
+            ToolHints::new(Some(true), None, Some(true), None),
             &[
                 r#"export default function (input: { "namespace": string })"#,
                 r#""source": PublishedProviderSource"#,
@@ -96,9 +95,9 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             ][..],
         ),
         (
-            BuiltinOperation::UpdateProvider,
-            // No read-only hint, so its default Operation Access State requires approval.
-            OperationHints::default(),
+            BuiltinTool::UpdateProvider,
+            // No read-only hint, so its default Tool Access State requires approval.
+            ToolHints::default(),
             &[
                 r#""namespace": string"#,
                 r#""refresh"?: true"#,
@@ -109,9 +108,9 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             ][..],
         ),
         (
-            BuiltinOperation::GetPolicy,
-            // Read-only, so the default Operation Access State is enabled.
-            OperationHints::new(Some(true), None, Some(true), None),
+            BuiltinTool::GetPolicy,
+            // Read-only, so the default Tool Access State is enabled.
+            ToolHints::new(Some(true), None, Some(true), None),
             &[
                 r#"export default function (input: { "namespace": string })"#,
                 r#""rules": ({} & Record<string, "enabled" | "approval_required" | "disabled">)"#,
@@ -119,35 +118,32 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             ][..],
         ),
         (
-            BuiltinOperation::UpdatePolicy,
-            // Idempotent only, so the default Operation Access State is approval_required.
-            OperationHints::new(None, None, Some(true), None),
+            BuiltinTool::UpdatePolicy,
+            // Idempotent only, so the default Tool Access State is approval_required.
+            ToolHints::new(None, None, Some(true), None),
             &[
                 r#""namespace": string"#,
-                r#""operations": ({} & Record<string, "enabled" | "approval_required" | "disabled">)"#,
+                r#""tools": ({} & Record<string, "enabled" | "approval_required" | "disabled">)"#,
                 "metadata: { kind: \"builtin\" }",
             ][..],
         ),
     ] {
-        let key = operation_key.key();
-        let operation = operations
+        let key = tool_key.key();
+        let tool = tools
             .iter()
-            .find(|operation| operation.key().as_str() == key)
+            .find(|tool| tool.key().as_str() == key)
             .unwrap_or_else(|| panic!("the catalog defines {key}"));
-        assert_eq!(operation.relative_path(), key);
-        assert_eq!(operation.availability(), OperationAvailability::Available);
-        assert_eq!(operation.hints(), hints, "{key}");
-        let ExecutionBinding::Builtin(binding) = operation.execution_binding() else {
-            panic!("a built-in Operation has a built-in Execution Binding");
+        assert_eq!(tool.relative_path(), key);
+        assert_eq!(tool.availability(), ToolAvailability::Available);
+        assert_eq!(tool.hints(), hints, "{key}");
+        let ExecutionBinding::Builtin(binding) = tool.execution_binding() else {
+            panic!("a built-in Tool has a built-in Execution Binding");
         };
-        assert_eq!(binding.operation(), Some(operation_key));
-        let declaration = coral_catalog::authoring_declaration_in_transaction(
-            &mut transaction,
-            &first,
-            operation,
-        )
-        .await
-        .unwrap();
+        assert_eq!(binding.tool(), Some(tool_key));
+        let declaration =
+            coral_catalog::authoring_declaration_in_transaction(&mut transaction, &first, tool)
+                .await
+                .unwrap();
         for expected in declared {
             assert!(
                 declaration.contains(expected),
@@ -155,7 +151,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             );
         }
     }
-    // Every built-in Operation is a search target, and nothing else is.
+    // Every built-in Tool is a search target, and nothing else is.
     let mut target_keys = targets
         .iter()
         .map(|target| target.key().as_str())
@@ -176,32 +172,29 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     let graph = coral_catalog::schema_graph_in_transaction(&mut transaction, &first)
         .await
         .unwrap();
-    // Search reads the same Operations as the search targets, and the same
-    // fields as a full Operation gives.
-    let searchable = coral_catalog::searchable_operations_in_transaction(&mut transaction, &first)
+    // Search reads the same Tools as the search targets, and the same
+    // fields as a full Tool gives.
+    let searchable = coral_catalog::searchable_tools_in_transaction(&mut transaction, &first)
         .await
         .unwrap();
     assert_eq!(
         searchable
             .iter()
-            .map(|operation| operation.key().as_str())
+            .map(|tool| tool.key().as_str())
             .collect::<Vec<_>>(),
         target_keys
     );
     let fields = coral_catalog::StoredDeclarationFields::new(graph);
-    let key = OperationKey::parse("addProvider").unwrap();
+    let key = ToolKey::parse("addProvider").unwrap();
     let add_provider = searchable
         .iter()
-        .find(|operation| operation.key() == &key)
+        .find(|tool| tool.key() == &key)
         .expect("addProvider is searchable");
-    let full = operations
-        .iter()
-        .find(|operation| operation.key() == &key)
-        .unwrap();
+    let full = tools.iter().find(|tool| tool.key() == &key).unwrap();
     assert_eq!(add_provider.relative_path(), full.relative_path());
     assert_eq!(add_provider.presentation(), full.presentation());
-    let prepared = fields.searchable_operation(add_provider).unwrap();
-    assert_eq!(prepared, fields.operation(full).unwrap());
+    let prepared = fields.searchable_tool(add_provider).unwrap();
+    assert_eq!(prepared, fields.tool(full).unwrap());
     let paths = prepared
         .entries()
         .iter()
@@ -218,7 +211,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         assert!(paths.contains(&path), "{path} in {paths:?}");
     }
     assert!(paths.contains(&"result.data.url"), "{paths:?}");
-    assert!(paths.contains(&"result.data.operations"), "{paths:?}");
+    assert!(paths.contains(&"result.data.tools"), "{paths:?}");
 
     assert_eq!(
         coral_catalog::credential_contract_in_transaction(&mut transaction, &first)
@@ -322,8 +315,7 @@ async fn a_builtin_generation_pins_its_own_catalog_and_no_other() {
     let database = fixture.database();
     let running = BuiltinCatalog::running().unwrap();
     let other =
-        BuiltinCatalog::with_unknown_operations([("archiveThings", OperationHints::default())])
-            .unwrap();
+        BuiltinCatalog::with_unknown_tools([("archiveThings", ToolHints::default())]).unwrap();
     let mut transaction = database.begin().await.unwrap();
     let generation =
         coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, &running, 1)
@@ -398,13 +390,13 @@ fn sha256_hex(value: &str) -> String {
 async fn a_builtin_binding_disagreeing_with_its_index_fails_full_and_search_reads() {
     for (case, corruption) in [
         (
-            "Operation Key",
-            "SET operation_key = 'renamedProvider' WHERE operation_key = 'addProvider'",
+            "Tool Key",
+            "SET tool_key = 'renamedProvider' WHERE tool_key = 'addProvider'",
         ),
         (
             "input schema",
-            "SET input_schema_id = (SELECT input_schema_id FROM materialized_operations \
-             WHERE operation_key = 'listProviders') WHERE operation_key = 'addProvider'",
+            "SET input_schema_id = (SELECT input_schema_id FROM materialized_tools \
+             WHERE tool_key = 'listProviders') WHERE tool_key = 'addProvider'",
         ),
     ] {
         let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
@@ -418,17 +410,16 @@ async fn a_builtin_binding_disagreeing_with_its_index_fails_full_and_search_read
         transaction.commit().await.unwrap();
         fixture
             .execute_fixture_sql(&format!(
-                "UPDATE materialized_operations {corruption} \
+                "UPDATE materialized_tools {corruption} \
                  AND provider_generation_id = '{generation}'"
             ))
             .await
             .unwrap();
 
         let mut transaction = database.begin_read_snapshot().await.unwrap();
-        let full = coral_catalog::operations_in_transaction(&mut transaction, &generation).await;
+        let full = coral_catalog::tools_in_transaction(&mut transaction, &generation).await;
         let searchable =
-            coral_catalog::searchable_operations_in_transaction(&mut transaction, &generation)
-                .await;
+            coral_catalog::searchable_tools_in_transaction(&mut transaction, &generation).await;
         transaction.rollback().await.unwrap();
         assert!(
             matches!(full, Err(Error::CorruptData(_))),

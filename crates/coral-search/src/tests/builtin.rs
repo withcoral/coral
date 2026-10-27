@@ -1,12 +1,12 @@
-//! Search and describe apply the Provider Module's per-Operation reach rule.
+//! Search and describe apply the Provider Module's per-Tool reach rule.
 //! The rule's full Principal table lives with its owner in coral-provider.
 use super::*;
 use coral_workspace::WorkspaceRole;
 
-// Catches: ranking, listing or describing a Built-in Operation that the
+// Catches: ranking, listing or describing a Built-in Tool that the
 // Principal does not reach, or hiding one it does.
 #[tokio::test]
-async fn search_and_describe_show_each_builtin_operation_to_the_principals_it_reaches() {
+async fn search_and_describe_show_each_builtin_tool_to_the_principals_it_reaches() {
     let fixture = TestModules::new().await;
     let database = fixture.search.database.clone();
     let owner = organization_user(database.clone(), "user:builtin-owner").await;

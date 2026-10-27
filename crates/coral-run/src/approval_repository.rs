@@ -247,7 +247,7 @@ pub(super) fn pending_invocation() -> SimpleExpr {
             column("workspace_id"),
             column("provider_id"),
             column("provider_generation_id"),
-            column("operation_key"),
+            column("tool_key"),
         ))
 }
 
@@ -268,7 +268,7 @@ pub(super) async fn pending_for_run(
                 .from_as(InvocationApprovals::Table, Alias::new("a"))
                 .join_as(
                     JoinType::InnerJoin,
-                    Alias::new("operation_invocations"),
+                    Alias::new("tool_invocations"),
                     Alias::new("i"),
                     pending_invocation(),
                 )

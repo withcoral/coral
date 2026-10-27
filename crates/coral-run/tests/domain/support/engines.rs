@@ -230,13 +230,12 @@ impl ProgramEngine for InvokingEngine {
                 )),
             },
             Err(
-                coral_v8::OperationHostError::Rejected { .. }
-                | coral_v8::OperationHostError::Upstream { .. },
+                coral_v8::ToolHostError::Rejected { .. } | coral_v8::ToolHostError::Upstream { .. },
             ) => ExecutionCompletion::Failed(crate::RunFailure::new(
                 RunFailureCode::ProgramRejected,
                 "Program rejected".to_string(),
             )),
-            Err(coral_v8::OperationHostError::Fatal) => ExecutionCompletion::ProgramHostTerminated,
+            Err(coral_v8::ToolHostError::Fatal) => ExecutionCompletion::ProgramHostTerminated,
         }
     }
 }
@@ -658,10 +657,10 @@ impl ProgramEngine for ScriptedCallsEngine {
             match runtime.block_on(call).expect("the call's task ends") {
                 Ok(_result_json) => outcomes.push(serde_json::json!("ok")),
                 Err(
-                    coral_v8::OperationHostError::Rejected { code, .. }
-                    | coral_v8::OperationHostError::Upstream { code, .. },
+                    coral_v8::ToolHostError::Rejected { code, .. }
+                    | coral_v8::ToolHostError::Upstream { code, .. },
                 ) => outcomes.push(serde_json::json!(code)),
-                Err(coral_v8::OperationHostError::Fatal) => {
+                Err(coral_v8::ToolHostError::Fatal) => {
                     return ExecutionCompletion::ProgramHostTerminated;
                 }
             }

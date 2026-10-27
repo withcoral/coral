@@ -6,7 +6,7 @@
 //! outcome. It requires a Tokio runtime; the Run Owner that hosts it retains
 //! the claim, the lease, child shutdown, and the final outcome transaction.
 //!
-//! The private host bridge owns Operation task spawning, JSON and console
+//! The private host bridge owns Tool task spawning, JSON and console
 //! projection, safe host-error translation, synchronous output calls, and
 //! stop-on-panic behavior. Invocation tasks start independently of V8 polling.
 //! The invoker and the output writer ask the Run Owner, which answers at

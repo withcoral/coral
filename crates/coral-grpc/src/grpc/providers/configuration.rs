@@ -303,20 +303,20 @@ pub(super) fn review(
         updating: value.updating,
         confirmed: value.confirmed.map(configuration),
         destinations: value.destinations.into_iter().collect(),
-        operations: value
-            .operations
+        tools: value
+            .tools
             .into_iter()
-            .map(|operation| wire::ReviewedProviderOperation {
-                key: operation.key,
-                relative_path: operation.relative_path,
-                summary: operation.summary,
-                tags: operation.tags,
+            .map(|tool| wire::ReviewedProviderTool {
+                key: tool.key,
+                relative_path: tool.relative_path,
+                summary: tool.summary,
+                tags: tool.tags,
             })
             .collect(),
-        unavailable_operations: value
-            .unavailable_operations
+        unavailable_tools: value
+            .unavailable_tools
             .into_iter()
-            .map(|(key, diagnostics)| wire::UnavailableProviderOperation {
+            .map(|(key, diagnostics)| wire::UnavailableProviderTool {
                 key,
                 reasons: diagnostics
                     .iter()
@@ -340,7 +340,7 @@ pub(super) fn review(
             .into_iter()
             .map(|group| wire::ProviderServerGroup {
                 declaration: group.declaration,
-                operations: group.operations,
+                tools: group.tools,
                 options: group
                     .options
                     .into_iter()

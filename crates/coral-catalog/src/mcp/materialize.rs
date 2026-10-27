@@ -4,13 +4,13 @@ use std::collections::{BTreeMap, HashSet};
 use serde_json::{Map, Value};
 
 use crate::mcp::projection::{fallback_typescript, project_mcp_typescript, typescript_names};
-use crate::paths::assign_operation_paths;
+use crate::paths::assign_tool_paths;
 use crate::schema::{SchemaGraphAccumulator, canonicalize};
 use crate::{
-    CatalogDiagnostic, MaterializationOutcome, MaterializedOperation, McpDiscoverySnapshot,
+    CatalogDiagnostic, MaterializationOutcome, MaterializedTool, McpDiscoverySnapshot,
     McpExecutionBinding, McpInvocationMethod, McpTaskSupport, McpToolAnnotations, McpTransport,
-    OperationHints, OperationKey, OperationPathAssignment, OperationPresentation,
-    PreparedProviderCatalog, SchemaId, SchemaSemantics,
+    PreparedProviderCatalog, SchemaId, SchemaSemantics, ToolHints, ToolKey, ToolPathAssignment,
+    ToolPresentation,
 };
 
 /// Stable version of the bounded schema-faithful MCP profile materializer.
@@ -19,11 +19,11 @@ const RESOURCE_READ_KEY: &str = "resources/read";
 const RESOURCE_READ_PATH: &str = "resources.read";
 
 /// Materializes one exact normalized MCP discovery snapshot and carries forward
-/// paths owned by Operation Keys that remain active.
+/// paths owned by Tool Keys that remain active.
 #[must_use]
 pub(crate) fn materialize(
     snapshot: &McpDiscoverySnapshot,
-    previous_paths: &[OperationPathAssignment],
+    previous_paths: &[ToolPathAssignment],
 ) -> MaterializationOutcome {
     match build_mcp(snapshot, previous_paths) {
         Ok(package) => MaterializationOutcome::Ready(package),
@@ -37,7 +37,7 @@ pub(crate) fn materialize(
 )]
 fn build_mcp(
     input: &McpDiscoverySnapshot,
-    previous_paths: &[OperationPathAssignment],
+    previous_paths: &[ToolPathAssignment],
 ) -> Result<PreparedProviderCatalog, CatalogDiagnostic> {
     let snapshot: Value = serde_json::from_str(input.as_str()).map_err(|_error| {
         diagnostic(
@@ -92,13 +92,13 @@ fn build_mcp(
             .ok_or_else(|| {
                 diagnostic(
                     "invalid_mcp_tool_name",
-                    "an MCP tool has an invalid Operation Key",
+                    "an MCP tool has an invalid Tool Key",
                 )
             })?;
-        let key = OperationKey::parse(name).map_err(|_error| {
+        let key = ToolKey::parse(name).map_err(|_error| {
             diagnostic(
                 "invalid_mcp_tool_name",
-                "an MCP tool has an invalid Operation Key",
+                "an MCP tool has an invalid Tool Key",
             )
         })?;
         if !seen.insert(key.clone()) {
@@ -114,11 +114,11 @@ fn build_mcp(
     }
     if resources_advertised {
         let resource_key =
-            OperationKey::parse(RESOURCE_READ_KEY).map_err(|_error| invalid_operation_index())?;
+            ToolKey::parse(RESOURCE_READ_KEY).map_err(|_error| invalid_tool_index())?;
         if !seen.insert(resource_key.clone()) {
             return Err(diagnostic(
-                "reserved_mcp_operation_conflict",
-                "an MCP tool conflicts with the reserved resource-read Operation",
+                "reserved_mcp_tool_conflict",
+                "an MCP tool conflicts with the reserved resource-read Tool",
             ));
         }
     }
@@ -129,7 +129,7 @@ fn build_mcp(
         ));
     }
 
-    let mut assigned_paths = assign_operation_paths(seen.iter(), previous_paths)?;
+    let mut assigned_paths = assign_tool_paths(seen.iter(), previous_paths)?;
     if resources_advertised {
         reserve_resource_read_path(&mut assigned_paths, previous_paths)?;
     }
@@ -140,7 +140,7 @@ fn build_mcp(
         let relative_path = assigned_paths
             .get(&draft.key)
             .cloned()
-            .ok_or_else(invalid_operation_index)?;
+            .ok_or_else(invalid_tool_index)?;
         builds.push(materialize_tool(
             &protocol_version,
             transport,
@@ -168,7 +168,7 @@ fn build_mcp(
             "the authoritative MCP schema graph cannot be encoded",
         )
     })?;
-    let mut operations = Vec::with_capacity(builds.len());
+    let mut materialized = Vec::with_capacity(builds.len());
     let type_names = typescript_names(&schema_graph);
     let mut shared_types = crate::schema::SharedTypes::default();
     for mut build in builds {
@@ -198,7 +198,7 @@ fn build_mcp(
                 (fallback_typescript(), Vec::new())
             }
         };
-        if let Some(diagnostic) = crate::types::operation_description_too_large(
+        if let Some(diagnostic) = crate::types::tool_description_too_large(
             &build.relative_path,
             &display_name,
             &declaration,
@@ -214,11 +214,11 @@ fn build_mcp(
         })?;
         let diagnostics_json = serde_json::to_string(&build.diagnostics).map_err(|_error| {
             diagnostic(
-                "invalid_operation_diagnostic",
-                "an Operation diagnostic cannot be encoded safely",
+                "invalid_tool_diagnostic",
+                "a Tool diagnostic cannot be encoded safely",
             )
         })?;
-        operations.push(MaterializedOperation::new(
+        materialized.push(MaterializedTool::new(
             build.key,
             build.relative_path,
             build.summary,
@@ -239,7 +239,7 @@ fn build_mcp(
         display_name,
         schema_graph,
         schema_graph_json,
-        operations,
+        materialized,
         shared_types,
     );
     let Some(configuration) = input.configuration() else {
@@ -420,38 +420,37 @@ fn valid_task_capability(value: &Value) -> bool {
 }
 
 fn reserve_resource_read_path(
-    assigned: &mut BTreeMap<OperationKey, String>,
-    previous_paths: &[OperationPathAssignment],
+    assigned: &mut BTreeMap<ToolKey, String>,
+    previous_paths: &[ToolPathAssignment],
 ) -> Result<(), CatalogDiagnostic> {
-    let resource_key =
-        OperationKey::parse(RESOURCE_READ_KEY).map_err(|_error| invalid_operation_index())?;
+    let resource_key = ToolKey::parse(RESOURCE_READ_KEY).map_err(|_error| invalid_tool_index())?;
     if previous_paths.iter().any(|previous| {
         (previous.key() == &resource_key && previous.relative_path() != RESOURCE_READ_PATH)
             || (previous.key() != &resource_key && previous.relative_path() == RESOURCE_READ_PATH)
     }) {
-        return Err(invalid_operation_index());
+        return Err(invalid_tool_index());
     }
     if assigned
         .iter()
         .any(|(key, path)| key != &resource_key && path == RESOURCE_READ_PATH)
     {
-        return Err(invalid_operation_index());
+        return Err(invalid_tool_index());
     }
     assigned.insert(resource_key, RESOURCE_READ_PATH.to_string());
     Ok(())
 }
 
 struct McpToolDraft {
-    key: OperationKey,
+    key: ToolKey,
     definition: Value,
 }
 
-struct McpOperationBuild {
-    key: OperationKey,
+struct McpToolBuild {
+    key: ToolKey,
     relative_path: String,
     summary: String,
-    presentation: OperationPresentation,
-    hints: OperationHints,
+    presentation: ToolPresentation,
+    hints: ToolHints,
     binding: McpExecutionBinding,
     input_schema: SchemaId,
     output_schema: Option<SchemaId>,
@@ -468,13 +467,13 @@ fn materialize_tool(
     draft: McpToolDraft,
     relative_path: String,
     schemas: &mut SchemaGraphAccumulator,
-) -> Result<McpOperationBuild, CatalogDiagnostic> {
+) -> Result<McpToolBuild, CatalogDiagnostic> {
     let object = draft.definition.as_object().ok_or_else(invalid_snapshot)?;
     let mut diagnostics = Vec::new();
     let summary = tool_summary(object, draft.key.as_str(), &mut diagnostics);
     let input_value = object.get("inputSchema").cloned().unwrap_or(Value::Null);
     let input_source = tool_schema_source(&draft.key, "input");
-    let (input_schema, input_schema_json) = retain_operation_schema(
+    let (input_schema, input_schema_json) = retain_tool_schema(
         schemas,
         &input_source,
         &input_value,
@@ -485,7 +484,7 @@ fn materialize_tool(
     let (output_schema, output_schema_json) = match object.get("outputSchema") {
         Some(output) => {
             let source = tool_schema_source(&draft.key, "output");
-            let (schema, json) = retain_operation_schema(
+            let (schema, json) = retain_tool_schema(
                 schemas,
                 &source,
                 output,
@@ -523,7 +522,7 @@ fn materialize_tool(
         server_task_capability.cloned(),
         task_support,
     );
-    Ok(McpOperationBuild {
+    Ok(McpToolBuild {
         key: draft.key,
         relative_path,
         summary,
@@ -544,8 +543,8 @@ fn materialize_resource_read(
     server_url: &str,
     server_task_capability: Option<&Value>,
     schemas: &mut SchemaGraphAccumulator,
-) -> Result<McpOperationBuild, CatalogDiagnostic> {
-    let key = OperationKey::parse(RESOURCE_READ_KEY).map_err(|_error| invalid_operation_index())?;
+) -> Result<McpToolBuild, CatalogDiagnostic> {
+    let key = ToolKey::parse(RESOURCE_READ_KEY).map_err(|_error| invalid_tool_index())?;
     let input = serde_json::json!({
         "type": "object",
         "required": ["reference"],
@@ -577,11 +576,11 @@ fn materialize_resource_read(
         server_task_capability.cloned(),
         None,
     );
-    Ok(McpOperationBuild {
+    Ok(McpToolBuild {
         key,
         relative_path: RESOURCE_READ_PATH.to_string(),
         summary: "Read one opaque Provider-bound MCP resource reference".to_string(),
-        presentation: OperationPresentation::new(
+        presentation: ToolPresentation::new(
             Some("Read MCP resource".to_string()),
             "Read one opaque Provider-bound MCP resource reference".to_string(),
             false,
@@ -589,7 +588,7 @@ fn materialize_resource_read(
             None,
         ),
         // `resources/read` reads by protocol definition; it is not a tool hint.
-        hints: OperationHints::new(Some(true), None, None, None),
+        hints: ToolHints::new(Some(true), None, None, None),
         binding,
         input_schema,
         output_schema: None,
@@ -599,7 +598,7 @@ fn materialize_resource_read(
     })
 }
 
-fn tool_schema_source(key: &OperationKey, direction: &str) -> String {
+fn tool_schema_source(key: &ToolKey, direction: &str) -> String {
     format!(
         "mcp:tool:{}:{}:{direction}",
         key.as_str().len(),
@@ -646,7 +645,7 @@ fn schema_requires_object(root: &Value, schema: &Value, seen: &mut HashSet<Strin
     })
 }
 
-fn retain_operation_schema(
+fn retain_tool_schema(
     schemas: &mut SchemaGraphAccumulator,
     source: &str,
     value: &Value,
@@ -682,14 +681,14 @@ fn tool_presentation(
     object: &Map<String, Value>,
     summary: &str,
     annotations: Option<&McpToolAnnotations>,
-) -> OperationPresentation {
+) -> ToolPresentation {
     let title = safe_tool_text(object.get("title"))
         .or_else(|| annotations.and_then(McpToolAnnotations::title))
         .map(str::to_string);
     let description = safe_tool_text(object.get("description"))
         .unwrap_or(summary)
         .to_string();
-    OperationPresentation::new(title, description, false, Vec::new(), None)
+    ToolPresentation::new(title, description, false, Vec::new(), None)
 }
 
 fn safe_tool_text(value: Option<&Value>) -> Option<&str> {
@@ -717,7 +716,7 @@ fn tool_summary(
     name.to_string()
 }
 
-/// Returns one MCP tool summary short enough to label an Operation.
+/// Returns one MCP tool summary short enough to label a Tool.
 fn safe_tool_summary_text(value: &Value) -> Option<&str> {
     safe_tool_text(Some(value)).filter(|value| value.len() <= 1024)
 }
@@ -825,10 +824,10 @@ fn invalid_snapshot() -> CatalogDiagnostic {
     )
 }
 
-fn invalid_operation_index() -> CatalogDiagnostic {
+fn invalid_tool_index() -> CatalogDiagnostic {
     diagnostic(
-        "invalid_operation_path_index",
-        "the Materialized Operation Catalog has an incoherent path index",
+        "invalid_tool_path_index",
+        "the Materialized Tool Catalog has an incoherent path index",
     )
 }
 

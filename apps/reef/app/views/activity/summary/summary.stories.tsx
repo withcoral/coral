@@ -5,7 +5,7 @@ import { expect, userEvent, within } from 'storybook/test'
 import { ActivitySummary, type ActivitySummaryProps, type SummaryProvider } from './summary'
 import type { ActivitySummaryData, SummaryDays } from '@/lib/activity-summary'
 
-/** A month of a team's use. Every stopped operation is also among the busiest. */
+/** A month of a team's use. Every stopped tool is also among the busiest. */
 const busy: ActivitySummaryData = {
   calls: { answered: 3781, blocked: 7, notAllowed: 3, needsSetup: 2, failed: 14, canceled: 5 },
   stopped: [
@@ -24,7 +24,7 @@ const busy: ActivitySummaryData = {
       needsSetup: 2,
     },
   ],
-  operations: [
+  tools: [
     { callPath: 'coral.providers.github.getPullRequest', calls: 1204 },
     { callPath: 'coral.providers.linear.searchIssues', calls: 811 },
     { callPath: 'coral.providers.github.listPullRequestReviewComments', calls: 532 },
@@ -50,7 +50,7 @@ const busy: ActivitySummaryData = {
 const quiet: ActivitySummaryData = {
   calls: { answered: 962, blocked: 0, notAllowed: 0, needsSetup: 0, failed: 0, canceled: 0 },
   stopped: [],
-  operations: [
+  tools: [
     { callPath: 'coral.providers.github.getPullRequest', calls: 512 },
     { callPath: 'coral.providers.linear.searchIssues', calls: 301 },
     { callPath: 'coral.providers.notion.getPage', calls: 149 },
@@ -63,7 +63,7 @@ const quiet: ActivitySummaryData = {
 const empty: ActivitySummaryData = {
   calls: { answered: 0, blocked: 0, notAllowed: 0, needsSetup: 0, failed: 0, canceled: 0 },
   stopped: [],
-  operations: [],
+  tools: [],
   approvals: { approved: 0, declined: 0, medianWaitSeconds: null },
 }
 
@@ -138,14 +138,14 @@ export const NeedsYou: Story = {
 
 export const Filtered: Story = {
   // Catches: a filter that ignores the provider name, or forgets how many it hid, or rows
-  // that ↓ cannot reach from the filter or that do not open the busiest operation first.
+  // that ↓ cannot reach from the filter or that do not open the busiest tool first.
   play: async ({ canvas }) => {
-    await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter operations' }), 'slack')
+    await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter tools' }), 'slack')
     await expect(await canvas.findByText('2 of 11')).toBeVisible()
     await userEvent.keyboard('{ArrowDown}')
     await expect(document.activeElement).toHaveAttribute(
       'href',
-      '/workspaces/w/providers/slack/ops/listChannelMessages',
+      '/workspaces/w/providers/slack/tools/listChannelMessages',
     )
   },
 }
@@ -244,7 +244,7 @@ export const OneOfEach: Story = {
           needsSetup: 1,
         },
       ],
-      operations: [{ callPath: 'coral.providers.gmail.listMessages', calls: 38 }],
+      tools: [{ callPath: 'coral.providers.gmail.listMessages', calls: 38 }],
       approvals: { approved: 3, declined: 1, medianWaitSeconds: 38 },
     },
   },

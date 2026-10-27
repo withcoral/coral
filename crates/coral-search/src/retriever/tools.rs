@@ -1,47 +1,47 @@
-//! The Operation retriever: Operations of the Workspace's visible, ready
+//! The Tool retriever: Tools of the Workspace's visible, ready
 //! Providers, ranked inside the database.
 //!
 //! Visibility stays with the owners. coral-provider decides whether a
 //! Provider is ready for the caller; coral-policy decides whether an
-//! Operation is disabled or needs approval. The retriever asks them once per
-//! request and loads no Operation catalog before ranking: catalog reads happen
-//! at hydration and in `describe`, for single Operations.
+//! Tool is disabled or needs approval. The retriever asks them once per
+//! request and loads no Tool catalog before ranking: catalog reads happen
+//! at hydration and in `describe`, for single Tools.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use coral_db::Transaction;
-use coral_policy::ExactOperationRules;
+use coral_policy::ExactToolRules;
 use coral_provider::ActiveProvider;
 
 use super::plan::QueryPlan;
 use super::repository;
 use super::{
-    Answer, EntityRef, EntityRetriever, Hydrated, Listing, OperationRef, QueryError, QueryRequest,
-    RequestContext, RetrievalError, count,
+    Answer, EntityRef, EntityRetriever, Hydrated, Listing, QueryError, QueryRequest,
+    RequestContext, RetrievalError, ToolRef, count,
 };
-use crate::eligibility::operation_approval;
+use crate::eligibility::tool_approval;
 use crate::evidence::{EvidenceBuilder, EvidenceTerms};
 use crate::hit::{HitMaterial, hit_text};
 use crate::signature::Callable;
 use crate::{
-    CallPath, EntityKind, Error, ExactAuthoringDescription, OperationAuthoringDescription,
-    ProviderCallRoot, RetrieverCoverage, SearchEvidence, SearchHit,
+    CallPath, EntityKind, Error, ExactAuthoringDescription, ProviderCallRoot, RetrieverCoverage,
+    SearchEvidence, SearchHit, ToolAuthoringDescription,
 };
 
-/// Ranks, hydrates, and describes Operations.
+/// Ranks, hydrates, and describes Tools.
 #[derive(Debug, Default)]
-pub(crate) struct OperationRetriever {
+pub(crate) struct ToolRetriever {
     /// Makes the ranked statement fail, for tests of a retriever error.
     #[cfg(test)]
     pub(crate) fail_ranking: bool,
 }
 
 #[async_trait]
-impl EntityRetriever for OperationRetriever {
+impl EntityRetriever for ToolRetriever {
     fn kind(&self) -> EntityKind {
-        EntityKind::Operation
+        EntityKind::ProviderTool
     }
 
     async fn list(
@@ -53,7 +53,7 @@ impl EntityRetriever for OperationRetriever {
         let providers = filtered_providers(transaction, context, provider_filter).await?;
         let units = providers.len();
         let rules = Arc::new(
-            coral_policy::exact_operation_rules_in_transaction(transaction, context.workspace_id)
+            coral_policy::exact_tool_rules_in_transaction(transaction, context.workspace_id)
                 .await?,
         );
         let mut listed = Vec::new();
@@ -76,13 +76,13 @@ impl EntityRetriever for OperationRetriever {
                 if rules.disables(provider.provider().id(), &target) {
                     continue;
                 }
-                listed.push(EntityRef::Operation(OperationRef {
-                    call_path: CallPath::operation(
+                listed.push(EntityRef::Tool(ToolRef {
+                    call_path: CallPath::tool(
                         provider.provider().call_root(),
                         target.relative_path(),
                     )?,
                     provider: Arc::clone(&provider),
-                    operation_key: target.key().clone(),
+                    tool_key: target.key().clone(),
                     rules: Arc::clone(&rules),
                     near_spellings: Arc::new([]),
                 }));
@@ -102,7 +102,7 @@ impl EntityRetriever for OperationRetriever {
     ) -> Result<Answer, QueryError> {
         let providers = filtered_providers(transaction, context, request.provider_filter).await?;
         let rules = Arc::new(
-            coral_policy::exact_operation_rules_in_transaction(transaction, context.workspace_id)
+            coral_policy::exact_tool_rules_in_transaction(transaction, context.workspace_id)
                 .await
                 .map_err(Error::from)?,
         );
@@ -139,7 +139,7 @@ impl EntityRetriever for OperationRetriever {
             .collect::<Vec<_>>();
         for provider in searched.values() {
             excluded.extend(
-                coral_provider::unreached_operations_in_transaction(
+                coral_provider::unreached_tools_in_transaction(
                     transaction,
                     provider,
                     context.authority.effective_user_role(),
@@ -161,7 +161,7 @@ impl EntityRetriever for OperationRetriever {
                 .values()
                 .map(|provider| provider.generation_id().clone())
                 .collect::<Vec<_>>();
-            repository::rank_operations(
+            repository::rank_tools(
                 transaction,
                 context.workspace_id,
                 &provider_ids,
@@ -176,17 +176,17 @@ impl EntityRetriever for OperationRetriever {
         let has_more = ranked.entities.len() > request.window;
         let near_spellings: Arc<[String]> = ranked.near_spellings.into();
         let mut window = Vec::new();
-        for operation in ranked.entities.into_iter().take(request.window) {
+        for tool in ranked.entities.into_iter().take(request.window) {
             let provider = searched
-                .get(&operation.provider_id)
+                .get(&tool.provider_id)
                 .ok_or(QueryError::Retriever(RetrievalError::Corrupt(
-                    "a ranked Operation's Provider was not searched",
+                    "a ranked Tool's Provider was not searched",
                 )))?;
-            window.push(EntityRef::Operation(OperationRef {
+            window.push(EntityRef::Tool(ToolRef {
                 provider: Arc::clone(provider),
-                operation_key: operation.operation_key,
+                tool_key: tool.tool_key,
                 rules: Arc::clone(&rules),
-                call_path: operation.call_path,
+                call_path: tool.call_path,
                 near_spellings: Arc::clone(&near_spellings),
             }));
         }
@@ -207,38 +207,34 @@ impl EntityRetriever for OperationRetriever {
         context: RequestContext<'_>,
         entity: &EntityRef,
     ) -> Result<Hydrated, Error> {
-        let EntityRef::Operation(operation) = entity else {
+        let EntityRef::Tool(tool) = entity else {
             return Ok(Hydrated::Dropped);
         };
-        let hydrated = match coral_provider::hydrate_operation_in_transaction(
+        let hydrated = match coral_provider::hydrate_tool_in_transaction(
             transaction,
             context.loaded,
-            &operation.provider,
-            &operation.operation_key,
+            &tool.provider,
+            &tool.tool_key,
         )
         .await
         {
             Ok(Some(hydrated)) => hydrated,
             Ok(None) => return Ok(Hydrated::Dropped),
-            // A corrupt Operation leaves the page; the others stay.
+            // A corrupt Tool leaves the page; the others stay.
             Err(
                 coral_provider::Error::CorruptData(_)
                 | coral_provider::Error::Catalog(coral_catalog::Error::CorruptData(_)),
             ) => return Ok(Hydrated::Unreadable),
             Err(error) => return Err(error.into()),
         };
-        let Some(description) = describe_material(
-            context,
-            hydrated.material(),
-            &operation.rules,
-            &operation.call_path,
-        )?
+        let Some(description) =
+            describe_material(context, hydrated.material(), &tool.rules, &tool.call_path)?
         else {
             return Ok(Hydrated::Dropped);
         };
         let material = HitMaterial {
             declaration: description.typescript_declaration(),
-            callable: Callable::Operation {
+            callable: Callable::Tool {
                 leaf: description.call_path().leaf(),
             },
             description: description.description(),
@@ -246,13 +242,13 @@ impl EntityRetriever for OperationRetriever {
             tags: description.tags(),
         };
         let Some(terms) = context.terms else {
-            return Ok(Hydrated::Hit(Box::new(SearchHit::from_operation(
+            return Ok(Hydrated::Hit(Box::new(SearchHit::from_tool(
                 &description,
                 hit_text(&material, None),
                 SearchEvidence::default(),
             ))));
         };
-        let terms = EvidenceTerms::new(terms, &operation.near_spellings);
+        let terms = EvidenceTerms::new(terms, &tool.near_spellings);
         let mut evidence = EvidenceBuilder::new(&terms);
         evidence
             .field("call_path", [description.call_path().as_str()])
@@ -274,12 +270,12 @@ impl EntityRetriever for OperationRetriever {
         let Some(matched) = evidence.build() else {
             tracing::debug!(
                 call_path = description.call_path().as_str(),
-                "a ranked Operation has no evidence and leaves the page"
+                "a ranked Tool has no evidence and leaves the page"
             );
             return Ok(Hydrated::Dropped);
         };
         let text = hit_text(&material, Some((&terms, &matched)));
-        Ok(Hydrated::Hit(Box::new(SearchHit::from_operation(
+        Ok(Hydrated::Hit(Box::new(SearchHit::from_tool(
             &description,
             text,
             matched.evidence,
@@ -293,25 +289,24 @@ impl EntityRetriever for OperationRetriever {
         call_path: &CallPath,
     ) -> Result<Option<ExactAuthoringDescription>, Error> {
         Ok(
-            describe_operations(transaction, context, std::slice::from_ref(call_path))
+            describe_tools(transaction, context, std::slice::from_ref(call_path))
                 .await?
                 .pop()
-                .map(ExactAuthoringDescription::operation),
+                .map(ExactAuthoringDescription::tool),
         )
     }
 }
 
-/// The complete description of each Operation in `call_paths` that the
+/// The complete description of each Tool in `call_paths` that the
 /// caller can describe, in order. Every other path is omitted. One policy read
 /// and one visibility check per Call Root serve the whole batch.
-pub(crate) async fn describe_operations(
+pub(crate) async fn describe_tools(
     transaction: &mut Transaction<'_>,
     context: RequestContext<'_>,
     call_paths: &[CallPath],
-) -> Result<Vec<OperationAuthoringDescription>, Error> {
+) -> Result<Vec<ToolAuthoringDescription>, Error> {
     let rules =
-        coral_policy::exact_operation_rules_in_transaction(transaction, context.workspace_id)
-            .await?;
+        coral_policy::exact_tool_rules_in_transaction(transaction, context.workspace_id).await?;
     let mut providers = HashMap::new();
     let mut descriptions = Vec::new();
     for call_path in call_paths {
@@ -330,7 +325,7 @@ pub(crate) async fn describe_operations(
         let Some(Some(provider)) = providers.get(&call_root) else {
             continue;
         };
-        let Some(material) = coral_provider::operation_material_by_relative_path_in_transaction(
+        let Some(material) = coral_provider::tool_material_by_relative_path_in_transaction(
             transaction,
             provider,
             relative_path,
@@ -385,8 +380,8 @@ fn call_roots(providers: &[ActiveProvider]) -> Vec<ProviderCallRoot> {
 }
 
 /// The Workspace's Active Providers that are ready for the caller, cut to the
-/// Call Root filter. Reads no Operation catalog, apart from the Built-in
-/// Provider's Operation identities that reach is decided on.
+/// Call Root filter. Reads no Tool catalog, apart from the Built-in
+/// Provider's Tool identities that reach is decided on.
 async fn visible_providers(
     transaction: &mut Transaction<'_>,
     context: RequestContext<'_>,
@@ -413,35 +408,35 @@ async fn visible_providers(
     Ok(visible)
 }
 
-/// The complete description of one current Operation, or `None` when the
+/// The complete description of one current Tool, or `None` when the
 /// caller does not reach it, policy disables it, or its path is not the
 /// expected one.
 fn describe_material(
     context: RequestContext<'_>,
-    material: &coral_provider::OperationAuthoringMaterial,
-    rules: &ExactOperationRules,
+    material: &coral_provider::ToolAuthoringMaterial,
+    rules: &ExactToolRules,
     call_path: &CallPath,
-) -> Result<Option<OperationAuthoringDescription>, Error> {
-    if CallPath::operation(material.provider_call_root(), material.relative_path())? != *call_path {
+) -> Result<Option<ToolAuthoringDescription>, Error> {
+    if CallPath::tool(material.provider_call_root(), material.relative_path())? != *call_path {
         return Ok(None);
     }
     if !coral_provider::reaches(
         material.provider_call_root(),
-        material.operation_key(),
+        material.tool_key(),
         context.authority.effective_user_role(),
     ) {
         return Ok(None);
     }
-    let Some(approval) = operation_approval(
+    let Some(approval) = tool_approval(
         rules,
         material.provider_id(),
-        material.operation_key(),
+        material.tool_key(),
         material.hints(),
         material.http_method(),
     ) else {
         return Ok(None);
     };
-    Ok(Some(OperationAuthoringDescription::new(
+    Ok(Some(ToolAuthoringDescription::new(
         call_path.clone(),
         material.typescript_declaration().to_string(),
         material.provider_call_root().clone(),

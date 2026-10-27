@@ -31,10 +31,10 @@ pub struct Dependencies {
     /// Workspace creation with its Built-in Provider, in one owned transaction.
     pub workspace_workflow: coral_administration::WorkspaceWorkflow,
     /// Provider readiness inspection.
-    /// Discovery supplies current policy and Operation readiness evidence.
+    /// Discovery supplies current policy and Tool readiness evidence.
     pub provider_readiness: coral_search::UniversalSearchModule,
-    /// Operation access rules.
-    pub policies: coral_policy::OperationPolicyModule,
+    /// Tool access rules.
+    pub policies: coral_policy::ToolPolicyModule,
     /// Shared credential and authorization workflows; absent when unavailable.
     pub accounts: Option<coral_provider::account::AccountModule>,
     /// Retained execution inspection and summary queries.
@@ -111,7 +111,7 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
             ),
         )
         .add_service(
-            management::operation_policy_service_server::OperationPolicyServiceServer::new(
+            management::tool_policy_service_server::ToolPolicyServiceServer::new(
                 services.clone(),
             ),
         )
@@ -182,7 +182,7 @@ struct GrpcServices {
     provider_workflow: coral_administration::ProviderWorkflow,
     workspace_workflow: coral_administration::WorkspaceWorkflow,
     provider_readiness: coral_search::UniversalSearchModule,
-    policies: coral_policy::OperationPolicyModule,
+    policies: coral_policy::ToolPolicyModule,
     accounts: Option<coral_provider::account::AccountModule>,
     tasks: coral_task::TaskModule,
     saved_functions: coral_functions::SavedFunctionInspection,

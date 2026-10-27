@@ -39,13 +39,13 @@ fn describe_fits_the_remaining_types_to_the_budget() {
     let mcp = r#"type Day = { "high": number };
 type McpSafeMeta = Record<string, unknown>;
 function forecast(input: { "city": string }): Promise<{ data: { days: Array<Day> }; metadata: { _meta?: McpSafeMeta } }>;"#;
-    let operation = EntityKind::Operation;
+    let tool = EntityKind::ProviderTool;
 
     for (story, declaration, kind, types, budget, expected) in [
         (
             "everything fits whole, so the declaration is unchanged",
             issues_list.as_str(),
-            operation,
+            tool,
             &[][..],
             all_whole,
             issues_list.clone(),
@@ -53,7 +53,7 @@ function forecast(input: { "city": string }): Promise<{ data: { days: Array<Day>
         (
             "every type fits as a stub; User's upgrade fits, and then Milestone's does not",
             &issues_list,
-            operation,
+            tool,
             &[],
             all_whole - 1,
             [WHOLE, USER, &milestone_stub, LABEL].join("\n"),
@@ -61,7 +61,7 @@ function forecast(input: { "city": string }): Promise<{ data: { days: Array<Day>
         (
             "what does not fit is listed by name",
             &issues_list,
-            operation,
+            tool,
             &[],
             0,
             [WHOLE, &not_shown(r#""User", "Milestone", "Label""#)].join("\n"),
@@ -69,7 +69,7 @@ function forecast(input: { "city": string }): Promise<{ data: { days: Array<Day>
         (
             "a stub fits where its full type does not",
             &issues_list,
-            operation,
+            tool,
             &[],
             user_stub.len() + 1,
             [
@@ -82,7 +82,7 @@ function forecast(input: { "city": string }): Promise<{ data: { days: Array<Day>
         (
             "requested types are whole, with their nested types placed and the top level not repeated",
             &issues_list,
-            operation,
+            tool,
             &["Milestone"],
             user_stub.len() + 1,
             [MILESTONE, &user_stub, &not_shown(r#""Label""#)].join("\n"),
@@ -99,7 +99,7 @@ function forecast(input: { "city": string }): Promise<{ data: { days: Array<Day>
         (
             "MCP data is inline, so it is its own top level, and its metadata's types are whole",
             mcp,
-            operation,
+            tool,
             &[],
             0,
             r#"function forecast(input: { "city": string }): Promise<{ data: { days: Array<Day> }; metadata: { _meta?: McpSafeMeta } }>;
@@ -129,7 +129,7 @@ fn stubs_and_requested_types_keep_fields_from_named_parts_and_merged_interfaces(
          type Child = Base & {{ \"own\": {long}; \"extra\": {long}; \"more\": {long}; \"most\": {long} }};\n\
          function get(): Promise<{{ data: {{ child: Child }}; metadata: {{}} }}>;"
     );
-    let abridged = fit(&intersection, EntityKind::Operation, &[], 200).unwrap();
+    let abridged = fit(&intersection, EntityKind::ProviderTool, &[], 200).unwrap();
     assert!(
         abridged.contains("type Child = { id; login; own; extra; more; most };"),
         "{abridged}"
@@ -165,7 +165,7 @@ fn more_skipped_types_than_types_accepts_are_requested_some_at_a_time() {
         fields.join("; ")
     );
 
-    let abridged = fit(&declaration, EntityKind::Operation, &[], 0).unwrap();
+    let abridged = fit(&declaration, EntityKind::ProviderTool, &[], 0).unwrap();
 
     let line = abridged.lines().last().unwrap();
     assert!(

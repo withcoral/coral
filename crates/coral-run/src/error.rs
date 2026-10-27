@@ -28,14 +28,14 @@ macro_rules! coral_failures {
 coral_failures! {
     /// The destination is outside the deployment outbound policy.
     OutboundDestinationRejected => "outbound_destination_rejected",
-    /// No current Operation matches the requested Call Path.
-    OperationNotFound => "operation_not_found",
-    /// Logical arguments cannot satisfy the Operation contract.
+    /// No current Tool matches the requested Call Path.
+    ToolNotFound => "tool_not_found",
+    /// Logical arguments cannot satisfy the Tool contract.
     InvalidInput => "invalid_input",
-    /// Encoded Operation input exceeds its accepted bound.
-    InputTooLarge => "operation_input_too_large",
-    /// The cataloged Operation cannot be invoked faithfully.
-    OperationUnavailable => "operation_unavailable",
+    /// Encoded Tool input exceeds its accepted bound.
+    InputTooLarge => "tool_input_too_large",
+    /// The cataloged Tool cannot be invoked faithfully.
+    ToolUnavailable => "tool_unavailable",
     /// An authorized human decision is still required.
     ApprovalRequired => "approval_required",
     /// An authorized User declined this Invocation.
@@ -50,8 +50,8 @@ coral_failures! {
     ProviderNotFound => "provider_not_found",
     /// Coral attempted the Provider's Publication, and it failed.
     ProviderPublicationFailed => "provider_publication_failed",
-    /// Exact Operation policy disables this Invocation.
-    OperationDisabled => "operation_disabled",
+    /// Exact Tool policy disables this Invocation.
+    ToolDisabled => "tool_disabled",
     /// The retained Credential Route changed.
     CredentialRouteChanged => "credential_route_changed",
     /// The exact retained route has no compatible usable Account.
@@ -66,7 +66,7 @@ coral_failures! {
     AccountConnectionDeclined => "account_connection_declined",
     /// The shared connection request expired.
     AccountConnectionExpired => "account_connection_expired",
-    /// Current authority does not permit the Operation.
+    /// Current authority does not permit the Tool.
     AuthorityLost => "dispatch_authority_lost",
     /// No complete bounded upstream result was received.
     UpstreamIncomplete => "upstream_incomplete",
@@ -80,15 +80,15 @@ coral_failures! {
 }
 
 impl CoralFailure {
-    /// An invalid-params rejection is the Operation contract refusing the
-    /// arguments, a tool the peer no longer lists leaves the cataloged Operation
+    /// An invalid-params rejection is the Tool contract refusing the
+    /// arguments, a tool the peer no longer lists leaves the cataloged Tool
     /// nothing to invoke, and every other protocol error is the peer refusing
     /// the request.
     #[must_use]
     pub(crate) const fn from_mcp_rejection(rejection: coral_upstream::McpRejection) -> Self {
         match rejection {
             coral_upstream::McpRejection::InvalidParams => Self::InvalidInput,
-            coral_upstream::McpRejection::UnknownTool => Self::OperationUnavailable,
+            coral_upstream::McpRejection::UnknownTool => Self::ToolUnavailable,
             coral_upstream::McpRejection::Other(_) => Self::UpstreamRejected,
         }
     }
@@ -105,28 +105,28 @@ impl CoralFailure {
     #[must_use]
     pub const fn message(self) -> &'static str {
         match self {
-            Self::OperationNotFound => "Operation Call Path was not found",
-            Self::InvalidInput => "Operation arguments are invalid",
-            Self::InputTooLarge => "Operation input exceeds its limit",
-            Self::OperationUnavailable => "Operation is unavailable",
-            Self::ApprovalRequired => "Operation requires approval",
+            Self::ToolNotFound => "Tool Call Path was not found",
+            Self::InvalidInput => "Tool arguments are invalid",
+            Self::InputTooLarge => "Tool input exceeds its limit",
+            Self::ToolUnavailable => "Tool is unavailable",
+            Self::ApprovalRequired => "Tool requires approval",
             Self::ApprovalDeclined => "Invocation approval was declined",
             Self::ApprovalExpired => "Invocation approval expired",
-            Self::OperationDisabled => "Operation is disabled",
+            Self::ToolDisabled => "Tool is disabled",
             Self::ProviderUnavailable => "Provider is unavailable",
             Self::ProviderNamespaceConflict => "Provider namespace is already in use",
             Self::ProviderNotFound => "Provider was not found",
             Self::ProviderPublicationFailed => "Coral could not publish the Provider",
-            Self::CredentialRouteChanged => "Operation credential route changed",
-            Self::AccountRequired => "Operation requires a Provider Account",
-            Self::CredentialRefreshFailed => "Operation credential refresh failed",
+            Self::CredentialRouteChanged => "Tool credential route changed",
+            Self::AccountRequired => "Tool requires a Provider Account",
+            Self::CredentialRefreshFailed => "Tool credential refresh failed",
             Self::OAuthClientConfiguration => {
                 "Ask the Provider owner to repair the OAuth application"
             }
-            Self::AccountAuthorizationChanged => "Operation account authorization changed",
+            Self::AccountAuthorizationChanged => "Tool account authorization changed",
             Self::AccountConnectionDeclined => "Account connection was declined",
             Self::AccountConnectionExpired => "Account connection expired",
-            Self::AuthorityLost => "Operation is not permitted",
+            Self::AuthorityLost => "Tool is not permitted",
             Self::OutboundDestinationRejected => "Provider destination is not permitted",
             Self::UpstreamIncomplete => "Upstream result is incomplete",
             Self::UpstreamRejected => "Upstream rejected the request",
@@ -136,13 +136,13 @@ impl CoralFailure {
     }
 }
 
-/// Why a complete upstream outcome rejects its Operation call. The upstream
+/// Why a complete upstream outcome rejects its Tool call. The upstream
 /// answered, so no code here is a [`CoralFailure`] code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UpstreamRejection {
     /// A non-2xx HTTP status, or an MCP tool result with `isError: true`.
     Error,
-    /// A 2xx status or media type that the Operation does not declare as a success.
+    /// A 2xx status or media type that the Tool does not declare as a success.
     Undeclared,
     /// A body Coral could not decode.
     Undecodable,
@@ -172,7 +172,7 @@ impl UpstreamRejection {
     pub(crate) const fn message(self) -> &'static str {
         match self {
             Self::Error => "The upstream service returned an error",
-            Self::Undeclared => "The upstream response is not a success this Operation declares",
+            Self::Undeclared => "The upstream response is not a success this Tool declares",
             Self::Undecodable => "The upstream response body could not be decoded",
         }
     }
@@ -224,7 +224,7 @@ impl Rejection {
     }
 
     /// `failure` naming each argument that caused it, such as each Call Path
-    /// that names no Operation.
+    /// that names no Tool.
     pub(crate) const fn naming(failure: CoralFailure, problems: Vec<InputProblem>) -> Self {
         Self { failure, problems }
     }
@@ -336,11 +336,11 @@ pub enum Error {
     /// Native Program Value JSON could not be parsed or encoded.
     #[error("Program Value JSON was invalid: {0}")]
     ProgramValueJson(#[source] serde_json::Error),
-    /// A resolved Operation was rejected with safe durable evidence.
-    #[error("Operation Invocation failed: {0}")]
+    /// A resolved Tool was rejected with safe durable evidence.
+    #[error("Tool Invocation failed: {0}")]
     InvocationRejected(Rejection),
     /// Invocation persistence lost an atomic lifecycle transition.
-    #[error("Operation Invocation persistence failed: {0}")]
+    #[error("Tool Invocation persistence failed: {0}")]
     InvocationPersistence(String),
     /// Run Event persistence lost an atomic sequence transition.
     #[error("Program Run Event persistence failed: {0}")]
@@ -380,7 +380,7 @@ pub enum Error {
     /// Provider or retained Catalog evidence rejected Invocation work.
     #[error(transparent)]
     Provider(#[from] coral_provider::Error),
-    /// Exact Operation policy rejected Invocation work.
+    /// Exact Tool policy rejected Invocation work.
     #[error(transparent)]
     Policy(#[from] coral_policy::Error),
     /// The private upstream Adapter could not plan, send, or project a result.

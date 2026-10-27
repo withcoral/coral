@@ -36,11 +36,11 @@ const frameError: ProgramError = {
   name: 'TypeError',
   message: 'x',
   frames: [{ source: 'Program', line: 2, column: 3 }],
-  operationCode: '',
-  operationTraceId: '',
-  operationStatus: 0,
-  operationBody: '',
-  operationBodyTruncated: false,
+  toolCode: '',
+  toolTraceId: '',
+  toolStatus: 0,
+  toolBody: '',
+  toolBodyTruncated: false,
   cause: null,
   errors: [],
   truncated: false,
@@ -76,7 +76,7 @@ const invocationRow: Extract<ActivityRow, { kind: 'invocation' }> = {
   task: '',
   run: run.name,
   provider: 'workspaces/finance/providers/mail',
-  operation: 'send',
+  tool: 'send',
   callPath: 'mail.send',
   state: 'ended',
   outcome: 'upstream_outcome',
@@ -184,7 +184,7 @@ it('highlights the exact line a failed Run threw from, when the Run itself is se
 })
 
 // Catches: a child selection inheriting the Run's failure line instead of its own location.
-it('never attributes the parent Run’s failure location to an operation selection', () => {
+it('never attributes the parent Run’s failure location to a tool selection', () => {
   const failedWithCall = context({
     source: [
       'export default async function program() {',
@@ -238,10 +238,10 @@ it('highlights the line Coral stored for the selected record, in the snapshot it
   expect(screen.getByRole('status')).toHaveTextContent('Line 2')
 })
 
-// Catches: an operation, log or emission with no stored location shown without saying so,
+// Catches: a tool, log or emission with no stored location shown without saying so,
 // or a text match of its call standing in for a location Coral never stored.
 it.each([
-  ['an operation', invocationRow],
+  ['a tool', invocationRow],
   ['a log', outputRow('program.logged')],
   ['an emission', outputRow('program.emitted')],
 ])('says the location is unavailable for %s without a stored one', (_, selectedRow) => {

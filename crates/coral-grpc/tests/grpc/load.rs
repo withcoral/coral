@@ -430,7 +430,7 @@ impl Probes {
 }
 
 /// A second active Workspace: its Owner plus one acting Member, one no-approval
-/// Operation, one-call Runs.
+/// Tool, one-call Runs.
 struct Neighbor {
     runs: coral_run::RunModule,
     actor: AuthenticatedPrincipal,
@@ -585,18 +585,18 @@ async fn publish_http(
         .clone()
 }
 
-/// Publishes an HTTP Provider and enables its one Operation without approval.
+/// Publishes an HTTP Provider and enables its one Tool without approval.
 async fn enable_http(f: &Fixture, workspace: &Workspace, namespace: &str, url: &str) {
     let provider = publish_http(f, workspace, namespace, url).await;
-    coral_policy::OperationPolicyModule::new(f.database.database(), f.workspaces.clone())
+    coral_policy::ToolPolicyModule::new(f.database.database(), f.workspaces.clone())
         .set_access_state(
             &change(&f.owner),
-            coral_policy::OperationPolicyTarget::new(
+            coral_policy::ToolPolicyTarget::new(
                 workspace.id().clone(),
                 provider,
-                coral_catalog::OperationKey::parse("read").unwrap(),
+                coral_catalog::ToolKey::parse("read").unwrap(),
             ),
-            coral_policy::OperationAccessState::Enabled,
+            coral_policy::ToolAccessState::Enabled,
         )
         .await
         .unwrap();
@@ -681,7 +681,7 @@ impl Probe {
 
     async fn invocations(&mut self, run: &RunId) -> Vec<InvocationRow> {
         let sql = "select admitted_at_unix_nanos, dispatch_started_at_unix_nanos, ended_at_unix_nanos, state, result_kind \
-                   from operation_invocations where run_id = $1";
+                   from tool_invocations where run_id = $1";
         match self {
             Self::Postgres(c) => sqlx::query_as(sql)
                 .bind(run.to_string())

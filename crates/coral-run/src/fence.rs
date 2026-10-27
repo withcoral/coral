@@ -15,9 +15,9 @@
 use std::collections::BTreeMap;
 
 use coral_db::{RowLock, Transaction};
-use coral_policy::{OperationAccessState, OperationPolicyTarget};
+use coral_policy::{ToolAccessState, ToolPolicyTarget};
 use coral_provider::account::{CredentialEvidence, RetainedAccountFact};
-use coral_provider::{InvocationOperationVerification, ResolvedInvocationOperation};
+use coral_provider::{InvocationToolVerification, ResolvedInvocationTool};
 use coral_workspace::{
     AuthenticatedPrincipal, Principal, PrincipalWorkspaceEvidence, WorkspaceId, WorkspaceModule,
 };
@@ -107,13 +107,13 @@ pub(crate) enum Decision {
     RunTerminated,
 }
 
-/// What one Operation verdict is keyed by: the retained Generation
-/// (immutable), the Operation key, and the credential route and
+/// What one Tool verdict is keyed by: the retained Generation
+/// (immutable), the Tool key, and the credential route and
 /// account-setting version the verification compares with the current
 /// Provider. Targets that retained different access share no verdict.
-type OperationVerdictKey = (
+type ToolVerdictKey = (
     coral_catalog::ProviderGenerationId,
-    coral_catalog::OperationKey,
+    coral_catalog::ToolKey,
     coral_provider::CredentialRoute,
     i64,
 );
@@ -123,19 +123,19 @@ type AccountKey = (coral_provider::account::ProviderAccountId, String);
 /// The facts a batch of Invocations shares, read once per batch.
 pub(crate) struct SharedFacts {
     authority: Result<PrincipalWorkspaceEvidence, CoralFailure>,
-    /// Per retained Operation: the policy the Invocation runs under, once
-    /// the Provider and the Operation are current.
-    operations: BTreeMap<OperationVerdictKey, Result<OperationAccessState, CoralFailure>>,
+    /// Per retained Tool: the policy the Invocation runs under, once
+    /// the Provider and the Tool are current.
+    tools: BTreeMap<ToolVerdictKey, Result<ToolAccessState, CoralFailure>>,
     /// Per selected Account: what the dispatch decides the Account on, once
     /// it is current.
     accounts: BTreeMap<AccountKey, Result<RetainedAccountFact, CoralFailure>>,
 }
 
-fn verdict_key(target: &ResolvedInvocationOperation) -> OperationVerdictKey {
+fn verdict_key(target: &ResolvedInvocationTool) -> ToolVerdictKey {
     let access = target.provider_access();
     (
         target.provider_generation_id().clone(),
-        target.operation().key().clone(),
+        target.tool().key().clone(),
         access.credential_route(),
         access.version(),
     )
@@ -147,12 +147,12 @@ fn account_key(evidence: &CredentialEvidence) -> AccountKey {
 
 pub(crate) fn policy_target(
     workspace_id: &WorkspaceId,
-    target: &ResolvedInvocationOperation,
-) -> OperationPolicyTarget {
-    OperationPolicyTarget::new(
+    target: &ResolvedInvocationTool,
+) -> ToolPolicyTarget {
+    ToolPolicyTarget::new(
         workspace_id.clone(),
         target.provider_access().id().clone(),
-        target.operation().key().clone(),
+        target.tool().key().clone(),
     )
 }
 
@@ -160,7 +160,7 @@ impl SharedFacts {
     /// Reads the facts `targets` depend on, each distinct fact once, holding
     /// their rows as `lock` says, in one order: the actor's authority (the
     /// User's Organization row and the Workspace row), then each distinct
-    /// Provider and Operation with its policy, then each distinct Account.
+    /// Provider and Tool with its policy, then each distinct Account.
     /// `now_unix_nanos` dates the reads that are themselves time-bound (an
     /// Agent Registration); the decision samples the clock again after the
     /// last read.
@@ -185,14 +185,11 @@ impl SharedFacts {
             Ok(evidence) => Ok(evidence),
             Err(error) => Err(authority_failure(error)?),
         };
-        let mut operations: BTreeMap<OperationVerdictKey, &ResolvedInvocationOperation> =
+        let mut tools: BTreeMap<ToolVerdictKey, &ResolvedInvocationTool> = BTreeMap::new();
+        let mut accounts: BTreeMap<AccountKey, (&ResolvedInvocationTool, &CredentialEvidence)> =
             BTreeMap::new();
-        let mut accounts: BTreeMap<
-            AccountKey,
-            (&ResolvedInvocationOperation, &CredentialEvidence),
-        > = BTreeMap::new();
         for target in targets {
-            operations
+            tools
                 .entry(verdict_key(&target.admitted.target))
                 .or_insert(&target.admitted.target);
             if let Some(evidence) = target.credential_evidence {
@@ -201,10 +198,10 @@ impl SharedFacts {
                     .or_insert((&target.admitted.target, evidence));
             }
         }
-        let mut operation_facts = BTreeMap::new();
-        for (key, target) in operations {
-            let fact = operation_fact(transaction, lock, scope.workspace_id, target).await?;
-            operation_facts.insert(key, fact);
+        let mut tool_facts = BTreeMap::new();
+        for (key, target) in tools {
+            let fact = tool_fact(transaction, lock, scope.workspace_id, target).await?;
+            tool_facts.insert(key, fact);
         }
         let mut account_facts = BTreeMap::new();
         for (key, (target, evidence)) in accounts {
@@ -223,13 +220,13 @@ impl SharedFacts {
         }
         Ok(Self {
             authority,
-            operations: operation_facts,
+            tools: tool_facts,
             accounts: account_facts,
         })
     }
 
     /// The policy `target` runs under, once the Run, the actor's authority,
-    /// the Provider and Operation, and the selected Account are current at
+    /// the Provider and Tool, and the selected Account are current at
     /// `now_unix_nanos`; otherwise what refuses it.
     pub(crate) fn checked(
         &self,
@@ -247,13 +244,13 @@ impl SharedFacts {
         if authority.require_current_at(now_unix_nanos).is_err() {
             return Err(Refusal::Deny(CoralFailure::AuthorityLost));
         }
-        let policy = match self.operations.get(&verdict_key(&target.admitted.target)) {
+        let policy = match self.tools.get(&verdict_key(&target.admitted.target)) {
             Some(Ok(policy)) => *policy,
             Some(Err(failure)) => return Err(Refusal::Deny(*failure)),
             None => return Err(Refusal::Deny(CoralFailure::AuthorityLost)),
         };
-        if policy == OperationAccessState::Disabled {
-            return Err(Refusal::Deny(CoralFailure::OperationDisabled));
+        if policy == ToolAccessState::Disabled {
+            return Err(Refusal::Deny(CoralFailure::ToolDisabled));
         }
         let account = match target.credential_evidence {
             None => None,
@@ -296,7 +293,7 @@ impl From<Refusal> for Decision {
 /// The shared facts found current for one Invocation.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Checked {
-    pub(crate) policy: OperationAccessState,
+    pub(crate) policy: ToolAccessState,
     account: Option<RetainedAccountFact>,
     /// When the Run or the actor's authority expires without a commit.
     until_unix_nanos: i64,
@@ -320,7 +317,7 @@ pub(crate) fn decide(
             until_unix_nanos: expires_at.min(checked.until_unix_nanos),
         };
     }
-    if checked.policy == OperationAccessState::ApprovalRequired {
+    if checked.policy == ToolAccessState::ApprovalRequired {
         match invocation.approval {
             ApprovalFact::Approved {
                 deadline_at_unix_nanos,
@@ -352,15 +349,15 @@ pub(crate) fn decide(
     Decision::Dispatch
 }
 
-/// The policy one retained Operation runs under, once its Provider and the
-/// Operation row are current; the failure that refuses it otherwise.
-async fn operation_fact(
+/// The policy one retained Tool runs under, once its Provider and the
+/// Tool row are current; the failure that refuses it otherwise.
+async fn tool_fact(
     transaction: &mut Transaction<'_>,
     lock: RowLock,
     workspace_id: &WorkspaceId,
-    target: &ResolvedInvocationOperation,
-) -> Result<Result<OperationAccessState, CoralFailure>, Error> {
-    match coral_provider::verify_invocation_operation_in_transaction(
+    target: &ResolvedInvocationTool,
+) -> Result<Result<ToolAccessState, CoralFailure>, Error> {
+    match coral_provider::verify_invocation_tool_in_transaction(
         transaction,
         workspace_id,
         target,
@@ -368,25 +365,25 @@ async fn operation_fact(
     )
     .await?
     {
-        InvocationOperationVerification::Current => {}
-        InvocationOperationVerification::CredentialRouteChanged => {
+        InvocationToolVerification::Current => {}
+        InvocationToolVerification::CredentialRouteChanged => {
             return Ok(Err(CoralFailure::CredentialRouteChanged));
         }
-        InvocationOperationVerification::AuthorityLost => {
+        InvocationToolVerification::AuthorityLost => {
             return Ok(Err(CoralFailure::AuthorityLost));
         }
     }
     match coral_policy::invocation_decision_in_transaction(
         transaction,
         &policy_target(workspace_id, target),
-        target.operation().hints(),
-        target.operation().http_method(),
+        target.tool().hints(),
+        target.tool().http_method(),
         lock,
     )
     .await
     {
         Ok(decision) => Ok(Ok(decision.access_state())),
-        Err(coral_policy::Error::OperationNotFound) => Ok(Err(CoralFailure::AuthorityLost)),
+        Err(coral_policy::Error::ToolNotFound) => Ok(Err(CoralFailure::AuthorityLost)),
         Err(error) => Err(error.into()),
     }
 }

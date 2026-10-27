@@ -4,15 +4,15 @@ import { openApiDocument } from '../../../../support/provider-fixtures.ts'
 import {
   addProviderFromFile,
   createWorkspace,
-  openOperation,
+  openTool,
   programRunner,
   waitForProviderStatus,
 } from '../../../../support/providers.ts'
 
-test('An Operation Coral cannot call stays in the table as Unavailable', async (context) => {
+test('A Tool Coral cannot call stays in the table as Unavailable', async (context) => {
   await withOwnerSession(context, async ({ page, target, step, actor }) => {
     let workspace = ''
-    await step('Add a Provider with one Operation Coral cannot call', async () => {
+    await step('Add a Provider with one Tool Coral cannot call', async () => {
       workspace = await createWorkspace(actor.accessToken, `Unavailable ${crypto.randomUUID()}`)
       await addProviderFromFile(
         page,
@@ -25,13 +25,13 @@ test('An Operation Coral cannot call stays in the table as Unavailable', async (
       )
     })
     await step('The table keeps it and its drawer says why', async () => {
-      const drawer = await openOperation(page, 'broken')
+      const drawer = await openTool(page, 'broken')
       await drawer.getByText('Unavailable', { exact: true }).waitFor()
       await drawer.getByText('responses', { exact: false }).first().waitFor()
       await drawer.getByText('coral.providers.mixed.broken', { exact: true }).waitFor()
       await page.keyboard.press('Escape')
       await drawer.waitFor({ state: 'hidden' })
-      // The provider stays Ready: its heading counts both operations and marks
+      // The provider stays Ready: its heading counts both tools and marks
       // only the broken one Unavailable.
       await waitForProviderStatus(page, 'Mixed', 'Ready', { available: 1, total: 2 })
     })

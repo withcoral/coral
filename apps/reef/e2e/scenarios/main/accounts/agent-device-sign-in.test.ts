@@ -7,7 +7,7 @@ import { withOwnerSession } from '../../../support/actors.ts'
 import { managementClients } from '../../../support/management.ts'
 import { oauthApiServer } from '../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   approveDeviceInNewTab,
   chooseAccount,
   chooseDeviceSignIn,
@@ -41,7 +41,7 @@ test("Device sign-in in a new tab connects an Agent's account while its page sta
       await page.getByLabel('Namespace', { exact: true }).fill('device')
       await chooseDeviceSignIn(page, upstream.origin)
       await page.getByRole('button', { name: 'Next', exact: true }).click()
-      await acceptOperations(page)
+      await acceptTools(page)
       await chooseAccount(page, 'own-later')
       await page.getByRole('button', { name: 'Add provider', exact: true }).click()
       await waitForPublication(page)

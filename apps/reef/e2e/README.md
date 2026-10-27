@@ -619,7 +619,7 @@ Maintained management recordings:
   disable/restore, then remove/recreate without inheriting identity or policy.
   Observe the retained original Run after removal.
 - Other `providers/` and `accounts/` scenarios: stale mutations, failed
-  Updates, unavailable Operations, exact lost-response recovery, secret-free
+  Updates, unavailable Tools, exact lost-response recovery, secret-free
   responses, protected MCP discovery, OAuth callbacks/rejected codes, external-browser
   consent, application-secret rotation, member authority and exact Workspace
   concealment. Scoped Accounts replace the old inventories. Disposable upstream

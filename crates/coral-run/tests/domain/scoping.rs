@@ -9,13 +9,13 @@ use crate::{PromptAnswer, RequiredActionRequest};
 #[tokio::test]
 async fn a_run_is_not_found_through_another_workspace_the_caller_can_access() {
     let held = HeldApproval::new("user:two-workspaces").await;
-    let (runs, operation, run) = (&held.fixture.runs, &held.operation, &held.run);
-    let user = &operation.principal;
+    let (runs, tool, run) = (&held.fixture.runs, &held.tool, &held.run);
+    let user = &tool.principal;
     let other = held
         .fixture
         .workspaces
         .create(
-            &change(operation.user.clone(), 60, '6'),
+            &change(tool.user.clone(), 60, '6'),
             WorkspaceDisplayName::parse("Other").unwrap(),
         )
         .await
@@ -25,7 +25,7 @@ async fn a_run_is_not_found_through_another_workspace_the_caller_can_access() {
     let RequiredActionRequest::InvocationApproval(approval) = &request else {
         panic!("approval action")
     };
-    let invocation = retained_events(runs, user, &operation.workspace_id, run)
+    let invocation = retained_events(runs, user, &tool.workspace_id, run)
         .await
         .into_iter()
         .find_map(|event| match event.kind() {
@@ -79,14 +79,14 @@ async fn a_run_is_not_found_through_another_workspace_the_caller_can_access() {
     );
 
     assert_eq!(
-        runs.observe(user, &operation.workspace_id, run, &immediate(None, 100))
+        runs.observe(user, &tool.workspace_id, run, &immediate(None, 100))
             .await
             .unwrap(),
         held.waiting,
         "the Run is unchanged"
     );
     assert_eq!(
-        runs.inspect_approval(user, &operation.workspace_id, approval)
+        runs.inspect_approval(user, &tool.workspace_id, approval)
             .await
             .unwrap()
             .state,
@@ -101,16 +101,11 @@ async fn a_run_is_not_found_through_another_workspace_the_caller_can_access() {
 #[tokio::test]
 async fn a_known_run_identifier_answers_like_an_absent_one_for_another_principal() {
     let held = HeldApproval::new("user:run-author").await;
-    let (runs, operation, run) = (&held.fixture.runs, &held.operation, &held.run);
-    let workspace = &operation.workspace_id;
+    let (runs, tool, run) = (&held.fixture.runs, &held.tool, &held.run);
+    let workspace = &tool.workspace_id;
     let guesser = AuthenticatedPrincipal::user(
         held.fixture
-            .workspace_user(
-                workspace,
-                &operation.user,
-                "user:guesser",
-                WorkspaceRole::Owner,
-            )
+            .workspace_user(workspace, &tool.user, "user:guesser", WorkspaceRole::Owner)
             .await,
     );
     let absent = crate::RunId::parse("height-word-database-library").unwrap();
@@ -118,7 +113,7 @@ async fn a_known_run_identifier_answers_like_an_absent_one_for_another_principal
         assert_run_not_found(runs, &guesser, workspace, id, case).await;
     }
     assert_eq!(
-        runs.observe(&operation.principal, workspace, run, &immediate(None, 100))
+        runs.observe(&tool.principal, workspace, run, &immediate(None, 100))
             .await
             .unwrap(),
         held.waiting,

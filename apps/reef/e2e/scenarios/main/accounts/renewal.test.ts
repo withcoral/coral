@@ -10,7 +10,7 @@ import { withBrowserSession } from '../../../support/browser-session.ts'
 import { inspectRunEvents, managementClients } from '../../../support/management.ts'
 import { oauthMcpServer } from '../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   chooseAccount,
   collectDataResponses,
   confirmConfiguration,
@@ -18,7 +18,7 @@ import {
   createWorkspace,
   openCustomSource,
   programRunner,
-  signInToReadOperations,
+  signInToReadTools,
   waitForNoAccount,
   waitForPublication,
 } from '../../../support/providers.ts'
@@ -33,7 +33,7 @@ test.for(['user', 'shared', 'agent'] as const)(
     const upstream = await oauthMcpServer(context, access, {
       refreshAccess: refreshed,
       // The first renewed token also expires before the fence. Re-preparation
-      // stays in this Invocation and must not create a second Operation send.
+      // stays in this Invocation and must not create a second Tool send.
       firstRefreshExpiresIn: scope === 'shared' ? 0 : 3600,
     })
     const api = managementClients(actor.accessToken)
@@ -117,9 +117,9 @@ test.for(['user', 'shared', 'agent'] as const)(
           await page.getByRole('button', { name: 'Connect', exact: true }).click()
           await page.getByLabel('Namespace', { exact: true }).fill('renewal')
           await confirmConfiguration(page)
-          await signInToReadOperations(page)
+          await signInToReadTools(page)
           await page.getByRole('link', { name: 'Approve fixture access', exact: true }).click()
-          await acceptOperations(page)
+          await acceptTools(page)
           await chooseAccount(
             page,
             scope === 'shared' ? 'shared' : scope === 'user' ? 'own' : 'own-later',

@@ -122,14 +122,14 @@ async fn a_cancel_during_an_in_flight_fence_is_applied_at_once_and_run_ended_fol
         latch.clone(),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:cancel-mid-fence", "Cancel during a fence")
+    let tool = fixture
+        .user_tool("user:cancel-mid-fence", "Cancel during a fence")
         .await;
     let run = fixture
         .runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             submission(
                 "await Promise.all([coral.providers.weather.getForecast(), coral.providers.weather.getForecast()]); return 'sent';",
             ),
@@ -140,9 +140,7 @@ async fn a_cancel_during_an_in_flight_fence_is_applied_at_once_and_run_ended_fol
     latch.release_arrivals();
     // The batch of both has read its facts and holds the commit slot.
     latch.until_loaded(1).await;
-    let before = fixture
-        .run_record(&operation.workspace_id, run.run_id())
-        .await;
+    let before = fixture.run_record(&tool.workspace_id, run.run_id()).await;
     let owner = fixture
         .runs
         .owners
@@ -152,28 +150,22 @@ async fn a_cancel_during_an_in_flight_fence_is_applied_at_once_and_run_ended_fol
         )
         .expect("the owner is live");
     owner.send(crate::owner::Message::Cancel {
-        requester: operation.principal.principal().clone(),
+        requester: tool.principal.principal().clone(),
         row: crate::run_inbox::InboxRow("delivered".to_string()),
     });
     wait_until(|| owner.is_stopping()).await;
     assert_eq!(
-        fixture
-            .run_record(&operation.workspace_id, run.run_id())
-            .await,
+        fixture.run_record(&tool.workspace_id, run.run_id()).await,
         before,
         "the intent waits behind the fence in flight"
     );
     latch.release_loaded();
     let canceled = fixture
-        .terminal_record(&operation.workspace_id, run.run_id())
+        .terminal_record(&tool.workspace_id, run.run_id())
         .await;
     assert_eq!(canceled.state, RunState::Canceled);
     let events = fixture
-        .events_after(
-            &operation.workspace_id,
-            run.run_id(),
-            last_sequence(&before),
-        )
+        .events_after(&tool.workspace_id, run.run_id(), last_sequence(&before))
         .await;
     let kinds: Vec<&str> = events
         .iter()
@@ -200,7 +192,7 @@ async fn a_cancel_during_an_in_flight_fence_is_applied_at_once_and_run_ended_fol
         ]
     );
     let rows = fixture
-        .invocation_rows(&operation.workspace_id, run.run_id())
+        .invocation_rows(&tool.workspace_id, run.run_id())
         .await;
     assert_eq!(rows.len(), 2);
     assert!(
@@ -236,22 +228,18 @@ async fn a_second_cancel_on_an_ending_run_records_nothing_and_leaves_no_row() {
     .await;
     fixture.runs.execution_policy =
         crate::execution::ExecutionPolicy::testing_with_shutdown_grace(Duration::from_secs(30));
-    let operation = fixture
-        .user_operation("user:second-cancel", "Second cancel")
+    let tool = fixture
+        .user_tool("user:second-cancel", "Second cancel")
         .await;
     let run = fixture
         .runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("invoke"),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission("invoke"))
         .await
         .unwrap();
     wait_until(|| upstream.entered.load(Ordering::SeqCst)).await;
     let cancel = |runs: RunModule, label: &'static str| {
-        let actor = operation.principal.clone();
-        let workspace = operation.workspace_id.clone();
+        let actor = tool.principal.clone();
+        let workspace = tool.workspace_id.clone();
         let run_id = run.run_id().clone();
         tokio::spawn(async move {
             runs.cancel(&actor, &workspace, &run_id, &immediate(None, 100))
@@ -262,29 +250,23 @@ async fn a_second_cancel_on_an_ending_run_records_nothing_and_leaves_no_row() {
     let first = cancel(fixture.runs.clone(), "first");
     wait_until_async(async || {
         fixture
-            .run_record(&operation.workspace_id, run.run_id())
+            .run_record(&tool.workspace_id, run.run_id())
             .await
             .termination
             .is_some()
     })
     .await;
-    let recorded = fixture
-        .run_record(&operation.workspace_id, run.run_id())
-        .await;
+    let recorded = fixture.run_record(&tool.workspace_id, run.run_id()).await;
     let second = cancel(fixture.next_process(), "second");
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!second.is_finished(), "the Run is still ending");
     assert_eq!(
-        fixture
-            .run_record(&operation.workspace_id, run.run_id())
-            .await,
+        fixture.run_record(&tool.workspace_id, run.run_id()).await,
         recorded,
         "the repeat moves nothing"
     );
     assert_eq!(
-        fixture
-            .inbox_rows(&operation.workspace_id, run.run_id())
-            .await,
+        fixture.inbox_rows(&tool.workspace_id, run.run_id()).await,
         0
     );
     upstream.release.store(true, Ordering::SeqCst);
@@ -294,8 +276,8 @@ async fn a_second_cancel_on_an_ending_run_records_nothing_and_leaves_no_row() {
     assert_eq!(second.state(), RunState::Canceled);
     let requested: Vec<_> = retained_events(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await
@@ -616,10 +598,10 @@ impl Termination {
         self,
         fixture: &TestModules,
         principal: &AuthenticatedPrincipal,
-        operation: &OperationFixture,
+        tool: &ToolFixture,
         run: &crate::RunId,
     ) -> crate::RunUpdate {
-        let workspace = &operation.workspace_id;
+        let workspace = &tool.workspace_id;
         match self {
             Self::Cancel(_) => fixture
                 .runs
@@ -744,22 +726,22 @@ async fn termination_ends_waiting_invocations_and_marks_unfinished_dispatches_in
         for dispatching in [false, true] {
             let case = format!("{termination:?}, dispatching: {dispatching}");
             let (in_flight, fixture) = InFlight::arrange(dispatching).await;
-            let operation = fixture
-                .user_operation("user:terminate-in-flight", "Terminate in-flight work")
+            let tool = fixture
+                .user_tool("user:terminate-in-flight", "Terminate in-flight work")
                 .await;
             let principal = match termination {
                 Termination::Cancel(caller) => {
                     fixture
-                        .cancellation_caller(caller, &operation.workspace_id, &operation.principal)
+                        .cancellation_caller(caller, &tool.workspace_id, &tool.principal)
                         .await
                 }
-                Termination::Deadline => operation.principal.clone(),
+                Termination::Deadline => tool.principal.clone(),
             };
             let accepted = fixture
                 .runs
                 .start(
                     &principal,
-                    &operation.workspace_id,
+                    &tool.workspace_id,
                     RunSubmission::new(
                         ProgramSource::parse("await coral.providers.weather.getForecast();")
                             .unwrap(),
@@ -772,7 +754,7 @@ async fn termination_ends_waiting_invocations_and_marks_unfinished_dispatches_in
 
             let terminating = std::time::Instant::now();
             let terminal = termination
-                .apply(&fixture, &principal, &operation, accepted.run_id())
+                .apply(&fixture, &principal, &tool, accepted.run_id())
                 .await;
             let terminating = terminating.elapsed();
             let (invocation_end, sends) = if dispatching {
@@ -788,8 +770,8 @@ async fn termination_ends_waiting_invocations_and_marks_unfinished_dispatches_in
             assert!(
                 retained_events(
                     &fixture.runs,
-                    &operation.principal,
-                    &operation.workspace_id,
+                    &tool.principal,
+                    &tool.workspace_id,
                     terminal.run_id()
                 )
                 .await
@@ -813,7 +795,7 @@ async fn termination_ends_waiting_invocations_and_marks_unfinished_dispatches_in
                 .runs
                 .observe(
                     &principal,
-                    &operation.workspace_id,
+                    &tool.workspace_id,
                     accepted.run_id(),
                     &immediate(None, 100),
                 )
@@ -850,14 +832,14 @@ async fn complete_outcome_or_known_failure_can_win_during_cancellation_shutdown(
         // first and record the dispatch as indeterminate.
         fixture.runs.execution_policy =
             crate::execution::ExecutionPolicy::testing_with_shutdown_grace(Duration::from_secs(30));
-        let operation = fixture
-            .user_operation("user:cancel-dispatch", "Cancel dispatching Invocation")
+        let tool = fixture
+            .user_tool("user:cancel-dispatch", "Cancel dispatching Invocation")
             .await;
         let accepted = fixture
             .runs
             .start(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 submission("await coral.providers.weather.getForecast();"),
             )
             .await
@@ -865,8 +847,8 @@ async fn complete_outcome_or_known_failure_can_win_during_cancellation_shutdown(
         wait_until(|| upstream.entered.load(Ordering::SeqCst)).await;
 
         let runs = fixture.runs.clone();
-        let principal = operation.principal.clone();
-        let workspace_id = operation.workspace_id.clone();
+        let principal = tool.principal.clone();
+        let workspace_id = tool.workspace_id.clone();
         let run_id = accepted.run_id().clone();
         let cancel = tokio::spawn(async move {
             runs.cancel(&principal, &workspace_id, &run_id, &immediate(None, 100))
@@ -877,8 +859,8 @@ async fn complete_outcome_or_known_failure_can_win_during_cancellation_shutdown(
             let update = fixture
                 .runs
                 .observe(
-                    &operation.principal,
-                    &operation.workspace_id,
+                    &tool.principal,
+                    &tool.workspace_id,
                     accepted.run_id(),
                     &immediate(None, 100),
                 )
@@ -886,8 +868,8 @@ async fn complete_outcome_or_known_failure_can_win_during_cancellation_shutdown(
                 .expect("observe cancellation intent");
             if retained_events(
                 &fixture.runs,
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 update.run_id(),
             )
             .await
@@ -920,8 +902,8 @@ async fn complete_outcome_or_known_failure_can_win_during_cancellation_shutdown(
         assert!(
             retained_events(
                 &fixture.runs,
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 canceled.run_id()
             )
             .await
@@ -979,7 +961,7 @@ async fn deadline_terminates_noncooperative_javascript_without_replay() {
 /// one Run recovered, and the Run as it ended.
 async fn swept_by_the_next_process(
     fixture: &TestModules,
-    operation: &OperationFixture,
+    tool: &ToolFixture,
     run_id: &crate::RunId,
 ) -> crate::RunUpdate {
     assert_eq!(
@@ -990,13 +972,7 @@ async fn swept_by_the_next_process(
             .expect("sweep the lapsed lease"),
         1
     );
-    wait_for_terminal(
-        &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
-        run_id,
-    )
-    .await
+    wait_for_terminal(&fixture.runs, &tool.principal, &tool.workspace_id, run_id).await
 }
 
 #[tokio::test]
@@ -1008,14 +984,14 @@ async fn recovery_revokes_a_started_claim_before_late_program_work() {
         serde_json::json!({"temperature": 21}),
     ));
     let fixture = TestModules::with_upstream(engine.clone(), upstream.clone()).await;
-    let operation = fixture
-        .user_operation("user:stale-claim", "Recover lost execution")
+    let tool = fixture
+        .user_tool("user:stale-claim", "Recover lost execution")
         .await;
     let accepted = fixture
         .runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             submission("stale-claim"),
         )
         .await
@@ -1023,8 +999,8 @@ async fn recovery_revokes_a_started_claim_before_late_program_work() {
     wait_until(|| engine.started.load(Ordering::SeqCst)).await;
     let accepted_at = retained_events(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await
@@ -1032,14 +1008,14 @@ async fn recovery_revokes_a_started_claim_before_late_program_work() {
     .expect("run.started")
     .occurred_at_unix_nanos();
     fixture
-        .expire_worker_claim(&operation.workspace_id, accepted.run_id(), accepted_at)
+        .expire_worker_claim(&tool.workspace_id, accepted.run_id(), accepted_at)
         .await;
     fixture
         .clock
         .next
         .store(accepted_at + 2_000_000_000, Ordering::SeqCst);
 
-    let interrupted = swept_by_the_next_process(&fixture, &operation, accepted.run_id()).await;
+    let interrupted = swept_by_the_next_process(&fixture, &tool, accepted.run_id()).await;
     assert_eq!(interrupted.state(), RunState::Interrupted);
     assert!(matches!(
         interrupted.terminal_outcome(),
@@ -1055,8 +1031,8 @@ async fn recovery_revokes_a_started_claim_before_late_program_work() {
     let unchanged = fixture
         .runs
         .observe(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
             &immediate(None, 100),
         )
@@ -1066,8 +1042,8 @@ async fn recovery_revokes_a_started_claim_before_late_program_work() {
     assert!(
         retained_events(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             unchanged.run_id()
         )
         .await
@@ -1094,14 +1070,14 @@ async fn recovery_ends_a_pending_invocation_without_dispatch() {
     let fixture =
         TestModules::with_invocation_adapters(engine.clone(), upstream.clone(), observer.clone())
             .await;
-    let operation = fixture
-        .user_operation("user:recover-pending", "Recover pending Invocation")
+    let tool = fixture
+        .user_tool("user:recover-pending", "Recover pending Invocation")
         .await;
     let accepted = fixture
         .runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             submission("recover-pending"),
         )
         .await
@@ -1109,8 +1085,8 @@ async fn recovery_ends_a_pending_invocation_without_dispatch() {
     wait_until(|| observer.entered()).await;
     let accepted_at = retained_events(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await
@@ -1118,20 +1094,20 @@ async fn recovery_ends_a_pending_invocation_without_dispatch() {
     .expect("run.started")
     .occurred_at_unix_nanos();
     fixture
-        .expire_worker_claim(&operation.workspace_id, accepted.run_id(), accepted_at)
+        .expire_worker_claim(&tool.workspace_id, accepted.run_id(), accepted_at)
         .await;
     fixture
         .clock
         .next
         .store(accepted_at + 2_000_000_000, Ordering::SeqCst);
 
-    let interrupted = swept_by_the_next_process(&fixture, &operation, accepted.run_id()).await;
+    let interrupted = swept_by_the_next_process(&fixture, &tool, accepted.run_id()).await;
     assert_eq!(interrupted.state(), RunState::Interrupted);
     assert!(
         retained_events(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             interrupted.run_id()
         )
         .await
@@ -1152,8 +1128,8 @@ async fn recovery_ends_a_pending_invocation_without_dispatch() {
     let unchanged = fixture
         .runs
         .observe(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
             &immediate(None, 100),
         )
@@ -1414,8 +1390,7 @@ async fn the_sweep_ends_an_abandoned_run_by_its_passed_timers_or_its_recorded_te
         let held =
             HeldApproval::expiring(&format!("user:abandoned-{case:?}"), Duration::from_secs(20))
                 .await;
-        let (fixture, workspace_id, run_id) =
-            (&held.fixture, &held.operation.workspace_id, &held.run);
+        let (fixture, workspace_id, run_id) = (&held.fixture, &held.tool.workspace_id, &held.run);
         let request = held
             .approvals
             .list_for_run(&held.actor, workspace_id, run_id)
@@ -1516,10 +1491,6 @@ async fn the_sweep_ends_an_abandoned_run_by_its_passed_timers_or_its_recorded_te
 /// with its Approval Request closed, then `run.ended`; the head moves once.
 /// The dead holder's late upstream result changes nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one journey: two Invocations brought to dispatching and waiting, then one chunk"
-)]
 async fn an_abandoned_runs_dispatching_and_waiting_invocations_end_in_one_chunk() {
     use crate::InvocationResultKind::{Indeterminate, RunTerminated};
     use crate::approval::ApprovalState;
@@ -1529,31 +1500,23 @@ async fn an_abandoned_runs_dispatching_and_waiting_invocations_end_in_one_chunk(
         serde_json::json!({"temperature": 21}),
     )));
     let fixture = TestModules::with_upstream(Arc::new(engine), upstream.clone()).await;
-    let operation = fixture
-        .user_operation("user:abandoned-in-flight", "Recover in-flight work")
+    let tool = fixture
+        .user_tool("user:abandoned-in-flight", "Recover in-flight work")
         .await;
-    fixture.require_approval(&operation).await;
-    let workspace_id = &operation.workspace_id;
+    fixture.require_approval(&tool).await;
+    let workspace_id = &tool.workspace_id;
     let approvals = fixture.approvals();
     let accepted = fixture
         .runs
-        .start(&operation.principal, workspace_id, submission("calls"))
+        .start(&tool.principal, workspace_id, submission("calls"))
         .await
         .unwrap();
     let run_id = accepted.run_id();
-    calls.invoke(&operation.call_path);
-    calls.invoke(&operation.call_path);
-    wait_for_actions(
-        &fixture.runs,
-        &operation.principal,
-        workspace_id,
-        run_id,
-        2,
-        2,
-    )
-    .await;
+    calls.invoke(&tool.call_path);
+    calls.invoke(&tool.call_path);
+    wait_for_actions(&fixture.runs, &tool.principal, workspace_id, run_id, 2, 2).await;
     let requests = approvals
-        .list_for_run(&operation.principal, workspace_id, run_id)
+        .list_for_run(&tool.principal, workspace_id, run_id)
         .await
         .unwrap();
     let [approved, waiting] = requests.as_slice() else {
@@ -1561,7 +1524,7 @@ async fn an_abandoned_runs_dispatching_and_waiting_invocations_end_in_one_chunk(
     };
     approvals
         .decide(
-            &operation.principal,
+            &tool.principal,
             workspace_id,
             &approved.id,
             crate::approval::ApprovalDecision::Approve,
@@ -1612,7 +1575,7 @@ async fn an_abandoned_runs_dispatching_and_waiting_invocations_end_in_one_chunk(
         "{events:?}"
     );
     let states: Vec<_> = approvals
-        .list_for_run(&operation.principal, workspace_id, run_id)
+        .list_for_run(&tool.principal, workspace_id, run_id)
         .await
         .unwrap()
         .into_iter()
@@ -1642,7 +1605,7 @@ async fn an_abandoned_runs_dispatching_and_waiting_invocations_end_in_one_chunk(
 async fn a_request_for_a_run_being_recovered_waits_until_its_chunk_lands() {
     use crate::approval::{ApprovalDecision, ApprovalState};
     let held = HeldApproval::new("user:recovered-request").await;
-    let (fixture, workspace_id, run_id) = (&held.fixture, &held.operation.workspace_id, &held.run);
+    let (fixture, workspace_id, run_id) = (&held.fixture, &held.tool.workspace_id, &held.run);
     let request = held
         .approvals
         .list_for_run(&held.actor, workspace_id, run_id)
@@ -1663,7 +1626,7 @@ async fn a_request_for_a_run_being_recovered_waits_until_its_chunk_lands() {
     let decide = || {
         let approvals = next.approvals();
         let (actor, workspace_id, id) = (
-            held.operation.principal.clone(),
+            held.tool.principal.clone(),
             workspace_id.clone(),
             request.id.clone(),
         );

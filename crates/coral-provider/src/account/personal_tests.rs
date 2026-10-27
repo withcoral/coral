@@ -23,14 +23,14 @@ async fn open_connection_request(
     now: i64,
 ) -> ConnectionRequestId {
     let mut tx = providers.database.begin().await.unwrap();
-    let target = crate::resolve_owner_operation_in_transaction(
+    let target = crate::resolve_owner_tool_in_transaction(
         &mut tx,
         workspace,
         "coral.providers.private.getPrivateForecast",
     )
     .await
     .unwrap()
-    .expect("callable Operation");
+    .expect("callable Tool");
     let principal = coral_workspace::AuthenticatedPrincipal::user(user.clone());
     let ConnectionResolution::Waiting { request: id, .. } =
         resolve_connection_in_transaction(&mut tx, &target, principal.principal(), None, now)
@@ -72,7 +72,7 @@ async fn connect(
 /// first's request. Either way the User has one pending request.
 #[tokio::test]
 async fn concurrent_creators_of_one_users_connection_request_share_its_row() {
-    const OPERATION: &str = "coral.providers.private.getPrivateForecast";
+    const TOOL: &str = "coral.providers.private.getPrivateForecast";
     let (db, workspaces, providers) = test_modules().await;
     let user = organization_user(
         db.database(),
@@ -99,10 +99,10 @@ async fn concurrent_creators_of_one_users_connection_request_share_its_row() {
 
     // The first creator keeps its request uncommitted while the second resolves.
     let mut first = providers.database.begin().await.unwrap();
-    let target = crate::resolve_owner_operation_in_transaction(&mut first, &scope, OPERATION)
+    let target = crate::resolve_owner_tool_in_transaction(&mut first, &scope, TOOL)
         .await
         .unwrap()
-        .expect("callable Operation");
+        .expect("callable Tool");
     let ConnectionResolution::Waiting {
         request: created, ..
     } = resolve_connection_in_transaction(&mut first, &target, principal.principal(), None, 20)
@@ -117,10 +117,10 @@ async fn concurrent_creators_of_one_users_connection_request_share_its_row() {
         let principal = principal.clone();
         async move {
             let mut tx = database.begin().await.unwrap();
-            let target = crate::resolve_owner_operation_in_transaction(&mut tx, &scope, OPERATION)
+            let target = crate::resolve_owner_tool_in_transaction(&mut tx, &scope, TOOL)
                 .await
                 .unwrap()
-                .expect("callable Operation");
+                .expect("callable Tool");
             let resolution = resolve_connection_in_transaction(
                 &mut tx,
                 &target,
