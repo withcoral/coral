@@ -572,6 +572,8 @@ export const OpensActivityThenStaysOnIt: Story = {
     // Pressed, it keeps its label; its description says pressing it again stops.
     await expect(latest()).toHaveTextContent(/^Live$/)
     await expect(latest()).toHaveAccessibleDescription('Stop following the latest activity.')
+    // On, the target icon is filled in; off again, it opens.
+    await expect(latest().querySelector('svg')).toHaveClass('lucide-locate-fixed')
     await expect(address().get('live')).toBe('latest')
     await idle()
     await closed()
@@ -600,6 +602,7 @@ export const OpensActivityThenStaysOnIt: Story = {
     await closed()
     await expect(address().toString()).toBe(before)
     await waitFor(() => expect(latest()).toHaveAttribute('aria-pressed', 'false'))
+    await expect(latest().querySelector('svg')).toHaveClass('lucide-locate')
   },
 }
 

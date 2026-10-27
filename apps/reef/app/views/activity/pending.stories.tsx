@@ -316,6 +316,8 @@ export const Combined: Story = {
     await expect(live).toHaveTextContent(/^Live$/)
     await expect(live).toHaveAttribute('aria-pressed', 'false')
     await expect(live).toHaveAccessibleDescription('Follow the newest task or run.')
+    // Off, the target icon is open; the label stays beside it.
+    await expect(live.querySelector('svg')).toHaveClass('lucide-locate')
     // Tab reaches it after the actions, and before the table.
     live.focus()
     await userEvent.tab({ shift: true })

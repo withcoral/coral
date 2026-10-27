@@ -501,8 +501,8 @@ const liveToggles: Record<LiveScope, { label: string; off: string; on: string; b
 /**
  * A live mode toggle: beside the drawer's close control for the shown Run or Task,
  * and above the list for the newest activity. Pressed, live mode follows its `scope`.
- * The icon shape shows the state too. Above the list it reads "Live" in both states,
- * the pressed style showing on, and its tooltip also describes it.
+ * The icon shape shows the state too. Above the list it also reads "Live" in both
+ * states, the pressed style showing on, and its tooltip also describes it.
  */
 function LiveToggle({
   scope,
@@ -529,6 +529,7 @@ function LiveToggle({
           <Button.TextButton
             size="22"
             variant="secondary"
+            icon={on ? 'LocateFixed' : 'Locate'}
             aria-pressed={on}
             aria-describedby={descriptionId}
             // Pressed, it still turns live mode off.

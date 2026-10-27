@@ -560,9 +560,11 @@ export const AgentFullActivity: Story = {
     await expect(live).toHaveTextContent(/^Live$/)
     await expect(live).toHaveAttribute('aria-pressed', 'false')
     await expect(live).toHaveAccessibleDescription('Follow the newest task or run.')
+    await expect(live.querySelector('svg')).toHaveClass('lucide-locate')
     await userEvent.click(live)
     await waitFor(() => expect(live).toHaveAttribute('aria-pressed', 'true'))
     await expect(live).toHaveTextContent(/^Live$/)
+    await expect(live.querySelector('svg')).toHaveClass('lucide-locate-fixed')
   },
 }
 // Catches: a link into the agent's Activity list opening the dashboard instead.

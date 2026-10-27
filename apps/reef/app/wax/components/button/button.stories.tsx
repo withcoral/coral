@@ -192,6 +192,13 @@ export const Pressed: Story = {
       <TextButton variant="secondary" aria-pressed={true} disabled>
         Disabled
       </TextButton>
+      {/* An icon whose shape also shows the state, as the Live toggle's does. */}
+      <TextButton variant="secondary" icon="Locate" aria-pressed={false}>
+        Live
+      </TextButton>
+      <TextButton variant="secondary" icon="LocateFixed" aria-pressed={true}>
+        Live
+      </TextButton>
     </div>
   ),
 }
