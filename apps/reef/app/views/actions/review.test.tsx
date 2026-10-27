@@ -11,7 +11,7 @@ import { ActivityArchivedContext } from '../activity/live'
 import { ActionReviewSession, ApprovalReview } from './review'
 
 type Approval = typeof approval
-type DecisionResponse = { error: string } | { state: string }
+type DecisionResponse = { error: string } | { state: string } | { recording: true }
 
 const approved: DecisionResponse = { state: 'approved' }
 // The instructions an invalid comment describes itself with.
@@ -262,6 +262,23 @@ describe('exact approval review', () => {
     expect(statuses()).toEqual(['Approved'])
     expect(page.container).not.toHaveTextContent('Could not save your decision.')
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+  })
+
+  // Catches: a decision that Coral holds offered again, or its status outliving the live read.
+  it('says your decision is saving until the live read shows it decided', async () => {
+    const page = renderReview()
+    await enterComment('Reviewed the exact arguments.')
+    await click('Approve this call')
+    await act(async () => page.submissions[0].respond({ recording: true }))
+
+    expect(statuses()).toContain('Saving your decision…')
+    expect(button('Approve this call')).toBeDisabled()
+    expect(button('Deny this call')).toBeDisabled()
+    // The comment went with the decision, so it is no longer an unsent draft.
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+
+    await page.show({ ...approval, state: 'approved', actionable: false })
+    expect(statuses()).toEqual(['Approved'])
   })
 
   it('shows the durable denial returned to a stale approval attempt and removes decision controls', async () => {

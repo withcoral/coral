@@ -161,14 +161,18 @@ export function ApprovalReview({
       ? fetcher.data.state
       : undefined
   const settled = Boolean(winning && winning !== 'pending')
-  const settle = session.settle
-  useEffect(() => {
-    // A terminal response settles this draft even before the next authorized loader snapshot.
-    if (settled) settle(detail.name)
-  }, [settled, settle, detail.name])
-  const commentInvalid = new TextEncoder().encode(comment).length > 1024 || comment.includes('\0')
   const state = winning ?? detail.state
   const deciding = available && !settled
+  // Coral holds the decision but has not recorded it yet. The live read shows the outcome, by
+  // the request's deadline at the latest.
+  const recording = deciding && Boolean(fetcher.data && 'recording' in fetcher.data)
+  const sent = settled || recording
+  const settle = session.settle
+  useEffect(() => {
+    // A sent decision settles this draft even before the next authorized loader snapshot.
+    if (sent) settle(detail.name)
+  }, [sent, settle, detail.name])
+  const commentInvalid = new TextEncoder().encode(comment).length > 1024 || comment.includes('\0')
   const tone = deciding ? 'amber' : (tones[state] ?? 'gray')
   const run = context.run
   const runIntent = context.submission?.intent || run.intent
@@ -239,7 +243,7 @@ export function ApprovalReview({
         <input type="hidden" name="name" value={detail.name} />
         {deciding && archived ? (
           <Typography.Body role="status">{restoreFirst(archived, 'decide')}</Typography.Body>
-        ) : deciding ? (
+        ) : deciding && !recording ? (
           <>
             <Disclosure title="Add a comment" open={Boolean(comment)}>
               <Typography.BodySmall as="label" htmlFor={id}>
@@ -271,13 +275,14 @@ export function ApprovalReview({
       {/* The decision stays in view while you read. The buttons submit the form above. */}
       {deciding && !archived && (
         <PanelFooter>
+          {recording && <Typography.Body role="status">Saving your decision…</Typography.Body>}
           <Button.TextButton
             type="submit"
             form={formId}
             name="intent"
             value="decline"
             variant="destructive"
-            disabled={pending || !connected || commentInvalid}
+            disabled={pending || recording || !connected || commentInvalid}
             busy={submitting === 'decline'}
           >
             Deny this call
@@ -287,7 +292,7 @@ export function ApprovalReview({
             form={formId}
             name="intent"
             value="approve"
-            disabled={pending || !connected || commentInvalid}
+            disabled={pending || recording || !connected || commentInvalid}
             busy={submitting === 'approve'}
           >
             Approve this call
@@ -318,7 +323,9 @@ export function QuickDecision({ name, label }: { name: string; label: string }) 
     fetcher.data && 'state' in fetcher.data && typeof fetcher.data.state === 'string'
       ? fetcher.data.state
       : undefined
-  const decided = pending || Boolean(winning && settledApproval(winning))
+  // Coral holds the decision but has not recorded it yet. The live read removes the row.
+  const recording = Boolean(fetcher.data && 'recording' in fetcher.data)
+  const decided = pending || recording || Boolean(winning && settledApproval(winning))
   return (
     <fetcher.Form method="post" action="/activity/resolve" className={styles.controls}>
       <input type="hidden" name="csrf" value={csrf} />
@@ -344,6 +351,9 @@ export function QuickDecision({ name, label }: { name: string; label: string }) 
       >
         Approve
       </Button.TextButton>
+      {recording && (
+        <Typography.BodySmall role="status">Saving your decision…</Typography.BodySmall>
+      )}
       {fetcher.data && 'error' in fetcher.data && (
         <Typography.BodySmall role="alert">{fetcher.data.error}</Typography.BodySmall>
       )}
@@ -363,25 +373,29 @@ export function CancelRun({
   const connected = useActivityConnected()
   const fetcher = useFetcher<typeof action>()
   const [confirming, setConfirming] = useState(false)
+  // Coral holds the cancellation but has not recorded it yet. The panel that shows this button
+  // removes it once the live read shows the Run ended, by the Run's deadline at the latest.
+  const recording = Boolean(fetcher.data && 'recording' in fetcher.data)
+  const status = !fetcher.data
+    ? null
+    : 'recording' in fetcher.data
+      ? 'Canceling the run…'
+      : 'message' in fetcher.data
+        ? fetcher.data.message
+        : 'error' in fetcher.data
+          ? fetcher.data.error
+          : null
   return (
     <>
       <Button.TextButton
         variant={variant}
-        disabled={!connected || fetcher.state !== 'idle'}
+        disabled={!connected || recording || fetcher.state !== 'idle'}
         busy={fetcher.state !== 'idle'}
         onClick={() => setConfirming(true)}
       >
         Cancel run
       </Button.TextButton>
-      {fetcher.data && (
-        <Typography.Body role="status">
-          {'message' in fetcher.data
-            ? fetcher.data.message
-            : 'error' in fetcher.data
-              ? fetcher.data.error
-              : null}
-        </Typography.Body>
-      )}
+      {status && <Typography.Body role="status">{status}</Typography.Body>}
       <Dialog.Root open={confirming} onOpenChange={setConfirming}>
         <Dialog.Portal>
           <Dialog.Backdrop />

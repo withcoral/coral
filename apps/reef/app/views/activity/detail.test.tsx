@@ -1,10 +1,9 @@
 /** @vitest-environment happy-dom */
 import { act, screen, within } from '@testing-library/react'
-import { useEffect, useState } from 'react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { markupRoute, renderRoute } from '@/test-support/route'
+import { markupRoute, renderLivePage, renderRoute } from '@/test-support/route'
 import { ActivityDetail } from './detail'
 import { ActionReviewSession } from '../actions/review'
 import { approvalRequest, pendingPage, run, workspace } from './fixtures'
@@ -657,32 +656,25 @@ it('replaces the Task context total when a live page brings a new one', () => {
     contextImpactBytes: '-55500',
     contextImpactPartial: true,
   }
-  let update!: (next: ActivityPage) => void
-  function LivePage() {
-    const [current, setCurrent] = useState(taskDetailPage(task))
-    useEffect(() => {
-      update = setCurrent
-    }, [])
-    return <ActivityDetail page={current} />
-  }
-  renderRoute(
-    <ActionReviewSession>
-      <LivePage />
-    </ActionReviewSession>,
+  const { update } = renderLivePage(
+    (page) => (
+      <ActionReviewSession>
+        <ActivityDetail page={page} />
+      </ActionReviewSession>
+    ),
+    taskDetailPage(task),
     { entry: '/activity' },
   )
   const before = screen.getByLabelText('55.5 kB saved so far')
   expect(before).toHaveTextContent('−55.5 kB')
-  act(() =>
-    update(
-      taskDetailPage({
-        ...task,
-        outcome: 'success',
-        endedAt: '2026-09-22T09:05:00Z',
-        contextImpactBytes: '-2200000',
-        contextImpactPartial: false,
-      }),
-    ),
+  update(
+    taskDetailPage({
+      ...task,
+      outcome: 'success',
+      endedAt: '2026-09-22T09:05:00Z',
+      contextImpactBytes: '-2200000',
+      contextImpactPartial: false,
+    }),
   )
   expect(screen.queryByLabelText('55.5 kB saved so far')).toBeNull()
   expect(screen.getByLabelText('2.2 MB saved')).toHaveTextContent('−2.2 MB')
@@ -2678,6 +2670,50 @@ it.each(
     expect(container.textContent).not.toMatch(/exact-run-failure|exact-run-final-value/)
   },
 )
+
+// Catches: a cancellation that Coral holds offered again, or its status outliving the Run.
+it('says the run is canceling until the live read shows it ended', async () => {
+  const running = { ...run, requiresAction: false, actionPage: undefined }
+  const pageOf = (current: typeof running, terminal: RunDetail['terminal']): ActivityPage => ({
+    ...pendingPage,
+    selected: current.name,
+    selectedRow: current,
+    detail: {
+      kind: 'run',
+      run: current,
+      request: null,
+      source: 'return null;',
+      linkedFunctions: [],
+      terminal,
+    },
+  })
+  const { update } = renderLivePage(
+    (page) => (
+      <ActionReviewSession>
+        <ActivityDetail page={page} />
+      </ActionReviewSession>
+    ),
+    pageOf(running, { kind: 'unavailable' }),
+    {
+      entry: '/activity',
+      routes: [{ path: '/activity/resolve', action: () => ({ recording: true }) }],
+    },
+  )
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('button', { name: 'Cancel run' }))
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel run' }))
+
+  expect(await screen.findByText('Canceling the run…')).toHaveAttribute('role', 'status')
+  expect(screen.getByRole('button', { name: 'Cancel run' })).toBeDisabled()
+
+  update(
+    pageOf(
+      { ...running, state: 'canceled', endedAt: '2026-09-22T09:05:00Z' },
+      { kind: 'canceled' },
+    ),
+  )
+  expect(screen.queryByText('Canceling the run…')).toBeNull()
+})
 
 // Catches: a pinned decision that leaves the named review, so navigating by region skips it.
 it('keeps the pinned Deny and Approve inside the one named review region', () => {
