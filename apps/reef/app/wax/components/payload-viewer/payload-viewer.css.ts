@@ -49,26 +49,16 @@ export const body = style({
 })
 export const framedBody = style(frame)
 
-/** The inline card: a compact row of actions at the top right, then the payload, which uses
- * the card's full width and scrolls under that row, which stays in view. */
-export const card = style({
-  ...frame,
-  display: 'flex',
-  flexDirection: 'column',
-  minWidth: 0,
-  overflow: 'hidden',
-})
 export const actions = style({ alignItems: 'center', display: 'flex', gap: 2 })
-export const cardActions = style({ alignSelf: 'flex-end', padding: '4px 4px 0' })
+/** Inline, the actions sit in a compact row above the card, at its right. */
+export const inlineActions = style({ alignSelf: 'flex-end', marginBlockEnd: -4 })
 
 /** Inline, a payload shows at most 320px, or half the screen on a short one, then scrolls
- * inside its card. Folding still sets how much there is to scroll. */
+ * inside its card at the card's full width. Folding still sets how much there is to scroll. */
 export const INLINE_MAX_HEIGHT = 'min(320px, 50vh)'
 export const inlineBody = style({
   maxHeight: INLINE_MAX_HEIGHT,
   overflow: 'auto',
-  // Room for the first row's focus outline, under the action row.
-  paddingTop: 4,
   selectors: {
     '&:focus-visible': { outline: `2px solid ${theme.stroke.focused}`, outlineOffset: -2 },
   },

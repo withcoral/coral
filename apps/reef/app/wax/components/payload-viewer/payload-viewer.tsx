@@ -164,7 +164,7 @@ function Viewer({
     : matches.length
       ? `${Math.min(current, matches.length - 1) + 1} of ${matches.length}`
       : 'No matches'
-  // Copy, Download and, inline, Expand: compact, in the card's corner or the viewer's toolbar.
+  // Copy, Download and, inline, Expand: compact, above the card or in the viewer's toolbar.
   const actions = (
     <div className={styles.actions} role="group" aria-label="Payload actions">
       <CopyButton
@@ -326,18 +326,16 @@ function Viewer({
     return (
       <section className={styles.viewer} aria-label={label}>
         {notice}
-        <div className={styles.card}>
-          <div className={styles.cardActions}>{actions}</div>
-          {/* A long payload scrolls here, under its actions; Tab reaches it to scroll by key. */}
-          <div
-            ref={body}
-            role="group"
-            aria-label="Payload content"
-            tabIndex={0}
-            className={classNames(styles.body, styles.inlineBody)}
-          >
-            {content}
-          </div>
+        <div className={styles.inlineActions}>{actions}</div>
+        {/* A long payload scrolls in its bordered card; Tab reaches it to scroll by key. */}
+        <div
+          ref={body}
+          role="group"
+          aria-label="Payload content"
+          tabIndex={0}
+          className={classNames(styles.body, styles.framedBody, styles.inlineBody)}
+        >
+          {content}
         </div>
       </section>
     )

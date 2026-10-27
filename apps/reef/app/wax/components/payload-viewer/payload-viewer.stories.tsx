@@ -58,14 +58,13 @@ const tallMalformed = `${Array.from({ length: 60 }, (_, index) => `"line ${index
 
 /**
  * Catches: an inline payload with no working height bound (an invalid max-height computes to
- * none), or actions that take a column down its whole height. The payload scrolls in a body as
- * wide as its card, under a compact action row that stays in view.
+ * none), or actions that take room inside its card. The actions sit in a compact row above
+ * the bordered payload, at its right; the payload takes the full width and scrolls in itself.
  */
 const bounded: Story['play'] = async ({ canvasElement, globals }) => {
   const region = within(canvasElement).getByRole('region')
   const content = within(region).getByRole('group', { name: 'Payload content' })
   const actions = within(region).getByRole('group', { name: 'Payload actions' })
-  const card = content.parentElement!
   const view = canvasElement.ownerDocument.defaultView!
   const bound = Math.min(320, view.innerHeight / 2)
   // A narrow story runs on the short phone screen, where half the screen is the bound.
@@ -78,15 +77,18 @@ const bounded: Story['play'] = async ({ canvasElement, globals }) => {
   await expect(parseFloat(maxHeight)).toBeCloseTo(bound, 0)
   await expect(content.getBoundingClientRect().height).toBeLessThanOrEqual(bound + 0.5)
   await expect(content.scrollHeight).toBeGreaterThan(content.clientHeight)
-  // The code takes the card's full width; the actions take only a row at its top right.
-  const [cardBox, actionsBox, contentBox] = [card, actions, content].map((element) =>
+  // The actions sit above the bordered payload, right-aligned with it, not inside it.
+  const [regionBox, actionsBox, contentBox] = [region, actions, content].map((element) =>
     element.getBoundingClientRect(),
   )
-  await expect(contentBox.width).toBeGreaterThanOrEqual(card.clientWidth - 1)
-  await expect(actionsBox.bottom).toBeLessThanOrEqual(contentBox.top + 1)
-  await expect(actionsBox.top - cardBox.top).toBeLessThan(12)
-  await expect(cardBox.right - actionsBox.right).toBeLessThan(12)
+  await expect(content.contains(actions)).toBe(false)
+  await expect(getComputedStyle(content).borderTopStyle).toBe('solid')
+  await expect(actionsBox.bottom).toBeLessThanOrEqual(contentBox.top)
+  await expect(Math.abs(contentBox.right - actionsBox.right)).toBeLessThan(4)
+  await expect(actionsBox.left).toBeGreaterThan(contentBox.left + contentBox.width / 2)
   await expect(actionsBox.height).toBeLessThan(40)
+  // The payload takes the full width.
+  await expect(contentBox.width).toBeGreaterThanOrEqual(regionBox.width - 1)
   // It scrolls inside itself; the actions stay where they were.
   content.scrollTop = 160
   await waitFor(() => expect(content.scrollTop).toBeGreaterThan(0))
