@@ -32,7 +32,14 @@ import {
   type BasicCredentials as BasicCredentialsValue,
 } from './basic-credentials'
 import { OAuthApplicationBlock } from './oauth-application'
-import { FieldError, NamespaceField, NAMESPACE, RequiredMark, TextField } from './fields'
+import {
+  FieldError,
+  NamespaceField,
+  NAMESPACE,
+  RequiredMark,
+  suggestedNamespace,
+  TextField,
+} from './fields'
 import {
   authenticationLabels,
   authenticationOptions,
@@ -132,6 +139,7 @@ export function ConfigurationStep({
   callbackUrl = '',
   namespace,
   onNamespace,
+  defaultNamespace,
   takenNamespaces = [],
   takenDisplayNames = [],
   suggestedName,
@@ -152,6 +160,8 @@ export function ConfigurationStep({
   /** The workspace namespace programs call it by, confirmed here and posted with the configuration; absent for Update. */
   namespace?: string
   onNamespace?: (namespace: string) => void
+  /** The namespace offered before anyone typed one, such as the recipe's service. */
+  defaultNamespace?: string
   /** Namespaces other providers in the workspace have; one of them cannot be confirmed. */
   takenNamespaces?: readonly string[]
   /** Display names other providers in the workspace have; one of them cannot be confirmed. Absent for Update. */
@@ -217,6 +227,14 @@ export function ConfigurationStep({
       : (suggestedName ?? review.values.displayName),
   }
   const [value, setValue] = useState<ConfigurationValues>(initial)
+  // The namespace follows the display name until the person types their own.
+  // A namespace that matches neither the offered one nor the name is their own.
+  const [namespaceFollows, setNamespaceFollows] = useState(
+    () =>
+      !namespace ||
+      namespace === defaultNamespace ||
+      namespace === suggestedNamespace(initial.displayName),
+  )
   const authorizationUrl = mcp
     ? value.authentication === 'device'
       ? (review.deviceAuthorizationUrl ?? '')
@@ -401,7 +419,10 @@ export function ConfigurationStep({
               label="Display name"
               required
               value={value.displayName}
-              onChange={(displayName) => update({ displayName })}
+              onChange={(displayName) => {
+                update({ displayName })
+                if (namespaceFollows) onNamespace?.(suggestedNamespace(displayName))
+              }}
               error={
                 errors.display_name ??
                 (displayNameTaken
@@ -414,7 +435,10 @@ export function ConfigurationStep({
               <NamespaceField
                 id={ids.namespace}
                 value={namespace}
-                onChange={onNamespace}
+                onChange={(next) => {
+                  setNamespaceFollows(false)
+                  onNamespace?.(next)
+                }}
                 error={
                   namespaceTaken
                     ? 'Another provider uses this namespace. Enter a different namespace.'

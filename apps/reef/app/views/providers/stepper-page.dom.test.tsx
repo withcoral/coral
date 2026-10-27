@@ -85,54 +85,53 @@ it('starts a typed URL again without it in the address, and offers the source fo
   expect(screen.getByRole('button', { name: 'Start again' })).toBeEnabled()
 })
 
-// Catches: a namespace named after the host that serves the document, such as
-// `raw` for a spec on raw.githubusercontent.com, rather than after the service.
-it("suggests the namespace from the document's name, not the host that serves it", () => {
-  const github = 'https://raw.githubusercontent.com/PaddleHQ/paddle-openapi/main/openapi.yaml'
-  const document: SetupView = {
-    ...setup,
-    kind: 'openapi',
-    state: 'awaiting_configuration',
-    sourceLabel: github,
-    sourceHost: 'raw.githubusercontent.com',
-    configuration: {
-      revision: '1',
-      confirmed: false,
-      authenticationMethods: ['none'],
-      discoveryAuthorizationRequired: false,
-      automaticClientAvailable: true,
-      issuer: '',
-      resource: '',
-      differences: [],
-      interruptsAccess: null,
-      updating: false,
-      values: {
-        displayName: 'Paddle API',
-        authentication: 'none',
-        headers: [],
-        parameters: [],
-        basic: {
-          username: { source: 'literal', value: '' },
-          password: { source: 'literal', value: '' },
-        },
-        credentialFields: {},
-        authorizationUrl: '',
-        tokenUrl: '',
-        scopes: [],
-        servers: [],
+const github = 'https://raw.githubusercontent.com/PaddleHQ/paddle-openapi/main/openapi.yaml'
+const document: SetupView = {
+  ...setup,
+  kind: 'openapi',
+  state: 'awaiting_configuration',
+  sourceLabel: github,
+  sourceHost: 'raw.githubusercontent.com',
+  configuration: {
+    revision: '1',
+    confirmed: false,
+    authenticationMethods: ['none'],
+    discoveryAuthorizationRequired: false,
+    automaticClientAvailable: true,
+    issuer: '',
+    resource: '',
+    differences: [],
+    interruptsAccess: null,
+    updating: false,
+    values: {
+      displayName: 'Paddle API',
+      authentication: 'none',
+      headers: [],
+      parameters: [],
+      basic: {
+        username: { source: 'literal', value: '' },
+        password: { source: 'literal', value: '' },
       },
-      authenticationStatus: 'supported',
-      documentDisplayName: 'Paddle API',
+      credentialFields: {},
+      authorizationUrl: '',
+      tokenUrl: '',
+      scopes: [],
       servers: [],
-      destinations: {},
-      operationCount: null,
-      operations: [],
-      unavailableOperations: [],
-      diagnostic: '',
-      readable: true,
-      errors: {},
     },
-  }
+    authenticationStatus: 'supported',
+    documentDisplayName: 'Paddle API',
+    servers: [],
+    destinations: {},
+    operationCount: null,
+    operations: [],
+    unavailableOperations: [],
+    diagnostic: '',
+    readable: true,
+    errors: {},
+  },
+}
+
+function renderConfiguration(namespace = '') {
   renderRoute(
     <StepperPage
       workspace={{
@@ -157,12 +156,38 @@ it("suggests the namespace from the document's name, not the host that serves it
         configure: false,
         operationsAccepted: false,
         account: null,
-        namespace: '',
+        namespace,
       }}
       callbackUrl=""
       form={{ csrf: 'test-csrf', requestId: 'test-request' }}
     />,
     { entry: `${basePath}?setup=${document.id}` },
   )
-  expect(screen.getByRole('textbox', { name: /Namespace/ })).toHaveValue('paddle_api')
+  return {
+    displayName: screen.getByRole('textbox', { name: /Display name/ }),
+    namespace: screen.getByRole('textbox', { name: /Namespace/ }),
+  }
+}
+
+// Catches: a namespace named after the host that serves the document, such as
+// `raw` for a spec on raw.githubusercontent.com, rather than after the service.
+it("suggests the namespace from the document's name, not the host that serves it", () => {
+  expect(renderConfiguration().namespace).toHaveValue('paddle_api')
+})
+
+// Catches: a renamed provider that keeps the old name's namespace, or a
+// namespace the person chose that a later rename overwrites.
+it.each([
+  { case: 'the offered namespace', namespace: '', typed: null, expected: 'paddle_billing' },
+  { case: 'a namespace typed first', namespace: '', typed: 'payments', expected: 'payments' },
+  { case: 'a namespace of their own', namespace: 'billing', typed: null, expected: 'billing' },
+])('follows the display name only while nobody chose the namespace: $case', async (row) => {
+  const fields = renderConfiguration(row.namespace)
+  if (row.typed !== null) {
+    await userEvent.clear(fields.namespace)
+    await userEvent.type(fields.namespace, row.typed)
+  }
+  await userEvent.clear(fields.displayName)
+  await userEvent.type(fields.displayName, 'Paddle Billing')
+  expect(fields.namespace).toHaveValue(row.expected)
 })
