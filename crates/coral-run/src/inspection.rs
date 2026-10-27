@@ -105,15 +105,14 @@ impl RunModule {
     ) -> Result<crate::approval::ApprovalRequest, Error> {
         self.approvals().get(actor, workspace, id).await
     }
-    /// The Approval Module that decides through this module's Run Owners
-    /// and on its clock: the one a decision on a Run this module started
-    /// must go through.
+    /// The Approval Module that decides through this module's Run Inbox and
+    /// on its clock, whichever Coral Instance owns the Run.
     #[must_use]
     pub fn approvals(&self) -> crate::approval::ApprovalModule {
         crate::approval::ApprovalModule::new(
             self.database.clone(),
             self.workspaces.clone(),
-            self.owners.clone(),
+            self.inbox.clone(),
         )
         .with_clock(self.clock.clone())
     }

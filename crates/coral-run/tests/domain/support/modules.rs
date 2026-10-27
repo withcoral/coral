@@ -248,16 +248,10 @@ impl TestModules {
         (dir, accounts)
     }
 
-    /// An Approval Module that decides deadlines on this fixture's clock and
-    /// records through this fixture's Run Owners (a `live_runs` module runs on
-    /// the system clock and builds its own, as `credentials.rs` does).
+    /// This fixture's Approval Module, on its clock (a `live_runs` module
+    /// runs on the system clock, as `credentials.rs` does).
     pub(crate) fn approvals(&self) -> crate::approval::ApprovalModule {
-        crate::approval::ApprovalModule::new(
-            self.database.clone(),
-            self.workspaces.clone(),
-            self.runs.owners.clone(),
-        )
-        .with_clock(self.clock.clone())
+        self.runs.approvals()
     }
 
     /// Publishes a second credential-free Provider in the fixture Operation's

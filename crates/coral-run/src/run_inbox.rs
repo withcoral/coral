@@ -1,6 +1,6 @@
 //! The Run Inbox (ADR 0025): where an outside Run Request waits for its
-//! Run's Run Owner, whichever Coral Instance received it. Only cancellations
-//! take this path so far.
+//! Run's Run Owner, whichever Coral Instance received it: a cancellation, or
+//! a decision on one of the Run's Approval Requests.
 //!
 //! [`RunInbox`] holds the implementation bootstrap chose behind the `Inbox`
 //! trait. Its two halves are the requester's (submit a request and wait for
@@ -27,7 +27,7 @@ use tokio::sync::{Mutex, Notify};
 use tokio::time::{Instant, sleep_until};
 
 use crate::observation::read_until;
-use crate::owner::{Message, Owners};
+use crate::owner::{DecisionRequest, Message, Owners};
 use crate::{CoralInstanceId, Error, RunId, run_repository};
 
 /// The shortest gap between two reads of the Run Inbox.
@@ -36,13 +36,21 @@ const READ_GAP: Duration = Duration::from_millis(250);
 /// that does not ring.
 const BACKSTOP: Duration = Duration::from_secs(15);
 
-/// One outside Run Request as the Run Inbox carries it: a cancellation of
-/// its Run, by the requester.
+/// One outside Run Request as the Run Inbox carries it, addressed to its Run.
 #[derive(Debug, Clone)]
 pub(crate) struct InboxRequest {
     pub(crate) workspace_id: WorkspaceId,
     pub(crate) run_id: RunId,
-    pub(crate) requester: Principal,
+    pub(crate) request: OutsideRequest,
+}
+
+/// What an outside Run Request asks the Run Owner to decide.
+#[derive(Debug, Clone)]
+pub(crate) enum OutsideRequest {
+    /// The Run's cancellation, by this requester.
+    Cancel(Principal),
+    /// A decision on one Approval Request of the Run.
+    Decide(DecisionRequest),
 }
 
 /// The row that carried one delivered request: the owner removes it by this
@@ -61,8 +69,8 @@ pub(crate) struct Delivery {
 trait Inbox: Send + Sync {
     /// Puts `request` in its Run's Run Inbox at `submitted_at_unix_nanos`,
     /// in `transaction`, which checked the requester's access: nothing when
-    /// the Run is not running, its termination is recorded, or a request for
-    /// the same decided thing waits already.
+    /// the Run is not running, a cancellation's Run has its termination
+    /// recorded, or a request for the same decided thing waits already.
     async fn submit(
         &self,
         transaction: &mut Transaction<'_>,
@@ -135,8 +143,17 @@ impl RunInbox {
         self.inbox.recorded(request, until).await
     }
 
-    pub(crate) fn wake(&self) {
-        self.inbox.wake();
+    /// Wakes this Coral Instance's reader when the owner of `run_id` is
+    /// here: it gets a request just submitted without waiting for the
+    /// change signal.
+    pub(crate) fn wake_for(&self, run_id: &RunId) {
+        if self
+            .reader
+            .get()
+            .is_some_and(|reader| reader.owners.contains(run_id))
+        {
+            self.inbox.wake();
+        }
     }
 
     pub(crate) async fn remove(
@@ -182,6 +199,8 @@ struct Reader {
     task: tokio::task::JoinHandle<()>,
     /// The last read found a request whose Run has no owner here yet.
     holding: Arc<AtomicBool>,
+    /// The Run Owners it hands requests to.
+    owners: Owners,
 }
 
 impl Reader {
@@ -193,6 +212,7 @@ impl Reader {
     ) -> Self {
         let holding = Arc::new(AtomicBool::new(false));
         let held = holding.clone();
+        let registered = owners.clone();
         let task = tokio::spawn(async move {
             loop {
                 let deliveries = inbox.receive(&instance).await;
@@ -205,9 +225,9 @@ impl Reader {
                         holds = true;
                         continue;
                     };
-                    owner.send(Message::Cancel {
-                        requester: request.requester,
-                        row,
+                    owner.send(match request.request {
+                        OutsideRequest::Cancel(requester) => Message::Cancel { requester, row },
+                        OutsideRequest::Decide(request) => Message::Decide { request, row },
                     });
                     #[cfg(test)]
                     observer.inbox_delivered();
@@ -215,7 +235,11 @@ impl Reader {
                 held.store(holds, Ordering::SeqCst);
             }
         });
-        Self { task, holding }
+        Self {
+            task,
+            holding,
+            owners: registered,
+        }
     }
 }
 
@@ -269,13 +293,13 @@ impl Inbox for TableInbox {
         request: &InboxRequest,
         submitted_at_unix_nanos: i64,
     ) -> Result<(), Error> {
-        run_repository::insert_cancellation(transaction, request, submitted_at_unix_nanos).await
+        run_repository::insert_inbox_request(transaction, request, submitted_at_unix_nanos).await
     }
 
     async fn recorded(&self, request: &InboxRequest, until: Instant) -> Result<bool, Error> {
         let database = &self.database;
         read_until(database, until, move || async move {
-            run_repository::cancellation_waits(database, &request.workspace_id, &request.run_id)
+            run_repository::inbox_request_waits(database, request)
                 .await
                 .map(|waits| !waits)
         })

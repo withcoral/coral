@@ -462,9 +462,12 @@ impl McpServer {
                 .await
             {
                 // The action ended or was resolved elsewhere while the User
-                // considered it, or its Run Owner stopped before answering:
-                // the reread update shows the recorded state.
-                Ok(()) | Err(coral_run::Error::ApprovalNotFound | coral_run::Error::OwnerLost) => {}
+                // considered it, or its Run Owner has not recorded the answer
+                // yet: the reread update shows the recorded state.
+                Ok(())
+                | Err(
+                    coral_run::Error::ApprovalNotFound | coral_run::Error::RunRequestNotYetRecorded,
+                ) => {}
                 Err(error) => return Err(run_failure(error)),
             }
         }
@@ -737,10 +740,6 @@ fn run_failure(error: coral_run::Error) -> DispatchError {
         coral_run::Error::OwnerLost => ToolFailure::stable(
             "run_owner_lost",
             "Program Run outcome is unknown; read the Run again",
-        ),
-        coral_run::Error::OwnedElsewhere => ToolFailure::stable(
-            "run_owned_elsewhere",
-            "Program Run has no live owner in this process; retry",
         ),
         coral_run::Error::RunRequestNotYetRecorded => ToolFailure::stable(
             "run_request_not_yet_recorded",

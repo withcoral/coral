@@ -111,6 +111,51 @@ async fn a_cancel_whose_chunk_has_not_landed_is_delivered_again_and_its_repeat_w
     assert_eq!(fixture.inbox_rows(&workspace_id, &run_id).await, 0);
 }
 
+/// A decision sent to the Coral Instance that does not own the Run waits in
+/// the Run Inbox until the owner records it: the request is decided as its
+/// decider asked, once, with the decider's trace, and the row is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decision_sent_to_another_coral_instance_is_recorded() {
+    use crate::approval::{ApprovalDecision, ApprovalState};
+    let held = HeldApproval::new("user:inbox-decision").await;
+    let (fixture, workspace_id, run_id) = (&held.fixture, &held.operation.workspace_id, &held.run);
+    let crate::RequiredActionRequest::InvocationApproval(id) = &held.action().request else {
+        panic!("an approval")
+    };
+    let trace = TraceId::parse(&"c".repeat(32)).unwrap();
+
+    let approved = fixture
+        .next_process()
+        .approvals()
+        .decide(
+            &held.operation.principal,
+            workspace_id,
+            id,
+            ApprovalDecision::Approve,
+            Some("elsewhere"),
+            &trace,
+        )
+        .await
+        .expect("the other Coral Instance decides");
+
+    assert_eq!(approved.state, ApprovalState::Approved);
+    assert_eq!(
+        approved.approver.as_ref(),
+        Some(held.operation.principal.principal())
+    );
+    assert_eq!(approved.comment.as_deref(), Some("elsewhere"));
+    let events = held
+        .approvals
+        .list_lifecycle_events(&held.operation.principal, workspace_id, id)
+        .await
+        .unwrap();
+    assert!(
+        matches!(events.as_slice(), [event] if event.state == ApprovalState::Approved && event.trace_id == trace),
+        "{events:?}"
+    );
+    assert_eq!(fixture.inbox_rows(workspace_id, run_id).await, 0);
+}
+
 /// The `cancellation.requested` Events of the Run.
 async fn cancellations(
     fixture: &TestModules,

@@ -10,13 +10,14 @@
 //! clock sample, from the decision the held gate recorded: an approval never
 //! changes once made.
 //!
-//! A decision is authorized and concealed here, then recorded by the Run's
-//! owner in its next chunk; the first decision wins, and a repeat receives the
-//! recorded answer. The decision reads no policy: the Dispatch Fence judges
-//! the approval when the Invocation dispatches. A request's deadline is the
-//! owner's timer: it expires the request in a chunk of its own, in mailbox
-//! order with the decisions that race it, and no reader or decision compares
-//! the clock with the deadline. The first terminal transition and its safe
+//! A decision is authorized and concealed here, then waits in the Run's Run
+//! Inbox until the Run's owner, in whichever Coral Instance holds the Run,
+//! records it in its next chunk; the first decision wins, and a repeat
+//! receives the recorded answer. The decision reads no policy: the Dispatch
+//! Fence judges the approval when the Invocation dispatches. A request's
+//! deadline is the owner's timer: it expires the request in a chunk of its
+//! own, in mailbox order with the decisions that race it, and only the owner
+//! compares its clock with the deadline. The first terminal transition and its safe
 //! lifecycle event commit together; a lost response can be recovered by
 //! reading or deciding again. Invocation owns live gate ordering and Promise
 //! settlement. Approval owns only request validity, decisions and evidence,
@@ -24,6 +25,7 @@
 
 use crate::lifecycle::RunRecord;
 use std::sync::Arc;
+use std::time::Duration;
 
 use coral_db::{Database, Transaction};
 use coral_provider::ProviderId;
@@ -33,17 +35,20 @@ use coral_workspace::TraceId;
 use coral_workspace::{
     AuthenticatedPrincipal, Principal, WorkspaceAction, WorkspaceId, WorkspaceModule, WorkspaceRole,
 };
+use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::approval_repository::{self, StoredApproval};
 use crate::engine::{Clock, SystemClock};
 use crate::fence::ApprovalFact;
 use crate::invocation::AdmittedInvocation;
-use crate::owner::{ChunkWork, DecisionAnswer, DecisionRequest, Owners, RequestKey};
+use crate::owner::{ChunkWork, DecisionRequest};
+use crate::run_inbox::{InboxRequest, OutsideRequest, RunInbox};
 use crate::run_repository::OwnedEvent;
-use crate::{
-    CoralFailure, Error, InvocationId, RunId, invocation_repository, owner, run_repository,
-};
+use crate::{CoralFailure, Error, InvocationId, RunId, invocation_repository, run_repository};
+
+/// How long a decision waits for its Run Owner to record it (ADR 0025).
+const DECISION_WAIT: Duration = Duration::from_secs(5);
 
 /// Opaque, non-authorizing Approval Request identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -115,6 +120,16 @@ pub enum ApprovalDecision {
     Decline,
 }
 
+impl ApprovalDecision {
+    /// The state this decision records.
+    pub(crate) const fn state(self) -> ApprovalState {
+        match self {
+            Self::Approve => ApprovalState::Approved,
+            Self::Decline => ApprovalState::Declined,
+        }
+    }
+}
+
 /// Authorized human detail. Never includes credentials or private Generations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalRequest {
@@ -183,25 +198,23 @@ pub struct ApprovalModule {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
     clock: Arc<dyn Clock>,
-    /// The Run Owners this module decides through: the owning Run Module's.
-    /// To a registry with none of a Run's owner (another process's), every
-    /// nonterminal Run is owned elsewhere.
-    owners: Owners,
+    /// Where a decision waits for its Run's owner.
+    inbox: RunInbox,
 }
 impl ApprovalModule {
     /// Builds the Approval module against the Run domain's migrated database,
-    /// deciding through `owners`.
+    /// deciding through `inbox`.
     #[must_use]
     pub(crate) fn new(
         database: Arc<Database>,
         workspaces: WorkspaceModule,
-        owners: Owners,
+        inbox: RunInbox,
     ) -> Self {
         Self {
             database,
             workspaces,
             clock: Arc::new(SystemClock),
-            owners,
+            inbox,
         }
     }
 
@@ -270,20 +283,22 @@ impl ApprovalModule {
         Ok(request)
     }
 
-    /// Decides one Approval Request through its Run's owner and returns the
-    /// request as recorded.
+    /// Decides one Approval Request through its Run's Run Inbox, whichever
+    /// Coral Instance owns the Run, and returns the request as recorded.
     ///
     /// Authentication supplies current Organization Membership; Workspace supplies
     /// the User's Workspace Membership authority. Comments are limited to 1024 UTF-8 bytes.
     /// Approval does not attest to any other current dispatch-authority fact.
     /// The first decision on a request wins; a repeat, and a loser, receive
-    /// the recorded answer: the decision, who made it and when. A request of
-    /// a terminal Run, or one decided already, is answered from the record.
+    /// the recorded answer: the decision, who made it and when. A request
+    /// decided or closed already, or one of a terminal Run, is answered from
+    /// the record and puts nothing in the Run Inbox. The wait for the owner
+    /// to record the decision ends early when the Run ends: the record
+    /// answers.
     /// # Errors
     /// Conceals unauthorized targets; rejects invalid comments and persistence faults.
-    /// [`Error::OwnedElsewhere`] when the Run is nonterminal and no owner for
-    /// it lives in this process; [`Error::OwnerLost`] when the owner stopped
-    /// before it recorded the decision (the outcome is unknown: read again).
+    /// [`Error::RunRequestNotYetRecorded`] when the owner has not recorded
+    /// the decision within the wait: retry.
     pub async fn decide(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -293,22 +308,21 @@ impl ApprovalModule {
         comment: Option<&str>,
         trace: &TraceId,
     ) -> Result<ApprovalRequest, Error> {
+        let arrived = Instant::now();
         if comment.is_some_and(|text| text.len() > 1024 || text.contains('\0')) {
             return Err(Error::InvalidInput(
                 "approval comment must be at most 1024 bytes without null characters".into(),
             ));
         }
         // One snapshot authorizes the request and reads the request as it
-        // stands; a recorded decision of this request is then this view with
-        // the decision the chunk wrote, read from no second snapshot.
-        let (mut request, run, own_name) = {
+        // stands.
+        let (request, run) = {
             let mut tx = self.database.begin_read_snapshot().await?;
             let row = approval_repository::load(&mut tx, workspace, id).await?;
             let run = self
                 .visible_run(&mut tx, actor, workspace, &row.run_id)
                 .await?;
             let now = self.now()?;
-            let mut own_name = None;
             if row.state == ApprovalState::Pending {
                 let authority = self
                     .workspaces
@@ -322,57 +336,43 @@ impl ApprovalModule {
                 {
                     return Err(Error::ApprovalNotFound);
                 }
-                own_name = approver_name(
-                    &mut tx,
-                    &self.workspaces,
-                    actor,
-                    workspace,
-                    actor.principal(),
-                )
-                .await?;
             }
             let request = view(&mut tx, &self.workspaces, actor, workspace, &run, row, now).await?;
             tx.commit().await?;
-            (request, run, own_name)
+            (request, run)
         };
-        if request.state != ApprovalState::Pending {
+        if request.state != ApprovalState::Pending || run.state.is_terminal() {
             return Ok(request);
         }
-        let Some(owner) = owner::local_owner(&self.owners, &self.database, workspace, &run).await?
-        else {
-            // The Run ended since the snapshot: its terminal write closed the
-            // request, and the record answers.
-            return self.get(actor, workspace, id).await;
-        };
-        let answer = owner
-            .decide(DecisionRequest {
+        let inbox_request = InboxRequest {
+            workspace_id: workspace.clone(),
+            run_id: run.id.clone(),
+            request: OutsideRequest::Decide(DecisionRequest {
                 approval: id.clone(),
                 deadline_at_unix_nanos: request.deadline_at_unix_nanos,
                 decision,
                 actor: actor.principal().clone(),
                 comment: comment.map(str::to_owned),
                 trace: trace.clone(),
-            })
+            }),
+        };
+        // The caller's access is read again in the transaction that inserts
+        // the row, which holds no Run row.
+        let mut tx = self.database.begin().await?;
+        self.visible_run(&mut tx, actor, workspace, &run.id).await?;
+        self.inbox
+            .submit(&mut tx, &inbox_request, self.now()?)
             .await?;
-        match answer {
-            DecisionAnswer::Recorded {
-                state,
-                decided_at_unix_nanos,
-            } => {
-                request.state = state;
-                request.actionable = false;
-                request.decided_at_unix_nanos = Some(decided_at_unix_nanos);
-                if matches!(state, ApprovalState::Approved | ApprovalState::Declined) {
-                    request.approver = Some(actor.principal().clone());
-                    request.approver_name = own_name;
-                    request.comment = comment.map(str::to_owned);
-                }
-                Ok(request)
-            }
-            // Another decision won, or the request was closed meanwhile: the
-            // record answers.
-            DecisionAnswer::FromRecord => self.get(actor, workspace, id).await,
+        tx.commit().await?;
+        self.inbox.wake_for(&run.id);
+        if !self
+            .inbox
+            .recorded(&inbox_request, arrived + DECISION_WAIT)
+            .await?
+        {
+            return Err(Error::RunRequestNotYetRecorded);
         }
+        self.get(actor, workspace, id).await
     }
 
     /// Lists safe evidence through the same human-only visibility as request detail.
@@ -733,7 +733,6 @@ enum Decided {
 pub(crate) struct DecideWork {
     approval: ApprovalId,
     decided: Decided,
-    answer: Option<DecisionAnswer>,
 }
 
 impl DecideWork {
@@ -747,7 +746,6 @@ impl DecideWork {
             } else {
                 Decided::Close(request)
             },
-            answer: None,
         }
     }
 
@@ -756,7 +754,6 @@ impl DecideWork {
         Self {
             approval,
             decided: Decided::Expire,
-            answer: None,
         }
     }
 
@@ -765,22 +762,19 @@ impl DecideWork {
         tx: &mut Transaction<'_>,
         run: &RunRecord,
         now: i64,
-    ) -> Result<(Vec<OwnedEvent>, DecisionAnswer), Error> {
+    ) -> Result<Vec<OwnedEvent>, Error> {
         let row = approval_repository::load(tx, &run.workspace_id, &self.approval).await;
         let mut row = match row {
             Ok(row) => row,
-            Err(Error::ApprovalNotFound) => return Ok((Vec::new(), DecisionAnswer::FromRecord)),
+            Err(Error::ApprovalNotFound) => return Ok(Vec::new()),
             Err(error) => return Err(error),
         };
         if row.state != ApprovalState::Pending {
-            return Ok((Vec::new(), DecisionAnswer::FromRecord));
+            return Ok(Vec::new());
         }
         let (state, decided_at, human, trace) = match &self.decided {
             Decided::Decision(request) => (
-                match request.decision {
-                    ApprovalDecision::Approve => ApprovalState::Approved,
-                    ApprovalDecision::Decline => ApprovalState::Declined,
-                },
+                request.decision.state(),
                 now,
                 Some((&request.actor, request.comment.as_deref())),
                 request.trace.clone(),
@@ -805,17 +799,10 @@ impl DecideWork {
             &trace,
         )
         .await?;
-        let events = settle_rejection(tx, run, &row, now)
+        Ok(settle_rejection(tx, run, &row, now)
             .await?
             .into_iter()
-            .collect();
-        Ok((
-            events,
-            DecisionAnswer::Recorded {
-                state,
-                decided_at_unix_nanos: decided_at,
-            },
-        ))
+            .collect())
     }
 }
 
@@ -841,20 +828,11 @@ impl ChunkWork for DecideWork {
         run: &RunRecord,
         now_unix_nanos: i64,
     ) -> Result<Vec<OwnedEvent>, Error> {
-        let now = now_unix_nanos.max(run.accepted_at_unix_nanos);
-        let (events, answer) = self.record(tx, run, now).await?;
-        self.answer = Some(answer);
-        Ok(events)
+        self.record(tx, run, now_unix_nanos.max(run.accepted_at_unix_nanos))
+            .await
     }
 
-    fn take_recorded_request(&mut self) -> Option<(RequestKey, DecisionAnswer)> {
-        self.answer
-            .take()
-            .map(|answer| (RequestKey::Approval(self.approval.clone()), answer))
-    }
-
-    /// The requester is answered by the owner, with the chunk's fate or the
-    /// failure this work reported.
+    /// The requester reads the record once the chunk deleted its row.
     fn settle(self: Box<Self>, _recorded: Result<(), Error>) {}
 }
 

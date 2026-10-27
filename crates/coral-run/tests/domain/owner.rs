@@ -5,8 +5,8 @@
 use super::*;
 
 use crate::owner::{
-    CHUNK_WORK_CAP, Check, CommitRejection, DecisionAnswer, Effect, Message, OwnerLimits,
-    OwnerState, ParkedWait, Phase, StartedExecution, Timer,
+    CHUNK_WORK_CAP, Check, CommitRejection, Effect, Message, OwnerLimits, OwnerState, ParkedWait,
+    Phase, StartedExecution, Timer,
 };
 
 /// [`crate::owner::apply`] without the idle tick's re-arming, which every
@@ -366,10 +366,6 @@ fn deliver(effects: Vec<Effect>) -> Vec<Effect> {
             }
             Effect::Abandon(work, error) => {
                 work.settle(Err(error));
-                None
-            }
-            Effect::Answer(reply, recorded) => {
-                let _delivered = reply.send(recorded);
                 None
             }
             Effect::Wake(parked) => {
@@ -1637,29 +1633,21 @@ fn approval_id() -> crate::approval::ApprovalId {
     crate::approval::ApprovalId::parse(&uuid::Uuid::new_v4().to_string()).expect("an id")
 }
 
-type Decided = tokio::sync::oneshot::Receiver<Result<DecisionAnswer, Error>>;
-
+/// A decision on `approval` the Run Inbox delivers in `row`.
 fn decide(
     state: &mut OwnerState,
     approval: &crate::approval::ApprovalId,
+    row: &str,
     now: i64,
-) -> (Vec<Effect>, Decided) {
-    let (reply, receiver) = tokio::sync::oneshot::channel();
-    (
-        apply_without_tick(
-            state,
-            Message::Decide {
-                request: decision(approval),
-                reply,
-            },
-            now,
-        ),
-        receiver,
+) -> Vec<Effect> {
+    apply_without_tick(
+        state,
+        Message::Decide {
+            request: decision(approval),
+            row: crate::run_inbox::InboxRow(row.to_string()),
+        },
+        now,
     )
-}
-
-fn decided(receiver: &mut Decided) -> Option<Result<DecisionAnswer, Error>> {
-    receiver.try_recv().ok()
 }
 
 /// A cancellation the Run Inbox delivers in `row`.
@@ -1772,59 +1760,31 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
     let admitted = admitted_invocation(&fixture, &operation, run.run_id()).await;
     let invoker = test_invoker(&fixture, &operation, &record);
 
-    // Two decisions on one request: the first rides the next chunk, the
-    // second waits parked for that chunk's answer and is then answered from
-    // memory, as is a third; no second chunk is built.
+    // Two decisions on one request: the first rides the next chunk with the
+    // deletion of its row; the second, a repeat, has its row deleted by the
+    // same chunk, and a third, after the record, by the next one. A row
+    // delivered again changes nothing, before its deletion lands and after.
     {
         let mut state = started(LIMITS);
         let approval = approval_id();
-        let (effects, mut first) = decide(&mut state, &approval, 3);
-        assert!(deliver(effects).is_empty());
-        let (effects, mut second) = decide(&mut state, &approval, 4);
-        assert!(deliver(effects).is_empty());
-        assert_eq!(state.parked_requests(), 1);
+        assert!(deliver(decide(&mut state, &approval, "first", 3)).is_empty());
+        assert!(deliver(decide(&mut state, &approval, "first", 4)).is_empty());
+        assert!(deliver(decide(&mut state, &approval, "second", 4)).is_empty());
+        assert_eq!(state.parked_requests(), 0);
         assert_eq!(state.pending_chunks(), 1);
         let chunk = committed_chunk(apply_without_tick(&mut state, Message::Drained, 5));
-        assert_eq!(chunk.works, 1);
+        assert_eq!((chunk.works, chunk.inbox_rows), (1, 2));
         assert!(chunk.termination.is_none());
-        assert!(decided(&mut first).is_none() && decided(&mut second).is_none());
-        // The chunk's work reports what it wrote before the chunk answers.
-        let effects = apply_without_tick(
-            &mut state,
-            Message::RequestRecorded {
-                key: crate::owner::RequestKey::Approval(approval.clone()),
-                answer: DecisionAnswer::Recorded {
-                    state: crate::approval::ApprovalState::Approved,
-                    decided_at_unix_nanos: 5,
-                },
-            },
-            6,
-        );
-        assert!(effects.is_empty(), "{effects:?}");
         let effects = deliver(apply_without_tick(&mut state, Message::Committed, 6));
         assert!(effects.is_empty(), "{effects:?}");
-        assert!(matches!(
-            decided(&mut first),
-            Some(Ok(DecisionAnswer::Recorded {
-                state: crate::approval::ApprovalState::Approved,
-                decided_at_unix_nanos: 5
-            }))
-        ));
-        assert!(
-            matches!(decided(&mut second), Some(Ok(DecisionAnswer::FromRecord))),
-            "the loser reads the record"
-        );
-        assert_eq!(state.parked_requests(), 0);
-        let (effects, mut third) = decide(&mut state, &approval, 7);
-        assert!(deliver(effects).is_empty());
-        assert!(matches!(
-            decided(&mut third),
-            Some(Ok(DecisionAnswer::FromRecord))
-        ));
+        assert!(deliver(decide(&mut state, &approval, "second", 7)).is_empty());
+        assert_eq!(state.pending_chunks(), 0);
+        assert!(deliver(decide(&mut state, &approval, "third", 7)).is_empty());
+        let repeat = committed_chunk(apply_without_tick(&mut state, Message::Drained, 8));
         assert_eq!(
-            state.pending_chunks(),
-            0,
-            "a recorded request joins no chunk"
+            (repeat.works, repeat.inbox_rows),
+            (0, 1),
+            "a recorded request joins no work"
         );
         assert_eq!(state.head(), 2);
     }
@@ -1885,8 +1845,7 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
     {
         let mut state = started(LIMITS);
         let approval = approval_id();
-        let (effects, _first) = decide(&mut state, &approval, 3);
-        assert!(deliver(effects).is_empty());
+        assert!(deliver(decide(&mut state, &approval, "first", 3)).is_empty());
         let effects = deliver(apply_without_tick(
             &mut state,
             Message::Timer(Timer::RunDeadline),
@@ -1897,18 +1856,21 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
             state.termination().map(|intent| intent.termination.kind),
             Some(RunTerminationKind::TimedOut)
         );
-        let (effects, mut late) = decide(
-            &mut state,
-            &approval_id(),
-            LIMITS.deadline_at_unix_nanos + 1,
+        assert!(
+            deliver(decide(
+                &mut state,
+                &approval_id(),
+                "late",
+                LIMITS.deadline_at_unix_nanos + 1,
+            ))
+            .is_empty()
         );
-        assert!(deliver(effects).is_empty());
         let chunk = committed_chunk(apply_without_tick(
             &mut state,
             Message::Drained,
             LIMITS.deadline_at_unix_nanos + 2,
         ));
-        assert_eq!(chunk.works, 2);
+        assert_eq!((chunk.works, chunk.inbox_rows), (2, 2));
         assert_eq!(chunk.events, 0, "a timeout writes no Event");
         assert_eq!(
             chunk.termination.map(|intent| intent.termination.kind),
@@ -1920,7 +1882,6 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
             Message::Committed,
             LIMITS.deadline_at_unix_nanos + 3,
         ));
-        assert!(matches!(decided(&mut late), Some(Ok(_))));
         let effects = apply_without_tick(
             &mut state,
             Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
@@ -2017,18 +1978,16 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         );
     }
 
-    // A lost claim answers every outside decision `OwnerLost`: the one on
-    // the chunk in flight and the one parked behind it. A cancellation on a
-    // chunk not yet committed keeps its Run Inbox row, and the row delivered
-    // again changes nothing.
+    // A lost claim commits nothing more: the rows of the decision on the
+    // chunk in flight, of its repeat and of a cancellation on a chunk not
+    // yet committed stay in the Run Inbox. A row delivered again, or a new
+    // one, changes nothing.
     {
         let mut state = started(LIMITS);
         let approval = approval_id();
-        let (effects, mut first) = decide(&mut state, &approval, 3);
-        assert!(deliver(effects).is_empty());
+        assert!(deliver(decide(&mut state, &approval, "first", 3)).is_empty());
         committed_chunk(apply_without_tick(&mut state, Message::Drained, 4));
-        let (effects, mut repeat) = decide(&mut state, &approval, 5);
-        assert!(deliver(effects).is_empty());
+        assert!(deliver(decide(&mut state, &approval, "repeat", 5)).is_empty());
         deliver(cancel(&mut state, "pending", 6));
         let effects = deliver(apply_without_tick(
             &mut state,
@@ -2039,18 +1998,14 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
             matches!(effects.as_slice(), [Effect::TerminateProgram]),
             "{effects:?}"
         );
-        for answer in [&mut first, &mut repeat] {
-            assert!(matches!(decided(answer), Some(Err(Error::OwnerLost))));
-        }
         assert_eq!(
             state.phase(),
             Phase::Stopped(CommitRejection::ClaimMismatch)
         );
         assert!(deliver(cancel(&mut state, "pending", 8)).is_empty());
+        assert!(deliver(decide(&mut state, &approval, "first", 8)).is_empty());
+        assert!(deliver(decide(&mut state, &approval_id(), "late", 8)).is_empty());
         assert_eq!(state.pending_chunks(), 0);
-        let (effects, mut late) = decide(&mut state, &approval_id(), 8);
-        let _ = deliver(effects);
-        assert!(matches!(decided(&mut late), Some(Err(Error::OwnerLost))));
     }
 
     // A cancel before the Run started: the Program never starts, the intent
@@ -2091,11 +2046,11 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         ));
     }
 
-    // A decision or a cancel during the terminal write waits for it. The
-    // Run ended: the decision's requester is answered and reads the record,
-    // and the cancel's row stays for the record to answer. A termination to
-    // settle: a chunk of the settle closes the request and deletes the
-    // cancel's row, a repeat.
+    // During the terminal write a decision joins the next chunk, which
+    // closes its request, and a cancel waits for that write. The Run ended:
+    // nothing more commits, and both rows stay for the record to answer. A
+    // termination to settle: a chunk of the settle closes the request and
+    // deletes both rows, the cancel's a repeat.
     {
         let mut state = started(LIMITS);
         deliver(apply_without_tick(
@@ -2104,25 +2059,24 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
             3,
         ));
         assert_eq!(state.phase(), Phase::Completing);
-        let (effects, mut during) = decide(&mut state, &approval_id(), 4);
-        assert!(deliver(effects).is_empty());
-        assert!(deliver(cancel(&mut state, "during", 4)).is_empty());
-        assert!(deliver(cancel(&mut state, "during", 4)).is_empty());
+        assert!(deliver(decide(&mut state, &approval_id(), "decision", 4)).is_empty());
+        assert!(deliver(cancel(&mut state, "cancel", 4)).is_empty());
+        assert!(deliver(cancel(&mut state, "cancel", 4)).is_empty());
         assert_eq!(
             state.parked_requests(),
-            2,
+            1,
             "a row delivered again parks once"
         );
+        assert_eq!(state.pending_chunks(), 1);
         let effects = deliver(apply_without_tick(
             &mut state,
             Message::Completed(Ok(None)),
             5,
         ));
-        assert!(matches!(effects.as_slice(), [Effect::Retire]));
-        assert!(matches!(
-            decided(&mut during),
-            Some(Ok(DecisionAnswer::FromRecord))
-        ));
+        assert!(
+            matches!(effects.as_slice(), [Effect::Retire]),
+            "{effects:?}"
+        );
 
         let mut state = started(LIMITS);
         deliver(apply_without_tick(
@@ -2130,31 +2084,21 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
             Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
             3,
         ));
-        let (effects, mut parked) = decide(&mut state, &approval_id(), 4);
-        assert!(deliver(effects).is_empty());
+        assert!(deliver(decide(&mut state, &approval_id(), "decision", 4)).is_empty());
         assert!(deliver(cancel(&mut state, "settled", 4)).is_empty());
         let chunk = committed_chunk(apply_without_tick(
             &mut state,
             Message::Completed(Ok(Some(ShutdownAction::for_apply_test()))),
             5,
         ));
-        assert_eq!((chunk.works, chunk.inbox_rows), (1, 1));
+        assert_eq!((chunk.works, chunk.inbox_rows), (1, 2));
         assert!(chunk.termination.is_none());
         assert_eq!(state.phase(), Phase::Settling);
-        assert!(decided(&mut parked).is_none());
         let effects = apply_without_tick(&mut state, Message::Committed, 6);
         assert!(
-            matches!(
-                effects.as_slice(),
-                [Effect::Answer(..), Effect::Settle { again: false, .. }]
-            ),
+            matches!(effects.as_slice(), [Effect::Settle { again: false, .. }]),
             "{effects:?}"
         );
-        deliver(effects);
-        assert!(matches!(
-            decided(&mut parked),
-            Some(Ok(DecisionAnswer::FromRecord))
-        ));
     }
 
     // A cancel and the Run deadline in one drain: the first applied decides
@@ -2243,9 +2187,9 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
     // request's timer and the periodic precheck. The timer first: the expiry
     // rides the next chunk with no requester, and once it is recorded the
     // parked Invocation goes back to its held recheck with no read; a
-    // decision applied after the timer waits parked and reads the recorded
-    // Expired, joining no chunk. A park on a request already decided goes
-    // back at once and arms nothing.
+    // decision applied after the timer is a repeat, whose row rides the
+    // expiry's chunk. A park on a request already decided goes back at once
+    // and arms nothing.
     {
         let mut state = started(LIMITS);
         let approval = approval_id();
@@ -2267,32 +2211,20 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
                 .is_empty()
         );
         assert_eq!(state.pending_chunks(), 1);
-        let (effects, mut late) = decide(&mut state, &approval, APPROVAL_DEADLINE + 1);
-        assert!(deliver(effects).is_empty());
-        assert_eq!(state.parked_requests(), 1);
+        assert!(deliver(decide(&mut state, &approval, "late", APPROVAL_DEADLINE + 1)).is_empty());
+        assert_eq!(state.parked_requests(), 0);
         let chunk = committed_chunk(apply_without_tick(&mut state, Message::Drained, 102));
-        assert_eq!(chunk.works, 1, "the expiry, not the decision");
-        apply_without_tick(
-            &mut state,
-            Message::RequestRecorded {
-                key: crate::owner::RequestKey::Approval(approval.clone()),
-                answer: DecisionAnswer::Recorded {
-                    state: crate::approval::ApprovalState::Expired,
-                    decided_at_unix_nanos: 100,
-                },
-            },
-            103,
+        assert_eq!(
+            (chunk.works, chunk.inbox_rows),
+            (1, 1),
+            "the expiry, and the decision's row"
         );
         woken.try_recv().expect_err("parked until the expiry lands");
         let effects = deliver(apply_without_tick(&mut state, Message::Committed, 104));
         assert!(effects.is_empty(), "{effects:?}");
         woken.try_recv().expect("the recorded expiry wakes it");
         assert_eq!(state.parked_invocations(), 0);
-        assert!(matches!(
-            decided(&mut late),
-            Some(Ok(DecisionAnswer::FromRecord))
-        ));
-        assert_eq!(state.pending_chunks(), 0, "the decision joins no chunk");
+        assert_eq!(state.pending_chunks(), 0);
         let (effects, mut again) = park(
             &mut state,
             &invoker,
@@ -2318,31 +2250,16 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         let (effects, mut woken) =
             park(&mut state, &invoker, &admitted, approval_wait(&approval), 3);
         assert_eq!(effects.len(), 2, "{effects:?}");
-        let (effects, mut first) = decide(&mut state, &approval, 4);
-        assert!(deliver(effects).is_empty());
+        assert!(deliver(decide(&mut state, &approval, "first", 4)).is_empty());
         assert!(apply_without_tick(&mut state, Message::Timer(timer.clone()), 100).is_empty());
         let chunk = committed_chunk(apply_without_tick(&mut state, Message::Drained, 101));
-        assert_eq!(chunk.works, 1, "the decision alone");
-        apply_without_tick(
-            &mut state,
-            Message::RequestRecorded {
-                key: crate::owner::RequestKey::Approval(approval.clone()),
-                answer: DecisionAnswer::Recorded {
-                    state: crate::approval::ApprovalState::Approved,
-                    decided_at_unix_nanos: 101,
-                },
-            },
-            102,
+        assert_eq!(
+            (chunk.works, chunk.inbox_rows),
+            (1, 1),
+            "the decision alone"
         );
         deliver(apply_without_tick(&mut state, Message::Committed, 103));
         woken.try_recv().expect("woken");
-        assert!(matches!(
-            decided(&mut first),
-            Some(Ok(DecisionAnswer::Recorded {
-                state: crate::approval::ApprovalState::Approved,
-                ..
-            }))
-        ));
         assert!(
             apply_without_tick(&mut state, Message::Timer(timer), 104).is_empty(),
             "a late timer on a decided request"
@@ -2352,35 +2269,23 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
 
     // A decision applied past the request's deadline on the owner's clock,
     // before its timer's message arrived: the expiry is applied first, as
-    // the timer would have been, and the decision reads the record.
+    // the timer would have been, and the decision is a repeat whose row
+    // rides the expiry's chunk.
     {
         let mut state = started(LIMITS);
         let approval = approval_id();
         let (effects, mut woken) =
             park(&mut state, &invoker, &admitted, approval_wait(&approval), 3);
         assert_eq!(effects.len(), 2, "{effects:?}");
-        let (effects, mut late) = decide(&mut state, &approval, 100);
-        assert!(deliver(effects).is_empty());
-        assert_eq!(state.parked_requests(), 1);
+        assert!(deliver(decide(&mut state, &approval, "late", APPROVAL_DEADLINE)).is_empty());
         let chunk = committed_chunk(apply_without_tick(&mut state, Message::Drained, 101));
-        assert_eq!(chunk.works, 1, "the expiry");
-        apply_without_tick(
-            &mut state,
-            Message::RequestRecorded {
-                key: crate::owner::RequestKey::Approval(approval.clone()),
-                answer: DecisionAnswer::Recorded {
-                    state: crate::approval::ApprovalState::Expired,
-                    decided_at_unix_nanos: 100,
-                },
-            },
-            102,
+        assert_eq!(
+            (chunk.works, chunk.inbox_rows),
+            (1, 1),
+            "the expiry, and the decision's row"
         );
         deliver(apply_without_tick(&mut state, Message::Committed, 103));
         woken.try_recv().expect("woken");
-        assert!(matches!(
-            decided(&mut late),
-            Some(Ok(DecisionAnswer::FromRecord))
-        ));
         assert_eq!(state.pending_chunks(), 0);
     }
 
@@ -2731,8 +2636,7 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
         assert!(prechecks(&effects, Check::Periodic, &[1]), "{effects:?}");
         // The decision lands before the precheck answers: the owner's
         // record wakes the Invocation, and the finding finds it gone.
-        let (effects, _decided) = decide(&mut state, &approval, 10);
-        assert!(deliver(effects).is_empty());
+        assert!(deliver(decide(&mut state, &approval, "decision", 10)).is_empty());
         committed_chunk(apply_without_tick(&mut state, Message::Drained, 11));
         deliver(apply_without_tick(&mut state, Message::Committed, 12));
         approval_woken.try_recv().expect("woken");

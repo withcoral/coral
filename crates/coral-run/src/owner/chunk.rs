@@ -13,7 +13,7 @@ use crate::run_inbox::InboxRow;
 use crate::run_repository::OwnedEvent;
 use crate::{CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, Error};
 
-use super::handle::{DecisionAnswer, Reply, RequestKey, RequestReply};
+use super::handle::{Reply, RequestKey};
 
 /// Row work items per chunk. Each one queries the database inside the
 /// commit, so this keeps a commit transaction short.
@@ -41,12 +41,6 @@ pub(crate) trait ChunkWork: Send + fmt::Debug {
         now_unix_nanos: i64,
     ) -> Result<Vec<OwnedEvent>, Error>;
 
-    /// The outside request this work records and what it recorded for it,
-    /// once [`Self::run`] returned `Ok`. `None` for the Program's own work.
-    fn take_recorded_request(&mut self) -> Option<(RequestKey, DecisionAnswer)> {
-        None
-    }
-
     /// The Invocation this work parked on a wait, once [`Self::run`]
     /// returned `Ok`: the owner keeps it, arms the wait's deadline, and wakes
     /// it once the chunk has landed and the wait ended. `None` for work that
@@ -58,16 +52,6 @@ pub(crate) trait ChunkWork: Send + fmt::Debug {
     /// Delivers the outcome once the chunk is recorded, or the failure that
     /// lost it before it ran or before it committed.
     fn settle(self: Box<Self>, recorded: Result<(), Error>);
-}
-
-/// One outside request a chunk records: the entity it decides, who waits
-/// for the answer (nobody for the owner's own timer), and what the chunk's
-/// work wrote for it once reported.
-#[derive(Debug)]
-pub(crate) struct PendingRequest {
-    pub(crate) key: RequestKey,
-    pub(crate) reply: Option<RequestReply>,
-    pub(crate) answer: Option<DecisionAnswer>,
 }
 
 /// One entry of a chunk, in arrival order.
@@ -98,10 +82,9 @@ pub(crate) struct ChunkBuild {
     /// The Run Ledger head the chunk is built on, set as it goes in flight;
     /// its commit asserts it.
     pub(crate) head: u64,
-    /// The outside requests this chunk records, by the entity each decides:
-    /// a repeat of one waits for this chunk's answer, and each requester is
-    /// answered once the chunk is recorded.
-    pub(crate) requests: Vec<PendingRequest>,
+    /// The entities this chunk's outside requests and the owner's own
+    /// expiries decide: a later request for one is a repeat.
+    pub(crate) requests: Vec<RequestKey>,
     /// The termination intent the owner applied into this chunk, written in
     /// its head update beside the `cancellation.requested` Event among the
     /// items.
@@ -130,7 +113,7 @@ impl ChunkBuild {
 
     /// Whether this chunk records the request `key` names.
     pub(crate) fn records(&self, key: &RequestKey) -> bool {
-        self.requests.iter().any(|request| request.key == *key)
+        self.requests.contains(key)
     }
 
     /// Adds `request` to the chunk's fence batch, opening it as one row work
