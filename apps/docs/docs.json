@@ -4,7 +4,10 @@
   "name": "Coral Docs",
   "description": "Install Coral, publish providers from OpenAPI documents and MCP servers, and let your agents discover and call their operations over MCP.",
   "logo": "/images/coral-logo.svg",
-  "favicon": "/images/favicon.svg",
+  "favicon": {
+    "light": "/images/favicon-light.svg",
+    "dark": "/images/favicon-dark.svg"
+  },
   "icons": {
     "library": "lucide"
   },
