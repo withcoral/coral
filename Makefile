@@ -60,6 +60,7 @@ docker-test: docker-build reef-docker-build
 	  CORAL_WEB_IMAGE="$(CORAL_WEB_DOCKER_IMAGE)" docker/image-test.sh
 
 rust-checks: lint-migrations
+	scripts/check-migrations.sh
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets --locked -- -D warnings
 	$(RUST_WORKSPACE_TESTS)
