@@ -48,7 +48,8 @@ WHERE result_json LIKE '%"code":"undeclared_status"%';
 -- name. Only a Coral failure has the `operation` member, so a Run whose error
 -- holds none keeps a Program's own `OperationError` as it was written. REPLACE
 -- cannot tell apart the errors that one Run's error nests, so a Program's own
--- `OperationError` nested beside a Coral failure is renamed with it.
+-- `OperationError` nested beside a Coral failure is renamed with it, and so
+-- are Coral's message fragments in its message.
 UPDATE program_run_records
 SET failure_message = 'ToolError: ' || REPLACE(REPLACE(REPLACE(
     CASE
@@ -132,7 +133,7 @@ WHERE diagnostic_code IN (
 
 UPDATE materialized_tools
 SET diagnostic_message =
-    REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(diagnostic_message,
+    REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(diagnostic_message,
         'an embedded Operation schema', 'an embedded Tool schema'),
         'an MCP tool conflicts with the reserved resource-read Operation', 'an MCP tool conflicts with the reserved resource-read Tool'),
         'an MCP tool has an invalid Operation Key', 'an MCP tool has an invalid Tool Key'),
@@ -147,12 +148,13 @@ SET diagnostic_message =
         'the pinned OpenAPI document contains no callable Operations', 'the pinned OpenAPI document contains no callable Tools'),
         'the pinned OpenAPI document produces duplicate Operation Keys', 'the pinned OpenAPI document produces duplicate Tool Keys'),
         'the previous active catalog has incoherent Operation paths', 'the previous active catalog has incoherent Tool paths'),
+        'the Provider''s Operations together request', 'the Provider''s Tools together request'),
         'the Provider''s Operations require different credential contracts', 'the Provider''s Tools require different credential contracts')
 WHERE diagnostic_message IS NOT NULL;
 
 UPDATE materialized_tools
 SET diagnostics_json =
-    REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(diagnostics_json,
+    REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(diagnostics_json,
         '"duplicate_operation_key"', '"duplicate_tool_key"'),
         '"empty_operation_catalog"', '"empty_tool_catalog"'),
         '"invalid_operation_diagnostic"', '"invalid_tool_diagnostic"'),
@@ -178,6 +180,7 @@ SET diagnostics_json =
         '"the pinned OpenAPI document contains no callable Operations', '"the pinned OpenAPI document contains no callable Tools'),
         '"the pinned OpenAPI document produces duplicate Operation Keys', '"the pinned OpenAPI document produces duplicate Tool Keys'),
         '"the previous active catalog has incoherent Operation paths', '"the previous active catalog has incoherent Tool paths'),
+        '"the Provider''s Operations together request', '"the Provider''s Tools together request'),
         '"the Provider''s Operations require different credential contracts', '"the Provider''s Tools require different credential contracts');
 
 UPDATE provider_publications
@@ -210,7 +213,7 @@ WHERE diagnostic_code IN (
 
 UPDATE provider_publications
 SET diagnostic_message =
-    REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(diagnostic_message,
+    REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(diagnostic_message,
         'an embedded Operation schema', 'an embedded Tool schema'),
         'an MCP tool conflicts with the reserved resource-read Operation', 'an MCP tool conflicts with the reserved resource-read Tool'),
         'an MCP tool has an invalid Operation Key', 'an MCP tool has an invalid Tool Key'),
@@ -225,6 +228,7 @@ SET diagnostic_message =
         'the pinned OpenAPI document contains no callable Operations', 'the pinned OpenAPI document contains no callable Tools'),
         'the pinned OpenAPI document produces duplicate Operation Keys', 'the pinned OpenAPI document produces duplicate Tool Keys'),
         'the previous active catalog has incoherent Operation paths', 'the previous active catalog has incoherent Tool paths'),
+        'the Provider''s Operations together request', 'the Provider''s Tools together request'),
         'the Provider''s Operations require different credential contracts', 'the Provider''s Tools require different credential contracts')
 WHERE diagnostic_message IS NOT NULL;
 
@@ -258,7 +262,7 @@ WHERE diagnostic_code IN (
 
 UPDATE provider_regeneration_publications
 SET diagnostic_message =
-    REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(diagnostic_message,
+    REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(diagnostic_message,
         'an embedded Operation schema', 'an embedded Tool schema'),
         'an MCP tool conflicts with the reserved resource-read Operation', 'an MCP tool conflicts with the reserved resource-read Tool'),
         'an MCP tool has an invalid Operation Key', 'an MCP tool has an invalid Tool Key'),
@@ -273,6 +277,7 @@ SET diagnostic_message =
         'the pinned OpenAPI document contains no callable Operations', 'the pinned OpenAPI document contains no callable Tools'),
         'the pinned OpenAPI document produces duplicate Operation Keys', 'the pinned OpenAPI document produces duplicate Tool Keys'),
         'the previous active catalog has incoherent Operation paths', 'the previous active catalog has incoherent Tool paths'),
+        'the Provider''s Operations together request', 'the Provider''s Tools together request'),
         'the Provider''s Operations require different credential contracts', 'the Provider''s Tools require different credential contracts')
 WHERE diagnostic_message IS NOT NULL;
 
@@ -284,7 +289,7 @@ WHERE diagnostic_message IS NOT NULL;
 -- whose key is `operations`.
 UPDATE provider_setups
 SET source_analysis =
-    REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(source_analysis,
+    REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(source_analysis,
         '","operations":[', '","tools":['),
         '"duplicate_operation_key"', '"duplicate_tool_key"'),
         '"empty_operation_catalog"', '"empty_tool_catalog"'),
@@ -311,12 +316,13 @@ SET source_analysis =
         '"the pinned OpenAPI document contains no callable Operations', '"the pinned OpenAPI document contains no callable Tools'),
         '"the pinned OpenAPI document produces duplicate Operation Keys', '"the pinned OpenAPI document produces duplicate Tool Keys'),
         '"the previous active catalog has incoherent Operation paths', '"the previous active catalog has incoherent Tool paths'),
+        '"the Provider''s Operations together request', '"the Provider''s Tools together request'),
         '"the Provider''s Operations require different credential contracts', '"the Provider''s Tools require different credential contracts')
 WHERE source_analysis IS NOT NULL;
 
 UPDATE provider_setups
 SET configuration_preview =
-    REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(configuration_preview,
+    REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(configuration_preview,
         '},"operations":[', '},"tools":['),
         '"unavailable_operations":{', '"unavailable_tools":{'),
         '"duplicate_operation_key"', '"duplicate_tool_key"'),
@@ -344,5 +350,6 @@ SET configuration_preview =
         '"the pinned OpenAPI document contains no callable Operations', '"the pinned OpenAPI document contains no callable Tools'),
         '"the pinned OpenAPI document produces duplicate Operation Keys', '"the pinned OpenAPI document produces duplicate Tool Keys'),
         '"the previous active catalog has incoherent Operation paths', '"the previous active catalog has incoherent Tool paths'),
+        '"the Provider''s Operations together request', '"the Provider''s Tools together request'),
         '"the Provider''s Operations require different credential contracts', '"the Provider''s Tools require different credential contracts')
 WHERE configuration_preview IS NOT NULL;

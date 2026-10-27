@@ -425,7 +425,7 @@ impl AccountModule {
     /// return field diagnostics without replacing the previous accepted configuration.
     #[expect(
         clippy::too_many_lines,
-        reason = "one domain tool owns application resolution, replay and configuration confirmation before consent"
+        reason = "one domain operation owns application resolution, replay and configuration confirmation before consent"
     )]
     pub async fn confirm_setup_configuration(
         &self,

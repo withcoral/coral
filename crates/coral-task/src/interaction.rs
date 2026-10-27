@@ -58,7 +58,7 @@ impl AttributedCommand {
     }
 }
 
-/// Tool attempted toward the goal.
+/// Action attempted toward the goal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttemptKind {
     /// One requested search page.

@@ -14,9 +14,9 @@ import {
 import * as styles from './providers.css'
 
 /**
- * Where one declared server sends its tools. The field offers the URLs the
- * document declares and accepts a URL it does not; an empty field leaves the
- * server's tools without a destination.
+ * Where Coral sends calls to one declared server's tools. The field offers the
+ * URLs the document declares and accepts a URL it does not; an empty field
+ * leaves the server's tools without a destination.
  */
 export function ServerField({
   group,

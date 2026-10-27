@@ -254,7 +254,7 @@ impl ProgramCompiler {
     fn request<T: Send + 'static>(
         &self,
         deadline: Instant,
-        tool: impl FnOnce(&mut CompilerIsolate) -> Result<T, Error> + Send + 'static,
+        work: impl FnOnce(&mut CompilerIsolate) -> Result<T, Error> + Send + 'static,
     ) -> Result<T, Error> {
         let deadline = deadline.min(Instant::now() + COMPILATION_TIMEOUT);
         let control = ProgramExecutionControl::new();
@@ -278,7 +278,7 @@ impl ProgramCompiler {
                 }
                 let active = compiler.as_mut().expect("compiler initialized");
                 worker_control.install(&active.isolate.thread_safe_handle());
-                let mut result = tool(active);
+                let mut result = work(active);
                 worker_control.uninstall();
                 if worker_control.is_requested() || Instant::now() >= deadline {
                     result = Err(Error::CompilationTimedOut);

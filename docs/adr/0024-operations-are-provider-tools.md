@@ -15,8 +15,8 @@ of MCP tools, which the glossary keeps apart from Provider Tools. Saved Function
 
 ## What changes for callers
 
-- A Program still calls a Provider Tool at `coral.providers.<namespace>.<tool>(...)`. `coral.ToolError` replaces
-  `coral.OperationError`.
+- A Program still calls a Provider Tool at `coral.providers.<namespace>.<tool>(...)`, or a Built-in Provider's Tool at
+  `coral.workspace.<tool>(...)`. `coral.ToolError` replaces `coral.OperationError`.
 - Coral Failure codes and catalog diagnostics name tools, such as `tool_not_found` and `tool_disabled`.
 - Search and describe name the kind `provider_tool`. The bare word would read as an MCP tool beside `search` and
   `exec`, so the wire value keeps the qualifier.
@@ -44,9 +44,10 @@ of MCP tools, which the glossary keeps apart from Provider Tools. Saved Function
 - **Beta databases migrate.** Migration `0046_tool_names` rewrites retained Invocation failure codes, messages and Tool
   Result decode diagnostics, Coral's errors in failed Runs, Task discovery evidence, stored catalog diagnostics, Setup
   caches, built-in Execution Bindings, and each Saved Function source that names `coral.OperationError`. Text that a
-  Program or an upstream wrote stays as it was, except a Program's own error class named `OperationError` nested in the
-  same Run error as a Coral failure: the migration cannot tell the two apart. Retained Run source stays as each Run
-  accepted it. Code reads only the new names.
+  Program or an upstream wrote stays as it was, except inside a failed Run's error that holds a Coral failure. There
+  the migration cannot tell a Program's own nested errors from Coral's, so it renames a nested `OperationError` too,
+  and rewrites Coral's message fragments, such as "Operation argument", wherever they appear in it. Retained Run source
+  stays as each Run accepted it. Code reads only the new names.
 - **This upgrade stops, then starts.** Both steps break the previous release's queries and readers, so this release is
   an exception to ADR 0018's expand-only migrations: stop every process on the previous release before the first
   process on this release boots. A rolling update would fail the old process's reads and writes, not just degrade

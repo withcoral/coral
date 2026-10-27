@@ -206,7 +206,8 @@ const ROWS_BEFORE_TOOL_NAMES: &str = r#"
     VALUES ('setup', 'workspace', 'mcp', 'https://mcp.example.test',
             '0000000000000000000000000000000000000000000000000000000000000000', '{}', 1);
     INSERT INTO provider_publication_request_keys (request_id, workspace_id, actor_user_id)
-    VALUES ('publish', 'workspace', 'user:upgrade'), ('regenerate', 'workspace', 'user:upgrade');
+    VALUES ('publish', 'workspace', 'user:upgrade'), ('regenerate', 'workspace', 'user:upgrade'),
+        ('regenerate-scopes', 'workspace', 'user:upgrade');
     INSERT INTO provider_publications
         (id, request_id, workspace_id, setup_id, requested_namespace, requested_route,
          outcome, diagnostic_code, diagnostic_message, completed_at_unix_nanos)
@@ -219,7 +220,10 @@ const ROWS_BEFORE_TOOL_NAMES: &str = r#"
          completed_at_unix_nanos)
     VALUES ('regeneration', FALSE, 1, 'regenerate', 'workspace', 'provider', 'setup', 'failed',
             'duplicate_operation_key',
-            'the pinned OpenAPI document produces duplicate Operation Keys', 2);
+            'the pinned OpenAPI document produces duplicate Operation Keys', 2),
+           ('scope-limit', FALSE, 1, 'regenerate-scopes', 'workspace', 'provider', 'setup',
+            'failed', 'credentials_not_supported',
+            'the Provider''s Operations together request more OAuth scopes than one grant can hold', 2);
 "#;
 
 /// The data step rewrites what Coral wrote about Operations: a Coral failure
@@ -299,11 +303,20 @@ async fn upgrade_renames_what_coral_wrote_about_operations_and_nothing_a_program
             ),
             (
                 "SELECT id, diagnostic_code, diagnostic_message \
-                 FROM provider_regeneration_publications",
+                 FROM provider_regeneration_publications WHERE id = 'regeneration'",
                 [
                     "regeneration",
                     "duplicate_tool_key",
                     "the pinned OpenAPI document produces duplicate Tool Keys",
+                ],
+            ),
+            (
+                "SELECT id, diagnostic_code, diagnostic_message \
+                 FROM provider_regeneration_publications WHERE id = 'scope-limit'",
+                [
+                    "scope-limit",
+                    "credentials_not_supported",
+                    "the Provider's Tools together request more OAuth scopes than one grant can hold",
                 ],
             ),
         ],

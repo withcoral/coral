@@ -1255,7 +1255,7 @@ pub(super) fn validate_credential_contract(
                         ),
                     ),
                     ContractConflict::ScopeLimit => (
-                        "the Provider's Operations together request more OAuth scopes than \
+                        "the Provider's Tools together request more OAuth scopes than \
                          one grant can hold",
                         format!(
                             "{} and {} together exceed the scope limit",

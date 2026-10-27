@@ -46,11 +46,7 @@ function credentialFree(tools: Record<string, object>, server?: string) {
 }
 
 /** Runs one Built-in Tool in a Program and returns its result. */
-async function builtinCall(
-  runner: ReturnType<typeof programRunner>,
-  tool: string,
-  call: unknown,
-) {
+async function builtinCall(runner: ReturnType<typeof programRunner>, tool: string, call: unknown) {
   const { update } = await observeRun(
     runner,
     await runner.exec(`return await coral.workspace.${tool}(${JSON.stringify(call)});`),
@@ -416,19 +412,16 @@ test("A workspace owner's Program moves a provider from an MCP server to an Open
         link = changed.url
       },
     )
-    await step(
-      'Review the tool the document adds and the tool it drops, and save',
-      async () => {
-        await page.goto(link)
-        await toolGroup(page, 'New').getByText('getForecast', { exact: true }).waitFor()
-        await toolGroup(page, 'Removed').getByText('hello', { exact: true }).waitFor()
-        await page.getByRole('button', { name: 'Save', exact: true }).click()
-        await page.waitForURL((url) => url.pathname.endsWith('/settings'))
-        const source = await api.providers.getProviderSource({ name: provider.name })
-        // An uploaded document has no URL to read again.
-        expect([source.kind, source.url]).toEqual([ProviderSetupInputKind.OPENAPI, ''])
-      },
-    )
+    await step('Review the tool the document adds and the tool it drops, and save', async () => {
+      await page.goto(link)
+      await toolGroup(page, 'New').getByText('getForecast', { exact: true }).waitFor()
+      await toolGroup(page, 'Removed').getByText('hello', { exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Save', exact: true }).click()
+      await page.waitForURL((url) => url.pathname.endsWith('/settings'))
+      const source = await api.providers.getProviderSource({ name: provider.name })
+      // An uploaded document has no URL to read again.
+      expect([source.kind, source.url]).toEqual([ProviderSetupInputKind.OPENAPI, ''])
+    })
     await step("A Program calls the document's tool under the same namespace", async () => {
       expect(
         await finalValue(program, 'return await coral.providers.weather.getForecast({});'),
@@ -489,20 +482,17 @@ test("A workspace owner's Program reads a provider's document URL again, and cal
       kind: 'openapi_url',
       url: `${service.origin}/openapi.json`,
     })
-    await step(
-      'The service adds a tool, and the Program reads the document again',
-      async () => {
-        service.tools = { getForecast: {}, getAlerts: {} }
-        const reads = service.reads
-        const changed = await builtinCall(program, 'updateProvider', {
-          namespace: 'weather',
-          refresh: true,
-        })
-        // The new document keeps every tool, so nobody needs to act.
-        expect(changed.status).toBe('published')
-        expect(service.reads).toBe(reads + 1)
-      },
-    )
+    await step('The service adds a tool, and the Program reads the document again', async () => {
+      service.tools = { getForecast: {}, getAlerts: {} }
+      const reads = service.reads
+      const changed = await builtinCall(program, 'updateProvider', {
+        namespace: 'weather',
+        refresh: true,
+      })
+      // The new document keeps every tool, so nobody needs to act.
+      expect(changed.status).toBe('published')
+      expect(service.reads).toBe(reads + 1)
+    })
     await step('A Program calls the new tool', async () => {
       expect(
         await finalValue(program, 'return await coral.providers.weather.getAlerts({});'),

@@ -128,7 +128,7 @@ export async function absentSurfaces(context: TestContext) {
           await response.body?.cancel()
         }
       }
-      // A published Tool adds no tool and cannot be called as one.
+      // A published provider tool adds no MCP tool and cannot be called as one.
       const run = programRunner(page, target, workspace)
       const found = await run.search('lookup')
       expect(found.structuredContent.hits.map((hit) => hit.call_path)).toContain(

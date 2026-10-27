@@ -458,7 +458,9 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
             exact: true,
           })
         const table = page.getByRole('table', { name: 'Activity records', exact: true })
-        expect(await table.getByLabel('20 B added', { exact: true }).count()).toBe(3)
+        // The Run returns only the failure code, so its context is that code's JSON.
+        const added = `${JSON.stringify('tool_disabled').length} B added`
+        expect(await table.getByLabel(added, { exact: true }).count()).toBe(3)
         expect(await table.getByLabel('No net context change', { exact: true }).count()).toBe(1)
         await toolLink.click()
         // The one scalar argument shows under its own field, with its exact JSON spelling.
