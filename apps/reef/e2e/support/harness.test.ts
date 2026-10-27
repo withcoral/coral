@@ -136,16 +136,17 @@ test('remote bootstrap selects only the explicit disposable DB and HTTPS fixture
       .postgresURL,
     undefined,
   )
-  for (const extra of [
-    { E2E_SUITE: 'desktop' },
-    { E2E_SUITE: 'local-mode' },
-    { E2E_HARNESS_PROBES: '1' },
-    { E2E_BASE_URL: 'http://127.0.0.1:3000', E2E_ALLOW_ATTACHED: '1' },
-  ]) {
-    assert.throws(
-      () => bootstrapConfig({ ...env, ...extra }),
-      /Only the main suite selects a database|Attached mode requires --suite local-mode/,
-    )
+  for (const [extra, message] of [
+    [{ E2E_SUITE: 'desktop' }, /Only the main suite selects a database/],
+    [{ E2E_SUITE: 'local-mode' }, /Only the main suite selects a database/],
+    [{ E2E_HARNESS_PROBES: '1' }, /Harness probes run on SQLite/],
+    [{ E2E_SUITE: 'multi-instance', E2E_HARNESS_PROBES: '1' }, /Harness probes run on SQLite/],
+    [
+      { E2E_BASE_URL: 'http://127.0.0.1:3000', E2E_ALLOW_ATTACHED: '1' },
+      /Attached mode requires --suite local-mode/,
+    ],
+  ] as const) {
+    assert.throws(() => bootstrapConfig({ ...env, ...extra }), message)
   }
   for (const url of [
     'not-a-url-with-secret',

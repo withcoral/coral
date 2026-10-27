@@ -938,6 +938,8 @@ export function programRunner(
 /** Starts `program` and returns the Run Update that waits for the invoking User's approval. */
 export async function pausedForApproval(runner: ReturnType<typeof programRunner>, program: string) {
   const started = await runner.exec(program)
+  // A 2026-07-28 runner gets the approval as a prompt; use its ask instead.
+  expect(started).not.toMatchObject({ resultType: 'input_required' })
   expect(started.isError).not.toBe(true)
   let paused = started.structuredContent
   for (let pages = 0; pages < 10 && !paused.required_actions.length; pages++)

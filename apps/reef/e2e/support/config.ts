@@ -66,13 +66,14 @@ export const SUITES = Object.keys(SUITE_DATABASE)
 export function checkSuiteDatabase(suite: string, database: string, probes = false) {
   if (!SUITES.includes(suite)) throw new Error('Unknown Reel suite')
   if (!['sqlite', 'postgres'].includes(database)) throw new Error('Unknown Reel database')
-  const fixed = probes ? 'sqlite' : SUITE_DATABASE[suite]
+  const fixed = SUITE_DATABASE[suite]
   if (fixed && database !== fixed)
     throw new Error(
       fixed === 'postgres'
         ? `The ${suite} suite runs on Postgres`
         : 'Only the main suite selects a database',
     )
+  if (probes && database !== 'sqlite') throw new Error('Harness probes run on SQLite')
 }
 
 export interface RunConfig {
