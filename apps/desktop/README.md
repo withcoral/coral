@@ -128,7 +128,8 @@ entry is "Coral". Uninstalling keeps the user's data. Run the installer with
 
 Desktop's icons use Reef's `public/app-icon.svg` as their source. Run
 `npm run icons --prefix apps/desktop` to regenerate the PNG, ICO and ICNS files,
-and the macOS menu bar's template images (`trayTemplate.png`).
+and the macOS menu bar's template images (`trayTemplate.png`). It also writes
+Reef's `public/favicon.ico` from `public/favicon.svg`.
 Desktop enlarges the mark by 35% within the same tile. The macOS icons add
 transparent padding around the flat artwork.
 

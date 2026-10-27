@@ -34,6 +34,8 @@ apps/desktop/resources/icons/*.png linguist-generated
 apps/desktop/resources/icons/*.ico linguist-generated
 apps/desktop/resources/icons/*.icns linguist-generated
 apps/desktop/resources/icons/icon.svg linguist-generated
+# Reef's legacy favicon, generated from its favicon.svg by the same command.
+apps/reef/public/favicon.ico linguist-generated
 
 # Complete provider documents mechanically generated from upstream definitions.
 apps/reef/recipes/*/openapi.json linguist-generated
