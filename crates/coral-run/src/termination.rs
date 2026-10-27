@@ -8,12 +8,11 @@ use coral_db::Transaction;
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use tokio::time::Instant;
 
-use crate::approval::{ApprovalId, DecideWork};
-use crate::lifecycle::{RequestedTermination, RunRecord, RunTermination, RunTerminationKind};
+use crate::lifecycle::{RequestedTermination, RunRecord, RunTerminationKind};
 use crate::observation::read_until;
 use crate::observation::validate_cursor;
-use crate::owner::ChunkWork as _;
 use crate::run_inbox::{InboxRequest, OutsideRequest};
+use crate::run_repository::{OwnedEvent, OwnedEventKind};
 use crate::{
     Error, RunId, RunModule, RunObservation, RunState, RunUpdate, invocation_lifecycle,
     invocation_repository, run_repository,
@@ -268,30 +267,12 @@ impl RunModule {
         if run.held_claim() != Some(claim_id) {
             return Err(Error::ClaimMismatch);
         }
-        // Never before a termination already recorded.
-        let now = self.now()?.max(run.accepted_at_unix_nanos).max(
-            run.termination
-                .map_or(run.accepted_at_unix_nanos, |termination| {
-                    termination.started_at_unix_nanos
-                }),
-        );
-        // Past the deadline the Run timed out, as every deadline path records.
-        let termination = match run.termination {
-            Some(termination) => termination,
-            None if now >= run.deadline_at_unix_nanos => {
-                run.request_termination(RunTerminationKind::TimedOut, now)?
-                    .termination
-            }
-            None => {
-                run.request_termination(RunTerminationKind::Interrupted, now)?
-                    .termination
-            }
-        };
+        let now = self.now()?.max(run.accepted_at_unix_nanos);
         end_in_one_chunk(
             &mut transaction,
             &run,
-            &termination,
-            &[],
+            None,
+            Vec::new(),
             takeover_claim_id.map(|claim_id| run_repository::Takeover {
                 claim_id,
                 instance: &self.instance,
@@ -329,27 +310,41 @@ impl RunModule {
     }
 }
 
-/// The one chunk that ends `run`, as read in `transaction`, with
-/// `termination`: the `expired` Approval Requests expire first, dated at
-/// their deadlines, and end their Invocations; every other nonterminal
-/// Invocation then ends (`run_terminated` before its dispatch,
-/// `indeterminate` once dispatching) with its Approval Request closed; and
-/// `run.ended` follows, the worker claim released and, for a started Run,
-/// the execution claim taken over by `takeover`. One head move,
-/// predicated on the claim and the head `run` shows.
+/// The one chunk that ends `run`, as read in `transaction`. `events`, from
+/// work the caller already ran in `transaction`, come first. The Run ends
+/// with the termination its row records, else the `applied` cancellation
+/// and its `cancellation.requested`, else timed out at `now` past its
+/// deadline (as every deadline path records), else interrupted at `now`.
+/// Every nonterminal Invocation ends (`run_terminated` before its dispatch,
+/// `indeterminate` once dispatching) with its Approval Request closed, then
+/// `run.ended`, never before the termination. The worker claim is released
+/// and, for a started Run, the execution claim taken over by `takeover`.
+/// One head move, predicated on the claim and the head `run` shows.
 pub(crate) async fn end_in_one_chunk(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
-    termination: &RunTermination,
-    expired: &[ApprovalId],
+    applied: Option<RequestedTermination>,
+    mut events: Vec<OwnedEvent>,
     takeover: Option<run_repository::Takeover<'_>>,
-    ended_at_unix_nanos: i64,
+    now: i64,
 ) -> Result<(), Error> {
-    let mut events = Vec::new();
-    for approval in expired {
-        let mut expiry = DecideWork::expiry(approval.clone());
-        events.extend(expiry.run(transaction, run, ended_at_unix_nanos).await?);
-    }
+    let termination = match (run.termination, applied) {
+        (Some(recorded), _) => RequestedTermination::recorded(recorded),
+        (None, Some(applied)) => {
+            events.extend(applied.requester.clone().map(|requester| {
+                OwnedEvent::new(
+                    OwnedEventKind::CancellationRequested(requester),
+                    applied.termination.started_at_unix_nanos,
+                )
+            }));
+            applied
+        }
+        (None, None) if now >= run.deadline_at_unix_nanos => {
+            run.request_termination(RunTerminationKind::TimedOut, now)?
+        }
+        (None, None) => run.request_termination(RunTerminationKind::Interrupted, now)?,
+    };
+    let ended_at_unix_nanos = now.max(termination.termination.started_at_unix_nanos);
     events.extend(
         invocation_lifecycle::end_nonterminal_invocations(transaction, run, ended_at_unix_nanos)
             .await?,
@@ -358,7 +353,7 @@ pub(crate) async fn end_in_one_chunk(
         transaction,
         run,
         &events,
-        termination,
+        &termination,
         takeover,
         ended_at_unix_nanos,
     )

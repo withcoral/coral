@@ -30,7 +30,7 @@ pub(crate) use events::{
 };
 pub(crate) use inbox::{
     delete as delete_inbox_rows, held_by, insert as insert_inbox_request,
-    waits as inbox_request_waits,
+    waiting_for as inbox_requests_waiting_for, waits as inbox_request_waits,
 };
 pub(crate) use ledger::{Chunk, ChunkEvent, commit_chunk};
 pub(crate) use retention::{delete_retained_history, hold_terminal_run, retention_activity};

@@ -385,6 +385,28 @@ impl TestModules {
             .expect("require approval for the fixture Operation");
     }
 
+    /// Puts `request` in the Run's Run Inbox, as the Coral Instance that
+    /// received it does, without waiting for an owner to record it.
+    pub(crate) async fn submit_to_inbox(
+        &self,
+        workspace_id: &coral_workspace::WorkspaceId,
+        run_id: &crate::RunId,
+        request: crate::run_inbox::OutsideRequest,
+    ) {
+        let request = crate::run_inbox::InboxRequest {
+            workspace_id: workspace_id.clone(),
+            run_id: run_id.clone(),
+            request,
+        };
+        let mut transaction = self.database.begin().await.expect("begin");
+        self.runs
+            .inbox
+            .submit(&mut transaction, &request, self.runs.now().expect("clock"))
+            .await
+            .expect("submit to the Run Inbox");
+        transaction.commit().await.expect("commit");
+    }
+
     /// The rows waiting in the Run's Run Inbox.
     pub(crate) async fn inbox_rows(
         &self,

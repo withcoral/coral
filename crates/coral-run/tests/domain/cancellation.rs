@@ -1364,52 +1364,101 @@ enum Abandoned {
     RunDeadline,
     /// Its owner recorded a cancellation and died before it settled.
     RecordedCancel,
+    /// A cancellation waits in its Run Inbox: the Run is canceled.
+    WaitingCancel,
+    /// A cancellation waits, and the Run deadline passed: the timers come
+    /// first, so the Run times out.
+    WaitingCancelPastRunDeadline,
+    /// A decision waits in its Run Inbox: it is recorded.
+    WaitingDecision,
+    /// A decision waits, and its Approval Request's deadline passed: the
+    /// expiry stands.
+    WaitingDecisionPastApprovalDeadline,
 }
 
 /// The expired-lease sweep recreates the owner of a Run whose holder died,
-/// with the timers that passed queued in deadline order, and that owner ends
-/// the Run in one chunk. An Approval Request whose deadline passed expires,
-/// dated at its deadline, and its Invocation fails `approval_expired` before
-/// the Run ends; a passed Run deadline records `timed_out`, not
-/// `interrupted`; a recorded termination is finished as recorded; otherwise
-/// the Run is interrupted, its waiting Invocation ends `run_terminated` and
-/// its request closes. The Run is taken over with a new claim.
+/// with the timers that passed queued in deadline order and then the
+/// requests waiting in its Run Inbox in insert order, and that owner ends
+/// the Run in one chunk that deletes those requests. An Approval Request
+/// whose deadline passed expires, dated at its deadline, and its Invocation
+/// fails `approval_expired` before the Run ends, even with a decision
+/// waiting; a passed Run deadline records `timed_out`, not `interrupted`,
+/// even with a cancellation waiting; a recorded termination is finished as
+/// recorded; a waiting cancellation is recorded and ends the Run
+/// `canceled`; a waiting decision is recorded, and its Invocation still ends
+/// `run_terminated`; otherwise the Run is interrupted, its waiting
+/// Invocation ends `run_terminated` and its request closes. The Run is taken
+/// over with a new claim.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "one table of abandoned Runs, each arranged and checked against its one chunk"
 )]
-async fn the_sweep_ends_an_abandoned_run_by_its_passed_timers_or_its_recorded_termination() {
+async fn the_sweep_ends_an_abandoned_run_after_its_passed_timers_and_waiting_requests() {
     use crate::InvocationResultKind::{CoralFailure, RunTerminated};
-    use crate::approval::ApprovalState;
-    // (what passed, the Run's end, its request's end, the Invocation's end)
+    use crate::approval::{ApprovalDecision, ApprovalState};
+    use crate::run_inbox::OutsideRequest;
+    // (what the Run carries, the Run's end, its request's end, the
+    // Invocation's end, whether the chunk records `cancellation.requested`)
     let cases = [
         (
             Abandoned::Nothing,
             RunState::Interrupted,
             ApprovalState::Closed,
             RunTerminated,
+            false,
         ),
         (
             Abandoned::ApprovalDeadline,
             RunState::Interrupted,
             ApprovalState::Expired,
             CoralFailure,
+            false,
         ),
         (
             Abandoned::RunDeadline,
             RunState::TimedOut,
             ApprovalState::Expired,
             CoralFailure,
+            false,
         ),
         (
             Abandoned::RecordedCancel,
             RunState::Canceled,
             ApprovalState::Closed,
             RunTerminated,
+            false,
+        ),
+        (
+            Abandoned::WaitingCancel,
+            RunState::Canceled,
+            ApprovalState::Closed,
+            RunTerminated,
+            true,
+        ),
+        (
+            Abandoned::WaitingCancelPastRunDeadline,
+            RunState::TimedOut,
+            ApprovalState::Expired,
+            CoralFailure,
+            false,
+        ),
+        (
+            Abandoned::WaitingDecision,
+            RunState::Interrupted,
+            ApprovalState::Approved,
+            RunTerminated,
+            false,
+        ),
+        (
+            Abandoned::WaitingDecisionPastApprovalDeadline,
+            RunState::Interrupted,
+            ApprovalState::Expired,
+            CoralFailure,
+            false,
         ),
     ];
-    for (case, run_end, request_end, invocation_end) in cases {
+    for (case, run_end, request_end, invocation_end, cancel_requested) in cases {
         // The request waits 20 s at most, well inside the Run's 60 s.
         let held =
             HeldApproval::expiring(&format!("user:abandoned-{case:?}"), Duration::from_secs(20))
@@ -1425,13 +1474,44 @@ async fn the_sweep_ends_an_abandoned_run_by_its_passed_timers_or_its_recorded_te
         let mut handed = fixture
             .hand_to(workspace_id, run_id, "dead-holder", None)
             .await;
+        // Each request was sent while the Run's deadlines were still ahead.
         match case {
-            Abandoned::Nothing => {}
-            Abandoned::ApprovalDeadline => fixture
-                .clock
-                .next
-                .store(request.deadline_at_unix_nanos, Ordering::SeqCst),
-            Abandoned::RunDeadline => fixture
+            Abandoned::WaitingCancel | Abandoned::WaitingCancelPastRunDeadline => {
+                fixture
+                    .submit_to_inbox(
+                        workspace_id,
+                        run_id,
+                        OutsideRequest::Cancel(held.actor.principal().clone()),
+                    )
+                    .await;
+            }
+            Abandoned::WaitingDecision | Abandoned::WaitingDecisionPastApprovalDeadline => {
+                fixture
+                    .submit_to_inbox(
+                        workspace_id,
+                        run_id,
+                        OutsideRequest::Decide(crate::owner::DecisionRequest {
+                            approval: request.id.clone(),
+                            deadline_at_unix_nanos: request.deadline_at_unix_nanos,
+                            decision: ApprovalDecision::Approve,
+                            actor: held.actor.principal().clone(),
+                            comment: None,
+                            trace: TraceId::parse(&"d".repeat(32)).unwrap(),
+                        }),
+                    )
+                    .await;
+            }
+            _ => {}
+        }
+        match case {
+            Abandoned::Nothing | Abandoned::WaitingCancel | Abandoned::WaitingDecision => {}
+            Abandoned::ApprovalDeadline | Abandoned::WaitingDecisionPastApprovalDeadline => {
+                fixture
+                    .clock
+                    .next
+                    .store(request.deadline_at_unix_nanos, Ordering::SeqCst);
+            }
+            Abandoned::RunDeadline | Abandoned::WaitingCancelPastRunDeadline => fixture
                 .clock
                 .next
                 .store(handed.deadline_at_unix_nanos, Ordering::SeqCst),
@@ -1476,12 +1556,23 @@ async fn the_sweep_ends_an_abandoned_run_by_its_passed_timers_or_its_recorded_te
                 .is_some_and(|claim| claim != "dead-holder"),
             "{case:?}: taken over with a new claim"
         );
+        assert_eq!(
+            fixture.inbox_rows(workspace_id, run_id).await,
+            0,
+            "{case:?}: the chunk deleted the requests it applied"
+        );
         let events = fixture
             .events_after(workspace_id, run_id, last_sequence(&handed))
             .await;
+        let kinds = events.iter().map(RunEvent::kind).collect::<Vec<_>>();
+        let (requested, end) = kinds.split_at(usize::from(cancel_requested));
         assert!(
-            matches!(
-                events.iter().map(RunEvent::kind).collect::<Vec<_>>().as_slice(),
+            requested.iter().all(|kind| matches!(
+                kind,
+                RunEventKind::CancellationRequested { principal }
+                    if principal == held.actor.principal()
+            )) && matches!(
+                end,
                 [
                     RunEventKind::InvocationEnded { result_kind, .. },
                     RunEventKind::Ended { state, .. },
@@ -1632,9 +1723,9 @@ async fn an_abandoned_runs_dispatching_and_waiting_invocations_end_in_one_chunk(
     );
 }
 
-/// A recovered owner takes no outside request until its chunk lands. A
-/// cancel and a decision wait in the Run Inbox, which no reader reads for a
-/// Run whose holder is gone, and each is answered "not yet recorded" past
+/// A recovered owner takes no outside request sent after the sweep read the
+/// Run Inbox. A cancel and a decision wait there, which no reader reads for
+/// a Run whose holder is gone, and each is answered "not yet recorded" past
 /// its wait, with nothing written to the Run. Once the chunk landed, the Run
 /// ended without them: a retried decision still waiting is answered from the
 /// record before its own wait is out, and so is the retried cancel.

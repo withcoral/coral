@@ -30,6 +30,7 @@ fn apply_without_tick(
         })
         .collect()
 }
+use crate::owner::RecoveryStep;
 use crate::termination::ShutdownAction;
 use crate::{AppliedOutputCap, CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, CoralFailure, FanOutLimit};
 
@@ -2703,6 +2704,79 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
     }
 }
 
+/// A recovered owner applies the Run Inbox requests the sweep queued after
+/// the timers, as a live owner applies them: a decision past its request's
+/// deadline is a repeat of its expiry; a cancellation is the first
+/// termination unless the Run deadline passed, whose timeout comes first; a
+/// decision after a termination closes its request. Its chunk deletes every
+/// row it applied.
+#[test]
+fn a_recovered_owner_applies_its_run_inbox_requests_in_insert_order() {
+    use crate::run_inbox::InboxRow;
+    #[derive(Debug, PartialEq)]
+    enum Step {
+        Expire,
+        Decide(bool),
+        Cancel,
+    }
+    let run_deadline = LIMITS.deadline_at_unix_nanos;
+    // (the rows delivered: (row, at), a cancel or a decision; what the
+    // chunk writes, the cancellation last)
+    let cases = [
+        (vec![("decision", 3)], vec![Step::Decide(true)]),
+        (vec![("decision", APPROVAL_DEADLINE)], vec![Step::Expire]),
+        (
+            vec![("decision", 3), ("cancel", 4)],
+            vec![Step::Decide(true), Step::Cancel],
+        ),
+        (
+            vec![("cancel", 3), ("decision", 4)],
+            vec![Step::Decide(false), Step::Cancel],
+        ),
+        (vec![("cancel", run_deadline)], vec![]),
+    ];
+    for (delivered, written) in cases {
+        let approval = approval_id();
+        let mut state = OwnerState::recovered(LIMITS, 1);
+        for &(row, at) in &delivered {
+            let effects = if row == "cancel" {
+                cancel(&mut state, row, at)
+            } else {
+                decide(&mut state, &approval, row, at)
+            };
+            assert!(effects.is_empty(), "{delivered:?}: {effects:?}");
+        }
+        let effects = apply_without_tick(&mut state, Message::Recover, run_deadline + 1);
+        let [Effect::Recover(recovered)] = effects.as_slice() else {
+            panic!("{delivered:?}: one chunk, nothing else: {effects:?}");
+        };
+        let steps = recovered
+            .steps
+            .iter()
+            .map(|step| match step {
+                RecoveryStep::Expire(expired) => {
+                    assert_eq!(*expired, approval);
+                    Step::Expire
+                }
+                RecoveryStep::Decide { decide, .. } => Step::Decide(*decide),
+            })
+            .chain(recovered.termination.iter().map(|intent| {
+                assert_eq!(intent.requester, Some(requester()));
+                Step::Cancel
+            }))
+            .collect::<Vec<_>>();
+        assert_eq!(steps, written, "{delivered:?}");
+        assert_eq!(
+            recovered.rows,
+            delivered
+                .iter()
+                .map(|(row, _)| InboxRow((*row).to_string()))
+                .collect::<Vec<_>>(),
+            "{delivered:?}"
+        );
+    }
+}
+
 /// A recovered owner gathers the Approval Request timers the sweep queued,
 /// in order, and its end writes them in one chunk. The write's answer, or a
 /// stop (the Shutdown Drain is out) whether the chunk is queued or in
@@ -2719,10 +2793,16 @@ fn a_recovered_owner_writes_its_queued_expiries_in_one_chunk_and_retires() {
     ] {
         effects.extend(apply_without_tick(&mut state, message, 3));
     }
-    let [Effect::Recover { expired }] = effects.as_slice() else {
+    let [Effect::Recover(recovered)] = effects.as_slice() else {
         panic!("one chunk, nothing else: {effects:?}");
     };
-    assert_eq!(expired, &[first, second]);
+    assert!(
+        matches!(
+            recovered.steps.as_slice(),
+            [RecoveryStep::Expire(one), RecoveryStep::Expire(two)] if *one == first && *two == second
+        ),
+        "{recovered:?}"
+    );
     assert!(apply_without_tick(&mut state, Message::Drained, 4).is_empty());
     assert!(matches!(
         apply_without_tick(
