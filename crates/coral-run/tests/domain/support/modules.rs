@@ -386,7 +386,9 @@ impl TestModules {
     }
 
     /// Puts `request` in the Run's Run Inbox, as the Coral Instance that
-    /// received it does, without waiting for an owner to record it.
+    /// received it does, without waiting for an owner to record it. The Run
+    /// must take it: running, with no request for the same decided thing
+    /// waiting (and, for a cancellation, no termination recorded).
     pub(crate) async fn submit_to_inbox(
         &self,
         workspace_id: &coral_workspace::WorkspaceId,
@@ -398,6 +400,7 @@ impl TestModules {
             run_id: run_id.clone(),
             request,
         };
+        let waiting = self.inbox_rows(workspace_id, run_id).await;
         let mut transaction = self.database.begin().await.expect("begin");
         self.runs
             .inbox
@@ -405,6 +408,11 @@ impl TestModules {
             .await
             .expect("submit to the Run Inbox");
         transaction.commit().await.expect("commit");
+        assert_eq!(
+            self.inbox_rows(workspace_id, run_id).await,
+            waiting + 1,
+            "the Run Inbox took the request"
+        );
     }
 
     /// The rows waiting in the Run's Run Inbox.

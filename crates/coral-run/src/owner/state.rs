@@ -99,19 +99,30 @@ impl Recovered {
         self.termination.is_none() && now_unix_nanos < limits.deadline_at_unix_nanos
     }
 
-    /// A cancellation, as [`OwnerState::cancel`] applies it: the first
-    /// termination while the owner accepts requests (past the Run deadline
-    /// the chunk finds the Run timed out), a repeat otherwise.
-    fn cancel(&mut self, requester: Principal, limits: &OwnerLimits, now_unix_nanos: i64) {
+    /// A cancellation from `row`, as [`OwnerState::cancel`] applies it: the
+    /// first termination while the owner accepts requests (past the Run
+    /// deadline the chunk finds the Run timed out), a repeat otherwise. An
+    /// intent the row cannot hold leaves the row, as
+    /// [`OwnerState::terminate`] does.
+    fn cancel(
+        &mut self,
+        requester: Principal,
+        row: InboxRow,
+        limits: &OwnerLimits,
+        now_unix_nanos: i64,
+    ) {
         if self.accepts(limits, now_unix_nanos) {
-            self.termination = RequestedTermination::new(
+            let Ok(intent) = RequestedTermination::new(
                 RunTerminationKind::Canceled,
                 Some(requester),
                 now_unix_nanos,
                 limits.shutdown_grace_nanos,
-            )
-            .ok();
+            ) else {
+                return;
+            };
+            self.termination = Some(intent);
         }
+        self.rows.push(row);
     }
 
     /// A decision, as [`OwnerState::decide`] applies it: past the request's
@@ -1505,8 +1516,7 @@ impl OwnerState {
                 recovered.steps.push(RecoveryStep::Expire(approval));
             }
             (Message::Cancel { requester, row }, Some(recovered)) => {
-                recovered.rows.push(row);
-                recovered.cancel(requester, &limits, now_unix_nanos);
+                recovered.cancel(requester, row, &limits, now_unix_nanos);
             }
             (Message::Decide { request, row }, Some(recovered)) => {
                 recovered.rows.push(row);

@@ -2775,6 +2775,21 @@ fn a_recovered_owner_applies_its_run_inbox_requests_in_insert_order() {
             "{delivered:?}"
         );
     }
+    // A cancellation whose intent the row cannot hold is not applied, and
+    // its row stays.
+    let mut state = OwnerState::recovered(
+        OwnerLimits {
+            shutdown_grace_nanos: i64::MAX,
+            ..LIMITS
+        },
+        1,
+    );
+    assert!(cancel(&mut state, "cancel", 3).is_empty());
+    let effects = apply_without_tick(&mut state, Message::Recover, 4);
+    let [Effect::Recover(recovered)] = effects.as_slice() else {
+        panic!("one chunk, nothing else: {effects:?}");
+    };
+    assert!(recovered.termination.is_none() && recovered.rows.is_empty());
 }
 
 /// A recovered owner gathers the Approval Request timers the sweep queued,
