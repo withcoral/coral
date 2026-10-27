@@ -1,9 +1,8 @@
 /** @vitest-environment happy-dom */
 import { act, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { useEffect, useState } from 'react'
 import { expect, it, onTestFinished, vi } from 'vitest'
-import { markupRoute, renderRoute } from '@/test-support/route'
+import { markupRoute, renderLivePage, renderRoute } from '@/test-support/route'
 import { Activity, duration } from './activity'
 import { ActivityArchivedContext } from './live'
 import { revealHref } from './navigation'
@@ -151,42 +150,34 @@ it('retains the selected review and draft across pending reorder and removal, bu
       terminal: { kind: 'unavailable' },
     },
   })
-  let publish!: (value: ActivityPage) => void
-  function Surface() {
-    const [current, setCurrent] = useState(initial)
-    useEffect(() => {
-      publish = setCurrent
-    }, [])
-    return (
+  const { update: publish } = renderLivePage(
+    (page) => (
       <ActionReviewSession>
-        <Activity page={current} />
+        <Activity page={page} />
       </ActionReviewSession>
-    )
-  }
-  renderRoute(<Surface />, { entry: '/activity?record=one&request=one' })
+    ),
+    initial,
+    { entry: '/activity?record=one&request=one' },
+  )
   expect(document.body).toHaveTextContent('exact-recipient')
   const comment = screen.getByRole('textbox', { name: 'Comment (optional)' })
   await user.type(comment, 'Keep this draft')
 
-  await act(async () =>
-    publish({
-      ...initial,
-      pending: { actions: [], actionCount: '0', next: '', unavailable: false },
-    }),
-  )
+  await publish({
+    ...initial,
+    pending: { actions: [], actionCount: '0', next: '', unavailable: false },
+  })
   expect(document.body).toHaveTextContent('exact-recipient')
   expect(screen.getByRole('textbox', { name: 'Comment (optional)' })).toBe(comment)
   expect(comment).toHaveValue('Keep this draft')
 
-  await act(async () =>
-    publish({
-      ...initial,
-      detail: null,
-      selectedRow: null,
-      unavailable: true,
-      pending: { actions: [], actionCount: '0', next: '', unavailable: true },
-    }),
-  )
+  await publish({
+    ...initial,
+    detail: null,
+    selectedRow: null,
+    unavailable: true,
+    pending: { actions: [], actionCount: '0', next: '', unavailable: true },
+  })
   expect(document.body).not.toHaveTextContent('exact-recipient')
   expect(screen.queryByRole('button', { name: 'Approve this call' })).not.toBeInTheDocument()
 })

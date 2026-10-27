@@ -1,7 +1,8 @@
 /** @vitest-environment happy-dom */
 import { screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { expect, it } from 'vitest'
-import { markupRoute, renderRoute } from '@/test-support/route'
+import { markupRoute, renderLivePage, renderRoute } from '@/test-support/route'
 import { Activity } from './activity'
 import { ActivityArchivedContext } from './live'
 import { ActionReviewSession } from '../actions/review'
@@ -142,4 +143,38 @@ it('hides known empty pending work but distinguishes unavailable data and off-pa
   expect(html).toContain('No actions remain on this page')
   expect(html).toContain('pendingAfter=cursor')
   expect(html).toContain('More actions')
+})
+// Catches: a row decision that Coral holds offered again, or its status outliving the row.
+it('says a row decision is saving until the live read removes the row', async () => {
+  const { update } = renderLivePage(
+    (page) => (
+      <ActionReviewSession>
+        <Activity page={page} />
+      </ActionReviewSession>
+    ),
+    pendingPage,
+    {
+      entry: '/activity',
+      routes: [{ path: '/activity/resolve', action: () => ({ recording: true }) }],
+    },
+  )
+  const pending = screen.getByRole('region', { name: 'Needs your action' })
+  await userEvent.click(
+    within(pending).getByRole('button', { name: 'Approve: Send invoice reminders?' }),
+  )
+
+  expect(await within(pending).findByText('Saving your decision…')).toHaveAttribute(
+    'role',
+    'status',
+  )
+  for (const decision of ['Approve', 'Deny'])
+    expect(
+      within(pending).getByRole('button', { name: `${decision}: Send invoice reminders?` }),
+    ).toBeDisabled()
+
+  await update({
+    ...pendingPage,
+    pending: { actions: [], actionCount: '0', next: '', unavailable: false },
+  })
+  expect(screen.queryByText('Saving your decision…')).toBeNull()
 })
