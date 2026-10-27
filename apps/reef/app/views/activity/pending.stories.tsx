@@ -307,12 +307,15 @@ export const Combined: Story = {
     const canvas = within(canvasElement)
     const pending = await canvas.findByRole('heading', { name: 'Needs your action' })
     const heading = canvas.getByRole('heading', { name: 'Your recent activity' })
-    const live = canvas.getByRole('button', { name: 'Follow latest activity' })
+    const live = canvas.getByRole('button', { name: 'Live' })
     // The page's live toggle sits right after the list heading, below the actions.
     await expect(heading.parentElement).toContainElement(live)
-    await expect(heading.compareDocumentPosition(live)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    await expect(heading.nextElementSibling).toContainElement(live)
     await expect(pending.compareDocumentPosition(live)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    // Its visible label is its name; its tooltip describes what pressing it does.
+    await expect(live).toHaveTextContent(/^Live$/)
     await expect(live).toHaveAttribute('aria-pressed', 'false')
+    await expect(live).toHaveAccessibleDescription('Follow the newest task or run.')
     // Tab reaches it after the actions, and before the table.
     live.focus()
     await userEvent.tab({ shift: true })

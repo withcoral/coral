@@ -4,6 +4,7 @@ import {
   memo,
   useContext,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -17,6 +18,7 @@ import { Elapsed } from '@/wax/components/elapsed'
 import * as Dialog from '@/wax/components/dialog'
 import { Icon, type IconName } from '@/wax/components/icon'
 import { Pill } from '@/wax/components/pill'
+import { Tooltip } from '@/wax/components/tooltip'
 import * as Table from '@/wax/components/table'
 import {
   MAX_EXPANDED_RECORDS,
@@ -499,21 +501,50 @@ const liveToggles: Record<LiveScope, { label: string; off: string; on: string; b
 /**
  * A live mode toggle: beside the drawer's close control for the shown Run or Task,
  * and above the list for the newest activity. Pressed, live mode follows its `scope`.
- * The icon shape shows the state too.
+ * The icon shape shows the state too. Above the list it reads "Live" in both states,
+ * the pressed style showing on, and its tooltip also describes it.
  */
 function LiveToggle({
   scope,
   on,
   blocked,
   onToggle,
+  text = false,
 }: {
   scope: LiveScope
   on: boolean
   /** Following needs more expanded records than the table allows, or did while on. */
   blocked: boolean
   onToggle: () => void
+  /** Labels the toggle "Live" rather than with an icon alone. */
+  text?: boolean
 }) {
   const copy = liveToggles[scope]
+  const tooltip = blocked ? copy.blocked : on ? copy.on : copy.off
+  const descriptionId = useId()
+  if (text)
+    return (
+      <>
+        <Tooltip content={tooltip} side="bottom">
+          <Button.TextButton
+            size="22"
+            variant="secondary"
+            aria-pressed={on}
+            aria-describedby={descriptionId}
+            // Pressed, it still turns live mode off.
+            disabled={blocked && !on}
+            focusableWhenDisabled
+            onClick={blocked && !on ? undefined : onToggle}
+            {...{ [liveToggleAttribute]: '' }}
+          >
+            Live
+          </Button.TextButton>
+        </Tooltip>
+        <span id={descriptionId} className={visuallyHidden}>
+          {tooltip}
+        </span>
+      </>
+    )
   return (
     <Button.IconButton
       name={on ? 'LocateFixed' : 'Locate'}
@@ -521,7 +552,7 @@ function LiveToggle({
       variant="bare"
       ariaLabel={copy.label}
       aria-pressed={on}
-      tooltipText={blocked ? copy.blocked : on ? copy.on : copy.off}
+      tooltipText={tooltip}
       tooltipSide="bottom"
       // Pressed, it still turns live mode off.
       disabled={blocked && !on}
@@ -1272,6 +1303,7 @@ export function Activity({
                 )}
                 {!glimpse && (
                   <LiveToggle
+                    text
                     scope="latest"
                     on={liveScope === 'latest'}
                     blocked={liveScope === 'latest' && stalled}

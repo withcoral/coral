@@ -524,7 +524,7 @@ async function surface({ canvasElement, userEvent }: Play) {
     /** The toggle above the list. A docked rail sits in the page too, so leave out its own. */
     latest: () =>
       canvas
-        .getAllByRole('button', { name: 'Follow latest activity' })
+        .getAllByRole('button', { name: 'Live' })
         .find((button) => !button.closest('[role="dialog"]'))!,
     railToggle: (name: string) => within(rail()).getByRole('button', { name }),
     press: (name: string) => userEvent.click(canvas.getByRole('button', { name })),
@@ -569,6 +569,9 @@ export const OpensActivityThenStaysOnIt: Story = {
     // With no record yet, live mode waits, and the rail stays closed.
     await userEvent.click(latest())
     await waitFor(() => expect(latest()).toHaveAttribute('aria-pressed', 'true'))
+    // Pressed, it keeps its label; its description says pressing it again stops.
+    await expect(latest()).toHaveTextContent(/^Live$/)
+    await expect(latest()).toHaveAccessibleDescription('Stop following the latest activity.')
     await expect(address().get('live')).toBe('latest')
     await idle()
     await closed()
@@ -1009,8 +1012,14 @@ export const StopsAtTheExpansionLimit: Story = {
     await expect(address().getAll('expand')).toHaveLength(19)
     await userEvent.hover(latest())
     await expect(
-      await screen.findByText('Collapse a record before you follow the latest activity.'),
+      // The tooltip itself, not the toggle's hidden description.
+      await screen.findByText('Collapse a record before you follow the latest activity.', {
+        selector: ':not([id])',
+      }),
     ).toBeVisible()
+    await expect(latest()).toHaveAccessibleDescription(
+      'Collapse a record before you follow the latest activity.',
+    )
     // Pressed, the toggle still turns live mode off.
     await expect(latest()).toHaveAttribute('aria-pressed', 'true')
     await userEvent.click(latest())

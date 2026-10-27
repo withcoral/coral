@@ -554,6 +554,15 @@ export const AgentFullActivity: Story = {
       'href',
       agent.path,
     )
+    // Catches: an icon-only live toggle, which reads as nothing here without the list heading.
+    const live = canvas.getByRole('button', { name: 'Live' })
+    await expect(live).toBeVisible()
+    await expect(live).toHaveTextContent(/^Live$/)
+    await expect(live).toHaveAttribute('aria-pressed', 'false')
+    await expect(live).toHaveAccessibleDescription('Follow the newest task or run.')
+    await userEvent.click(live)
+    await waitFor(() => expect(live).toHaveAttribute('aria-pressed', 'true'))
+    await expect(live).toHaveTextContent(/^Live$/)
   },
 }
 // Catches: a link into the agent's Activity list opening the dashboard instead.
