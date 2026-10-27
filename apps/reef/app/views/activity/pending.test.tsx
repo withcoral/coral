@@ -167,11 +167,12 @@ it('says a row decision is saving until the live read removes the row', async ()
     'role',
     'status',
   )
-  expect(
-    within(pending).getByRole('button', { name: 'Deny: Send invoice reminders?' }),
-  ).toBeDisabled()
+  for (const decision of ['Approve', 'Deny'])
+    expect(
+      within(pending).getByRole('button', { name: `${decision}: Send invoice reminders?` }),
+    ).toBeDisabled()
 
-  update({
+  await update({
     ...pendingPage,
     pending: { actions: [], actionCount: '0', next: '', unavailable: false },
   })

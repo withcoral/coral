@@ -1,4 +1,4 @@
-import { ConnectError } from '@connectrpc/connect'
+import { Code, ConnectError } from '@connectrpc/connect'
 import { data } from 'react-router'
 import type { Route } from './+types/activity-resolve'
 import { ActivityRunState } from '@/generated/coral/management/v1/activity_pb'
@@ -17,10 +17,14 @@ import {
  * the request by its Run or Approval Request, and the first one wins, so the second send is
  * safe. Undefined means Coral still holds it: the live read shows the outcome.
  */
-async function untilRecorded<Result>(send: () => Promise<Result>) {
+async function sendWithOneRetry<Result>(send: () => Promise<Result>) {
   const attempt = () =>
     send().catch((error: unknown) => {
-      if (error instanceof ConnectError && error.rawMessage === 'RUN_REQUEST_NOT_YET_RECORDED')
+      if (
+        error instanceof ConnectError &&
+        error.code === Code.Unavailable &&
+        error.rawMessage === 'RUN_REQUEST_NOT_YET_RECORDED'
+      )
         return undefined
       throw error
     })
@@ -35,7 +39,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     const name = field(form, 'name')
     const intent = field(form, 'intent')
     if (intent === 'cancel') {
-      const result = await untilRecorded(() => api.cancelActivityRun({ name }))
+      const result = await sendWithOneRetry(() => api.cancelActivityRun({ name }))
       if (!result) return recording()
       const messages: Partial<Record<ActivityRunState, string>> = {
         [ActivityRunState.RUNNING]: 'Cancellation requested. Check the current run state.',
@@ -62,7 +66,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       throw new Response('Invalid action', { status: 400, headers: privateHeaders })
     // Queue rows decide without a comment field; review forms always send one.
     const comment = (form.has('comment') && field(form, 'comment')) || undefined
-    const result = await untilRecorded(() =>
+    const result = await sendWithOneRetry(() =>
       api.decideApproval({ name, decision: intent, comment }),
     )
     if (!result) return recording()

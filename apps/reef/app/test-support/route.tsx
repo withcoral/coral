@@ -57,7 +57,10 @@ export function renderLivePage<Page>(
     }, [])
     return view(page)
   }
-  return { ...renderRoute(<LivePage />, options), update: (next: Page) => act(() => show(next)) }
+  return {
+    ...renderRoute(<LivePage />, options),
+    update: (next: Page) => act(async () => show(next)),
+  }
 }
 
 /** Renders `view` as the route at `entry` to static HTML, as the server would. */

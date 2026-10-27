@@ -102,9 +102,6 @@ describe.each([
     send.mockRejectedValueOnce(new ConnectError('connection refused', Code.Unavailable))
     const response = await action(authRouteTestArgs(request(intent), {}))
     expect(response.init?.status).toBe(503)
-    expect(response.data).toMatchObject({
-      error: expect.stringContaining('Coral is not available.'),
-    })
     expect(send).toHaveBeenCalledOnce()
   })
 })

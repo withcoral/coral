@@ -28,6 +28,9 @@ import * as styles from './actions.css'
 
 type Approval = Extract<RequestDetail, { kind: 'approval' }>
 
+/** Coral holds the request but has not recorded it yet. The live read shows the outcome. */
+const isRecording = (data: object | undefined) => Boolean(data && 'recording' in data)
+
 type Draft = { name: string; comment: string }
 const DraftContext = createContext<{
   draft: Draft
@@ -163,9 +166,7 @@ export function ApprovalReview({
   const settled = Boolean(winning && winning !== 'pending')
   const state = winning ?? detail.state
   const deciding = available && !settled
-  // Coral holds the decision but has not recorded it yet. The live read shows the outcome, by
-  // the request's deadline at the latest.
-  const recording = deciding && Boolean(fetcher.data && 'recording' in fetcher.data)
+  const recording = deciding && isRecording(fetcher.data)
   const sent = settled || recording
   const settle = session.settle
   useEffect(() => {
@@ -323,8 +324,8 @@ export function QuickDecision({ name, label }: { name: string; label: string }) 
     fetcher.data && 'state' in fetcher.data && typeof fetcher.data.state === 'string'
       ? fetcher.data.state
       : undefined
-  // Coral holds the decision but has not recorded it yet. The live read removes the row.
-  const recording = Boolean(fetcher.data && 'recording' in fetcher.data)
+  // The status shows until the live read removes the row.
+  const recording = isRecording(fetcher.data)
   const decided = pending || recording || Boolean(winning && settledApproval(winning))
   return (
     <fetcher.Form method="post" action="/activity/resolve" className={styles.controls}>
@@ -373,12 +374,11 @@ export function CancelRun({
   const connected = useActivityConnected()
   const fetcher = useFetcher<typeof action>()
   const [confirming, setConfirming] = useState(false)
-  // Coral holds the cancellation but has not recorded it yet. The panel that shows this button
-  // removes it once the live read shows the Run ended, by the Run's deadline at the latest.
-  const recording = Boolean(fetcher.data && 'recording' in fetcher.data)
+  // The panel that shows this button removes it once the live read shows the Run ended.
+  const recording = isRecording(fetcher.data)
   const status = !fetcher.data
     ? null
-    : 'recording' in fetcher.data
+    : recording
       ? 'Canceling the run…'
       : 'message' in fetcher.data
         ? fetcher.data.message

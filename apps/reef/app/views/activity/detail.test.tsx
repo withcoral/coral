@@ -643,7 +643,7 @@ function taskDetailPage(task: Omit<ActivityRow & { kind: 'task' }, 'kind'>): Act
 }
 
 // Catches: a live page that refreshes the Task but leaves its context total stale.
-it('replaces the Task context total when a live page brings a new one', () => {
+it('replaces the Task context total when a live page brings a new one', async () => {
   const task = {
     name: `${workspace}/tasks/invoices`,
     workspace,
@@ -667,7 +667,7 @@ it('replaces the Task context total when a live page brings a new one', () => {
   )
   const before = screen.getByLabelText('55.5 kB saved so far')
   expect(before).toHaveTextContent('−55.5 kB')
-  update(
+  await update(
     taskDetailPage({
       ...task,
       outcome: 'success',
@@ -2706,7 +2706,7 @@ it('says the run is canceling until the live read shows it ended', async () => {
   expect(await screen.findByText('Canceling the run…')).toHaveAttribute('role', 'status')
   expect(screen.getByRole('button', { name: 'Cancel run' })).toBeDisabled()
 
-  update(
+  await update(
     pageOf(
       { ...running, state: 'canceled', endedAt: '2026-09-22T09:05:00Z' },
       { kind: 'canceled' },
