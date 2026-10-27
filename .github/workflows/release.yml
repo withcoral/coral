@@ -10,7 +10,7 @@ name: Release
 # the release whole: it tags the images, then publishes the draft.
 #
 # The feed never lives in withcoral/coral, whose releases the 0.x app
-# polls. docs/adr/0013-desktop-release-channel.md records the decision.
+# polls, or that app would update itself into this one.
 #
 # Merging the release-please PR is the approval. release-please then publishes
 # a release here, which starts this workflow; everything after it runs by

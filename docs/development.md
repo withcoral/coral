@@ -237,7 +237,7 @@ literals are rejected; blocked-special literals are rejected under HTTPS too. Br
 DNS and later redirects can differ, so this is not connection-time enforcement.
 `[outbound]` does not restrict browser consent transport: HTTP consent can coexist
 with HTTPS-only discovery and token exchange. See
-[ADR 0009](adr/0009-provider-consent-navigation.md) for the exact contract.
+[ADR 0009](adr/0009-provider-consent-navigation.md) for the decision.
 
 `./dev setup` regenerates `.dev/state/config.toml`. Reapply operator selections after
 running it. See [ADR 0008](adr/0008-outbound-network-permissions.md) for the decision.

@@ -226,7 +226,7 @@ function configurationDraft(
       ? authentication.value
       : undefined
   // Both parts must be sources this Reef knows; one it does not leaves the
-  // method out, rather than sending a part Coral never saved (ADR 0005).
+  // method out, rather than sending a part Coral never saved (ADR 0004).
   const basic = authentication.case === 'basicAuth' ? basicAuth(authentication.value) : null
   const parameters =
     authentication.case === 'queryCredentials'

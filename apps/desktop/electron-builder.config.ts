@@ -15,7 +15,6 @@ const STAGED = [
 // never be withcoral/coral, whose releases the 0.x app polls: that app
 // would update itself into this one. Only a release package names a feed, so
 // only a release package can update itself.
-// docs/adr/0013-desktop-release-channel.md records why.
 //
 // electron-builder names the updater's download cache after package.json
 // `name`. `coral-app` keeps it apart from the 0.x `@withcoral/desktop`.
