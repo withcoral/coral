@@ -1496,7 +1496,7 @@ export const FinalValue: Story = {
     // The returned value shows directly in its own card, not behind a disclosure.
     const value = within(dialog).getByRole('region', { name: 'Final value' })
     await expect(value).toBeVisible()
-    await expect(value.textContent).toBe(value.querySelector('pre')!.textContent)
+    await expect(within(value).getByRole('group', { name: 'Structure' })).toBeVisible()
     await expect(within(dialog).queryByText('Final value', { selector: 'summary' })).toBeNull()
     for (const token of ['"reminded"', '24', '"owners"', '9', '18450.70', '"INV-4180"'])
       await expect(value).toHaveTextContent(token)
@@ -2426,8 +2426,10 @@ function payloadCard(story: Story, card: string, title: string): Story {
       await expect(within(header).queryByText(/^(diagnostic|retained)$/)).toBeNull()
       const terms = within(dialog.querySelector('dl')!).getAllByRole('term')
       await expect(terms.map((term) => term.textContent)).toEqual(['Started'])
-      // The card shows only the payload; the facts above carry no heading.
-      await expect(region.textContent).toBe(region.querySelector('pre')!.textContent)
+      // The payload shows in its viewer; the facts above carry no heading.
+      await expect(
+        within(region).getByRole('group', { name: /^(Structure|Lines|Raw)$/ }),
+      ).toBeVisible()
       await expect(within(dialog).queryByRole('heading', { name: 'Context' })).toBeNull()
       await expect(dialog).not.toHaveTextContent('Technical details')
       await expect(dialog).not.toHaveTextContent('This log is not a user-facing result')
@@ -2466,7 +2468,8 @@ export const EmittedLongNarrow = panel(
     ),
     'emission #7',
   ),
-  { narrow: true, evidence: 'owner-40@example.com' },
+  // A large value opens shallow: its list folds and states its size.
+  { narrow: true, evidence: '40 items' },
 )
 EmittedLongNarrow.play = payloadCard(EmittedLongNarrow, 'Emitted value', 'coral.emit #7').play
 const logged = (level: LogLevel, message: string) =>
@@ -2606,4 +2609,109 @@ export const UnknownEvent = events.unknown
 export const DetailUnavailable = panel(
   'Unavailable · record removed or concealed',
   panelPage(invocation(), null, { unavailable: true, selectedRow: null }),
+)
+
+// Large payloads ------------------------------------------------------------
+const largeResponse = JSON.stringify({
+  status: 200,
+  data: Array.from({ length: 150 }, (_, index) => ({
+    id: index,
+    title: `Release ${index}`,
+    body: `Notes for release ${index}. `.repeat(12),
+  })),
+  metadata: { kind: 'http' },
+  // An integer no JavaScript number holds: it must show exactly as retained.
+}).replace(/"id":\d+,/, '"id":9007199254740993123,')
+const largeResponsePage = invocationPage(
+  invocationDetail(endedInvocation('upstream_outcome'), {
+    result: { kind: 'upstream_outcome', value: largeResponse },
+  }),
+)
+/** The scrolling element around `element`: the pane that owns its vertical scroll. */
+function scroller(element: HTMLElement) {
+  for (let node = element.parentElement; node; node = node.parentElement)
+    if (
+      /(auto|scroll)/.test(getComputedStyle(node).overflowY) &&
+      node.scrollHeight > node.clientHeight
+    )
+      return node
+  return null
+}
+/**
+ * A large response opens shallow in the pane, which keeps its own scroll: no nested scroll box.
+ * Expand opens it in a viewer of its own, and closing that returns focus, the record and the
+ * pane's scroll position as they were.
+ */
+function largePayloadStory(story: Story): Story {
+  return {
+    ...story,
+    play: async (context) => {
+      await meta.play(context)
+      const { userEvent } = context
+      const body = within(context.canvasElement.ownerDocument.body)
+      const opened = await body.findByRole('dialog')
+      const response = within(opened).getByRole('region', { name: 'Provider response' })
+      const tree = within(response).getByRole('group', { name: 'Structure' })
+      // Exact tokens: the integer past 2^53 keeps every digit.
+      await userEvent.click(within(tree).getByRole('button', { name: 'data: 150 items' }))
+      await userEvent.click(within(tree).getByRole('button', { name: 'Item 1: 3 properties' }))
+      await expect(tree).toHaveTextContent('9007199254740993123')
+      // The payload never scrolls on its own; the pane around it does.
+      const pane = scroller(response)!
+      await expect(pane).not.toBeNull()
+      await expect(response.contains(pane)).toBe(false)
+      for (const inner of response.querySelectorAll<HTMLElement>('*'))
+        await expect(inner.scrollHeight).toBeLessThanOrEqual(inner.clientHeight + 1)
+      await expect(opened.scrollWidth).toBeLessThanOrEqual(opened.clientWidth)
+      const heading = within(opened).getAllByRole('heading', { level: 2 })[0]!.textContent
+      // Scroll the pane, as you would to reach Expand under content above it.
+      const expand = within(response).getByRole('button', { name: 'Expand Provider response' })
+      expand.scrollIntoView({ block: 'center' })
+      const position = pane.scrollTop
+      await expect(position).toBeGreaterThan(0)
+      await userEvent.click(expand)
+      const viewer = await body.findByRole('dialog', { name: 'Provider response' })
+      await waitFor(() =>
+        expect(within(viewer).getByRole('group', { name: 'Structure' })).toBeVisible(),
+      )
+      // It opens on the view you had: the rows you unfolded stay open.
+      await expect(
+        within(viewer).getByRole('button', { name: 'Item 1: 3 properties' }),
+      ).toHaveAttribute('aria-expanded', 'true')
+      // Its body fills the rest of the dialog and scrolls on its own.
+      const viewerBody = within(viewer).getByRole('group', { name: 'Structure' }).parentElement!
+      await expect(
+        viewer.getBoundingClientRect().bottom - viewerBody.getBoundingClientRect().bottom,
+      ).toBeLessThan(48)
+      // Find works there too, through folded content.
+      await userEvent.type(
+        within(viewer).getByRole('searchbox', { name: 'Find in Provider response' }),
+        'Release 149$',
+      )
+      await expect(within(viewer).getByRole('status')).toHaveTextContent('1 of 1')
+      // The match unfolded its rows, which scroll inside the viewer, the match in view.
+      await expect(viewerBody.scrollHeight).toBeGreaterThan(viewerBody.clientHeight)
+      const match = viewer.querySelector('[data-current-match]')!.getBoundingClientRect()
+      const box = viewerBody.getBoundingClientRect()
+      await expect(match.top >= box.top && match.bottom <= box.bottom).toBe(true)
+      await userEvent.keyboard('{Escape}')
+      await waitFor(() =>
+        expect(body.queryByRole('dialog', { name: 'Provider response' })).toBeNull(),
+      )
+      await waitFor(() => expect(expand).toHaveFocus())
+      await expect(pane.scrollTop).toBe(position)
+      await expect(within(opened).getAllByRole('heading', { level: 2 })[0]!).toHaveTextContent(
+        heading!,
+      )
+    },
+  }
+}
+export const InvocationLargeResponse = largePayloadStory(
+  panel('Operation call · large response', largeResponsePage, { evidence: '150 items' }),
+)
+export const InvocationLargeResponseNarrow = largePayloadStory(
+  panel('Operation call · large response, narrow screen', largeResponsePage, {
+    evidence: '150 items',
+    narrow: true,
+  }),
 )

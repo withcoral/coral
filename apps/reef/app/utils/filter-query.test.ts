@@ -55,3 +55,27 @@ test.each([
 ])('%j marks %j at %j', (input, text, ranges) => {
   expect(filterQuery(input).ranges(text)).toEqual(ranges)
 })
+
+// Catches: a Find that counts each piece of a `*` query as its own match.
+test.each([
+  [
+    'row*11',
+    'row-11 row-110',
+    [
+      [
+        [0, 3],
+        [4, 6],
+      ],
+      [
+        [7, 10],
+        [11, 13],
+      ],
+    ],
+  ],
+  ['ow', 'row row', [[[1, 3]], [[5, 7]]]],
+  ['^r', 'row row', [[[0, 1]]]],
+  ['*', 'row', []],
+  ['', 'row', []],
+])('%j finds each match of %j as one hit', (input, text, hits) => {
+  expect(filterQuery(input).hits(text)).toEqual(hits)
+})

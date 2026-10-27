@@ -1029,7 +1029,7 @@ export const UpstreamToolError: Story = {
     await expect(
       drawer.getByText(codeContaining('No invoices for this account'), { selector: 'pre' }),
     ).toBeVisible()
-    await expect(drawer.getByText('This is the start of the data.')).toBeVisible()
+    await expect(drawer.getByText('This is only the start of the value.')).toBeVisible()
   },
 }
 export const RetainedSource: Story = {
@@ -1101,9 +1101,10 @@ export const FinalValueOnExec: Story = {
       await expect(within(table).getByRole('link', { name: 'final value' })).toBeVisible()
     }
     const drawer = within(await within(canvasElement.ownerDocument.body).findByRole('dialog'))
-    await expect(
-      drawer.getByText(codeContaining('"invoices": 24'), { selector: 'pre' }),
-    ).toBeVisible()
+    const value = drawer.getByRole('region', { name: 'Final value' })
+    await expect(within(value).getByRole('group', { name: 'Structure' })).toHaveTextContent(
+      '"invoices": 24',
+    )
   },
 }
 export const NoFinalValue: Story = {
@@ -1160,14 +1161,13 @@ export const ExactNativeInteger: Story = {
     },
   },
   play: async ({ canvasElement }) => {
-    const value = await within(canvasElement.ownerDocument.body).findByText(
-      codeContaining('9007199254740993'),
-      {
-        selector: 'pre',
-      },
-    )
+    const response = await within(canvasElement.ownerDocument.body).findByRole('region', {
+      name: 'Provider response',
+    })
+    const value = within(response).getByRole('group', { name: 'Structure' })
     await expect(value).toBeVisible()
-    await expect(value.textContent).toContain('\n  "data": {\n    "id": 9007199254740993')
+    // The integer past 2^53 keeps every digit, under its key.
+    await expect(value).toHaveTextContent('"data": { 1 property"id": 9007199254740993')
   },
 }
 export const CoralFailure: Story = {

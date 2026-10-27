@@ -378,8 +378,11 @@ export const ReversesMidSlide: Story = {
 
 /** The scrolling viewports inside `root`, not counting any inside a hidden copy. */
 const viewports = (root: Element) =>
-  [...root.querySelectorAll<HTMLElement>('*')].filter((element) =>
-    /auto|scroll/.test(getComputedStyle(element).overflowY),
+  [...root.querySelectorAll<HTMLElement>('*')].filter(
+    (element) =>
+      /auto|scroll/.test(getComputedStyle(element).overflowY) &&
+      // A segmented control scrolls its options sideways; it is no record's viewport.
+      !element.matches('[role="radiogroup"]'),
   )
 
 /**

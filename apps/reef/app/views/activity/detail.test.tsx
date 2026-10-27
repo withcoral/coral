@@ -899,7 +899,8 @@ it.each<[string, RunDetail, string | null]>([
     // A returned value shows directly in its own card, never behind a disclosure.
     const returned = container.querySelector('[aria-label="Final value"]')
     expect(Boolean(returned)).toBe(state === 'succeeded')
-    if (returned) expect(returned.textContent).toBe(returned.querySelector('pre')!.textContent)
+    if (returned)
+      expect(within(returned as HTMLElement).getByRole('group', { name: 'Structure' })).toBeTruthy()
     expect(within(container).queryByText('Final value', { selector: 'summary' })).toBeNull()
     expect(Boolean(within(container).queryByRole('button', { name: 'Cancel run' }))).toBe(
       state === 'running',
@@ -1671,7 +1672,10 @@ it.each<[string, Detail, string | null]>([
     const card = container.querySelector('[aria-label="Final value"]')
     // No value shows no card and no sentence; JSON null is a value and has its card.
     if (value === null) expect(card).toBeNull()
-    else expect(card!.querySelector('pre')!.textContent).toContain(value)
+    else
+      expect(
+        within(card as HTMLElement).getByRole('group', { name: 'Structure' }).textContent,
+      ).toContain(value)
     expect(container.textContent).not.toContain('returned no final value')
     expect(within(container).queryByText('Final value', { selector: 'summary' })).toBeNull()
   },
@@ -1736,7 +1740,8 @@ it.each<[string, RunEvent, boolean, string, string[], string | null]>([
     { ...at, kind: 'program.logged', level: 'warn', message: 'Fetched page 2\n  then page 3' },
     true,
     'Log message',
-    ['Fetched page 2\n  then page 3'],
+    // One numbered line each, the indent kept.
+    ['1Fetched page 2', '2  then page 3'],
     'warn',
   ],
   [
@@ -1797,10 +1802,9 @@ it.each<[string, RunEvent, boolean, string, string[], string | null]>([
       'Technical details',
     ])
       expect(container.textContent).not.toContain(gone)
-    // The card is named for assistive technology but shows only the payload.
+    // The payload viewer is named for assistive technology; its payload is exact.
     const body = container.querySelector<HTMLElement>(`[aria-label="${card}"]`)!
-    const code = body.querySelector('pre')!
-    expect(body.textContent).toBe(code.textContent)
+    const code = within(body).getByRole('group', { name: level ? 'Lines' : 'Structure' })
     for (const text of content) expect(code.textContent).toContain(text)
   },
 )

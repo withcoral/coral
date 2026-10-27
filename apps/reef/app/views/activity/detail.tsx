@@ -26,7 +26,7 @@ import { DescribeParameters, DiscoveryEvidence, SearchParameters } from './disco
 import { DetailHeader, StateBadge } from './detail-header'
 import { ContextImpact } from './context-impact'
 import { Instant } from './instant'
-import { ValueCard } from './value-card'
+import { PayloadViewer } from '@/wax/components/payload-viewer'
 import { invocationOutcomeLabels, requestedBy, resultUnknown } from './labels'
 import { Panel } from './panel'
 import { useActivityConnected } from './live'
@@ -593,7 +593,7 @@ function InvocationOutcome({ detail }: { detail: InvocationDetail }) {
   switch (detail.result.kind) {
     case 'upstream_outcome':
       // What the provider answered, which says nothing of whether the goal succeeded.
-      return <ValueCard value={detail.result.value} format="json" label="Provider response" />
+      return <PayloadViewer value={detail.result.value} format="json" label="Provider response" />
     case 'coral_failure':
       return (
         <ErrorCard
@@ -734,9 +734,9 @@ function EventEvidence({
   recordHref: (name: string) => string
 }) {
   if (event.kind === 'program.logged')
-    return <ValueCard value={event.message} format="text" label="Log message" />
+    return <PayloadViewer value={event.message} format="text" label="Log message" />
   if (event.kind === 'program.emitted')
-    return <ValueCard value={event.value} format="json" label="Emitted value" />
+    return <PayloadViewer value={event.value} format="json" label="Emitted value" />
   // Its time is in the list above.
   return (
     <>
@@ -766,7 +766,7 @@ function TerminalEvidence({ terminal }: { terminal: RunTerminal }) {
     case 'succeeded':
       // A program's return value, apart from anything it emitted while it ran.
       return terminal.finalValue === null ? null : (
-        <ValueCard value={terminal.finalValue} format="json" label="Final value" />
+        <PayloadViewer value={terminal.finalValue} format="json" label="Final value" />
       )
     case 'failed':
       return (
@@ -814,10 +814,12 @@ function ErrorDetail({ error }: { error: ProgramError }) {
       {error.toolBody && (
         <>
           <Typography.BodySmallStrong>Upstream response data</Typography.BodySmallStrong>
-          <Native value={error.toolBody} format="json" />
-          {error.toolBodyTruncated && (
-            <Typography.Body>This is the start of the data.</Typography.Body>
-          )}
+          <PayloadViewer
+            value={error.toolBody}
+            format="json"
+            label="Upstream response data"
+            truncated={error.toolBodyTruncated}
+          />
         </>
       )}
       {error.truncated && (
