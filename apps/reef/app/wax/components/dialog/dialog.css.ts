@@ -1,4 +1,4 @@
-import { createVar, keyframes, style, styleVariants } from '@/wax/css'
+import { createVar, globalStyle, keyframes, style, styleVariants } from '@/wax/css'
 
 import { utils } from '@/styles/utils'
 import { stickyBottom, stickyTop } from '@/wax/components/card/card.css'
@@ -119,6 +119,52 @@ export const fullWidthOnMobile = style({
 
 // Beside the page, the rail sits under page menus, dialogs and tooltips.
 export const besidePage = style({ zIndex: zIndex.rail })
+
+/** At this width or more a docked rail takes its place in the page's layout. */
+export const docked = '(min-width: 1200px)'
+
+// Where a docked rail portals its popup. It has no box of its own until the rail
+// docks, so a floating or modal rail still positions against the viewport.
+export const dock = style({ display: 'contents' })
+
+// The page beside it keeps the rest of the row, so a docked rail takes a share of it.
+export const dockActive = style({
+  display: 'flex',
+  flexDirection: 'column',
+  flex: '0 0 clamp(420px, 45%, 700px)',
+  minHeight: 0,
+  minWidth: 0,
+  // A closed rail leaves the page the whole row.
+  selectors: { '&:empty': { display: 'none' } },
+})
+
+// The portal's own element passes the dock's height on to the popup.
+globalStyle(`${dockActive} > *`, {
+  display: 'flex',
+  flexDirection: 'column',
+  flex: '1 1 auto',
+  minHeight: 0,
+})
+
+// In the page's flow, beside the content it pushes aside. It sets no stacking order,
+// so a dialog opened from it still draws above the page. It lies on the page's own
+// surface, inside an outline: its pinned headers and fades take that surface too.
+export const dockedPopup = style({
+  backgroundColor: 'transparent',
+  borderColor: theme.stroke.secondary,
+  vars: { [theme.surface.floating]: theme.surface.main },
+  position: 'relative',
+  inset: 'auto',
+  flex: '1 1 auto',
+  width: 'auto',
+  maxWidth: 'none',
+  height: 'auto',
+  maxHeight: 'none',
+  minHeight: 0,
+  borderRadius: 10,
+  boxShadow: 'none',
+  zIndex: 'auto',
+})
 
 export const header = style({
   position: 'sticky',

@@ -535,8 +535,11 @@ export const UnsentComment: Story = {
     // A row click asks first; Keep editing keeps the comment, detail, address and focus.
     await userEvent.click(link('Task 1'))
     const asked = await confirm()
-    const layer = (element: Element) =>
-      Number(getComputedStyle(element.closest('[role="dialog"]')!).zIndex)
+    // A docked rail sets no stacking order of its own: it draws at the page's level.
+    const layer = (element: Element) => {
+      const z = getComputedStyle(element.closest('[role="dialog"]')!).zIndex
+      return z === 'auto' ? 0 : Number(z)
+    }
     await expect(layer(asked)).toBeGreaterThan(layer(review))
     await choose('Keep editing')
     await expect(rail()).toBe(review)
@@ -600,6 +603,56 @@ export const Mobile: Story = {
     )
     await userEvent.click(within(opened).getByRole('button', { name: 'Close details' }))
     await waitFor(() => expect(rail()).toBeNull())
+    await waitFor(() => expect(table).toHaveFocus())
+  },
+}
+
+/** The box of an element as it renders now. */
+const box = (element: Element) => element.getBoundingClientRect()
+
+/**
+ * At 1200px or more the rail docks beside the list: the table shrinks to make room,
+ * and no record sits under the rail. Narrower, the rail floats over the table as before.
+ */
+export const Docked: Story = {
+  play: async ({ canvasElement, userEvent }) => {
+    loads.open()
+    // Storybook's own UI cannot resize its viewport, so this play needs the test runner.
+    if (!(await resizeViewport(1440, 900))) return
+    const { table, link, rail, shows } = await surface(canvasElement)
+    const full = box(table).width
+
+    await userEvent.click(link('Task 1'))
+    await shows('Task 1')
+    const opened = rail()!
+    // Once it slides in, the table ends before the rail starts, and the rail stays in the window.
+    const docked = () =>
+      waitFor(() => {
+        expect(box(table).right).toBeLessThanOrEqual(box(opened).left)
+        expect(box(opened).right).toBeLessThanOrEqual(window.innerWidth)
+      })
+    await docked()
+    await expect(box(table).width).toBeLessThan(full)
+    // Every record stays in reach beside the rail, and another one replaces its detail.
+    await userEvent.click(link('Task 3'))
+    await shows('Task 3')
+    await expect(rail()).toBe(opened)
+
+    // Narrower than 1200px, the open rail floats over the table, which takes the width back.
+    await resizeViewport(1000, 900)
+    await waitFor(() => expect(box(opened).left).toBeLessThan(box(table).right))
+    await expect(rail()).toBe(opened)
+    await shows('Task 3')
+    // Wide again, the same rail docks with the record it shows.
+    await resizeViewport(1440, 900)
+    await docked()
+    await expect(rail()).toBe(opened)
+    await shows('Task 3')
+
+    // Closing gives the table its width back, and focus returns to it.
+    await userEvent.click(within(opened).getByRole('button', { name: 'Close details' }))
+    await waitFor(() => expect(rail()).toBeNull())
+    await waitFor(() => expect(box(table).width).toBeCloseTo(full, 0))
     await waitFor(() => expect(table).toHaveFocus())
   },
 }

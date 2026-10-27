@@ -1,13 +1,22 @@
 import { style } from '@vanilla-extract/css'
 
+/** The list, and the detail rail docked beside it on a wide screen. */
 export const root = style({
   display: 'flex',
-  flexDirection: 'column',
   gap: 16,
   height: '100%',
   minHeight: 0,
   minWidth: 0,
   flex: 1,
+})
+/** Everything but the docked rail: it shrinks when the rail docks. */
+export const main = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 16,
+  flex: '1 1 0',
+  minHeight: 0,
+  minWidth: 0,
 })
 export const toolbar = style({
   display: 'flex',
@@ -53,7 +62,12 @@ export const pending = style({
   minWidth: 0,
   gap: 12,
 })
-export const metadata = style({ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 })
+export const metadata = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  minWidth: 0,
+})
 export const native = style({
   whiteSpace: 'pre-wrap',
   overflowWrap: 'anywhere',

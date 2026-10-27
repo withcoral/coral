@@ -9,9 +9,10 @@ export type { CloseProps } from './close'
 export { Description } from './description'
 export type { DescriptionProps } from './description'
 export { Popup } from './popup'
+export { Portal } from './portal'
 export type { PopupProps, PopupSize } from './popup'
 export { Rail } from './rail'
-export type { RailProps } from './rail'
+export type { RailMode, RailProps } from './rail'
 export { Header } from './header'
 export { Title } from './title'
 export type { TitleProps } from './title'
@@ -19,7 +20,6 @@ export { Trigger } from './trigger'
 export { useCloseAfterExit } from './use-close-after-exit'
 export type { TriggerProps } from './trigger'
 
-export const Portal = BaseDialog.Portal
 export const Root = BaseDialog.Root
 
 /** Pins content to the popup's top edge, flush like `Header`. */
