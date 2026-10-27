@@ -226,7 +226,16 @@ export async function startRoundRobinProxy() {
   const mcp = http1('mcp')
   const auth = http1('auth')
 
-  const [grpcPort, mcpPort, authPort] = await Promise.all([listen(grpc), listen(mcp), listen(auth)])
+  const servers = [grpc, mcp, auth]
+  let ports: number[]
+  try {
+    ports = await Promise.all(servers.map(listen))
+  } catch (error) {
+    // A front that failed to bind takes the others down with it.
+    await Promise.all(servers.map(close))
+    throw error
+  }
+  const [grpcPort, mcpPort, authPort] = ports
   return {
     grpcURL: `http://127.0.0.1:${grpcPort}`,
     mcpURL: `http://127.0.0.1:${mcpPort}`,

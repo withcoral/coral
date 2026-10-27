@@ -5,7 +5,7 @@ import { managementClients } from '../../support/management.ts'
 import { withOwner } from '../../support/topology.ts'
 import { runWaitingForApproval } from './waiting-run.ts'
 
-test('Reef cancels a Run that the other Coral Instance owns, over its one connection', async (context) => {
+test('Reef cancels through one Coral Instance a Run that the other owns, over its one connection', async (context) => {
   const instances = coralInstances()
   const owner = 1
   const requests = await instances.during(() =>

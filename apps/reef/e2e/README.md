@@ -37,12 +37,12 @@ npm run e2e:serve --prefix apps/reef
 
 ### One product suite, plus small tests for the differences
 
-| Suite            | What it proves                                                                                         | Discovery                               |
-| ---------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------- |
-| `main` (default) | Provider, Account, Workspace, Agent, activity, identity and permission journeys, with genuine sign-in  | `scenarios/main/**/*.test.ts`           |
-| `local-mode`     | No sign-in ceremony, implicit Owner Membership, lifecycle fences, loopback access and parity scenarios | `scenarios/local-mode/**/*.test.ts`     |
-| `desktop`        | The packaged Desktop app: its supervisor, its window, background, quit and relaunch                    | `scenarios/desktop/**/*.test.ts`        |
-| `multi-instance` | Two Coral Instances on one Postgres database: a request through either one reaches a Run's Run Owner   | `scenarios/multi-instance/**/*.test.ts` |
+| Suite            | What it proves                                                                                           | Discovery                               |
+| ---------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `main` (default) | Provider, Account, Workspace, Agent, activity, identity and permission journeys, with genuine sign-in    | `scenarios/main/**/*.test.ts`           |
+| `local-mode`     | No sign-in ceremony, implicit Owner Membership, lifecycle fences, loopback access and parity scenarios   | `scenarios/local-mode/**/*.test.ts`     |
+| `desktop`        | The packaged Desktop app: its supervisor, its window, background, quit and relaunch                      | `scenarios/desktop/**/*.test.ts`        |
+| `multi-instance` | Two Coral Instances on one Postgres database: a pending request through either one reaches the Run Owner | `scenarios/multi-instance/**/*.test.ts` |
 
 `main` is the default; `--suite main` selects it explicitly. `local-mode` means the
 no-sign-in deployment, not tests running on your machine.
@@ -309,7 +309,8 @@ The restart scenario for boot recovery is separate, open work.
 
 `--suite multi-instance` runs two Coral Instances on one disposable Postgres
 database behind a round-robin proxy. It proves that an outside request made
-through one Coral Instance reaches the Run Owner on the other
+through one Coral Instance reaches the Run Owner on the other, when the record
+does not already answer it
 ([ADR 0025](../../../docs/adr/0025-outside-run-requests-reach-the-run-owner-through-the-run-inbox.md)).
 It signs in as the main suite does. Postgres is the suite's only database, so it
 takes no `--database`.

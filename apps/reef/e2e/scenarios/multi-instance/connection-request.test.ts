@@ -23,8 +23,7 @@ test('An account connected through one Coral Instance continues a Run that the o
       let workspace = ''
       let run = ''
       let update!: RunUpdate
-      const runner = () => programRunner(page, target, workspace, { waitMs: 100 })
-      let program!: ReturnType<typeof runner>
+      let program!: ReturnType<typeof programRunner>
       await step('A Run on the first Coral Instance waits for you to connect', async () => {
         workspace = await createWorkspace(accessToken, `Connections ${crypto.randomUUID()}`)
         await addProviderFromFile(
@@ -38,7 +37,7 @@ test('An account connected through one Coral Instance continues a Run that the o
           'connections',
           { authentication: 'Bearer token', account: 'own-later' },
         )
-        program = runner()
+        program = programRunner(page, target, workspace, { waitMs: 100 })
         run = await instances.startOn(owner, async () => {
           update = (await program.exec('return await coral.providers.connections.listEntries({});'))
             .structuredContent

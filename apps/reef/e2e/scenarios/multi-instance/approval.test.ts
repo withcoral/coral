@@ -6,7 +6,7 @@ import { withOwner } from '../../support/topology.ts'
 import { openReview } from '../main/providers/program-approval.ts'
 import { runWaitingForApproval } from './waiting-run.ts'
 
-test('Reef approves a call on a Run that the other Coral Instance owns', async (context) => {
+test('Reef approves through one Coral Instance a call on a Run that the other owns', async (context) => {
   const instances = coralInstances()
   const owner = 0
   const requests = await instances.during(() =>
