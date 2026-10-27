@@ -1,5 +1,5 @@
 // Reef's own mark, inlined at build time, so Desktop keeps no copy of it.
-import coralMark from '../../../reef/public/favicon.svg'
+import coralMark from '../../../reef/public/app-icon.svg'
 
 import type { ProcessExit } from './process'
 import type { Failure, Role } from './supervisor'

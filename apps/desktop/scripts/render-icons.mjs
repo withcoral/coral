@@ -1,4 +1,4 @@
-// Regenerate Desktop's flat icons from Reef's favicon with electron-builder's
+// Regenerate Desktop's flat icons from Reef's app icon with electron-builder's
 // own icon converter. Run `npm run icons` in apps/desktop after changing it.
 import { runIconsTool } from 'app-builder-lib/out/toolsets/icons.js'
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
@@ -7,11 +7,11 @@ import { join, resolve } from 'node:path'
 
 const desktopRoot = resolve(import.meta.dirname, '..')
 const directory = join(desktopRoot, 'resources', 'icons')
-const source = await readFile(join(desktopRoot, '..', 'reef', 'public', 'favicon.svg'), 'utf8')
-// Reef's favicon places its 20-unit mark at 16 of the tile's 32 units, centered.
+const source = await readFile(join(desktopRoot, '..', 'reef', 'public', 'app-icon.svg'), 'utf8')
+// Reef's app icon places its 20-unit mark at 16 of the tile's 32 units, centered.
 const placement = 'translate(8 8) scale(0.8)'
 if (!source.includes(placement))
-  throw new Error(`Reef's favicon no longer places its mark with ${placement}; update this script`)
+  throw new Error(`Reef's app icon no longer places its mark with ${placement}; update this script`)
 // Enlarge the mark by 35% around the tile's center without changing the tile.
 const favicon = source.replace(placement, 'translate(5.2 5.2) scale(1.08)')
 const darkFavicon = favicon.replace(

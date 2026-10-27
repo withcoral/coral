@@ -126,7 +126,7 @@ On every platform the two apps keep separate data folders. The Start Menu
 entry is "Coral". Uninstalling keeps the user's data. Run the installer with
 `/S` to install silently.
 
-Desktop's icons use Reef's `public/favicon.svg` as their source. Run
+Desktop's icons use Reef's `public/app-icon.svg` as their source. Run
 `npm run icons --prefix apps/desktop` to regenerate the PNG, ICO and ICNS files,
 and the macOS menu bar's template images (`trayTemplate.png`).
 Desktop enlarges the mark by 35% within the same tile. The macOS icons add
