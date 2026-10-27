@@ -1,9 +1,8 @@
 import { expect, test } from 'vitest'
 import { coralInstances, expectNoUnavailable } from '../../support/instances.ts'
 import { managementClients } from '../../support/management.ts'
-import { observeRun } from '../../support/providers.ts'
+import { observeRun, openReview } from '../../support/providers.ts'
 import { withOwner } from '../../support/topology.ts'
-import { openReview } from '../main/providers/program-approval.ts'
 import { runWaitingForApproval } from './waiting-run.ts'
 
 test('Reef approves through one Coral Instance a call on a Run that the other owns', async (context) => {

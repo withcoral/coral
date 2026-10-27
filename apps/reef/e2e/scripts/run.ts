@@ -82,7 +82,7 @@ try {
     )
   if (options.database === 'postgres') {
     if (settings.E2E_BASE_URL || settings.E2E_HARNESS_PROBES === '1')
-      throw new Error('Postgres requires the managed main suite')
+      throw new Error('Postgres requires a stack that Reel starts, not attached mode or probes')
     database = await new LocalPostgres(settings).provision(settings.E2E_POSTGRES_URL)
     settings.E2E_POSTGRES_TEST_URL = database.url
   }

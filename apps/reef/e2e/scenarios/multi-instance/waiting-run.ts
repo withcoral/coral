@@ -4,8 +4,12 @@ import type { Target } from '../../support/config.ts'
 import { coralInstances } from '../../support/instances.ts'
 import { managementClients } from '../../support/management.ts'
 import { openApiDocument } from '../../support/provider-fixtures.ts'
-import { createWorkspace, programRunner, type RunUpdate } from '../../support/providers.ts'
-import { pausedForApproval } from '../main/providers/program-approval.ts'
+import {
+  createWorkspace,
+  pausedForApproval,
+  programRunner,
+  type RunUpdate,
+} from '../../support/providers.ts'
 
 /**
  * A Program whose one call, addProvider, waits for the invoking User's approval

@@ -50,7 +50,30 @@ export interface InstancesTarget {
   controlURL: string
 }
 
-export const SUITES = ['main', 'local-mode', 'desktop', 'multi-instance']
+/**
+ * Each suite's database. Only main selects one; several Coral Instances share
+ * one database only on Postgres.
+ */
+const SUITE_DATABASE: Record<string, 'sqlite' | 'postgres' | undefined> = {
+  main: undefined,
+  'local-mode': 'sqlite',
+  desktop: 'sqlite',
+  'multi-instance': 'postgres',
+}
+export const SUITES = Object.keys(SUITE_DATABASE)
+
+/** Rejects a suite, or a database the suite does not run on. Harness probes run on SQLite. */
+export function checkSuiteDatabase(suite: string, database: string, probes = false) {
+  if (!SUITES.includes(suite)) throw new Error('Unknown Reel suite')
+  if (!['sqlite', 'postgres'].includes(database)) throw new Error('Unknown Reel database')
+  const fixed = probes ? 'sqlite' : SUITE_DATABASE[suite]
+  if (fixed && database !== fixed)
+    throw new Error(
+      fixed === 'postgres'
+        ? `The ${suite} suite runs on Postgres`
+        : 'Only the main suite selects a database',
+    )
+}
 
 export interface RunConfig {
   runDir: string
@@ -143,11 +166,9 @@ export function commandOptions(args: string[]) {
       )
     } else vitest.push(argument)
   }
-  if (suite !== 'main' && selected.has('--database'))
+  if (SUITE_DATABASE[suite] && selected.has('--database'))
     throw new Error('Only the main suite selects a database')
-  // Several Coral Instances share one database only on Postgres.
-  if (suite === 'multi-instance') database = 'postgres'
-  return { suite, database, vitest }
+  return { suite, database: SUITE_DATABASE[suite] ?? database, vitest }
 }
 
 export function bootstrapConfig(env: NodeJS.ProcessEnv) {
@@ -155,13 +176,7 @@ export function bootstrapConfig(env: NodeJS.ProcessEnv) {
   const suite = env.E2E_SUITE || 'main'
   const database = env.E2E_DATABASE || 'sqlite'
   const probes = env.E2E_HARNESS_PROBES === '1'
-  if (!SUITES.includes(suite)) throw new Error('Unknown Reel suite')
-  if (!['sqlite', 'postgres'].includes(database)) throw new Error('Unknown Reel database')
-  const managed = suite === 'main' || suite === 'multi-instance'
-  if (database === 'postgres' && (!managed || probes || attached))
-    throw new Error('Postgres requires the managed main suite')
-  if (suite === 'multi-instance' && database !== 'postgres')
-    throw new Error('The multi-instance suite runs on Postgres')
+  checkSuiteDatabase(suite, database, probes)
   if (attached && suite !== 'local-mode')
     throw new Error('Attached mode requires --suite local-mode')
   let postgresURL: string | undefined

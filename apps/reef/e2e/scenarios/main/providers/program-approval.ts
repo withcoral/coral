@@ -8,8 +8,9 @@ import {
   addedProviders,
   connectSharedAccount,
   observeRun,
+  openReview,
+  pausedForApproval,
   programRunner,
-  type RunUpdate,
   waitForPublication,
 } from '../../../support/providers.ts'
 import { withOwner } from '../../../support/topology.ts'
@@ -46,29 +47,6 @@ async function pauseForApproval(
     `try { return await coral.workspace.addProvider(${JSON.stringify(call)}); } catch (error) { return error.code; }`,
   )
   return { workspace, id, call, runner, paused }
-}
-
-/** Starts `program` and returns the Run Update that waits for the invoking User's approval. */
-export async function pausedForApproval(runner: ReturnType<typeof programRunner>, program: string) {
-  const started = await runner.exec(program)
-  expect(started.isError).not.toBe(true)
-  let paused = started.structuredContent
-  for (let pages = 0; pages < 10 && !paused.required_actions.length; pages++)
-    paused = (await runner.wait(paused)).structuredContent
-  expect(paused.required_actions).toEqual([
-    expect.objectContaining({ kind: 'invocation_approval', required_actor: 'invoking_user' }),
-  ])
-  return paused
-}
-
-/** Opens the paused call's review of the Built-in `operation` from the link the Program got. */
-export async function openReview(page: Page, paused: RunUpdate, operation: string) {
-  await page.goto(paused.required_actions[0].run_status_url)
-  const name = `Review coral.workspace.${operation}`
-  await page.getByRole('link', { name, exact: true }).click()
-  const review = page.getByRole('region', { name, exact: true })
-  await review.getByRole('button', { name: 'Approve this call', exact: true }).waitFor()
-  return review
 }
 
 /**

@@ -44,8 +44,20 @@ export interface Backend {
 const listen = (server: HttpServer | Http2Server) =>
   new Promise<number>((resolve, reject) => {
     server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => resolve((server.address() as { port: number }).port))
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject)
+      resolve((server.address() as { port: number }).port)
+    })
   })
+
+/** gRPC percent-encodes its message; a malformed one is kept as sent. */
+function grpcText(value: string) {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
 
 const close = (server: HttpServer | Http2Server) =>
   new Promise<void>((resolve) => server.close(() => resolve()))
@@ -135,7 +147,7 @@ export async function startRoundRobinProxy() {
     const grpcResult = (block: IncomingHttpHeaders) => {
       if (block['grpc-status'] !== undefined) record.grpcStatus = String(block['grpc-status'])
       if (block['grpc-message'] !== undefined)
-        record.grpcMessage = decodeURIComponent(String(block['grpc-message']))
+        record.grpcMessage = grpcText(String(block['grpc-message']))
     }
     forwarded.on('response', (response, flags) => {
       record.status = Number(response[':status'])

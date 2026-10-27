@@ -5,9 +5,6 @@ import { promisify } from 'node:util'
 import type { startRoundRobinProxy } from './round-robin-proxy.ts'
 
 const exec = promisify(execFile)
-// Coral identifiers are URL-safe text; anything else never reaches the query.
-const identifier = /^[A-Za-z0-9_-]{1,128}$/
-
 async function body(request: IncomingMessage) {
   let text = ''
   for await (const chunk of request) text += chunk
@@ -34,21 +31,27 @@ export async function startInstanceControl(
   const ids: (string | undefined)[] = []
   const holderOf = async (run: string) => {
     const [, workspace, id] = /^workspaces\/([^/]+)\/runs\/([^/]+)$/.exec(run) ?? []
-    if (!identifier.test(workspace ?? '') || !identifier.test(id ?? ''))
-      throw new Error(`Name a Run, not ${JSON.stringify(run)}`)
-    const { stdout } = await exec(
+    if (!workspace || !id) throw new Error(`Name a Run, not ${JSON.stringify(run)}`)
+    // psql quotes each variable itself, and reads variables only from a script.
+    const query = exec(
       'psql',
       [
         '-XAtq',
         '-v',
         'ON_ERROR_STOP=1',
+        '-v',
+        `workspace=${workspace}`,
+        '-v',
+        `run=${id}`,
         '-d',
         postgresURL,
-        '-c',
-        `SELECT holder_instance_id FROM program_run_records WHERE workspace_id = '${workspace}' AND id = '${id}'`,
       ],
       { env, timeout: 10_000 },
     )
+    query.child.stdin?.end(
+      "SELECT holder_instance_id FROM program_run_records WHERE workspace_id = :'workspace' AND id = :'run';",
+    )
+    const { stdout } = await query
     return stdout.trim() || undefined
   }
   const server = createServer(async (request, response) => {
@@ -87,7 +90,10 @@ export async function startInstanceControl(
   })
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
-    server.listen(0, '127.0.0.1', resolve)
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject)
+      resolve()
+    })
   })
   return {
     url: `http://127.0.0.1:${(server.address() as { port: number }).port}`,

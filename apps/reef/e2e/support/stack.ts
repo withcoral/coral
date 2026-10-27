@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { reefRoot, type FixtureAddress, type Target } from './config.ts'
 import { prepareAuthenticatedTarget, reservePort } from './authenticated-target.ts'
 import { startInstanceControl } from './instance-control.ts'
-import { startRoundRobinProxy } from './round-robin-proxy.ts'
+import { startRoundRobinProxy, type Backend } from './round-robin-proxy.ts'
 
 export async function bounded<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -198,7 +198,7 @@ export async function startStack(options: {
       ...(credentialKey ? { E2E_CREDENTIAL_KEY: credentialKey } : {}),
       ...authentication?.coralEnv,
     }
-    const instances: { grpcURL: string; mcpURL: string; authURL: string }[] = []
+    const instances: Backend[] = []
     for (const [index, stateDir] of stateDirs.entries()) {
       await writeFile(
         join(stateDir, 'config.toml'),

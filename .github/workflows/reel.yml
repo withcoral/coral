@@ -27,7 +27,7 @@ on:
         options: [main, local-mode, desktop, multi-instance]
         default: main
       database:
-        description: Main suite database (multi-instance requires postgres; the other suites require sqlite)
+        description: Main suite database (multi-instance always uses postgres; local-mode and desktop require sqlite)
         type: choice
         options: [sqlite, postgres]
         default: sqlite
@@ -70,10 +70,7 @@ jobs:
           if [ "$REEL_SUITE" = main ]; then
             args+=(--database "$REEL_DATABASE")
           elif [ "$REEL_SUITE" = multi-instance ]; then
-            if [ "$REEL_DATABASE" != postgres ]; then
-              echo 'The multi-instance suite runs on Postgres'
-              exit 1
-            fi
+            : # It always runs on Postgres and takes no --database.
           elif [ "$REEL_DATABASE" != sqlite ]; then
             echo 'Only the main suite selects a database'
             exit 1
@@ -85,7 +82,7 @@ jobs:
         if: ${{ always() && github.event.repository.private }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: reel-${{ inputs.suite }}-${{ inputs.database }}${{ inputs.shard && format('-{0}', inputs.shard) || '' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: reel-${{ inputs.suite }}-${{ inputs.suite == 'multi-instance' && 'postgres' || inputs.database }}${{ inputs.shard && format('-{0}', inputs.shard) || '' }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: apps/reef/e2e/runs/
           if-no-files-found: warn
           retention-days: 7

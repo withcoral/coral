@@ -142,7 +142,10 @@ test('remote bootstrap selects only the explicit disposable DB and HTTPS fixture
     { E2E_HARNESS_PROBES: '1' },
     { E2E_BASE_URL: 'http://127.0.0.1:3000', E2E_ALLOW_ATTACHED: '1' },
   ]) {
-    assert.throws(() => bootstrapConfig({ ...env, ...extra }), /managed main suite/)
+    assert.throws(
+      () => bootstrapConfig({ ...env, ...extra }),
+      /Only the main suite selects a database|Attached mode requires --suite local-mode/,
+    )
   }
   for (const url of [
     'not-a-url-with-secret',

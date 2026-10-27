@@ -241,7 +241,6 @@ jobs:
     uses: ./.github/workflows/reel.yml
     with:
       suite: multi-instance
-      database: postgres
 
   # The one check to require. It passes when every gate passed or its paths
   # did not change. A skipped job passes a required check by itself, so

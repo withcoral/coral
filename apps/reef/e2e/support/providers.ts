@@ -733,17 +733,32 @@ export async function programWorkspace(
   return workspace
 }
 
+/** A 2026-07-28 tool result that asks the client before the call can finish. */
+export interface InputRequired {
+  resultType: 'input_required'
+  /** Keyed by request, such as `approval/<id>` for an Approval Request. */
+  inputRequests: Record<string, unknown>
+  requestState: string
+}
+
 /**
  * Owns one real MCP session. By default, acquire the browser User's genuine
  * Workspace OAuth grant. Supply an Agent Registration bearer to act as an Agent.
  * Local checks use the implicit User. `wait` observes the original Run without replay.
  * Calling the helper directly retains the serialized result used by older scenarios.
+ * On protocol 2026-07-28 it holds no session and accepts form prompts, so an
+ * approval comes back as `InputRequired`, which `answer` answers.
  */
 export function programRunner(
   page: Page,
   target: Target,
   workspace: string,
-  options: { waitMs?: number; accessToken?: string; taskIntent?: string } = {},
+  options: {
+    waitMs?: number
+    accessToken?: string
+    taskIntent?: string
+    protocolVersion?: '2025-11-25' | '2026-07-28'
+  } = {},
 ) {
   let id = 0
   const calls: Record<string, number> = {}
@@ -751,19 +766,39 @@ export function programRunner(
   let taskId = ''
   let accessToken = options.accessToken
   const waitMs = options.waitMs ?? 8000
-  const headers = () => ({
+  const version = options.protocolVersion ?? '2025-11-25'
+  const stateless = version !== '2025-11-25'
+  const headers = (method: string, params: object) => ({
     Accept: 'application/json, text/event-stream',
-    'MCP-Protocol-Version': '2025-11-25',
+    'MCP-Protocol-Version': version,
     ...(session ? { 'Mcp-Session-Id': session } : {}),
     ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    // 2026-07-28 names each request's method and tool in its headers.
+    ...(stateless ? { 'Mcp-Method': method } : {}),
+    ...(stateless && 'name' in params ? { 'Mcp-Name': String(params.name) } : {}),
   })
   /** One JSON-RPC exchange; the body carries either a result or an error. */
   const post = async (method: string, params: object) => {
     if (method === 'tools/call' && 'name' in params && typeof params.name === 'string')
       calls[params.name] = (calls[params.name] ?? 0) + 1
     const response = await page.request.post(`${target.mcpURL}/workspaces/${workspace}/mcp`, {
-      headers: headers(),
-      data: { jsonrpc: '2.0', id: ++id, method, params },
+      headers: headers(method, params),
+      data: {
+        jsonrpc: '2.0',
+        id: ++id,
+        method,
+        // Without a session, every 2026-07-28 request says who is asking.
+        params: stateless
+          ? {
+              ...params,
+              _meta: {
+                'io.modelcontextprotocol/protocolVersion': version,
+                'io.modelcontextprotocol/clientInfo': { name: 'Reel', version: '1' },
+                'io.modelcontextprotocol/clientCapabilities': { elicitation: { form: {} } },
+              },
+            }
+          : params,
+      },
       // exec and wait hold the request for up to wait_ms, so it must outlast that.
       timeout: waitMs + 10_000,
     })
@@ -785,15 +820,15 @@ export function programRunner(
     return body.result
   }
   const initialize = async () => {
-    if (!session) {
-      if (!accessToken && target.authentication) accessToken = await mcpToken(page, workspace)
+    if (!accessToken && target.authentication) accessToken = await mcpToken(page, workspace)
+    if (!session && !stateless) {
       await rpc('initialize', {
-        protocolVersion: '2025-11-25',
+        protocolVersion: version,
         capabilities: {},
         clientInfo: { name: 'Reel', version: '1' },
       })
       await page.request.post(`${target.mcpURL}/workspaces/${workspace}/mcp`, {
-        headers: headers(),
+        headers: headers('notifications/initialized', {}),
         data: { jsonrpc: '2.0', method: 'notifications/initialized' },
       })
     }
@@ -806,20 +841,37 @@ export function programRunner(
       taskId = task.structuredContent.task_id
     }
   }
+  const execArguments = (program: string) => ({
+    task_id: taskId,
+    intent: 'Call one Operation',
+    program,
+    wait_ms: waitMs,
+  })
   const exec = async (program: string): Promise<ToolResult<RunUpdate>> => {
     await initialize()
-    return rpc('tools/call', {
-      name: 'exec',
-      arguments: {
-        task_id: taskId,
-        intent: 'Call one Operation',
-        program,
-        wait_ms: waitMs,
-      },
-    })
+    return rpc('tools/call', { name: 'exec', arguments: execArguments(program) })
   }
   return Object.assign(async (program: string) => JSON.stringify(await exec(program)), {
     exec,
+    /** On 2026-07-28: starts `program` and returns the prompt its first required action asks. */
+    async ask(program: string): Promise<InputRequired> {
+      const asked: unknown = await exec(program)
+      expect(asked).toMatchObject({ resultType: 'input_required' })
+      return asked as InputRequired
+    },
+    /** Answers a prompt by retrying the exec that asked it, with the same arguments. */
+    async answer(
+      program: string,
+      asked: InputRequired,
+      inputResponses: Record<string, { action: 'accept' | 'decline' | 'cancel' }>,
+    ): Promise<ToolResult<RunUpdate>> {
+      return rpc('tools/call', {
+        name: 'exec',
+        arguments: execArguments(program),
+        requestState: asked.requestState,
+        inputResponses,
+      })
+    },
     calls,
     taskId: () => taskId,
     async endTask(outcome: 'success' | 'failure', feedback?: string): Promise<ToolResult> {
@@ -881,6 +933,29 @@ export function programRunner(
       return post('tools/call', { name, arguments: args })
     },
   })
+}
+
+/** Starts `program` and returns the Run Update that waits for the invoking User's approval. */
+export async function pausedForApproval(runner: ReturnType<typeof programRunner>, program: string) {
+  const started = await runner.exec(program)
+  expect(started.isError).not.toBe(true)
+  let paused = started.structuredContent
+  for (let pages = 0; pages < 10 && !paused.required_actions.length; pages++)
+    paused = (await runner.wait(paused)).structuredContent
+  expect(paused.required_actions).toEqual([
+    expect.objectContaining({ kind: 'invocation_approval', required_actor: 'invoking_user' }),
+  ])
+  return paused
+}
+
+/** Opens the paused call's review of the Built-in `operation` from the link the Program got. */
+export async function openReview(page: Page, paused: RunUpdate, operation: string) {
+  await page.goto(paused.required_actions[0].run_status_url)
+  const name = `Review coral.workspace.${operation}`
+  await page.getByRole('link', { name, exact: true }).click()
+  const review = page.getByRole('region', { name, exact: true })
+  await review.getByRole('button', { name: 'Approve this call', exact: true }).waitFor()
+  return review
 }
 
 /** Collects at most ten more Run Updates without starting or replaying a Program. */

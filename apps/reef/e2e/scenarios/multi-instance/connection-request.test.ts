@@ -16,11 +16,11 @@ test('An account connected through one Coral Instance continues a Run that the o
   const requests = await instances.during(() =>
     withOwner(context, async ({ page, step, target, accessToken }) => {
       const api = managementClients(accessToken)
+      let workspace = ''
       const pendingConnections = async () =>
         (await api.accounts.listUserAccounts({ parent: `workspaces/${workspace}` })).accounts
           .map((row) => row.pendingConnection)
           .filter(Boolean).length
-      let workspace = ''
       let run = ''
       let update!: RunUpdate
       let program!: ReturnType<typeof programRunner>

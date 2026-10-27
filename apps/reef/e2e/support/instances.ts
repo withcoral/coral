@@ -39,9 +39,15 @@ export function coralInstances() {
     /**
      * Starts a Run through `instance` and returns its name. The instance that
      * accepts a Run holds it, so this also teaches the harness that instance's id.
+     * Every MCP request must have reached `instance`: one in a session that
+     * another instance issued would not follow the pin.
      */
     async startOn(instance: number, start: () => Promise<string>) {
+      const before = (await requests()).length
       const run = await on(instance, start)
+      const mcp = (await requests()).slice(before).filter(({ front }) => front === 'mcp')
+      expect(mcp.length).toBeGreaterThan(0)
+      expect(mcp.filter((request) => request.instance !== instance)).toEqual([])
       await control('/accepted', { instance, run })
       return run
     },
