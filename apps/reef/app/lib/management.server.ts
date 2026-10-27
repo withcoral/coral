@@ -17,6 +17,7 @@ import { ProviderAccountService } from '@/generated/coral/management/v1/account_
 import { ActivityService } from '@/generated/coral/management/v1/activity_pb'
 import { OperationPolicyService } from '@/generated/coral/management/v1/policy_pb'
 import { SavedFunctionService } from '@/generated/coral/management/v1/saved_function_pb'
+import { ReleaseService } from '@/generated/coral/management/v1/release_pb'
 import { managementTransportForRequest } from './coral-request.server'
 import { runtimeConfigContext } from './runtime-config.server'
 
@@ -41,6 +42,7 @@ export function management(request: Request, context: Readonly<RouterContextProv
     accounts: createClient(ProviderAccountService, providerTransport),
     policies: createClient(OperationPolicyService, transport),
     savedFunctions: createClient(SavedFunctionService, transport),
+    releases: createClient(ReleaseService, transport),
   }
 }
 export type ManagementApi = ReturnType<typeof management>

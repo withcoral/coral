@@ -31,6 +31,8 @@ interface SidebarProps {
   /** Pending actions by Workspace path. Null or a null count shows no badge. */
   actionCounts?: ActionCounts | null
   organizationOwner?: boolean
+  /** A published Coral release newer than this one. The shell passes it only to organization owners. */
+  newerRelease?: NewerRelease
   auth?: BrowserAuth
   userName?: string
   initialIsMinimized: boolean
@@ -39,6 +41,11 @@ interface SidebarProps {
   archivedWorkspaces?: SidebarWorkspace[]
   workspace?: SidebarWorkspace
   form?: FormContext
+}
+
+export interface NewerRelease {
+  version: string
+  notesUrl: string
 }
 
 interface Destination {
@@ -136,6 +143,7 @@ export function Sidebar({ initialIsMinimized, ...props }: SidebarProps) {
 function SidebarNavigation({
   actionCounts,
   organizationOwner,
+  newerRelease,
   auth = { mode: 'disabled' },
   userName,
   workspaces = [],
@@ -228,6 +236,24 @@ function SidebarNavigation({
         {d.label}
       </SidebarButton>
     ))
+  // An owner's notice of a newer release joins the help links, so it keeps their spacing.
+  const release = newerRelease && (
+    <SidebarButton
+      as="a"
+      href={newerRelease.notesUrl}
+      target="_blank"
+      rel="noreferrer"
+      icon="CircleArrowUp"
+      variant="accent"
+      isMinimized={isMinimized}
+      aria-label={`Coral ${newerRelease.version} is available. Read the release notes.`}
+      title={`Coral ${newerRelease.version} is available`}
+      className={classNames(isMinimized && styles.minimizedControl)}
+    >
+      Coral {newerRelease.version} is available
+    </SidebarButton>
+  )
+
   return (
     <nav
       aria-label="Coral"
@@ -468,6 +494,7 @@ function SidebarNavigation({
       )}
       {!isMinimized && (
         <div className={styles.externalLinks}>
+          {release}
           {externalLinks.map((link) => (
             <SidebarButton
               key={link.href}
@@ -485,6 +512,7 @@ function SidebarNavigation({
         </div>
       )}
       <div className={classNames(styles.footer, isMinimized && styles.minimizedColumn)}>
+        {isMinimized && release}
         {isMinimized && (
           <Menu.Container>
             <Menu.Trigger

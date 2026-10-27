@@ -50,6 +50,10 @@ bind = "${LOOPBACK}:${ports.mcp}"
 # interrupted at once instead of draining.
 [runtime]
 shutdown_drain_seconds = 0
+
+# Shows a newer release in Reef's sidebar. Desktop's updater installs it.
+[updates]
+check = true
 ${databaseSection}`,
     // The runtime treats any file beside config.toml in a fresh state
     // directory as foreign state, so a crash must not leave one there.

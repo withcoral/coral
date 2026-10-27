@@ -74,6 +74,14 @@ All provider calls not covered by an explicit policy in this section are treated
 | ---------------------------- | ----------------------------------------------------------------------------------- | -------- | ------- |
 | `reconcile_interval_seconds` | Interval on which provider operation and saved function search indexing is executed | No       | `300`   |
 
+### `[updates]`
+
+When the check is on, Coral reads the latest release from `api.github.com` at startup and every 6 hours. Organization owners then see a newer release in the sidebar. The `[outbound]` policy still applies. Coral Desktop always turns the check on.
+
+| Key     | Description                                        | Required | Default |
+| ------- | -------------------------------------------------- | -------- | ------- |
+| `check` | Check GitHub for a newer Coral release when `true` | No       | `false` |
+
 ### `[otel]`
 
 Controls telemetry export to an OpenTelemetry endpoint.
