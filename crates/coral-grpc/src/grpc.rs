@@ -7,6 +7,7 @@ mod organization_memberships;
 mod organization_workspaces;
 mod policies;
 mod providers;
+mod request_trace;
 mod saved_functions;
 mod workspaces;
 use std::sync::Arc;
@@ -157,9 +158,10 @@ async fn trace_request(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let span = tracing::info_span!(parent: None, "coral.private.request");
-    coral_telemetry::set_parent_from_http_headers(&span, request.headers());
-    next.run(request).instrument(span).await
+    let span = coral_telemetry::grpc_request_span!("coral.private.request", &request);
+    let path = request.uri().path().to_owned();
+    let response = next.run(request).instrument(span.clone()).await;
+    request_trace::until_status(response, span, path)
 }
 
 #[derive(Clone)]

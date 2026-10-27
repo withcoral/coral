@@ -6,6 +6,7 @@
 )]
 
 use coral_mcp::SUPPORTED_PROTOCOL_VERSIONS;
+use opentelemetry::trace::SpanKind;
 use opentelemetry_sdk::trace::SpanData;
 use serde_json::{Value, json};
 
@@ -71,7 +72,7 @@ async fn tool_failures_name_the_trace_of_their_request() {
                 continued["structuredContent"]["trace_id"], parent,
                 "{context}: a valid traceparent continues its trace"
             );
-            failures.push((context, parent, tool));
+            failures.push((context, parent, tool, Some(code)));
         }
         session.close().await;
     }
@@ -101,7 +102,12 @@ async fn tool_failures_name_the_trace_of_their_request() {
         coral_workspace::TraceId::parse(&restarted).is_ok(),
         "{restarted} is a lowercase W3C trace id"
     );
-    failures.push(("an invalid traceparent".to_owned(), restarted, "wait"));
+    failures.push((
+        "an invalid traceparent".to_owned(),
+        restarted,
+        "wait",
+        Some("run_not_found"),
+    ));
     session.close().await;
 
     capture
@@ -110,19 +116,21 @@ async fn tool_failures_name_the_trace_of_their_request() {
         .expect("flush test telemetry");
     let spans = capture.spans.get_finished_spans().expect("captured spans");
     let workspace = tracer.workspace_a.to_string();
-    for (context, trace, tool) in failures {
-        assert_spans_in_trace(&spans, &context, &trace, tool, &workspace);
+    for (context, trace, tool, failure) in failures {
+        assert_spans_in_trace(&spans, &context, &trace, tool, &workspace, failure);
     }
 }
 
-/// The request span and the tool span both carry `trace`, and the tool span
-/// names the caller's Workspace and Principal kind.
+/// The request span and the tool span both carry `trace`. The tool span is
+/// an MCP server span that names the caller's Workspace and Principal kind,
+/// and a tool failure's Coral code.
 fn assert_spans_in_trace(
     spans: &[SpanData],
     context: &str,
     trace: &str,
     tool: &str,
     workspace: &str,
+    failure: Option<&str>,
 ) {
     let in_trace = |name: &str| {
         spans
@@ -135,6 +143,7 @@ fn assert_spans_in_trace(
     );
     let tool_span = in_trace(&format!("tools/call {tool}"))
         .unwrap_or_else(|| panic!("{context}: a tool span shares the failure's trace"));
+    assert_eq!(tool_span.span_kind, SpanKind::Server, "{context}");
     let attribute = |name: &str| {
         tool_span
             .attributes
@@ -152,6 +161,66 @@ fn assert_spans_in_trace(
         Some("user"),
         "{context}"
     );
+    assert_eq!(
+        attribute("error.type").as_deref(),
+        failure.map(|_code| "tool_error"),
+        "{context}"
+    );
+    assert_eq!(
+        attribute("coral.mcp.failure.code").as_deref(),
+        failure,
+        "{context}"
+    );
+}
+
+/// A protocol error keeps its JSON-RPC code on the tool span. An unknown tool
+/// is the caller's mistake, not a server fault, so the span does not fail.
+#[tokio::test(flavor = "multi_thread")]
+async fn protocol_errors_record_their_json_rpc_code() {
+    let capture = capture();
+    let tracer = Tracer::start().await;
+    let session = RawSession::open(&tracer.endpoint(), &SUPPORTED_PROTOCOL_VERSIONS[0]).await;
+    let trace = "00000000000000000000000000c0a300";
+    let response = session
+        .request(
+            "tools/call",
+            json!({"name": "no_such_tool", "arguments": {}}),
+            Some(2),
+        )
+        .header("traceparent", format!("00-{trace}-00f067aa0ba902b7-01"))
+        .send()
+        .await
+        .expect("raw request");
+    let message = super::parse_message(response).await;
+    assert_eq!(message["error"]["code"], -32602, "{message}");
+    session.close().await;
+
+    capture
+        .provider
+        .force_flush()
+        .expect("flush test telemetry");
+    let spans = capture.spans.get_finished_spans().expect("captured spans");
+    let tool_span = spans
+        .iter()
+        .find(|span| span.span_context.trace_id().to_string() == trace && span.name == "tools/call")
+        .expect("an unknown tool's span is named by the method alone");
+    let attribute = |name: &str| {
+        tool_span
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key.as_str() == name)
+            .map(|attribute| attribute.value.to_string())
+    };
+    assert_eq!(
+        attribute("rpc.response.status_code").as_deref(),
+        Some("-32602")
+    );
+    assert_eq!(attribute("error.type"), None);
+    assert_ne!(
+        tool_span.status,
+        opentelemetry::trace::Status::error("MCP tool call failed")
+    );
+    assert!(!format!("{tool_span:?}").contains("no_such_tool"));
 }
 
 /// Caller-controlled error text cannot set the failure's `trace_id`.
@@ -276,6 +345,13 @@ async fn records_carry_the_trace_of_their_request() {
                 "{context}: the record continues the trace"
             );
         }
-        assert_spans_in_trace(&spans, &context, recorded, "save_function", &workspace);
+        assert_spans_in_trace(
+            &spans,
+            &context,
+            recorded,
+            "save_function",
+            &workspace,
+            None,
+        );
     }
 }

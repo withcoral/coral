@@ -64,6 +64,10 @@ const TOOL_NAMES: [&str; 9] = [
 /// Stable message recorded on a failed tool call's span.
 const TOOL_FAILURE_MESSAGE: &str = "MCP tool call failed";
 
+/// JSON-RPC codes for the caller's mistakes, such as unknown tools and
+/// invalid arguments. An MCP server span does not count them as failures.
+const CALLER_ERROR_CODES: [i32; 5] = [-32700, -32600, -32601, -32602, -32002];
+
 #[derive(Clone)]
 pub(crate) struct McpServer {
     runtime: McpRuntime,
@@ -595,12 +599,14 @@ impl McpServer {
             parent: request,
             "coral.mcp.tool",
             otel.name = tool.map_or_else(|| "tools/call".to_owned(), |tool| format!("tools/call {tool}")),
-            otel.kind = "internal",
+            otel.kind = "server",
             mcp.method.name = "tools/call",
             gen_ai.tool.name = tool,
             coral.workspace.id = %self.workspace_id,
             coral.principal.kind = self.runtime.principal.principal().kind().as_storage_str(),
             coral.task.id = tracing::field::Empty,
+            coral.mcp.failure.code = tracing::field::Empty,
+            rpc.response.status_code = tracing::field::Empty,
             error.type = tracing::field::Empty,
             exception.message = tracing::field::Empty,
             status = tracing::field::Empty,
@@ -650,11 +656,12 @@ impl ServerHandler for McpServer {
                 Ok(response)
             }
             Err(DispatchError::Tool(error)) => {
-                coral_telemetry::record_failure(&span, error.code(), TOOL_FAILURE_MESSAGE);
+                span.record("coral.mcp.failure.code", error.code());
+                coral_telemetry::record_failure(&span, "tool_error", TOOL_FAILURE_MESSAGE);
                 Ok(projection::failure(&error, &trace).into())
             }
             Err(DispatchError::Protocol(error)) => {
-                coral_telemetry::record_failure(&span, "protocol_error", TOOL_FAILURE_MESSAGE);
+                record_protocol_error(&span, error.code.0);
                 Err(error)
             }
         }
@@ -723,6 +730,17 @@ fn now_unix_nanos() -> Result<i64, DispatchError> {
         .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))?;
     i64::try_from(duration.as_nanos())
         .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))
+}
+
+/// Records a tool call's JSON-RPC error code, failing the span only for a
+/// server fault.
+fn record_protocol_error(span: &tracing::Span, code: i32) {
+    span.record("rpc.response.status_code", tracing::field::display(code));
+    if CALLER_ERROR_CODES.contains(&code) {
+        span.record("status", "ok");
+    } else {
+        coral_telemetry::record_failure(span, code.to_string(), TOOL_FAILURE_MESSAGE);
+    }
 }
 
 /// Names the Task a tool call acts in on its span.

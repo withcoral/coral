@@ -24,6 +24,7 @@ coral-search.workspace = true
 coral-task.workspace = true
 coral-telemetry.workspace = true
 coral-workspace.workspace = true
+http-body.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tonic-health.workspace = true

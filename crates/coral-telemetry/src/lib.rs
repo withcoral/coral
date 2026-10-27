@@ -229,6 +229,90 @@ pub fn record_http_response(span: &tracing::Span, status: http::StatusCode) {
     }
 }
 
+/// Opens the server span of one inbound gRPC call, under the caller's target,
+/// and continues a valid inbound W3C trace.
+///
+/// `$name` names the listener's request span in Coral's own logs. Record the
+/// method and status with [`record_grpc_response`], which also gives the
+/// exported span its name. Metadata and messages stay off the span.
+#[macro_export]
+macro_rules! grpc_request_span {
+    ($name:literal, $request:expr) => {{
+        let request: &$crate::__http::Request<_> = $request;
+        let span = ::tracing::info_span!(
+            parent: None,
+            $name,
+            otel.name = "grpc",
+            otel.kind = "server",
+            rpc.system.name = "grpc",
+            rpc.method = ::tracing::field::Empty,
+            rpc.response.status_code = ::tracing::field::Empty,
+            error.type = ::tracing::field::Empty,
+            exception.message = ::tracing::field::Empty,
+            status = ::tracing::field::Empty,
+        );
+        $crate::set_parent_from_http_headers(&span, request.headers());
+        span
+    }};
+}
+
+/// gRPC status names, indexed by code.
+const GRPC_STATUS_NAMES: [&str; 17] = [
+    "OK",
+    "CANCELLED",
+    "UNKNOWN",
+    "INVALID_ARGUMENT",
+    "DEADLINE_EXCEEDED",
+    "NOT_FOUND",
+    "ALREADY_EXISTS",
+    "PERMISSION_DENIED",
+    "RESOURCE_EXHAUSTED",
+    "FAILED_PRECONDITION",
+    "ABORTED",
+    "OUT_OF_RANGE",
+    "UNIMPLEMENTED",
+    "INTERNAL",
+    "UNAVAILABLE",
+    "DATA_LOSS",
+    "UNAUTHENTICATED",
+];
+
+/// Codes that mark a server span failed: the server's faults, not the caller's.
+const GRPC_SERVER_ERRORS: [i32; 6] = [2, 4, 12, 13, 14, 15];
+
+const GRPC_UNIMPLEMENTED: i32 = 12;
+
+/// Records how a gRPC call ended on a span opened by [`grpc_request_span!`].
+///
+/// `path` is the request path, `/package.Service/Method`, and `code` the
+/// call's gRPC status code. A served method names the span. A call that ended
+/// UNIMPLEMENTED records `_OTHER`, since its caller chose the method.
+pub fn record_grpc_response(span: &tracing::Span, path: &str, code: i32) {
+    let method = path.strip_prefix('/').filter(|method| !method.is_empty());
+    match method {
+        Some(method) if code != GRPC_UNIMPLEMENTED => {
+            // The span has usually started by now, and a started span takes
+            // its new name only through OpenTelemetry, not `otel.name`.
+            span.context().span().update_name(method.to_owned());
+            span.record("rpc.method", method);
+        }
+        _ => {
+            span.record("rpc.method", "_OTHER");
+        }
+    }
+    let status = usize::try_from(code)
+        .ok()
+        .and_then(|code| GRPC_STATUS_NAMES.get(code))
+        .copied()
+        .unwrap_or("UNKNOWN");
+    span.record("rpc.response.status_code", status);
+    if GRPC_SERVER_ERRORS.contains(&code) {
+        record_failure(span, status, GRPC_REQUEST_ERROR_MESSAGE);
+    } else {
+        span.record("status", "ok");
+    }
+}
+
 /// Sets `span`'s parent from a text-map carrier.
 pub fn set_parent_from_extractor(span: &tracing::Span, extractor: &dyn Extractor) {
     set_parent_from_context(span, context_from_extractor(extractor));
@@ -453,6 +537,82 @@ mod tests {
                 !format!("{span:?}").contains("canary"),
                 "{method}: {span:?}"
             );
+            provider.shutdown().expect("provider shutdown");
+        }
+    }
+
+    /// A gRPC request span is named by its method, unless the call ended
+    /// UNIMPLEMENTED: then the caller chose the method, and it stays off.
+    /// Only the server-fault statuses fail the span.
+    #[test]
+    fn grpc_request_spans_name_only_served_methods() {
+        const METHOD: &str = "coral.management.v1.WorkspaceService/UpdateWorkspace";
+        for (path, code, name, method, status, failed) in [
+            (format!("/{METHOD}"), 0, METHOD, METHOD, "OK", false),
+            (
+                format!("/{METHOD}"),
+                3,
+                METHOD,
+                METHOD,
+                "INVALID_ARGUMENT",
+                false,
+            ),
+            (format!("/{METHOD}"), 13, METHOD, METHOD, "INTERNAL", true),
+            (
+                "/coral.management.v1.WorkspaceService/CanaryMethod".to_owned(),
+                12,
+                "grpc",
+                "_OTHER",
+                "UNIMPLEMENTED",
+                true,
+            ),
+        ] {
+            let request = http::Request::builder()
+                .uri(path.as_str())
+                .body(())
+                .expect("request");
+            let memory = InMemorySpanExporter::default();
+            let provider = SdkTracerProvider::builder()
+                .with_simple_exporter(memory.clone())
+                .build();
+            let subscriber = tracing_subscriber::Registry::default()
+                .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("grpc-test")));
+            tracing::subscriber::with_default(subscriber, || {
+                let span = crate::grpc_request_span!("request", &request);
+                // The call runs, and so starts the span, before its status is known.
+                span.in_scope(|| {
+                    crate::record_grpc_response(&span, request.uri().path(), code);
+                });
+            });
+            provider.force_flush().expect("flush spans");
+            let spans = memory.get_finished_spans().expect("finished spans");
+            let span = spans.first().expect("request span");
+            let attribute = |name: &str| {
+                span.attributes
+                    .iter()
+                    .find(|attribute| attribute.key.as_str() == name)
+                    .map(|attribute| attribute.value.to_string())
+            };
+            assert_eq!(span.name, name, "{path} {code}");
+            assert_eq!(span.span_kind, opentelemetry::trace::SpanKind::Server);
+            assert_eq!(attribute("rpc.system.name").as_deref(), Some("grpc"));
+            assert_eq!(attribute("rpc.method").as_deref(), Some(method), "{path}");
+            assert_eq!(
+                attribute("rpc.response.status_code").as_deref(),
+                Some(status),
+                "{path} {code}"
+            );
+            assert_eq!(
+                span.status == OtelStatus::error("gRPC request failed"),
+                failed,
+                "{path} {code}"
+            );
+            assert_eq!(
+                attribute("error.type").as_deref(),
+                failed.then_some(status),
+                "{path} {code}"
+            );
+            assert!(!format!("{span:?}").contains("Canary"), "{span:?}");
             provider.shutdown().expect("provider shutdown");
         }
     }
