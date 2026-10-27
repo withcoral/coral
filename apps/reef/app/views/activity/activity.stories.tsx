@@ -1699,7 +1699,7 @@ export const PendingConnectionFooter: Story = {
     }
   },
 }
-/** A call selected on its own, beside the evidence and source of the Run that made it. */
+/** A call selected on its own, beside the source of the Run that made it. */
 export const InvocationWithRunEvidence: Story = {
   args: {
     page: {
@@ -1745,16 +1745,9 @@ export const InvocationWithRunEvidence: Story = {
     )
     await expect(drawer.getByRole('heading', { level: 2, name: 'mail.send' })).toBeVisible()
     await expectAlignedHeaders(await openDrawer(canvasElement, 'Activity details'))
-    // The call's provider response and the Run's failure each show in their own card.
-    const failure = drawer.getByRole('region', { name: 'Error' })
-    await expect(failure).toHaveTextContent('The program failed after this call returned.')
-    await expect(failure).toHaveTextContent('program_execution_failed')
     await expect(drawer.getByRole('region', { name: 'Provider response' })).toBeVisible()
-    await expect(drawer.getByText('program run: failed')).toBeVisible()
-    // The call leads; the Run's source shows in its own pane below, not repeated in Details.
-    await expect(drawer.queryByText('Accepted program source', { selector: 'summary' })).toBeNull()
+    // The call leads; the Run's source shows in its own pane below.
     const source = drawer.getByRole('region', { name: 'Accepted source' })
     await expect(source.querySelector('[data-line="1"]')).toBeVisible()
-    await expect(drawer.getByText('Details', { selector: 'summary' })).toBeVisible()
   },
 }

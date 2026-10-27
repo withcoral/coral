@@ -56,7 +56,7 @@ export function ActivityDetail({
   if (!detail) return null
   // An approval is always reviewed inside its Run; any other selected call leads with itself.
   if (detail.kind === 'invocation' && detail.request?.kind !== 'approval') {
-    return <InvocationDetailView page={page} detail={detail} sourceShown={sourceShown} />
+    return <InvocationDetailView page={page} detail={detail} />
   }
   const context =
     detail.kind === 'run' ? detail : detail.kind === 'invocation' ? detail.context : undefined
@@ -176,43 +176,15 @@ function ExecutionDetail({
   )
 }
 
-/** The program a Run accepted, with the saved-function snapshots it linked. */
-function AcceptedSource({ detail }: { detail: RunDetail }) {
-  return (
-    <>
-      <Disclosure title="Accepted program source">
-        <Native value={detail.source} format="typescript" />
-      </Disclosure>
-      {detail.linkedFunctions.map((source) => (
-        <Disclosure key={source.savedFunction} title={`Saved-function snapshot: ${source.path}`}>
-          <Typography.BodySmall>
-            Accepted for this execution. This is not the current saved function.
-          </Typography.BodySmall>
-          <Native value={source.source} format="typescript" />
-        </Disclosure>
-      ))}
-    </>
-  )
-}
-
-/** One exact call, leading with its own identity. Its Run, when retained, is context: the Run's
- * intent and outcome, its accepted source in Details unless the split already shows it, and its
- * whole-run controls. Raw IDs and the Run's own times stay out: the Run's panel holds them. */
-function InvocationDetailView({
-  page,
-  detail,
-  sourceShown,
-}: {
-  page: ActivityPage
-  detail: InvocationDetail
-  sourceShown: boolean
-}) {
-  const { recordHref, revealHref, href } = useActivityNavigation(page)
+/** One exact call, leading with its own identity and ending with its own outcome. Its Run, when
+ * retained, adds only its intent. The Run's state, outcome, source, raw IDs, times and controls
+ * stay out: the Run's panel holds them, and a Run's lifecycle is not this call's. */
+function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: InvocationDetail }) {
+  const { href } = useActivityNavigation(page)
   const connected = useActivityConnected()
   const context = detail.context
   const call = detail.invocation
   const runIntent = context?.submission?.intent || context?.run.intent
-  const running = context?.run.state === 'running'
   // A connection request belongs to the call's Run, which is where you connect or decline.
   const connectionHref = (name: string) => href({ record: call.run, request: name })
   const expiresId = useId()
@@ -307,15 +279,6 @@ function InvocationDetailView({
         </List.Container>
       )}
       <InvocationOutcome detail={detail} />
-      {/* The Run's own outcome, apart from this call's: a Run can fail after a call succeeds. */}
-      {context && (
-        <>
-          <div>
-            <StateBadge entity="program run" state={context.run.state} />
-          </div>
-          <TerminalEvidence terminal={context.terminal} />
-        </>
-      )}
       {!!otherRequests.length && (
         <List.Container as="ul" aria-label="Requests for this call">
           {otherRequests.map((request, index) => (
@@ -337,30 +300,6 @@ function InvocationDetailView({
             </List.Item>
           ))}
         </List.Container>
-      )}
-      {context && (
-        <>
-          {/* Beside the split, the Run's source shows once, in its own pane. */}
-          {(context.submission || !sourceShown) && (
-            <Disclosure title="Details">
-              {context.submission && (
-                <Link to={recordHref(context.submission.name)} preventScrollReset>
-                  Inspect original exec submission
-                </Link>
-              )}
-              {!sourceShown && <AcceptedSource detail={context} />}
-            </Disclosure>
-          )}
-          <div className={styles.endActions}>
-            <Link
-              to={revealHref({ ...detail.invocation, kind: 'invocation' }, { select: false })}
-              preventScrollReset
-            >
-              View in history
-            </Link>
-            {running && <CancelRun name={context.run.name} variant="destructive" />}
-          </div>
-        </>
       )}
     </Panel>
   )
@@ -560,8 +499,8 @@ function RecordDetail({ page, sourceShown }: { page: ActivityPage; sourceShown: 
       {detail.kind === 'output' && (
         <>
           <EventEvidence event={detail.event} recordHref={recordHref} />
-          {/* Inside its Run's split, an emitted output leads back to history itself, as an
-              tool does. A program log ends at its payload. */}
+          {/* Inside its Run's split, an emitted output leads back to history itself. A program
+              log ends at its payload. */}
           {sourceShown && row && detail.event.kind !== 'program.logged' && (
             <Link to={revealHref(row, { select: false })} preventScrollReset>
               View in history

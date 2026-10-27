@@ -1687,8 +1687,8 @@ export const InvocationPendingOnConnection = panel(
   ),
   { evidence: 'coral.providers.linear.listIssues' },
 )
-/** A tool in a running Run ends with View in history and Cancel run. On a narrow screen
- * they keep a gap between them, and wrap rather than overflow. */
+/** A tool in a running Run ends at its own outcome, with no Run controls. On a narrow
+ * screen it does not overflow. */
 export const InvocationInRunningRunNarrow: Story = {
   ...panel(
     'Tool call · in a running Run, narrow screen',
@@ -1698,16 +1698,6 @@ export const InvocationInRunningRunNarrow: Story = {
   play: async (context) => {
     await meta.play(context)
     const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
-    const history = within(dialog).getByRole('link', { name: 'View in history' })
-    const cancel = within(dialog).getByRole('button', { name: 'Cancel run' })
-    await expect(history).toBeVisible()
-    await expect(cancel).toBeVisible()
-    const a = history.getBoundingClientRect()
-    const b = cancel.getBoundingClientRect()
-    // Apart on the same line, or on lines of their own: never touching.
-    const sameLine = a.bottom > b.top && b.bottom > a.top
-    if (sameLine) await expect(b.left - a.right).toBeGreaterThanOrEqual(8)
-    else await expect(b.top - a.bottom).toBeGreaterThanOrEqual(8)
     await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
   },
 }
