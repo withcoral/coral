@@ -7,11 +7,11 @@ import { CallsLens } from './calls-lens'
 import { ContextLens, callers } from './context-lens'
 import { joined, number, share } from './format'
 import { NeedsYouLens } from './needs-you-lens'
-import type { SummaryProvider } from './operations'
+import type { SummaryProvider } from './tools'
 import { Note } from './parts'
 import * as styles from './summary.css'
 
-export type { SummaryProvider } from './operations'
+export type { SummaryProvider } from './tools'
 
 const periodName = (days: SummaryDays) => (days === 1 ? '24 hours' : `${days} days`)
 const dayOptions = SUMMARY_DAYS.map((days) => ({ value: String(days), label: periodName(days) }))

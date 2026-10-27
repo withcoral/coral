@@ -17,7 +17,7 @@ async fn activity_observation_wakes_for_task_creation_interactions_and_ending() 
     );
     f.commands
         .search(
-            &f.call(&goal, "Find operations"),
+            &f.call(&goal, "Find tools"),
             coral_search::SearchInput::default(),
         )
         .await
@@ -54,7 +54,7 @@ async fn context_impact_task_total_includes_unloaded_measurements_and_ignores_no
  {
     let f = Fixture::new().await;
     let goal = f.goal().await;
-    let call = f.call(&goal, "Find operations");
+    let call = f.call(&goal, "Find tools");
     for _ in 0..2 {
         f.commands
             .search(&call, coral_search::SearchInput::default())
@@ -176,7 +176,7 @@ async fn activity_summary_counts_context_as_the_task_total_does() {
         .await
         .unwrap();
     let goal = f.goal().await;
-    let call = f.call(&goal, "Find operations");
+    let call = f.call(&goal, "Find tools");
     f.commands
         .search(&call, coral_search::SearchInput::default())
         .await
@@ -201,7 +201,7 @@ async fn activity_summary_counts_context_as_the_task_total_does() {
         agent.clone(),
         f.workspace.clone(),
         agent_goal.id().clone(),
-        TaskIntent::parse("Find agent operations").unwrap(),
+        TaskIntent::parse("Find agent tools").unwrap(),
         coral_test_support::trace('1'),
     );
     f.commands
@@ -342,7 +342,7 @@ async fn context_impact_is_partial_while_a_run_runs_and_skips_an_unmeasured_chil
     assert_eq!(task_impact(&f, &goal).await, (Some(0), false), "empty goal");
     f.commands
         .search(
-            &f.call(&goal, "Find operations"),
+            &f.call(&goal, "Find tools"),
             coral_search::SearchInput::default(),
         )
         .await

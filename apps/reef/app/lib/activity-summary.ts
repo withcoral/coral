@@ -1,8 +1,8 @@
-/** How the ended Operation calls in a window ended, by who acts next. */
+/** How the ended Tool calls in a window ended, by who acts next. */
 export interface CallOutcomes {
   /** The upstream returned a complete response, which may still be an error response. */
   answered: number
-  /** A rule stopped the call: a disabled operation, a required approval, access, or a destination. */
+  /** A rule stopped the call: a disabled tool, a required approval, access, or a destination. */
   blocked: number
   /** A person declined the approval or the account connection, or let the approval expire. */
   notAllowed: number
@@ -17,10 +17,10 @@ export type CallOutcome = keyof CallOutcomes
 /** The outcomes a person or a rule stopped. */
 export type StopReason = 'blocked' | 'notAllowed' | 'needsSetup'
 
-/** One operation's stopped calls, split by who must act. */
-export type StoppedOperation = { callPath: string } & Record<StopReason, number>
-/** One operation's ended calls. */
-export interface OperationCalls {
+/** One tool's stopped calls, split by who must act. */
+export type StoppedTool = { callPath: string } & Record<StopReason, number>
+/** One tool's ended calls. */
+export interface ToolCalls {
   callPath: string
   calls: number
 }
@@ -43,9 +43,9 @@ export interface ContextEntry {
 export interface ActivitySummaryData {
   calls: CallOutcomes
   /** Most stopped first. */
-  stopped: readonly StoppedOperation[]
+  stopped: readonly StoppedTool[]
   /** Most called first. */
-  operations: readonly OperationCalls[]
+  tools: readonly ToolCalls[]
   approvals: ApprovalDecisions
   contextImpactBytes?: string
   contextImpactPartial?: boolean

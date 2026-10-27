@@ -2,10 +2,10 @@ use super::*;
 use crate::approval::{ApprovalModule, ApprovalState};
 use crate::{PromptAnswer, RequiredActionRequest};
 
-async fn approval_operation(fixture: &TestModules, user_id: &str) -> OperationFixture {
-    let operation = fixture.user_operation(user_id, "Prompt for approval").await;
-    fixture.require_approval(&operation).await;
-    operation
+async fn approval_tool(fixture: &TestModules, user_id: &str) -> ToolFixture {
+    let tool = fixture.user_tool(user_id, "Prompt for approval").await;
+    fixture.require_approval(&tool).await;
+    tool
 }
 
 fn approvals(fixture: &TestModules) -> ApprovalModule {
@@ -16,10 +16,10 @@ fn trace() -> TraceId {
     TraceId::parse(&"b".repeat(32)).unwrap()
 }
 
-/// An Organization member who becomes another Owner of the Operation's Workspace.
+/// An Organization member who becomes another Owner of the Tool's Workspace.
 async fn co_owner(
     fixture: &TestModules,
-    operation: &OperationFixture,
+    tool: &ToolFixture,
     user_id: &str,
 ) -> AuthenticatedPrincipal {
     let member =
@@ -27,8 +27,8 @@ async fn co_owner(
     fixture
         .workspaces
         .set_membership(
-            &change(operation.user.clone(), 50, '5'),
-            &operation.workspace_id,
+            &change(tool.user.clone(), 50, '5'),
+            &tool.workspace_id,
             &member,
             WorkspaceRole::Owner,
         )
@@ -50,8 +50,8 @@ async fn the_invoking_user_decides_each_current_approval_from_its_prompt() {
         "coral.providers.weather.getForecast",
     )))
     .await;
-    let operation = approval_operation(&fixture, "user:prompted").await;
-    let (user, workspace) = (&operation.principal, &operation.workspace_id);
+    let tool = approval_tool(&fixture, "user:prompted").await;
+    let (user, workspace) = (&tool.principal, &tool.workspace_id);
     let approvals = approvals(&fixture);
     for (answer, expected) in [
         (PromptAnswer::Accept, ApprovalState::Approved),
@@ -151,11 +151,11 @@ async fn only_the_user_who_started_a_run_is_prompted_or_answers() {
         "coral.providers.weather.getForecast",
     )))
     .await;
-    let operation = approval_operation(&fixture, "user:owner").await;
-    let (owner, workspace) = (&operation.principal, &operation.workspace_id);
+    let tool = approval_tool(&fixture, "user:owner").await;
+    let (owner, workspace) = (&tool.principal, &tool.workspace_id);
     let approvals = approvals(&fixture);
     let agent = registered_agent(&fixture.workspaces, owner, workspace).await;
-    let member = co_owner(&fixture, &operation, "user:member").await;
+    let member = co_owner(&fixture, &tool, "user:member").await;
     let mut held = Vec::new();
     for starter in [&agent, owner] {
         let run = fixture
@@ -243,8 +243,8 @@ async fn an_answer_through_another_of_your_runs_decides_nothing() {
         "coral.providers.weather.getForecast",
     )))
     .await;
-    let operation = approval_operation(&fixture, "user:two-runs").await;
-    let (user, workspace) = (&operation.principal, &operation.workspace_id);
+    let tool = approval_tool(&fixture, "user:two-runs").await;
+    let (user, workspace) = (&tool.principal, &tool.workspace_id);
     let approvals = approvals(&fixture);
     let mut held = Vec::new();
     for _ in 0..2 {
@@ -307,13 +307,13 @@ async fn a_connection_prompt_opens_reef_and_declining_it_declines_the_request() 
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
-    let operation = fixture
-        .user_operation("user:connect", "Prompt for an Account")
+    let tool = fixture
+        .user_tool("user:connect", "Prompt for an Account")
         .await;
     let (_directory, accounts) =
-        configure_user_caller(&fixture, &operation, "https://upstream.example").await;
+        configure_user_caller(&fixture, &tool, "https://upstream.example").await;
     let runs = fixture.runs.clone().with_accounts(accounts);
-    let (user, workspace) = (&operation.principal, &operation.workspace_id);
+    let (user, workspace) = (&tool.principal, &tool.workspace_id);
     let run = runs
         .start(
             user,
@@ -339,7 +339,7 @@ async fn a_connection_prompt_opens_reef_and_declining_it_declines_the_request() 
     assert_eq!(prompt.run_status_path, action.run_status_path);
     assert_eq!(
         prompt.connect_path.as_deref(),
-        Some(format!("/workspaces/{workspace}/accounts/{}", operation.provider_id).as_str()),
+        Some(format!("/workspaces/{workspace}/accounts/{}", tool.provider_id).as_str()),
         "the prompt opens your own Account page for the waiting Provider"
     );
     let queued = runs.required_actions(user, None, None, 1).await.unwrap();
@@ -392,7 +392,7 @@ async fn a_connection_prompt_opens_reef_and_declining_it_declines_the_request() 
         runs.accounts
             .as_ref()
             .unwrap()
-            .get_connection_request(&change(operation.user.clone(), 40, '4'), workspace, request)
+            .get_connection_request(&change(tool.user.clone(), 40, '4'), workspace, request)
             .await
             .unwrap()
             .state,

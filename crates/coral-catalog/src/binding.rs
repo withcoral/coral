@@ -1,13 +1,13 @@
 use crate::{BuiltinExecutionBinding, Error, HttpExecutionBinding, McpExecutionBinding, SchemaId};
 
-/// Complete upstream-specific invocation recipe for one materialized Operation.
+/// Complete upstream-specific invocation recipe for one materialized Tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutionBinding {
     /// HTTP request/response execution.
     Http(HttpExecutionBinding),
     /// MCP tool or resource execution.
     Mcp(McpExecutionBinding),
-    /// A Built-in Provider Operation that Coral performs itself.
+    /// A Built-in Provider Tool that Coral performs itself.
     Builtin(BuiltinExecutionBinding),
 }
 
@@ -26,7 +26,7 @@ impl ExecutionBinding {
             "mcp" => McpExecutionBinding::from_storage_json(value).map(Self::Mcp),
             "builtin" => BuiltinExecutionBinding::from_storage_json(value).map(Self::Builtin),
             _ => Err(Error::CorruptData(format!(
-                "Materialized Operation has unrecognized protocol '{protocol}'"
+                "Materialized Tool has unrecognized protocol '{protocol}'"
             ))),
         }
     }

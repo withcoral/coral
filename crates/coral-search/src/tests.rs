@@ -1,6 +1,6 @@
 mod builtin;
 mod describe;
-mod describe_operations;
+mod describe_tools;
 mod index;
 mod retrieval;
 mod storage;
@@ -9,13 +9,13 @@ use coral_outbound::DestinationPolicy;
 use coral_test_support::{change, trace};
 use std::fmt::Write as _;
 
-use coral_catalog::{OpenApiDocument, OperationHints, OperationKey};
+use coral_catalog::{OpenApiDocument, ToolHints, ToolKey};
 use coral_functions::test_fixtures_repository as function_faults;
 use coral_functions::{
     SavedFunctionChangeContext, SavedFunctionDescription, SavedFunctionModule, SavedFunctionPath,
     SavedFunctionSave, SavedFunctionSource,
 };
-use coral_policy::{OperationAccessState, OperationPolicyModule, OperationPolicyTarget};
+use coral_policy::{ToolAccessState, ToolPolicyModule, ToolPolicyTarget};
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::test_fixtures_repository as provider_faults;
 use coral_provider::{
@@ -43,7 +43,7 @@ const RAW_SCHEMA_CANARY: &str = "private-raw-schema-canary";
 const EXECUTION_BINDING_CANARY: &str = "private-execution-binding-canary";
 const SAVED_SOURCE_CANARY: &str = "private-saved-source-canary";
 
-/// One User's Workspace with the tracer Operation and the tracer Saved Function.
+/// One User's Workspace with the tracer Tool and the tracer Saved Function.
 struct TracerScope {
     upstream: MockServer,
     user: AuthenticatedUser,
@@ -54,7 +54,7 @@ struct TracerScope {
 }
 
 impl TracerScope {
-    const OPERATION: &str = "coral.providers.weather.getForecast";
+    const TOOL: &str = "coral.providers.weather.getForecast";
     const FUNCTION: &str = "coral.functions.internal.formatForecast";
 
     async fn new(fixture: &TestModules) -> Self {
@@ -127,7 +127,7 @@ async fn listing_orders_hits_by_call_path() {
             .iter()
             .map(|result| result.call_path().as_str())
             .collect::<Vec<_>>(),
-        [TracerScope::FUNCTION, TracerScope::OPERATION],
+        [TracerScope::FUNCTION, TracerScope::TOOL],
         "an omitted query uses deterministic complete Call Path order"
     );
     assert_eq!(
@@ -135,7 +135,7 @@ async fn listing_orders_hits_by_call_path() {
             .iter()
             .map(crate::SearchHit::kind)
             .collect::<Vec<_>>(),
-        [EntityKind::SavedFunction, EntityKind::Operation]
+        [EntityKind::SavedFunction, EntityKind::ProviderTool]
     );
 
     let saved_hit = listed.first().expect("Saved Function hit");
@@ -149,34 +149,31 @@ async fn listing_orders_hits_by_call_path() {
         "the named input's members appear inline"
     );
     assert!(
-        saved_hit.operation().is_none(),
+        saved_hit.tool().is_none(),
         "a Saved Function hit has no Provider display name and no hints"
     );
 
-    let operation_hit = listed.get(1).expect("Operation hit");
+    let tool_hit = listed.get(1).expect("Tool hit");
     assert_eq!(
-        operation_hit.signature_line(),
+        tool_hit.signature_line(),
         "getForecast(): Promise<{ data: {…} }>"
     );
     assert_eq!(
-        operation_hit.description_snippet(),
+        tool_hit.description_snippet(),
         "Fetch the current conditions for one forecast location."
     );
     assert_eq!(
-        (
-            operation_hit.guidance_snippet(),
-            operation_hit.matched_tags()
-        ),
+        (tool_hit.guidance_snippet(), tool_hit.matched_tags()),
         (None, &[][..]),
         "a listing matched no term"
     );
-    let operation = operation_hit.operation().expect("Operation facts");
-    assert_eq!(operation.title(), Some("Get one weather forecast"));
-    assert!(operation.deprecated());
-    assert_eq!(operation.provider_display_name(), "Weather Tracer");
-    assert_eq!(operation.hints(), OperationHints::default());
+    let tool = tool_hit.tool().expect("Tool facts");
+    assert_eq!(tool.title(), Some("Get one weather forecast"));
+    assert!(tool.deprecated());
+    assert_eq!(tool.provider_display_name(), "Weather Tracer");
+    assert_eq!(tool.hints(), ToolHints::default());
     assert_eq!(
-        operation.approval_requirement(),
+        tool.approval_requirement(),
         ApprovalRequirement::NotRequired
     );
 }
@@ -220,7 +217,7 @@ async fn saved_function_signature_lines_show_the_inferred_result_fields() {
 }
 
 #[tokio::test]
-async fn operation_signature_lines_follow_the_published_declaration() {
+async fn tool_signature_lines_follow_the_published_declaration() {
     let fixture = TestModules::new().await;
     let user = organization_user(fixture.search.database.clone(), "user:signature-lines").await;
     let principal = AuthenticatedPrincipal::user(user.clone());
@@ -255,7 +252,7 @@ async fn operation_signature_lines_follow_the_published_declaration() {
         .search
         .search(&principal, &workspace_id, &SearchRequest::list())
         .await
-        .expect("list Operations");
+        .expect("list Tools");
 
     assert_eq!(
         page.hits()
@@ -277,7 +274,7 @@ async fn operation_signature_lines_follow_the_published_declaration() {
 }
 
 #[tokio::test]
-async fn queries_match_safe_operation_fields_and_function_declarations() {
+async fn queries_match_safe_tool_fields_and_function_declarations() {
     let fixture = TestModules::new().await;
     let scope = TracerScope::new(&fixture).await;
     for query in [
@@ -296,8 +293,8 @@ async fn queries_match_safe_operation_fields_and_function_declarations() {
                 .await
                 .hits()
                 .iter()
-                .any(|result| result.call_path().as_str() == TracerScope::OPERATION),
-            "query {query:?} must return the Operation"
+                .any(|result| result.call_path().as_str() == TracerScope::TOOL),
+            "query {query:?} must return the Tool"
         );
     }
     for (query, guidance_snippet, matched_tags) in [
@@ -313,8 +310,8 @@ async fn queries_match_safe_operation_fields_and_function_declarations() {
         let hit = page
             .hits()
             .iter()
-            .find(|hit| hit.call_path().as_str() == TracerScope::OPERATION)
-            .expect("Operation hit");
+            .find(|hit| hit.call_path().as_str() == TracerScope::TOOL)
+            .expect("Tool hit");
         assert_eq!(
             (
                 hit.guidance_snippet(),
@@ -352,32 +349,32 @@ async fn queries_match_safe_operation_fields_and_function_declarations() {
 async fn describe_returns_exact_descriptions_and_only_owned_source() {
     let fixture = TestModules::new().await;
     let scope = TracerScope::new(&fixture).await;
-    let described_operation = scope
-        .describe(&fixture, TracerScope::OPERATION)
+    let described_tool = scope
+        .describe(&fixture, TracerScope::TOOL)
         .await
-        .expect("describe exact Operation");
-    let AuthoringDescription::Operation(operation) = described_operation.authoring() else {
-        panic!("the tracer path is an Operation");
+        .expect("describe exact Tool");
+    let AuthoringDescription::Tool(tool) = described_tool.authoring() else {
+        panic!("the tracer path is a Tool");
     };
-    assert_eq!(operation.call_path().as_str(), TracerScope::OPERATION);
-    assert_eq!(operation.tags(), ["forecast", "weather"]);
+    assert_eq!(tool.call_path().as_str(), TracerScope::TOOL);
+    assert_eq!(tool.tags(), ["forecast", "weather"]);
     assert_eq!(
-        operation.guidance(),
+        tool.guidance(),
         Some("Use a stable location identifier when one is available.")
     );
     assert_eq!(
-        operation.provider_call_root().as_str(),
+        tool.provider_call_root().as_str(),
         "coral.providers.weather"
     );
-    assert_eq!(operation.provider_id(), &scope.published.provider_id);
-    let declaration = operation.typescript_declaration();
+    assert_eq!(tool.provider_id(), &scope.published.provider_id);
+    let declaration = tool.typescript_declaration();
     assert!(
         declaration.contains(
             "export default function (): Promise<HttpResult<{ \"temperatureC\": number }"
         )
     );
     assert!(declaration.ends_with(", 200, \"application/json\">>;"));
-    assert!(described_operation.saved_function_detail().is_none());
+    assert!(described_tool.saved_function_detail().is_none());
 
     let described_function = scope
         .describe(&fixture, TracerScope::FUNCTION)
@@ -417,7 +414,7 @@ async fn search_and_describe_never_read_private_material_or_dispatch_upstream() 
             "search leaked {private_term}"
         );
     }
-    for path in [TracerScope::OPERATION, TracerScope::FUNCTION] {
+    for path in [TracerScope::TOOL, TracerScope::FUNCTION] {
         scope
             .describe(&fixture, path)
             .await
@@ -435,7 +432,7 @@ async fn search_and_describe_never_read_private_material_or_dispatch_upstream() 
 }
 
 #[tokio::test]
-async fn disabled_operation_leaves_search_and_describe() {
+async fn disabled_tool_leaves_search_and_describe() {
     let fixture = TestModules::new().await;
     let scope = TracerScope::new(&fixture).await;
     fixture
@@ -443,10 +440,10 @@ async fn disabled_operation_leaves_search_and_describe() {
         .set_access_state(
             &change(scope.user.clone(), 50, '5'),
             scope.published.policy_target.clone(),
-            OperationAccessState::Disabled,
+            ToolAccessState::Disabled,
         )
         .await
-        .expect("disable tracer Operation");
+        .expect("disable tracer Tool");
     let after_disable = fixture
         .search
         .search(
@@ -465,7 +462,7 @@ async fn disabled_operation_leaves_search_and_describe() {
         [TracerScope::FUNCTION]
     );
     assert!(matches!(
-        scope.describe(&fixture, TracerScope::OPERATION).await,
+        scope.describe(&fixture, TracerScope::TOOL).await,
         Err(Error::AuthoringDescriptionNotFound)
     ));
 }
@@ -508,7 +505,7 @@ async fn function_replacement_and_corrupt_relevance_keep_exact_descriptions() {
             .await
             .hits()
             .iter()
-            .all(|item| item.kind() == EntityKind::Operation),
+            .all(|item| item.kind() == EntityKind::ProviderTool),
         "a corrupt Saved Function declaration lane matches nothing"
     );
     let listing_with_corrupt_relevance = fixture
@@ -635,7 +632,7 @@ async fn relevance_combines_metadata_and_schema_lanes_before_call_path_ties() {
             .evidence()
             .fields(),
         ["call_path"],
-        "Operation Keys and relative paths must not masquerade as public metadata concepts"
+        "Tool Keys and relative paths must not masquerade as public metadata concepts"
     );
 
     let schema_description_results = fixture
@@ -882,7 +879,7 @@ async fn provider_declaration_paths_match_the_authoritative_typescript_surface()
             ),
         )
         .await
-        .expect("search argumentless Operation");
+        .expect("search argumentless Tool");
     assert!(
         argumentless.hits().is_empty(),
         "an omitted input parameter must not produce evidence"
@@ -1020,7 +1017,7 @@ async fn phrase_points_match_whole_words_and_favor_a_whole_field() {
     let user = organization_user(fixture.search.database.clone(), "user:phrase-points").await;
     let principal = AuthenticatedPrincipal::user(user.clone());
     let workspace_id = fixture.create_workspace(&user).await;
-    // The two operations an agent wants carry long text, as their large
+    // The two tools an agent wants carry long text, as their large
     // schemas do in the GitHub catalog, so their length lowers their score
     // below the short decoys'.
     let long = "Drafts are available in public repositories with paid plans. ".repeat(12);
@@ -1390,7 +1387,7 @@ async fn oversized_declaration_regenerates_with_its_shallow_fields_searchable() 
         .await
         .expect("search the oversized replacement");
     let [item] = current.hits() else {
-        panic!("one oversized Operation match");
+        panic!("one oversized Tool match");
     };
     assert_eq!(
         item.call_path().as_str(),
@@ -1448,7 +1445,7 @@ async fn relevance_retrieves_before_hydrating_complete_descriptions() {
         .publish_openapi(&user, &workspace_id, document, "lazy", 20)
         .await;
     fixture.converge().await;
-    provider_faults::corrupt_operation_tags(
+    provider_faults::corrupt_tool_tags(
         &fixture.search.database,
         &workspace_id,
         &lazy,
@@ -1493,7 +1490,7 @@ async fn relevance_retrieves_before_hydrating_complete_descriptions() {
             "coral.providers.lazy.healthyLookup",
             "coral.providers.survivor.durableLookup",
         ],
-        "a corrupt Operation leaves the page; its healthy sibling stays"
+        "a corrupt Tool leaves the page; its healthy sibling stays"
     );
 
     let healthy = fixture
@@ -1536,7 +1533,7 @@ async fn relevance_retrieves_before_hydrating_complete_descriptions() {
 }
 
 #[tokio::test]
-async fn oversized_complete_operation_description_is_unavailable_not_truncated() {
+async fn oversized_complete_tool_description_is_unavailable_not_truncated() {
     let fixture = TestModules::new().await;
     let user = organization_user(
         fixture.search.database.clone(),
@@ -1602,7 +1599,7 @@ async fn oversized_complete_operation_description_is_unavailable_not_truncated()
             ),
         )
         .await
-        .expect("publish catalog with unavailable large Operation");
+        .expect("publish catalog with unavailable large Tool");
 
     let page = fixture
         .search
@@ -2154,10 +2151,10 @@ async fn pages_complete_current_results_with_query_bound_non_authorizing_cursors
         .set_access_state(
             &change(user, 60, '6'),
             published.policy_target,
-            OperationAccessState::Disabled,
+            ToolAccessState::Disabled,
         )
         .await
-        .expect("disable Operation after first page");
+        .expect("disable Tool after first page");
     let after_visibility_change = fixture
         .search
         .search(
@@ -2264,7 +2261,7 @@ fn describe_requires_one_complete_safe_call_path() {
 
 struct PublishedTracer {
     provider_id: coral_provider::ProviderId,
-    policy_target: OperationPolicyTarget,
+    policy_target: ToolPolicyTarget,
 }
 
 /// One caller-routed Provider and an Agent that its Organization Owner provisions.
@@ -2391,26 +2388,26 @@ async fn agent_readiness_and_discovery_use_the_exact_agents_account() {
     fixture
         .assert_discovery(agent, workspace, &[], &[AgentRoute::CALL_PATH])
         .await;
-    let target = OperationPolicyTarget::new(
+    let target = ToolPolicyTarget::new(
         workspace.clone(),
         route.provider.id().clone(),
-        coral_catalog::OperationKey::parse("getForecast").unwrap(),
+        coral_catalog::ToolKey::parse("getForecast").unwrap(),
     );
     fixture
         .policies
-        .set_access_state(context, target.clone(), OperationAccessState::Disabled)
+        .set_access_state(context, target.clone(), ToolAccessState::Disabled)
         .await
         .unwrap();
     assert_eq!(
         inspect().await.unwrap().first().unwrap().readiness.blockers,
         vec![
             ProviderBlocker::CallerAccountRequired,
-            ProviderBlocker::NoOperationsReady
+            ProviderBlocker::NoToolsReady
         ]
     );
     fixture
         .policies
-        .set_access_state(context, target, OperationAccessState::ApprovalRequired)
+        .set_access_state(context, target, ToolAccessState::ApprovalRequired)
         .await
         .unwrap();
     // Another User's personal Account never substitutes for the Agent's.
@@ -2727,7 +2724,7 @@ async fn user_caller_discovery_does_not_wait_for_a_personal_account() {
             .inspect_provider_readiness_for(&route.user, workspace, route.provider.id())
     };
 
-    // Missing: the User connects when invoking, so discovery shows the Operation
+    // Missing: the User connects when invoking, so discovery shows the Tool
     // and Provider readiness reports no personal Account state.
     fixture
         .assert_discovery(principal, workspace, &[call_path], &[])
@@ -3097,14 +3094,14 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
         )
         .await
         .unwrap();
-    let target = OperationPolicyTarget::new(
+    let target = ToolPolicyTarget::new(
         workspace.clone(),
         second.id().clone(),
-        OperationKey::parse("getForecast").unwrap(),
+        ToolKey::parse("getForecast").unwrap(),
     );
     fixture
         .policies
-        .set_access_state(&context, target.clone(), OperationAccessState::Disabled)
+        .set_access_state(&context, target.clone(), ToolAccessState::Disabled)
         .await
         .unwrap();
     for actor in [&principal, &agent] {
@@ -3114,19 +3111,19 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
     }
     fixture
         .policies
-        .set_access_state(&context, target, OperationAccessState::Enabled)
+        .set_access_state(&context, target, ToolAccessState::Enabled)
         .await
         .unwrap();
     fixture
         .policies
         .set_access_state(
             &context,
-            OperationPolicyTarget::new(
+            ToolPolicyTarget::new(
                 workspace.clone(),
                 first.id().clone(),
-                OperationKey::parse("getForecast").unwrap(),
+                ToolKey::parse("getForecast").unwrap(),
             ),
-            OperationAccessState::ApprovalRequired,
+            ToolAccessState::ApprovalRequired,
         )
         .await
         .unwrap();
@@ -3139,10 +3136,10 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
             .describe(&principal, &workspace, &CallPath::parse(path).unwrap(), &[])
             .await
             .unwrap();
-        let AuthoringDescription::Operation(operation) = exact.authoring() else {
+        let AuthoringDescription::Tool(tool) = exact.authoring() else {
             unreachable!()
         };
-        assert_eq!(operation.approval_requirement(), approval);
+        assert_eq!(tool.approval_requirement(), approval);
     }
     // Explicit disconnection removes readiness; incompatible shared Update can no
     // longer publish an unusable configuration/account pair (Provider tests cover rejection).
@@ -3187,7 +3184,7 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
             .await;
     }
     // Relevance health never controls exact description, even for a credentialed route.
-    let failing = fixture.failing_search(&[EntityKind::Operation, EntityKind::SavedFunction]);
+    let failing = fixture.failing_search(&[EntityKind::ProviderTool, EntityKind::SavedFunction]);
     for actor in [&principal, &agent] {
         assert!(matches!(
             failing
@@ -3307,7 +3304,7 @@ async fn none_route_discovery_requires_a_credential_free_current_contract() {
         )
         .await
         .unwrap();
-    // The credentialed contract hides the Operation until the Agent has an Account.
+    // The credentialed contract hides the Tool until the Agent has an Account.
     // The User connects its own Account during Invocation instead.
     fixture
         .assert_discovery(&agent, &workspace, &[], &[path])
@@ -3552,7 +3549,7 @@ async fn exact_provider_readiness_does_not_read_unrelated_providers() {
 async fn readiness_inspection_does_not_require_saved_function_persistence() {
     // Drop Functions' schema and the search index: any accidental
     // repository read must fail, even when no Functions exist. Readiness
-    // depends only on Operation domains and reads no index.
+    // depends only on Tool domains and reads no index.
     let fixture = TestModules::new().await;
     fixture
         .fixture
@@ -3685,13 +3682,13 @@ async fn provider_inspection_reports_policy_and_lifecycle_blockers() {
     assert!(ready[0].blockers.is_empty());
     assert!(!format!("{ready:?}").contains(ACCOUNT_LABEL_CANARY));
 
-    // Disabling the only Operation leaves the Provider with nothing to call.
+    // Disabling the only Tool leaves the Provider with nothing to call.
     fixture
         .policies
         .set_access_state(
             &change(user.clone(), 50, '5'),
             published.policy_target.clone(),
-            OperationAccessState::Disabled,
+            ToolAccessState::Disabled,
         )
         .await
         .unwrap();
@@ -3700,10 +3697,7 @@ async fn provider_inspection_reports_policy_and_lifecycle_blockers() {
         .inspect_provider_readiness(&user, &workspace)
         .await
         .unwrap();
-    assert_eq!(
-        disabled[0].blockers,
-        vec![ProviderBlocker::NoOperationsReady]
-    );
+    assert_eq!(disabled[0].blockers, vec![ProviderBlocker::NoToolsReady]);
 
     // Revocation is reported by the Provider Module, ahead of discovery evidence.
     fixture
@@ -3747,7 +3741,7 @@ struct TestModules {
     fixture: TestDatabase,
     workspaces: WorkspaceModule,
     providers: ProviderModule,
-    policies: OperationPolicyModule,
+    policies: ToolPolicyModule,
     saved_functions: SavedFunctionModule,
     search: UniversalSearchModule,
     index: crate::SearchIndex,
@@ -3771,7 +3765,7 @@ impl TestModules {
             database.clone(),
             workspaces.clone(),
         );
-        let policies = OperationPolicyModule::new(database.clone(), workspaces.clone());
+        let policies = ToolPolicyModule::new(database.clone(), workspaces.clone());
         let saved_functions = SavedFunctionModule::new(
             database.clone(),
             workspaces.clone(),
@@ -4114,13 +4108,13 @@ impl TestModules {
         let published = publication
             .published_provider()
             .expect("successful Provider publication");
-        let operation_key = OperationKey::parse("getForecast").expect("Operation Key");
+        let tool_key = ToolKey::parse("getForecast").expect("Tool Key");
         PublishedTracer {
             provider_id: published.id().clone(),
-            policy_target: OperationPolicyTarget::new(
+            policy_target: ToolPolicyTarget::new(
                 workspace_id.clone(),
                 published.access().id().clone(),
-                operation_key,
+                tool_key,
             ),
         }
     }

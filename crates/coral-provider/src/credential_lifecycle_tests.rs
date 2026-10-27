@@ -495,7 +495,7 @@ async fn a_permanently_rejected_refresh_opens_a_connection_request_that_reconnec
     let database = db.database();
     let resolve = async |request: Option<crate::account::ConnectionRequestId>, now: i64| {
         let mut tx = database.begin().await.unwrap();
-        let target = crate::resolve_owner_operation_in_transaction(
+        let target = crate::resolve_owner_tool_in_transaction(
             &mut tx,
             &owner,
             "coral.providers.oauth.getData",
@@ -1408,7 +1408,7 @@ async fn invocation_connection_requests_wait_for_the_user_and_resolve_once_conne
                          request: Option<crate::account::ConnectionRequestId>,
                          now: i64| {
         let mut tx = h.database.begin().await.unwrap();
-        let target = crate::resolve_owner_operation_in_transaction(
+        let target = crate::resolve_owner_tool_in_transaction(
             &mut tx,
             owner,
             &format!("coral.providers.{namespace}.getPrivateForecast"),

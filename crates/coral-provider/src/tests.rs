@@ -1,7 +1,7 @@
 use coral_outbound::DestinationPolicy;
 use std::sync::Arc;
 
-use coral_catalog::{OperationHints, OperationKey};
+use coral_catalog::{ToolHints, ToolKey};
 use coral_db::Database;
 use coral_telemetry::TraceId;
 use coral_test_support::TestDatabase;
@@ -36,7 +36,7 @@ paths:
 "#;
 
 #[tokio::test]
-async fn disabled_provider_remains_a_valid_operation_policy_target() {
+async fn disabled_provider_remains_a_valid_tool_policy_target() {
     let (fixture, workspaces, providers) = test_modules().await;
     let owner = organization_user(
         fixture.database(),
@@ -70,11 +70,11 @@ async fn disabled_provider_remains_a_valid_operation_policy_target() {
         .begin()
         .await
         .expect("begin policy target resolution");
-    let found = crate::operation_hints_and_method_in_transaction(
+    let found = crate::tool_hints_and_method_in_transaction(
         &mut transaction,
         workspace.id(),
         provider.id(),
-        &OperationKey::parse("getForecast").expect("Operation Key"),
+        &ToolKey::parse("getForecast").expect("Tool Key"),
     )
     .await
     .expect("suspension is not Provider-package corruption");
@@ -84,10 +84,7 @@ async fn disabled_provider_remains_a_valid_operation_policy_target() {
         .expect("finish policy target resolution");
     assert_eq!(
         found,
-        Some((
-            OperationHints::default(),
-            Some(coral_catalog::HttpMethod::Get)
-        ))
+        Some((ToolHints::default(), Some(coral_catalog::HttpMethod::Get)))
     );
 }
 
@@ -165,24 +162,24 @@ pub(crate) async fn name_oauth_application(
     assert!(confirmed.errors.is_empty(), "{:?}", confirmed.errors);
 }
 
-pub(crate) async fn retained_operation(
+pub(crate) async fn retained_tool(
     providers: &ProviderModule,
     workspace_id: &coral_workspace::WorkspaceId,
     call_root: &ProviderCallRoot,
-) -> crate::ResolvedInvocationOperation {
+) -> crate::ResolvedInvocationTool {
     let mut transaction = providers
         .database
         .begin()
         .await
         .expect("begin Invocation resolution");
-    let retained = crate::resolve_owner_operation_in_transaction(
+    let retained = crate::resolve_owner_tool_in_transaction(
         &mut transaction,
         workspace_id,
         &format!("{}.getForecast", call_root.as_str()),
     )
     .await
-    .expect("resolve Invocation Operation")
-    .expect("current callable Operation");
+    .expect("resolve Invocation Tool")
+    .expect("current callable Tool");
     transaction
         .rollback()
         .await
@@ -190,24 +187,24 @@ pub(crate) async fn retained_operation(
     retained
 }
 
-pub(crate) async fn verify_retained_operation(
+pub(crate) async fn verify_retained_tool(
     providers: &ProviderModule,
     workspace_id: &coral_workspace::WorkspaceId,
-    retained: &crate::ResolvedInvocationOperation,
-) -> crate::InvocationOperationVerification {
+    retained: &crate::ResolvedInvocationTool,
+) -> crate::InvocationToolVerification {
     let mut transaction = providers
         .database
         .begin()
         .await
         .expect("begin Invocation verification");
-    let current = crate::verify_invocation_operation_in_transaction(
+    let current = crate::verify_invocation_tool_in_transaction(
         &mut transaction,
         workspace_id,
         retained,
         coral_db::RowLock::Shared,
     )
     .await
-    .expect("verify Invocation Operation");
+    .expect("verify Invocation Tool");
     transaction
         .rollback()
         .await
@@ -215,7 +212,7 @@ pub(crate) async fn verify_retained_operation(
     current
 }
 
-pub(crate) async fn operation_authoring_paths(
+pub(crate) async fn tool_authoring_paths(
     providers: &ProviderModule,
     workspace_id: &coral_workspace::WorkspaceId,
 ) -> Vec<String> {
@@ -232,11 +229,11 @@ pub(crate) async fn operation_authoring_paths(
     catalogs
         .iter()
         .flat_map(|catalog| {
-            catalog.operations().iter().map(|operation| {
+            catalog.tools().iter().map(|tool| {
                 format!(
                     "{}.{}",
                     catalog.access().call_root().as_str(),
-                    operation.relative_path()
+                    tool.relative_path()
                 )
             })
         })

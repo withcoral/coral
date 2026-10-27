@@ -40,7 +40,7 @@ export function ArchiveWorkspaceButton({
           <Typography.Body as="p">This stops:</Typography.Body>
           <ul className={styles.bulletList}>
             <Typography.Body as="li">New runs</Typography.Body>
-            <Typography.Body as="li">Unsent operation calls</Typography.Body>
+            <Typography.Body as="li">Unsent tool calls</Typography.Body>
             <Typography.Body as="li">
               Changes to providers, accounts, agents and members
             </Typography.Body>

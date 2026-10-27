@@ -1,7 +1,7 @@
 //! Performs `coral.workspace.listProviders`.
 
 use coral_catalog::{ListProvidersResult, ListedProvider, ListedSetup, ListedSetupState};
-use coral_policy::ExactOperationRules;
+use coral_policy::ExactToolRules;
 use coral_provider::access::ProviderCallRoot;
 use coral_provider::{ProviderSetup, ProviderSetupState, PublishedProvider};
 
@@ -27,8 +27,7 @@ pub(super) async fn perform(host: &BuiltinHost<'_>) -> Result<serde_json::Value,
         .await
         .map_err(authority_error)?;
     let rules =
-        coral_policy::exact_operation_rules_in_transaction(&mut snapshot, host.workspace_id)
-            .await?;
+        coral_policy::exact_tool_rules_in_transaction(&mut snapshot, host.workspace_id).await?;
     snapshot.rollback().await?;
     Ok(ListProvidersResult {
         providers: providers
@@ -40,11 +39,11 @@ pub(super) async fn perform(host: &BuiltinHost<'_>) -> Result<serde_json::Value,
             .filter_map(|setup| listed_setup(host, setup))
             .collect(),
     }
-    .into_operation_result())
+    .into_tool_result())
 }
 
 /// One entry, under the Call Root a Program calls it by.
-fn listed_provider(published: &PublishedProvider, rules: &ExactOperationRules) -> ListedProvider {
+fn listed_provider(published: &PublishedProvider, rules: &ExactToolRules) -> ListedProvider {
     let provider = &published.provider;
     ListedProvider {
         call_root: provider.call_root().as_str().to_owned(),

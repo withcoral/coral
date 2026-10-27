@@ -18,17 +18,17 @@ const nodes: TreeNode[] = [
           {
             id: 'github/issues.list',
             label: 'issues.list',
-            href: '/providers/github/ops/issues.list',
+            href: '/providers/github/tools/issues.list',
           },
           {
             id: 'github/issues.create',
             label: 'issues.create',
-            href: '/providers/github/ops/issues.create',
+            href: '/providers/github/tools/issues.create',
           },
           {
             id: 'github/issues.close',
             label: 'issues.close',
-            href: '/providers/github/ops/issues.close',
+            href: '/providers/github/tools/issues.close',
             dimmed: true,
             marker: 'hollow',
           },
@@ -39,11 +39,11 @@ const nodes: TreeNode[] = [
         label: 'repos',
         detail: '2',
         children: [
-          { id: 'github/repos.get', label: 'repos.get', href: '/providers/github/ops/repos.get' },
+          { id: 'github/repos.get', label: 'repos.get', href: '/providers/github/tools/repos.get' },
           {
             id: 'github/repos.list',
             label: 'repos.list',
-            href: '/providers/github/ops/repos.list',
+            href: '/providers/github/tools/repos.list',
           },
         ],
       },
@@ -58,7 +58,7 @@ const nodes: TreeNode[] = [
       {
         id: 'weather/getForecast',
         label: 'getForecast',
-        href: '/providers/weather/ops/getForecast',
+        href: '/providers/weather/tools/getForecast',
       },
     ],
   },
@@ -84,4 +84,4 @@ type Story = StoryObj<typeof meta>
 
 export const Expanded: Story = {}
 export const Collapsed: Story = { args: { defaultCollapsedIds: ['github', 'weather'] } }
-export const Empty: Story = { args: { nodes: [], emptyMessage: 'No operations match' } }
+export const Empty: Story = { args: { nodes: [], emptyMessage: 'No tools match' } }

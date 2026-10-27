@@ -23,8 +23,8 @@ pub enum ProviderBlocker {
     SharedAccountRequired,
     /// The Provider requires credentials but its account setting supplies none.
     AccountSettingIncompatible,
-    /// Every Operation is structurally unavailable or policy-disabled.
-    NoOperationsReady,
+    /// Every Tool is structurally unavailable or policy-disabled.
+    NoToolsReady,
 }
 
 /// One Provider and the selected caller's current blockers.
@@ -37,11 +37,11 @@ pub struct ProviderReadiness {
 }
 
 impl ProviderReadiness {
-    /// Combines discovery's exact policy/Operation evidence with lifecycle blockers.
+    /// Combines discovery's exact policy/Tool evidence with lifecycle blockers.
     /// Account blockers do not hide policy/structural blockers; readiness is never stored.
     #[must_use]
-    pub fn with_operation_readiness(mut self, has_ready_operation: bool) -> Self {
-        if !has_ready_operation
+    pub fn with_tool_readiness(mut self, has_ready_tool: bool) -> Self {
+        if !has_ready_tool
             && !self.blockers.iter().any(|blocker| {
                 matches!(
                     blocker,
@@ -49,7 +49,7 @@ impl ProviderReadiness {
                 )
             })
         {
-            self.blockers.push(ProviderBlocker::NoOperationsReady);
+            self.blockers.push(ProviderBlocker::NoToolsReady);
         }
         self
     }
@@ -76,8 +76,8 @@ pub struct AgentProviderInspection {
 }
 
 /// Supplies Provider inspection with lifecycle and route blockers inside the
-/// caller's snapshot. Search adds policy/structural Operation evidence. A
-/// User sees a Provider only when it reaches one of its Operations.
+/// caller's snapshot. Search adds policy/structural Tool evidence. A
+/// User sees a Provider only when it reaches one of its Tools.
 /// # Errors
 /// Returns persistence failures; never inspects another User's Account.
 pub async fn inspect_provider_readiness_in_transaction(

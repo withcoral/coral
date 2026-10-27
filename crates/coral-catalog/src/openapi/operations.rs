@@ -1,11 +1,11 @@
-//! One traversal defines Operation identity, references and server declaration inheritance.
+//! One traversal defines Tool identity, references and server declaration inheritance.
 use super::schema::{ReferenceObjectKind, child_pointer, resolve_reference_object};
-use crate::{CatalogDiagnostic, HttpMethod, OperationKey};
+use crate::{CatalogDiagnostic, HttpMethod, ToolKey};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
 
 pub(super) struct LocatedOperation {
-    pub key: OperationKey,
+    pub key: ToolKey,
     pub path: String,
     /// The query a path key such as `/v1/models?beta=true` fixes.
     pub query: Option<String>,
@@ -40,7 +40,7 @@ pub(super) fn locate_operations(
     for path in paths.keys().filter(|path| !path.starts_with("x-")) {
         if !path.starts_with('/') || path.chars().any(char::is_control) {
             return Err(CatalogDiagnostic::stable(
-                "invalid_operation_path",
+                "invalid_tool_path",
                 "an OpenAPI Operation path does not begin with '/' or is unsafe",
             ));
         }
@@ -73,11 +73,11 @@ pub(super) fn locate_operations(
                     "an identifiable OpenAPI Operation is not an object",
                 )
             })?;
-            let key = operation_key(object, method, path)?;
+            let key = tool_key(object, method, path)?;
             if !keys.insert(key.clone()) {
                 return Err(CatalogDiagnostic::stable(
-                    "duplicate_operation_key",
-                    "the pinned OpenAPI document produces duplicate Operation Keys",
+                    "duplicate_tool_key",
+                    "the pinned OpenAPI document produces duplicate Tool Keys",
                 ));
             }
             let pointer = child_pointer(&path_item.pointer, name);
@@ -105,8 +105,8 @@ pub(super) fn locate_operations(
     }
     if operations.is_empty() {
         return Err(CatalogDiagnostic::stable(
-            "empty_operation_catalog",
-            "the pinned OpenAPI document contains no callable Operations",
+            "empty_tool_catalog",
+            "the pinned OpenAPI document contains no callable Tools",
         ));
     }
     operations.sort_by(|left, right| left.key.cmp(&right.key));
@@ -124,11 +124,11 @@ fn server_fields(object: &Map<String, Value>) -> Map<String, Value> {
         .collect()
 }
 
-fn operation_key(
+fn tool_key(
     object: &Map<String, Value>,
     method: HttpMethod,
     path: &str,
-) -> Result<OperationKey, CatalogDiagnostic> {
+) -> Result<ToolKey, CatalogDiagnostic> {
     let key = match object.get("operationId") {
         None => format!("{} {path}", method.as_str()),
         Some(Value::String(value)) if !value.is_empty() && !value.chars().any(char::is_control) => {
@@ -136,15 +136,15 @@ fn operation_key(
         }
         Some(_) => {
             return Err(CatalogDiagnostic::stable(
-                "invalid_operation_key",
+                "invalid_tool_key",
                 "an OpenAPI operationId is not a nonempty safe string",
             ));
         }
     };
-    OperationKey::parse(&key).map_err(|_invalid| {
+    ToolKey::parse(&key).map_err(|_invalid| {
         CatalogDiagnostic::stable(
-            "invalid_operation_key",
-            "an OpenAPI Operation has an invalid Operation Key",
+            "invalid_tool_key",
+            "an OpenAPI Operation has an invalid Tool Key",
         )
     })
 }

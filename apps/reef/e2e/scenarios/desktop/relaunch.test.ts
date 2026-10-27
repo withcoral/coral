@@ -72,7 +72,7 @@ test('Quit stops Desktop’s processes, and a relaunch keeps the workspace at th
         await page.goto('/')
         expect(await copyMcpEndpoint(page, app, name)).toBe(endpoint)
       })
-      await step('Find the provider’s operation over the same MCP endpoint', async () => {
+      await step('Find the provider’s tool over the same MCP endpoint', async () => {
         const workspace = new URL(endpoint).pathname.split('/')[2]
         const runner = programRunner(
           page,

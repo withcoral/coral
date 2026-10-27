@@ -2,7 +2,7 @@ import { expect, test } from 'vitest'
 import { withOwnerSession } from '../../../../support/actors.ts'
 import { openApiDocument } from '../../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   accountQuestion,
   addProviderFromFile,
   chooseAccount,
@@ -51,7 +51,7 @@ test('Secret entry with one shared account, then each person’s own account', a
       // The suggested namespace, ledger, belongs to the first provider.
       await page.getByLabel('Namespace', { exact: true }).fill('ledger_theirs')
       await confirmConfiguration(page, 'Bearer token')
-      await acceptOperations(page)
+      await acceptTools(page)
       await accountQuestion(page).waitFor()
       expect(await page.getByLabel('Token', { exact: true }).count()).toBe(0)
       await chooseAccount(page, 'own-later')
@@ -60,7 +60,7 @@ test('Secret entry with one shared account, then each person’s own account', a
       // You cannot call it before you connect your own account.
       const theirs = { path: new URL(page.url()).pathname }
       await waitForProviderStatus(page, theirs, 'Connect your account')
-      // Both list the same operation; open the new provider's own row.
+      // Both list the same tool; open the new provider's own row.
       await page
         .locator(`#provider-group-${theirs.path.split('/').at(-1)}`)
         .getByRole('link', { name: 'listEntries', exact: true })
@@ -88,7 +88,7 @@ test('Secret entry with one shared account, then each person’s own account', a
       await page
         .getByRole('dialog')
         .getByRole('listitem')
-        .filter({ hasText: 'Every operation under coral.providers.ledger' })
+        .filter({ hasText: 'Every tool under coral.providers.ledger' })
         .waitFor()
       await page
         .getByRole('dialog')

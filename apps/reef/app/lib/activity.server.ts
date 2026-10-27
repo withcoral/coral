@@ -59,8 +59,8 @@ import {
   type ManagementApi,
 } from './management.server'
 import { savedFunctionHref } from './management-views.server'
-import { listAllOperations, listAllProviders, providerPath } from './providers.server'
-import { operationOwner } from './call-root'
+import { listAllTools, listAllProviders, providerPath } from './providers.server'
+import { toolOwner } from './call-root'
 import { connectionState } from './accounts.server'
 import { liveScopeOf, MAX_EXPANDED_RECORDS, type RunRow } from '@/views/activity/types'
 import {
@@ -175,7 +175,7 @@ async function listedOrNone<T>(read: () => Promise<T[]>) {
 }
 /**
  * Links each discovery target to today's catalog. A target keeps no link when
- * its operation, provider or function is gone, or when the caller cannot list them.
+ * its tool, provider or function is gone, or when the caller cannot list them.
  */
 async function linkCurrentTargets(
   view: DiscoveryView,
@@ -185,26 +185,26 @@ async function linkCurrentTargets(
   const targets =
     view.kind === 'search' ? view.page.hits : view.kind === 'describe' ? [view.description] : []
   const workspace = workspaceOf(interaction.name)
-  if (targets.some((target) => target.kind === 'operation')) {
+  if (targets.some((target) => target.kind === 'provider_tool')) {
     const providers = await listedOrNone(() => listAllProviders(api, workspace))
     const linked = targets.flatMap((target) => {
-      const owner = target.kind === 'operation' ? operationOwner(target.callPath, providers) : null
+      const owner = target.kind === 'provider_tool' ? toolOwner(target.callPath, providers) : null
       if (!owner) return []
-      // An untitled operation shows its path inside the provider, as the provider page does.
+      // An untitled tool shows its path inside the provider, as the provider page does.
       if (target.title === target.callPath) target.title = owner.relativePath
       return [{ target, provider: owner.provider.name, path: owner.relativePath }]
     })
-    // An update can remove an operation and keep its provider, so read the
-    // current operations of each provider that a target names.
-    const operations = new Map(
+    // An update can remove a tool and keep its provider, so read the
+    // current tools of each provider that a target names.
+    const tools = new Map(
       await Promise.all(
         [...new Set(linked.map(({ provider }) => provider))].map(
           async (provider) =>
             [
               provider,
               new Set(
-                (await listedOrNone(() => listAllOperations(api, provider))).map(
-                  (operation) => operation.relativePath,
+                (await listedOrNone(() => listAllTools(api, provider))).map(
+                  (tool) => tool.relativePath,
                 ),
               ),
             ] as const,
@@ -212,8 +212,8 @@ async function linkCurrentTargets(
       ),
     )
     for (const { target, provider, path } of linked)
-      if (operations.get(provider)?.has(path))
-        target.currentHref = `${providerPath(resourcePath(workspace), provider)}/ops/${encodeURIComponent(path)}`
+      if (tools.get(provider)?.has(path))
+        target.currentHref = `${providerPath(resourcePath(workspace), provider)}/tools/${encodeURIComponent(path)}`
   }
   // Reef opens only the caller's own functions. A function that an Agent's
   // search found belongs to the Agent, so the same path can name another function.
@@ -367,7 +367,7 @@ function invocationView(value: ActivityInvocation): InvocationRow {
     state: enumLabel(invocationStates, value.state),
     run: value.run,
     provider: value.provider,
-    operation: value.operation,
+    tool: value.tool,
     callPath: value.callPath,
     outcome: enumLabel(invocationOutcomes, value.outcome),
     sourceLocation: sourceLocationView(value.sourceLocation),
@@ -397,11 +397,11 @@ function errorView(value: ActivityProgramError): ProgramError {
       line,
       column,
     })),
-    operationCode: value.operationCode,
-    operationTraceId: value.operationTraceId,
-    operationStatus: value.operationStatus,
-    operationBody: value.operationBody,
-    operationBodyTruncated: value.operationBodyTruncated,
+    toolCode: value.toolCode,
+    toolTraceId: value.toolTraceId,
+    toolStatus: value.toolStatus,
+    toolBody: value.toolBody,
+    toolBodyTruncated: value.toolBodyTruncated,
     cause: value.cause ? errorView(value.cause) : null,
     errors: value.errors.map(errorView),
     truncated: value.truncated,
@@ -829,7 +829,7 @@ async function selectedDetail(
             comment: request.comment ?? null,
           }
           if (detail.kind === 'run') {
-            // Approval belongs to this exact operation, not its containing Run.
+            // Approval belongs to this exact tool, not its containing Run.
             // Resolve it in this response rather than redirecting and rereading history.
             const value = await api.activity.inspectInvocation(
               { name: request.invocation },
@@ -911,7 +911,7 @@ async function selectedDetail(
         else throw error
       }
       // Only a successful approval review reads the Run above. Any other request, or one
-      // that is unavailable, leaves the operation with the Run's own authorized source.
+      // that is unavailable, leaves the tool with the Run's own authorized source.
       if (detail.kind === 'invocation' && !detail.context) {
         const context = await runSourceContext(run, page, query, api, signal)
         if (context) detail.context = context
@@ -959,8 +959,8 @@ const ROOT_SCAN_PAGE = 100
 /**
  * The oldest action you can take in the selected record's Run, while live mode follows
  * it, or in the read after an approval review's decision. It reads every page of the
- * Run's current requests from the first, and times each by the operation that waits on
- * it: the earliest start, then the lowest operation identity, decides across every
+ * Run's current requests from the first, and times each by the tool that waits on
+ * it: the earliest start, then the lowest tool identity, decides across every
  * page. An approval counts only when you can decide it, and an account connection only
  * while it is pending. A request Reef cannot read is skipped.
  */
@@ -1001,7 +1001,7 @@ async function oldestRunAction(
  * list's scope, past the loaded list too, and only the Runs it may follow: a standalone
  * Run at any age, or one of a Task that started `TAKS_MAX_AGE` ago or less.
  * - `action`: the oldest action you can take in any of those Runs. Each is timed as
- *   `oldestRunAction` times it, by the operation that waits on it, so the operation
+ *   `oldestRunAction` times it, by the tool that waits on it, so the tool
  *   that started waiting first wins, not the request made first: Coral states no
  *   request time. The candidates are the Runs that run and wait on you that the list,
  *   a loaded window or your queue of required actions shows. Your queue lists a shared
@@ -1219,7 +1219,7 @@ async function requiredActions(
 }
 
 /**
- * Every action you can take in `run`, each timed by the operation that waits on it. It
+ * Every action you can take in `run`, each timed by the tool that waits on it. It
  * reads every page of the Run's current requests from `first`, or from the start. An
  * approval counts only when you can decide it, and an account connection only while it
  * is pending. A request Reef cannot read is skipped.
@@ -1265,21 +1265,21 @@ async function runActions(
   }
 }
 
-/** An action, with when its operation started and that operation's identity. */
+/** An action, with when its tool started and that tool's identity. */
 interface TimedAction {
   startedAt: bigint
-  operation: string
+  tool: string
   action: LiveAction
 }
-/** Earlier start first, then the lower operation identity, then the lower request. */
+/** Earlier start first, then the lower tool identity, then the lower request. */
 const older = (a: TimedAction, b: TimedAction) =>
   Number(a.startedAt > b.startedAt) - Number(a.startedAt < b.startedAt) ||
-  Number(a.operation > b.operation) - Number(a.operation < b.operation) ||
+  Number(a.tool > b.tool) - Number(a.tool < b.tool) ||
   Number(a.action.request > b.action.request) - Number(a.action.request < b.action.request)
 
 /**
- * The approval `name`, when you can decide it and its operation in `run` still waits on
- * it. The approval names its operation, which says when it started.
+ * The approval `name`, when you can decide it and its tool in `run` still waits on
+ * it. The approval names its tool, which says when it started.
  */
 async function approvalAction(
   name: string,
@@ -1297,7 +1297,7 @@ async function approvalAction(
     if (!invocation || invocation.run !== run || !invocation.requiresAction) return undefined
     return {
       startedAt: invocation.startedAtUnixNanos,
-      operation: invocation.name,
+      tool: invocation.name,
       action: { run, record: invocation.name, request: name },
     }
   } catch (error) {
@@ -1307,10 +1307,10 @@ async function approvalAction(
 }
 
 /**
- * The pending connections among `names`, each timed by its oldest waiting operation.
- * Coral exposes neither a request time nor an operation link on a connection. Read
+ * The pending connections among `names`, each timed by its oldest waiting tool.
+ * Coral exposes neither a request time nor a tool link on a connection. Read
  * every child page: admission order cannot break equal-time ties across pages, and
- * several operations can share one connection. This scan runs only for pending,
+ * several tools can share one connection. This scan runs only for pending,
  * readable connections; approvals use exact reads instead of scanning history.
  */
 async function connectionActions(
@@ -1342,20 +1342,20 @@ async function connectionActions(
       record.case === 'invocation' && record.value.requiresAction ? [record.value] : [],
     )
     const read = await Promise.all(
-      waiting.map((operation) =>
-        api.activity.inspectInvocation({ name: operation.name }, { signal }).catch((error) => {
+      waiting.map((tool) =>
+        api.activity.inspectInvocation({ name: tool.name }, { signal }).catch((error) => {
           if (!unavailable(error)) throw error
           return undefined
         }),
       ),
     )
-    const candidates = waiting.flatMap((operation, index) =>
+    const candidates = waiting.flatMap((tool, index) =>
       (read[index]?.requests.map(requestReferenceView) ?? []).flatMap((reference) =>
         reference.kind === 'account_connection' && pending.has(reference.name)
           ? [
               {
-                startedAt: operation.startedAtUnixNanos,
-                operation: operation.name,
+                startedAt: tool.startedAtUnixNanos,
+                tool: tool.name,
                 action: { run, record: run, request: reference.name },
               },
             ]

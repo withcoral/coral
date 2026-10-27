@@ -8,13 +8,13 @@ import {
   publishWorkspaceProvider,
 } from '../../../../support/providers.ts'
 
-test('Workspace operations preserve deep links, settings, and independent filters', async (context) => {
+test('Workspace tools preserve deep links, settings, and independent filters', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {
     let installation = ''
     let providersPage = ''
-    const table = page.getByRole('table', { name: 'Operations', exact: true })
-    const filter = page.getByRole('searchbox', { name: 'Filter operations', exact: true })
-    await step('Open the workspace operations table', async () => {
+    const table = page.getByRole('table', { name: 'Tools', exact: true })
+    const filter = page.getByRole('searchbox', { name: 'Filter tools', exact: true })
+    await step('Open the workspace tools table', async () => {
       const workspace = await createWorkspace(actor.accessToken, `Catalog ${crypto.randomUUID()}`)
       await publishWorkspaceProvider(
         actor.accessToken,
@@ -41,7 +41,7 @@ test('Workspace operations preserve deep links, settings, and independent filter
         `workspaces/${workspace}`,
         // The second provider is taller than the table's port, so its tab scrolls.
         openApiDocument('Second catalog', {
-          another: { summary: 'Another operation' },
+          another: { summary: 'Another tool' },
           ...Object.fromEntries(Array.from({ length: 24 }, (_, index) => [`more${index}`, {}])),
         }),
         'other',
@@ -49,8 +49,8 @@ test('Workspace operations preserve deep links, settings, and independent filter
       await page.goto(installation)
       await table.waitFor()
     })
-    await step('Open and reload an operation details drawer', async () => {
-      await page.goto(`${installation}/ops/broken`)
+    await step('Open and reload a tool details drawer', async () => {
+      await page.goto(`${installation}/tools/broken`)
       await page
         .getByRole('dialog', { name: 'broken', exact: true })
         .getByText('Unavailable', { exact: true })
@@ -58,13 +58,13 @@ test('Workspace operations preserve deep links, settings, and independent filter
       await page.getByRole('dialog', { name: 'broken', exact: true }).waitFor()
       await page.reload()
       await page.getByRole('dialog', { name: 'broken', exact: true }).waitFor()
-      expect(new URL(page.url()).pathname).toBe(`${installation}/ops/broken`)
+      expect(new URL(page.url()).pathname).toBe(`${installation}/tools/broken`)
       const drawer = page.getByRole('dialog', { name: 'broken', exact: true })
       await drawer.waitFor()
       await drawer.getByRole('button', { name: 'Close', exact: true }).click()
       await page.waitForURL((url) => url.pathname === installation)
       await table.getByRole('link', { name: 'works', exact: true }).click()
-      await page.waitForURL((url) => url.pathname === `${installation}/ops/works`)
+      await page.waitForURL((url) => url.pathname === `${installation}/tools/works`)
       await page.getByRole('dialog', { name: 'works', exact: true }).waitFor()
       await page.keyboard.press('Escape')
       await page.waitForURL((url) => url.pathname === installation)
@@ -82,7 +82,7 @@ test('Workspace operations preserve deep links, settings, and independent filter
       await page.goForward()
       await settings.waitFor()
       await page.setViewportSize({ width: 390, height: 844 })
-      await page.goto(`${installation}/ops/works`)
+      await page.goto(`${installation}/tools/works`)
       const drawer = page.getByRole('dialog', { name: 'works', exact: true })
       await drawer.waitFor()
       // The drawer slides in from the edge, then rests against it.
@@ -144,8 +144,8 @@ test('Workspace operations preserve deep links, settings, and independent filter
       await expect.poll(() => table.evaluate((element) => element.scrollTop)).toBe(0)
       await page.setViewportSize({ width: 1440, height: 1000 })
     })
-    await step('Reject an unknown operation URL', async () => {
-      const response = await page.goto(`${installation}/ops/notAnOperation`)
+    await step('Reject an unknown tool URL', async () => {
+      const response = await page.goto(`${installation}/tools/notAnTool`)
       expect(response?.status()).toBe(404)
       expect(await page.getByRole('dialog').count()).toBe(0)
     })

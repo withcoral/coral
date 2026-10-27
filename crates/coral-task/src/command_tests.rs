@@ -107,7 +107,7 @@ impl Fixture {
         }
     }
 
-    /// Publishes a one-Operation Provider under `namespace`, so a search may
+    /// Publishes a one-Tool Provider under `namespace`, so a search may
     /// filter by it.
     async fn publish_provider(&self, namespace: &str) {
         self.publish_openapi(
@@ -720,7 +720,7 @@ async fn completion_feedback_creates_no_interaction() {
             &fixture.workspace,
             goal.id(),
             TaskOutcome::Failure,
-            Some("No operations"),
+            Some("No tools"),
             wall_time(),
         )
         .await
@@ -877,7 +877,7 @@ async fn real_recording_and_commit_faults_prevent_uncommitted_saves_and_run_acce
                 &coral_functions::SavedFunctionPath::parse("answer").unwrap(),
             )
             .await
-            .expect_err("operation must fail");
+            .expect_err("tool must fail");
         let history = fixture
             .tasks
             .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
@@ -1025,7 +1025,7 @@ async fn a_begun_attempt_can_accept_after_closure_and_lost_handoff_keeps_the_run
             &coral_run::RunObservation::immediate(None, 100).unwrap(),
         )
         .await
-        .expect_err("operation must fail");
+        .expect_err("tool must fail");
 }
 
 #[tokio::test]
@@ -1086,7 +1086,7 @@ async fn unknown_attempts_and_completion_feedback_expire_without_deleting_curren
             &fixture.workspace,
             goal.id(),
             TaskOutcome::Failure,
-            Some("No operations"),
+            Some("No tools"),
             ended_at,
         )
         .await
@@ -1098,7 +1098,7 @@ async fn unknown_attempts_and_completion_feedback_expire_without_deleting_curren
             .await
             .unwrap()
             .feedback(),
-        Some("No operations")
+        Some("No tools")
     );
     assert!(
         !fixture

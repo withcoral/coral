@@ -3,7 +3,7 @@
 //! Reef page where a person finishes it. The call never waits for that person.
 //! `coral.workspace.listProviders` lists the Providers a Program can check first.
 //! `coral.workspace.getProvider` reads one Provider's Provider Configuration.
-//! `coral.workspace.getPolicy` reads one Provider's exact Operation rules.
+//! `coral.workspace.getPolicy` reads one Provider's exact Tool rules.
 //! `coral.workspace.updatePolicy` sets them.
 use super::*;
 use coral_provider::{ProviderSetupId, ProviderSetupState};
@@ -13,7 +13,7 @@ pub(super) const DOCUMENT: &str = r#"{"openapi":"3.1.0","info":{"title":"Weather
 pub(super) const PRIVATE_DOCUMENT: &str = r#"{"openapi":"3.1.0","info":{"title":"Weather","version":"1"},"security":[{"bearer":[]}],"components":{"securitySchemes":{"bearer":{"type":"http","scheme":"bearer"}}},"servers":[{"url":"https://weather.example"}],"paths":{"/forecast":{"get":{"operationId":"getForecast","responses":{"200":{"description":"OK"}}}}}}"#;
 
 /// A Program that calls `addProvider` with exactly `arguments` and returns
-/// its Operation Result, or the JavaScript expression `caught` for the Coral
+/// its Tool Result, or the JavaScript expression `caught` for the Coral
 /// Failure it catches, such as `error.code`.
 fn add_provider(arguments: &serde_json::Value, caught: &str) -> RunSubmission {
     submission(
@@ -21,7 +21,7 @@ fn add_provider(arguments: &serde_json::Value, caught: &str) -> RunSubmission {
         try {
             return await coral.workspace.addProvider(ARGUMENTS);
         } catch (error) {
-            if (!(error instanceof coral.OperationError)) throw error;
+            if (!(error instanceof coral.ToolError)) throw error;
             return CAUGHT;
         }
     "
@@ -112,13 +112,13 @@ impl AdminScope {
         self.owner.authenticated_user().unwrap().clone()
     }
 
-    async fn set_access(&self, state: OperationAccessState) {
+    async fn set_access(&self, state: ToolAccessState) {
         self.set_access_to("coral.workspace.addProvider", state)
             .await;
     }
 
-    /// Sets the Operation Access State of the Operation at `call_path`.
-    pub(super) async fn set_access_to(&self, call_path: &str, state: OperationAccessState) {
+    /// Sets the Tool Access State of the Tool at `call_path`.
+    pub(super) async fn set_access_to(&self, call_path: &str, state: ToolAccessState) {
         self.fixture
             .policies
             .set_access_state(
@@ -127,13 +127,13 @@ impl AdminScope {
                 state,
             )
             .await
-            .expect("set the Operation Access State");
+            .expect("set the Tool Access State");
     }
 
-    /// The policy target of the Operation at `call_path`.
-    pub(super) async fn policy_target(&self, call_path: &str) -> OperationPolicyTarget {
+    /// The policy target of the Tool at `call_path`.
+    pub(super) async fn policy_target(&self, call_path: &str) -> ToolPolicyTarget {
         let mut transaction = self.fixture.database.begin().await.unwrap();
-        let target = coral_provider::resolve_invocation_operation_in_transaction(
+        let target = coral_provider::resolve_invocation_tool_in_transaction(
             &mut transaction,
             &self.workspace_id,
             coral_provider::InvocationCaller::new(&self.fixture.workspaces, &self.owner, 12),
@@ -143,16 +143,16 @@ impl AdminScope {
         .unwrap()
         .unwrap_or_else(|| panic!("{call_path} resolves"));
         transaction.rollback().await.unwrap();
-        OperationPolicyTarget::new(
+        ToolPolicyTarget::new(
             self.workspace_id.clone(),
             target.provider_access().id().clone(),
-            target.operation().key().clone(),
+            target.tool().key().clone(),
         )
     }
 
-    /// The access state of the Operation under `call_path`, and whether a
+    /// The access state of the Tool under `call_path`, and whether a
     /// rule sets it.
-    async fn access(&self, call_path: &str) -> (OperationAccessState, bool) {
+    async fn access(&self, call_path: &str) -> (ToolAccessState, bool) {
         let decision = self
             .fixture
             .policies
@@ -162,7 +162,7 @@ impl AdminScope {
         (decision.access_state(), decision.is_explicit())
     }
 
-    /// Operation-policy lifecycle events.
+    /// Tool-policy lifecycle events.
     async fn policy_events(&self) -> Vec<coral_policy::AdministrativeLifecycleEvent> {
         self.fixture
             .policies
@@ -341,8 +341,8 @@ impl AdminScope {
             .clone()
     }
 
-    /// How many Operations the Workspace's Built-in Provider has.
-    async fn builtin_operations(&self) -> usize {
+    /// How many Tools the Workspace's Built-in Provider has.
+    async fn builtin_tools(&self) -> usize {
         let builtin = self
             .fixture
             .providers
@@ -409,10 +409,7 @@ pub(super) fn final_value(update: &crate::RunUpdate) -> serde_json::Value {
 // returning anything but the Reef page for that Setup.
 #[tokio::test]
 async fn add_provider_returns_the_reef_page_that_finishes_its_setup() {
-    for access in [
-        OperationAccessState::ApprovalRequired,
-        OperationAccessState::Enabled,
-    ] {
+    for access in [ToolAccessState::ApprovalRequired, ToolAccessState::Enabled] {
         let scope = AdminScope::new("user:add-provider").await;
         scope.set_access(access).await;
         let server = private_document_server().await;
@@ -421,7 +418,7 @@ async fn add_provider_returns_the_reef_page_that_finishes_its_setup() {
         let run = scope
             .start(&scope.owner, add_provider(&serde_json::json!({ "namespace": "weather", "source": source, "credentialRoute": "fixed" }), "error.code"))
             .await;
-        if access == OperationAccessState::ApprovalRequired {
+        if access == ToolAccessState::ApprovalRequired {
             wait_for_approval(
                 &scope.fixture.approvals(),
                 &scope.owner,
@@ -491,7 +488,7 @@ async fn add_provider_returns_the_reef_page_that_finishes_its_setup() {
 #[tokio::test]
 async fn coral_publishes_a_provider_that_needs_nobody_to_sign_in() {
     let scope = AdminScope::new("user:self-publish").await;
-    scope.set_access(OperationAccessState::Enabled).await;
+    scope.set_access(ToolAccessState::Enabled).await;
     let run = scope
         .start(
             &scope.owner,
@@ -515,7 +512,7 @@ async fn coral_publishes_a_provider_that_needs_nobody_to_sign_in() {
                 "displayName": "Weather",
                 "credentialRoute": "none",
                 "authentication": "none",
-                "operations": 1,
+                "tools": 1,
                 "accountRequired": false,
             },
             "metadata": { "kind": "builtin" },
@@ -637,7 +634,7 @@ enum PublicationFault {
 async fn a_failed_publication_is_a_failure_the_program_catches() {
     for fault in [PublicationFault::Failed, PublicationFault::SetupCanceled] {
         let mut scope = AdminScope::new("user:failed-publication").await;
-        scope.set_access(OperationAccessState::Enabled).await;
+        scope.set_access(ToolAccessState::Enabled).await;
         let publisher: Arc<dyn coral_provider::WorkspaceProviderPublisher> = match fault {
             PublicationFault::Failed => Arc::new(FailingPublisher(workflow(&scope.fixture))),
             PublicationFault::SetupCanceled => {
@@ -689,7 +686,7 @@ async fn a_failed_publication_is_a_failure_the_program_catches() {
 #[tokio::test]
 async fn a_configuration_the_source_cannot_take_leaves_no_setup_open() {
     let scope = AdminScope::new("user:route-mismatch").await;
-    scope.set_access(OperationAccessState::Enabled).await;
+    scope.set_access(ToolAccessState::Enabled).await;
     let before = scope.created_setups().await;
     let run = scope
         .start(
@@ -726,7 +723,7 @@ async fn a_configuration_the_source_cannot_take_leaves_no_setup_open() {
 #[tokio::test]
 async fn a_source_that_fails_to_answer_is_not_the_programs_input_to_correct() {
     let scope = AdminScope::new("user:source-fails").await;
-    scope.set_access(OperationAccessState::Enabled).await;
+    scope.set_access(ToolAccessState::Enabled).await;
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/unavailable.json"))
@@ -787,7 +784,7 @@ async fn a_source_that_fails_to_answer_is_not_the_programs_input_to_correct() {
 #[tokio::test]
 async fn a_namespace_in_use_fails_before_any_fetch_or_setup() {
     let scope = AdminScope::new("user:namespace-in-use").await;
-    scope.set_access(OperationAccessState::Enabled).await;
+    scope.set_access(ToolAccessState::Enabled).await;
     scope
         .fixture
         .providers
@@ -870,7 +867,7 @@ impl coral_provider::WorkspaceProviderPublisher for NamespaceTakenFirst {
 #[tokio::test]
 async fn a_namespace_taken_while_coral_publishes_is_a_conflict() {
     let mut scope = AdminScope::new("user:namespace-race").await;
-    scope.set_access(OperationAccessState::Enabled).await;
+    scope.set_access(ToolAccessState::Enabled).await;
     scope.fixture.runs =
         scope
             .fixture
@@ -928,7 +925,7 @@ async fn a_run_ends_before_the_call_returns(route: &str, document: &str) {
     scope.fixture.runs.invocation_observer = Arc::new(RunEndsAfterSetup {
         clock: scope.fixture.clock.clone(),
     });
-    scope.set_access(OperationAccessState::Enabled).await;
+    scope.set_access(ToolAccessState::Enabled).await;
     let before = scope.created_setups().await;
     let run = scope
         .start(
@@ -1057,7 +1054,7 @@ async fn recovery_settles_a_lost_publication_from_its_publication() {
             .runs
             .clone()
             .with_provider_publisher(publisher.clone());
-        scope.set_access(OperationAccessState::Enabled).await;
+        scope.set_access(ToolAccessState::Enabled).await;
         let run = scope
             .start(
                 &scope.owner,
@@ -1177,13 +1174,13 @@ async fn invalid_input_fails_before_storage_approval_fetch_or_setup() {
 
 // Catches: an older Coral that a rolling deploy runs beside a newer one
 // failing an Invocation as corrupt data, or asking an Owner to approve an
-// Operation it cannot perform, after the newer Coral updated at boot.
+// Tool it cannot perform, after the newer Coral updated at boot.
 #[tokio::test]
-async fn an_operation_this_version_does_not_perform_fails_before_approval() {
-    let scope = AdminScope::new("user:unknown-operation").await;
-    let newer_catalog = coral_catalog::BuiltinCatalog::with_unknown_operations([(
+async fn a_tool_this_version_does_not_perform_fails_before_approval() {
+    let scope = AdminScope::new("user:unknown-tool").await;
+    let newer_catalog = coral_catalog::BuiltinCatalog::with_unknown_tools([(
         "listThings",
-        coral_catalog::OperationHints::default(),
+        coral_catalog::ToolHints::default(),
     )])
     .expect("the newer catalog prepares");
     let newer = ProviderModule::new(
@@ -1217,7 +1214,7 @@ async fn an_operation_this_version_does_not_perform_fails_before_approval() {
                 try {
                     return await coral.workspace.listThings({});
                 } catch (error) {
-                    if (!(error instanceof coral.OperationError)) throw error;
+                    if (!(error instanceof coral.ToolError)) throw error;
                     return error.code;
                 }
             ",
@@ -1227,7 +1224,7 @@ async fn an_operation_this_version_does_not_perform_fails_before_approval() {
 
     assert_final_code(
         &scope.terminal(&scope.owner, &run).await,
-        "operation_unavailable",
+        "tool_unavailable",
     );
     assert!(
         scope
@@ -1252,7 +1249,7 @@ async fn an_operation_this_version_does_not_perform_fails_before_approval() {
 )]
 async fn the_program_configures_how_a_person_signs_in() {
     let scope = AdminScope::new("user:sign-in-configuration").await;
-    scope.set_access(OperationAccessState::Enabled).await;
+    scope.set_access(ToolAccessState::Enabled).await;
     let bot_header = serde_json::json!({
         "method": "header_credentials",
         "headers": { "authorization": { "source": "field", "field": "token", "prefix": "Bot " } },
@@ -1389,9 +1386,7 @@ impl wiremock::Respond for HeldDocument {
 #[tokio::test]
 async fn an_owner_demoted_while_coral_performs_the_call_loses_it() {
     let scope = AdminScope::new("user:demoting-owner").await;
-    scope
-        .set_access(OperationAccessState::ApprovalRequired)
-        .await;
+    scope.set_access(ToolAccessState::ApprovalRequired).await;
     let demoted = scope
         .fixture
         .workspace_user(
@@ -1497,7 +1492,7 @@ async fn an_oauth_protected_mcp_server_needs_a_person_to_sign_in() {
     const BEARER: &str =
         r#"Bearer resource_metadata="{uri}/.well-known/oauth-protected-resource/mcp""#;
     let scope = AdminScope::new("user:protected-mcp").await;
-    scope.set_access(OperationAccessState::Enabled).await;
+    scope.set_access(ToolAccessState::Enabled).await;
     let discovery = |code: &str| {
         format!(" at `source`: Coral could not discover how to sign in to the MCP server ({code})")
     };
@@ -1562,7 +1557,7 @@ async fn an_oauth_protected_mcp_server_needs_a_person_to_sign_in() {
                 value,
                 serde_json::json!({
                     "code": "invalid_input",
-                    "message": format!("Operation arguments are invalid{message}"),
+                    "message": format!("Tool arguments are invalid{message}"),
                 }),
                 "{arguments}"
             );
@@ -1608,7 +1603,7 @@ async fn an_oauth_protected_mcp_server_needs_a_person_to_sign_in() {
 async fn an_invalid_argument_names_what_to_correct() {
     const CANARY: &str = "sk-canary";
     let scope = AdminScope::new("user:invalid-argument-reason").await;
-    scope.set_access(OperationAccessState::Enabled).await;
+    scope.set_access(ToolAccessState::Enabled).await;
     for (arguments, message) in [
         (
             valid_with(serde_json::json!({ "namespace": "not-an-identifier" })),
@@ -1730,7 +1725,7 @@ async fn an_invalid_argument_names_what_to_correct() {
             final_value(&scope.terminal(&scope.owner, &run).await),
             serde_json::json!({
                 "code": "invalid_input",
-                "message": format!("Operation arguments are invalid{message}"),
+                "message": format!("Tool arguments are invalid{message}"),
             }),
             "{arguments}"
         );
@@ -1740,13 +1735,13 @@ async fn an_invalid_argument_names_what_to_correct() {
     }
 }
 
-// Catches: a Built-in Operation's reach that ignores the Workspace action it
+// Catches: a Built-in Tool's reach that ignores the Workspace action it
 // declares, a host that performs listProviders or getPolicy only for a User,
 // or a read that waits for approval.
 #[tokio::test]
-async fn members_and_agents_list_providers_and_get_policy_but_reach_no_owner_operation() {
+async fn members_and_agents_list_providers_and_get_policy_but_reach_no_owner_tool() {
     let scope = AdminScope::new("user:admin-owner").await;
-    scope.set_access(OperationAccessState::Enabled).await;
+    scope.set_access(ToolAccessState::Enabled).await;
     scope.publish_weather().await;
     let member = organization_user(
         scope.fixture.database.clone(),
@@ -1770,7 +1765,7 @@ async fn members_and_agents_list_providers_and_get_policy_but_reach_no_owner_ope
     let before = scope.lifecycle_events().await;
     let policy_before = scope.policy_events().await;
     for principal in [AuthenticatedPrincipal::user(member), agent] {
-        for (operation, arguments) in [
+        for (tool, arguments) in [
             (
                 "addProvider",
                 serde_json::json!({ "namespace": "other", "source": document_source(), "credentialRoute": "none" }),
@@ -1778,22 +1773,19 @@ async fn members_and_agents_list_providers_and_get_policy_but_reach_no_owner_ope
             ("getProvider", serde_json::json!({ "namespace": "weather" })),
             (
                 "updatePolicy",
-                serde_json::json!({ "namespace": "weather", "operations": { "getForecast": "disabled" } }),
+                serde_json::json!({ "namespace": "weather", "tools": { "getForecast": "disabled" } }),
             ),
         ] {
             let run = scope
-                .start(
-                    &principal,
-                    workspace_call(operation, &arguments.to_string()),
-                )
+                .start(&principal, workspace_call(tool, &arguments.to_string()))
                 .await;
             assert_eq!(
                 final_value(&scope.terminal(&principal, &run).await),
                 serde_json::json!({
-                    "code": "operation_not_found",
-                    "message": "Operation Call Path was not found",
+                    "code": "tool_not_found",
+                    "message": "Tool Call Path was not found",
                 }),
-                "{operation}"
+                "{tool}"
             );
         }
 
@@ -1845,7 +1837,7 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
     let source = url_source(&server);
     // The default deployment policy rejects the loopback test server.
     let scope = AdminScope::new("user:outbound-policy").await;
-    scope.set_access(OperationAccessState::Enabled).await;
+    scope.set_access(ToolAccessState::Enabled).await;
     let before = scope.created_setups().await;
     let production = RunModule::new(
         DestinationPolicy::default(),
@@ -1891,32 +1883,32 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
     assert_eq!(scope.setups_created_since(&before).await.len(), 1);
 }
 
-/// A Program that calls the Built-in `operation` with `arguments`, the
-/// JavaScript argument list, and returns its Operation Result or the failure
+/// A Program that calls the Built-in `tool` with `arguments`, the
+/// JavaScript argument list, and returns its Tool Result or the failure
 /// it catches.
-pub(super) fn workspace_call(operation: &str, arguments: &str) -> RunSubmission {
+pub(super) fn workspace_call(tool: &str, arguments: &str) -> RunSubmission {
     submission(
         &"
         try {
-            return await coral.workspace.OPERATION(ARGUMENTS);
+            return await coral.workspace.TOOL(ARGUMENTS);
         } catch (error) {
-            if (!(error instanceof coral.OperationError)) throw error;
+            if (!(error instanceof coral.ToolError)) throw error;
             return { code: error.code, message: error.message };
         }
     "
-        .replace("OPERATION", operation)
+        .replace("TOOL", tool)
         .replace("ARGUMENTS", arguments),
     )
 }
 
 // Catches: a result that misleads a Program about taken Call Roots, such as
-// a disabled Provider not marked disabled, an operations count that includes
-// an Operation the Provider's state or policy stops the caller calling, a read
+// a disabled Provider not marked disabled, a tools count that includes
+// a Tool the Provider's state or policy stops the caller calling, a read
 // that waits for approval, or an argument the call silently ignores.
 #[tokio::test]
 async fn list_providers_lists_every_provider_without_approval() {
     let scope = AdminScope::new("user:list-providers").await;
-    scope.set_access(OperationAccessState::Disabled).await;
+    scope.set_access(ToolAccessState::Disabled).await;
     let weather = scope.publish_weather().await;
     scope
         .fixture
@@ -1930,7 +1922,7 @@ async fn list_providers_lists_every_provider_without_approval() {
         )
         .await
         .unwrap();
-    let builtin_operations = scope.builtin_operations().await;
+    let builtin_tools = scope.builtin_tools().await;
     let listed = serde_json::json!({
         "data": {
             "providers": [
@@ -1942,7 +1934,7 @@ async fn list_providers_lists_every_provider_without_approval() {
                     "credentialRoute": "none",
                     "authentication": "none",
                     // Policy disables addProvider.
-                    "operations": builtin_operations - 1,
+                    "tools": builtin_tools - 1,
                     "accountRequired": false,
                 },
                 {
@@ -1952,7 +1944,7 @@ async fn list_providers_lists_every_provider_without_approval() {
                     "state": "disabled",
                     "credentialRoute": "none",
                     "authentication": "none",
-                    "operations": 0,
+                    "tools": 0,
                     "accountRequired": false,
                 },
             ],
@@ -1969,7 +1961,7 @@ async fn list_providers_lists_every_provider_without_approval() {
             r#"{ "namespace": "weather" }"#,
             serde_json::json!({
                 "code": "invalid_input",
-                "message": "Operation arguments are invalid at `namespace`: unknown field; \
+                "message": "Tool arguments are invalid at `namespace`: unknown field; \
                             pass an empty object",
             }),
         ),
@@ -1977,7 +1969,7 @@ async fn list_providers_lists_every_provider_without_approval() {
             "[]",
             serde_json::json!({
                 "code": "invalid_input",
-                "message": "Operation arguments are invalid: pass an empty object",
+                "message": "Tool arguments are invalid: pass an empty object",
             }),
         ),
     ] {
@@ -2036,7 +2028,7 @@ async fn public_mcp_server() -> MockServer {
 #[tokio::test]
 async fn get_provider_reads_back_the_configuration_a_program_saved() {
     let scope = AdminScope::new("user:get-provider").await;
-    scope.set_access(OperationAccessState::Enabled).await;
+    scope.set_access(ToolAccessState::Enabled).await;
     let document_server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/openapi.json"))
@@ -2131,17 +2123,17 @@ async fn get_provider_reads_back_the_configuration_a_program_saved() {
 #[tokio::test]
 async fn get_provider_and_get_policy_name_an_absent_provider() {
     let scope = AdminScope::new("user:get-provider-absent").await;
-    for operation in ["getProvider", "getPolicy"] {
+    for tool in ["getProvider", "getPolicy"] {
         let run = scope
             .start(
                 &scope.owner,
-                workspace_call(operation, r#"{ "namespace": "forecasts" }"#),
+                workspace_call(tool, r#"{ "namespace": "forecasts" }"#),
             )
             .await;
         assert_eq!(
             final_value(&scope.terminal(&scope.owner, &run).await),
             serde_json::json!({ "code": "provider_not_found", "message": "Provider was not found" }),
-            "{operation}"
+            "{tool}"
         );
     }
 }
@@ -2155,7 +2147,7 @@ async fn update_policy_sets_the_sent_paths_once_an_owner_approves() {
     let before = scope.policy_events().await;
     assert_eq!(
         scope.access("coral.workspace.updatePolicy").await,
-        (OperationAccessState::ApprovalRequired, false),
+        (ToolAccessState::ApprovalRequired, false),
         "updatePolicy waits for approval by default"
     );
     let run = scope
@@ -2163,7 +2155,7 @@ async fn update_policy_sets_the_sent_paths_once_an_owner_approves() {
             &scope.owner,
             workspace_call(
                 "updatePolicy",
-                r#"{ namespace: "weather", operations: { getForecast: "disabled" } }"#,
+                r#"{ namespace: "weather", tools: { getForecast: "disabled" } }"#,
             ),
         )
         .await;
@@ -2176,7 +2168,7 @@ async fn update_policy_sets_the_sent_paths_once_an_owner_approves() {
     .await;
     assert_eq!(
         scope.access("coral.providers.weather.getForecast").await,
-        (OperationAccessState::Enabled, false),
+        (ToolAccessState::Enabled, false),
         "nothing changes before approval"
     );
 
@@ -2184,13 +2176,13 @@ async fn update_policy_sets_the_sent_paths_once_an_owner_approves() {
     assert_eq!(
         final_value(&scope.terminal(&scope.owner, &run).await),
         serde_json::json!({
-            "data": { "namespace": "weather", "operations": { "getForecast": "disabled" } },
+            "data": { "namespace": "weather", "tools": { "getForecast": "disabled" } },
             "metadata": { "kind": "builtin" },
         })
     );
     assert_eq!(
         scope.access("coral.providers.weather.getForecast").await,
-        (OperationAccessState::Disabled, true)
+        (ToolAccessState::Disabled, true)
     );
     let events = scope.policy_events().await;
     assert_eq!(
@@ -2214,53 +2206,47 @@ async fn update_policy_rejects_an_argument_problem_before_admission() {
     let run = scope
         .start(
             &scope.owner,
-            workspace_call(
-                "updatePolicy",
-                r#"{ namespace: "weather", operations: {} }"#,
-            ),
+            workspace_call("updatePolicy", r#"{ namespace: "weather", tools: {} }"#),
         )
         .await;
     assert_eq!(
         final_value(&scope.terminal(&scope.owner, &run).await),
         serde_json::json!({
             "code": "invalid_input",
-            "message": "Operation arguments are invalid at `operations`: name 1 to 100 Operations",
+            "message": "Tool arguments are invalid at `tools`: name 1 to 100 Tools",
         }),
     );
     assert!(!scope.recorded_an_invocation(&run).await);
     assert_eq!(scope.policy_events().await, before);
 }
 
-// Catches: a valid path applied beside one that names no Operation, a failure
+// Catches: a valid path applied beside one that names no Tool, a failure
 // that does not name the path, or a namespace that reaches a Built-in
-// Operation, updatePolicy's own included.
+// Tool, updatePolicy's own included.
 #[tokio::test]
 async fn update_policy_changes_nothing_when_a_target_is_missing() {
     let scope = AdminScope::new("user:update-policy-missing").await;
     scope.publish_weather().await;
     scope
-        .set_access_to(
-            "coral.workspace.updatePolicy",
-            OperationAccessState::Enabled,
-        )
+        .set_access_to("coral.workspace.updatePolicy", ToolAccessState::Enabled)
         .await;
     let before = scope.policy_events().await;
     for (arguments, expected) in [
         (
             serde_json::json!({
                 "namespace": "weather",
-                "operations": { "getForecast": "disabled", "getAlerts": "disabled" },
+                "tools": { "getForecast": "disabled", "getAlerts": "disabled" },
             }),
             serde_json::json!({
-                "code": "operation_not_found",
-                "message": "Operation Call Path was not found at `operations.getAlerts`: no \
-                            Operation of weather has this path",
+                "code": "tool_not_found",
+                "message": "Tool Call Path was not found at `tools.getAlerts`: no \
+                            Tool of weather has this path",
             }),
         ),
         (
             serde_json::json!({
                 "namespace": "workspace",
-                "operations": { "updatePolicy": "disabled" },
+                "tools": { "updatePolicy": "disabled" },
             }),
             serde_json::json!({ "code": "provider_not_found", "message": "Provider was not found" }),
         ),
@@ -2280,6 +2266,6 @@ async fn update_policy_changes_nothing_when_a_target_is_missing() {
     assert_eq!(scope.policy_events().await, before);
     assert_eq!(
         scope.access("coral.workspace.updatePolicy").await,
-        (OperationAccessState::Enabled, true)
+        (ToolAccessState::Enabled, true)
     );
 }

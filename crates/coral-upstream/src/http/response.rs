@@ -12,7 +12,7 @@ use crate::{
 
 const MAX_REDIRECTS: usize = 10;
 
-/// One safe redirect fact retained in an HTTP Operation result.
+/// One safe redirect fact retained in an HTTP Tool result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpRedirect {
     status: u16,
@@ -108,10 +108,10 @@ impl HttpOutcome {
         self.class
     }
 
-    /// Returns the complete HTTP Operation Result: its status beside its data,
+    /// Returns the complete HTTP Tool Result: its status beside its data,
     /// with mandatory metadata.
     #[must_use]
-    pub fn operation_result(&self) -> Value {
+    pub fn tool_result(&self) -> Value {
         let redirects = self.redirects.iter().map(|redirect| serde_json::json!({
             "status": redirect.status(), "url": redirect.url(), "crossOrigin": redirect.cross_origin(),
         })).collect::<Vec<_>>();
@@ -357,7 +357,7 @@ impl HttpUpstream {
                 class,
             };
             let encoded =
-                serde_json::to_string(&outcome.operation_result()).map_err(Error::EncodeJson)?;
+                serde_json::to_string(&outcome.tool_result()).map_err(Error::EncodeJson)?;
             if encoded.len() > limits.upstream_bytes() {
                 return Err(Error::ResultTooLarge);
             }
@@ -478,7 +478,7 @@ fn decode_response_body(
         push_diagnostic(
             &mut diagnostics,
             "undeclared_status",
-            "the response status is not declared by this Operation",
+            "the response status is not declared by this Tool",
         );
     }
     let selected_content = response.and_then(|response| {

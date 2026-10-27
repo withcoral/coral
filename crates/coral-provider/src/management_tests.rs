@@ -539,7 +539,7 @@ async fn an_owner_reads_a_providers_configuration_by_namespace() {
         )
     };
     let forecasts = ProviderNamespace::parse("forecasts").unwrap();
-    // The Built-in Provider's Operations are under coral.workspace.
+    // The Built-in Provider's Tools are under coral.workspace.
     let builtin = ProviderNamespace::parse("workspace").unwrap();
     for (actor, workspace, namespace, expected, denial) in [
         (

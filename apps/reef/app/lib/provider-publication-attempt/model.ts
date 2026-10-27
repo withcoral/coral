@@ -12,8 +12,8 @@ type Draft = InputPresentation & {
   state: 'draft'
   setupId: string | null
   configure: boolean
-  /** The listed operations have been accepted; reopening configuration relists them. */
-  operationsAccepted: boolean
+  /** The listed tools have been accepted; reopening configuration relists them. */
+  toolsAccepted: boolean
 }
 type Frozen = InputPresentation & {
   state: 'frozen'
@@ -110,9 +110,9 @@ export function parseAttempt(
       configure)
   )
     throw new InvalidAttempt()
-  const accepted = scalar('operationsAccepted')
+  const accepted = scalar('toolsAccepted')
   if (accepted && accepted !== '1') throw new InvalidAttempt()
-  const operationsAccepted = accepted === '1'
+  const toolsAccepted = accepted === '1'
   const suggestedName = scalar('suggestedName')
   if (suggestedName.length > 256 || /[\p{Cc}]/u.test(suggestedName)) throw new InvalidAttempt()
   const recipe = scalar('recipe')
@@ -121,7 +121,7 @@ export function parseAttempt(
     ...(suggestedName ? { suggestedName } : {}),
     ...(recipe ? { recipe } : {}),
   }
-  let state: Draft | Frozen = { ...input, state: 'draft', setupId, configure, operationsAccepted }
+  let state: Draft | Frozen = { ...input, state: 'draft', setupId, configure, toolsAccepted }
   if (requestId) {
     const revision = scalar('configurationRevision')
     if (
@@ -181,7 +181,7 @@ export function attemptParams(attempt: PublicationAttempt): URLSearchParams {
     params.set('configurationRevision', attempt.configurationRevision)
   } else {
     if (attempt.configure) params.set('configure', '1')
-    if (attempt.operationsAccepted) params.set('operationsAccepted', '1')
+    if (attempt.toolsAccepted) params.set('toolsAccepted', '1')
   }
   switch (attempt.kind) {
     case 'workspace':
@@ -233,11 +233,11 @@ export function reviseAttempt(
     recipe: attempt.recipe,
     setupId: attempt.setupId,
     configure: edit === 'configuration',
-    // Reopening configuration relists the operations, so the acceptance goes.
+    // Reopening configuration relists the tools, so the acceptance goes.
     // Every other revision keeps it, and a frozen attempt reached publication,
     // which only a draft that accepted the list can reach.
-    operationsAccepted:
-      edit !== 'configuration' && (attempt.state === 'frozen' || attempt.operationsAccepted),
+    toolsAccepted:
+      edit !== 'configuration' && (attempt.state === 'frozen' || attempt.toolsAccepted),
   }
   switch (attempt.kind) {
     case 'workspace':
@@ -389,12 +389,12 @@ export function attemptProgress(
           : !replaying &&
               (setup.state === 'awaiting_authorization' || setup.state === 'awaiting_discovery')
             ? 'discovery'
-            : // Every source shows its operations before anyone is asked about
+            : // Every source shows its tools before anyone is asked about
               // accounts: what the provider can do is the thing worth checking,
               // and on a protected MCP server the branch above signs in first.
-              // Only Add requires a separate Operations acceptance step.
-              attempt.kind !== 'update' && attempt.state === 'draft' && !attempt.operationsAccepted
-              ? 'operations'
+              // Only Add requires a separate Tools acceptance step.
+              attempt.kind !== 'update' && attempt.state === 'draft' && !attempt.toolsAccepted
+              ? 'tools'
               : attempt.kind !== 'update' && (!account || accountStep(attempt, setup).reopens)
                 ? 'account'
                 : 'publish'
@@ -478,7 +478,7 @@ export function savesDirectly(setup: SetupView, currentAccount: AccountChoice) {
   )
 }
 
-/** Accepts the listed operations, so the attempt moves on to the account question. */
-export function acceptOperations(attempt: CreationAttempt): CreationAttempt & Draft {
-  return { ...reviseAttempt(attempt), operationsAccepted: true }
+/** Accepts the listed tools, so the attempt moves on to the account question. */
+export function acceptTools(attempt: CreationAttempt): CreationAttempt & Draft {
+  return { ...reviseAttempt(attempt), toolsAccepted: true }
 }

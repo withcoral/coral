@@ -22,15 +22,15 @@ pub(crate) enum InvocationState {
 pub(crate) struct UnfinishedInvocation {
     pub(crate) id: InvocationId,
     pub(crate) state: InvocationState,
-    /// The Generation and Operation the Invocation called.
+    /// The Generation and Tool the Invocation called.
     pub(crate) generation: coral_catalog::ProviderGenerationId,
-    pub(crate) operation: coral_catalog::OperationKey,
+    pub(crate) tool: coral_catalog::ToolKey,
 }
 
 impl UnfinishedInvocation {
-    /// How the Invocation ends with its Run, and the Operation Result recovery
+    /// How the Invocation ends with its Run, and the Tool Result recovery
     /// can still establish. A lost send is indeterminate. A lost Built-in
-    /// Operation may not be: an `addProvider`'s own Publication shows what
+    /// Tool may not be: an `addProvider`'s own Publication shows what
     /// happened.
     async fn settle_for_termination(
         &self,
@@ -44,7 +44,7 @@ impl UnfinishedInvocation {
                 run,
                 &self.id,
                 &self.generation,
-                &self.operation,
+                &self.tool,
             )
             .await?
             .unwrap_or((InvocationResultKind::Indeterminate, None))),
@@ -149,7 +149,7 @@ pub(crate) async fn finish_approval_failure(
 
 /// Ends every nonterminal Invocation of `run` for its termination: pending
 /// ones as `run_terminated`, dispatching ones as `indeterminate` (or with
-/// the Operation Result Coral's own records establish), their pending
+/// the Tool Result Coral's own records establish), their pending
 /// Approval Requests closed. Returns their `invocation.ended` Events for the
 /// caller's terminal chunk, so the Invocation rows, the Approval rows, the
 /// Events and `run.ended` commit together.
@@ -198,7 +198,7 @@ pub(crate) async fn end_nonterminal_invocations(
 
 /// Ends one nonterminal Invocation for a termination: its row, its pending
 /// Approval Request, and its `invocation.ended` for the caller's chunk, with
-/// the Operation Result recovery established, if any. `None` when the row is
+/// the Tool Result recovery established, if any. `None` when the row is
 /// no longer in the expected state.
 pub(crate) async fn end_for_termination(
     transaction: &mut Transaction<'_>,

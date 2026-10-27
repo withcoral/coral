@@ -13,48 +13,46 @@ async fn approval_waits_for_the_invoking_user_and_commits_one_decision() {
         upstream.clone(),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:approver", "Approve weather")
-        .await;
+    let tool = fixture.user_tool("user:approver", "Approve weather").await;
     let mut tx = fixture.database.begin().await.unwrap();
     coral_workspace::OrganizationModule::hold_profile_updates_in_transaction(&mut tx)
         .await
         .unwrap();
     coral_workspace::OrganizationModule::refresh_profile_in_transaction(
         &mut tx,
-        operation.user.user_id(),
+        tool.user.user_id(),
         coral_workspace::VerifiedUserProfile::new(Some("Reviewing user"), None, None, None),
         40,
     )
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    fixture.require_approval(&operation).await;
+    fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
     let accepted = fixture
         .runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("invoke-operation"),
+            &tool.principal,
+            &tool.workspace_id,
+            submission("invoke-tool"),
         )
         .await
         .unwrap();
     let request = wait_for_approval(
         &approvals,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
     assert_eq!(request.state, ApprovalState::Pending);
-    assert_eq!(request.provider_id, operation.provider_id);
-    assert_eq!(request.invoking_principal, *operation.principal.principal());
+    assert_eq!(request.provider_id, tool.provider_id);
+    assert_eq!(request.invoking_principal, *tool.principal.principal());
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
     let decided = approvals
         .decide(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             &request.id,
             ApprovalDecision::Approve,
             None,
@@ -67,8 +65,8 @@ async fn approval_waits_for_the_invoking_user_and_commits_one_decision() {
     assert_eq!(
         approvals
             .decide(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 &request.id,
                 ApprovalDecision::Decline,
                 None,
@@ -80,21 +78,21 @@ async fn approval_waits_for_the_invoking_user_and_commits_one_decision() {
     );
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
     assert_eq!(terminal.state(), RunState::Succeeded);
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 1);
     let events = approvals
-        .list_lifecycle_events(&operation.principal, &operation.workspace_id, &request.id)
+        .list_lifecycle_events(&tool.principal, &tool.workspace_id, &request.id)
         .await
         .unwrap();
     let [event] = events.as_slice() else {
         panic!("one decision event: {events:?}")
     };
-    assert_eq!(event.actor, Some(operation.principal.principal().clone()));
+    assert_eq!(event.actor, Some(tool.principal.principal().clone()));
     assert_eq!(event.state, ApprovalState::Approved);
     assert_eq!(event.changed_field_paths, ["state"]);
 }
@@ -105,17 +103,17 @@ async fn declining_commits_invocation_failure_with_the_winning_decision() {
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
-    let operation = fixture
-        .user_operation("user:decliner", "Decline exact invocation")
+    let tool = fixture
+        .user_tool("user:decliner", "Decline exact invocation")
         .await;
-    fixture.require_approval(&operation).await;
+    fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
-    let run = fixture.runs.start(&operation.principal, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast({city:'argument-canary'}); } catch (e) { return e.code; }"
+    let run = fixture.runs.start(&tool.principal, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast({city:'argument-canary'}); } catch (e) { return e.code; }"
     )).await.unwrap();
     let request = wait_for_approval(
         &approvals,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
@@ -125,8 +123,8 @@ async fn declining_commits_invocation_failure_with_the_winning_decision() {
     );
     approvals
         .decide(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             &request.id,
             ApprovalDecision::Decline,
             Some("comment-canary"),
@@ -137,8 +135,8 @@ async fn declining_commits_invocation_failure_with_the_winning_decision() {
     let update = fixture
         .runs
         .observe(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id(),
             &immediate(None, 100),
         )
@@ -147,8 +145,8 @@ async fn declining_commits_invocation_failure_with_the_winning_decision() {
     assert!(
         retained_events(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             update.run_id()
         )
         .await
@@ -158,14 +156,14 @@ async fn declining_commits_invocation_failure_with_the_winning_decision() {
     );
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
     assert_final_code(&terminal, "approval_declined");
     let events = approvals
-        .list_lifecycle_events(&operation.principal, &operation.workspace_id, &request.id)
+        .list_lifecycle_events(&tool.principal, &tool.workspace_id, &request.id)
         .await
         .unwrap();
     assert_eq!(events.len(), 1);
@@ -177,7 +175,7 @@ async fn declining_commits_invocation_failure_with_the_winning_decision() {
 /// Owner, a Member and an Agent, besides the Workspace's creator.
 struct ApprovalAudience {
     fixture: TestModules,
-    operation: OperationFixture,
+    tool: ToolFixture,
     approvals: crate::approval::ApprovalModule,
     org_owner: AuthenticatedPrincipal,
     designated: AuthenticatedPrincipal,
@@ -192,10 +190,8 @@ impl ApprovalAudience {
             "coral.providers.weather.getForecast",
         )))
         .await;
-        let operation = fixture
-            .user_operation("user:private", "Private approvals")
-            .await;
-        fixture.require_approval(&operation).await;
+        let tool = fixture.user_tool("user:private", "Private approvals").await;
+        fixture.require_approval(&tool).await;
         let org_owner = AuthenticatedPrincipal::user(
             organization_user(
                 fixture.database.clone(),
@@ -214,8 +210,8 @@ impl ApprovalAudience {
             fixture
                 .workspaces
                 .set_membership(
-                    &change(operation.user.clone(), 50, '5'),
-                    &operation.workspace_id,
+                    &change(tool.user.clone(), 50, '5'),
+                    &tool.workspace_id,
                     &user,
                     role,
                 )
@@ -224,16 +220,12 @@ impl ApprovalAudience {
             members.push(AuthenticatedPrincipal::user(user));
         }
         let [designated, member] = <[_; 2]>::try_from(members).unwrap();
-        let agent = registered_agent(
-            &fixture.workspaces,
-            &operation.principal,
-            &operation.workspace_id,
-        )
-        .await;
+        let agent =
+            registered_agent(&fixture.workspaces, &tool.principal, &tool.workspace_id).await;
         Self {
             approvals: fixture.approvals(),
             fixture,
-            operation,
+            tool,
             org_owner,
             designated,
             member,
@@ -251,13 +243,13 @@ impl ApprovalAudience {
         let run = self
             .fixture
             .runs
-            .start(actor, &self.operation.workspace_id, submission("invoke"))
+            .start(actor, &self.tool.workspace_id, submission("invoke"))
             .await
             .unwrap()
             .run_id()
             .clone();
         let request =
-            wait_for_approval(&self.approvals, reader, &self.operation.workspace_id, &run).await;
+            wait_for_approval(&self.approvals, reader, &self.tool.workspace_id, &run).await;
         (run, request)
     }
 
@@ -270,7 +262,7 @@ impl ApprovalAudience {
         self.approvals
             .decide(
                 actor,
-                &self.operation.workspace_id,
+                &self.tool.workspace_id,
                 id,
                 decision,
                 None,
@@ -290,7 +282,7 @@ impl ApprovalAudience {
             .workspaces
             .set_membership(
                 &change(actor.authenticated_user().unwrap().clone(), at, '6'),
-                &self.operation.workspace_id,
+                &self.tool.workspace_id,
                 user,
                 role,
             )
@@ -304,9 +296,9 @@ impl ApprovalAudience {
 #[tokio::test]
 async fn a_users_approval_is_concealed_from_everyone_else() {
     let audience = ApprovalAudience::new().await;
-    let workspace = &audience.operation.workspace_id;
+    let workspace = &audience.tool.workspace_id;
     let (run, request) = audience
-        .pending(&audience.operation.principal, &audience.operation.principal)
+        .pending(&audience.tool.principal, &audience.tool.principal)
         .await;
     let absent =
         crate::approval::ApprovalId::parse("00000000-0000-0000-0000-000000000001").unwrap();
@@ -355,7 +347,7 @@ async fn a_users_approval_is_concealed_from_everyone_else() {
     assert_eq!(
         audience
             .approvals
-            .get(&audience.operation.principal, workspace, &request.id)
+            .get(&audience.tool.principal, workspace, &request.id)
             .await
             .unwrap(),
         request,
@@ -367,10 +359,10 @@ async fn a_users_approval_is_concealed_from_everyone_else() {
 #[tokio::test]
 async fn a_user_decides_their_own_approval_as_an_ordinary_member() {
     let audience = ApprovalAudience::new().await;
-    let user = &audience.operation.principal;
+    let user = &audience.tool.principal;
     let (run, request) = audience.pending(user, user).await;
     audience
-        .set_workspace_role(user, &audience.operation.user, WorkspaceRole::Member, 60)
+        .set_workspace_role(user, &audience.tool.user, WorkspaceRole::Member, 60)
         .await;
     let declined = audience
         .decide(user, &request.id, ApprovalDecision::Decline)
@@ -380,7 +372,7 @@ async fn a_user_decides_their_own_approval_as_an_ordinary_member() {
     wait_for_terminal(
         &audience.fixture.runs,
         user,
-        &audience.operation.workspace_id,
+        &audience.tool.workspace_id,
         &run,
     )
     .await;
@@ -392,8 +384,8 @@ async fn a_user_decides_their_own_approval_as_an_ordinary_member() {
 #[tokio::test]
 async fn an_agents_approval_belongs_to_current_workspace_owners() {
     let audience = ApprovalAudience::new().await;
-    let workspace = &audience.operation.workspace_id;
-    let creator = &audience.operation.principal;
+    let workspace = &audience.tool.workspace_id;
+    let creator = &audience.tool.principal;
     let (_, request) = audience.pending(&audience.agent, creator).await;
     assert_eq!(
         audience
@@ -446,8 +438,8 @@ async fn an_agents_approval_belongs_to_current_workspace_owners() {
 #[tokio::test]
 async fn organization_ownership_does_not_restore_agent_approval_to_a_demoted_owner() {
     let audience = ApprovalAudience::new().await;
-    let workspace = &audience.operation.workspace_id;
-    let creator = &audience.operation.principal;
+    let workspace = &audience.tool.workspace_id;
+    let creator = &audience.tool.principal;
     let demoted = &audience.designated;
     let user = demoted.authenticated_user().unwrap();
     let (run, request) = audience.pending(&audience.agent, demoted).await;
@@ -499,37 +491,32 @@ async fn destructive_lifecycle_keeps_exact_agent_invocation_and_approval_history
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
-    let operation = fixture
-        .user_operation("user:retained-approval", "Retain approvals")
+    let tool = fixture
+        .user_tool("user:retained-approval", "Retain approvals")
         .await;
-    fixture.require_approval(&operation).await;
-    let agent = registered_agent(
-        &fixture.workspaces,
-        &operation.principal,
-        &operation.workspace_id,
-    )
-    .await;
+    fixture.require_approval(&tool).await;
+    let agent = registered_agent(&fixture.workspaces, &tool.principal, &tool.workspace_id).await;
     let approvals = fixture.approvals();
     let run = fixture
         .runs
         .start(
             &agent,
-            &operation.workspace_id,
+            &tool.workspace_id,
             submission("await coral.providers.weather.getForecast({city:'private-argument'});"),
         )
         .await
         .unwrap();
     let request = wait_for_approval(
         &approvals,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
     let decision = approvals
         .decide(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             &request.id,
             ApprovalDecision::Decline,
             Some("private-comment"),
@@ -539,35 +526,31 @@ async fn destructive_lifecycle_keeps_exact_agent_invocation_and_approval_history
         .unwrap();
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
     let events = approvals
-        .list_lifecycle_events(&operation.principal, &operation.workspace_id, &request.id)
+        .list_lifecycle_events(&tool.principal, &tool.workspace_id, &request.id)
         .await
         .unwrap();
-    let context = change(operation.user.clone(), 50, '5');
+    let context = change(tool.user.clone(), 50, '5');
     coral_administration::AccessLifecycleModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
     )
-    .delete_agent(&context, &operation.workspace_id, agent.principal().id())
+    .delete_agent(&context, &tool.workspace_id, agent.principal().id())
     .await
     .unwrap();
     fixture
         .providers
-        .delete_provider(
-            &context,
-            &operation.workspace_id.clone(),
-            &operation.provider_id,
-        )
+        .delete_provider(&context, &tool.workspace_id.clone(), &tool.provider_id)
         .await
         .unwrap();
     assert_eq!(
         approvals
-            .get(&operation.principal, &operation.workspace_id, &request.id)
+            .get(&tool.principal, &tool.workspace_id, &request.id)
             .await
             .unwrap(),
         crate::approval::ApprovalRequest {
@@ -578,7 +561,7 @@ async fn destructive_lifecycle_keeps_exact_agent_invocation_and_approval_history
     assert_eq!(decision.invoking_principal, *agent.principal());
     assert_eq!(
         approvals
-            .list_lifecycle_events(&operation.principal, &operation.workspace_id, &request.id)
+            .list_lifecycle_events(&tool.principal, &tool.workspace_id, &request.id)
             .await
             .unwrap(),
         events
@@ -586,8 +569,8 @@ async fn destructive_lifecycle_keeps_exact_agent_invocation_and_approval_history
     assert_eq!(
         wait_for_terminal(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id()
         )
         .await,
@@ -606,22 +589,18 @@ async fn racing_decisions_have_one_durable_winner_and_event() {
         upstream.clone(),
     )
     .await;
-    let operation = fixture.user_operation("user:race", "Approval race").await;
-    fixture.require_approval(&operation).await;
+    let tool = fixture.user_tool("user:race", "Approval race").await;
+    fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
     let run = fixture
         .runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("invoke"),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission("invoke"))
         .await
         .unwrap();
     let request = wait_for_approval(
         &approvals,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
@@ -629,16 +608,16 @@ async fn racing_decisions_have_one_durable_winner_and_event() {
     let trace = TraceId::parse(&"a".repeat(32)).unwrap();
     let (approved, declined) = tokio::join!(
         approvals.decide(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             &request.id,
             ApprovalDecision::Approve,
             Some("first-canary"),
             &trace
         ),
         second.decide(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             &request.id,
             ApprovalDecision::Decline,
             Some("second-canary"),
@@ -653,8 +632,8 @@ async fn racing_decisions_have_one_durable_winner_and_event() {
     ));
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
@@ -665,8 +644,8 @@ async fn racing_decisions_have_one_durable_winner_and_event() {
     assert_eq!(
         retained_events(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             terminal.run_id()
         )
         .await
@@ -677,7 +656,7 @@ async fn racing_decisions_have_one_durable_winner_and_event() {
     );
     assert_eq!(
         approvals
-            .list_lifecycle_events(&operation.principal, &operation.workspace_id, &request.id)
+            .list_lifecycle_events(&tool.principal, &tool.workspace_id, &request.id)
             .await
             .unwrap()
             .len(),
@@ -699,18 +678,18 @@ async fn approval_deadline_follows_the_run_timeout_and_stays_decidable_until_it(
     // Advance one shared clock without turning this into an unrelated lost-worker test.
     fixture.runs.execution_policy =
         crate::execution::ExecutionPolicy::testing_with_claim_lease(Duration::from_mins(15));
-    let operation = fixture
-        .user_operation("user:human-review-budget", "Review within the Run timeout")
+    let tool = fixture
+        .user_tool("user:human-review-budget", "Review within the Run timeout")
         .await;
-    fixture.require_approval(&operation).await;
+    fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
     let run = fixture
         .runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             RunSubmission::new(
-                ProgramSource::parse("invoke-operation").unwrap(),
+                ProgramSource::parse("invoke-tool").unwrap(),
                 RunTimeout::from_millis(900_000).unwrap(),
             ),
         )
@@ -718,16 +697,16 @@ async fn approval_deadline_follows_the_run_timeout_and_stays_decidable_until_it(
         .unwrap();
     let pending = wait_for_approval(
         &approvals,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
     let accepted_at = fixture
         .runs
         .inspect_run(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id(),
             &crate::RunInspection {
                 event_limit: 1,
@@ -748,7 +727,7 @@ async fn approval_deadline_follows_the_run_timeout_and_stays_decidable_until_it(
         .next
         .store(accepted_at + 70_000_000_000, Ordering::SeqCst);
     let review = approvals
-        .get(&operation.principal, &operation.workspace_id, &pending.id)
+        .get(&tool.principal, &tool.workspace_id, &pending.id)
         .await
         .unwrap();
     assert_eq!(review.state, ApprovalState::Pending);
@@ -759,8 +738,8 @@ async fn approval_deadline_follows_the_run_timeout_and_stays_decidable_until_it(
     );
     let decided = approvals
         .decide(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             &pending.id,
             ApprovalDecision::Approve,
             None,
@@ -774,8 +753,8 @@ async fn approval_deadline_follows_the_run_timeout_and_stays_decidable_until_it(
     assert!(decided_at < pending.deadline_at_unix_nanos);
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
@@ -793,10 +772,6 @@ async fn approval_deadline_follows_the_run_timeout_and_stays_decidable_until_it(
 /// actionable), and a decision that arrives after the timer fired is
 /// answered with the recorded Expired; no Approved decision is written.
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "expiry agreement across Run counts, current cards, caller actions, exact decisions and terminal evidence"
-)]
 async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_reads_expired() {
     let mut fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
@@ -806,19 +781,17 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
     let approval_wait = Duration::from_millis(200);
     fixture.runs.execution_policy =
         crate::execution::ExecutionPolicy::testing_with_approval_wait(approval_wait);
-    let operation = fixture
-        .user_operation("user:expiry", "Approval expiry")
-        .await;
-    fixture.require_approval(&operation).await;
+    let tool = fixture.user_tool("user:expiry", "Approval expiry").await;
+    fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
     let started = fixture.clock.next.load(Ordering::SeqCst);
-    let run = fixture.runs.start(&operation.principal, &operation.workspace_id, RunSubmission::new(
+    let run = fixture.runs.start(&tool.principal, &tool.workspace_id, RunSubmission::new(
         ProgramSource::parse("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }").unwrap(),
         RunTimeout::from_millis(900_000).unwrap())).await.unwrap();
     let request = wait_for_approval(
         &approvals,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
@@ -832,7 +805,7 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
     );
     // The timer fires on the host clock; the test clock stays before the
     // deadline, so nothing but the owner's record can show the expiry.
-    let read = || approvals.get(&operation.principal, &operation.workspace_id, &request.id);
+    let read = || approvals.get(&tool.principal, &tool.workspace_id, &request.id);
     wait_until_async_within(Duration::from_secs(5), async || {
         read().await.unwrap().state != ApprovalState::Pending
     })
@@ -848,14 +821,14 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
     );
     let queue = fixture
         .runs
-        .required_actions(&operation.principal, None, None, 1)
+        .required_actions(&tool.principal, None, None, 1)
         .await
         .unwrap();
     assert_eq!(queue.action_count, 0);
     assert_eq!(
         fixture
             .runs
-            .required_action_count(&operation.principal, None)
+            .required_action_count(&tool.principal, None)
             .await
             .unwrap(),
         0
@@ -863,8 +836,8 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
     assert!(queue.actions.is_empty());
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
@@ -873,8 +846,8 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
     let exact = fixture
         .runs
         .inspect_run(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id(),
             &crate::RunInspection::default(),
         )
@@ -887,8 +860,8 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
     // nothing more is written.
     let decided = approvals
         .decide(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             &request.id,
             ApprovalDecision::Approve,
             None,
@@ -898,7 +871,7 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
         .unwrap();
     assert_eq!(decided, expired);
     let events = approvals
-        .list_lifecycle_events(&operation.principal, &operation.workspace_id, &request.id)
+        .list_lifecycle_events(&tool.principal, &tool.workspace_id, &request.id)
         .await
         .unwrap();
     let [event] = events.as_slice() else {
@@ -923,18 +896,18 @@ async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_e
     // host clock) does not fire within this test.
     fixture.runs.execution_policy =
         crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(30));
-    let operation = fixture
-        .user_operation("user:late-reader", "Approval past its deadline")
+    let tool = fixture
+        .user_tool("user:late-reader", "Approval past its deadline")
         .await;
-    fixture.require_approval(&operation).await;
+    fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
-    let run = fixture.runs.start(&operation.principal, &operation.workspace_id, RunSubmission::new(
+    let run = fixture.runs.start(&tool.principal, &tool.workspace_id, RunSubmission::new(
         ProgramSource::parse("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }").unwrap(),
         RunTimeout::from_millis(900_000).unwrap())).await.unwrap();
     let request = wait_for_approval(
         &approvals,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
@@ -945,7 +918,7 @@ async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_e
         .next
         .store(request.deadline_at_unix_nanos + 1, Ordering::SeqCst);
     let read = approvals
-        .get(&operation.principal, &operation.workspace_id, &request.id)
+        .get(&tool.principal, &tool.workspace_id, &request.id)
         .await
         .unwrap();
     assert_eq!(read.state, ApprovalState::Pending);
@@ -954,7 +927,7 @@ async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_e
     assert_eq!(read.decided_at_unix_nanos, None);
     let queue = fixture
         .runs
-        .required_actions(&operation.principal, None, None, 1)
+        .required_actions(&tool.principal, None, None, 1)
         .await
         .unwrap();
     assert_eq!(queue.action_count, 1);
@@ -972,8 +945,8 @@ async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_e
     let page = fixture
         .runs
         .inspect_run(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id(),
             &crate::RunInspection::default(),
         )
@@ -986,8 +959,8 @@ async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_e
     let observed = fixture
         .runs
         .observe(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id(),
             &immediate(None, 1),
         )
@@ -1002,7 +975,7 @@ async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_e
     );
     assert_eq!(
         approvals
-            .list_lifecycle_events(&operation.principal, &operation.workspace_id, &request.id)
+            .list_lifecycle_events(&tool.principal, &tool.workspace_id, &request.id)
             .await
             .unwrap(),
         Vec::new(),
@@ -1024,18 +997,18 @@ async fn a_decision_at_the_request_deadline_expires() {
     // host clock) does not fire within this test.
     fixture.runs.execution_policy =
         crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(30));
-    let operation = fixture
-        .user_operation("user:late-expiry", "Approval expiry under holds")
+    let tool = fixture
+        .user_tool("user:late-expiry", "Approval expiry under holds")
         .await;
-    fixture.require_approval(&operation).await;
+    fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
-    let run = fixture.runs.start(&operation.principal, &operation.workspace_id, RunSubmission::new(
+    let run = fixture.runs.start(&tool.principal, &tool.workspace_id, RunSubmission::new(
         ProgramSource::parse("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }").unwrap(),
         RunTimeout::from_millis(900_000).unwrap())).await.unwrap();
     let request = wait_for_approval(
         &approvals,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
@@ -1049,8 +1022,8 @@ async fn a_decision_at_the_request_deadline_expires() {
         .next_process()
         .approvals()
         .decide(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             &request.id,
             ApprovalDecision::Approve,
             None,
@@ -1066,14 +1039,14 @@ async fn a_decision_at_the_request_deadline_expires() {
     );
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
     assert_final_code(&terminal, "approval_expired");
     let events = approvals
-        .list_lifecycle_events(&operation.principal, &operation.workspace_id, &request.id)
+        .list_lifecycle_events(&tool.principal, &tool.workspace_id, &request.id)
         .await
         .unwrap();
     assert!(
@@ -1101,31 +1074,31 @@ async fn pending_approval_rechecks_live_policy_authority_and_run_termination() {
         // Outlast the test: only a dispatched Invocation may hold cancellation open.
         fixture.runs.execution_policy =
             crate::execution::ExecutionPolicy::testing_with_shutdown_grace(Duration::from_mins(15));
-        let operation = fixture
-            .user_operation("user:wait-races", "Pending approval lifecycle")
+        let tool = fixture
+            .user_tool("user:wait-races", "Pending approval lifecycle")
             .await;
-        fixture.require_approval(&operation).await;
+        fixture.require_approval(&tool).await;
         let approvals = fixture.approvals();
-        let run = fixture.runs.start(&operation.principal, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast({}); return 'sent'; } catch(e) { return e.code; }")).await.unwrap();
+        let run = fixture.runs.start(&tool.principal, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast({}); return 'sent'; } catch(e) { return e.code; }")).await.unwrap();
         let request = wait_for_approval(
             &approvals,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id(),
         )
         .await;
-        let context = change(operation.user.clone(), 50, '5');
+        let context = change(tool.user.clone(), 50, '5');
         match action {
             "enable" | "disable" => {
                 fixture
                     .policies
                     .set_access_state(
                         &context,
-                        operation.policy_target.clone(),
+                        tool.policy_target.clone(),
                         if action == "enable" {
-                            OperationAccessState::Enabled
+                            ToolAccessState::Enabled
                         } else {
-                            OperationAccessState::Disabled
+                            ToolAccessState::Disabled
                         },
                     )
                     .await
@@ -1134,18 +1107,14 @@ async fn pending_approval_rechecks_live_policy_authority_and_run_termination() {
             "revoke" => {
                 fixture
                     .providers
-                    .disable_provider(
-                        &context,
-                        &operation.workspace_id.clone(),
-                        &operation.provider_id,
-                    )
+                    .disable_provider(&context, &tool.workspace_id.clone(), &tool.provider_id)
                     .await
                     .unwrap();
             }
             "archive" => {
                 fixture
                     .workspaces
-                    .archive(&context, &operation.workspace_id)
+                    .archive(&context, &tool.workspace_id)
                     .await
                     .unwrap();
             }
@@ -1153,8 +1122,8 @@ async fn pending_approval_rechecks_live_policy_authority_and_run_termination() {
                 let canceled = tokio::time::timeout(
                     Duration::from_secs(5),
                     fixture.runs.cancel(
-                        &operation.principal,
-                        &operation.workspace_id,
+                        &tool.principal,
+                        &tool.workspace_id,
                         run.run_id(),
                         &immediate(None, 100),
                     ),
@@ -1168,8 +1137,8 @@ async fn pending_approval_rechecks_live_policy_authority_and_run_termination() {
         }
         let terminal = wait_for_terminal(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id(),
         )
         .await;
@@ -1180,7 +1149,7 @@ async fn pending_approval_rechecks_live_policy_authority_and_run_termination() {
                 &terminal,
                 match action {
                     "enable" => "sent",
-                    "disable" => "operation_disabled",
+                    "disable" => "tool_disabled",
                     _ => "dispatch_authority_lost",
                 },
             );
@@ -1191,7 +1160,7 @@ async fn pending_approval_rechecks_live_policy_authority_and_run_termination() {
         );
         assert_eq!(
             approvals
-                .get(&operation.principal, &operation.workspace_id, &request.id)
+                .get(&tool.principal, &tool.workspace_id, &request.id)
                 .await
                 .unwrap()
                 .state,
@@ -1199,7 +1168,7 @@ async fn pending_approval_rechecks_live_policy_authority_and_run_termination() {
         );
         assert_eq!(
             approvals
-                .list_lifecycle_events(&operation.principal, &operation.workspace_id, &request.id)
+                .list_lifecycle_events(&tool.principal, &tool.workspace_id, &request.id)
                 .await
                 .unwrap()
                 .len(),
@@ -1240,8 +1209,8 @@ async fn approval_binds_the_selected_account_and_is_not_reusable_by_another_invo
             ),
         )
         .await;
-        let mut operation = fixture
-            .user_operation_at(
+        let mut tool = fixture
+            .user_tool_at(
                 "user:account-approval",
                 "Select before approval",
                 &server.uri(),
@@ -1250,25 +1219,25 @@ async fn approval_binds_the_selected_account_and_is_not_reusable_by_another_invo
         let (_directory, accounts) = if fixed {
             Box::pin(configure_shared_account(
                 &fixture,
-                &mut operation,
+                &mut tool,
                 &server.uri(),
                 "approval-secret-canary",
             ))
             .await
         } else {
-            configure_user_caller(&fixture, &operation, &server.uri()).await
+            configure_user_caller(&fixture, &tool, &server.uri()).await
         };
-        fixture.require_approval(&operation).await;
+        fixture.require_approval(&tool).await;
         fixture.runs = fixture.runs.clone().with_accounts(accounts.clone());
         let approvals = fixture.approvals();
-        let context = change(operation.user.clone(), 50, '5');
-        let scope = operation.workspace_id.clone();
+        let context = change(tool.user.clone(), 50, '5');
+        let scope = tool.workspace_id.clone();
         let shared_account_id = if fixed {
             let account_id = accounts
                 .get_account(
                     &context,
                     &scope,
-                    &operation.provider_id,
+                    &tool.provider_id,
                     &coral_provider::account::AccountScope::Shared,
                 )
                 .await
@@ -1283,20 +1252,16 @@ async fn approval_binds_the_selected_account_and_is_not_reusable_by_another_invo
         let source = "return await coral.providers.weather.getForecast({});";
         let run = fixture
             .runs
-            .start(
-                &operation.principal,
-                &operation.workspace_id,
-                submission(source),
-            )
+            .start(&tool.principal, &tool.workspace_id, submission(source))
             .await
             .unwrap();
         let account_id = if let Some(account_id) = shared_account_id {
             account_id
         } else {
-            wait_for_connection(&accounts, &operation).await;
+            wait_for_connection(&accounts, &tool).await;
             assert!(
                 approvals
-                    .list_for_run(&operation.principal, &operation.workspace_id, run.run_id())
+                    .list_for_run(&tool.principal, &tool.workspace_id, run.run_id())
                     .await
                     .unwrap()
                     .is_empty()
@@ -1304,8 +1269,8 @@ async fn approval_binds_the_selected_account_and_is_not_reusable_by_another_invo
             let authorization = accounts
                 .start_user_authorization(
                     &context,
-                    &operation.workspace_id,
-                    &operation.provider_id,
+                    &tool.workspace_id,
+                    &tool.provider_id,
                     ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                     None,
                 )
@@ -1327,8 +1292,8 @@ async fn approval_binds_the_selected_account_and_is_not_reusable_by_another_invo
         };
         let request = wait_for_approval(
             &approvals,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id(),
         )
         .await;
@@ -1344,8 +1309,8 @@ async fn approval_binds_the_selected_account_and_is_not_reusable_by_another_invo
         assert!(server.received_requests().await.unwrap().is_empty());
         approvals
             .decide(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 &request.id,
                 ApprovalDecision::Approve,
                 None,
@@ -1355,8 +1320,8 @@ async fn approval_binds_the_selected_account_and_is_not_reusable_by_another_invo
             .unwrap();
         let terminal = wait_for_terminal(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id(),
         )
         .await;
@@ -1364,17 +1329,13 @@ async fn approval_binds_the_selected_account_and_is_not_reusable_by_another_invo
         assert!(!format!("{terminal:?}{request:?}").contains("approval-secret-canary"));
         let later = fixture
             .runs
-            .start(
-                &operation.principal,
-                &operation.workspace_id,
-                submission(source),
-            )
+            .start(&tool.principal, &tool.workspace_id, submission(source))
             .await
             .unwrap();
         let new_request = wait_for_approval(
             &approvals,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             later.run_id(),
         )
         .await;
@@ -1385,8 +1346,8 @@ async fn approval_binds_the_selected_account_and_is_not_reusable_by_another_invo
         fixture
             .runs
             .cancel(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 later.run_id(),
                 &immediate(None, 100),
             )
@@ -1408,23 +1369,23 @@ async fn approval_does_not_bypass_a_later_restrictive_policy_at_the_fence() {
         gate.clone(),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:approved-policy", "Approved but disabled")
+    let tool = fixture
+        .user_tool("user:approved-policy", "Approved but disabled")
         .await;
-    fixture.require_approval(&operation).await;
+    fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
-    let run = fixture.runs.start(&operation.principal, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }")).await.unwrap();
+    let run = fixture.runs.start(&tool.principal, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }")).await.unwrap();
     let request = wait_for_approval(
         &approvals,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
     approvals
         .decide(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             &request.id,
             ApprovalDecision::Approve,
             None,
@@ -1436,25 +1397,25 @@ async fn approval_does_not_bypass_a_later_restrictive_policy_at_the_fence() {
     fixture
         .policies
         .set_access_state(
-            &change(operation.user.clone(), 50, '5'),
-            operation.policy_target.clone(),
-            OperationAccessState::Disabled,
+            &change(tool.user.clone(), 50, '5'),
+            tool.policy_target.clone(),
+            ToolAccessState::Disabled,
         )
         .await
         .unwrap();
     release.send(()).unwrap();
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
-    assert_final_code(&terminal, "operation_disabled");
+    assert_final_code(&terminal, "tool_disabled");
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
     assert_eq!(
         approvals
-            .get(&operation.principal, &operation.workspace_id, &request.id)
+            .get(&tool.principal, &tool.workspace_id, &request.id)
             .await
             .unwrap()
             .state,
@@ -1477,10 +1438,10 @@ async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decisi
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
-    let operation = fixture
-        .user_operation("user:approval-fault", "Atomic approval evidence")
+    let tool = fixture
+        .user_tool("user:approval-fault", "Atomic approval evidence")
         .await;
-    fixture.require_approval(&operation).await;
+    fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
     let source =
         "try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }";
@@ -1489,24 +1450,20 @@ async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decisi
     // with.
     let first = fixture
         .runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission(source),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission(source))
         .await
         .unwrap();
     let request = wait_for_approval(
         &approvals,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         first.run_id(),
     )
     .await;
     approvals
         .decide(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             &request.id,
             ApprovalDecision::Decline,
             None,
@@ -1516,8 +1473,8 @@ async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decisi
         .unwrap();
     wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         first.run_id(),
     )
     .await;
@@ -1525,8 +1482,8 @@ async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decisi
     let run = fixture
         .runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             RunSubmission::new(
                 ProgramSource::parse(source).unwrap(),
                 RunTimeout::from_millis(900_000).unwrap(),
@@ -1536,16 +1493,16 @@ async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decisi
         .unwrap();
     let pending = wait_for_approval(
         &approvals,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
 
     let closed = approvals
         .decide(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             &pending.id,
             ApprovalDecision::Approve,
             None,
@@ -1555,8 +1512,8 @@ async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decisi
         .expect("the record answers once the Run ends");
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
@@ -1565,7 +1522,7 @@ async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decisi
     assert_eq!(closed.approver, None, "no decision was recorded");
     assert!(
         approvals
-            .list_lifecycle_events(&operation.principal, &operation.workspace_id, &pending.id)
+            .list_lifecycle_events(&tool.principal, &tool.workspace_id, &pending.id)
             .await
             .unwrap()
             .iter()
@@ -1576,8 +1533,8 @@ async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decisi
     assert!(
         retained_events(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id()
         )
         .await
@@ -1657,16 +1614,16 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
             clock: fixture.clock.clone(),
             expire_at_checks: during_final_checks.then_some(APPROVAL_DEADLINE),
         });
-        let operation = fixture
-            .user_operation("user:approval-expiry", "Approval expiry")
+        let tool = fixture
+            .user_tool("user:approval-expiry", "Approval expiry")
             .await;
-        fixture.require_approval(&operation).await;
+        fixture.require_approval(&tool).await;
         let approvals = fixture.approvals();
-        let run = fixture.runs.start(&operation.principal, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; } return 'unexpected dispatch';")).await.unwrap();
+        let run = fixture.runs.start(&tool.principal, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; } return 'unexpected dispatch';")).await.unwrap();
         let request = wait_for_approval(
             &approvals,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id(),
         )
         .await;
@@ -1678,7 +1635,7 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
         if during_final_checks {
             crate::approval_repository::set_approval_deadline(
                 &fixture.database,
-                &operation.workspace_id,
+                &tool.workspace_id,
                 &request.id,
                 APPROVAL_DEADLINE,
             )
@@ -1687,8 +1644,8 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
         }
         approvals
             .decide(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 &request.id,
                 ApprovalDecision::Approve,
                 None,
@@ -1699,7 +1656,7 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
         if !during_final_checks {
             crate::approval_repository::set_approval_deadline(
                 &fixture.database,
-                &operation.workspace_id,
+                &tool.workspace_id,
                 &request.id,
                 fixture.clock.next.load(Ordering::SeqCst),
             )
@@ -1713,8 +1670,8 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
         release_fence.send(()).unwrap();
         let terminal = wait_for_terminal(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id(),
         )
         .await;
@@ -1723,7 +1680,7 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
         assert_final_code(&terminal, "approval_expired");
         assert_eq!(
             approvals
-                .get(&operation.principal, &operation.workspace_id, &request.id)
+                .get(&tool.principal, &tool.workspace_id, &request.id)
                 .await
                 .unwrap()
                 .state,
@@ -1741,7 +1698,7 @@ impl InvocationObserver for ApprovalFailureGate {
     }
 }
 
-/// A decision reads no policy: a decline made after the Operation was
+/// A decision reads no policy: a decline made after the Tool was
 /// disabled is recorded as the decline, and the Invocation ends declined
 /// even though the fence already judged the policy failure.
 #[tokio::test]
@@ -1753,33 +1710,33 @@ async fn a_decline_after_a_policy_change_is_recorded_as_the_decline() {
         Arc::new(ApprovalFailureGate(gate.clone())),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:decline-completion-race", "Recover winning rejection")
+    let tool = fixture
+        .user_tool("user:decline-completion-race", "Recover winning rejection")
         .await;
-    fixture.require_approval(&operation).await;
+    fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
-    let run = fixture.runs.start(&operation.principal, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }")).await.unwrap();
+    let run = fixture.runs.start(&tool.principal, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }")).await.unwrap();
     let request = wait_for_approval(
         &approvals,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
     fixture
         .policies
         .set_access_state(
-            &change(operation.user.clone(), 50, '5'),
-            operation.policy_target.clone(),
-            OperationAccessState::Disabled,
+            &change(tool.user.clone(), 50, '5'),
+            tool.policy_target.clone(),
+            ToolAccessState::Disabled,
         )
         .await
         .unwrap();
     wait_until(|| gate.entered()).await;
     approvals
         .decide(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             &request.id,
             ApprovalDecision::Decline,
             None,
@@ -1790,8 +1747,8 @@ async fn a_decline_after_a_policy_change_is_recorded_as_the_decline() {
     release.send(()).unwrap();
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
@@ -1799,8 +1756,8 @@ async fn a_decline_after_a_policy_change_is_recorded_as_the_decline() {
     assert_eq!(
         retained_events(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             terminal.run_id()
         )
         .await
@@ -1825,38 +1782,33 @@ async fn first_durable_decision_wins_against_policy_changes_before_the_worker_ob
             Arc::new(ApprovalWaitGate(gate.clone())),
         )
         .await;
-        let operation = fixture
-            .user_operation("user:decline-winner", "Keep durable denial")
+        let tool = fixture
+            .user_tool("user:decline-winner", "Keep durable denial")
             .await;
         let invoker = if agent_case {
-            registered_agent(
-                &fixture.workspaces,
-                &operation.principal,
-                &operation.workspace_id,
-            )
-            .await
+            registered_agent(&fixture.workspaces, &tool.principal, &tool.workspace_id).await
         } else {
-            operation.principal.clone()
+            tool.principal.clone()
         };
-        fixture.require_approval(&operation).await;
+        fixture.require_approval(&tool).await;
         let approvals = fixture.approvals();
-        let run = fixture.runs.start(&invoker, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }")).await.unwrap();
+        let run = fixture.runs.start(&invoker, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }")).await.unwrap();
         wait_until(|| gate.entered()).await;
         let request = wait_for_approval(
             &approvals,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id(),
         )
         .await;
-        let context = change(operation.user.clone(), 50, '5');
+        let context = change(tool.user.clone(), 50, '5');
         let disable = || async {
             if agent_case {
                 fixture
                     .workspaces
                     .set_agent_state(
                         &context,
-                        &operation.workspace_id,
+                        &tool.workspace_id,
                         invoker.principal().id(),
                         coral_workspace::AgentState::Disabled,
                     )
@@ -1867,8 +1819,8 @@ async fn first_durable_decision_wins_against_policy_changes_before_the_worker_ob
                     .policies
                     .set_access_state(
                         &context,
-                        operation.policy_target.clone(),
-                        OperationAccessState::Disabled,
+                        tool.policy_target.clone(),
+                        ToolAccessState::Disabled,
                     )
                     .await
                     .unwrap();
@@ -1879,7 +1831,7 @@ async fn first_durable_decision_wins_against_policy_changes_before_the_worker_ob
             assert_eq!(
                 fixture
                     .runs
-                    .required_actions(&operation.principal, None, None, 10)
+                    .required_actions(&tool.principal, None, None, 10)
                     .await
                     .unwrap()
                     .action_count,
@@ -1889,8 +1841,8 @@ async fn first_durable_decision_wins_against_policy_changes_before_the_worker_ob
                 fixture
                     .runs
                     .inspect_run(
-                        &operation.principal,
-                        &operation.workspace_id,
+                        &tool.principal,
+                        &tool.workspace_id,
                         run.run_id(),
                         &crate::RunInspection {
                             event_limit: 1,
@@ -1907,7 +1859,7 @@ async fn first_durable_decision_wins_against_policy_changes_before_the_worker_ob
             );
             assert!(
                 !approvals
-                    .get(&operation.principal, &operation.workspace_id, &request.id)
+                    .get(&tool.principal, &tool.workspace_id, &request.id)
                     .await
                     .unwrap()
                     .actionable
@@ -1915,8 +1867,8 @@ async fn first_durable_decision_wins_against_policy_changes_before_the_worker_ob
         }
         let result = approvals
             .decide(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 &request.id,
                 ApprovalDecision::Decline,
                 None,
@@ -1933,8 +1885,8 @@ async fn first_durable_decision_wins_against_policy_changes_before_the_worker_ob
         release.send(()).unwrap();
         let terminal = wait_for_terminal(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id(),
         )
         .await;
@@ -1957,18 +1909,18 @@ async fn an_unrelated_commit_while_an_approval_is_pending_causes_no_fence_and_no
             .with_wakeups(Duration::from_secs(15), wake_gap),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:quiet-wait", "Wait without holding the Run")
+    let tool = fixture
+        .user_tool("user:quiet-wait", "Wait without holding the Run")
         .await;
     let bystander = fixture
-        .user_operation("user:quiet-bystander", "Commit elsewhere")
+        .user_tool("user:quiet-bystander", "Commit elsewhere")
         .await;
-    fixture.require_approval(&operation).await;
+    fixture.require_approval(&tool).await;
     let run = fixture
         .runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             submission("await coral.providers.weather.getForecast({});"),
         )
         .await
@@ -1989,8 +1941,8 @@ async fn an_unrelated_commit_while_an_approval_is_pending_causes_no_fence_and_no
     fixture
         .runs
         .cancel(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id(),
             &immediate(None, 100),
         )
@@ -2011,16 +1963,16 @@ async fn a_wait_that_became_moot_is_found_by_the_periodic_precheck_and_its_reque
             .with_wakeups(Duration::from_millis(300), Duration::from_secs(1)),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:moot-wait", "A wait that became moot")
+    let tool = fixture
+        .user_tool("user:moot-wait", "A wait that became moot")
         .await;
-    fixture.require_approval(&operation).await;
+    fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
     let run = fixture
         .runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             submission(
                 "try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }",
             ),
@@ -2029,8 +1981,8 @@ async fn a_wait_that_became_moot_is_found_by_the_periodic_precheck_and_its_reque
         .unwrap();
     let request = wait_for_approval(
         &approvals,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
@@ -2038,17 +1990,14 @@ async fn a_wait_that_became_moot_is_found_by_the_periodic_precheck_and_its_reque
     let held = probe.held();
     fixture
         .workspaces
-        .archive(
-            &change(operation.user.clone(), 50, '5'),
-            &operation.workspace_id,
-        )
+        .archive(&change(tool.user.clone(), 50, '5'), &tool.workspace_id)
         .await
         .unwrap();
 
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
@@ -2073,7 +2022,7 @@ async fn a_wait_that_became_moot_is_found_by_the_periodic_precheck_and_its_reque
     assert_eq!(probe.fences(), 0, "no fence");
     assert_eq!(
         approvals
-            .get(&operation.principal, &operation.workspace_id, &request.id)
+            .get(&tool.principal, &tool.workspace_id, &request.id)
             .await
             .unwrap()
             .state,
@@ -2094,18 +2043,18 @@ async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
             .with_wakeups(Duration::from_secs(15), Duration::from_secs(1)),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:quiet-expiry", "Expire by the timer")
+    let tool = fixture
+        .user_tool("user:quiet-expiry", "Expire by the timer")
         .await;
-    fixture.require_approval(&operation).await;
+    fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
-    let run = fixture.runs.start(&operation.principal, &operation.workspace_id, RunSubmission::new(
+    let run = fixture.runs.start(&tool.principal, &tool.workspace_id, RunSubmission::new(
         ProgramSource::parse("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }").unwrap(),
         RunTimeout::from_millis(900_000).unwrap())).await.unwrap();
     let request = wait_for_approval(
         &approvals,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
@@ -2114,7 +2063,7 @@ async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
     // Without the timer's chunk, the wait would sleep until the precheck.
     wait_until_async_within(Duration::from_secs(3), async || {
         fixture
-            .run_record(&operation.workspace_id, run.run_id())
+            .run_record(&tool.workspace_id, run.run_id())
             .await
             .state
             .is_terminal()
@@ -2122,15 +2071,15 @@ async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
     .await;
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
     assert_final_code(&terminal, "approval_expired");
     assert_eq!(
         approvals
-            .get(&operation.principal, &operation.workspace_id, &request.id)
+            .get(&tool.principal, &tool.workspace_id, &request.id)
             .await
             .unwrap()
             .state,
@@ -2160,16 +2109,16 @@ async fn probed_fixture(
 
 /// Commits a policy change in another Workspace. Each commit rings every
 /// change subscriber, as a busy deployment does.
-async fn commit_elsewhere(fixture: &TestModules, bystander: &OperationFixture, at: i64) {
+async fn commit_elsewhere(fixture: &TestModules, bystander: &ToolFixture, at: i64) {
     fixture
         .policies
         .set_access_state(
             &change(bystander.user.clone(), 60 + at, 'b'),
             bystander.policy_target.clone(),
             if at % 2 == 0 {
-                OperationAccessState::Disabled
+                ToolAccessState::Disabled
             } else {
-                OperationAccessState::Enabled
+                ToolAccessState::Enabled
             },
         )
         .await
@@ -2183,12 +2132,7 @@ async fn quiet_approval_fixture(
     engine: Arc<dyn ProgramEngine>,
     upstream: Arc<dyn UpstreamSender>,
     label: &str,
-) -> (
-    TestModules,
-    OperationFixture,
-    ApprovalModule,
-    Arc<CommitProbe>,
-) {
+) -> (TestModules, ToolFixture, ApprovalModule, Arc<CommitProbe>) {
     let probe = CommitProbe::new();
     let mut fixture = TestModules::with_execution_adapters(
         engine,
@@ -2199,12 +2143,12 @@ async fn quiet_approval_fixture(
     .await;
     fixture.runs.execution_policy =
         crate::execution::ExecutionPolicy::testing_with_claim_lease(Duration::from_secs(60));
-    let operation = fixture
-        .user_operation(&format!("user:{label}"), "Owner-recorded decisions")
+    let tool = fixture
+        .user_tool(&format!("user:{label}"), "Owner-recorded decisions")
         .await;
-    fixture.require_approval(&operation).await;
+    fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
-    (fixture, operation, approvals, probe)
+    (fixture, tool, approvals, probe)
 }
 
 /// Two deciders on one Approval Request, one on each Coral Instance: the
@@ -2219,7 +2163,7 @@ async fn two_deciders_on_one_request_are_answered_in_insert_order_and_the_loser_
         200,
         serde_json::json!({"temperature": 21}),
     ));
-    let (fixture, operation, approvals, probe) = quiet_approval_fixture(
+    let (fixture, tool, approvals, probe) = quiet_approval_fixture(
         Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
         upstream.clone(),
         "two-deciders",
@@ -2227,17 +2171,13 @@ async fn two_deciders_on_one_request_are_answered_in_insert_order_and_the_loser_
     .await;
     let run = fixture
         .runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("invoke"),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission("invoke"))
         .await
         .unwrap();
     let request = wait_for_approval(
         &approvals,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
@@ -2246,8 +2186,8 @@ async fn two_deciders_on_one_request_are_answered_in_insert_order_and_the_loser_
     let elsewhere = fixture.next_process().approvals();
     let decide = |approvals: &ApprovalModule, decision: ApprovalDecision, comment: &'static str| {
         let approvals = approvals.clone();
-        let actor = operation.principal.clone();
-        let workspace = operation.workspace_id.clone();
+        let actor = tool.principal.clone();
+        let workspace = tool.workspace_id.clone();
         let id = request.id.clone();
         let trace = trace.clone();
         tokio::spawn(async move {
@@ -2270,10 +2210,7 @@ async fn two_deciders_on_one_request_are_answered_in_insert_order_and_the_loser_
     let first = first.await.expect("join").expect("the first decision");
     let second = second.await.expect("join").expect("the second decision");
     assert_eq!(first.state, ApprovalState::Approved);
-    assert_eq!(
-        first.approver.as_ref(),
-        Some(operation.principal.principal())
-    );
+    assert_eq!(first.approver.as_ref(), Some(tool.principal.principal()));
     assert_eq!(first.comment.as_deref(), Some("first"));
     assert!(first.decided_at_unix_nanos.is_some());
     assert_eq!(
@@ -2281,15 +2218,13 @@ async fn two_deciders_on_one_request_are_answered_in_insert_order_and_the_loser_
         "the loser receives the winner's recorded answer"
     );
     assert_eq!(
-        fixture
-            .inbox_rows(&operation.workspace_id, run.run_id())
-            .await,
+        fixture.inbox_rows(&tool.workspace_id, run.run_id()).await,
         0
     );
     let third = elsewhere
         .decide(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             &request.id,
             ApprovalDecision::Decline,
             Some("third"),
@@ -2299,7 +2234,7 @@ async fn two_deciders_on_one_request_are_answered_in_insert_order_and_the_loser_
         .expect("a repeat after the record");
     assert_eq!(third, first);
     let events = approvals
-        .list_lifecycle_events(&operation.principal, &operation.workspace_id, &request.id)
+        .list_lifecycle_events(&tool.principal, &tool.workspace_id, &request.id)
         .await
         .unwrap();
     assert_eq!(
@@ -2309,8 +2244,8 @@ async fn two_deciders_on_one_request_are_answered_in_insert_order_and_the_loser_
     );
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
@@ -2344,16 +2279,16 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
         .await;
         fixture.runs.execution_policy =
             crate::execution::ExecutionPolicy::testing_with_shutdown_grace(Duration::from_secs(30));
-        let operation = fixture
-            .user_operation("user:decide-settling", "Decide while settling")
+        let tool = fixture
+            .user_tool("user:decide-settling", "Decide while settling")
             .await;
-        fixture.require_approval(&operation).await;
+        fixture.require_approval(&tool).await;
         let approvals = fixture.approvals();
         let run = fixture
             .runs
             .start(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 submission(
                     "await Promise.all([coral.providers.weather.getForecast({}), coral.providers.weather.getForecast({})]); return 'done';",
                 ),
@@ -2362,15 +2297,15 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
             .unwrap();
         wait_for_actions(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id(),
             2,
             2,
         )
         .await;
         let requests = approvals
-            .list_for_run(&operation.principal, &operation.workspace_id, run.run_id())
+            .list_for_run(&tool.principal, &tool.workspace_id, run.run_id())
             .await
             .unwrap();
         let [dispatched, obsolete] = requests.as_slice() else {
@@ -2379,8 +2314,8 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
         let trace = TraceId::parse(&"b".repeat(32)).unwrap();
         approvals
             .decide(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 &dispatched.id,
                 ApprovalDecision::Approve,
                 None,
@@ -2390,8 +2325,8 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
             .unwrap();
         wait_until(|| upstream.entered.load(Ordering::SeqCst)).await;
         let runs = fixture.runs.clone();
-        let actor = operation.principal.clone();
-        let workspace = operation.workspace_id.clone();
+        let actor = tool.principal.clone();
+        let workspace = tool.workspace_id.clone();
         let run_id = run.run_id().clone();
         let cancel = tokio::spawn(async move {
             runs.cancel(&actor, &workspace, &run_id, &immediate(None, 100))
@@ -2399,7 +2334,7 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
         });
         wait_until_async(async || {
             fixture
-                .run_record(&operation.workspace_id, run.run_id())
+                .run_record(&tool.workspace_id, run.run_id())
                 .await
                 .termination
                 .is_some()
@@ -2407,8 +2342,8 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
         .await;
         let closed = approvals
             .decide(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 &obsolete.id,
                 ApprovalDecision::Approve,
                 None,
@@ -2421,7 +2356,7 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
         assert!(!closed.actionable);
         assert_eq!(
             approvals
-                .list_lifecycle_events(&operation.principal, &operation.workspace_id, &obsolete.id)
+                .list_lifecycle_events(&tool.principal, &tool.workspace_id, &obsolete.id)
                 .await
                 .unwrap()
                 .iter()
@@ -2434,7 +2369,7 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
         assert_eq!(canceled.state(), RunState::Canceled);
         assert_eq!(
             approvals
-                .get(&operation.principal, &operation.workspace_id, &obsolete.id)
+                .get(&tool.principal, &tool.workspace_id, &obsolete.id)
                 .await
                 .unwrap()
                 .state,
@@ -2446,7 +2381,7 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
     // Once terminal: the terminal chunk closed the request; the decision
     // reads it.
     {
-        let (fixture, operation, approvals, _probe) = quiet_approval_fixture(
+        let (fixture, tool, approvals, _probe) = quiet_approval_fixture(
             Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
             Arc::new(RejectingUpstream),
             "decide-terminal",
@@ -2454,38 +2389,32 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
         .await;
         let run = fixture
             .runs
-            .start(
-                &operation.principal,
-                &operation.workspace_id,
-                submission("invoke"),
-            )
+            .start(&tool.principal, &tool.workspace_id, submission("invoke"))
             .await
             .unwrap();
         let request = wait_for_approval(
             &approvals,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id(),
         )
         .await;
         let canceled = fixture
             .runs
             .cancel(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 run.run_id(),
                 &immediate(None, 100),
             )
             .await
             .unwrap();
         assert_eq!(canceled.state(), RunState::Canceled);
-        let before = fixture
-            .run_record(&operation.workspace_id, run.run_id())
-            .await;
+        let before = fixture.run_record(&tool.workspace_id, run.run_id()).await;
         let closed = approvals
             .decide(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 &request.id,
                 ApprovalDecision::Approve,
                 None,
@@ -2497,7 +2426,7 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
         assert_eq!(closed.approver, None);
         assert_eq!(
             approvals
-                .list_lifecycle_events(&operation.principal, &operation.workspace_id, &request.id)
+                .list_lifecycle_events(&tool.principal, &tool.workspace_id, &request.id)
                 .await
                 .unwrap()
                 .iter()
@@ -2506,9 +2435,7 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
             [ApprovalState::Closed]
         );
         assert_eq!(
-            fixture
-                .run_record(&operation.workspace_id, run.run_id())
-                .await,
+            fixture.run_record(&tool.workspace_id, run.run_id()).await,
             before,
             "nothing is written for a terminal Run"
         );
@@ -2520,7 +2447,7 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
 /// Run.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_owner_that_dies_after_recording_a_decision_leaves_its_requester_the_record() {
-    let (fixture, operation, approvals, probe) = quiet_approval_fixture(
+    let (fixture, tool, approvals, probe) = quiet_approval_fixture(
         Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
         Arc::new(ScriptedUpstream::json(200, serde_json::json!({}))),
         "owner-dies",
@@ -2528,25 +2455,21 @@ async fn an_owner_that_dies_after_recording_a_decision_leaves_its_requester_the_
     .await;
     let run = fixture
         .runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("invoke"),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission("invoke"))
         .await
         .unwrap();
     let request = wait_for_approval(
         &approvals,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
     let release = probe.hold_next_commit();
     let deciding = {
         let approvals = approvals.clone();
-        let actor = operation.principal.clone();
-        let workspace = operation.workspace_id.clone();
+        let actor = tool.principal.clone();
+        let workspace = tool.workspace_id.clone();
         let id = request.id.clone();
         tokio::spawn(async move {
             approvals
@@ -2567,14 +2490,11 @@ async fn an_owner_that_dies_after_recording_a_decision_leaves_its_requester_the_
     release.send(()).expect("release the decision chunk");
     let recorded = deciding.await.expect("join").expect("the record answers");
     assert_eq!(recorded.state, ApprovalState::Approved);
-    assert_eq!(
-        recorded.approver.as_ref(),
-        Some(operation.principal.principal())
-    );
+    assert_eq!(recorded.approver.as_ref(), Some(tool.principal.principal()));
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;

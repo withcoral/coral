@@ -161,7 +161,7 @@ export const bulkPolicyForm = style({
   flexWrap: 'wrap',
   gap: 8,
 })
-export const operationGroupLabel = style({
+export const toolGroupLabel = style({
   alignItems: 'center',
   display: 'flex',
   gap: 8,
@@ -198,7 +198,7 @@ export const checkedRow = style({
   backgroundColor: theme.surface.onMainContent,
   selectors: { '&:hover': { backgroundColor: theme.surface.onMainContentHover } },
 })
-export const operationNameCell = style({
+export const toolNameCell = style({
   alignItems: 'center',
   display: 'flex',
   gap: 8,
@@ -207,7 +207,7 @@ export const operationNameCell = style({
   paddingInlineStart: 40,
 })
 // The name reads as plain text; the whole row is the click target.
-export const operationName = style({
+export const toolName = style({
   color: theme.content.primary,
   minWidth: 0,
   overflow: 'hidden',
@@ -219,11 +219,11 @@ export const operationName = style({
     '&:focus-visible': { borderRadius: 4, outline: `2px solid ${theme.stroke.focused}` },
   },
 })
-export const operationDescriptionCell = style({
+export const toolDescriptionCell = style({
   display: 'flex',
   minWidth: 0,
 })
-export const operationDescriptionText = style({
+export const toolDescriptionText = style({
   minWidth: 0,
   ...utils.boxClamp(2),
 })
@@ -479,7 +479,7 @@ export const twoUp = style({
 })
 
 // The catalog reads as one panel: the search box sits with the list it filters.
-export const operationsBrowser = style({
+export const toolsBrowser = style({
   border: `1px solid ${theme.stroke.secondary}`,
   borderRadius: 10,
   display: 'flex',
@@ -489,7 +489,7 @@ export const operationsBrowser = style({
 })
 // The controls sit at the end of the row: the list is the thing being read,
 // and the search box is what you reach for once reading has not found it.
-export const operationsSearch = style({
+export const toolsSearch = style({
   alignItems: 'center',
   borderBottom: `1px solid ${theme.stroke.secondary}`,
   display: 'flex',
@@ -498,7 +498,7 @@ export const operationsSearch = style({
   justifyContent: 'flex-end',
   padding: 8,
 })
-export const operationsFind = style({ maxWidth: 260, minWidth: 160 })
+export const toolsFind = style({ maxWidth: 260, minWidth: 160 })
 // Nothing to list yet: what the empty panel offers under its own copy, kept
 // in one centred column so a form, a notice and a button line up.
 export const emptyActions = style({
@@ -517,18 +517,18 @@ export const endedActions = style({
   gap: 8,
   justifyContent: 'center',
 })
-export const operationsScroll = style({ padding: 4 })
+export const toolsScroll = style({ padding: 4 })
 // An empty panel keeps roughly the height it will have once it holds rows, and
 // centres its message in that room rather than resting on the search bar.
 // Full width, so its percentage-wide rows size against the panel.
-export const operationsSkeleton = style({
+export const toolsSkeleton = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 14,
   padding: 16,
   width: '100%',
 })
-export const operationsEmpty = style({
+export const toolsEmpty = style({
   alignItems: 'center',
   display: 'flex',
   justifyContent: 'center',

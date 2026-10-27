@@ -113,7 +113,7 @@ pub(super) fn inspect(loaded: &LoadedSetup) -> Result<ProviderConfigurationRevie
         },
         servers: vec![ServerGroup {
             declaration: "#/servers".into(),
-            operations: Vec::new(),
+            tools: Vec::new(),
             options: vec![ServerOption {
                 url: source,
                 variables: BTreeMap::new(),

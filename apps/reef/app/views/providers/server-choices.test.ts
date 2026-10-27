@@ -8,7 +8,7 @@ function variable(name: string, defaultValue: string, values: string[] = []): Se
 }
 
 function group(options: ServerGroup['options']): ServerGroup {
-  return { declaration: '#/servers', operations: ['metrics'], options }
+  return { declaration: '#/servers', tools: ['metrics'], options }
 }
 
 const site = variable('site', 'datadoghq.com', ['datadoghq.com', 'datadoghq.eu'])
@@ -138,9 +138,9 @@ describe('serverProblem', () => {
     expect(serverProblem(declared, { ...selection, variables: { path } })).toBeUndefined()
   })
 
-  it('requires a root destination only when operations use it', () => {
+  it('requires a root destination only when tools use it', () => {
     expect(serverProblem(declared, undefined)).toBeDefined()
-    expect(serverProblem({ ...declared, operations: [] }, undefined)).toBeUndefined()
+    expect(serverProblem({ ...declared, tools: [] }, undefined)).toBeUndefined()
     expect(
       serverProblem({ ...declared, declaration: '#/paths/~1logs/servers' }, undefined),
     ).toBeUndefined()

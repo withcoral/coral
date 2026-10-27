@@ -66,7 +66,7 @@
             },
             "kind": {
               "type": "string",
-              "const": "operation"
+              "const": "provider_tool"
             }
           },
           "required": [

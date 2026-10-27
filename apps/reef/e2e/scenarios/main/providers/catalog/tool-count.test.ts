@@ -5,7 +5,7 @@ import {
   confirmConfiguration,
   createWorkspace,
   openCustomSource,
-  readOperations,
+  readTools,
 } from '../../../../support/providers.ts'
 
 test('An unread MCP catalog stays unknown; a discovered empty catalog shows zero', async (context) => {
@@ -19,18 +19,18 @@ test('An unread MCP catalog stays unknown; a discovered empty catalog shows zero
       await page.getByLabel('MCP server URL', { exact: true }).fill(`${upstream.origin}/mcp`)
       await page.getByRole('button', { name: 'Connect', exact: true }).click()
       await page.getByLabel('Namespace', { exact: true }).waitFor()
-      expect(await page.getByText('No operations found', { exact: true }).count()).toBe(0)
+      expect(await page.getByText('No tools found', { exact: true }).count()).toBe(0)
       expect(upstream.counts.discovery).toBe(0)
       await confirmConfiguration(page, 'Bearer token')
       await page
-        .getByRole('button', { name: 'Enter a token to read the operations', exact: true })
+        .getByRole('button', { name: 'Enter a token to read the tools', exact: true })
         .waitFor()
-      expect(await page.getByText('No operations found', { exact: true }).count()).toBe(0)
+      expect(await page.getByText('No tools found', { exact: true }).count()).toBe(0)
     })
     await step('Show the known empty result, including after reload', async () => {
-      await readOperations(page, token)
-      await page.getByRole('heading', { name: 'Operations', exact: true }).waitFor()
-      const count = page.getByText('0 operations', { exact: true })
+      await readTools(page, token)
+      await page.getByRole('heading', { name: 'Tools', exact: true }).waitFor()
+      const count = page.getByText('0 tools', { exact: true })
       await count.waitFor()
       expect(await page.getByText('Not counted yet', { exact: true }).count()).toBe(0)
       expect(upstream.counts.discovery).toBe(1)

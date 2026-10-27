@@ -152,7 +152,7 @@ impl Session {
     async fn exec_program(&self, task: &str, program: &str) -> Value {
         self.call(
             "exec",
-            json!({"task_id":task, "intent":"Invoke an approval-gated Operation", "wait_ms":5000, "program":program}),
+            json!({"task_id":task, "intent":"Invoke an approval-gated Tool", "wait_ms":5000, "program":program}),
         )
         .await
     }
@@ -289,7 +289,7 @@ async fn each_answer_decides_only_the_prompted_invocation() {
             // `src/prompts.rs` owns the exact copy; the wire carries the exec intent.
             let message = form_message(prompt);
             assert!(
-                message.contains("Invoke an approval-gated Operation"),
+                message.contains("Invoke an approval-gated Tool"),
                 "{case}: the prompt asks the agent's stated reason: {message}"
             );
             assert!(
@@ -305,7 +305,7 @@ async fn each_answer_decides_only_the_prompted_invocation() {
                 let terminal = session.wait_terminal(update).await;
                 assert_eq!(terminal["state"], state, "{case}: {terminal}");
                 assert_eq!(
-                    terminal.pointer("/failure/error/operation/code"),
+                    terminal.pointer("/failure/error/tool/code"),
                     code.map(|code| json!(code)).as_ref(),
                     "{case}: {terminal}"
                 );
@@ -336,7 +336,7 @@ async fn each_answer_decides_only_the_prompted_invocation() {
                     panic!("{case}: a later observation prompts again: {prompts:?}")
                 };
                 assert!(
-                    form_message(later).contains("Invoke an approval-gated Operation"),
+                    form_message(later).contains("Invoke an approval-gated Tool"),
                     "{case}: a wait prompt finds the reason the Run was submitted"
                 );
                 let canceled = session
@@ -426,7 +426,7 @@ async fn an_in_band_answer_takes_effect_before_the_next_prompt(
     let accepted = session
         .call(
             "exec",
-            json!({"task_id":task, "intent":"Invoke two approval-gated Operations", "wait_ms":0, "program":PARALLEL}),
+            json!({"task_id":task, "intent":"Invoke two approval-gated Tools", "wait_ms":0, "program":PARALLEL}),
         )
         .await;
     let run = coral_run::RunId::parse(accepted["run_id"].as_str().expect("Run")).expect("Run");
@@ -562,7 +562,7 @@ async fn a_raw_retry_completes_the_call_that_asked(endpoint: &str, version: &Pro
         .tool("start_task", json!({"intent":"Answer on the wire"}))
         .await;
     let arguments = json!({
-        "task_id":started["structuredContent"]["task_id"], "intent":"Invoke an approval-gated Operation",
+        "task_id":started["structuredContent"]["task_id"], "intent":"Invoke an approval-gated Tool",
         "wait_ms":5000, "program":PROGRAM
     });
     let asked = session.tool("exec", arguments.clone()).await;

@@ -6,33 +6,31 @@ import { ProviderAccountScope } from '../../../../generated/coral/management/v1/
 import { withOwnerSession } from '../../../../support/actors.ts'
 import { listen, oauthMcpServer, openApiDocument } from '../../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   addProviderFromFile,
   chooseAccount,
   chooseFile,
   confirmConfiguration,
   createWorkspace,
   openCustomSource,
-  openOperation,
+  openTool,
   openProviderSettings,
-  operationGroup,
+  toolGroup,
   programRunner,
   discardSettingsChange,
   saveConfirmedSettingsChange,
   setProviderEnabled,
-  signInToReadOperations,
+  signInToReadTools,
   waitForProviderStatus,
   waitForPublication,
 } from '../../../../support/providers.ts'
 
 // Every change returns to the provider's settings, where it opens.
 const saved = (page: Page) => page.waitForURL((url) => url.pathname.endsWith('/settings'))
-const operationLink = (page: Page, name: string) =>
-  page
-    .getByRole('table', { name: 'Operations', exact: true })
-    .getByRole('link', { name, exact: true })
+const toolLink = (page: Page, name: string) =>
+  page.getByRole('table', { name: 'Tools', exact: true }).getByRole('link', { name, exact: true })
 const save = async (page: Page) => {
-  expect(new URL(page.url()).searchParams.has('operationsAccepted')).toBe(false)
+  expect(new URL(page.url()).searchParams.has('toolsAccepted')).toBe(false)
   await page.getByRole('button', { name: 'Save', exact: true }).click()
   await saved(page)
 }
@@ -100,7 +98,7 @@ test('Refresh keeps a saved document URL through configuration edits and clears 
   let holdRead = false
   let releaseRead: (() => void) | undefined
   context.onTestFinished(() => releaseRead?.())
-  let operations: Record<string, object> = { listRecords: {} }
+  let tools: Record<string, object> = { listRecords: {} }
   const source = await listen(
     context,
     createServer((request, response) => {
@@ -112,7 +110,7 @@ test('Refresh keeps a saved document URL through configuration edits and clears 
       const send = () =>
         response
           .writeHead(200, { 'content-type': 'application/json' })
-          .end(openApiDocument('Records', operations))
+          .end(openApiDocument('Records', tools))
       if (holdRead)
         releaseRead = () => {
           holdRead = false
@@ -129,7 +127,7 @@ test('Refresh keeps a saved document URL through configuration edits and clears 
     await page.getByLabel('OpenAPI URL', { exact: true }).fill(source.origin)
     await page.getByRole('button', { name: 'Read', exact: true }).click()
     await confirmConfiguration(page, 'No authentication')
-    await acceptOperations(page)
+    await acceptTools(page)
     await page.getByRole('button', { name: 'Add provider', exact: true }).click()
     await waitForPublication(page)
     const providerPath = new URL(page.url()).pathname
@@ -141,7 +139,7 @@ test('Refresh keeps a saved document URL through configuration edits and clears 
       await page.getByRole('button', { name: 'Save', exact: true }).click()
       await saved(page)
       expect(reads).toBe(initialReads)
-      operations = { listRecords: {}, newReport: {} }
+      tools = { listRecords: {}, newReport: {} }
       await page.getByRole('link', { name: 'Check for updates', exact: true }).click()
       // The source shows as settings show it, redacted and normalised.
       await page.getByText(`${source.origin}/`, { exact: true }).waitFor()
@@ -149,25 +147,25 @@ test('Refresh keeps a saved document URL through configuration edits and clears 
       expect(await page.getByRole('heading', { name: 'Changes', exact: true }).count()).toBe(0)
       expect(await page.getByRole('heading', { name: 'Review', exact: true }).count()).toBe(0)
       holdRead = true
-      await page.getByRole('button', { name: 'Read operations', exact: true }).click()
-      await page.getByRole('status').getByText('Reading operations…', { exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Read tools', exact: true }).click()
+      await page.getByRole('status').getByText('Reading tools…', { exact: true }).waitFor()
       // Nothing to save until the source is read.
       expect(await page.getByRole('button', { name: 'Save', exact: true }).isDisabled()).toBe(true)
       await expect.poll(() => typeof releaseRead).toBe('function')
       releaseRead!()
       // What the read adds opens at the top.
-      await operationGroup(page, 'New').getByText('newReport', { exact: true }).waitFor()
+      await toolGroup(page, 'New').getByText('newReport', { exact: true }).waitFor()
       expect(await page.getByRole('textbox', { name: 'Display name', exact: true }).count()).toBe(0)
       expect(await page.getByRole('group', { name: 'Sign-in', exact: true }).count()).toBe(0)
       await save(page)
       expect(reads).toBe(initialReads + 1)
       await page.goto(providerPath)
-      await operationLink(page, 'newReport').waitFor()
+      await toolLink(page, 'newReport').waitFor()
     })
     await step('An uploaded replacement no longer offers the old URL', async () => {
       await openProviderSettings(page)
       await page.getByRole('link', { name: 'Replace source', exact: true }).click()
-      await chooseFile(page, 'replacement.json', openApiDocument('Renamed records', operations))
+      await chooseFile(page, 'replacement.json', openApiDocument('Renamed records', tools))
       await page.getByRole('button', { name: 'Read', exact: true }).click()
       await page.getByRole('button', { name: 'Save', exact: true }).waitFor()
       expect(await page.getByRole('textbox', { name: 'Display name', exact: true }).count()).toBe(0)
@@ -176,9 +174,7 @@ test('Refresh keeps a saved document URL through configuration edits and clears 
       expect(new URL(page.url()).pathname).toBe(`${providerPath}/settings`)
       await page.getByRole('link', { name: 'Check for updates', exact: true }).click()
       await page.getByRole('link', { name: 'Replace document', exact: true }).waitFor()
-      expect(await page.getByRole('button', { name: 'Read operations', exact: true }).count()).toBe(
-        0,
-      )
+      expect(await page.getByRole('button', { name: 'Read tools', exact: true }).count()).toBe(0)
     })
   })
 })
@@ -212,7 +208,7 @@ test('Start a canceled settings change again against the provider as it is now',
     await page.getByLabel('OpenAPI URL', { exact: true }).fill(original.origin)
     await page.getByRole('button', { name: 'Read', exact: true }).click()
     await confirmConfiguration(page, 'No authentication')
-    await acceptOperations(page)
+    await acceptTools(page)
     await page.getByRole('button', { name: 'Add provider', exact: true }).click()
     await waitForPublication(page)
     const providerPath = new URL(page.url()).pathname
@@ -278,9 +274,9 @@ test('Recover a different-account sign-in and review configuration-triggered red
     await page.getByLabel('MCP server URL', { exact: true }).fill(upstream.mcpUrl)
     await page.getByRole('button', { name: 'Connect', exact: true }).click()
     await confirmConfiguration(page)
-    await signInToReadOperations(page)
+    await signInToReadTools(page)
     await page.getByRole('link', { name: 'Approve fixture access', exact: true }).click()
-    await acceptOperations(page)
+    await acceptTools(page)
     await chooseAccount(page, 'shared')
     await page.getByRole('button', { name: 'Add provider', exact: true }).click()
     await waitForPublication(page)
@@ -297,7 +293,7 @@ test('Recover a different-account sign-in and review configuration-triggered red
       async () => {
         await openProviderSettings(page)
         await page.getByRole('link', { name: 'Check for updates', exact: true }).click()
-        await page.getByRole('button', { name: 'Read operations', exact: true }).click()
+        await page.getByRole('button', { name: 'Read tools', exact: true }).click()
         await page.getByRole('button', { name: /^Sign in/ }).click()
         await page.getByRole('link', { name: 'Approve fixture access', exact: true }).click()
         await page.getByRole('radio', { name: 'Connect another account', exact: true }).check()
@@ -331,7 +327,7 @@ test('Recover a different-account sign-in and review configuration-triggered red
       await page.getByRole('button', { name: 'Edit configuration', exact: true }).click()
       await confirmConfiguration(page, 'Bearer token', 'Save')
       await page.getByLabel('Token', { exact: true }).fill(token)
-      await page.getByRole('button', { name: 'List operations', exact: true }).click()
+      await page.getByRole('button', { name: 'List tools', exact: true }).click()
       await page.getByRole('radio', { name: 'Use this account', exact: true }).check()
       await page.getByRole('button', { name: 'Save', exact: true }).click()
       const confirm = page.getByRole('dialog', { name: 'Save changes?' })
@@ -361,19 +357,19 @@ test('Refresh an uploaded document with unreadable and stale-change protection',
       await chooseFile(page, 'records.json', document)
       await page.getByRole('button', { name: 'Read', exact: true }).click()
     }
-    await step('A new document adds and removes operations', async () => {
+    await step('A new document adds and removes tools', async () => {
       await upload(openApiDocument('Records', { listRecords: {}, newReport: {} }))
-      await operationGroup(page, 'New').getByText('newReport', { exact: true }).waitFor()
-      await operationGroup(page, 'Removed').getByText('oldReport', { exact: true }).waitFor()
+      await toolGroup(page, 'New').getByText('newReport', { exact: true }).waitFor()
+      await toolGroup(page, 'Removed').getByText('oldReport', { exact: true }).waitFor()
       // Nothing breaks access, so Save asks nothing.
       expect(await page.getByRole('checkbox').count()).toBe(0)
       await save(page)
       expect(new URL(page.url()).pathname).toBe(`${providerPath}/settings`)
       await page.goto(providerPath)
-      await operationLink(page, 'newReport').waitFor()
-      expect(await operationLink(page, 'oldReport').count()).toBe(0)
-      // The operation's full name keeps the namespace.
-      const drawer = await openOperation(page, 'newReport')
+      await toolLink(page, 'newReport').waitFor()
+      expect(await toolLink(page, 'oldReport').count()).toBe(0)
+      // The tool's full name keeps the namespace.
+      const drawer = await openTool(page, 'newReport')
       await drawer.getByText('coral.providers.records.newReport', { exact: true }).waitFor()
       await page.keyboard.press('Escape')
       await drawer.waitFor({ state: 'hidden' })
@@ -398,7 +394,7 @@ test('Refresh an uploaded document with unreadable and stale-change protection',
         ),
       )
       const error = page.getByRole('alert').filter({ hasText: 'Cannot read this document' })
-      await error.getByText('Error code: duplicate_operation_key', { exact: false }).waitFor()
+      await error.getByText('Error code: duplicate_tool_key', { exact: false }).waitFor()
       expect(await page.getByLabel('Display name', { exact: true }).count()).toBe(0)
       // An upload is not kept, so you choose the source again in settings.
       await error.getByRole('link', { name: 'Choose a source', exact: true }).click()

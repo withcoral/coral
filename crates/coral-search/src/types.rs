@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fmt;
 
 use base64::Engine as _;
-use coral_catalog::{OperationHints, OperationPresentation};
+use coral_catalog::{ToolHints, ToolPresentation};
 pub use coral_provider::ProviderId;
 pub use coral_provider::access::ProviderCallRoot;
 use coral_provider::access::ProviderNamespace;
@@ -225,7 +225,7 @@ impl SearchRequest {
         }
     }
 
-    /// Restricts results to the Operations of the Provider with this Call Root.
+    /// Restricts results to the Tools of the Provider with this Call Root.
     #[must_use]
     pub fn with_provider(mut self, provider: ProviderCallRoot) -> Self {
         self.provider = Some(provider);
@@ -271,7 +271,7 @@ impl SearchRequest {
     }
 }
 
-/// Complete public JavaScript path for one Operation or Saved Function.
+/// Complete public JavaScript path for one Tool or Saved Function.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CallPath(String);
 
@@ -296,10 +296,7 @@ impl CallPath {
         Ok(Self(value.to_string()))
     }
 
-    pub(crate) fn operation(
-        call_root: &ProviderCallRoot,
-        relative_path: &str,
-    ) -> Result<Self, Error> {
+    pub(crate) fn tool(call_root: &ProviderCallRoot, relative_path: &str) -> Result<Self, Error> {
         Self::parse(&format!("{}.{relative_path}", call_root.as_str()))
     }
 
@@ -334,13 +331,13 @@ fn safe_path_segment(value: &str) -> bool {
 /// Kind of Search Entity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EntityKind {
-    /// One Operation projected through a Provider.
-    Operation,
+    /// One Provider Tool projected through a Provider.
+    ProviderTool,
     /// One current Principal-owned Saved Function.
     SavedFunction,
 }
 
-/// Current approval fact exposed for one visible Operation.
+/// Current approval fact exposed for one visible Tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalRequirement {
     /// Current policy permits admission without an Invocation Approval.
@@ -349,23 +346,23 @@ pub enum ApprovalRequirement {
     Required,
 }
 
-/// Complete safe TypeScript authoring contract for one visible Operation.
+/// Complete safe TypeScript authoring contract for one visible Tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OperationAuthoringDescription {
+pub struct ToolAuthoringDescription {
     call_path: CallPath,
     typescript_declaration: String,
     provider_call_root: ProviderCallRoot,
     provider_id: ProviderId,
     provider_display_name: String,
-    presentation: OperationPresentation,
-    hints: OperationHints,
+    presentation: ToolPresentation,
+    hints: ToolHints,
     approval_requirement: ApprovalRequirement,
 }
 
-impl OperationAuthoringDescription {
+impl ToolAuthoringDescription {
     #[expect(
         clippy::too_many_arguments,
-        reason = "one immutable complete Operation Authoring Description is assembled at discovery"
+        reason = "one immutable complete Tool Authoring Description is assembled at discovery"
     )]
     pub(crate) const fn new(
         call_path: CallPath,
@@ -373,8 +370,8 @@ impl OperationAuthoringDescription {
         provider_call_root: ProviderCallRoot,
         provider_id: ProviderId,
         provider_display_name: String,
-        presentation: OperationPresentation,
-        hints: OperationHints,
+        presentation: ToolPresentation,
+        hints: ToolHints,
         approval_requirement: ApprovalRequirement,
     ) -> Self {
         Self {
@@ -452,7 +449,7 @@ impl OperationAuthoringDescription {
 
     /// Returns the declared effect hints.
     #[must_use]
-    pub const fn hints(&self) -> OperationHints {
+    pub const fn hints(&self) -> ToolHints {
         self.hints
     }
 
@@ -507,8 +504,8 @@ impl SavedFunctionAuthoringDescription {
 /// One complete current TypeScript Authoring Description.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthoringDescription {
-    /// A visible Operation contract.
-    Operation(OperationAuthoringDescription),
+    /// A visible Tool contract.
+    Tool(ToolAuthoringDescription),
     /// The authenticated Principal's current Saved Function contract.
     SavedFunction(SavedFunctionAuthoringDescription),
 }
@@ -518,7 +515,7 @@ impl AuthoringDescription {
     #[must_use]
     pub const fn kind(&self) -> EntityKind {
         match self {
-            Self::Operation(_) => EntityKind::Operation,
+            Self::Tool(_) => EntityKind::ProviderTool,
             Self::SavedFunction(_) => EntityKind::SavedFunction,
         }
     }
@@ -527,7 +524,7 @@ impl AuthoringDescription {
     #[must_use]
     pub const fn call_path(&self) -> &CallPath {
         match self {
-            Self::Operation(description) => description.call_path(),
+            Self::Tool(description) => description.call_path(),
             Self::SavedFunction(description) => description.call_path(),
         }
     }
@@ -536,7 +533,7 @@ impl AuthoringDescription {
     #[must_use]
     pub fn description(&self) -> &str {
         match self {
-            Self::Operation(description) => description.description(),
+            Self::Tool(description) => description.description(),
             Self::SavedFunction(description) => description.description(),
         }
     }
@@ -545,7 +542,7 @@ impl AuthoringDescription {
     #[must_use]
     pub fn typescript_declaration(&self) -> &str {
         match self {
-            Self::Operation(description) => description.typescript_declaration(),
+            Self::Tool(description) => description.typescript_declaration(),
             Self::SavedFunction(description) => description.typescript_declaration(),
         }
     }
@@ -608,20 +605,20 @@ pub struct SearchHit {
     guidance_snippet: Option<String>,
     matched_tags: Vec<String>,
     evidence: SearchEvidence,
-    operation: Option<OperationHit>,
+    tool: Option<ToolHit>,
 }
 
-/// What a Search Hit shows only for an Operation.
+/// What a Search Hit shows only for a Tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OperationHit {
+pub struct ToolHit {
     provider_display_name: String,
     title: Option<String>,
-    hints: OperationHints,
+    hints: ToolHints,
     approval_requirement: ApprovalRequirement,
     deprecated: bool,
 }
 
-impl OperationHit {
+impl ToolHit {
     /// Returns safe Provider presentation metadata.
     #[must_use]
     pub fn provider_display_name(&self) -> &str {
@@ -636,7 +633,7 @@ impl OperationHit {
 
     /// Returns the declared effect hints.
     #[must_use]
-    pub const fn hints(&self) -> OperationHints {
+    pub const fn hints(&self) -> ToolHints {
         self.hints
     }
 
@@ -662,8 +659,8 @@ pub(crate) struct HitText {
 }
 
 impl SearchHit {
-    pub(crate) fn from_operation(
-        description: &OperationAuthoringDescription,
+    pub(crate) fn from_tool(
+        description: &ToolAuthoringDescription,
         text: HitText,
         evidence: SearchEvidence,
     ) -> Self {
@@ -671,7 +668,7 @@ impl SearchHit {
             description.call_path.clone(),
             text,
             evidence,
-            Some(OperationHit {
+            Some(ToolHit {
                 provider_display_name: description.provider_display_name.clone(),
                 title: description.title().map(str::to_string),
                 hints: description.hints,
@@ -693,7 +690,7 @@ impl SearchHit {
         call_path: CallPath,
         text: HitText,
         evidence: SearchEvidence,
-        operation: Option<OperationHit>,
+        tool: Option<ToolHit>,
     ) -> Self {
         Self {
             call_path,
@@ -702,15 +699,15 @@ impl SearchHit {
             guidance_snippet: text.guidance_snippet,
             matched_tags: text.matched_tags,
             evidence,
-            operation,
+            tool,
         }
     }
 
     /// Returns the Search Entity kind.
     #[must_use]
     pub const fn kind(&self) -> EntityKind {
-        if self.operation.is_some() {
-            EntityKind::Operation
+        if self.tool.is_some() {
+            EntityKind::ProviderTool
         } else {
             EntityKind::SavedFunction
         }
@@ -754,22 +751,21 @@ impl SearchHit {
         &self.evidence
     }
 
-    /// Returns what the hit shows only for an Operation.
+    /// Returns what the hit shows only for a Tool.
     #[must_use]
-    pub const fn operation(&self) -> Option<&OperationHit> {
-        self.operation.as_ref()
+    pub const fn tool(&self) -> Option<&ToolHit> {
+        self.tool.as_ref()
     }
 
     pub(crate) fn encoded_size_upper_bound(&self) -> usize {
-        let operation = self.operation.as_ref();
+        let tool = self.tool.as_ref();
         [
             self.call_path.as_str(),
             self.signature_line.as_str(),
             self.description_snippet.as_str(),
             self.guidance_snippet.as_deref().unwrap_or_default(),
-            operation.map_or("", |operation| operation.provider_display_name.as_str()),
-            operation
-                .and_then(|operation| operation.title.as_deref())
+            tool.map_or("", |tool| tool.provider_display_name.as_str()),
+            tool.and_then(|tool| tool.title.as_deref())
                 .unwrap_or_default(),
         ]
         .into_iter()
@@ -825,7 +821,7 @@ impl RetrieverCoverage {
     }
 
     /// Returns the units the caller may search: visible, ready Providers for
-    /// Operations; the Principal's current Saved Functions for functions.
+    /// Tools; the Principal's current Saved Functions for functions.
     #[must_use]
     pub const fn eligible_units(&self) -> u64 {
         self.eligible_units
@@ -953,9 +949,9 @@ pub struct ExactAuthoringDescription {
 }
 
 impl ExactAuthoringDescription {
-    pub(crate) const fn operation(authoring: OperationAuthoringDescription) -> Self {
+    pub(crate) const fn tool(authoring: ToolAuthoringDescription) -> Self {
         Self {
-            authoring: AuthoringDescription::Operation(authoring),
+            authoring: AuthoringDescription::Tool(authoring),
             saved_function_detail: None,
         }
     }
@@ -979,7 +975,7 @@ impl ExactAuthoringDescription {
         }
         let kind = self.authoring.kind();
         let declaration = match &mut self.authoring {
-            AuthoringDescription::Operation(description) => &mut description.typescript_declaration,
+            AuthoringDescription::Tool(description) => &mut description.typescript_declaration,
             AuthoringDescription::SavedFunction(description) => {
                 &mut description.typescript_declaration
             }
@@ -1008,9 +1004,9 @@ impl ExactAuthoringDescription {
 pub enum SearchIndexState {
     /// No attempt has reached the Generation yet.
     Pending,
-    /// The last attempt indexed the Generation's Operations.
+    /// The last attempt indexed the Generation's Tools.
     Indexed,
-    /// The last attempt failed; the Operations are missing from search until
+    /// The last attempt failed; the Tools are missing from search until
     /// the reconcile task retries.
     Failed {
         /// The kind of error the attempt recorded; `None` when the row holds

@@ -766,7 +766,7 @@ async fn provider_contract(
 /// Fails closed for missing, mismatched, or incompatible accounts; never falls back.
 pub async fn select_in_transaction(
     tx: &mut Transaction<'_>,
-    target: &crate::ResolvedInvocationOperation,
+    target: &crate::ResolvedInvocationTool,
     principal: &coral_workspace::Principal,
 ) -> Result<Option<CredentialEvidence>, Error> {
     let contract =
@@ -792,10 +792,10 @@ pub(crate) async fn credentials_ready_in_transaction(
     }
 }
 
-/// Decides whether this Principal can discover the Provider's Operations.
+/// Decides whether this Principal can discover the Provider's Tools.
 ///
 /// [`crate::reaches`] decides first: the Principal must reach one of the
-/// Provider's Operations, and discovery leaves out each one it does not
+/// Provider's Tools, and discovery leaves out each one it does not
 /// reach. Otherwise the Credential Route decides. A User connects its own `caller`
 /// Account during Invocation, so this reads no User Account; every other route
 /// and Principal needs usable credentials now. Discovery is not Account
@@ -910,7 +910,7 @@ impl RetainedAccountFact {
 /// credentials.
 pub async fn retained_account_fact_in_transaction(
     tx: &mut Transaction<'_>,
-    target: &crate::ResolvedInvocationOperation,
+    target: &crate::ResolvedInvocationTool,
     evidence: &CredentialEvidence,
     lock: coral_db::RowLock,
 ) -> Result<RetainedAccountFact, Error> {

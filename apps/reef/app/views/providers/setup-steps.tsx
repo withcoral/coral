@@ -173,10 +173,10 @@ export function ContinueSignIn({
  * for. The account question is a later and separate decision; this sign-in only
  * reads the list.
  */
-const DISCOVERY_ONLY = 'This sign-in only reads the operations. It is not shared with anyone.'
+const DISCOVERY_ONLY = 'This sign-in only reads the tools. It is not shared with anyone.'
 
 /**
- * The operations panel with nothing to list yet: why it is empty, and the one
+ * The tools panel with nothing to list yet: why it is empty, and the one
  * action that fills it. A protected MCP server answers nobody until someone
  * signs in, so that sign-in belongs in the panel rather than on a step of its
  * own. Update keeps DiscoveryStep, which also offers the connected account.
@@ -202,8 +202,8 @@ export function DiscoveryPrompt({
     return (
       <EmptyPage
         iconName="TriangleAlert"
-        title="Coral cannot read the operations"
-        description={`${setup.serverName || 'The server'} did not list its operations. ${setup.discoveryFailure || ''} You do not need to sign in again.`.replace(
+        title="Coral cannot read the tools"
+        description={`${setup.serverName || 'The server'} did not list its tools. ${setup.discoveryFailure || ''} You do not need to sign in again.`.replace(
           '  ',
           ' ',
         )}
@@ -232,7 +232,7 @@ export function DiscoveryPrompt({
     <EmptyPage
       iconName="Lock"
       title="Sign in to see what this provider can do"
-      description={`${setup.serverName || 'This server'} lists its operations only to a signed-in caller. ${DISCOVERY_ONLY}`}
+      description={`${setup.serverName || 'This server'} lists its tools only to a signed-in caller. ${DISCOVERY_ONLY}`}
       action={
         <div className={styles.emptyActions}>
           <SignInStatus setup={setup} />
@@ -275,13 +275,13 @@ export function DiscoveryPrompt({
                 render={<Button.Container variant="primary" size="36" disabled={pending} />}
               >
                 <Button.Text>
-                  {bearer ? 'Enter a token to read the operations' : signInLabel(setup)}
+                  {bearer ? 'Enter a token to read the tools' : signInLabel(setup)}
                 </Button.Text>
               </Dialog.Trigger>
               <Dialog.Portal>
                 <Dialog.Backdrop />
                 <Dialog.Popup>
-                  <Dialog.Title>Read the operations</Dialog.Title>
+                  <Dialog.Title>Read the tools</Dialog.Title>
                   <Dialog.Description>{DISCOVERY_ONLY}</Dialog.Description>
                   {bearer && (
                     <SetupSecretForm setup={setup} form={form} pending={pending} id={formId} />
@@ -296,7 +296,7 @@ export function DiscoveryPrompt({
                       Cancel
                     </Button.TextButton>
                     <DocumentSubmitButton form={formId} disabled={pending}>
-                      {bearer ? 'List operations' : signInLabel(setup)}
+                      {bearer ? 'List tools' : signInLabel(setup)}
                     </DocumentSubmitButton>
                   </Dialog.Actions>
                 </Dialog.Popup>
@@ -317,7 +317,7 @@ export function DiscoveryPrompt({
 
 /**
  * After configuration review: authorize protected MCP discovery before listing
- * operations. Every button is one Coral call.
+ * tools. Every button is one Coral call.
  */
 export function DiscoveryStep({
   setup,
@@ -352,10 +352,9 @@ export function DiscoveryStep({
   if (setup.state === 'awaiting_discovery')
     return (
       <div className={styles.stack}>
-        <Banner variant="warning" title="Coral cannot read the operations">
-          {setup.serverName || 'The server'} did not list its operations.{' '}
-          {setup.discoveryFailure || ''} Select Try again to request the list. You do not need to
-          sign in again.
+        <Banner variant="warning" title="Coral cannot read the tools">
+          {setup.serverName || 'The server'} did not list its tools. {setup.discoveryFailure || ''}{' '}
+          Select Try again to request the list. You do not need to sign in again.
         </Banner>
         {result?.error && <Banner variant="error">{result.error}</Banner>}
         {expiry}
@@ -386,19 +385,18 @@ export function DiscoveryStep({
   return (
     <div className={styles.stack}>
       {setup.configuration?.updating && (
-        <Typography.BodyStrong as="h2">Access to read operations</Typography.BodyStrong>
+        <Typography.BodyStrong as="h2">Access to read tools</Typography.BodyStrong>
       )}
       <Typography.Body as="p">
-        Sign in to let Coral read the operations. You choose how to use this account after
-        discovery.
+        Sign in to let Coral read the tools. You choose how to use this account after discovery.
       </Typography.Body>
       {setup.configuration?.updating && existingAccount !== 'none' && (
         <Form method="post">
           <Fields form={form} intent="borrow-account" />
           <SetupFields setup={setup} />
           <Typography.BodySmall as="p">
-            Reading operations does not change your connected accounts. Coral checks compatibility
-            before using this account.
+            Reading tools does not change your connected accounts. Coral checks compatibility before
+            using this account.
           </Typography.BodySmall>
           <Button.TextButton type="submit" disabled={pending}>
             {existingAccount === 'fixed' ? 'Use the existing shared account' : 'Use your account'}
@@ -407,8 +405,7 @@ export function DiscoveryStep({
       )}
       {setup.configuration?.updating && (
         <Typography.BodySmall as="p">
-          Or sign in temporarily to read operations. This does not connect an account for future
-          calls.
+          Or sign in temporarily to read tools. This does not connect an account for future calls.
         </Typography.BodySmall>
       )}
       <SignInStatus setup={setup} />
@@ -424,7 +421,7 @@ export function DiscoveryStep({
           <div className={styles.stepActions}>
             {back}
             <DocumentSubmitButton form={formId} size="36" disabled={pending}>
-              List operations
+              List tools
             </DocumentSubmitButton>
           </div>
         </>

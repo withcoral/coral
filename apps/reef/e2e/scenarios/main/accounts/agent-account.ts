@@ -8,7 +8,7 @@ import {
 import { inspectRunEvents, managementClients } from '../../../support/management.ts'
 import { oauthMcpServer } from '../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   breadcrumb,
   chooseAccount,
   collectDataResponses,
@@ -16,7 +16,7 @@ import {
   createWorkspace,
   openCustomSource,
   programRunner,
-  signInToReadOperations,
+  signInToReadTools,
   waitForPublication,
 } from '../../../support/providers.ts'
 import { copyNewAgentKey } from '../../../support/agent-key.ts'
@@ -54,9 +54,9 @@ export async function agentAccount(context: TestContext) {
         await page.getByRole('button', { name: 'Connect', exact: true }).click()
         await page.getByLabel('Namespace', { exact: true }).fill('automation')
         await confirmConfiguration(page)
-        await signInToReadOperations(page)
+        await signInToReadTools(page)
         await approveConsent()
-        await acceptOperations(page)
+        await acceptTools(page)
         await chooseAccount(page, 'own')
         await page.getByRole('button', { name: 'Add provider', exact: true }).click()
         await waitForPublication(page)

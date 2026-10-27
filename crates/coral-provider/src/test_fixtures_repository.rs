@@ -29,33 +29,33 @@ pub async fn corrupt_credential_contract(
     .await;
 }
 
-/// Makes one active Operation's authoritative tags undecodable, so its complete
+/// Makes one active Tool's authoritative tags undecodable, so its complete
 /// description cannot load while its search index entry stays healthy.
 ///
 /// # Panics
 ///
-/// Panics when the write fails or does not change exactly one Operation.
-pub async fn corrupt_operation_tags(
+/// Panics when the write fails or does not change exactly one Tool.
+pub async fn corrupt_tool_tags(
     database: &Database,
     workspace: &WorkspaceId,
     provider: &ProviderId,
-    operation_key: &str,
+    tool_key: &str,
 ) {
     let changed = database
         .execute(
             Query::update()
-                .table(Alias::new("materialized_operations"))
+                .table(Alias::new("materialized_tools"))
                 .value(Alias::new("tags_json"), "not-json")
                 .and_where(
                     Expr::col(Alias::new("provider_generation_id"))
                         .in_subquery(active_generation(workspace, provider)),
                 )
-                .and_where(Expr::col(Alias::new("operation_key")).eq(operation_key))
+                .and_where(Expr::col(Alias::new("tool_key")).eq(tool_key))
                 .to_owned(),
         )
         .await
-        .expect("inject Operation tags fault");
-    assert_eq!(changed, 1, "exactly one active Operation");
+        .expect("inject Tool tags fault");
+    assert_eq!(changed, 1, "exactly one active Tool");
 }
 
 /// Stores a namespace the Provider decoder rejects, so every read of this Provider fails.

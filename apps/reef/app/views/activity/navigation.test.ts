@@ -367,7 +367,7 @@ describe('detail slide order', () => {
 
   it.each<[string, ActivityPage, ActivityRow | null, number | undefined]>([
     ['the start of the Run', ordered, started, 0],
-    ['an Operation Invocation', ordered, call, 1],
+    ['a Tool Invocation', ordered, call, 1],
     ['a Program Log', ordered, logged, 2],
     ['a cancellation request', ordered, cancelling, 3],
     ['not the Run itself or its final value, which its Task orders', ordered, owner, undefined],
@@ -399,7 +399,7 @@ describe('live mode', () => {
       { run: standalone.name, chain: [standalone.name] },
     ],
     [
-      'an operation follows the Run that called it',
+      'a tool follows the Run that called it',
       call,
       { run: owner.name, chain: [owner.task, owner.name] },
     ],

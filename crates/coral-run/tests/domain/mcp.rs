@@ -103,7 +103,7 @@ async fn an_mcp_is_error_rejects_the_call_and_provider_bound_reads_survive_run_o
           await coral.providers.first.mixed({});
           throw new Error("isError should reject the call");
         } catch (error) {
-          if (!(error instanceof coral.OperationError)) throw error;
+          if (!(error instanceof coral.ToolError)) throw error;
           result = {code: error.code, status: error.status ?? null, data: error.data, metadata: error.metadata};
         }
         const reference = result.data.content[1].resource;

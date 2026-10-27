@@ -11,7 +11,7 @@ import { withBrowserSession } from '../../../../support/browser-session.ts'
 import { managementClients } from '../../../../support/management.ts'
 import { listen, openApiDocument } from '../../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   addProviderFromFile,
   chooseAccount,
   chooseFile,
@@ -23,7 +23,7 @@ import {
   ensureNamespace,
   oauthSettings,
   openCustomSource,
-  openOperation,
+  openTool,
   openProviderSettings,
   requestedScopes,
   scopesField,
@@ -133,13 +133,13 @@ test('Authenticated configuration rejects a loopback server and accepts a public
     await step(
       'Correct the declaration and publish without contacting the rejected server',
       async () => {
-        // The rejection shows on the operations step, whose Back returns to the
+        // The rejection shows on the tools step, whose Back returns to the
         // configuration that declared the refused server.
         await page.getByRole('link', { name: 'Back', exact: true }).click()
         await destinationField(page, 'Main server').fill('https://api.example.test')
         await page.keyboard.press('Escape')
         await confirmConfiguration(page, 'No authentication')
-        await acceptOperations(page)
+        await acceptTools(page)
         await setNamespace(page, 'corrected')
         await page.getByRole('button', { name: 'Add provider', exact: true }).click()
         await waitForPublication(page)
@@ -183,8 +183,8 @@ test('Authenticated update rejects loopback MCP discovery and preserves the exis
     await step('Return to the unchanged provider and its shared account', async () => {
       await page.goto(providerPath)
       await waitForProviderStatus(page, 'Existing API', 'Ready', { available: 1, total: 1 })
-      // The operation's full name keeps the original namespace.
-      const drawer = await openOperation(page, 'hello')
+      // The tool's full name keeps the original namespace.
+      const drawer = await openTool(page, 'hello')
       await drawer.getByText('coral.providers.existing.hello', { exact: true }).waitFor()
       await page.goto(`${providerPath}/settings`)
       await page.getByText('People and agents use this shared account.', { exact: true }).waitFor()
@@ -259,7 +259,7 @@ test('Authenticated OAuth configuration retains typed scopes through field error
           ?.confirmed
         expect(oauthSettings(confirmed)?.scopeFormat).toBe(OAuthScopeFormat.COMMA)
         expect(confirmed?.requestHeaders).toEqual({ 'x-service-version': '2022-11-28' })
-        await acceptOperations(page)
+        await acceptTools(page)
         await setNamespace(page, 'public_scopes')
         await chooseAccount(page, 'own-later')
         await page.getByRole('button', { name: 'Add provider', exact: true }).click()
@@ -323,7 +323,7 @@ test('Authenticated OAuth application changes cancel pending consent and retain 
           code: Code.InvalidArgument,
           rawMessage: 'INVALID_PROVIDER_INPUT',
         })
-        await acceptOperations(page)
+        await acceptTools(page)
         await setNamespace(page, 'public_application')
         await chooseAccount(page, 'own-later')
         await page.getByRole('button', { name: 'Add provider', exact: true }).click()

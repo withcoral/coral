@@ -442,7 +442,7 @@ fn conceal(error: coral_workspace::Error) -> Error {
         other => other.into(),
     }
 }
-/// Whether the Operation's current policy asks for a decision, as a read
+/// Whether the Tool's current policy asks for a decision, as a read
 /// snapshot shows it: the request's `actionable` projection. A decision
 /// itself reads no policy; the Dispatch Fence judges the approval against
 /// the policy current when the Invocation dispatches.
@@ -462,24 +462,23 @@ async fn decision_required(
         crate::fence::authority_failure(error)?;
         return Ok(false);
     }
-    let operation =
-        coral_catalog::operation_in_transaction(tx, &target.generation, &target.operation)
-            .await
-            .map_err(coral_provider::Error::from)?
-            .ok_or(Error::ApprovalNotFound)?;
-    let policy_target = coral_policy::OperationPolicyTarget::new(
+    let tool = coral_catalog::tool_in_transaction(tx, &target.generation, &target.tool)
+        .await
+        .map_err(coral_provider::Error::from)?
+        .ok_or(Error::ApprovalNotFound)?;
+    let policy_target = coral_policy::ToolPolicyTarget::new(
         run.workspace_id.clone(),
         target.provider_id.clone(),
-        target.operation.clone(),
+        target.tool.clone(),
     );
     let policy = coral_policy::discovery_decision_in_transaction(
         tx,
         &policy_target,
-        operation.hints(),
-        operation.http_method(),
+        tool.hints(),
+        tool.http_method(),
     )
     .await?;
-    Ok(policy.access_state() == coral_policy::OperationAccessState::ApprovalRequired)
+    Ok(policy.access_state() == coral_policy::ToolAccessState::ApprovalRequired)
 }
 
 /// The approver's current name, when Workspace profile rules let `actor`
@@ -664,7 +663,7 @@ fn approval_fact(row: &StoredApproval) -> ApprovalFact {
 }
 
 /// A failure an outside writer recorded on the Invocation that prevents its
-/// continuation: a declined or expired decision, a disabled Operation, lost
+/// continuation: a declined or expired decision, a disabled Tool, lost
 /// authority.
 pub(super) async fn committed_failure(
     tx: &mut Transaction<'_>,
@@ -680,7 +679,7 @@ pub(super) fn prevents_continuation(failure: CoralFailure) -> bool {
         failure,
         CoralFailure::ApprovalDeclined
             | CoralFailure::ApprovalExpired
-            | CoralFailure::OperationDisabled
+            | CoralFailure::ToolDisabled
             | CoralFailure::AuthorityLost
     )
 }

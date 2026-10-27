@@ -10,13 +10,13 @@ import { listen, openApiDocument } from '../../../support/provider-fixtures.ts'
 import {
   addProviderFromFile,
   createWorkspace,
-  enableOperation,
+  enableTool,
   observeRun,
   programRunner,
 } from '../../../support/providers.ts'
 import { withOwner } from '../../../support/topology.ts'
 
-// A real Run stores where the author's code made each operation call, log and emission.
+// A real Run stores where the author's code made each tool call, log and emission.
 // The API reads those locations back, and Activity highlights each record's own line in
 // the accepted program or in the Saved Function snapshot the Run accepted, even after
 // that Saved Function changes. Location rules stay in Reef's `source-location.test.ts`
@@ -117,7 +117,7 @@ export async function sourceLocations(context: TestContext) {
       'locationFixture',
     )
     await page.goto(provider)
-    await enableOperation(page, 'lookup')
+    await enableTool(page, 'lookup')
     const execute = programRunner(page, target, workspace, {
       taskIntent: `Locate calls ${crypto.randomUUID()}`,
     })
@@ -131,7 +131,7 @@ export async function sourceLocations(context: TestContext) {
 
     type Shown = { name: string; label: string | null; line: number }
     let savedFunction = ''
-    let operations: ActivityInvocation[] = []
+    let tools: ActivityInvocation[] = []
     let outputs: ActivityEventSummary[] = []
     const inSnapshot = (line: number, name: string) => ({
       document: { case: 'savedFunction', value: savedFunction },
@@ -166,23 +166,23 @@ export async function sourceLocations(context: TestContext) {
       expect(accepted.linkedFunctions).toHaveLength(1)
       savedFunction = accepted.linkedFunctions[0]!.savedFunction
       const entries = await api.activity.browseRunEntries({ name: run, pageSize: 100 })
-      operations = entries.entries.flatMap(({ record }) =>
+      tools = entries.entries.flatMap(({ record }) =>
         record.case === 'invocation' ? [record.value] : [],
       )
       outputs = entries.entries.flatMap(({ record }) =>
         record.case === 'event' && record.value.kind.startsWith('program.') ? [record.value] : [],
       )
-      expect(operations).toHaveLength(4)
+      expect(tools).toHaveLength(4)
       expect(outputs).toHaveLength(3)
       expect({
-        operations: operations.slice(0, 3).map((value) => value.sourceLocation),
+        tools: tools.slice(0, 3).map((value) => value.sourceLocation),
         outputs: outputs.slice(0, 2).map((value) => value.sourceLocation),
       }).toMatchObject({
-        operations: [inProgram(1, 'lookup'), inProgram(3, 'lookup'), inProgram(3, 'lookup')],
+        tools: [inProgram(1, 'lookup'), inProgram(3, 'lookup'), inProgram(3, 'lookup')],
         outputs: [inProgram(5, 'info'), inProgram(6, 'emit')],
       })
       // The exact reads carry the same locations as the entries that list them.
-      for (const value of operations) {
+      for (const value of tools) {
         const exact = await api.activity.inspectInvocation({ name: value.name })
         expect(exact.invocation?.sourceLocation).toEqual(value.sourceLocation)
       }
@@ -192,10 +192,10 @@ export async function sourceLocations(context: TestContext) {
       }
     })
     const event = (index: number) => `${run}/events/${outputs[index]!.sequence}`
-    await highlights('operation', { name: operations[0]!.name, label: PROGRAM, line: 1 })
+    await highlights('tool', { name: tools[0]!.name, label: PROGRAM, line: 1 })
     // One call site in a loop: both records keep the line they ran.
-    await highlights('first loop call', { name: operations[1]!.name, label: PROGRAM, line: 3 })
-    await highlights('second loop call', { name: operations[2]!.name, label: PROGRAM, line: 3 })
+    await highlights('first loop call', { name: tools[1]!.name, label: PROGRAM, line: 3 })
+    await highlights('second loop call', { name: tools[2]!.name, label: PROGRAM, line: 3 })
     await highlights('log', { name: event(0), label: PROGRAM, line: 5 })
     await highlights('emission', { name: event(1), label: PROGRAM, line: 6 })
 
@@ -211,12 +211,12 @@ export async function sourceLocations(context: TestContext) {
     })
     await step('Read the Saved Function’s stored locations back in its snapshot', async () => {
       expect({
-        operation: operations[3]!.sourceLocation,
+        tool: tools[3]!.sourceLocation,
         log: outputs[2]!.sourceLocation,
-      }).toMatchObject({ operation: inSnapshot(2, 'lookup'), log: inSnapshot(3, 'warn') })
+      }).toMatchObject({ tool: inSnapshot(2, 'lookup'), log: inSnapshot(3, 'warn') })
     })
-    await highlights('Saved Function operation', {
-      name: operations[3]!.name,
+    await highlights('Saved Function tool', {
+      name: tools[3]!.name,
       label: SNAPSHOT,
       line: 2,
     })

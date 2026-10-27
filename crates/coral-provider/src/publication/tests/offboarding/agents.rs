@@ -159,11 +159,11 @@ async fn agent_removal(shared: bool) {
         }
     );
     h.providers
-        .inspect_operation(
+        .inspect_tool(
             &owner,
             workspace.id(),
             provider.id(),
-            &OperationKey::parse("getUpdatedForecast").unwrap(),
+            &ToolKey::parse("getUpdatedForecast").unwrap(),
         )
         .await
         .unwrap();

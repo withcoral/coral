@@ -1,7 +1,7 @@
 //! The Built-in Provider install and catalog update at boot: each Workspace in
 //! its own transaction, and Universal Search told after each commit.
 use crate::{ProviderWorkflow, WorkspaceWorkflow};
-use coral_catalog::{BuiltinCatalog, OperationHints};
+use coral_catalog::{BuiltinCatalog, ToolHints};
 use coral_provider::{Provider, ProviderModule};
 use coral_search::{CallPath, SearchIndex, SearchQuery, SearchRequest, UniversalSearchModule};
 use coral_test_support::{TestDatabase, provision_user};
@@ -12,12 +12,12 @@ use coral_workspace::{
 
 const ADDED: &str = "coral.workspace.listThings";
 
-/// Catalog B: this Coral version's Operations plus a read-only one it does
+/// Catalog B: this Coral version's Tools plus a read-only one it does
 /// not perform, as a later Coral version could define.
 fn catalog_b() -> BuiltinCatalog {
-    BuiltinCatalog::with_unknown_operations([(
+    BuiltinCatalog::with_unknown_tools([(
         "listThings",
-        OperationHints::new(Some(true), None, None, None),
+        ToolHints::new(Some(true), None, None, None),
     )])
     .expect("catalog B prepares")
 }
@@ -33,7 +33,7 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
-        // Search applies Operation access rules, so the schema includes Policy.
+        // Search applies Tool access rules, so the schema includes Policy.
         let db = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let database = db.database();
         let workspaces = WorkspaceModule::new(database.clone());
@@ -100,7 +100,7 @@ impl Fixture {
             .await
             .unwrap()
             .iter()
-            .any(|operation| operation.key.as_str() == "listThings")
+            .any(|tool| tool.key.as_str() == "listThings")
     }
 
     async fn events(&self, workspace: &Workspace) -> usize {
@@ -113,9 +113,9 @@ impl Fixture {
 }
 
 // Catches: an update that commits the new catalog without telling search, so
-// agents cannot find the added Operation until a reconcile pass runs.
+// agents cannot find the added Tool until a reconcile pass runs.
 #[tokio::test]
-async fn an_update_makes_the_added_operation_searchable_and_describable() {
+async fn an_update_makes_the_added_tool_searchable_and_describable() {
     let fixture = Fixture::new().await;
     let workspace = fixture.create_workspace("Ops", 100).await;
     let search = UniversalSearchModule::new(fixture.db.database(), fixture.workspaces.clone());
@@ -153,10 +153,10 @@ async fn an_update_makes_the_added_operation_searchable_and_describable() {
 }
 
 // Catches: an install that commits without telling search, so agents in a
-// Workspace from before the Built-in Provider cannot find its Operations until
+// Workspace from before the Built-in Provider cannot find its Tools until
 // a reconcile pass runs.
 #[tokio::test]
-async fn an_install_makes_the_builtin_operations_searchable() {
+async fn an_install_makes_the_builtin_tools_searchable() {
     let fixture = Fixture::new().await;
     // Creating a Workspace without the workflow installs no Built-in Provider,
     // as in a database from before Coral had it.

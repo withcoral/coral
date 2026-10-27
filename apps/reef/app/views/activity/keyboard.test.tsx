@@ -16,7 +16,7 @@ import type { ActivityPage, ActivityRow, ActivityViewProps } from './types'
 
 const invoices = taskRow('invoices', 'Find invoices')
 const reminders = taskRow('reminders', 'Send reminders')
-const search = toolRow(invoices.name, 'search', { intent: 'Find operations', position: 0 })
+const search = toolRow(invoices.name, 'search', { intent: 'Find tools', position: 0 })
 const reminder = runRow('reminder', invoices.name, {
   actor: 'Reminder run',
   intent: 'Reminder run',
@@ -121,7 +121,7 @@ it('↑ and ↓ from the page background enter the table on the same press', asy
   expect(table).toHaveFocus()
   expect(cursor()).toBe('Find invoices')
   await user.keyboard('{ArrowDown}')
-  expect(cursor()).toBe('Find operations')
+  expect(cursor()).toBe('Find tools')
 
   // A focused control keeps its keys, and the cursor stays out of sight.
   const outside = screen.getByRole('button', { name: 'Outside' })
@@ -130,7 +130,7 @@ it('↑ and ↓ from the page background enter the table on the same press', asy
   await user.keyboard('{ArrowDown}{ArrowUp}')
   expect(outside).toHaveFocus()
   act(() => table.focus())
-  expect(cursor()).toBe('Find operations')
+  expect(cursor()).toBe('Find tools')
 })
 
 it('↑ with no cursor starts at the last record', async () => {
@@ -151,11 +151,11 @@ it('with the rail open, ↑ and ↓ step the shown record and keep focus where t
   const { user, table, link, record, router, cursor } = await renderActivity(opened(invoices.name))
   const dialog = rail()!
   // A click on another row replaces the detail; focus rests on the table.
-  await user.click(link('Find operations'))
+  await user.click(link('Find tools'))
   expect(record()).toBe(search.name)
   // Focus rests on the table, whose cursor row shows the clicked record.
   expect(table).toHaveFocus()
-  expect(cursor()).toBe('Find operations')
+  expect(cursor()).toBe('Find tools')
   // The next ↓ continues from the clicked record.
   await user.keyboard('{ArrowDown}')
   expect(record()).toBe(reminder.name)
@@ -184,13 +184,13 @@ it('Space toggles the cursor Task or collapses the branch around a child; ← an
   const { user, cursor, router, link } = await renderActivity()
   const expanded = () => new URLSearchParams(router.state.location.search).getAll('expand')
   await user.keyboard('{ArrowDown}{ArrowDown}')
-  expect(cursor()).toBe('Find operations')
+  expect(cursor()).toBe('Find tools')
   await user.keyboard('{ArrowLeft}{ArrowRight}')
-  expect(link('Find operations')).toBeInTheDocument()
+  expect(link('Find tools')).toBeInTheDocument()
   // A child collapses its Task, and the cursor moves to the Task.
   await user.keyboard('[Space]')
   await waitFor(() => expect(cursor()).toBe('Find invoices'))
-  expect(screen.queryByRole('link', { name: 'Find operations' })).toBeNull()
+  expect(screen.queryByRole('link', { name: 'Find tools' })).toBeNull()
   expect(expanded()).toEqual([])
   // Held Space toggles once.
   await user.keyboard('[Space>3/]')
@@ -221,7 +221,7 @@ it('a collapse that hides the shown record opens the record it collapses', async
   await user.keyboard('[Space]')
   expect(record()).toBe(invoices.name)
   expect(router.state.historyAction).toBe('REPLACE')
-  expect(screen.queryByRole('link', { name: 'Find operations' })).toBeNull()
+  expect(screen.queryByRole('link', { name: 'Find tools' })).toBeNull()
   expect(detailHeading(rail())).toBe('Find invoices')
 
   // The expand control pushes, and a collapse that hides nothing keeps the detail.
@@ -277,9 +277,9 @@ it('Escape from the table closes the rail onto the last record it showed; Enter 
 it('the cursor keeps its record across live arrivals, follows acceptance, and clears on removal', async () => {
   const { user, table, cursor, update } = await renderActivity()
   await user.keyboard('{ArrowDown}{ArrowDown}')
-  expect(cursor()).toBe('Find operations')
+  expect(cursor()).toBe('Find tools')
   update({ roots: [taskRow('newer', 'Newer task'), invoices, reminders] })
-  expect(cursor()).toBe('Find operations')
+  expect(cursor()).toBe('Find tools')
   await user.keyboard('{ArrowDown}')
   expect(cursor()).toBe('Reminder run')
 

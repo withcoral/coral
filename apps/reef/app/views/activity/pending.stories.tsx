@@ -111,7 +111,7 @@ const accountCall = {
   name: `${workspace}/invocations/linear`,
   run: accountRun.name,
   provider: `${workspace}/providers/linear`,
-  operation: 'listIssues',
+  tool: 'listIssues',
   callPath: 'coral.providers.linear.listIssues',
   state: 'pending' as const,
   outcome: 'unknown' as const,
@@ -236,7 +236,7 @@ function StoryActivity({ page: initial }: { page: ActivityPage }) {
       name: approval.invocation,
       run: context.run.name,
       provider: approval.provider,
-      operation: approval.callPath,
+      tool: approval.callPath,
       callPath: approval.callPath,
       state: 'pending' as const,
       outcome: 'unknown' as const,
@@ -498,7 +498,7 @@ export const ResolvedSelection: Story = {
     },
   },
 }
-/** Parallel calls to one Operation: one Run, three separate decisions. */
+/** Parallel calls to one Tool: one Run, three separate decisions. */
 export const ParallelCalls: Story = {
   args: {
     page: {

@@ -38,7 +38,7 @@ import type {
 import { credentialFieldViews, credentialValuesFrom } from '../credential-fields.server'
 import { field, privateHeaders, type ManagementApi } from '../management.server'
 import { safeInternalPath } from '@/auth/safe-path.server'
-import { operationGroup, providerFailure, routeChoice, uuidOr404 } from '../providers.server'
+import { toolGroup, providerFailure, routeChoice, uuidOr404 } from '../providers.server'
 import { OPENAPI_DOCUMENT_MAX_BYTES, OPENAPI_DOCUMENT_SIZE_LABEL } from '../provider-input-limits'
 import { recipeDocument } from '../provider-recipes/library.server'
 import {
@@ -376,9 +376,9 @@ function configurationView(
     }
   }
   // Joined into the list below, so a large catalog does not rescan the failures
-  // once per Operation.
+  // once per Tool.
   const unavailableByKey = new Map(
-    review.unavailableOperations.map(({ key, reasons }) => [key, reasons]),
+    review.unavailableTools.map(({ key, reasons }) => [key, reasons]),
   )
   return {
     ...draft,
@@ -404,7 +404,7 @@ function configurationView(
     documentDisplayName: review.suggested?.displayName ?? '',
     servers: review.servers.map((group) => ({
       declaration: group.declaration,
-      operations: group.operations,
+      tools: group.tools,
       options: group.options.map((option) => ({
         url: option.url,
         variables: option.variables.map(({ name, defaultValue, enumerated, values }) => ({
@@ -418,29 +418,29 @@ function configurationView(
     destinations: review.destinations,
     // An empty MCP catalog is a completed read, even though it cannot be published.
     // Other rejected previews and pending discovery do not establish an empty catalog.
-    operationCount: review.discoveryAuthorizationRequired
+    toolCount: review.discoveryAuthorizationRequired
       ? null
       : review.diagnostic === 'empty_mcp_catalog'
         ? 0
         : review.configurationConfirmed && !review.diagnostic
-          ? review.operations.length
+          ? review.tools.length
           : null,
-    // Availability arrives once, keyed by Operation Key; the list joins it in so
-    // the operations step reads one record per Operation.
-    operations: review.operations.map((operation) => {
-      const unavailable = unavailableByKey.get(operation.key)
+    // Availability arrives once, keyed by Tool Key; the list joins it in so
+    // the tools step reads one record per Tool.
+    tools: review.tools.map((tool) => {
+      const unavailable = unavailableByKey.get(tool.key)
       return {
-        key: operation.key,
-        relativePath: operation.relativePath,
-        summary: operation.summary,
-        group: operationGroup(operation),
+        key: tool.key,
+        relativePath: tool.relativePath,
+        summary: tool.summary,
+        group: toolGroup(tool),
         available: !unavailable,
         reasons: unavailable ?? [],
         // Nothing to select before the Provider is published.
         path: '',
       }
     }),
-    unavailableOperations: review.unavailableOperations.map(({ key, reasons }) => ({
+    unavailableTools: review.unavailableTools.map(({ key, reasons }) => ({
       key,
       reasons,
     })),
@@ -916,8 +916,8 @@ export async function setupAction<Published = never>(
   const answering = Boolean(submittedAccount)
   const draft = reviseAttempt(attempt)
   if (draft.kind === 'update') draft.accountGrant = undefined
-  // A confirmed configuration relists the operations, so they are accepted again.
-  if (intent === 'configure') draft.operationsAccepted = false
+  // A confirmed configuration relists the tools, so they are accepted again.
+  if (intent === 'configure') draft.toolsAccepted = false
   draft.setupId = name.split('/').at(-1)!
   const namespace = form.get('namespace')
   if (draft.kind === 'workspace' && typeof namespace === 'string') draft.namespace = namespace
@@ -1112,7 +1112,7 @@ export async function setupAction<Published = never>(
       secret: 'Coral could not save the bearer token or API key. ',
       'oauth-start': 'Coral could not start sign-in. ',
       'oauth-resume': 'Coral could not continue sign-in. ',
-      'oauth-retry': 'Coral could not list the operations. ',
+      'oauth-retry': 'Coral could not list the tools. ',
       'borrow-account':
         'Coral could not use your existing account. Authorize this update separately. ',
       cancel: 'Coral could not start over. ',

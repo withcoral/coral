@@ -22,13 +22,13 @@ export async function loadActivitySummary(
       failed: toCount(value.calls?.failed),
       canceled: toCount(value.calls?.canceled),
     },
-    stopped: value.stopped.map((op) => ({
-      callPath: op.callPath,
-      blocked: toCount(op.blocked),
-      notAllowed: toCount(op.notAllowed),
-      needsSetup: toCount(op.needsSetup),
+    stopped: value.stopped.map((tool) => ({
+      callPath: tool.callPath,
+      blocked: toCount(tool.blocked),
+      notAllowed: toCount(tool.notAllowed),
+      needsSetup: toCount(tool.needsSetup),
     })),
-    operations: value.operations.map((op) => ({ callPath: op.callPath, calls: toCount(op.calls) })),
+    tools: value.tools.map((tool) => ({ callPath: tool.callPath, calls: toCount(tool.calls) })),
     approvals: {
       approved: toCount(value.approvals?.approved),
       declined: toCount(value.approvals?.declined),

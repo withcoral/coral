@@ -1,4 +1,4 @@
-//! OpenAPI Materialized Operation Catalog acceptance at the public Module seam.
+//! OpenAPI Materialized Tool Catalog acceptance at the public Module seam.
 #![allow(
     unused_crate_dependencies,
     reason = "integration targets inherit the library's direct dependency set"
@@ -18,8 +18,8 @@ use std::fmt::Write as _;
 
 use coral_catalog::{
     CatalogDiagnostic, ExecutionBinding, HttpExecutionBinding, HttpParameterLocation,
-    HttpParameterStyle, HttpResponseStatus, MaterializationOutcome, MaterializedOperation,
-    OpenApiDocument, OperationAvailability, ProviderSetupInput, SuccessSelection, materialize,
+    HttpParameterStyle, HttpResponseStatus, MaterializationOutcome, MaterializedTool,
+    OpenApiDocument, ProviderSetupInput, SuccessSelection, ToolAvailability, materialize,
 };
 use coral_v8::{DiagnosticCategory, ProgramCompiler};
 use serde_json::Value;
@@ -151,7 +151,7 @@ fn ready(document: &str) -> coral_catalog::PreparedProviderCatalog {
     }
 }
 
-fn http_binding(operation: &MaterializedOperation) -> &HttpExecutionBinding {
+fn http_binding(operation: &MaterializedTool) -> &HttpExecutionBinding {
     let ExecutionBinding::Http(binding) = operation.execution_binding() else {
         panic!("OpenAPI materialization must produce an HTTP Execution Binding");
     };
@@ -219,10 +219,10 @@ paths:
         ("redirectOnly", 302, false, Verdict::ErrorStatus),
     ] {
         let operation = prepared
-            .operations()
+            .tools()
             .iter()
             .find(|operation| operation.key().as_str() == operation_id)
-            .expect("declared Operation");
+            .expect("declared Tool");
         let binding = http_binding(operation);
         let verdict = match binding.success_for(status, redirected) {
             SuccessSelection::ErrorStatus => Verdict::ErrorStatus,
@@ -270,13 +270,13 @@ fn corpus_slice_materializes_schema_authority_and_typed_http_bindings() {
     );
 
     let list = prepared
-        .operations()
+        .tools()
         .iter()
         .find(|operation| operation.key().as_str() == "issues/list-for-repo")
-        .expect("list Operation");
+        .expect("list Tool");
     assert_eq!(
         list.availability(),
-        OperationAvailability::Available,
+        ToolAvailability::Available,
         "{:?}",
         list.diagnostics()
     );
@@ -324,10 +324,10 @@ fn corpus_slice_materializes_schema_authority_and_typed_http_bindings() {
     );
 
     let upload = prepared
-        .operations()
+        .tools()
         .iter()
         .find(|operation| operation.key().as_str() == "repos/upload-release-asset")
-        .expect("upload Operation");
+        .expect("upload Tool");
     assert_eq!(
         http_binding(upload).server_url(),
         Some("https://uploads.example.test/")
@@ -336,7 +336,7 @@ fn corpus_slice_materializes_schema_authority_and_typed_http_bindings() {
     assert!(body.required());
     assert_eq!(body.content()[0].media_type(), "application/octet-stream");
 
-    for operation in prepared.operations() {
+    for operation in prepared.tools() {
         let declaration = prepared.authoring_declaration(operation);
         assert!(declaration.contains("Promise<"));
         assert!(!declaration.contains("import "));
@@ -356,10 +356,10 @@ fn corpus_slice_materializes_schema_authority_and_typed_http_bindings() {
 fn reserved_openapi_header_parameters_do_not_become_caller_arguments() {
     let prepared = ready(HTTP_CORPUS_SLICE);
     let list = prepared
-        .operations()
+        .tools()
         .iter()
         .find(|operation| operation.key().as_str() == "issues/list-for-repo")
-        .expect("list Operation");
+        .expect("list Tool");
 
     assert!(
         !http_binding(list)
@@ -374,10 +374,10 @@ fn reserved_openapi_header_parameters_do_not_become_caller_arguments() {
 fn http_declarations_list_only_declared_successes() {
     let prepared = ready(HTTP_CORPUS_SLICE);
     let list = prepared
-        .operations()
+        .tools()
         .iter()
         .find(|operation| operation.key().as_str() == "issues/list-for-repo")
-        .expect("list Operation");
+        .expect("list Tool");
     let declaration = prepared.authoring_declaration(list);
 
     assert!(declaration.contains("Promise<HttpResult<Array<Issue>, 200, \"application/json\">>;"));
@@ -387,7 +387,7 @@ fn http_declarations_list_only_declared_successes() {
 }
 
 /// Strict TypeScript error codes for `body`, an async Program body that calls
-/// the Operation as `Materialized.callable`.
+/// the Tool as `Materialized.callable`.
 fn strict_program_errors(declaration: &str, body: &str) -> Vec<u32> {
     let declaration = named_callable(declaration, "callable");
     let source = format!(
@@ -554,10 +554,10 @@ paths:
     ] {
         let declaration = prepared.authoring_declaration(
             prepared
-                .operations()
+                .tools()
                 .iter()
                 .find(|operation| operation.key().as_str() == operation_id)
-                .expect("declared Operation"),
+                .expect("declared Tool"),
         );
         let body = if body.starts_with("const {") {
             body.to_string()
@@ -601,10 +601,10 @@ paths:
     let declaration = |key: &str| {
         prepared.authoring_declaration(
             prepared
-                .operations()
+                .tools()
                 .iter()
                 .find(|operation| operation.key().as_str() == key)
-                .expect("declared Operation"),
+                .expect("declared Tool"),
         )
     };
     let probe = declaration("probe");
@@ -629,7 +629,7 @@ paths:
     );
     assert!(
         !declaration("exact").contains("HttpStatus"),
-        "an Operation without ranges declares none"
+        "a Tool without ranges declares none"
     );
     assert_strict_compiling_declaration(&format!(
         "{probe}\n\
@@ -644,10 +644,10 @@ paths:
 fn multi_media_requests_expose_each_explicit_media_selection() {
     let prepared = ready(HTTP_ARCHITECTURE_CORPUS);
     let markdown = prepared
-        .operations()
+        .tools()
         .iter()
         .find(|operation| operation.key().as_str() == "markdown/render-raw")
-        .expect("multi-media request Operation");
+        .expect("multi-media request Tool");
     let declaration = prepared.authoring_declaration(markdown);
 
     assert_eq!(
@@ -672,20 +672,20 @@ fn multi_media_requests_expose_each_explicit_media_selection() {
 #[test]
 fn approved_http_corpus_retains_all_transport_and_schema_shapes() {
     let prepared = ready(HTTP_ARCHITECTURE_CORPUS);
-    assert_eq!(prepared.operations().len(), 12);
+    assert_eq!(prepared.tools().len(), 12);
     assert_eq!(
         prepared
-            .operations()
+            .tools()
             .iter()
-            .filter(|operation| operation.availability() == OperationAvailability::Available)
+            .filter(|operation| operation.availability() == ToolAvailability::Available)
             .count(),
         11
     );
     let create_customer = prepared
-        .operations()
+        .tools()
         .iter()
         .find(|operation| operation.key().as_str() == "customers/create")
-        .expect("form Operation");
+        .expect("form Tool");
     let form = &http_binding(create_customer)
         .request_body()
         .expect("form body")
@@ -715,10 +715,10 @@ fn approved_http_corpus_retains_all_transport_and_schema_shapes() {
     );
 
     let avatar = prepared
-        .operations()
+        .tools()
         .iter()
         .find(|operation| operation.key().as_str() == "users/update-avatar")
-        .expect("multipart Operation");
+        .expect("multipart Tool");
     let multipart = &http_binding(avatar)
         .request_body()
         .expect("multipart body")
@@ -730,10 +730,10 @@ fn approved_http_corpus_retains_all_transport_and_schema_shapes() {
     );
 
     let content = prepared
-        .operations()
+        .tools()
         .iter()
         .find(|operation| operation.key().as_str() == "repos/get-content")
-        .expect("multi-representation Operation");
+        .expect("multi-representation Tool");
     let content_binding = http_binding(content);
     assert_eq!(content_binding.responses().len(), 3);
     assert_eq!(content_binding.responses()[0].content().len(), 3);
@@ -744,10 +744,10 @@ fn approved_http_corpus_retains_all_transport_and_schema_shapes() {
     );
 
     let delete = prepared
-        .operations()
+        .tools()
         .iter()
         .find(|operation| operation.key().as_str() == "drives/delete-item-content")
-        .expect("empty response Operation");
+        .expect("empty response Tool");
     assert!(
         http_binding(delete)
             .responses()
@@ -759,14 +759,11 @@ fn approved_http_corpus_retains_all_transport_and_schema_shapes() {
     );
 
     let unsupported = prepared
-        .operations()
+        .tools()
         .iter()
         .find(|operation| operation.key().as_str() == "unsupported/serialization")
-        .expect("unsupported Operation remains cataloged");
-    assert_eq!(
-        unsupported.availability(),
-        OperationAvailability::Unavailable
-    );
+        .expect("unsupported Tool remains cataloged");
+    assert_eq!(unsupported.availability(), ToolAvailability::Unavailable);
     assert_eq!(
         unsupported.diagnostic().expect("diagnostic").code(),
         "unsupported_parameter_serialization"
@@ -801,8 +798,8 @@ fn approved_http_corpus_retains_every_named_component_schema() {
 #[test]
 fn unsupported_serialization_or_media_makes_the_operation_unavailable() {
     let object = "{ type: object, properties: { state: { type: string } } }";
-    // (method, the Operation's parameters or request body) → the diagnostic
-    // code, or `None` when the Operation stays available
+    // (method, the Tool's parameters or request body) → the diagnostic
+    // code, or `None` when the Tool stays available
     for (method, request, expected) in [
         // deepObject without explode has no defined encoding.
         (
@@ -850,11 +847,11 @@ paths:
       responses: {{ "200": {{ description: ok }} }}
 "#
         ));
-        let operation = prepared.operations().first().expect("Operation");
+        let operation = prepared.tools().first().expect("Tool");
         let availability = if expected.is_some() {
-            OperationAvailability::Unavailable
+            ToolAvailability::Unavailable
         } else {
-            OperationAvailability::Available
+            ToolAvailability::Available
         };
         assert_eq!(
             (
@@ -892,8 +889,8 @@ paths:
                   - kind: open
 "#,
     );
-    let operation = prepared.operations().first().expect("Operation");
-    assert_eq!(operation.availability(), OperationAvailability::Available);
+    let operation = prepared.tools().first().expect("Tool");
+    assert_eq!(operation.availability(), ToolAvailability::Available);
     assert!(
         prepared
             .authoring_declaration(operation)
@@ -1059,8 +1056,8 @@ components:
           type: string
 "##,
     );
-    assert_eq!(prepared.operations().len(), 2);
-    for operation in prepared.operations() {
+    assert_eq!(prepared.tools().len(), 2);
+    for operation in prepared.tools() {
         let own = operation.typescript_declaration();
         assert!(
             own.contains("HttpResult<Attachment, 200,") && !own.contains("type Attachment ="),
@@ -1098,7 +1095,7 @@ components:
     }
 }
 
-/// A document whose one Operation returns a string enum of `literals`
+/// A document whose one Tool returns a string enum of `literals`
 /// 204-character literals, declared inline or as the shared type `Large`.
 fn large_enum_document(literals: usize, shared: bool) -> String {
     let values = (0..literals)
@@ -1129,19 +1126,16 @@ fn large_enum_document(literals: usize, shared: bool) -> String {
     .to_string()
 }
 
-/// The diagnostic of an Operation over the discovery limit states its size
-/// and the limit, and the size grows by exactly what the Operation adds.
+/// The diagnostic of a Tool over the discovery limit states its size
+/// and the limit, and the size grows by exactly what the Tool adds.
 #[test]
 fn an_operation_over_the_discovery_limit_reports_its_size_and_the_limit() {
     let sizes = |literals: usize| {
         let prepared = ready(&large_enum_document(literals, false));
-        let operation = &prepared.operations()[0];
-        assert_eq!(operation.availability(), OperationAvailability::Unavailable);
-        let diagnostic = operation.diagnostic().expect("too large");
-        assert_eq!(
-            diagnostic.code(),
-            "operation_authoring_description_too_large"
-        );
+        let tool = &prepared.tools()[0];
+        assert_eq!(tool.availability(), ToolAvailability::Unavailable);
+        let diagnostic = tool.diagnostic().expect("too large");
+        assert_eq!(diagnostic.code(), "tool_authoring_description_too_large");
         let numbers = diagnostic
             .message()
             .split(|character: char| !character.is_ascii_digit())
@@ -1150,10 +1144,7 @@ fn an_operation_over_the_discovery_limit_reports_its_size_and_the_limit() {
         let [observed, limit] = numbers[..] else {
             panic!("{}", diagnostic.message());
         };
-        assert_eq!(
-            limit,
-            coral_catalog::OPERATION_AUTHORING_DESCRIPTION_MAX_BYTES
-        );
+        assert_eq!(limit, coral_catalog::TOOL_AUTHORING_DESCRIPTION_MAX_BYTES);
         assert!(observed > limit, "{observed}");
         observed
     };
@@ -1161,21 +1152,21 @@ fn an_operation_over_the_discovery_limit_reports_its_size_and_the_limit() {
     assert_eq!(sizes(1_401) - sizes(1_400), 204 + 2 + 3);
 }
 
-/// The discovery limit counts an Operation's own declaration, not the shared
-/// types it names, so a large shared type leaves the Operation available.
+/// The discovery limit counts a Tool's own declaration, not the shared
+/// types it names, so a large shared type leaves the Tool available.
 #[test]
 fn a_shared_type_over_the_discovery_limit_leaves_its_operation_available() {
     let prepared = ready(&large_enum_document(1_400, true));
-    let operation = &prepared.operations()[0];
+    let tool = &prepared.tools()[0];
     assert_eq!(
-        operation.availability(),
-        OperationAvailability::Available,
+        tool.availability(),
+        ToolAvailability::Available,
         "{:?}",
-        operation.diagnostic()
+        tool.diagnostic()
     );
     assert!(
-        prepared.authoring_declaration(operation).len()
-            > coral_catalog::OPERATION_AUTHORING_DESCRIPTION_MAX_BYTES
+        prepared.authoring_declaration(tool).len()
+            > coral_catalog::TOOL_AUTHORING_DESCRIPTION_MAX_BYTES
     );
 }
 
@@ -1206,28 +1197,27 @@ components:
     Truncation: {{ type: string }}
 "#
         ));
-        let operation = &prepared.operations()[0];
-        let response = http_binding(operation).responses()[0].content()[0].schema();
+        let tool = &prepared.tools()[0];
+        let response = http_binding(tool).responses()[0].content()[0].schema();
         let graph = prepared.schema_graph();
         assert_eq!(
             (
                 case.projection.is_none_or(|projection| {
                     prepared
-                        .authoring_declaration(operation)
+                        .authoring_declaration(tool)
                         .contains(&format!("HttpResult<{projection}, 200,"))
                 }),
                 graph.accepts(response, &Value::Null),
                 graph.accepts(response, &Value::from("open")),
                 case.rejects
                     .is_none_or(|rejected| !graph.accepts(response, &Value::from(rejected))),
-                operation
-                    .diagnostics()
+                tool.diagnostics()
                     .iter()
                     .any(|diagnostic| diagnostic.code() == "nullable_ignored"),
             ),
             (true, case.accepts_null, true, true, case.warns),
             "{version} {schema}\n{}",
-            prepared.authoring_declaration(operation)
+            prepared.authoring_declaration(tool)
         );
 
         if let Some(available) = case.text_body_available {
@@ -1247,11 +1237,11 @@ paths:
 "#
             ));
             assert_eq!(
-                prepared.operations()[0].availability(),
+                prepared.tools()[0].availability(),
                 if available {
-                    OperationAvailability::Available
+                    ToolAvailability::Available
                 } else {
-                    OperationAvailability::Unavailable
+                    ToolAvailability::Unavailable
                 },
                 "{version} {schema} as a text/plain request body"
             );
@@ -1287,7 +1277,7 @@ paths:
                   type: string
 "#,
     );
-    let operation = prepared.operations().first().expect("Operation");
+    let operation = prepared.tools().first().expect("Tool");
     let declaration = prepared.authoring_declaration(operation);
     assert!(declaration.contains("\"count\": number"));
     assert!(declaration.contains("Record<string, unknown>"));
@@ -1340,8 +1330,8 @@ components:
     assert_eq!(diagnostic.code(), "credentials_not_supported");
 }
 
-/// A document whose `/probe` Operation uses `UserAuth` through the root
-/// security and whose `/admin/probe` Operation names `AdminAuth` itself.
+/// A document whose `/probe` Tool uses `UserAuth` through the root
+/// security and whose `/admin/probe` Tool names `AdminAuth` itself.
 fn two_scheme_document(user: (&str, &str), admin: (&str, &str)) -> String {
     let (user_scheme, user_scopes) = user;
     let (admin_scheme, admin_scopes) = admin;
@@ -1382,7 +1372,7 @@ fn oauth_scopes(prepared: &coral_catalog::PreparedProviderCatalog) -> Option<Vec
 
 #[test]
 fn operations_share_one_oauth_grant_up_to_the_scope_limit() {
-    // The scheme declares 101 scopes; each Operation asks for 60 of them.
+    // The scheme declares 101 scopes; each Tool asks for 60 of them.
     let declared = (0..=100)
         .map(|index| format!("s{index}: s{index}"))
         .collect::<Vec<_>>()
@@ -1422,7 +1412,7 @@ fn operations_share_one_oauth_grant_up_to_the_scope_limit() {
                 assert_eq!(diagnostic.code(), "credentials_not_supported", "{case}");
                 assert_eq!(
                     diagnostic.message(),
-                    "the Provider's Operations together request more OAuth scopes than one \
+                    "the Provider's Tools together request more OAuth scopes than one \
                      grant can hold at #/paths/~1probe/get: UserAuth and AdminAuth together \
                      exceed the scope limit",
                     "{case}"
@@ -1439,7 +1429,7 @@ fn operations_agree_on_credential_contracts_not_security_scheme_names() {
     let oauth = r#"{ type: oauth2, flows: { authorizationCode: { authorizationUrl: "https://auth.example.test/authorize", tokenUrl: "https://auth.example.test/token", scopes: { read: r, admin: a } } } }"#;
     let other_oauth = r#"{ type: oauth2, flows: { authorizationCode: { authorizationUrl: "https://other.example.test/authorize", tokenUrl: "https://other.example.test/token", scopes: { read: r, admin: a } } } }"#;
     // The scopes the one shared contract requests, `Some(None)` for a shared
-    // contract that is not OAuth; `None` means the Operations need separate
+    // contract that is not OAuth; `None` means the Tools need separate
     // credentials.
     let cases = [
         (
@@ -1462,7 +1452,7 @@ fn operations_agree_on_credential_contracts_not_security_scheme_names() {
             Some(Some(&["admin", "read"][..])),
         ),
         (
-            "one OAuth scheme, one Operation without scopes",
+            "one OAuth scheme, one Tool without scopes",
             (oauth, "read"),
             (oauth, ""),
             Some(Some(&["read"][..])),
@@ -1487,8 +1477,8 @@ fn operations_agree_on_credential_contracts_not_security_scheme_names() {
                     .flatten()
                     .map(|scopes| scopes.iter().map(ToString::to_string).collect::<Vec<_>>());
                 assert_eq!(oauth_scopes(&prepared), expected, "{case}");
-                for operation in prepared.operations() {
-                    assert_eq!(operation.availability(), OperationAvailability::Available);
+                for operation in prepared.tools() {
+                    assert_eq!(operation.availability(), ToolAvailability::Available);
                     let binding = http_binding(operation);
                     let [slot] = binding.credential_slots() else {
                         panic!("{case}: one credential slot");
@@ -1506,7 +1496,7 @@ fn operations_agree_on_credential_contracts_not_security_scheme_names() {
                 assert_eq!(diagnostic.code(), "credentials_not_supported", "{case}");
                 assert_eq!(
                     diagnostic.message(),
-                    "the Provider's Operations require different credential contracts \
+                    "the Provider's Tools require different credential contracts \
                      at #/paths/~1probe/get: UserAuth differs from AdminAuth",
                     "{case}"
                 );
@@ -1550,20 +1540,17 @@ paths:
 "#,
     );
     let good = prepared
-        .operations()
+        .tools()
         .iter()
         .find(|operation| operation.key().as_str() == "good")
         .expect("valid sibling");
     let unsupported = prepared
-        .operations()
+        .tools()
         .iter()
         .find(|operation| operation.key().as_str() == "unsupportedServers")
-        .expect("unsupported server Operation");
-    assert_eq!(good.availability(), OperationAvailability::Available);
-    assert_eq!(
-        unsupported.availability(),
-        OperationAvailability::Unavailable
-    );
+        .expect("unsupported server Tool");
+    assert_eq!(good.availability(), ToolAvailability::Available);
+    assert_eq!(unsupported.availability(), ToolAvailability::Unavailable);
     assert_eq!(http_binding(unsupported).server_url(), None);
     assert_eq!(
         unsupported.diagnostic().expect("server diagnostic").code(),
@@ -1593,7 +1580,7 @@ info:
         );
         let prepared = ready(&document);
         assert_eq!(
-            http_binding(&prepared.operations()[0]).server_url(),
+            http_binding(&prepared.tools()[0]).server_url(),
             Some("https://operation.example.test/")
         );
     }
@@ -1602,7 +1589,7 @@ info:
 #[test]
 fn operation_paths_carry_forward_for_active_keys_and_releases_removed_claims() {
     let first = ready(&path_fixture(&["foo-bar", "foo_bar", "stable"]));
-    let first_paths = operation_paths(&first);
+    let first_paths = tool_paths(&first);
     assert_eq!(first_paths.len(), 3);
     assert_eq!(
         first_paths
@@ -1619,7 +1606,7 @@ fn operation_paths_carry_forward_for_active_keys_and_releases_removed_claims() {
     let replacement = match materialize(
         DestinationPolicy::default(),
         &ProviderSetupInput::from(replacement_document),
-        &first.operation_paths(),
+        &first.tool_paths(),
     ) {
         MaterializationOutcome::Ready(prepared) => prepared,
         MaterializationOutcome::Rejected(diagnostic) => panic!(
@@ -1628,7 +1615,7 @@ fn operation_paths_carry_forward_for_active_keys_and_releases_removed_claims() {
             diagnostic.message()
         ),
     };
-    let replacement_paths = operation_paths(&replacement);
+    let replacement_paths = tool_paths(&replacement);
     for key in ["foo-bar", "foo_bar", "stable"] {
         assert_eq!(replacement_paths[key], first_paths[key]);
     }
@@ -1639,7 +1626,7 @@ fn operation_paths_carry_forward_for_active_keys_and_releases_removed_claims() {
     let after_removal = match materialize(
         DestinationPolicy::default(),
         &ProviderSetupInput::from(without_first_owner),
-        &replacement.operation_paths(),
+        &replacement.tool_paths(),
     ) {
         MaterializationOutcome::Ready(prepared) => prepared,
         MaterializationOutcome::Rejected(diagnostic) => panic!(
@@ -1648,11 +1635,11 @@ fn operation_paths_carry_forward_for_active_keys_and_releases_removed_claims() {
             diagnostic.message()
         ),
     };
-    let after_removal_paths = operation_paths(&after_removal);
+    let after_removal_paths = tool_paths(&after_removal);
     assert_eq!(after_removal_paths["foo_bar"], replacement_paths["foo_bar"]);
     assert_eq!(
         after_removal_paths["foo@bar"], first_paths["foo-bar"],
-        "a removed key no longer reserves its Operation-relative path"
+        "a removed key no longer reserves its Tool-relative path"
     );
 }
 
@@ -1684,17 +1671,14 @@ components:
 "#,
     );
     let prepared = ready(&document);
-    assert_eq!(prepared.operations().len(), 3);
+    assert_eq!(prepared.tools().len(), 3);
 
     let unsupported = prepared
-        .operations()
+        .tools()
         .iter()
         .find(|operation| operation.key().as_str() == "structurallyUnsupported")
-        .expect("unsupported Operation remains in Reef catalog material");
-    assert_eq!(
-        unsupported.availability(),
-        OperationAvailability::Unavailable
-    );
+        .expect("unsupported Tool remains in Reef catalog material");
+    assert_eq!(unsupported.availability(), ToolAvailability::Unavailable);
     let diagnostic = unsupported.diagnostic().expect("safe blocking diagnostic");
     assert_eq!(diagnostic.code(), "unsupported_parameter_serialization");
     assert!(!diagnostic.message().contains("canary"));
@@ -1703,7 +1687,7 @@ components:
             .schema_graph()
             .schema_id_for_source("#/paths/~1unsupported/get/parameters/0/schema")
             .is_some(),
-        "valid schemas remain in the complete graph even when their Operation binding is unsupported"
+        "valid schemas remain in the complete graph even when their Tool binding is unsupported"
     );
     assert!(
         prepared
@@ -1716,10 +1700,10 @@ components:
     );
     assert!(
         prepared
-            .operations()
+            .tools()
             .iter()
             .filter(|operation| operation.key().as_str() != "structurallyUnsupported")
-            .all(|operation| operation.availability() == OperationAvailability::Available)
+            .all(|operation| operation.availability() == ToolAvailability::Available)
     );
 }
 
@@ -1749,8 +1733,8 @@ fn unrelated_ref_fields_do_not_hide_schemas_in_concrete_openapi_objects() {
     });
     let prepared = ready(&document.to_string());
     assert_eq!(
-        prepared.operations()[0].availability(),
-        OperationAvailability::Unavailable
+        prepared.tools()[0].availability(),
+        ToolAvailability::Unavailable
     );
     for source in [
         "#/paths/~1value/get/parameters/0/schema",
@@ -1785,14 +1769,14 @@ components:
     );
     let prepared = ready(&document);
     let malformed = prepared
-        .operations()
+        .tools()
         .iter()
         .find(|operation| operation.key().as_str() == "malformedSchema")
-        .expect("malformed Operation remains cataloged");
-    assert_eq!(malformed.availability(), OperationAvailability::Unavailable);
+        .expect("malformed Tool remains cataloged");
+    assert_eq!(malformed.availability(), ToolAvailability::Unavailable);
     assert_eq!(
         malformed.diagnostic().expect("schema diagnostic").code(),
-        "invalid_operation_schema"
+        "invalid_tool_schema"
     );
     assert!(
         prepared
@@ -1837,8 +1821,8 @@ components:
           type: string
 "##,
     );
-    let operation = prepared.operations().first().expect("Operation");
-    assert_eq!(operation.availability(), OperationAvailability::Available);
+    let operation = prepared.tools().first().expect("Tool");
+    assert_eq!(operation.availability(), ToolAvailability::Available);
     assert!(
         prepared
             .authoring_declaration(operation)
@@ -1908,7 +1892,7 @@ fn equivalent_schema_pointers_share_identity_and_literal_references_stay_literal
         prepared.schema_graph().schema(alias_id).expect("alias")["$ref"],
         target_id.as_str()
     );
-    let response_id = http_binding(&prepared.operations()[0]).responses()[0].content()[0].schema();
+    let response_id = http_binding(&prepared.tools()[0]).responses()[0].content()[0].schema();
     assert_eq!(
         prepared
             .schema_graph()
@@ -2003,14 +1987,14 @@ fn invalid_schema_reference_forms_are_safe_operation_local_failures() {
     for (reference, expected_code) in cases {
         let document = reference_fixture("3.1.0", reference);
         let prepared = ready(&document);
-        let operation = &prepared.operations()[0];
+        let tool = &prepared.tools()[0];
         assert_eq!(
-            operation.availability(),
-            OperationAvailability::Unavailable,
+            tool.availability(),
+            ToolAvailability::Unavailable,
             "{reference}"
         );
         assert_eq!(
-            operation.diagnostic().expect("safe diagnostic").code(),
+            tool.diagnostic().expect("safe diagnostic").code(),
             expected_code,
             "{reference}"
         );
@@ -2032,11 +2016,8 @@ fn openapi_versions_apply_their_ref_sibling_semantics() {
         "3.0.3",
         serde_json::json!(5),
     ));
-    let operation_30 = &openapi_30.operations()[0];
-    assert_eq!(
-        operation_30.availability(),
-        OperationAvailability::Available
-    );
+    let operation_30 = &openapi_30.tools()[0];
+    assert_eq!(operation_30.availability(), ToolAvailability::Available);
     let schema_id_30 = http_binding(operation_30).responses()[0].content()[0].schema();
     let schema_30 = openapi_30
         .schema_graph()
@@ -2058,15 +2039,15 @@ fn openapi_versions_apply_their_ref_sibling_semantics() {
         serde_json::json!(5),
     ));
     assert_eq!(
-        openapi_31.operations()[0].availability(),
-        OperationAvailability::Unavailable
+        openapi_31.tools()[0].availability(),
+        ToolAvailability::Unavailable
     );
     assert_eq!(
-        openapi_31.operations()[0]
+        openapi_31.tools()[0]
             .diagnostic()
             .expect("3.1 sibling diagnostic")
             .code(),
-        "invalid_operation_schema"
+        "invalid_tool_schema"
     );
 }
 
@@ -2082,8 +2063,8 @@ fn schema_dialect_and_scope_failures_use_stable_diagnostics() {
         document["jsonSchemaDialect"] = serde_json::json!(dialect);
         let prepared = ready(&document.to_string());
         assert_eq!(
-            prepared.operations()[0].availability(),
-            OperationAvailability::Available
+            prepared.tools()[0].availability(),
+            ToolAvailability::Available
         );
     }
 
@@ -2110,9 +2091,7 @@ fn schema_dialect_and_scope_failures_use_stable_diagnostics() {
         ("$recursiveAnchor", serde_json::json!(true)),
     ] {
         let prepared = ready(&schema_keyword_fixture("3.1.0", keyword, value));
-        let diagnostic = prepared.operations()[0]
-            .diagnostic()
-            .expect("scope diagnostic");
+        let diagnostic = prepared.tools()[0].diagnostic().expect("scope diagnostic");
         assert_eq!(
             diagnostic.code(),
             "unsupported_schema_reference_scope",
@@ -2125,7 +2104,7 @@ fn schema_dialect_and_scope_failures_use_stable_diagnostics() {
         );
     }
     let anchor_reference = ready(&reference_fixture("3.1.0", "#named-anchor"));
-    let diagnostic = anchor_reference.operations()[0]
+    let diagnostic = anchor_reference.tools()[0]
         .diagnostic()
         .expect("anchor reference diagnostic");
     assert!(
@@ -2139,7 +2118,7 @@ fn schema_dialect_and_scope_failures_use_stable_diagnostics() {
         serde_json::json!("https://json-schema.org/draft/2020-12/schema"),
     ));
     assert_eq!(
-        openapi_30.operations()[0]
+        openapi_30.tools()[0]
             .diagnostic()
             .expect("OpenAPI 3.0 dialect diagnostic")
             .code(),
@@ -2151,8 +2130,8 @@ fn schema_dialect_and_scope_failures_use_stable_diagnostics() {
         serde_json::json!({"https://example.test/vocabulary": false}),
     ));
     assert_eq!(
-        vocabulary.operations()[0].availability(),
-        OperationAvailability::Available
+        vocabulary.tools()[0].availability(),
+        ToolAvailability::Available
     );
 }
 
@@ -2179,11 +2158,11 @@ fn shared_non_schema_component_failure_is_applied_to_each_operation_owner() {
         }}}
     });
     let prepared = ready(&document.to_string());
-    assert!(prepared.operations().iter().all(|operation| {
-        operation.availability() == OperationAvailability::Unavailable
+    assert!(prepared.tools().iter().all(|operation| {
+        operation.availability() == ToolAvailability::Unavailable
             && operation
                 .diagnostic()
-                .is_some_and(|diagnostic| diagnostic.code() == "invalid_operation_schema")
+                .is_some_and(|diagnostic| diagnostic.code() == "invalid_tool_schema")
     }));
     assert!(
         prepared
@@ -2224,7 +2203,7 @@ fn local_schema_failures_do_not_hide_reference_edges_from_scc_analysis() {
     });
     let prepared = ready(&document.to_string());
     let diagnostics = prepared
-        .operations()
+        .tools()
         .iter()
         .map(|operation| operation.diagnostic().expect("cycle failure").code())
         .collect::<Vec<_>>();
@@ -2240,19 +2219,19 @@ fn local_schema_failures_do_not_hide_reference_edges_from_scc_analysis() {
 #[test]
 fn schema_cycles_propagate_failures_and_closed_cycles_remain_package_local() {
     let invalid = ready(&cycle_fixture(true));
-    assert!(invalid.operations().iter().all(|operation| {
-        operation.availability() == OperationAvailability::Unavailable
+    assert!(invalid.tools().iter().all(|operation| {
+        operation.availability() == ToolAvailability::Unavailable
             && operation
                 .diagnostic()
-                .is_some_and(|diagnostic| diagnostic.code() == "invalid_operation_schema")
+                .is_some_and(|diagnostic| diagnostic.code() == "invalid_tool_schema")
     }));
 
     let valid = ready(&cycle_fixture(false));
     assert!(
         valid
-            .operations()
+            .tools()
             .iter()
-            .all(|operation| operation.availability() == OperationAvailability::Available)
+            .all(|operation| operation.availability() == ToolAvailability::Available)
     );
     for source in [
         "#/components/parameters/A/schema",
@@ -2269,7 +2248,7 @@ fn schema_cycles_propagate_failures_and_closed_cycles_remain_package_local() {
                 .expect("cycle member schema"),
         );
     }
-    for operation in valid.operations() {
+    for operation in valid.tools() {
         assert!(
             direct_type_aliases_are_acyclic(&valid.authoring_declaration(operation)),
             "declaration contains a circular direct alias:\n{}",
@@ -2283,12 +2262,12 @@ fn schema_cycles_propagate_failures_and_closed_cycles_remain_package_local() {
 fn unreferenced_failing_component_schema_does_not_block_other_operations() {
     let prepared = ready(&failing_component_fixture(false));
 
-    assert_eq!(prepared.operations().len(), 2);
+    assert_eq!(prepared.tools().len(), 2);
     assert!(
         prepared
-            .operations()
+            .tools()
             .iter()
-            .all(|operation| operation.availability() == OperationAvailability::Available)
+            .all(|operation| operation.availability() == ToolAvailability::Available)
     );
     assert!(
         prepared
@@ -2304,23 +2283,23 @@ fn failing_component_schema_blocks_only_operations_that_reach_it() {
     let prepared = ready(&failing_component_fixture(true));
 
     let availability = prepared
-        .operations()
+        .tools()
         .iter()
         .map(|operation| (operation.key().as_str(), operation.availability()))
         .collect::<BTreeMap<_, _>>();
     assert_eq!(
         availability,
         BTreeMap::from([
-            ("health", OperationAvailability::Available),
-            ("listFiles", OperationAvailability::Available),
-            ("search", OperationAvailability::Unavailable),
+            ("health", ToolAvailability::Available),
+            ("listFiles", ToolAvailability::Available),
+            ("search", ToolAvailability::Unavailable),
         ])
     );
     let search = prepared
-        .operations()
+        .tools()
         .iter()
         .find(|operation| operation.key().as_str() == "search")
-        .expect("search Operation");
+        .expect("search Tool");
     let diagnostic = search.diagnostic().expect("scope diagnostic");
     assert_eq!(diagnostic.code(), "unsupported_schema_reference_scope");
     assert!(
@@ -2338,7 +2317,7 @@ fn component_schema_faults_are_local_to_the_operations_that_reach_them() {
         (
             "component schema",
             serde_json::json!({"Broken": {"type": 5}}),
-            "invalid_operation_schema",
+            "invalid_tool_schema",
         ),
         (
             "schema graph",
@@ -2373,7 +2352,7 @@ fn component_schema_faults_are_local_to_the_operations_that_reach_them() {
         });
         let prepared = ready(&document.to_string());
         let outcomes = prepared
-            .operations()
+            .tools()
             .iter()
             .map(|operation| {
                 (
@@ -2411,14 +2390,14 @@ fn productive_array_recursion_remains_strict_compiling_and_typed() {
         }}}
     });
     let prepared = ready(&document.to_string());
-    let operation = &prepared.operations()[0];
-    assert_eq!(operation.availability(), OperationAvailability::Available);
+    let tool = &prepared.tools()[0];
+    assert_eq!(tool.availability(), ToolAvailability::Available);
     assert!(
         prepared
-            .authoring_declaration(operation)
+            .authoring_declaration(tool)
             .contains("type RecursiveArray = Array<RecursiveArray>;")
     );
-    assert_strict_compiling_declaration(&prepared.authoring_declaration(operation));
+    assert_strict_compiling_declaration(&prepared.authoring_declaration(tool));
 }
 
 #[test]
@@ -2442,20 +2421,20 @@ fn productive_map_recursion_remains_strict_compiling_and_typed() {
         }}}
     });
     let prepared = ready(&document.to_string());
-    let operation = &prepared.operations()[0];
-    assert_eq!(operation.availability(), OperationAvailability::Available);
+    let tool = &prepared.tools()[0];
+    assert_eq!(tool.availability(), ToolAvailability::Available);
     assert!(
         prepared
-            .authoring_declaration(operation)
+            .authoring_declaration(tool)
             .contains("type RecursiveMap = { [key: string]: RecursiveMap };")
     );
     assert!(
-        !operation
+        !tool
             .diagnostics()
             .iter()
             .any(|diagnostic| diagnostic.code() == "typescript_schema_widened")
     );
-    assert_strict_compiling_declaration(&prepared.authoring_declaration(operation));
+    assert_strict_compiling_declaration(&prepared.authoring_declaration(tool));
 }
 
 #[test]
@@ -2479,9 +2458,9 @@ fn composed_reference_cycles_widen_to_strict_compiling_types() {
         }}
     });
     let prepared = ready(&document.to_string());
-    let operation = &prepared.operations()[0];
-    assert_eq!(operation.availability(), OperationAvailability::Available);
-    let declaration = prepared.authoring_declaration(operation);
+    let tool = &prepared.tools()[0];
+    assert_eq!(tool.availability(), ToolAvailability::Available);
+    let declaration = prepared.authoring_declaration(tool);
     let aliases = declaration
         .lines()
         .filter(|line| line.starts_with("type ") && !line.starts_with("type HttpResult<"))
@@ -2492,12 +2471,11 @@ fn composed_reference_cycles_widen_to_strict_compiling_types() {
         "reference-only cycle must widen instead of producing circular aliases: {aliases:?}"
     );
     assert!(
-        operation
-            .diagnostics()
+        tool.diagnostics()
             .iter()
             .any(|diagnostic| diagnostic.code() == "typescript_schema_widened")
     );
-    assert_strict_compiling_declaration(&prepared.authoring_declaration(operation));
+    assert_strict_compiling_declaration(&prepared.authoring_declaration(tool));
 }
 
 #[test]
@@ -2530,10 +2508,10 @@ fn openapi_map_extensions_remain_literal_during_discovery_and_binding() {
         }
     });
     let prepared = ready(&document.to_string());
-    assert_eq!(prepared.operations().len(), 1);
+    assert_eq!(prepared.tools().len(), 1);
     assert_eq!(
-        prepared.operations()[0].availability(),
-        OperationAvailability::Available
+        prepared.tools()[0].availability(),
+        ToolAvailability::Available
     );
     for source in [
         "#/paths/x-path-extension/get/responses/200/content/application~1json/schema",
@@ -2576,8 +2554,8 @@ fn discovery_only_failures_are_ignored_and_callback_and_webhook_schemas_are_reta
     });
     let prepared = ready(&document.to_string());
     assert_eq!(
-        prepared.operations()[0].availability(),
-        OperationAvailability::Available
+        prepared.tools()[0].availability(),
+        ToolAvailability::Available
     );
     assert!(
         prepared
@@ -2666,8 +2644,8 @@ fn openapi_30_does_not_discover_openapi_31_only_object_locations() {
     });
     let prepared = ready(&document.to_string());
     assert_eq!(
-        prepared.operations()[0].availability(),
-        OperationAvailability::Available
+        prepared.tools()[0].availability(),
+        ToolAvailability::Available
     );
     assert!(prepared
         .schema_graph()
@@ -2699,11 +2677,11 @@ fn references_to_malformed_indexed_schemas_propagate_the_target_failure() {
         }
     });
     let prepared = ready(&document.to_string());
-    assert!(prepared.operations().iter().all(|operation| {
-        operation.availability() == OperationAvailability::Unavailable
+    assert!(prepared.tools().iter().all(|operation| {
+        operation.availability() == ToolAvailability::Unavailable
             && operation
                 .diagnostic()
-                .is_some_and(|diagnostic| diagnostic.code() == "invalid_operation_schema")
+                .is_some_and(|diagnostic| diagnostic.code() == "invalid_tool_schema")
     }));
 }
 
@@ -2728,18 +2706,18 @@ fn malformed_schema_child_containers_expose_no_reference_targets() {
     });
     let prepared = ready(&document.to_string());
     let owner = prepared
-        .operations()
+        .tools()
         .iter()
         .find(|operation| operation.key().as_str() == "owner")
-        .expect("owner Operation");
+        .expect("owner Tool");
     let reference = prepared
-        .operations()
+        .tools()
         .iter()
         .find(|operation| operation.key().as_str() == "reference")
-        .expect("reference Operation");
+        .expect("reference Tool");
     assert_eq!(
         owner.diagnostic().expect("owner diagnostic").code(),
-        "invalid_operation_schema"
+        "invalid_tool_schema"
     );
     assert_eq!(
         reference.diagnostic().expect("reference diagnostic").code(),
@@ -2783,7 +2761,7 @@ fn reusable_parameter_schema_keeps_its_provider_pointer_identity() {
         .schema_id_for_source("#/components/parameters/Shared/schema")
         .expect("shared provider identity");
     let binding_ids = prepared
-        .operations()
+        .tools()
         .iter()
         .map(|operation| http_binding(operation).parameters()[0].schema())
         .collect::<Vec<_>>();
@@ -2874,7 +2852,7 @@ paths:
         "200":
           description: ok
 "#,
-            "duplicate_operation_key",
+            "duplicate_tool_key",
         ),
     ];
 
@@ -2957,12 +2935,9 @@ fn layered_diamond_schema_graph_materializes_as_one_deterministic_local_package(
     let second = ready(&document);
 
     assert_eq!(first.fingerprint(), second.fingerprint());
-    assert_eq!(first.operation_paths(), second.operation_paths());
-    assert_eq!(first.operations().len(), 1);
-    assert_eq!(
-        first.operations()[0].availability(),
-        OperationAvailability::Available
-    );
+    assert_eq!(first.tool_paths(), second.tool_paths());
+    assert_eq!(first.tools().len(), 1);
+    assert_eq!(first.tools()[0].availability(), ToolAvailability::Available);
 
     for layer in 0..=28 {
         for side in ['A', 'B'] {
@@ -3037,14 +3012,14 @@ components:
     )
 }
 
-/// An Operation's declaration with its anonymous default-export callable
+/// A Tool's declaration with its anonymous default-export callable
 /// declared as the function `name` instead.
 fn named_callable(declaration: &str, name: &str) -> String {
     declaration.replacen("export default function (", &format!("function {name}("), 1)
 }
 
 /// Compiles `declaration` strictly. A namespace cannot hold a default export,
-/// so the check names the Operation's callable `callable`.
+/// so the check names the Tool's callable `callable`.
 fn assert_strict_compiling_declaration(declaration: &str) {
     let declaration = named_callable(declaration, "callable");
     let source = format!(
@@ -3242,9 +3217,9 @@ fn cycle_fixture(with_invalid_dependency: bool) -> String {
     .to_string()
 }
 
-fn operation_paths(prepared: &coral_catalog::PreparedProviderCatalog) -> BTreeMap<String, String> {
+fn tool_paths(prepared: &coral_catalog::PreparedProviderCatalog) -> BTreeMap<String, String> {
     prepared
-        .operations()
+        .tools()
         .iter()
         .map(|operation| {
             (
@@ -3261,14 +3236,14 @@ fn operation_count_does_not_reject_an_openapi_catalog() {
     let ids: Vec<&str> = operation_ids.iter().map(String::as_str).collect();
     let prepared = ready(&path_fixture(&ids));
 
-    assert_eq!(prepared.operations().len(), operation_ids.len());
+    assert_eq!(prepared.tools().len(), operation_ids.len());
     for operation_id in &operation_ids {
         let operation = prepared
-            .operations()
+            .tools()
             .iter()
             .find(|operation| operation.key().as_str() == operation_id)
-            .expect("every Operation is retained above the former 64-Operation cap");
-        assert_eq!(operation.availability(), OperationAvailability::Available);
+            .expect("every Tool is retained above the former 64-Tool cap");
+        assert_eq!(operation.availability(), ToolAvailability::Available);
         assert_eq!(http_binding(operation).responses().len(), 1);
     }
 }
@@ -3315,7 +3290,7 @@ fn summaries_bearing_nonwhitespace_control_characters_fall_back_to_the_method_an
          responses:\n        \
          \"200\": { description: ok }\n",
     );
-    let operation = prepared.operations().first().expect("Operation");
+    let operation = prepared.tools().first().expect("Tool");
 
     assert_eq!(operation.summary(), "GET /values");
     assert_eq!(operation.presentation().description(), "GET /values");
@@ -3325,7 +3300,7 @@ fn summaries_bearing_nonwhitespace_control_characters_fall_back_to_the_method_an
 #[test]
 fn search_material_never_reaches_the_catalog() {
     // Universal Search prepares its own material after the commit (ADR 0017):
-    // an Operation past the field bound, or with one field over the former
+    // a Tool past the field bound, or with one field over the former
     // 256 KiB bound, is Available and carries no search diagnostic.
     let ok = |schema: Value| {
         serde_json::json!({"200": {
@@ -3365,12 +3340,12 @@ fn search_material_never_reaches_the_catalog() {
 
         let prepared = ready(&document);
 
-        let [operation] = prepared.operations() else {
-            panic!("{case}: one Operation");
+        let [operation] = prepared.tools() else {
+            panic!("{case}: one Tool");
         };
         assert_eq!(
             operation.availability(),
-            OperationAvailability::Available,
+            ToolAvailability::Available,
             "{case}"
         );
         assert_eq!(
@@ -3495,7 +3470,7 @@ fn alias_expansion_and_deep_nesting_are_refused_before_materialization() {
     }
 }
 
-/// One credential-free Operation whose single response the tests below edit.
+/// One credential-free Tool whose single response the tests below edit.
 const WEATHER_OPENAPI: &str = r#"openapi: 3.1.0
 info:
   title: Weather
@@ -3552,13 +3527,13 @@ fn operation_ids_must_be_keys_and_keyword_paths_declare_valid_typescript() {
     ) else {
         panic!("a numeric operationId rejects the package");
     };
-    assert_eq!(diagnostic.code(), "invalid_operation_key");
+    assert_eq!(diagnostic.code(), "invalid_tool_key");
 
     let keyword = configured_ready(
         &WEATHER_OPENAPI.replace("operationId: getForecast", "operationId: delete"),
     );
-    let [operation] = keyword.operations() else {
-        panic!("one Operation");
+    let [operation] = keyword.tools() else {
+        panic!("one Tool");
     };
     assert_eq!(operation.relative_path(), "delete");
     let declaration = keyword.authoring_declaration(operation);
@@ -3578,7 +3553,7 @@ fn response_schema_drives_the_typescript_declaration() {
         )
     );
     let prepared = configured_ready(&document);
-    let declaration = prepared.authoring_declaration(&prepared.operations()[0]);
+    let declaration = prepared.authoring_declaration(&prepared.tools()[0]);
     assert!(declaration.starts_with("type Forecast = { \"temperature\": number };\n"));
     assert!(declaration.ends_with("Promise<HttpResult<Forecast, 200, \"application/json\">>;"));
 }
@@ -3589,13 +3564,13 @@ fn a_query_in_a_path_key_becomes_the_operations_fixed_query() {
         ("/forecast?beta=true", Ok(Some("beta=true"))),
         ("/forecast?a=1&b=two", Ok(Some("a=1&b=two"))),
         ("/forecast?", Ok(None)),
-        ("/forecast?beta={flag}", Err("invalid_operation_path")),
-        ("/forecast?beta=true#top", Err("invalid_operation_path")),
+        ("/forecast?beta={flag}", Err("invalid_tool_path")),
+        ("/forecast?beta=true#top", Err("invalid_tool_path")),
     ] {
         let document = WEATHER_OPENAPI.replace("  /forecast:", &format!("  \"{key}\":"));
         let prepared = configured_ready(&document);
-        let [operation] = prepared.operations() else {
-            panic!("{key}: one Operation");
+        let [operation] = prepared.tools() else {
+            panic!("{key}: one Tool");
         };
         match expected {
             Ok(query) => {
@@ -3607,7 +3582,7 @@ fn a_query_in_a_path_key_becomes_the_operations_fixed_query() {
             Err(code) => {
                 assert_eq!(
                     operation.availability(),
-                    OperationAvailability::Unavailable,
+                    ToolAvailability::Unavailable,
                     "{key}"
                 );
                 assert_eq!(
@@ -3626,7 +3601,7 @@ fn a_query_in_a_path_key_becomes_the_operations_fixed_query() {
     let document = format!("{anonymous}  \"/forecast?beta=true\":{path_item}");
     let prepared = configured_ready(&document);
     let operations = prepared
-        .operations()
+        .tools()
         .iter()
         .map(|operation| {
             let binding = http_binding(operation);
@@ -3676,7 +3651,7 @@ fn malformed_responses_and_servers_make_only_their_operation_unavailable() {
             weather_with_response(
                 "          description: Forecast\n          content:\n            application/json:\n              schema: 7",
             ),
-            "invalid_operation_schema",
+            "invalid_tool_schema",
         ),
         (
             "explicit empty servers",
@@ -3688,12 +3663,12 @@ fn malformed_responses_and_servers_make_only_their_operation_unavailable() {
         ),
     ] {
         let prepared = configured_ready(&document);
-        let [operation] = prepared.operations() else {
-            panic!("{case}: one Operation");
+        let [operation] = prepared.tools() else {
+            panic!("{case}: one Tool");
         };
         assert_eq!(
             operation.availability(),
-            OperationAvailability::Unavailable,
+            ToolAvailability::Unavailable,
             "{case}"
         );
         assert_eq!(
@@ -3715,8 +3690,8 @@ fn a_valid_local_response_reference_is_available() {
         )
     );
     assert_eq!(
-        configured_ready(&document).operations()[0].availability(),
-        OperationAvailability::Available
+        configured_ready(&document).tools()[0].availability(),
+        ToolAvailability::Available
     );
 }
 
@@ -3748,13 +3723,13 @@ fn server_user_information_is_rejected_without_echoing_it() {
     assert!(errors.iter().all(|error| !error.message.contains("canary")));
 }
 
-/// Concatenates every Operation's declaration into one scope, as a Program
-/// that calls several Operations of one Provider sees them. Identical lines
+/// Concatenates every Tool's declaration into one scope, as a Program
+/// that calls several Tools of one Provider sees them. Identical lines
 /// declare one shared type once. One scope holds one default export, so each
 /// callable is named by its position.
 fn shared_scope(prepared: &coral_catalog::PreparedProviderCatalog) -> String {
     let declarations = prepared
-        .operations()
+        .tools()
         .iter()
         .enumerate()
         .map(|(index, operation)| {
@@ -3916,9 +3891,9 @@ fn declarations_of_every_operation_compile_together_in_one_scope() {
     let prepared = ready(&document.to_string());
     assert!(
         prepared
-            .operations()
+            .tools()
             .iter()
-            .all(|operation| operation.availability() == OperationAvailability::Available)
+            .all(|operation| operation.availability() == ToolAvailability::Available)
     );
     let scope = shared_scope(&prepared);
 
@@ -3945,9 +3920,9 @@ fn declarations_of_every_operation_compile_together_in_one_scope() {
 #[test]
 fn blank_response_descriptions_are_accepted_and_missing_ones_are_not() {
     let cases = [
-        ("description: \"\"", OperationAvailability::Available),
-        ("description: \"   \"", OperationAvailability::Available),
-        ("x-generated: true", OperationAvailability::Unavailable),
+        ("description: \"\"", ToolAvailability::Available),
+        ("description: \"   \"", ToolAvailability::Available),
+        ("x-generated: true", ToolAvailability::Unavailable),
     ];
     for (description_line, expected) in cases {
         let document = HTTP_CORPUS_SLICE.replace(
@@ -3969,12 +3944,12 @@ components:
         );
         let prepared = ready(&document);
         let operation = prepared
-            .operations()
+            .tools()
             .iter()
             .find(|operation| operation.key().as_str() == "generatedResponse")
-            .expect("generated Operation remains cataloged");
+            .expect("generated Tool remains cataloged");
         assert_eq!(operation.availability(), expected, "{description_line}");
-        if expected == OperationAvailability::Unavailable {
+        if expected == ToolAvailability::Unavailable {
             let diagnostic = operation.diagnostic().expect("blocking diagnostic");
             assert_eq!(diagnostic.code(), "invalid_openapi_operation");
             assert_eq!(

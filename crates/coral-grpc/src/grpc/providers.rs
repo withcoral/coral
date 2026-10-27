@@ -91,8 +91,8 @@ pub(super) fn provider_view(
                     domain::access::ProviderBlocker::AccountSettingIncompatible => {
                         wire::ProviderBlocker::AccountSettingIncompatible
                     }
-                    domain::access::ProviderBlocker::NoOperationsReady => {
-                        wire::ProviderBlocker::NoOperationsReady
+                    domain::access::ProviderBlocker::NoToolsReady => {
+                        wire::ProviderBlocker::NoToolsReady
                     }
                 }
                 .into()
@@ -129,27 +129,24 @@ const fn search_index_failure_reason(
     }
 }
 
-fn operation_view(
-    parent: &str,
-    operation: &coral_catalog::OperationSummary,
-) -> wire::ProviderOperation {
-    wire::ProviderOperation {
+fn tool_view(parent: &str, tool: &coral_catalog::ToolSummary) -> wire::ProviderTool {
+    wire::ProviderTool {
         name: format!(
-            "{parent}/operations/{}",
-            URL_SAFE_NO_PAD.encode(operation.key.as_str())
+            "{parent}/tools/{}",
+            URL_SAFE_NO_PAD.encode(tool.key.as_str())
         ),
-        relative_path: operation.relative_path.clone(),
-        summary: operation.summary.clone(),
-        description: operation.description.clone(),
-        hints: Some(wire::OperationHints {
-            read_only: operation.hints.read_only(),
-            destructive: operation.hints.destructive(),
-            idempotent: operation.hints.idempotent(),
-            open_world: operation.hints.open_world(),
+        relative_path: tool.relative_path.clone(),
+        summary: tool.summary.clone(),
+        description: tool.description.clone(),
+        hints: Some(wire::ToolHints {
+            read_only: tool.hints.read_only(),
+            destructive: tool.hints.destructive(),
+            idempotent: tool.hints.idempotent(),
+            open_world: tool.hints.open_world(),
         }),
-        available: operation.availability == coral_catalog::OperationAvailability::Available,
-        diagnostics: operation.diagnostics.iter().map(diagnostic).collect(),
-        tags: operation.tags.clone(),
+        available: tool.availability == coral_catalog::ToolAvailability::Available,
+        diagnostics: tool.diagnostics.iter().map(diagnostic).collect(),
+        tags: tool.tags.clone(),
     }
 }
 
@@ -236,7 +233,7 @@ pub(super) fn error(value: domain::Error) -> Status {
         E::ProviderNotFound
         | E::ProviderSetupNotFound
         | E::ProviderPublicationNotFound
-        | E::OperationNotFound
+        | E::ToolNotFound
         | E::AccountNotFound => (Code::NotFound, "NOT_FOUND"),
         E::ConsentDestinationRejected => (Code::FailedPrecondition, "CONSENT_DESTINATION_REJECTED"),
         E::OutboundDestinationRejected => {
@@ -1019,42 +1016,39 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         Ok(Response::new(()))
     }
 
-    #[tracing::instrument(skip_all, name = "coral.private.list_operations")]
-    async fn list_operations(
+    #[tracing::instrument(skip_all, name = "coral.private.list_tools")]
+    async fn list_tools(
         &self,
-        request: Request<wire::ListOperationsRequest>,
-    ) -> Result<Response<wire::ListOperationsResponse>, Status> {
+        request: Request<wire::ListToolsRequest>,
+    ) -> Result<Response<wire::ListToolsResponse>, Status> {
         let user = self.management_user(&request).await?;
         let req = request.into_inner();
         let (owner, id) = resource(&req.parent, "providers")?;
         let id = domain::ProviderId::parse(id).map_err(error)?;
         self.visible_provider(&user, &owner, &id).await?;
-        let scope = format!("{}:{}:operations", user.user_id(), req.parent);
+        let scope = format!("{}:{}:tools", user.user_id(), req.parent);
         let (page_size, after) = page_start(req.page_size, &req.page_token, &scope)?;
         let after = if after.is_empty() {
             None
         } else {
             Some(
-                coral_catalog::OperationKey::parse(&after)
+                coral_catalog::ToolKey::parse(&after)
                     .map_err(|_error| invalid("invalid page token"))?,
             )
         };
-        let operations = self
+        let tools = self
             .providers
             .inspect_catalog_page(&user, &owner, &id, after.as_ref(), page_size)
             .await
             .map_err(error)?;
-        let (operations, next_page_token) = page(
-            operations,
-            req.page_size,
-            &req.page_token,
-            &scope,
-            |operation| operation.key.as_str().to_owned(),
-        )?;
-        Ok(Response::new(wire::ListOperationsResponse {
-            operations: operations
+        let (tools, next_page_token) =
+            page(tools, req.page_size, &req.page_token, &scope, |tool| {
+                tool.key.as_str().to_owned()
+            })?;
+        Ok(Response::new(wire::ListToolsResponse {
+            tools: tools
                 .iter()
-                .map(|operation| operation_view(&req.parent, operation))
+                .map(|tool| tool_view(&req.parent, tool))
                 .collect(),
             next_page_token,
         }))
@@ -1281,7 +1275,7 @@ mod tests {
         for name in [
             format!("{exact}/"),
             format!("workspaces/{workspace}/providers/"),
-            format!("{exact}/operations/o1"),
+            format!("{exact}/tools/o1"),
             format!("workspaces/{workspace}/agents/a1/providers/p1"),
             format!("workspaces/{workspace}//providers/p1"),
             format!("workspaces/{}/providers/p1", workspace.to_uppercase()),
@@ -1350,7 +1344,7 @@ mod tests {
                 "NOT_FOUND",
             ),
             (
-                coral_search::Error::Policy(coral_policy::Error::OperationNotFound),
+                coral_search::Error::Policy(coral_policy::Error::ToolNotFound),
                 Code::NotFound,
                 "NOT_FOUND",
             ),

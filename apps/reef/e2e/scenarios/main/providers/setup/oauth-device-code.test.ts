@@ -2,21 +2,21 @@ import { expect, test } from 'vitest'
 import { withOwnerSession } from '../../../../support/actors.ts'
 import { oauthApiServer } from '../../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   approveDeviceInNewTab,
   chooseAccount,
   chooseFile,
   chooseDeviceSignIn,
   collectDataResponses,
   createWorkspace,
-  enableOperation,
+  enableTool,
   nextPublication,
   programRunner,
   waitForPublication,
   signInAndShareAccount,
 } from '../../../../support/providers.ts'
 
-test('Device-code sign-in in a new tab adds the provider and supplies a shared account to an Operation', async (context) => {
+test('Device-code sign-in in a new tab adds the provider and supplies a shared account to a Tool', async (context) => {
   const access = `device-access-${crypto.randomUUID()}`
   const upstream = await oauthApiServer(context, access, { device: true })
   await withOwnerSession(context, async ({ page, step, target, actor }) => {
@@ -34,7 +34,7 @@ test('Device-code sign-in in a new tab adds the provider and supplies a shared a
         expect(await page.getByLabel('Callback URL', { exact: true }).count()).toBe(0)
         expect(await page.getByLabel('PKCE', { exact: true }).count()).toBe(0)
         await page.getByRole('button', { name: 'Next', exact: true }).click()
-        await acceptOperations(page)
+        await acceptTools(page)
         await chooseAccount(page, 'shared')
         await signInAndShareAccount(page)
         await page.getByText('ABCD-EFGH', { exact: true }).waitFor()
@@ -52,8 +52,8 @@ test('Device-code sign-in in a new tab adds the provider and supplies a shared a
         await waitForPublication(page)
       },
     )
-    await step('Call an Operation with the resulting account', async () => {
-      await enableOperation(page, 'listRecords')
+    await step('Call a Tool with the resulting account', async () => {
+      await enableTool(page, 'listRecords')
       const run = programRunner(page, target, workspace)
       const result = await run('return await coral.providers.device.listRecords({});')
       expect(result).toContain('Hello from the OAuth API')

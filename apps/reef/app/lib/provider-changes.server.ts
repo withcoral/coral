@@ -3,18 +3,14 @@ import { field, privateHeaders } from './management.server'
 import type { ManagementApi } from './management.server'
 import { providerName, providerFailure, uuidOr404 } from './providers.server'
 import { authorizedWorkspace } from './workspace-route.server'
-import { OperationAccessState } from '@/generated/coral/management/v1/policy_pb'
-import {
-  decodeSelectedOperations,
-  selectionKey,
-  type SelectedOperation,
-} from '@/views/providers/selection'
+import { ToolAccessState } from '@/generated/coral/management/v1/policy_pb'
+import { decodeSelectedTools, selectionKey, type SelectedTool } from '@/views/providers/selection'
 import { countLabel } from '@/views/providers/configuration-details'
-import type { OperationOutcome } from '@/views/providers/types'
+import type { ToolOutcome } from '@/views/providers/types'
 
 /**
  * One owner change to a workspace's providers, from a form the route already
- * parsed and checked: rename, enable or disable, remove, or operation policy.
+ * parsed and checked: rename, enable or disable, remove, or tool policy.
  */
 export async function applyProviderChange(
   request: Request,
@@ -52,7 +48,7 @@ export async function applyProviderChange(
             credential: null,
             message:
               intent === 'disableProvider'
-                ? 'Provider disabled. Coral blocks unsent operation calls. Calls already sent can finish.'
+                ? 'Provider disabled. Coral blocks unsent tool calls. Calls already sent can finish.'
                 : 'Provider enabled. Other access restrictions still apply.',
           },
           { headers: privateHeaders },
@@ -67,46 +63,46 @@ export async function applyProviderChange(
       }
       case 'policy': {
         const access = field(form, 'access')
-        const states: Record<string, OperationAccessState> = {
-          enabled: OperationAccessState.ENABLED,
-          approval_required: OperationAccessState.APPROVAL_REQUIRED,
-          disabled: OperationAccessState.DISABLED,
+        const states: Record<string, ToolAccessState> = {
+          enabled: ToolAccessState.ENABLED,
+          approval_required: ToolAccessState.APPROVAL_REQUIRED,
+          disabled: ToolAccessState.DISABLED,
         }
-        const selected = decodeSelectedOperations(form)
+        const selected = decodeSelectedTools(form)
         if (
           !Object.hasOwn(states, access) ||
           !selected ||
           selected.length === 0 ||
-          selected.some((target) => target.operation.length > 4096) ||
-          new Set(selected.map((target) => selectionKey(target.provider, target.operation)))
-            .size !== selected.length
+          selected.some((target) => target.tool.length > 4096) ||
+          new Set(selected.map((target) => selectionKey(target.provider, target.tool))).size !==
+            selected.length
         )
-          throw new Response('Select distinct operations and a policy.', {
+          throw new Response('Select distinct tools and a policy.', {
             status: 400,
             headers: privateHeaders,
           })
         const byProvider = new Map<string, string[]>()
         for (const target of selected) {
           const provider = uuidOr404(target.provider)
-          byProvider.set(provider, [...(byProvider.get(provider) ?? []), target.operation])
+          byProvider.set(provider, [...(byProvider.get(provider) ?? []), target.tool])
         }
         const outcomes = await applyPolicyBatches(
-          [...byProvider].flatMap(([provider, operations]) =>
-            chunk(operations, POLICY_BATCH_SIZE).map((batch) => ({ provider, operations: batch })),
+          [...byProvider].flatMap(([provider, tools]) =>
+            chunk(tools, POLICY_BATCH_SIZE).map((batch) => ({ provider, tools: batch })),
           ),
           { api, workspace: w.name, accessState: states[access]! },
         )
         const failed = outcomes.filter((outcome) => outcome.status === 'failed')
         const message =
           failed.length === 0
-            ? `Operation policy saved for ${countLabel(selected.length, 'operation')}.`
-            : `Operation policy saved for ${countLabel(selected.length - failed.length, 'operation')}. ${countLabel(failed.length, 'operation')} not saved: ${failed[0]!.reason}`
+            ? `Tool policy saved for ${countLabel(selected.length, 'tool')}.`
+            : `Tool policy saved for ${countLabel(selected.length - failed.length, 'tool')}. ${countLabel(failed.length, 'tool')} not saved: ${failed[0]!.reason}`
         return data(
           {
             error: null,
             message,
             credential: null,
-            operations: outcomes,
+            tools: outcomes,
           },
           { headers: privateHeaders },
         )
@@ -120,7 +116,7 @@ export async function applyProviderChange(
       disableProvider: 'Coral could not disable the provider. ',
       enableProvider: 'Coral could not enable the provider. ',
       removeProvider: 'Coral could not remove the provider. ',
-      policy: 'Coral could not save operation policy. ',
+      policy: 'Coral could not save tool policy. ',
     }
     return providerFailure(error, failures[intent])
   }
@@ -139,10 +135,10 @@ function chunk<T>(items: T[], size: number) {
   return chunks
 }
 
-type PolicyBatch = { provider: string; operations: string[] }
+type PolicyBatch = { provider: string; tools: string[] }
 
 /**
- * Runs every batch with bounded concurrency and reports each operation on its
+ * Runs every batch with bounded concurrency and reports each tool on its
  * own, so a failure in one batch neither hides the batches that saved nor
  * masquerades as a failure of them.
  */
@@ -152,22 +148,22 @@ async function applyPolicyBatches(
     api,
     workspace,
     accessState,
-  }: { api: ManagementApi; workspace: string; accessState: OperationAccessState },
-): Promise<OperationOutcome[]> {
-  const outcomes: OperationOutcome[] = []
+  }: { api: ManagementApi; workspace: string; accessState: ToolAccessState },
+): Promise<ToolOutcome[]> {
+  const outcomes: ToolOutcome[] = []
   let next = 0
   const worker = async () => {
     while (next < batches.length) {
       const batch = batches[next]!
       next += 1
-      const targets: SelectedOperation[] = batch.operations.map((operation) => ({
+      const targets: SelectedTool[] = batch.tools.map((tool) => ({
         provider: batch.provider,
-        operation,
+        tool,
       }))
       try {
-        await api.policies.updateOperationPolicies({
+        await api.policies.updateToolPolicies({
           parent: providerName(workspace, batch.provider),
-          policies: batch.operations.map((operation) => ({ operation, accessState })),
+          policies: batch.tools.map((tool) => ({ tool, accessState })),
         })
         for (const target of targets) outcomes.push({ ...target, status: 'updated' })
       } catch (error) {
@@ -183,6 +179,6 @@ async function applyPolicyBatches(
 }
 
 function failureReason(error: unknown) {
-  const failure = providerFailure(error, 'Coral could not save operation policy. ')
-  return failure.data.error ?? 'Coral could not save operation policy.'
+  const failure = providerFailure(error, 'Coral could not save tool policy. ')
+  return failure.data.error ?? 'Coral could not save tool policy.'
 }

@@ -50,7 +50,7 @@ impl McpDiscoverySnapshot {
         Ok(self)
     }
 
-    /// Confirmed authentication and destination, separate from discovered Operations.
+    /// Confirmed authentication and destination, separate from discovered Tools.
     #[must_use]
     pub fn configuration(&self) -> Option<&crate::ProviderConfiguration> {
         self.configuration.as_deref()

@@ -30,7 +30,7 @@ use tokio::time::Instant;
 use coral_workspace::AuthenticatedPrincipal;
 
 use crate::execution::{Backoff, until_answered};
-use crate::invocation::{FenceBatch, OperationInvoker, PrecheckBatch};
+use crate::invocation::{FenceBatch, PrecheckBatch, ToolInvoker};
 use crate::lifecycle::RunRecord;
 use crate::owner::ChunkWork as _;
 use crate::program_output::ProgramOutputWriter;
@@ -442,7 +442,7 @@ fn start_program(
     handle: &OwnerHandle,
     package: engine::ProgramPackage,
 ) {
-    let invoker = OperationInvoker::new(
+    let invoker = ToolInvoker::new(
         module.accounts.clone(),
         module.providers.clone(),
         module.policies.clone(),

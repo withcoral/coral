@@ -55,11 +55,8 @@ pub(crate) async fn retention_activity(
     for (table, column) in [
         ("invocation_approvals", "created_at_unix_nanos"),
         ("invocation_approvals", "decided_at_unix_nanos"),
-        ("operation_invocations", "dispatch_started_at_unix_nanos"),
-        (
-            "operation_invocations",
-            "account_wait_started_at_unix_nanos",
-        ),
+        ("tool_invocations", "dispatch_started_at_unix_nanos"),
+        ("tool_invocations", "account_wait_started_at_unix_nanos"),
     ] {
         sources.union(sea_query::UnionType::All, latest(table, column));
     }
@@ -88,7 +85,7 @@ pub(crate) async fn delete_retained_history(
     for table in [
         "program_run_events",
         "invocation_approvals",
-        "operation_invocations",
+        "tool_invocations",
         "program_run_saved_function_snapshots",
         "program_run_packages",
     ] {

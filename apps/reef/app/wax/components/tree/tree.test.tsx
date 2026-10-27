@@ -47,7 +47,7 @@ describe('filterNodes', () => {
 describe('Tree expansion', () => {
   it('owns its expansion when the page passes none', () => {
     const html = renderToStaticMarkup(
-      <Tree label="Operations" nodes={nodes} defaultCollapsedIds={['group:logs']} />,
+      <Tree label="Tools" nodes={nodes} defaultCollapsedIds={['group:logs']} />,
     )
     expect(html).not.toContain('logs.list')
     expect(html).toContain('metrics.read')
@@ -55,7 +55,7 @@ describe('Tree expansion', () => {
 
   it('shows exactly what a controlling page says is collapsed', () => {
     const html = renderToStaticMarkup(
-      <Tree label="Operations" nodes={nodes} collapsedIds={['group:metrics']} />,
+      <Tree label="Tools" nodes={nodes} collapsedIds={['group:metrics']} />,
     )
     expect(html).toContain('logs.list')
     expect(html).not.toContain('metrics.read')
@@ -63,12 +63,7 @@ describe('Tree expansion', () => {
 
   it('treats an empty controlled list as everything open', () => {
     const html = renderToStaticMarkup(
-      <Tree
-        label="Operations"
-        nodes={nodes}
-        collapsedIds={[]}
-        defaultCollapsedIds={['group:logs']}
-      />,
+      <Tree label="Tools" nodes={nodes} collapsedIds={[]} defaultCollapsedIds={['group:logs']} />,
     )
     expect(html).toContain('logs.list')
     expect(html).toContain('metrics.read')

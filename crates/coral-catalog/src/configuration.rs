@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConfiguration {
-    /// One method applies to every Operation. Absence still needs an explicit answer.
+    /// One method applies to every Tool. Absence still needs an explicit answer.
     pub authentication: Option<AuthenticationConfiguration>,
     /// Non-secret service headers, sent independently of account credentials.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -94,7 +94,7 @@ pub enum ServerSelection {
 pub struct ServerOption {
     /// Declared URL template, or inspected MCP server URL.
     pub url: String,
-    /// Declared variables; empty for MCP and never ordinary Operation arguments.
+    /// Declared variables; empty for MCP and never ordinary Tool arguments.
     pub variables: BTreeMap<String, ServerVariable>,
 }
 
@@ -107,13 +107,13 @@ pub struct ServerVariable {
     pub enumeration: Option<Vec<String>>,
 }
 
-/// Operations sharing one destination declaration.
+/// Tools sharing one destination declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerGroup {
     /// OpenAPI declaration pointer, or the main server scope for MCP.
     pub declaration: String,
-    /// Operations affected by this declaration, excluding explicit overrides.
-    pub operations: Vec<String>,
+    /// Tools affected by this declaration, excluding explicit overrides.
+    pub tools: Vec<String>,
     /// Declared alternatives; an empty list needs owner review.
     pub options: Vec<ServerOption>,
 }

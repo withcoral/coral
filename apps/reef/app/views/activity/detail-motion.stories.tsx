@@ -17,21 +17,21 @@ import {
 // The selected record's slide between records of one Run, in Chromium: its
 // direction, what it leaves alone, and when it replaces the record at once.
 
-type Operation = Extract<ActivityRow, { kind: 'invocation' }>
+type Tool = Extract<ActivityRow, { kind: 'invocation' }>
 const reminders = runRow('reminders', '', { actor: 'Reminder run', intent: 'Send reminders' })
 const audit = runRow('audit', '', { actor: 'Audit run', intent: 'Audit invoices' })
 const programSource = Array.from({ length: 80 }, (_, line) => `// line ${line + 1}`).join('\n')
 
-const operation = (run: string, id: string, callPath: string, position?: number): Operation =>
+const tool = (run: string, id: string, callPath: string, position?: number): Tool =>
   invocationRow(run, id, {
-    operation: callPath.split('.').at(-1)!,
+    tool: callPath.split('.').at(-1)!,
     callPath,
     position,
     sourceLocation: { document: { kind: 'program' }, line: 2 + (position ?? 0), column: 1 },
   })
-const list = operation(reminders.name, 'list', 'billing.list', 0)
-const send = operation(reminders.name, 'send', 'mail.send', 1)
-const check = operation(reminders.name, 'check', 'mail.check', 2)
+const list = tool(reminders.name, 'list', 'billing.list', 0)
+const send = tool(reminders.name, 'send', 'mail.send', 1)
+const check = tool(reminders.name, 'check', 'mail.check', 2)
 const logged: Extract<ActivityRow, { kind: 'output' }> = {
   kind: 'output',
   name: `${reminders.name}/events/3`,
@@ -43,8 +43,8 @@ const logged: Extract<ActivityRow, { kind: 'output' }> = {
   agent: '',
   position: 3,
 }
-const archive = operation(reminders.name, 'archive', 'mail.archive', 4)
-const notify = operation(reminders.name, 'notify', 'mail.notify', 5)
+const archive = tool(reminders.name, 'archive', 'mail.archive', 4)
+const notify = tool(reminders.name, 'notify', 'mail.notify', 5)
 const emitted: Extract<ActivityRow, { kind: 'output' }> = {
   ...logged,
   name: `${reminders.name}/events/6`,
@@ -52,7 +52,7 @@ const emitted: Extract<ActivityRow, { kind: 'output' }> = {
   eventKind: 'program.emitted',
   position: 6,
 }
-// Lifecycle records: an Operation call ending, and a request to cancel the Run.
+// Lifecycle records: a Tool call ending, and a request to cancel the Run.
 const ended: Extract<ActivityRow, { kind: 'output' }> = {
   ...logged,
   name: `${reminders.name}/events/7`,
@@ -68,8 +68,8 @@ const cancelling: Extract<ActivityRow, { kind: 'output' }> = {
   position: 8,
 }
 // The Run's tenth record: Coral holds it, but the loaded window ends before it.
-const unloaded = operation(reminders.name, 'unloaded', 'mail.unloaded')
-const audited = operation(audit.name, 'audited', 'audit.check', 0)
+const unloaded = tool(reminders.name, 'unloaded', 'mail.unloaded')
+const audited = tool(audit.name, 'audited', 'audit.check', 0)
 
 const events: Record<string, RunEvent> = {
   [logged.name]: {
@@ -174,7 +174,7 @@ function MotionRoute() {
         History back
       </button>
       <button type="button" onClick={() => open(unloaded)}>
-        Open unloaded operation
+        Open unloaded tool
       </button>
       <Activity page={page} windowKey="motion" />
     </ActionReviewSession>
@@ -291,7 +291,7 @@ const up = (from: string, to: string): Slide => ({
 })
 const instant: Slide = { entering: undefined, leaving: undefined, elsewhere: 0 }
 
-/** A later operation enters from below and an earlier one from above, by click, key or Back. */
+/** A later tool enters from below and an earlier one from above, by click, key or Back. */
 export const SlidesInRunOrder: Story = {
   play: async (context) => {
     if (!(await inTestBrowser())) return
@@ -300,7 +300,7 @@ export const SlidesInRunOrder: Story = {
       await shows('mail.send')
       await select('mail.check')
       await expect(await shows('mail.check')).toEqual(down('mail.send', 'mail.check'))
-      // Back returns to the earlier operation, so it enters from above.
+      // Back returns to the earlier tool, so it enters from above.
       await button('History back')
       await expect(await shows('mail.send')).toEqual(up('mail.check', 'mail.send'))
 
@@ -429,7 +429,7 @@ export const KeepsTheSourceStill: Story = {
 
 /**
  * Logs and emissions take their place in the Run's order too: ↑, ↓ and clicks slide
- * between them and operations.
+ * between them and tools.
  */
 export const SlidesThroughLogsAndEmissions: Story = {
   play: async (context) => {
@@ -462,14 +462,14 @@ export const SlidesThroughLogsAndEmissions: Story = {
 }
 
 /**
- * Lifecycle records, such as an Operation call ending or a request to cancel the Run,
+ * Lifecycle records, such as a Tool call ending or a request to cancel the Run,
  * slide in the Run's order like every other record inside it.
  */
 export const SlidesThroughLifecycleEvents: Story = {
   play: async (context) => {
     if (!(await inTestBrowser())) return
     const { rail, recorder, shows, select } = await surface(context)
-    const callEnded = 'Operation call ended: completed'
+    const callEnded = 'Tool call ended: completed'
     const cancelRequested = 'Cancellation requested'
     try {
       await shows('mail.send')
@@ -508,13 +508,13 @@ export const ReplacesAtOnce: Story = {
       // From the Run itself, which its Task orders, not its Run.
       await select('mail.send')
       await expect(await shows('mail.send')).toEqual(instant)
-      // An operation of another Run.
+      // A tool of another Run.
       await select('audit.check')
       await expect(await shows('audit.check')).toEqual(instant)
       await select('mail.notify')
       await expect(await shows('mail.notify')).toEqual(instant)
-      // An operation outside the loaded window has no known position.
-      await button('Open unloaded operation')
+      // A tool outside the loaded window has no known position.
+      await button('Open unloaded tool')
       await expect(await shows('mail.unloaded')).toEqual(instant)
     } finally {
       recorder.stop()
@@ -522,7 +522,7 @@ export const ReplacesAtOnce: Story = {
   },
 }
 
-/** With reduced motion, a move between operations replaces the record at once. */
+/** With reduced motion, a move between tools replaces the record at once. */
 export const ReducedMotion: Story = {
   play: async (context) => {
     if (!(await emulateReducedMotion(true))) return
@@ -542,7 +542,7 @@ export const ReducedMotion: Story = {
   },
 }
 
-/** Without Web Animations, a move between operations replaces the record at once. */
+/** Without Web Animations, a move between tools replaces the record at once. */
 export const WithoutWebAnimations: Story = {
   play: async (context) => {
     if (!(await inTestBrowser())) return

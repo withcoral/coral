@@ -115,7 +115,7 @@ impl std::fmt::Display for ActionCursor {
 pub struct ActionSummary {
     /// Opaque, non-authorizing request identity.
     pub request: RequiredActionRequest,
-    /// Retained Operation path; empty when a shared connection spans different Operations.
+    /// Retained Tool path; empty when a shared connection spans different Tools.
     pub call_path: String,
     /// Current Provider display label, absent after the Provider is removed.
     pub provider_label: Option<String>,

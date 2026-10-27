@@ -269,7 +269,7 @@ struct ResultData<'d> {
 }
 
 impl<'d> ResultData<'d> {
-    /// An Operation's result is a union of envelopes, each a wrapper around
+    /// A Tool's result is a union of envelopes, each a wrapper around
     /// one response's data (see `signature::envelope`). A Saved Function's
     /// whole result is success data.
     fn of(callable: &'d Signature, kind: EntityKind) -> Self {
@@ -278,7 +278,7 @@ impl<'d> ResultData<'d> {
             success: Vec::new(),
         };
         let envelopes = match kind {
-            EntityKind::Operation => callable.result.as_ref().and_then(envelopes),
+            EntityKind::ProviderTool => callable.result.as_ref().and_then(envelopes),
             EntityKind::SavedFunction => None,
         };
         let Some(envelopes) = envelopes else {

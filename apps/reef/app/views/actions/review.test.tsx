@@ -122,7 +122,7 @@ describe('exact approval review', () => {
 
   it.each([
     [
-      'approval to its exact operation',
+      'approval to its exact tool',
       `/activity?record=${encodeURIComponent(approval.run)}&request=${encodeURIComponent(approval.name)}`,
       `/activity?record=${encodeURIComponent(approval.invocation)}&request=${encodeURIComponent(approval.name)}`,
       'record',

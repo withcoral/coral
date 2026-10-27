@@ -247,7 +247,7 @@ fn collect_embedded_references(
     {
         return Err(CatalogDiagnostic::stable(
             "unsupported_embedded_schema_scope",
-            "an embedded Operation schema uses unsupported reference scope semantics",
+            "an embedded Tool schema uses unsupported reference scope semantics",
         ));
     }
     if let Some(reference) = object.get("$ref") {
@@ -572,7 +572,7 @@ fn validate_dependent_required(value: &Value) -> Result<(), CatalogDiagnostic> {
 }
 
 pub(super) struct TypeScriptProjection {
-    /// The Operation's own declaration. It names the Provider's shared types
+    /// The Tool's own declaration. It names the Provider's shared types
     /// rather than declaring them.
     pub(super) declaration: String,
     /// The shared types the declaration names directly.
@@ -591,7 +591,7 @@ pub(crate) struct SharedType {
 
 /// The named types of one Provider, each declared once.
 ///
-/// An Operation's declaration names these types instead of declaring them.
+/// A Tool's declaration names these types instead of declaring them.
 /// Its complete declaration is its own text plus every shared type it
 /// reaches; see [`TypeClosure`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -615,7 +615,7 @@ impl SharedTypes {
         self.0.iter().map(|(name, shared)| (name.as_str(), shared))
     }
 
-    /// The complete declaration of an Operation whose own text is
+    /// The complete declaration of a Tool whose own text is
     /// `declaration` and which names `references` directly.
     pub(crate) fn compose(&self, declaration: &str, references: &[String]) -> String {
         let mut closure = TypeClosure::new(references);
@@ -630,13 +630,13 @@ impl SharedTypes {
                 .collect();
             closure
                 .reach(&names, found)
-                .expect("materialization declares every shared type an Operation names");
+                .expect("materialization declares every shared type a Tool names");
         }
         closure.compose(declaration)
     }
 }
 
-/// The shared types one Operation reaches, found level by level from the
+/// The shared types one Tool reaches, found level by level from the
 /// names its own declaration names. Each level looks up only names not yet
 /// reached, so a cycle ends the walk.
 pub(crate) struct TypeClosure {
@@ -680,13 +680,13 @@ impl TypeClosure {
             Ok(())
         } else {
             Err(crate::Error::CorruptData(
-                "an Operation names a missing shared type".to_string(),
+                "a Tool names a missing shared type".to_string(),
             ))
         }
     }
 
     /// The complete declaration: the reached types in name order, then the
-    /// Operation's own `declaration`.
+    /// Tool's own `declaration`.
     pub(crate) fn compose(self, declaration: &str) -> String {
         let mut lines = self.reached.into_values().collect::<Vec<_>>();
         lines.push(declaration.to_string());
@@ -742,7 +742,7 @@ impl ProjectionOptions {
     }
 }
 
-/// Declares an Operation's callable as an anonymous default export, as a
+/// Declares a Tool's callable as an anonymous default export, as a
 /// Saved Function's compiler-emitted declaration does. The Call Path travels
 /// beside the declaration, so a segment such as `delete`, which TypeScript
 /// rejects as a function or namespace name, never has to parse here.
@@ -779,13 +779,13 @@ pub(super) fn property_is_visible(
 
 type ProjectionKey = (SchemaId, Direction);
 
-/// One named schema's projection, kept for the Provider's later Operations.
+/// One named schema's projection, kept for the Provider's later Tools.
 ///
-/// A named body does not depend on the Operation that reaches it: references
+/// A named body does not depend on the Tool that reaches it: references
 /// inside it project as names, and its reference guard starts at zero. What
-/// does depend on the Operation is which diagnostics are new and which named
+/// does depend on the Tool is which diagnostics are new and which named
 /// types are not yet rendered, so the render keeps its effects in order and
-/// each Operation replays them.
+/// each Tool replays them.
 struct NamedRender {
     body: String,
     effects: Vec<RenderEffect>,
@@ -802,14 +802,14 @@ enum RenderEffect {
 
 /// TypeScript names for every schema of one Provider, in both directions.
 ///
-/// Every Operation of the Provider projects through the same table, so a name
-/// means one type across the Provider and any Operations' declarations can
+/// Every Tool of the Provider projects through the same table, so a name
+/// means one type across the Provider and any Tools' declarations can
 /// share one scope.
 pub(crate) struct TypeScriptNames {
     names: HashMap<ProjectionKey, String>,
     options: ProjectionOptions,
-    /// Named schemas already projected for an earlier Operation. Projecting
-    /// each Operation from scratch repeats the whole reachable type graph,
+    /// Named schemas already projected for an earlier Tool. Projecting
+    /// each Tool from scratch repeats the whole reachable type graph,
     /// which large Providers such as Microsoft Graph cannot afford.
     renders: RefCell<HashMap<ProjectionKey, Arc<NamedRender>>>,
 }
@@ -887,7 +887,7 @@ pub(super) struct TypeScriptProjector<'a> {
     used_named_scalars: BTreeSet<&'static str>,
     /// Effects of each named render in progress, innermost last.
     recording: Vec<Vec<RenderEffect>>,
-    /// Named types the Operation's own projections name, outside any named
+    /// Named types the Tool's own projections name, outside any named
     /// type's body.
     direct_references: BTreeSet<String>,
 }
@@ -938,7 +938,7 @@ impl<'a> TypeScriptProjector<'a> {
         let schema = graph.schema(id).ok_or_else(|| {
             CatalogDiagnostic::stable(
                 "invalid_schema_graph",
-                "an Operation references a missing package-local schema",
+                "a Tool references a missing package-local schema",
             )
         })?;
         if named {
@@ -976,7 +976,7 @@ impl<'a> TypeScriptProjector<'a> {
         }
     }
 
-    /// Applies a kept render's effects to this Operation in their original order.
+    /// Applies a kept render's effects to this Tool in their original order.
     fn replay(&mut self, key: &ProjectionKey, kept: &NamedRender) -> Result<(), CatalogDiagnostic> {
         for effect in &kept.effects {
             match effect {
@@ -1389,7 +1389,7 @@ impl<'a> TypeScriptProjector<'a> {
         let name = self.type_names.get(id, direction).cloned().ok_or_else(|| {
             CatalogDiagnostic::stable(
                 "invalid_schema_graph",
-                "an Operation references a missing package-local schema",
+                "a Tool references a missing package-local schema",
             )
         })?;
         self.referenced
@@ -1439,7 +1439,7 @@ impl<'a> TypeScriptProjector<'a> {
         self.diagnostics
     }
 
-    /// Adds every named type the Operation reaches to the Provider's shared
+    /// Adds every named type the Tool reaches to the Provider's shared
     /// types, and returns the names its own projections name directly.
     pub(super) fn share_named_declarations(
         &mut self,
@@ -1746,7 +1746,7 @@ pub(super) fn canonicalize(value: &Value) -> Value {
 
 fn invalid_schema() -> CatalogDiagnostic {
     CatalogDiagnostic::stable(
-        "invalid_operation_schema",
+        "invalid_tool_schema",
         "an OpenAPI Operation contains an invalid JSON Schema",
     )
 }

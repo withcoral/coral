@@ -30,17 +30,17 @@ import type { ActivityPage, ActivityRow, RequestDetail, RunDetail } from './type
 
 const at = '2026-09-18T14:02:00.000Z'
 type Run = Extract<ActivityRow, { kind: 'run' }>
-type Operation = Extract<ActivityRow, { kind: 'invocation' }>
+type Call = Extract<ActivityRow, { kind: 'invocation' }>
 type Tool = Extract<ActivityRow, { kind: 'tool' }>
 interface RunModel {
   /** Orders it among its Task's records: each new record's is higher. */
   order: number
   row: Run
-  operations: Operation[]
+  calls: Call[]
   ended: boolean
   /** It ended in failure, with no final value. */
   failed?: boolean
-  /** The operation that waits for your approval, if any. */
+  /** The call that waits for your approval, if any. */
   waiting: string | null
 }
 type Root =
@@ -55,9 +55,9 @@ type Root =
     }
   | { kind: 'run'; run: RunModel }
 
-/** When an operation started, by the number in its name. */
-const startOf = (operation: string) => Number(operation.split('-op-').at(-1))
-const approvalOf = (operation: string) => `${workspace}/approvals/${operation.split('/').at(-1)}`
+/** When a call started, by the number in its name. */
+const startOf = (call: string) => Number(call.split('-op-').at(-1))
+const approvalOf = (call: string) => `${workspace}/approvals/${call.split('/').at(-1)}`
 const finalOf = (run: string) => `${run}/final`
 
 function newRun(id: string, task = '', order = 0): RunModel {
@@ -70,7 +70,7 @@ function newRun(id: string, task = '', order = 0): RunModel {
       // Coral accepts each new Run later than the last.
       startedAt: new Date(Date.parse(at) + order * 1000).toISOString(),
     }),
-    operations: [],
+    calls: [],
     ended: false,
     waiting: null,
   }
@@ -116,7 +116,7 @@ const world = {
       | 'describe'
       | 'submit'
       | 'accept'
-      | 'operation'
+      | 'call'
       | 'approve'
       | 'end'
       | 'end oldest'
@@ -169,7 +169,7 @@ const world = {
     const latest = runs
       .toSorted((a, b) => a.order - b.order || a.row.name.localeCompare(b.row.name))
       .at(-1)
-    if (kind === 'operation' && latest) this.operate(latest)
+    if (kind === 'call' && latest) this.operate(latest)
     const asking = runs
       .filter((model) => !model.ended)
       .toSorted((a, b) => a.order - b.order)
@@ -194,16 +194,16 @@ const world = {
       oldest.row = { ...oldest.row, outcome: 'succeeded', endedAt: at }
     }
   },
-  /** Adds an operation to `run`, which waits for your approval if `waits`. */
+  /** Adds a call to `run`, which waits for your approval if `waits`. */
   operate(run: RunModel, waits = false) {
     const id = `${run.row.name.split('/').at(-1)}-op-${++this.count}`
-    const operation = invocationRow(run.row.name, id, {
+    const call = invocationRow(run.row.name, id, {
       task: run.row.task,
       callPath: `call.${id}`,
-      operation: `call.${id}`,
+      tool: `call.${id}`,
     })
-    run.operations.push(operation)
-    if (waits) run.waiting = operation.name
+    run.calls.push(call)
+    if (waits) run.waiting = call.name
   },
 }
 
@@ -215,12 +215,12 @@ const runView = (model: RunModel): Run => ({
   hasFinalValue: model.ended && !model.failed,
 })
 function children(model: RunModel): ActivityRow[] {
-  const operations = model.operations.map((row): ActivityRow =>
+  const calls = model.calls.map((row): ActivityRow =>
     row.name === model.waiting ? { ...row, state: 'pending', requiresAction: true } : row,
   )
-  if (!model.ended || model.failed) return operations
+  if (!model.ended || model.failed) return calls
   return [
-    ...operations,
+    ...calls,
     {
       kind: 'output',
       name: finalOf(model.row.name),
@@ -315,15 +315,15 @@ function pageFor(url: URL): ActivityPage {
       (model) =>
         record === model.row.name ||
         record === finalOf(model.row.name) ||
-        model.operations.some((row) => row.name === record),
+        model.calls.some((row) => row.name === record),
     )
-  const operation = owner?.operations.find((row) => row.name === record)
+  const call = owner?.calls.find((row) => row.name === record)
   const selectedRow: ActivityRow | null =
     task?.kind === 'task'
       ? task.row
       : tool
         ? tool
-        : operation
+        : call
           ? (children(owner!).find((row) => row.name === record) ?? null)
           : owner
             ? runView(owner)
@@ -340,17 +340,15 @@ function pageFor(url: URL): ActivityPage {
         ? { kind: 'succeeded', finalValue: '"done"' }
         : { kind: 'unavailable' },
   })
-  // A waiting operation selected with its approval opens that approval's review.
+  // A waiting call selected with its approval opens that approval's review.
   const review: RequestDetail | null =
-    operation &&
-    owner?.waiting === operation.name &&
-    query.get('request') === approvalOf(operation.name)
+    call && owner?.waiting === call.name && query.get('request') === approvalOf(call.name)
       ? {
           ...approvalRequest,
-          name: approvalOf(operation.name),
+          name: approvalOf(call.name),
           run: owner.row.name,
-          invocation: operation.name,
-          callPath: operation.callPath,
+          invocation: call.name,
+          callPath: call.callPath,
           state: 'pending',
           actionable: true,
         }
@@ -361,12 +359,12 @@ function pageFor(url: URL): ActivityPage {
     branches,
     selected: selectedRow ? record : null,
     selectedRow,
-    // The loader names the followed Run's waiting operation in every live scope.
+    // The loader names the followed Run's waiting call in every live scope.
     liveAction:
       query.has('live') && owner?.waiting
         ? { run: owner.row.name, record: owner.waiting, request: approvalOf(owner.waiting) }
         : undefined,
-    // With no Run that runs open, the loader names the Run whose operation started
+    // With no Run that runs open, the loader names the Run whose call started
     // waiting first, then each Task's newest Run that runs, among the Runs page live mode
     // may follow.
     liveLatest: query.get('live') === 'latest' && (!owner || owner.ended) ? latestOf() : undefined,
@@ -375,7 +373,7 @@ function pageFor(url: URL): ActivityPage {
         ? { kind: 'task', task: task.row }
         : tool
           ? { kind: 'tool', task: tool.task, interaction: tool, evidence: { kind: 'unknown' } }
-          : operation && selectedRow?.kind === 'invocation'
+          : call && selectedRow?.kind === 'invocation'
             ? {
                 kind: 'invocation',
                 invocation: selectedRow,
@@ -429,7 +427,7 @@ function ScopesRoute() {
       {button('Add describe to newest task', () => world.change('describe'))}
       {button('Submit exec to newest task', () => world.change('submit'))}
       {button('Accept submission', () => world.change('accept'))}
-      {button('Add operation', () => world.change('operation'))}
+      {button('Add call', () => world.change('call'))}
       {button('Approve elsewhere', () => world.change('approve'))}
       {button('End first running run', () => world.change('end'))}
       {button('End oldest running run', () => world.change('end oldest'))}
@@ -499,7 +497,7 @@ async function surface({ canvasElement, userEvent }: Play) {
         const selected = [...table.querySelectorAll('[role="row"][aria-selected="true"]')]
         expect(selected.map((item) => item.querySelector('a[href]')?.textContent)).toEqual([row])
       }),
-    /** The rail reviews the approval of the operation `call`, and the table selects it. */
+    /** The rail reviews the approval of the call `call`, and the table selects it. */
     reviews: (call: string) =>
       waitFor(() => {
         expect(within(rail()).getByRole('region', { name: `Review ${call}` })).toBeVisible()
@@ -538,7 +536,7 @@ export const OpensActivityThenStaysOnIt: Story = {
     await press('Add run to newest task')
     await selects('Run r2', 'run r2')
     // Then it follows the Run's newest record, as live mode on a Run does.
-    await press('Add operation')
+    await press('Add call')
     await selects('call.r2-op-3', 'call.r2-op-3')
 
     // A newer Run or Task never takes over the Run you have open.
@@ -728,7 +726,7 @@ export const FollowsTheRecordsOfATask: Story = {
     await expect(address().get('record')).toBe(runRow('r4', alpha).name)
     await expect(address().getAll('expand')).toEqual([alpha, runRow('r4', alpha).name])
     // Then the Run's first record.
-    await press('Add operation')
+    await press('Add call')
     await selects('call.r4-op-5', 'call.r4-op-5')
     await expect(address().get('record')).toBe(invocationRow('', 'r4-op-5').name)
 
@@ -754,7 +752,7 @@ export const FollowsTheRecordsOfATask: Story = {
     await idle()
     await selects('Run e9', 'exec 8')
     await expect(address().get('record')).toBe(accepted)
-    await press('Add operation')
+    await press('Add call')
     await selects('call.e9-op-10', 'call.e9-op-10')
     await expect(address().get('record')).toBe(invocationRow('', 'e9-op-10').name)
   },
@@ -1011,7 +1009,7 @@ export const FollowsNewWorkFromWhatItShows: Story = {
     // Its new Run opens before it has a record, then its first record.
     await press('Add run to newest task')
     await opened('Run r4', 'run r4', runRow('r4', fresh).name)
-    await press('Add operation')
+    await press('Add call')
     const call = invocationRow('', 'r4-op-5').name
     await opened('call.r4-op-5', 'call.r4-op-5', call)
 
@@ -1120,13 +1118,13 @@ function endsThenANewRunStarts(press: string, rests: [heading: string, row: stri
       await expect(address().get('record')).toBe(runRow('r2', alpha).name)
 
       // Then its first record.
-      await click('Add operation')
+      await click('Add call')
       await selects('call.r2-op-3', 'call.r2-op-3')
       await expect(address().get('record')).toBe(invocationRow('', 'r2-op-3').name)
     },
   }
 }
-// A Run that succeeded rests on its final value; one that failed, on its operation.
+// A Run that succeeded rests on its final value; one that failed, on its call.
 export const ASucceededRunGivesWayToANewRun = endsThenANewRunStarts('End oldest running run', [
   'Run a1',
   'final value',

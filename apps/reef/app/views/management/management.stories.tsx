@@ -234,7 +234,7 @@ export const SummaryOverview: Story = {
                 needsSetup: 0,
               },
             ],
-            operations: [
+            tools: [
               { callPath: 'coral.providers.github.getIssue', calls: 81 },
               { callPath: 'coral.providers.linear.searchIssues', calls: 40 },
               { callPath: 'coral.providers.gmail.sendMessage', calls: 16 },

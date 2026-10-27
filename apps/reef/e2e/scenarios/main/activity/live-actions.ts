@@ -5,9 +5,9 @@ import { listen, openApiDocument } from '../../../support/provider-fixtures.ts'
 import {
   addProviderFromFile,
   createWorkspace,
-  enableOperation,
+  enableTool,
   programRunner,
-  setOperationPolicy,
+  setToolPolicy,
 } from '../../../support/providers.ts'
 import { withOwner } from '../../../support/topology.ts'
 import { highlighted } from './follow-latest.ts'
@@ -66,8 +66,8 @@ export async function liveActions(context: TestContext) {
       'actionFixture',
     )
     await page.goto(provider)
-    await setOperationPolicy(page, 'charge', 'Needs approval')
-    await enableOperation(page, 'gate')
+    await setToolPolicy(page, 'charge', 'Needs approval')
+    await enableTool(page, 'gate')
     // A User's own calls do not need approval. Run as a real registered Agent so
     // the Owner reviews its calls through the normal authorization path.
     const issued = await api.agents.createAgent({

@@ -38,7 +38,7 @@ export function describeContextImpact(value: bigint, partial: boolean) {
     label: `${value < 0n ? '−' : value > 0n ? '+' : ''}${formatted}`,
     change: value < 0n ? 'Saved' : value > 0n ? 'Added' : 'No change',
     meaning: `${value === 0n ? 'No net context change' : `${formatted} ${direction}`}${partial ? ' so far' : ''}`,
-    title: `${partial ? 'Some work is still running. This total changes when it ends. ' : ''}${exact}. Display values are rounded. Compare retained output with operation results. Parent totals use exact byte counts. Totals include all pages. This measures payload bytes, not tokens.`,
+    title: `${partial ? 'Some work is still running. This total changes when it ends. ' : ''}${exact}. Display values are rounded. Compare retained output with tool results. Parent totals use exact byte counts. Totals include all pages. This measures payload bytes, not tokens.`,
     variant:
       value < 0n ? ('success' as const) : value > 0n ? ('error' as const) : ('tertiary' as const),
   }

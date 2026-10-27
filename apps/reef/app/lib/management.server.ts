@@ -15,7 +15,7 @@ import { WorkspaceMembershipService } from '@/generated/coral/management/v1/memb
 import { ProviderService, ProviderSetupService } from '@/generated/coral/management/v1/provider_pb'
 import { ProviderAccountService } from '@/generated/coral/management/v1/account_pb'
 import { ActivityService } from '@/generated/coral/management/v1/activity_pb'
-import { OperationPolicyService } from '@/generated/coral/management/v1/policy_pb'
+import { ToolPolicyService } from '@/generated/coral/management/v1/policy_pb'
 import { SavedFunctionService } from '@/generated/coral/management/v1/saved_function_pb'
 import { managementTransportForRequest } from './coral-request.server'
 import { runtimeConfigContext } from './runtime-config.server'
@@ -39,7 +39,7 @@ export function management(request: Request, context: Readonly<RouterContextProv
     providers: createClient(ProviderService, providerTransport),
     setups: createClient(ProviderSetupService, providerTransport),
     accounts: createClient(ProviderAccountService, providerTransport),
-    policies: createClient(OperationPolicyService, transport),
+    policies: createClient(ToolPolicyService, transport),
     savedFunctions: createClient(SavedFunctionService, transport),
   }
 }
@@ -158,11 +158,11 @@ export function managementFailure(error: unknown): never {
 }
 /**
  * Why Coral refused a change. A specific reason stands alone; a generic one
- * follows the operation that failed.
+ * follows the tool that failed.
  */
 export function failureReason(
   error: unknown,
-  operation = 'Coral could not apply this change. ',
+  tool = 'Coral could not apply this change. ',
   notFoundMessage?: string,
 ): [status: number, message: string] {
   if (error instanceof Response) throw error
@@ -185,15 +185,15 @@ export function failureReason(
     status,
     error instanceof ConnectError && reasons[error.rawMessage]
       ? reasons[error.rawMessage]
-      : `${operation}${error instanceof ConnectError && error.code === Code.NotFound && notFoundMessage ? notFoundMessage : message}`,
+      : `${tool}${error instanceof ConnectError && error.code === Code.NotFound && notFoundMessage ? notFoundMessage : message}`,
   ]
 }
 export function actionFailure(
   error: unknown,
-  operation = 'Coral could not apply this change. ',
+  tool = 'Coral could not apply this change. ',
   notFoundMessage?: string,
 ) {
-  const [status, message] = failureReason(error, operation, notFoundMessage)
+  const [status, message] = failureReason(error, tool, notFoundMessage)
   return data({ error: message, credential: null }, { status, headers: privateHeaders })
 }
 

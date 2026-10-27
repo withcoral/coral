@@ -1,4 +1,4 @@
-//! MCP Materialized Operation Catalog acceptance at the public Module seam.
+//! MCP Materialized Tool Catalog acceptance at the public Module seam.
 #![allow(
     unused_crate_dependencies,
     reason = "integration targets inherit the library's direct dependency set"
@@ -10,13 +10,13 @@
 
 use coral_catalog::AuthenticationConfiguration;
 use coral_catalog::{
-    ExecutionBinding, MaterializationOutcome, MaterializedOperation, McpDiscoverySnapshot,
-    McpExecutionBinding, McpInvocationMethod, McpTaskSupport, OperationAvailability,
-    OperationHints, ProviderSetupInput, materialize,
+    ExecutionBinding, MaterializationOutcome, MaterializedTool, McpDiscoverySnapshot,
+    McpExecutionBinding, McpInvocationMethod, McpTaskSupport, ProviderSetupInput, ToolAvailability,
+    ToolHints, materialize,
 };
 use coral_outbound::DestinationPolicy;
 
-const MCP_ARCHITECTURE_CORPUS: &str = include_str!("fixtures/mcp-operation-corpus.json");
+const MCP_ARCHITECTURE_CORPUS: &str = include_str!("fixtures/mcp-tool-corpus.json");
 
 fn ready(snapshot: &str) -> coral_catalog::PreparedProviderCatalog {
     let snapshot = McpDiscoverySnapshot::parse(snapshot).expect("bounded MCP discovery snapshot");
@@ -34,8 +34,8 @@ fn ready(snapshot: &str) -> coral_catalog::PreparedProviderCatalog {
     }
 }
 
-fn mcp_binding(operation: &MaterializedOperation) -> &McpExecutionBinding {
-    let ExecutionBinding::Mcp(binding) = operation.execution_binding() else {
+fn mcp_binding(tool: &MaterializedTool) -> &McpExecutionBinding {
+    let ExecutionBinding::Mcp(binding) = tool.execution_binding() else {
         panic!("MCP materialization must produce an MCP Execution Binding");
     };
     binding
@@ -47,21 +47,21 @@ fn corpus_keeps_exactly_the_declared_hints() {
     for (key, expected) in [
         (
             "list_issues",
-            OperationHints::new(Some(true), Some(false), Some(true), Some(true)),
+            ToolHints::new(Some(true), Some(false), Some(true), Some(true)),
         ),
         (
             "delete_file",
-            OperationHints::new(Some(false), Some(true), Some(false), Some(true)),
+            ToolHints::new(Some(false), Some(true), Some(false), Some(true)),
         ),
         // No annotations: an undeclared hint never takes the protocol default.
-        ("get-structured-content", OperationHints::default()),
+        ("get-structured-content", ToolHints::default()),
     ] {
-        let operation = prepared
-            .operations()
+        let tool = prepared
+            .tools()
             .iter()
-            .find(|operation| operation.key().as_str() == key)
-            .expect("corpus Operation");
-        assert_eq!(operation.hints(), expected, "{key}");
+            .find(|tool| tool.key().as_str() == key)
+            .expect("corpus Tool");
+        assert_eq!(tool.hints(), expected, "{key}");
     }
 }
 
@@ -70,10 +70,10 @@ fn corpus_preserves_exact_schemas_annotations_and_result_field_presence() {
     let prepared = ready(MCP_ARCHITECTURE_CORPUS);
 
     let list = prepared
-        .operations()
+        .tools()
         .iter()
-        .find(|operation| operation.key().as_str() == "list_issues")
-        .expect("list_issues Operation");
+        .find(|tool| tool.key().as_str() == "list_issues")
+        .expect("list_issues Tool");
     let list_binding = mcp_binding(list);
     assert_eq!(
         list_binding.transport(),
@@ -86,7 +86,7 @@ fn corpus_preserves_exact_schemas_annotations_and_result_field_presence() {
             .expect("declared annotations")
             .read_only_hint(),
         Some(true),
-        "the binding keeps the hint that made the Operation read-only"
+        "the binding keeps the hint that made the Tool read-only"
     );
     assert!(list_binding.output_schema().is_none());
     let list_input = prepared
@@ -103,10 +103,10 @@ fn corpus_preserves_exact_schemas_annotations_and_result_field_presence() {
     assert!(!list.typescript_declaration().contains("BinaryValue"));
 
     let delete = prepared
-        .operations()
+        .tools()
         .iter()
-        .find(|operation| operation.key().as_str() == "delete_file")
-        .expect("delete_file Operation");
+        .find(|tool| tool.key().as_str() == "delete_file")
+        .expect("delete_file Tool");
     assert_eq!(
         mcp_binding(delete)
             .annotations()
@@ -117,10 +117,10 @@ fn corpus_preserves_exact_schemas_annotations_and_result_field_presence() {
     );
 
     let structured = prepared
-        .operations()
+        .tools()
         .iter()
-        .find(|operation| operation.key().as_str() == "get-structured-content")
-        .expect("structured-content Operation");
+        .find(|tool| tool.key().as_str() == "get-structured-content")
+        .expect("structured-content Tool");
     let structured_binding = mcp_binding(structured);
     let output_schema = prepared
         .schema_graph()
@@ -187,9 +187,9 @@ fn standalone_mcp_schema_references_remain_exact_and_projectable() {
         }]
     });
     let prepared = ready(&snapshot.to_string());
-    let operation = &prepared.operations()[0];
-    assert_eq!(operation.availability(), OperationAvailability::Available);
-    let binding = mcp_binding(operation);
+    let tool = &prepared.tools()[0];
+    assert_eq!(tool.availability(), ToolAvailability::Available);
+    let binding = mcp_binding(tool);
     assert_eq!(
         binding.tool_definition().expect("exact tool definition")["inputSchema"]["$ref"],
         "#/$defs/Query"
@@ -202,7 +202,7 @@ fn standalone_mcp_schema_references_remain_exact_and_projectable() {
             .as_str()
             .is_some_and(|reference| reference.starts_with("schema_"))
     );
-    assert!(operation.typescript_declaration().contains("text"));
+    assert!(tool.typescript_declaration().contains("text"));
 }
 
 #[test]
@@ -232,11 +232,11 @@ fn duplicated_required_entries_are_deduplicated_in_the_schema_graph() {
         }]
     });
     let prepared = ready(&snapshot.to_string());
-    let operation = &prepared.operations()[0];
-    assert_eq!(operation.availability(), OperationAvailability::Available);
+    let tool = &prepared.tools()[0];
+    assert_eq!(tool.availability(), ToolAvailability::Available);
     let graph = prepared.schema_graph();
     let input = graph
-        .schema(mcp_binding(operation).input_schema())
+        .schema(mcp_binding(tool).input_schema())
         .expect("input schema");
     assert_eq!(input["required"], serde_json::json!(["query", "filter"]));
     let filter: coral_catalog::SchemaId =
@@ -249,7 +249,7 @@ fn duplicated_required_entries_are_deduplicated_in_the_schema_graph() {
 }
 
 #[test]
-fn operation_scoped_schema_names_do_not_collide_and_non_object_roots_are_unavailable() {
+fn tool_scoped_schema_names_do_not_collide_and_non_object_roots_are_unavailable() {
     let snapshot = serde_json::json!({
         "protocolVersion": "2025-11-25",
         "serverInfo": { "name": "schema-names", "version": "1" },
@@ -286,44 +286,37 @@ fn operation_scoped_schema_names_do_not_collide_and_non_object_roots_are_unavail
     });
     let prepared = ready(&snapshot.to_string());
     let available = prepared
-        .operations()
+        .tools()
         .iter()
-        .filter(|operation| operation.availability() == OperationAvailability::Available)
+        .filter(|tool| tool.availability() == ToolAvailability::Available)
         .collect::<Vec<_>>();
     assert_eq!(available.len(), 2);
     let declarations = available
         .iter()
-        .map(|operation| prepared.authoring_declaration(operation))
+        .map(|tool| prepared.authoring_declaration(tool))
         .collect::<Vec<_>>();
     let aliases = declarations
         .iter()
         .flat_map(|declaration| declaration.lines())
         .filter(|line| line.starts_with("type SharedSchema"))
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(
-        aliases.len(),
-        2,
-        "operation-local schema names stay distinct"
-    );
+    assert_eq!(aliases.len(), 2, "tool-local schema names stay distinct");
     let unsupported = prepared
-        .operations()
+        .tools()
         .iter()
-        .find(|operation| operation.key().as_str() == "scalar_root")
-        .expect("unsupported schema Operation");
-    assert_eq!(
-        unsupported.availability(),
-        OperationAvailability::Unavailable
-    );
+        .find(|tool| tool.key().as_str() == "scalar_root")
+        .expect("unsupported schema Tool");
+    assert_eq!(unsupported.availability(), ToolAvailability::Unavailable);
     assert_eq!(
         unsupported.diagnostic().expect("safe diagnostic").code(),
         "unsupported_mcp_input_schema"
     );
     let scoped = prepared
-        .operations()
+        .tools()
         .iter()
-        .find(|operation| operation.key().as_str() == "nested_id_scope")
-        .expect("unsupported scoped schema Operation");
-    assert_eq!(scoped.availability(), OperationAvailability::Unavailable);
+        .find(|tool| tool.key().as_str() == "nested_id_scope")
+        .expect("unsupported scoped schema Tool");
+    assert_eq!(scoped.availability(), ToolAvailability::Unavailable);
 }
 
 #[test]
@@ -360,19 +353,18 @@ fn invalid_presentation_metadata_warns_without_changing_structural_availability(
         }]
     });
     let prepared = ready(&snapshot.to_string());
-    let operation = &prepared.operations()[0];
-    assert_eq!(operation.availability(), OperationAvailability::Available);
-    assert!(operation.diagnostic().is_none());
+    let tool = &prepared.tools()[0];
+    assert_eq!(tool.availability(), ToolAvailability::Available);
+    assert!(tool.diagnostic().is_none());
     assert!(
-        operation
-            .diagnostics()
+        tool.diagnostics()
             .iter()
             .any(|diagnostic| diagnostic.code() == "invalid_mcp_tool_metadata")
     );
 }
 
 #[test]
-fn malformed_annotation_member_retains_valid_effect_evidence_but_blocks_the_operation() {
+fn malformed_annotation_member_retains_valid_effect_evidence_but_blocks_the_tool() {
     let snapshot = serde_json::json!({
         "protocolVersion": "2025-11-25",
         "serverInfo": { "name": "annotations", "version": "1" },
@@ -385,19 +377,19 @@ fn malformed_annotation_member_retains_valid_effect_evidence_but_blocks_the_oper
         }]
     });
     let prepared = ready(&snapshot.to_string());
-    let operation = &prepared.operations()[0];
-    assert_eq!(operation.availability(), OperationAvailability::Unavailable);
+    let tool = &prepared.tools()[0];
+    assert_eq!(tool.availability(), ToolAvailability::Unavailable);
     assert_eq!(
-        operation.hints(),
-        OperationHints::new(Some(true), None, None, None),
+        tool.hints(),
+        ToolHints::new(Some(true), None, None, None),
         "an invalid hint is undeclared; valid hints remain"
     );
     assert_eq!(
-        operation.diagnostic().expect("safe diagnostic").code(),
+        tool.diagnostic().expect("safe diagnostic").code(),
         "invalid_mcp_tool_annotations"
     );
     assert_eq!(
-        mcp_binding(operation)
+        mcp_binding(tool)
             .annotations()
             .expect("valid annotation evidence remains present")
             .read_only_hint(),
@@ -409,11 +401,11 @@ fn malformed_annotation_member_retains_valid_effect_evidence_but_blocks_the_oper
 fn required_tasks_are_unavailable_while_optional_tasks_stay_direct() {
     let prepared = ready(MCP_ARCHITECTURE_CORPUS);
     let required = prepared
-        .operations()
+        .tools()
         .iter()
-        .find(|operation| operation.key().as_str() == "simulate-research-query")
-        .expect("task-required corpus Operation");
-    assert_eq!(required.availability(), OperationAvailability::Unavailable);
+        .find(|tool| tool.key().as_str() == "simulate-research-query")
+        .expect("task-required corpus Tool");
+    assert_eq!(required.availability(), ToolAvailability::Unavailable);
     assert_eq!(
         required.diagnostic().expect("safe task diagnostic").code(),
         "upstream_mcp_task_required"
@@ -443,8 +435,8 @@ fn required_tasks_are_unavailable_while_optional_tasks_stay_direct() {
         }]
     });
     let prepared = ready(&optional.to_string());
-    let optional = &prepared.operations()[0];
-    assert_eq!(optional.availability(), OperationAvailability::Available);
+    let optional = &prepared.tools()[0];
+    assert_eq!(optional.availability(), ToolAvailability::Available);
     let binding = mcp_binding(optional);
     assert_eq!(binding.server_url(), "https://tasks.example.test");
     assert_eq!(
@@ -455,20 +447,17 @@ fn required_tasks_are_unavailable_while_optional_tasks_stay_direct() {
 }
 
 #[test]
-fn resource_capability_synthesizes_one_opaque_provider_bound_read_operation() {
+fn resource_capability_synthesizes_one_opaque_provider_bound_read_tool() {
     let prepared = ready(MCP_ARCHITECTURE_CORPUS);
     let reads = prepared
-        .operations()
+        .tools()
         .iter()
-        .filter(|operation| operation.relative_path() == "resources.read")
+        .filter(|tool| tool.relative_path() == "resources.read")
         .collect::<Vec<_>>();
     assert_eq!(reads.len(), 1);
     let read = reads[0];
     assert_eq!(read.key().as_str(), "resources/read");
-    assert_eq!(
-        read.hints(),
-        OperationHints::new(Some(true), None, None, None)
-    );
+    assert_eq!(read.hints(), ToolHints::new(Some(true), None, None, None));
     let binding = mcp_binding(read);
     assert_eq!(
         binding.invocation_method(),
@@ -510,11 +499,8 @@ fn resource_capability_synthesizes_one_opaque_provider_bound_read_operation() {
         "capabilities": { "resources": {} }
     });
     let resources_only = ready(&resources_only.to_string());
-    assert_eq!(resources_only.operations().len(), 1);
-    assert_eq!(
-        resources_only.operations()[0].relative_path(),
-        "resources.read"
-    );
+    assert_eq!(resources_only.tools().len(), 1);
+    assert_eq!(resources_only.tools()[0].relative_path(), "resources.read");
 
     let without_resources = serde_json::json!({
         "protocolVersion": "2025-11-25",
@@ -528,9 +514,9 @@ fn resource_capability_synthesizes_one_opaque_provider_bound_read_operation() {
     });
     assert!(
         ready(&without_resources.to_string())
-            .operations()
+            .tools()
             .iter()
-            .all(|operation| operation.relative_path() != "resources.read")
+            .all(|tool| tool.relative_path() != "resources.read")
     );
 }
 
@@ -551,8 +537,8 @@ fn multiline_tool_summaries_survive_materialization() {
   ]
 }"#,
     );
-    let operation = prepared.operations().first().expect("Operation");
-    let summary = operation.summary();
+    let tool = prepared.tools().first().expect("Tool");
+    let summary = tool.summary();
 
     // The tool declares no `title`, so its description is also the summary.
     // Rejecting the newlines left only the bare tool name.
@@ -587,8 +573,8 @@ fn snapshot_credential_contract_is_retained_on_every_mcp_binding() {
     });
     let prepared = ready(&snapshot.to_string());
     assert_eq!(prepared.credential_contract(), expected);
-    for operation in prepared.operations() {
-        assert_eq!(mcp_binding(operation).credential_contract(), &expected);
+    for tool in prepared.tools() {
+        assert_eq!(mcp_binding(tool).credential_contract(), &expected);
     }
 }
 

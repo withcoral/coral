@@ -153,13 +153,13 @@ async fn member_removal(removal: Removal, initially_shared: bool, shared: bool) 
         .inspect_provider(&owner, workspace.id(), provider.id())
         .await
         .unwrap();
-    let operation = h
+    let tool = h
         .providers
-        .inspect_operation(
+        .inspect_tool(
             &owner,
             workspace.id(),
             provider.id(),
-            &OperationKey::parse("getPrivateForecast").unwrap(),
+            &ToolKey::parse("getPrivateForecast").unwrap(),
         )
         .await
         .unwrap();
@@ -298,15 +298,15 @@ async fn member_removal(removal: Removal, initially_shared: bool, shared: bool) 
     );
     assert_eq!(
         h.providers
-            .inspect_operation(
+            .inspect_tool(
                 &owner,
                 workspace.id(),
                 provider.id(),
-                &OperationKey::parse("getPrivateForecast").unwrap()
+                &ToolKey::parse("getPrivateForecast").unwrap()
             )
             .await
             .unwrap(),
-        operation
+        tool
     );
     if let Some(shared_before) = shared_before {
         assert_eq!(

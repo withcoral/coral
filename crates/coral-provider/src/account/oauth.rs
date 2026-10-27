@@ -747,7 +747,7 @@ impl TokenResponse {
     /// commas), and only the upstream service can say what a token may do.
     /// Coral therefore keeps the reported value for people to read and never
     /// compares it with the requested scopes. A grant the service later finds
-    /// insufficient shows up as that Operation's upstream failure, which a
+    /// insufficient shows up as that Tool's upstream failure, which a
     /// person resolves by reconnecting the Account.
     pub(super) fn granted_scope(&self) -> String {
         self.scope.clone().unwrap_or_default()

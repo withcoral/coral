@@ -7,9 +7,9 @@ mod tests;
 
 use crate::{
     BuiltinCatalogIdentity, CatalogDiagnostic, Error, ExecutionBinding, HttpMethod,
-    MaterializedOperation, OperationAvailability, OperationKey, PreparedProviderCatalog,
-    ProviderGenerationId, ProviderSetupInput, ProviderSetupInputDigest, ProviderSetupInputKind,
-    SchemaGraph, SchemaId,
+    MaterializedTool, PreparedProviderCatalog, ProviderGenerationId, ProviderSetupInput,
+    ProviderSetupInputDigest, ProviderSetupInputKind, SchemaGraph, SchemaId, ToolAvailability,
+    ToolKey,
 };
 
 #[derive(Iden)]
@@ -28,10 +28,10 @@ enum ProviderGenerations {
 }
 
 #[derive(Iden)]
-enum MaterializedOperations {
+enum MaterializedTools {
     Table,
     ProviderGenerationId,
-    OperationKey,
+    ToolKey,
     RelativePath,
     Protocol,
     Method,
@@ -190,8 +190,8 @@ struct HintColumns {
 }
 
 impl HintColumns {
-    const fn decode(self) -> crate::OperationHints {
-        crate::OperationHints::new(
+    const fn decode(self) -> crate::ToolHints {
+        crate::ToolHints::new(
             self.read_only,
             self.destructive,
             self.idempotent,
@@ -200,12 +200,12 @@ impl HintColumns {
     }
 }
 
-/// Reads an Operation's method column; NULL for a protocol other than HTTP.
+/// Reads a Tool's method column; NULL for a protocol other than HTTP.
 fn decode_http_method(method: Option<&str>) -> Result<Option<HttpMethod>, Error> {
     method
         .map(|method| {
             HttpMethod::parse(method).ok_or_else(|| {
-                Error::CorruptData("Materialized Operation has invalid HTTP method".to_string())
+                Error::CorruptData("Materialized Tool has invalid HTTP method".to_string())
             })
         })
         .transpose()
@@ -213,7 +213,7 @@ fn decode_http_method(method: Option<&str>) -> Result<Option<HttpMethod>, Error>
 
 #[derive(Debug, FromRow)]
 struct SearchTargetRow {
-    operation_key: String,
+    tool_key: String,
     relative_path: String,
     method: Option<String>,
     #[sqlx(flatten)]
@@ -222,12 +222,12 @@ struct SearchTargetRow {
 
 impl SearchTargetRow {
     fn decode(self) -> Result<crate::CatalogSearchTarget, Error> {
-        let key = OperationKey::parse(&self.operation_key).map_err(|_error| {
-            Error::CorruptData("search target has an invalid Operation Key".to_string())
+        let key = ToolKey::parse(&self.tool_key).map_err(|_error| {
+            Error::CorruptData("search target has an invalid Tool Key".to_string())
         })?;
         if !crate::paths::valid_relative_path(&self.relative_path) {
             return Err(Error::CorruptData(
-                "search target has an invalid Operation-relative path".to_string(),
+                "search target has an invalid Tool-relative path".to_string(),
             ));
         }
         Ok(crate::CatalogSearchTarget::new(
@@ -239,22 +239,24 @@ impl SearchTargetRow {
     }
 }
 
-/// Rejects a binding whose own input schema or Operation Key disagrees with
+/// Rejects a binding whose own input schema or Tool Key disagrees with
 /// the row's index columns. An HTTP binding names neither.
 fn verify_schema_index(
     binding: &ExecutionBinding,
-    key: &OperationKey,
+    key: &ToolKey,
     input_schema: &SchemaId,
 ) -> Result<(), Error> {
     match binding {
-        ExecutionBinding::Mcp(binding) if binding.input_schema() != input_schema => Err(
-            Error::CorruptData("MCP Operation binding disagrees with its schema index".to_string()),
-        ),
+        ExecutionBinding::Mcp(binding) if binding.input_schema() != input_schema => {
+            Err(Error::CorruptData(
+                "MCP-backed Tool binding disagrees with its schema index".to_string(),
+            ))
+        }
         ExecutionBinding::Builtin(binding)
-            if binding.input_schema() != input_schema || binding.operation_key() != key =>
+            if binding.input_schema() != input_schema || binding.tool_key() != key =>
         {
             Err(Error::CorruptData(
-                "built-in Operation binding disagrees with its index".to_string(),
+                "built-in Tool binding disagrees with its index".to_string(),
             ))
         }
         ExecutionBinding::Http(_) | ExecutionBinding::Mcp(_) | ExecutionBinding::Builtin(_) => {
@@ -269,28 +271,28 @@ fn decode_presentation(
     deprecated: bool,
     tags_json: &str,
     guidance: Option<String>,
-) -> Result<crate::OperationPresentation, Error> {
-    let presentation = crate::OperationPresentation::new(
+) -> Result<crate::ToolPresentation, Error> {
+    let presentation = crate::ToolPresentation::new(
         title,
         description,
         deprecated,
         serde_json::from_str(tags_json).map_err(|_error| {
-            Error::CorruptData("Materialized Operation tags are not valid JSON".to_string())
+            Error::CorruptData("Materialized Tool tags are not valid JSON".to_string())
         })?,
         guidance,
     );
     if !presentation.is_valid() {
         return Err(Error::CorruptData(
-            "Materialized Operation has invalid presentation metadata".to_string(),
+            "Materialized Tool has invalid presentation metadata".to_string(),
         ));
     }
     Ok(presentation)
 }
 
-/// The columns the search index reads of one Operation.
+/// The columns the search index reads of one Tool.
 #[derive(Debug, FromRow)]
-struct SearchableOperationRow {
-    operation_key: String,
+struct SearchableToolRow {
+    tool_key: String,
     relative_path: String,
     protocol: String,
     title: Option<String>,
@@ -302,14 +304,14 @@ struct SearchableOperationRow {
     input_schema_id: Option<String>,
 }
 
-impl SearchableOperationRow {
-    fn decode(self) -> Result<crate::SearchableOperation, Error> {
-        let key = OperationKey::parse(&self.operation_key).map_err(|_error| {
-            Error::CorruptData("Materialized Operation has invalid key".to_string())
+impl SearchableToolRow {
+    fn decode(self) -> Result<crate::SearchableTool, Error> {
+        let key = ToolKey::parse(&self.tool_key).map_err(|_error| {
+            Error::CorruptData("Materialized Tool has invalid key".to_string())
         })?;
         if !crate::paths::valid_relative_path(&self.relative_path) {
             return Err(Error::CorruptData(
-                "Materialized Operation has an invalid Operation-relative path".to_string(),
+                "Materialized Tool has an invalid Tool-relative path".to_string(),
             ));
         }
         let presentation = decode_presentation(
@@ -321,10 +323,10 @@ impl SearchableOperationRow {
         )?;
         let binding = ExecutionBinding::from_storage_json(&self.protocol, &self.definition_json)?;
         let input_schema = SchemaId::from_storage(self.input_schema_id.ok_or_else(|| {
-            Error::CorruptData("Materialized Operation has no input schema identity".to_string())
+            Error::CorruptData("Materialized Tool has no input schema identity".to_string())
         })?)?;
         verify_schema_index(&binding, &key, &input_schema)?;
-        Ok(crate::SearchableOperation::new(
+        Ok(crate::SearchableTool::new(
             key,
             self.relative_path,
             presentation,
@@ -335,8 +337,8 @@ impl SearchableOperationRow {
 }
 
 #[derive(Debug, FromRow)]
-struct OperationSummaryRow {
-    operation_key: String,
+struct ToolSummaryRow {
+    tool_key: String,
     relative_path: String,
     summary: String,
     description: String,
@@ -347,41 +349,40 @@ struct OperationSummaryRow {
     diagnostics_json: Option<String>,
 }
 
-impl OperationSummaryRow {
-    fn decode(self) -> Result<crate::OperationSummary, Error> {
-        let key = OperationKey::parse(&self.operation_key)
-            .map_err(|_error| Error::CorruptData("Operation summary has invalid key".into()))?;
+impl ToolSummaryRow {
+    fn decode(self) -> Result<crate::ToolSummary, Error> {
+        let key = ToolKey::parse(&self.tool_key)
+            .map_err(|_error| Error::CorruptData("Tool summary has invalid key".into()))?;
         if !crate::paths::valid_relative_path(&self.relative_path) || self.summary.is_empty() {
             return Err(Error::CorruptData(
-                "Operation summary has invalid path or summary".into(),
+                "Tool summary has invalid path or summary".into(),
             ));
         }
         if !crate::types::valid_presentation_text(&self.description) {
             return Err(Error::CorruptData(
-                "Operation summary has invalid description".into(),
+                "Tool summary has invalid description".into(),
             ));
         }
         let tags: Vec<String> = serde_json::from_str(&self.tags_json)
-            .map_err(|_error| Error::CorruptData("Operation summary tags are invalid".into()))?;
+            .map_err(|_error| Error::CorruptData("Tool summary tags are invalid".into()))?;
         if tags.iter().any(|tag| tag.trim().is_empty()) {
-            return Err(Error::CorruptData(
-                "Operation summary has an empty tag".into(),
-            ));
+            return Err(Error::CorruptData("Tool summary has an empty tag".into()));
         }
-        let availability = OperationAvailability::from_storage_str(&self.availability)?;
-        let diagnostics =
-            CatalogDiagnostic::list_from_storage(self.diagnostics_json.as_deref().ok_or_else(
-                || Error::CorruptData("Operation summary has no diagnostics".into()),
-            )?)?;
+        let availability = ToolAvailability::from_storage_str(&self.availability)?;
+        let diagnostics = CatalogDiagnostic::list_from_storage(
+            self.diagnostics_json
+                .as_deref()
+                .ok_or_else(|| Error::CorruptData("Tool summary has no diagnostics".into()))?,
+        )?;
         let unavailable = diagnostics
             .iter()
             .any(|d| d.severity() == crate::CatalogDiagnosticSeverity::Error);
-        if unavailable != (availability == OperationAvailability::Unavailable) {
+        if unavailable != (availability == ToolAvailability::Unavailable) {
             return Err(Error::CorruptData(
-                "Operation summary has inconsistent availability".into(),
+                "Tool summary has inconsistent availability".into(),
             ));
         }
-        Ok(crate::OperationSummary {
+        Ok(crate::ToolSummary {
             key,
             relative_path: self.relative_path,
             summary: self.summary,
@@ -395,8 +396,8 @@ impl OperationSummaryRow {
 }
 
 #[derive(Debug, FromRow)]
-struct OperationRow {
-    operation_key: String,
+struct ToolRow {
+    tool_key: String,
     relative_path: String,
     protocol: String,
     method: Option<String>,
@@ -422,14 +423,14 @@ struct OperationRow {
     type_references_json: String,
 }
 
-impl OperationRow {
+impl ToolRow {
     #[expect(
         clippy::too_many_lines,
-        reason = "one persisted Operation row validates every protocol-specific invariant"
+        reason = "one persisted Tool row validates every protocol-specific invariant"
     )]
-    fn decode(self) -> Result<MaterializedOperation, Error> {
-        let key = OperationKey::parse(&self.operation_key).map_err(|_error| {
-            Error::CorruptData("Materialized Operation has invalid key".to_string())
+    fn decode(self) -> Result<MaterializedTool, Error> {
+        let key = ToolKey::parse(&self.tool_key).map_err(|_error| {
+            Error::CorruptData("Materialized Tool has invalid key".to_string())
         })?;
         if self.relative_path.is_empty()
             || self.summary.is_empty()
@@ -438,18 +439,18 @@ impl OperationRow {
             || self.output_schema_json.is_empty()
         {
             return Err(Error::CorruptData(
-                "Materialized Operation has incomplete binding or summary".to_string(),
+                "Materialized Tool has incomplete binding or summary".to_string(),
             ));
         }
         if self.typescript_declaration.is_empty() {
             return Err(Error::CorruptData(
-                "Materialized Operation has no TypeScript declaration".to_string(),
+                "Materialized Tool has no TypeScript declaration".to_string(),
             ));
         }
         let type_references: Vec<String> = serde_json::from_str(&self.type_references_json)
             .map_err(|_error| {
                 Error::CorruptData(
-                    "Materialized Operation type references are not valid JSON".to_string(),
+                    "Materialized Tool type references are not valid JSON".to_string(),
                 )
             })?;
         let presentation = decode_presentation(
@@ -461,31 +462,31 @@ impl OperationRow {
         )?;
         let binding = ExecutionBinding::from_storage_json(&self.protocol, &self.definition_json)?;
         let hints = self.hints.decode();
-        let availability = OperationAvailability::from_storage_str(&self.availability)?;
+        let availability = ToolAvailability::from_storage_str(&self.availability)?;
         let stored_diagnostic = match (self.diagnostic_code, self.diagnostic_message) {
             (Some(code), Some(message)) => Some(CatalogDiagnostic::from_storage(code, message)?),
             (None, None) => None,
             _ => {
                 return Err(Error::CorruptData(
-                    "Materialized Operation has partial diagnostic evidence".to_string(),
+                    "Materialized Tool has partial diagnostic evidence".to_string(),
                 ));
             }
         };
         let input_schema = SchemaId::from_storage(self.input_schema_id.ok_or_else(|| {
-            Error::CorruptData("Materialized Operation has no input schema identity".to_string())
+            Error::CorruptData("Materialized Tool has no input schema identity".to_string())
         })?)?;
         let diagnostics_json = self.diagnostics_json.ok_or_else(|| {
-            Error::CorruptData("Materialized Operation has no diagnostic collection".to_string())
+            Error::CorruptData("Materialized Tool has no diagnostic collection".to_string())
         })?;
         let diagnostics = CatalogDiagnostic::list_from_storage(&diagnostics_json)?;
         let diagnostic = diagnostics
             .iter()
             .find(|diagnostic| diagnostic.severity() == crate::CatalogDiagnosticSeverity::Error);
         if diagnostic != stored_diagnostic.as_ref()
-            || diagnostic.is_some() != (availability == OperationAvailability::Unavailable)
+            || diagnostic.is_some() != (availability == ToolAvailability::Unavailable)
         {
             return Err(Error::CorruptData(
-                "Materialized Operation has inconsistent availability evidence".to_string(),
+                "Materialized Tool has inconsistent availability evidence".to_string(),
             ));
         }
         verify_schema_index(&binding, &key, &input_schema)?;
@@ -496,22 +497,21 @@ impl OperationRow {
                     .as_deref()
                     .and_then(HttpMethod::parse)
                     .ok_or_else(|| {
-                        Error::CorruptData(
-                            "Materialized Operation has invalid HTTP method".to_string(),
-                        )
+                        Error::CorruptData("Materialized Tool has invalid HTTP method".to_string())
                     })?;
-                let path = self.path.as_deref().ok_or_else(|| {
-                    Error::CorruptData("HTTP Operation has no path index".to_string())
-                })?;
+                let path = self
+                    .path
+                    .as_deref()
+                    .ok_or_else(|| Error::CorruptData("HTTP Tool has no path index".to_string()))?;
                 if binding.method() != method
                     || binding.path_template() != path
                     || binding.server_url() != self.server_url.as_deref()
-                    || (availability == OperationAvailability::Available
+                    || (availability == ToolAvailability::Available
                         && self.server_url.as_deref().is_none_or(str::is_empty))
-                    || hints != crate::OperationHints::default()
+                    || hints != crate::ToolHints::default()
                 {
                     return Err(Error::CorruptData(
-                        "Materialized Operation binding disagrees with its index".to_string(),
+                        "Materialized Tool binding disagrees with its index".to_string(),
                     ));
                 }
                 self.definition_json
@@ -519,7 +519,7 @@ impl OperationRow {
             ExecutionBinding::Mcp(_) => {
                 if self.method.is_some() || self.path.is_some() || self.server_url.is_some() {
                     return Err(Error::CorruptData(
-                        "MCP Operation has an HTTP index".to_string(),
+                        "MCP-backed Tool has an HTTP index".to_string(),
                     ));
                 }
                 self.definition_json
@@ -527,13 +527,13 @@ impl OperationRow {
             ExecutionBinding::Builtin(_) => {
                 if self.method.is_some() || self.path.is_some() || self.server_url.is_some() {
                     return Err(Error::CorruptData(
-                        "built-in Operation has an HTTP index".to_string(),
+                        "built-in Tool has an HTTP index".to_string(),
                     ));
                 }
                 self.definition_json
             }
         };
-        Ok(MaterializedOperation::new(
+        Ok(MaterializedTool::new(
             key,
             self.relative_path,
             self.summary,
@@ -575,8 +575,8 @@ pub(super) async fn publish_generation(
         created_at_unix_nanos,
     )
     .await?;
-    for operation in &parts.operations {
-        insert_operation(transaction, &generation_id, operation).await?;
+    for tool in &parts.tools {
+        insert_tool(transaction, &generation_id, tool).await?;
     }
     insert_shared_types(transaction, &generation_id, &parts.shared_types).await?;
     Ok(generation_id)
@@ -717,85 +717,83 @@ async fn insert_generation(
     Ok(())
 }
 
-async fn insert_operation(
+async fn insert_tool(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-    operation: &MaterializedOperation,
+    tool: &MaterializedTool,
 ) -> Result<(), Error> {
-    let (method, path, server_url) = operation.http_index();
+    let (method, path, server_url) = tool.http_index();
     let statement = Query::insert()
-        .into_table(MaterializedOperations::Table)
+        .into_table(MaterializedTools::Table)
         .columns([
-            MaterializedOperations::ProviderGenerationId,
-            MaterializedOperations::OperationKey,
-            MaterializedOperations::RelativePath,
-            MaterializedOperations::Protocol,
-            MaterializedOperations::Method,
-            MaterializedOperations::Path,
-            MaterializedOperations::ServerUrl,
-            MaterializedOperations::Summary,
-            MaterializedOperations::Title,
-            MaterializedOperations::Description,
-            MaterializedOperations::Deprecated,
-            MaterializedOperations::TagsJson,
-            MaterializedOperations::Guidance,
-            MaterializedOperations::ReadOnlyHint,
-            MaterializedOperations::DestructiveHint,
-            MaterializedOperations::IdempotentHint,
-            MaterializedOperations::OpenWorldHint,
-            MaterializedOperations::DefinitionJson,
-            MaterializedOperations::InputSchemaJson,
-            MaterializedOperations::OutputSchemaJson,
-            MaterializedOperations::TypescriptDeclaration,
-            MaterializedOperations::Availability,
-            MaterializedOperations::DiagnosticCode,
-            MaterializedOperations::DiagnosticMessage,
-            MaterializedOperations::InputSchemaId,
-            MaterializedOperations::DiagnosticsJson,
-            MaterializedOperations::TypeReferencesJson,
+            MaterializedTools::ProviderGenerationId,
+            MaterializedTools::ToolKey,
+            MaterializedTools::RelativePath,
+            MaterializedTools::Protocol,
+            MaterializedTools::Method,
+            MaterializedTools::Path,
+            MaterializedTools::ServerUrl,
+            MaterializedTools::Summary,
+            MaterializedTools::Title,
+            MaterializedTools::Description,
+            MaterializedTools::Deprecated,
+            MaterializedTools::TagsJson,
+            MaterializedTools::Guidance,
+            MaterializedTools::ReadOnlyHint,
+            MaterializedTools::DestructiveHint,
+            MaterializedTools::IdempotentHint,
+            MaterializedTools::OpenWorldHint,
+            MaterializedTools::DefinitionJson,
+            MaterializedTools::InputSchemaJson,
+            MaterializedTools::OutputSchemaJson,
+            MaterializedTools::TypescriptDeclaration,
+            MaterializedTools::Availability,
+            MaterializedTools::DiagnosticCode,
+            MaterializedTools::DiagnosticMessage,
+            MaterializedTools::InputSchemaId,
+            MaterializedTools::DiagnosticsJson,
+            MaterializedTools::TypeReferencesJson,
         ])
         .values_panic([
             Expr::val(generation_id.to_string()),
-            Expr::val(operation.key().as_str()),
-            Expr::val(operation.relative_path()),
-            Expr::val(operation.binding_kind()),
+            Expr::val(tool.key().as_str()),
+            Expr::val(tool.relative_path()),
+            Expr::val(tool.binding_kind()),
             Expr::val(method),
             Expr::val(path),
             Expr::val(server_url),
-            Expr::val(operation.summary()),
-            Expr::val(operation.presentation().title()),
-            Expr::val(operation.presentation().description()),
-            Expr::val(operation.presentation().deprecated()),
+            Expr::val(tool.summary()),
+            Expr::val(tool.presentation().title()),
+            Expr::val(tool.presentation().description()),
+            Expr::val(tool.presentation().deprecated()),
             Expr::val(
-                serde_json::to_string(operation.presentation().tags()).map_err(|_error| {
-                    Error::CorruptData("Operation tags cannot be encoded".to_string())
+                serde_json::to_string(tool.presentation().tags()).map_err(|_error| {
+                    Error::CorruptData("Tool tags cannot be encoded".to_string())
                 })?,
             ),
-            Expr::val(operation.presentation().guidance()),
-            Expr::val(operation.hints().read_only()),
-            Expr::val(operation.hints().destructive()),
-            Expr::val(operation.hints().idempotent()),
-            Expr::val(operation.hints().open_world()),
-            Expr::val(operation.binding_json()),
-            Expr::val(operation.input_schema_json()),
-            Expr::val(operation.output_schema_json()),
-            Expr::val(operation.typescript_declaration()),
-            Expr::val(operation.availability().as_storage_str()),
+            Expr::val(tool.presentation().guidance()),
+            Expr::val(tool.hints().read_only()),
+            Expr::val(tool.hints().destructive()),
+            Expr::val(tool.hints().idempotent()),
+            Expr::val(tool.hints().open_world()),
+            Expr::val(tool.binding_json()),
+            Expr::val(tool.input_schema_json()),
+            Expr::val(tool.output_schema_json()),
+            Expr::val(tool.typescript_declaration()),
+            Expr::val(tool.availability().as_storage_str()),
             Expr::val(
-                operation
-                    .diagnostic()
+                tool.diagnostic()
                     .map(|diagnostic| diagnostic.code().to_string()),
             ),
             Expr::val(
-                operation
-                    .diagnostic()
+                tool.diagnostic()
                     .map(|diagnostic| diagnostic.message().to_string()),
             ),
-            Expr::val(operation.input_schema().as_str()),
-            Expr::val(operation.diagnostics_json()),
+            Expr::val(tool.input_schema().as_str()),
+            Expr::val(tool.diagnostics_json()),
             Expr::val(
-                serde_json::to_string(operation.type_references()).map_err(|_error| {
-                    Error::CorruptData("Operation type references cannot be encoded".to_string())
+                serde_json::to_string(tool.type_references()).map_err(|_error| {
+                    Error::CorruptData("Tool type references cannot be encoded".to_string())
                 })?,
             ),
         ])
@@ -937,8 +935,8 @@ pub(super) async fn generation_fingerprint(
     let schema_graph_json = row.schema_graph_json.clone();
     let typescript_view = row.typescript_view.clone();
     let (stored_id, _input_digest, schema_graph) = row.decode()?;
-    let operations = load_catalog_operations(transaction, &stored_id).await?;
-    verify_operation_schema_references(&schema_graph, &operations)?;
+    let tools = load_catalog_tools(transaction, &stored_id).await?;
+    verify_tool_schema_references(&schema_graph, &tools)?;
     let configuration_json = load_configuration(transaction, generation_id)
         .await?
         .map(|configuration| serde_json::to_string(&configuration))
@@ -947,7 +945,7 @@ pub(super) async fn generation_fingerprint(
     Ok(crate::ProviderGenerationFingerprint::from_material(
         &schema_graph_json,
         &typescript_view,
-        &operations,
+        &tools,
         configuration_json.as_deref(),
     ))
 }
@@ -994,11 +992,11 @@ pub(super) async fn verify_generation(
 ) -> Result<(), Error> {
     let row = load_generation(transaction, generation_id).await?;
     let (stored_id, _input_digest, schema_graph) = row.decode()?;
-    let operations = load_catalog_operations(transaction, &stored_id).await?;
-    verify_operation_schema_references(&schema_graph, &operations)?;
-    if operations.is_empty() {
+    let tools = load_catalog_tools(transaction, &stored_id).await?;
+    verify_tool_schema_references(&schema_graph, &tools)?;
+    if tools.is_empty() {
         return Err(Error::CorruptData(
-            "Materialized Catalog contains no Operations".to_string(),
+            "Materialized Catalog contains no Tools".to_string(),
         ));
     }
     Ok(())
@@ -1013,214 +1011,202 @@ pub(super) async fn available_search_targets(
         .fetch_all(
             Query::select()
                 .columns([
-                    MaterializedOperations::OperationKey,
-                    MaterializedOperations::RelativePath,
-                    MaterializedOperations::Method,
-                    MaterializedOperations::ReadOnlyHint,
-                    MaterializedOperations::DestructiveHint,
-                    MaterializedOperations::IdempotentHint,
-                    MaterializedOperations::OpenWorldHint,
+                    MaterializedTools::ToolKey,
+                    MaterializedTools::RelativePath,
+                    MaterializedTools::Method,
+                    MaterializedTools::ReadOnlyHint,
+                    MaterializedTools::DestructiveHint,
+                    MaterializedTools::IdempotentHint,
+                    MaterializedTools::OpenWorldHint,
                 ])
-                .from(MaterializedOperations::Table)
+                .from(MaterializedTools::Table)
                 .and_where(
-                    Expr::col(MaterializedOperations::ProviderGenerationId)
+                    Expr::col(MaterializedTools::ProviderGenerationId)
                         .eq(generation_id.to_string()),
                 )
                 .and_where(
-                    Expr::col(MaterializedOperations::Availability)
-                        .eq(OperationAvailability::Available.as_storage_str()),
+                    Expr::col(MaterializedTools::Availability)
+                        .eq(ToolAvailability::Available.as_storage_str()),
                 )
-                .order_by(MaterializedOperations::OperationKey, Order::Asc)
+                .order_by(MaterializedTools::ToolKey, Order::Asc)
                 .to_owned(),
         )
         .await?;
     rows.into_iter().map(SearchTargetRow::decode).collect()
 }
 
-pub(super) async fn searchable_operations(
+pub(super) async fn searchable_tools(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-) -> Result<Vec<crate::SearchableOperation>, Error> {
+) -> Result<Vec<crate::SearchableTool>, Error> {
     require_generation(transaction, generation_id).await?;
-    let rows: Vec<SearchableOperationRow> = transaction
+    let rows: Vec<SearchableToolRow> = transaction
         .fetch_all(
             Query::select()
                 .columns([
-                    MaterializedOperations::OperationKey,
-                    MaterializedOperations::RelativePath,
-                    MaterializedOperations::Protocol,
-                    MaterializedOperations::Title,
-                    MaterializedOperations::Description,
-                    MaterializedOperations::Deprecated,
-                    MaterializedOperations::TagsJson,
-                    MaterializedOperations::Guidance,
-                    MaterializedOperations::DefinitionJson,
-                    MaterializedOperations::InputSchemaId,
+                    MaterializedTools::ToolKey,
+                    MaterializedTools::RelativePath,
+                    MaterializedTools::Protocol,
+                    MaterializedTools::Title,
+                    MaterializedTools::Description,
+                    MaterializedTools::Deprecated,
+                    MaterializedTools::TagsJson,
+                    MaterializedTools::Guidance,
+                    MaterializedTools::DefinitionJson,
+                    MaterializedTools::InputSchemaId,
                 ])
-                .from(MaterializedOperations::Table)
+                .from(MaterializedTools::Table)
                 .and_where(
-                    Expr::col(MaterializedOperations::ProviderGenerationId)
+                    Expr::col(MaterializedTools::ProviderGenerationId)
                         .eq(generation_id.to_string()),
                 )
                 .and_where(
-                    Expr::col(MaterializedOperations::Availability)
-                        .eq(OperationAvailability::Available.as_storage_str()),
+                    Expr::col(MaterializedTools::Availability)
+                        .eq(ToolAvailability::Available.as_storage_str()),
                 )
-                .order_by(MaterializedOperations::OperationKey, Order::Asc)
+                .order_by(MaterializedTools::ToolKey, Order::Asc)
                 .to_owned(),
         )
         .await?;
-    rows.into_iter()
-        .map(SearchableOperationRow::decode)
-        .collect()
+    rows.into_iter().map(SearchableToolRow::decode).collect()
 }
 
-pub(super) async fn load_operation_summaries(
+pub(super) async fn load_tool_summaries(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-    after: Option<&OperationKey>,
+    after: Option<&ToolKey>,
     page_size: u32,
-) -> Result<Vec<crate::OperationSummary>, Error> {
+) -> Result<Vec<crate::ToolSummary>, Error> {
     require_generation(transaction, generation_id).await?;
-    // Match OperationKey's ordinal ordering regardless of the Postgres locale.
+    // Match ToolKey's ordinal ordering regardless of the Postgres locale.
     // SQLite's TEXT columns use BINARY by default. This also keeps the exclusive
     // cursor predicate consistent with the transport's continuation ordering.
     let key = match transaction.system() {
-        coral_db::DatabaseSystem::Sqlite => Expr::col(MaterializedOperations::OperationKey),
-        coral_db::DatabaseSystem::Postgres => Expr::cust("\"operation_key\" COLLATE \"C\""),
+        coral_db::DatabaseSystem::Sqlite => Expr::col(MaterializedTools::ToolKey),
+        coral_db::DatabaseSystem::Postgres => Expr::cust("\"tool_key\" COLLATE \"C\""),
     };
     let mut query = Query::select();
     query
         .columns([
-            MaterializedOperations::OperationKey,
-            MaterializedOperations::RelativePath,
-            MaterializedOperations::Summary,
-            MaterializedOperations::Description,
-            MaterializedOperations::TagsJson,
-            MaterializedOperations::ReadOnlyHint,
-            MaterializedOperations::DestructiveHint,
-            MaterializedOperations::IdempotentHint,
-            MaterializedOperations::OpenWorldHint,
-            MaterializedOperations::Availability,
-            MaterializedOperations::DiagnosticsJson,
+            MaterializedTools::ToolKey,
+            MaterializedTools::RelativePath,
+            MaterializedTools::Summary,
+            MaterializedTools::Description,
+            MaterializedTools::TagsJson,
+            MaterializedTools::ReadOnlyHint,
+            MaterializedTools::DestructiveHint,
+            MaterializedTools::IdempotentHint,
+            MaterializedTools::OpenWorldHint,
+            MaterializedTools::Availability,
+            MaterializedTools::DiagnosticsJson,
         ])
-        .from(MaterializedOperations::Table)
-        .and_where(
-            Expr::col(MaterializedOperations::ProviderGenerationId).eq(generation_id.to_string()),
-        )
+        .from(MaterializedTools::Table)
+        .and_where(Expr::col(MaterializedTools::ProviderGenerationId).eq(generation_id.to_string()))
         .order_by_expr(key.clone(), Order::Asc)
         .limit(u64::from(page_size) + 1);
     if let Some(after) = after {
         query.and_where(key.gt(after.as_str()));
     }
-    let rows: Vec<OperationSummaryRow> = transaction.fetch_all(query).await?;
-    rows.into_iter().map(OperationSummaryRow::decode).collect()
+    let rows: Vec<ToolSummaryRow> = transaction.fetch_all(query).await?;
+    rows.into_iter().map(ToolSummaryRow::decode).collect()
 }
 
-pub(super) async fn load_catalog_operations(
+pub(super) async fn load_catalog_tools(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-) -> Result<Vec<MaterializedOperation>, Error> {
+) -> Result<Vec<MaterializedTool>, Error> {
     require_generation(transaction, generation_id).await?;
-    let rows: Vec<OperationRow> = transaction
+    let rows: Vec<ToolRow> = transaction
         .fetch_all(
             Query::select()
-                .columns(operation_columns())
-                .from(MaterializedOperations::Table)
+                .columns(tool_columns())
+                .from(MaterializedTools::Table)
                 .and_where(
-                    Expr::col(MaterializedOperations::ProviderGenerationId)
+                    Expr::col(MaterializedTools::ProviderGenerationId)
                         .eq(generation_id.to_string()),
                 )
-                .order_by(MaterializedOperations::OperationKey, Order::Asc)
+                .order_by(MaterializedTools::ToolKey, Order::Asc)
                 .to_owned(),
         )
         .await?;
-    rows.into_iter().map(OperationRow::decode).collect()
+    rows.into_iter().map(ToolRow::decode).collect()
 }
 
-pub(super) async fn load_operation_paths(
+pub(super) async fn load_tool_paths(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-) -> Result<Vec<crate::OperationPathAssignment>, Error> {
+) -> Result<Vec<crate::ToolPathAssignment>, Error> {
     require_generation(transaction, generation_id).await?;
     let rows: Vec<(String, String)> = transaction
         .fetch_all(
             Query::select()
-                .columns([
-                    MaterializedOperations::OperationKey,
-                    MaterializedOperations::RelativePath,
-                ])
-                .from(MaterializedOperations::Table)
+                .columns([MaterializedTools::ToolKey, MaterializedTools::RelativePath])
+                .from(MaterializedTools::Table)
                 .and_where(
-                    Expr::col(MaterializedOperations::ProviderGenerationId)
+                    Expr::col(MaterializedTools::ProviderGenerationId)
                         .eq(generation_id.to_string()),
                 )
-                .order_by(MaterializedOperations::OperationKey, Order::Asc)
+                .order_by(MaterializedTools::ToolKey, Order::Asc)
                 .to_owned(),
         )
         .await?;
     rows.into_iter()
         .map(|(key, relative_path)| {
-            let key = OperationKey::parse(&key).map_err(|_error| {
-                Error::CorruptData("Operation path has an invalid Operation Key".to_string())
+            let key = ToolKey::parse(&key).map_err(|_error| {
+                Error::CorruptData("Tool path has an invalid Tool Key".to_string())
             })?;
             if !crate::paths::valid_relative_path(&relative_path) {
                 return Err(Error::CorruptData(
-                    "Operation path has an invalid Operation-relative path".to_string(),
+                    "Tool path has an invalid Tool-relative path".to_string(),
                 ));
             }
-            Ok(crate::OperationPathAssignment::new(key, relative_path))
+            Ok(crate::ToolPathAssignment::new(key, relative_path))
         })
         .collect()
 }
 
-pub(super) async fn operation_exists(
+pub(super) async fn tool_exists(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-    operation_key: &OperationKey,
+    tool_key: &ToolKey,
 ) -> Result<bool, Error> {
     let row: Option<(i32,)> = transaction
         .fetch_optional(
             Query::select()
                 .expr(Expr::val(1_i32))
-                .from(MaterializedOperations::Table)
+                .from(MaterializedTools::Table)
                 .and_where(
-                    Expr::col(MaterializedOperations::ProviderGenerationId)
+                    Expr::col(MaterializedTools::ProviderGenerationId)
                         .eq(generation_id.to_string()),
                 )
-                .and_where(
-                    Expr::col(MaterializedOperations::OperationKey).eq(operation_key.as_str()),
-                )
+                .and_where(Expr::col(MaterializedTools::ToolKey).eq(tool_key.as_str()))
                 .to_owned(),
         )
         .await?;
     Ok(row.is_some())
 }
 
-pub(super) async fn load_operation(
+pub(super) async fn load_tool(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-    operation_key: &OperationKey,
-) -> Result<Option<MaterializedOperation>, Error> {
-    load_one_operation(
+    tool_key: &ToolKey,
+) -> Result<Option<MaterializedTool>, Error> {
+    load_one_tool(
         transaction,
         generation_id,
-        Expr::col(MaterializedOperations::OperationKey).eq(operation_key.as_str()),
+        Expr::col(MaterializedTools::ToolKey).eq(tool_key.as_str()),
     )
     .await
 }
 
-pub(super) async fn load_operation_hints_and_methods(
+pub(super) async fn load_tool_hints_and_methods(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-    keys: &[OperationKey],
-) -> Result<
-    std::collections::BTreeMap<OperationKey, (crate::OperationHints, Option<HttpMethod>)>,
-    Error,
-> {
+    keys: &[ToolKey],
+) -> Result<std::collections::BTreeMap<ToolKey, (crate::ToolHints, Option<HttpMethod>)>, Error> {
     #[derive(FromRow)]
     struct Row {
-        operation_key: String,
+        tool_key: String,
         method: Option<String>,
         #[sqlx(flatten)]
         hints: HintColumns,
@@ -1230,45 +1216,43 @@ pub(super) async fn load_operation_hints_and_methods(
         .fetch_all(
             Query::select()
                 .columns([
-                    MaterializedOperations::OperationKey,
-                    MaterializedOperations::Method,
-                    MaterializedOperations::ReadOnlyHint,
-                    MaterializedOperations::DestructiveHint,
-                    MaterializedOperations::IdempotentHint,
-                    MaterializedOperations::OpenWorldHint,
+                    MaterializedTools::ToolKey,
+                    MaterializedTools::Method,
+                    MaterializedTools::ReadOnlyHint,
+                    MaterializedTools::DestructiveHint,
+                    MaterializedTools::IdempotentHint,
+                    MaterializedTools::OpenWorldHint,
                 ])
-                .from(MaterializedOperations::Table)
+                .from(MaterializedTools::Table)
                 .and_where(
-                    Expr::col(MaterializedOperations::ProviderGenerationId)
+                    Expr::col(MaterializedTools::ProviderGenerationId)
                         .eq(generation_id.to_string()),
                 )
                 .and_where(
-                    Expr::col(MaterializedOperations::OperationKey)
-                        .is_in(keys.iter().map(OperationKey::as_str)),
+                    Expr::col(MaterializedTools::ToolKey).is_in(keys.iter().map(ToolKey::as_str)),
                 )
                 .to_owned(),
         )
         .await?;
     rows.into_iter()
         .map(|row| {
-            let key = OperationKey::parse(&row.operation_key).map_err(|_error| {
-                Error::CorruptData("Operation hints have an invalid key".into())
-            })?;
+            let key = ToolKey::parse(&row.tool_key)
+                .map_err(|_error| Error::CorruptData("Tool hints have an invalid key".into()))?;
             let method = decode_http_method(row.method.as_deref())?;
             Ok((key, (row.hints.decode(), method)))
         })
         .collect()
 }
 
-pub(super) async fn load_operation_by_relative_path(
+pub(super) async fn load_tool_by_relative_path(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
     relative_path: &str,
-) -> Result<Option<MaterializedOperation>, Error> {
-    load_one_operation(
+) -> Result<Option<MaterializedTool>, Error> {
+    load_one_tool(
         transaction,
         generation_id,
-        Expr::col(MaterializedOperations::RelativePath).eq(relative_path),
+        Expr::col(MaterializedTools::RelativePath).eq(relative_path),
     )
     .await
 }
@@ -1291,73 +1275,73 @@ async fn require_generation(
         .ok_or_else(|| Error::CorruptData("Provider has no retained Generation".to_string()))
 }
 
-async fn load_one_operation(
+async fn load_one_tool(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
     predicate: sea_query::SimpleExpr,
-) -> Result<Option<MaterializedOperation>, Error> {
+) -> Result<Option<MaterializedTool>, Error> {
     require_generation(transaction, generation_id).await?;
-    let row: Option<OperationRow> = transaction
+    let row: Option<ToolRow> = transaction
         .fetch_optional(
             Query::select()
-                .columns(operation_columns())
-                .from(MaterializedOperations::Table)
+                .columns(tool_columns())
+                .from(MaterializedTools::Table)
                 .and_where(
-                    Expr::col(MaterializedOperations::ProviderGenerationId)
+                    Expr::col(MaterializedTools::ProviderGenerationId)
                         .eq(generation_id.to_string()),
                 )
                 .and_where(predicate)
                 .to_owned(),
         )
         .await?;
-    row.map(OperationRow::decode).transpose()
+    row.map(ToolRow::decode).transpose()
 }
 
-fn verify_operation_schema_references(
+fn verify_tool_schema_references(
     graph: &SchemaGraph,
-    operations: &[MaterializedOperation],
+    tools: &[MaterializedTool],
 ) -> Result<(), Error> {
-    for operation in operations {
-        if !graph.contains(operation.input_schema())
-            || operation
+    for tool in tools {
+        if !graph.contains(tool.input_schema())
+            || tool
                 .schema_ids()
                 .any(|schema_id| !graph.contains(schema_id))
         {
             return Err(Error::CorruptData(
-                "Materialized Operation references a missing authoritative schema".to_string(),
+                "Materialized Tool references a missing authoritative schema".to_string(),
             ));
         }
     }
     Ok(())
 }
 
-fn operation_columns() -> [MaterializedOperations; 26] {
+fn tool_columns() -> [MaterializedTools; 26] {
     [
-        MaterializedOperations::OperationKey,
-        MaterializedOperations::RelativePath,
-        MaterializedOperations::Protocol,
-        MaterializedOperations::Method,
-        MaterializedOperations::Path,
-        MaterializedOperations::ServerUrl,
-        MaterializedOperations::Summary,
-        MaterializedOperations::Title,
-        MaterializedOperations::Description,
-        MaterializedOperations::Deprecated,
-        MaterializedOperations::TagsJson,
-        MaterializedOperations::Guidance,
-        MaterializedOperations::ReadOnlyHint,
-        MaterializedOperations::DestructiveHint,
-        MaterializedOperations::IdempotentHint,
-        MaterializedOperations::OpenWorldHint,
-        MaterializedOperations::DefinitionJson,
-        MaterializedOperations::InputSchemaJson,
-        MaterializedOperations::OutputSchemaJson,
-        MaterializedOperations::TypescriptDeclaration,
-        MaterializedOperations::Availability,
-        MaterializedOperations::DiagnosticCode,
-        MaterializedOperations::DiagnosticMessage,
-        MaterializedOperations::InputSchemaId,
-        MaterializedOperations::DiagnosticsJson,
-        MaterializedOperations::TypeReferencesJson,
+        MaterializedTools::ToolKey,
+        MaterializedTools::RelativePath,
+        MaterializedTools::Protocol,
+        MaterializedTools::Method,
+        MaterializedTools::Path,
+        MaterializedTools::ServerUrl,
+        MaterializedTools::Summary,
+        MaterializedTools::Title,
+        MaterializedTools::Description,
+        MaterializedTools::Deprecated,
+        MaterializedTools::TagsJson,
+        MaterializedTools::Guidance,
+        MaterializedTools::ReadOnlyHint,
+        MaterializedTools::DestructiveHint,
+        MaterializedTools::IdempotentHint,
+        MaterializedTools::OpenWorldHint,
+        MaterializedTools::DefinitionJson,
+        MaterializedTools::InputSchemaJson,
+        MaterializedTools::OutputSchemaJson,
+        MaterializedTools::TypescriptDeclaration,
+        MaterializedTools::Availability,
+        MaterializedTools::DiagnosticCode,
+        MaterializedTools::DiagnosticMessage,
+        MaterializedTools::InputSchemaId,
+        MaterializedTools::DiagnosticsJson,
+        MaterializedTools::TypeReferencesJson,
     ]
 }

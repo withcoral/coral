@@ -9,17 +9,17 @@ const row = (page: Page, name: string) =>
     has: page.getByRole('checkbox', { name: `Select ${name}`, exact: true }),
   })
 
-/** The operation the keyboard cursor rests on. */
+/** The tool the keyboard cursor rests on. */
 const cursorName = (table: Locator) =>
-  table.locator('[role="row"][data-active] a[href*="/ops/"]').textContent()
+  table.locator('[role="row"][data-active] a[href*="/tools/"]').textContent()
 
 // Cursor movement, the summary filter, and key routing are
 // workspace-providers-page.dom.test.tsx cases; this scenario keeps what needs
 // a real layout, real focus, and a saved policy.
-test('The keyboard drives the operations table, its drawer, and its policy', async (context) => {
+test('The keyboard drives the tools table, its drawer, and its policy', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {
-    const table = page.getByRole('table', { name: 'Operations', exact: true })
-    const filter = page.getByRole('searchbox', { name: 'Filter operations', exact: true })
+    const table = page.getByRole('table', { name: 'Tools', exact: true })
+    const filter = page.getByRole('searchbox', { name: 'Filter tools', exact: true })
     const heading = (provider: string) =>
       table.getByRole('rowgroup', { name: provider, exact: true })
     let workspace = ''
@@ -50,14 +50,14 @@ test('The keyboard drives the operations table, its drawer, and its policy', asy
       await page.goto(`/workspaces/${workspace}/providers`)
       await table.waitFor()
     })
-    await step('The find shortcut focuses the operation filter', async () => {
+    await step('The find shortcut focuses the tool filter', async () => {
       await page.keyboard.press('ControlOrMeta+f')
       await expect
         .poll(() => filter.evaluate((input) => input === document.activeElement))
         .toBe(true)
     })
     await step('The cursor row scrolls into view below the pinned headings', async () => {
-      // With no cursor, ↑ starts at the last operation, at the far end of the table.
+      // With no cursor, ↑ starts at the last tool, at the far end of the table.
       await page.keyboard.press('ArrowUp')
       await expect.poll(() => cursorName(table)).toBe('op149')
       await page.keyboard.press('ArrowUp')
@@ -78,7 +78,7 @@ test('The keyboard drives the operations table, its drawer, and its policy', asy
         )
         .toBe(true)
     })
-    await step('← saves the cursor operation’s policy', async () => {
+    await step('← saves the cursor tool’s policy', async () => {
       // Focus leaves the filter, whose caret keeps ← and →.
       await filter.blur()
       await page.keyboard.press('ArrowLeft')
@@ -98,22 +98,22 @@ test('The keyboard drives the operations table, its drawer, and its policy', asy
       const count = heading('Keys').getByRole('button', { name: '1 Always allow', exact: true })
       await count.click()
       expect(await count.getAttribute('aria-pressed')).toBe('true')
-      // Coral's own provider has read-only operations that start as Always allow.
+      // Coral's own provider has read-only tools that start as Always allow.
       await expect
-        .poll(() => heading('Keys').locator('a[href*="/ops/"]').allTextContents())
+        .poll(() => heading('Keys').locator('a[href*="/tools/"]').allTextContents())
         .toEqual(['op146'])
-      await heading('Keys').getByText('1 of 150 operations', { exact: true }).waitFor()
-      await heading('Aside').getByText('No matching operations.', { exact: true }).waitFor()
+      await heading('Keys').getByText('1 of 150 tools', { exact: true }).waitFor()
+      await heading('Aside').getByText('No matching tools.', { exact: true }).waitFor()
       await page
-        .getByRole('button', { name: 'Filter operations by', exact: true })
+        .getByRole('button', { name: 'Filter tools by', exact: true })
         .getByText('Always allow', { exact: true })
         .waitFor()
       await count.click()
       await heading('Aside').getByRole('link', { name: 'other', exact: true }).waitFor()
       // The pinned heading repeats the count.
-      await heading('Keys').getByText('150 operations', { exact: true }).first().waitFor()
+      await heading('Keys').getByText('150 tools', { exact: true }).first().waitFor()
     })
-    await step('A row click opens the drawer, and ↓ moves it to the next operation', async () => {
+    await step('A row click opens the drawer, and ↓ moves it to the next tool', async () => {
       await filter.fill('op00')
       // The name cell's far end holds no control, so the row takes the click.
       const cell = row(page, 'op001').getByRole('cell').nth(1)
@@ -121,14 +121,14 @@ test('The keyboard drives the operations table, its drawer, and its policy', asy
       if (!bounds) throw new Error('The op001 row is not laid out')
       await cell.click({ position: { x: bounds.width - 8, y: bounds.height / 2 } })
       await page.getByRole('dialog', { name: 'op001', exact: true }).waitFor()
-      await page.waitForURL((url) => url.pathname.endsWith('/ops/op001'))
+      await page.waitForURL((url) => url.pathname.endsWith('/tools/op001'))
       await page.keyboard.press('ArrowDown')
       await page.getByRole('dialog', { name: 'op002', exact: true }).waitFor()
-      await page.waitForURL((url) => url.pathname.endsWith('/ops/op002'))
+      await page.waitForURL((url) => url.pathname.endsWith('/tools/op002'))
     })
-    await step('After Escape, Space checks the operation the drawer showed', async () => {
+    await step('After Escape, Space checks the tool the drawer showed', async () => {
       await page.keyboard.press('Escape')
-      await page.waitForURL((url) => !url.pathname.includes('/ops/'))
+      await page.waitForURL((url) => !url.pathname.includes('/tools/'))
       await expect.poll(() => cursorName(table)).toBe('op002')
       // Focus returns to the table, which must not keep Space for itself.
       await page.keyboard.press('Space')
@@ -140,10 +140,10 @@ test('The keyboard drives the operations table, its drawer, and its policy', asy
       ).toBe(false)
     })
     await step('↓ right after Escape moves the cursor while the drawer closes', async () => {
-      // The cursor row has focus, so Enter opens its operation.
+      // The cursor row has focus, so Enter opens its tool.
       await page.keyboard.press('Enter')
       const drawer = page.getByRole('dialog', { name: 'op002', exact: true })
-      await page.waitForURL((url) => url.pathname.endsWith('/ops/op002'))
+      await page.waitForURL((url) => url.pathname.endsWith('/tools/op002'))
       // The drawer has finished opening: its keyframe animation has ended.
       await drawer.evaluate((element) =>
         Promise.all(element.getAnimations().map((animation) => animation.finished)),
@@ -163,9 +163,9 @@ test('The keyboard drives the operations table, its drawer, and its policy', asy
       await heading('Keys').getByRole('button', { name: 'Collapse Keys', exact: true }).click()
       const expand = heading('Keys').getByRole('button', { name: 'Expand Keys', exact: true })
       expect(await expand.getAttribute('aria-expanded')).toBe('false')
-      expect(await heading('Keys').locator('a[href*="/ops/"]').count()).toBe(0)
-      // The heading still counts every operation it hides.
-      await heading('Keys').getByText('150 operations', { exact: true }).waitFor()
+      expect(await heading('Keys').locator('a[href*="/tools/"]').count()).toBe(0)
+      // The heading still counts every tool it hides.
+      await heading('Keys').getByText('150 tools', { exact: true }).waitFor()
       // The heading sits below the table's header, inside the table.
       const inView = () =>
         table.evaluate((element) => {

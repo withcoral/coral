@@ -34,8 +34,8 @@ export default [
       route('workspaces/:workspace/providers', 'routes/providers.tsx', { id: 'providers' }, [
         index('routes/providers-selection.tsx', { id: 'providers-index' }),
         route(':provider', 'routes/providers-selection.tsx', { id: 'providers-provider' }),
-        route(':provider/ops/:operation', 'routes/providers-selection.tsx', {
-          id: 'providers-operation',
+        route(':provider/tools/:tool', 'routes/providers-selection.tsx', {
+          id: 'providers-tool',
         }),
       ]),
       route('workspaces/:workspace/providers/new', 'routes/provider-new.tsx', {

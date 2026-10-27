@@ -21,7 +21,7 @@ const updateBranch = {
   descriptionSnippet:
     'Updates the pull request branch with the latest upstream changes by merging HEAD from the base branch into the pull request branch.\nNote: If making a request on behalf of a GitHub App you must also have permissions to write the contents of the head repository.',
   guidanceSnippet: null,
-  operation: { approvalRequired: false, deprecated: false, hints: {} },
+  tool: { approvalRequired: false, deprecated: false, hints: {} },
   currentHref: null,
 }
 
@@ -33,7 +33,7 @@ it('reads a search page into hits, with no coverage when every retriever searche
   expect(view.page.hits).toHaveLength(5)
   expect(view.page.hits[4]).toEqual({
     ...updateBranch,
-    kind: 'operation',
+    kind: 'provider_tool',
     // A hit names no title, so it shows its Call Path until the loader links
     // it to its provider and shortens it.
     title: 'coral.providers.github.pulls.updateBranch',
@@ -48,18 +48,18 @@ it('reads the kind of each hit from its Call Path, and an absent flag as unset',
   expect(savedFunction).toMatchObject({
     kind: 'saved_function',
     title: 'github.openIssuesByLabel',
-    operation: null,
+    tool: null,
   })
   expect(merge).toMatchObject({
-    kind: 'operation',
+    kind: 'provider_tool',
     guidanceSnippet: 'API method documentation',
-    operation: {
+    tool: {
       approvalRequired: true,
       deprecated: false,
       hints: { destructive: true, idempotent: false },
     },
   })
-  expect(subIssues.operation).toEqual({ approvalRequired: false, deprecated: false, hints: {} })
+  expect(subIssues.tool).toEqual({ approvalRequired: false, deprecated: false, hints: {} })
   // An argument the signature line could not show reads as its declaration path.
   expect(subIssues.matched.paths).toEqual(['input.per_page'])
 })
@@ -69,7 +69,7 @@ it('reads Search Coverage for a kind whose results may be missing', () => {
   if (view.kind !== 'search') throw new Error(`expected a search page, got ${view.kind}`)
   expect(view.page.coverage).toEqual([
     {
-      kind: 'operation',
+      kind: 'provider_tool',
       state: 'partial',
       eligible: 3,
       searched: 2,
@@ -95,7 +95,7 @@ it('reads an untrimmed page with its titles, full coverage, and declaration path
       hasMore: false,
     },
     {
-      kind: 'operation',
+      kind: 'provider_tool',
       state: 'results_found',
       eligible: 1,
       searched: 1,
@@ -107,7 +107,7 @@ it('reads an untrimmed page with its titles, full coverage, and declaration path
   expect(view.page.hits).toHaveLength(5)
   expect(view.page.hits[4]).toEqual({
     ...updateBranch,
-    kind: 'operation',
+    kind: 'provider_tool',
     title: 'Update a pull request branch',
     matched: {
       fields: ['call_path', 'description', 'provider_display_name', 'provider_namespace', 'tags'],
@@ -143,7 +143,7 @@ it('reads a stored Saved Function description with its source and diagnostics', 
     kind: 'saved_function',
     callPath: 'coral.functions.github.openIssuesByLabel',
     title: 'github.openIssuesByLabel',
-    operation: null,
+    tool: null,
     savedFunction: {
       diagnostics: [
         {
@@ -174,14 +174,14 @@ it('reads a Saved Function description returned for types, which has no source',
   expect(view.description).toMatchObject({ kind: 'saved_function', savedFunction: null })
 })
 
-it('reads a stored Operation description with its provider facts', () => {
-  const view = discoveryView(exact, stored.describeOperation)
+it('reads a stored Tool description with its provider facts', () => {
+  const view = discoveryView(exact, stored.describeTool)
   if (view.kind !== 'describe') throw new Error(`expected a description, got ${view.kind}`)
   expect(view.description).toMatchObject({
-    kind: 'operation',
+    kind: 'provider_tool',
     callPath: 'coral.providers.github.issues.create',
     title: 'Create an issue',
-    operation: {
+    tool: {
       providerLabel: 'GitHub',
       approvalRequired: false,
       deprecated: false,
@@ -198,7 +198,7 @@ it.each([
   ['mixed', search, 'search'],
   ['partial', search, 'search'],
   ['error', search, 'search'],
-  ['describeOperation', exact, 'describe'],
+  ['describeTool', exact, 'describe'],
   ['describeFunction', exact, 'describe'],
   // The response before Search Hits has other keys: Reef shows it as stored.
   ['earlierShape', search, 'raw'],

@@ -1,7 +1,7 @@
-//! Run-bound Operation Invocation admission, dispatch fence, and completion,
+//! Run-bound Tool Invocation admission, dispatch fence, and completion,
 //! as Run Requests to the Run Owner.
 //!
-//! The [`OperationInvoker`] is private to one accepted Program Run. It resolves
+//! The [`ToolInvoker`] is private to one accepted Program Run. It resolves
 //! a Call Path outside the Run, admits it as one owner request (answered at
 //! Applied: the Invocation row and `invocation.started` ride the owner's next
 //! chunk), plans away from persistence, runs its held rechecks as row work
@@ -21,8 +21,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use coral_db::Transaction;
-use coral_policy::OperationAccessState;
-use coral_provider::{InvocationCaller, ResolvedInvocationOperation};
+use coral_policy::ToolAccessState;
+use coral_provider::{InvocationCaller, ResolvedInvocationTool};
 use coral_upstream::{McpRejection, McpResources, ReadyDispatch, UpstreamOutcome};
 use coral_workspace::{AuthenticatedPrincipal, Principal};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
@@ -180,12 +180,12 @@ impl From<Error> for InvocationHostError {
     }
 }
 
-/// Exact immutable Run context privately retained by one Operation invoker.
+/// Exact immutable Run context privately retained by one Tool invoker.
 #[derive(Clone)]
-pub(crate) struct OperationInvoker {
+pub(crate) struct ToolInvoker {
     accounts: Option<coral_provider::account::AccountModule>,
     providers: coral_provider::ProviderModule,
-    policies: coral_policy::OperationPolicyModule,
+    policies: coral_policy::ToolPolicyModule,
     provider_publisher: Option<Arc<dyn coral_provider::WorkspaceProviderPublisher>>,
     human_interface: Option<crate::HumanInterfaceUrl>,
     database: Arc<coral_db::Database>,
@@ -209,7 +209,7 @@ pub(crate) struct OperationInvoker {
     observer: Arc<dyn InvocationObserver>,
 }
 
-impl OperationInvoker {
+impl ToolInvoker {
     #[expect(
         clippy::too_many_arguments,
         reason = "the private Run-bound invoker retains every dispatch-authority fact explicitly"
@@ -217,7 +217,7 @@ impl OperationInvoker {
     pub(crate) fn new(
         accounts: Option<coral_provider::account::AccountModule>,
         providers: coral_provider::ProviderModule,
-        policies: coral_policy::OperationPolicyModule,
+        policies: coral_policy::ToolPolicyModule,
         provider_publisher: Option<Arc<dyn coral_provider::WorkspaceProviderPublisher>>,
         human_interface: Option<crate::HumanInterfaceUrl>,
         database: Arc<coral_db::Database>,
@@ -288,9 +288,9 @@ impl OperationInvoker {
             }))
             .await?;
         let mut progress = InvocationProgress::default();
-        if policy == OperationAccessState::Disabled {
+        if policy == ToolAccessState::Disabled {
             return Err(self
-                .finish_failure(&admitted, &progress, CoralFailure::OperationDisabled)
+                .finish_failure(&admitted, &progress, CoralFailure::ToolDisabled)
                 .await?);
         }
         let mut ready = match self.dispatch(&admitted, &arguments, builtin.as_ref()) {
@@ -307,9 +307,7 @@ impl OperationInvoker {
                     coral_upstream::Error::UnsupportedRequestMedia(_) => {
                         CoralFailure::InvalidInput.into()
                     }
-                    coral_upstream::Error::OperationUnavailable => {
-                        CoralFailure::OperationUnavailable.into()
-                    }
+                    coral_upstream::Error::ToolUnavailable => CoralFailure::ToolUnavailable.into(),
                     private_error => return Err(Error::Upstream(private_error).into()),
                 };
                 return Err(self.finish_failure(&admitted, &progress, failure).await?);
@@ -373,8 +371,8 @@ impl OperationInvoker {
             .await
     }
 
-    /// Resolves the Call Path's current Operation and policy, outside the Run:
-    /// the fence rechecks both before any dispatch. A Built-in Operation checks
+    /// Resolves the Call Path's current Tool and policy, outside the Run:
+    /// the fence rechecks both before any dispatch. A Built-in Tool checks
     /// its input here, before admission, so input it rejects, such as a
     /// credential, is never stored.
     async fn resolve(
@@ -383,15 +381,15 @@ impl OperationInvoker {
         arguments: &serde_json::Value,
     ) -> Result<
         (
-            ResolvedInvocationOperation,
-            OperationAccessState,
+            ResolvedInvocationTool,
+            ToolAccessState,
             Option<crate::builtin::BuiltinCall>,
         ),
         Error,
     > {
         let mut transaction = self.database.begin().await?;
         let resolved_at = self.now()?.max(self.accepted_at_unix_nanos);
-        let Some(target) = coral_provider::resolve_invocation_operation_in_transaction(
+        let Some(target) = coral_provider::resolve_invocation_tool_in_transaction(
             &mut transaction,
             &self.workspace_id,
             InvocationCaller::new(&self.workspaces, &self.actor, resolved_at),
@@ -400,9 +398,7 @@ impl OperationInvoker {
         .await?
         else {
             transaction.rollback().await?;
-            return Err(Error::InvocationRejected(
-                CoralFailure::OperationNotFound.into(),
-            ));
+            return Err(Error::InvocationRejected(CoralFailure::ToolNotFound.into()));
         };
         let builtin = match crate::builtin::BuiltinCall::parse(&target, arguments) {
             Some(Ok(call)) => Some(call),
@@ -415,8 +411,8 @@ impl OperationInvoker {
         let policy = coral_policy::invocation_decision_in_transaction(
             &mut transaction,
             &fence::policy_target(&self.workspace_id, &target),
-            target.operation().hints(),
-            target.operation().http_method(),
+            target.tool().hints(),
+            target.tool().http_method(),
             coral_db::RowLock::Shared,
         )
         .await?
@@ -524,7 +520,7 @@ impl OperationInvoker {
             }
         };
         let result_json = self
-            .finish_result(admitted, progress, &outcome.operation_result(), &mut slot)
+            .finish_result(admitted, progress, &outcome.tool_result(), &mut slot)
             .await?;
         match crate::error::UpstreamRejection::of(outcome.class()) {
             None => Ok(result_json),
@@ -535,7 +531,7 @@ impl OperationInvoker {
         }
     }
 
-    /// Records a complete Operation Result as the Upstream Outcome, through
+    /// Records a complete Tool Result as the Upstream Outcome, through
     /// the owner.
     async fn finish_result(
         &self,
@@ -566,7 +562,7 @@ impl OperationInvoker {
         }
     }
 
-    /// What the fence will permit: a Built-in Operation that Coral performs
+    /// What the fence will permit: a Built-in Tool that Coral performs
     /// itself, or one planned upstream send.
     fn dispatch(
         &self,
@@ -581,8 +577,8 @@ impl OperationInvoker {
             .map(Dispatch::Upstream)
     }
 
-    /// Performs a Built-in Operation as the invoking Principal after the fence,
-    /// where an upstream send would run, and records its Operation Result as
+    /// Performs a Built-in Tool as the invoking Principal after the fence,
+    /// where an upstream send would run, and records its Tool Result as
     /// the Upstream Outcome. Nothing is sent upstream.
     async fn perform_builtin(
         &self,
@@ -595,7 +591,7 @@ impl OperationInvoker {
         // built-in result could not link the person anywhere.
         let Some(human_interface) = &self.human_interface else {
             return Err(self
-                .finish_failure(admitted, progress, CoralFailure::OperationUnavailable)
+                .finish_failure(admitted, progress, CoralFailure::ToolUnavailable)
                 .await?);
         };
         let context = match self.actor.authenticated_user() {
@@ -659,8 +655,8 @@ impl OperationInvoker {
         let authorization = match ready {
             Dispatch::Upstream(ReadyDispatch::Http(http)) => http.authorize(&secret),
             Dispatch::Upstream(ReadyDispatch::Mcp(mcp)) => mcp.authorize(&secret),
-            // Built-in Operations have no Credential Route.
-            Dispatch::Builtin(_) => Err(coral_upstream::Error::OperationUnavailable),
+            // Built-in Tools have no Credential Route.
+            Dispatch::Builtin(_) => Err(coral_upstream::Error::ToolUnavailable),
         };
         authorization.map_err(|error| {
             Error::InvocationRejected(
@@ -676,11 +672,11 @@ impl OperationInvoker {
 
     fn plan(
         &self,
-        target: &ResolvedInvocationOperation,
+        target: &ResolvedInvocationTool,
         arguments: &serde_json::Value,
     ) -> Result<ReadyDispatch, coral_upstream::Error> {
         ReadyDispatch::plan(
-            target.operation(),
+            target.tool(),
             target.schema_graph(),
             arguments,
             &target.provider_access().id().to_string(),
@@ -965,7 +961,7 @@ impl OperationInvoker {
             tx,
             admitted,
             run,
-            checked.policy == OperationAccessState::ApprovalRequired,
+            checked.policy == ToolAccessState::ApprovalRequired,
             self.approval_wait_nanos,
             now,
             events,
@@ -1123,7 +1119,7 @@ impl OperationInvoker {
             }
             FinishOutcome::Lost => {
                 return Err(Error::InvocationPersistence(
-                    "Operation Invocation was already completed".to_string(),
+                    "Tool Invocation was already completed".to_string(),
                 ));
             }
         }
@@ -1247,7 +1243,7 @@ pub(crate) struct AdmittedInvocation {
     pub(crate) id: InvocationId,
     pub(crate) workspace_id: WorkspaceId,
     pub(crate) run_id: RunId,
-    pub(crate) target: ResolvedInvocationOperation,
+    pub(crate) target: ResolvedInvocationTool,
     pub(crate) call_path: String,
     pub(crate) arguments_json: String,
     pub(crate) source_location: Option<crate::SourceLocation>,
@@ -1380,7 +1376,7 @@ impl ChunkWork for AdmissionWork {
 }
 
 struct SelectCredentialsWork {
-    invoker: OperationInvoker,
+    invoker: ToolInvoker,
     admitted: Arc<AdmittedInvocation>,
     progress: InvocationProgress,
     reply: Replier<SelectionOutcome>,
@@ -1441,7 +1437,7 @@ impl ChunkWork for SelectCredentialsWork {
 }
 
 struct ApprovalReadyWork {
-    invoker: OperationInvoker,
+    invoker: ToolInvoker,
     admitted: Arc<AdmittedInvocation>,
     progress: InvocationProgress,
     reply: Replier<GateOutcome>,
@@ -1515,7 +1511,7 @@ pub(crate) struct ParkedInvocation {
 /// What a snapshot check reads one parked wait against: the Invocation's
 /// retained target, its selected credentials, and the wait.
 struct ParkedTarget {
-    invoker: OperationInvoker,
+    invoker: ToolInvoker,
     admitted: Arc<AdmittedInvocation>,
     credential_evidence: Option<coral_provider::account::CredentialEvidence>,
     wait: ParkedWait,
@@ -1533,7 +1529,7 @@ impl ParkedTarget {
 impl ParkedInvocation {
     /// The Invocation a held recheck parked on `wait`, for its owner.
     fn new(
-        invoker: &OperationInvoker,
+        invoker: &ToolInvoker,
         admitted: &Arc<AdmittedInvocation>,
         progress: &InvocationProgress,
         wait: ParkedWait,
@@ -1564,7 +1560,7 @@ impl ParkedInvocation {
     /// check it.
     #[cfg(test)]
     pub(crate) fn for_apply_test(
-        invoker: &OperationInvoker,
+        invoker: &ToolInvoker,
         admitted: &Arc<AdmittedInvocation>,
         wait: ParkedWait,
         wake: oneshot::Sender<()>,
@@ -1745,7 +1741,7 @@ impl PrecheckBatch {
 /// credentials and the approval the gate found, and the invoker of its Run,
 /// which the batch keeps once.
 pub(crate) struct FenceRequest {
-    invoker: OperationInvoker,
+    invoker: ToolInvoker,
     fenced: FencedInvocation,
 }
 
@@ -1778,7 +1774,7 @@ impl FenceRequest {
     /// A request for the owner's in-memory tests, which never run it.
     #[cfg(test)]
     pub(crate) fn for_apply_test(
-        invoker: OperationInvoker,
+        invoker: ToolInvoker,
         admitted: Arc<AdmittedInvocation>,
         sender: oneshot::Sender<Result<FenceOutcome, Error>>,
     ) -> Self {
@@ -1800,7 +1796,7 @@ impl FenceRequest {
 /// `pending` to `dispatching` in the same commit, which the owner predicates
 /// on its claim and the head. The fence writes no Event.
 pub(crate) struct FenceBatch {
-    invoker: OperationInvoker,
+    invoker: ToolInvoker,
     invocations: Vec<FencedInvocation>,
 }
 
@@ -2045,7 +2041,7 @@ impl ChunkWork for EndBeforeSendWork {
             id: self.admitted.id.clone(),
             state: InvocationState::Dispatching,
             generation: self.admitted.target.provider_generation_id().clone(),
-            operation: self.admitted.target.operation().key().clone(),
+            tool: self.admitted.target.tool().key().clone(),
         };
         // A row that is no longer dispatching was settled by the termination
         // itself; nothing is left to end.
@@ -2068,7 +2064,7 @@ impl ChunkWork for EndBeforeSendWork {
 }
 
 #[async_trait]
-impl crate::builtin::InvokingRun for OperationInvoker {
+impl crate::builtin::InvokingRun for ToolInvoker {
     /// Whether this Run still accepts Program work: not stopped, terminated or
     /// past its deadline.
     async fn still_current(&self) -> Result<bool, Error> {
@@ -2089,7 +2085,7 @@ impl crate::builtin::InvokingRun for OperationInvoker {
     }
 
     fn now(&self) -> Result<i64, Error> {
-        OperationInvoker::now(self)
+        ToolInvoker::now(self)
     }
 
     #[cfg(test)]
@@ -2098,7 +2094,7 @@ impl crate::builtin::InvokingRun for OperationInvoker {
     }
 }
 
-/// What the fence permits: one upstream send, or a Built-in Operation that
+/// What the fence permits: one upstream send, or a Built-in Tool that
 /// Coral performs itself.
 enum Dispatch {
     Upstream(ReadyDispatch),

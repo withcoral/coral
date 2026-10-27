@@ -2,7 +2,7 @@ import { expect, test } from 'vitest'
 import { withOwnerSession } from '../../../../support/actors.ts'
 import { oauthMcpServer } from '../../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   approveDeviceInNewTab,
   chooseAccount,
   chooseSignIn,
@@ -10,7 +10,7 @@ import {
   openCustomSource,
   programRunner,
   replaceScopes,
-  signInToReadOperations,
+  signInToReadTools,
   waitForPublication,
 } from '../../../../support/providers.ts'
 
@@ -50,14 +50,14 @@ test('MCP device discovery, publication and call from manual settings', async (c
       ).toBe(true)
       expect(await page.getByLabel('PKCE', { exact: true }).count()).toBe(0)
       await page.getByRole('button', { name: 'Next', exact: true }).click()
-      await signInToReadOperations(page)
+      await signInToReadTools(page)
       await page.getByText('ABCD-EFGH', { exact: true }).waitFor()
       returnTo = page.url()
     })
-    await step('Approve the device and publish the discovered operations', async () => {
+    await step('Approve the device and publish the discovered tools', async () => {
       await approveDeviceInNewTab(page)
       expect(page.url()).toBe(returnTo)
-      await acceptOperations(page)
+      await acceptTools(page)
       await chooseAccount(page, 'shared')
       await page.getByRole('button', { name: 'Add provider', exact: true }).click()
       await waitForPublication(page)

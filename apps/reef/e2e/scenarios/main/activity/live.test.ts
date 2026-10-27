@@ -11,7 +11,7 @@ import {
   programRunner,
 } from '../../../support/providers.ts'
 import { listen, openApiDocument } from '../../../support/provider-fixtures.ts'
-import { OperationAccessState } from '../../../generated/coral/management/v1/policy_pb.ts'
+import { ToolAccessState } from '../../../generated/coral/management/v1/policy_pb.ts'
 import { WorkspaceRole } from '../../../generated/coral/management/v1/workspace_pb.ts'
 
 test('Activity automatically streams new rows and continuously loads bounded child viewports without losing detail', async (context) => {
@@ -206,7 +206,7 @@ test('Activity automatically streams new rows and continuously loads bounded chi
     const taskSection = () =>
       table.getByRole('rowgroup', { name: `${taskLabel} records`, exact: true })
     const runSection = () =>
-      table.getByRole('rowgroup', { name: 'Call one Operation records', exact: true })
+      table.getByRole('rowgroup', { name: 'Call one Tool records', exact: true })
     await step(
       'Scroll through later execution output and later task records without page controls',
       async () => {
@@ -318,7 +318,7 @@ test('Activity automatically streams new rows and continuously loads bounded chi
   })
 })
 
-test('Current Run and operation actions settle live while exact review stays selected for personal and Agent work', async (context) => {
+test('Current Run and tool actions settle live while exact review stays selected for personal and Agent work', async (context) => {
   await withOwnerSession(context, async ({ page, target, actor, step }) => {
     const api = managementClients(actor.accessToken)
     const workspace = await api.workspaces.createWorkspace({
@@ -360,8 +360,8 @@ test('Current Run and operation actions settle live while exact review stays sel
           exact: true,
           includeHidden: true,
         })
-    const catalog = await api.providers.listOperations({ parent: provider })
-    const operation = catalog.operations[0].name
+    const catalog = await api.providers.listTools({ parent: provider })
+    const tool = catalog.tools[0].name
     const issued = await api.agents.createAgent({
       parent: workspace.name,
       displayName: 'Live worker',
@@ -370,9 +370,9 @@ test('Current Run and operation actions settle live while exact review stays sel
     const userToken = await mcpToken(page, id)
     for (const scope of ['personal', 'agent'] as const) {
       await step(`Observe ${scope} action state without dismissing exact review`, async () => {
-        await api.policies.updateOperationPolicies({
+        await api.policies.updateToolPolicies({
           parent: provider,
-          policies: [{ operation, accessState: OperationAccessState.APPROVAL_REQUIRED }],
+          policies: [{ tool, accessState: ToolAccessState.APPROVAL_REQUIRED }],
         })
         const runner = programRunner(page, target, id, {
           accessToken: scope === 'personal' ? userToken : issued.credential,
@@ -394,7 +394,7 @@ test('Current Run and operation actions settle live while exact review stays sel
         const invocation = entries.entries.find(
           (entry) => entry.record.case === 'invocation',
         )!.record
-        if (invocation.case !== 'invocation') throw new Error('Expected a pending operation')
+        if (invocation.case !== 'invocation') throw new Error('Expected a pending tool')
         const selected = invocation.value.name
         const query = new URLSearchParams({ tree: '1', record: selected })
         query.append('expand', `${workspace.name}/tasks/${runner.taskId()}`)
@@ -407,9 +407,9 @@ test('Current Run and operation actions settle live while exact review stays sel
         expect(await page.getByText('needs action', { exact: true }).count()).toBeGreaterThan(0)
         await page.locator('summary').filter({ hasText: 'Add a comment' }).click()
         await page.getByRole('textbox', { name: 'Comment (optional)' }).fill('Keep my review')
-        await api.policies.updateOperationPolicies({
+        await api.policies.updateToolPolicies({
           parent: provider,
-          policies: [{ operation, accessState: OperationAccessState.DISABLED }],
+          policies: [{ tool, accessState: ToolAccessState.DISABLED }],
         })
         // The action leaves the queue as soon as the policy commits.
         await expect
@@ -417,13 +417,13 @@ test('Current Run and operation actions settle live while exact review stays sel
           .toBe(0)
         // The policy alone ends the parked call at its Run Owner's next periodic
         // precheck, up to 15 s later. An approval from elsewhere wakes the call now,
-        // and the Dispatch Fence still refuses the disabled Operation.
+        // and the Dispatch Fence still refuses the disabled Tool.
         const { requests } = await api.activity.inspectInvocation({ name: selected })
         const approval = requests.find(({ request }) => request.case === 'approval')?.request
         if (approval?.case !== 'approval') throw new Error('Expected an approval')
         await api.activity.decideApproval({ name: approval.value, decision: 'approve' })
         await page
-          .getByText('Coral failure: operation_disabled', { exact: true })
+          .getByText('Coral failure: tool_disabled', { exact: true })
           .waitFor({ timeout: 10_000 })
         expect(new URL(page.url()).searchParams.get('record')).toBe(selected)
         expect(await page.getByRole('dialog').count()).toBe(1)
@@ -433,9 +433,9 @@ test('Current Run and operation actions settle live while exact review stays sel
         ).toBe(0)
       })
       await step(`Find and review concurrent ${scope} actions in Activity`, async () => {
-        await api.policies.updateOperationPolicies({
+        await api.policies.updateToolPolicies({
           parent: provider,
-          policies: [{ operation, accessState: OperationAccessState.APPROVAL_REQUIRED }],
+          policies: [{ tool, accessState: ToolAccessState.APPROVAL_REQUIRED }],
         })
         const runner = programRunner(page, target, id, {
           accessToken: scope === 'personal' ? userToken : issued.credential,
@@ -478,7 +478,7 @@ test('Current Run and operation actions settle live while exact review stays sel
           await page.waitForURL((url) => Boolean(url.searchParams.get('request')))
           await page.getByRole('button', { name: 'Close details', exact: true }).click()
           await page.waitForURL((url) => !url.searchParams.has('record'))
-          await table.getByRole('link', { name: 'Call one Operation', exact: true }).click()
+          await table.getByRole('link', { name: 'Call one Tool', exact: true }).click()
           await page.getByRole('dialog', { name: 'Activity details', exact: true }).waitFor()
           expect(new URL(page.url()).searchParams.get('record')).toBe(run)
           expect(
@@ -507,11 +507,11 @@ test('Current Run and operation actions settle live while exact review stays sel
             exact: true,
             includeHidden: true,
           })
-          .getByRole('link', { name: 'Call one Operation', exact: true, includeHidden: true })
+          .getByRole('link', { name: 'Call one Tool', exact: true, includeHidden: true })
           .waitFor()
         await history
           .getByRole('rowgroup', {
-            name: 'Call one Operation records',
+            name: 'Call one Tool records',
             exact: true,
             includeHidden: true,
           })
@@ -528,9 +528,9 @@ test('Current Run and operation actions settle live while exact review stays sel
         await page.waitForURL((url) =>
           Boolean(url.searchParams.get('record')?.includes('/invocations/')),
         )
-        const selectedOperation = new URL(page.url()).searchParams.get('record')!
+        const selectedTool = new URL(page.url()).searchParams.get('record')!
         const selectedRow = history.locator('[role="row"][aria-selected="true"]')
-        expect(await selectedRow.getAttribute('data-record-key')).toBe(selectedOperation)
+        expect(await selectedRow.getAttribute('data-record-key')).toBe(selectedTool)
         expect(await selectedRow.getByText('needs action', { exact: true }).count()).toBe(1)
         expect(
           await history
@@ -566,8 +566,8 @@ test('Current Run and operation actions settle live while exact review stays sel
             api.activity.inspectApproval({ name }),
           ),
         )
-        expect(decided.invocation).toBe(selectedOperation)
-        expect(remaining.invocation).not.toBe(selectedOperation)
+        expect(decided.invocation).toBe(selectedTool)
+        expect(remaining.invocation).not.toBe(selectedTool)
         const before = calls
         await page.getByRole('button', { name: 'Approve this call', exact: true }).click()
         // Your decision wins, so the review advances to the approval the Run waits on now.

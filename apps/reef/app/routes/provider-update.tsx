@@ -8,12 +8,7 @@ import {
   mutationForm,
   privateHeaders,
 } from '@/lib/management.server'
-import {
-  accountChoice,
-  listAllOperations,
-  providerName,
-  providerPath,
-} from '@/lib/providers.server'
+import { accountChoice, listAllTools, providerName, providerPath } from '@/lib/providers.server'
 import { callbackRedirectUri } from '@/lib/provider-publication-attempt/setup.server'
 import { attemptPath } from '@/lib/provider-publication-attempt/model'
 import {
@@ -66,9 +61,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     const application = await api.providers.getProviderOAuthClient({ name: provider.name })
     const source = await api.providers.getProviderSource({ name: provider.name })
     // A refresh groups what it adds to and removes from the live provider.
-    const currentOperations =
+    const currentTools =
       setup && (parsed.task ?? 'refresh') === 'refresh'
-        ? (await listAllOperations(api, provider.name)).map((o) => ({
+        ? (await listAllTools(api, provider.name)).map((o) => ({
             relativePath: o.relativePath,
             summary: o.summary,
           }))
@@ -84,7 +79,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
           kind: source.kind === ProviderSetupInputKind.MCP ? ('mcp' as const) : ('url' as const),
         },
         currentAccount: accountChoice(provider.credentialRoute),
-        currentOperations,
+        currentTools,
         basePath,
         cancelPath,
         settingsPath,

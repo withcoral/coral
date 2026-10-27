@@ -5,8 +5,8 @@ use crate::{
     Error, Provider, ProviderCallRoot, ProviderId, ProviderModule, ProviderNamespace, repository,
 };
 use coral_catalog::{
-    AuthenticationConfiguration, CredentialField, OperationKey, OperationSummary,
-    ProviderConfiguration, ServerSelection,
+    AuthenticationConfiguration, CredentialField, ProviderConfiguration, ServerSelection, ToolKey,
+    ToolSummary,
 };
 use coral_workspace::AuthenticatedUser;
 use coral_workspace::WorkspaceAction;
@@ -145,7 +145,7 @@ impl ProviderModule {
     }
 
     /// Lists exact Workspace Providers under current inspection authority.
-    /// A Provider whose Operations `actor` does not reach is left out.
+    /// A Provider whose Tools `actor` does not reach is left out.
     ///
     /// # Errors
     /// Returns current Workspace authority or persistence failures.
@@ -276,7 +276,7 @@ impl ProviderModule {
     }
 
     /// Inspects one Provider, concealing other Workspaces, and a Provider
-    /// whose Operations `actor` does not reach, as absent.
+    /// whose Tools `actor` does not reach, as absent.
     ///
     /// # Errors
     /// Returns current Workspace authority, missing Provider or persistence failures.
@@ -294,7 +294,7 @@ impl ProviderModule {
         Ok(stored.provider)
     }
     /// Reads one page of the current catalog without exposing private
-    /// execution bindings. It leaves out each Operation `actor` does not reach.
+    /// execution bindings. It leaves out each Tool `actor` does not reach.
     ///
     /// # Errors
     /// Returns current Workspace authority, missing Provider or catalog persistence failures.
@@ -303,21 +303,21 @@ impl ProviderModule {
         actor: &AuthenticatedUser,
         workspace: &WorkspaceId,
         provider: &ProviderId,
-        after: Option<&OperationKey>,
+        after: Option<&ToolKey>,
         page_size: u32,
-    ) -> Result<Vec<OperationSummary>, Error> {
+    ) -> Result<Vec<ToolSummary>, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
         let (stored, role) = self
             .inspected_provider(&mut tx, actor, workspace, provider)
             .await?;
         let call_root = stored.provider.call_root();
-        // Read on past each Operation left out, so a full page still carries
+        // Read on past each Tool left out, so a full page still carries
         // its one lookahead row.
         let lookahead = usize::try_from(page_size).unwrap_or(usize::MAX);
-        let mut operations = Vec::new();
+        let mut tools = Vec::new();
         let mut after = after.cloned();
         loop {
-            let page = coral_catalog::operation_summaries_in_transaction(
+            let page = coral_catalog::tool_summaries_in_transaction(
                 &mut tx,
                 &stored.generation_id,
                 after.as_ref(),
@@ -325,18 +325,18 @@ impl ProviderModule {
             )
             .await?;
             let exhausted = page.len() <= lookahead;
-            after = page.last().map(|operation| operation.key.clone());
-            operations.extend(
+            after = page.last().map(|tool| tool.key.clone());
+            tools.extend(
                 page.into_iter()
-                    .filter(|operation| crate::reaches(call_root, &operation.key, Some(role))),
+                    .filter(|tool| crate::reaches(call_root, &tool.key, Some(role))),
             );
-            if exhausted || operations.len() > lookahead {
+            if exhausted || tools.len() > lookahead {
                 break;
             }
         }
-        operations.truncate(lookahead.saturating_add(1));
+        tools.truncate(lookahead.saturating_add(1));
         tx.rollback().await?;
-        Ok(operations)
+        Ok(tools)
     }
     pub(super) async fn management_authority(
         &self,

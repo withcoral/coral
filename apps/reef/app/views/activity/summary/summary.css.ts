@@ -33,15 +33,15 @@ export const truncate = style({
 export const count = style({ fontVariantNumeric: 'tabular-nums' })
 export const stopSplit = style({ display: 'inline-flex', alignItems: 'center', gap: 10 })
 
-export const operation = style({
+export const tool = style({
   display: 'inline-flex',
   alignItems: 'center',
   gap: 8,
   minWidth: 0,
   maxWidth: '100%',
 })
-// A long provider name gives way before the operation does.
-export const operationProvider = style({
+// A long provider name gives way before the tool does.
+export const toolProvider = style({
   flexShrink: 1,
   minWidth: 0,
   maxWidth: '50%',

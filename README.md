@@ -18,17 +18,17 @@ pasted into each one, and every tool definition loaded into every prompt.
 Coral replaces that with one server:
 
 - **Smaller context, fewer round trips.** The agent searches for the
-  operations it needs instead of loading them all up front. It then sends one
-  program that can call several operations and return only the fields the
+  tools it needs instead of loading them all up front. It then sends one
+  program that can call several tools and return only the fields the
   answer needs.
 - **Agents build on what already worked.** When a program works, the agent
   saves it as a function. The next time, it calls that function in one step
-  instead of finding the operations and writing the program again. Saved
-  functions are typed and appear in search alongside provider operations.
+  instead of finding the tools and writing the program again. Saved
+  functions are typed and appear in search alongside provider tools.
 - **Agents never hold credentials.** Coral stores your tokens and adds them to
   each call. Programs run in an isolated sandbox with no secrets, no network
   access, and no imports.
-- **You decide what runs.** Set each operation to allowed, approval required,
+- **You decide what runs.** Set each tool to allowed, approval required,
   or disabled. A call that needs approval waits until a person approves it.
 - **Every run is recorded.** Review each program and the calls it made in the
   Coral UI.
@@ -83,7 +83,7 @@ graph LR
     Gate --> Own["Your OpenAPI or MCP service"]
 ```
 
-The agent searches for the operations it can use and reads their TypeScript
+The agent searches for the tools it can use and reads their TypeScript
 signatures. Then it sends Coral a short program. This one finds open pull
 requests that have no reviewer and posts them to Slack:
 

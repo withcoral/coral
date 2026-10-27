@@ -1,10 +1,10 @@
 import {
-  acceptOperations,
+  acceptTools,
   attemptPath,
   type CreationAttempt,
 } from '@/lib/provider-publication-attempt/model'
 import { Button } from '@/wax/components'
-import { OperationsSection, OperationsSummary } from './operations-section'
+import { ToolsSection, ToolsSummary } from './tools-section'
 import { DiscoveryPrompt } from './setup-steps'
 import type { FormContext, SetupView, StepperResult } from './types'
 import { StepFrame } from './step-frame'
@@ -14,7 +14,7 @@ import { StepFrame } from './step-frame'
  * nothing until someone signs in, so the panel asks for that sign-in in place
  * of the list. Accepting the list moves the attempt on to the account question.
  */
-export function OperationsStep({
+export function ToolsStep({
   attempt,
   setup,
   basePath,
@@ -30,7 +30,7 @@ export function OperationsStep({
   basePath: string
   /** Where to revise the confirmed configuration. */
   backPath: string
-  /** Coral cannot read the operations until this setup is authorized. */
+  /** Coral cannot read the tools until this setup is authorized. */
   discovering: boolean
   form: FormContext
   pending: boolean
@@ -39,8 +39,8 @@ export function OperationsStep({
 }) {
   return (
     <StepFrame
-      title="Operations"
-      meta={<OperationsSummary setup={setup} discovering={discovering} />}
+      title="Tools"
+      meta={<ToolsSummary setup={setup} discovering={discovering} />}
       actions={
         <>
           <Button.InternalLink size="small" to={backPath} variant="secondary">
@@ -50,7 +50,7 @@ export function OperationsStep({
               until the list exists, so Next is here but cannot be taken. */}
           <Button.InternalLink
             size="small"
-            to={attemptPath(basePath, acceptOperations(attempt))}
+            to={attemptPath(basePath, acceptTools(attempt))}
             variant="primary"
             disabled={discovering}
           >
@@ -59,7 +59,7 @@ export function OperationsStep({
         </>
       }
     >
-      <OperationsSection
+      <ToolsSection
         setup={setup}
         discovery={
           discovering ? (

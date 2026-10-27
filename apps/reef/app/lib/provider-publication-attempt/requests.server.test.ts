@@ -696,7 +696,7 @@ describe('consent issuance', () => {
     },
   )
 
-  // Catches: a sign-in that read the operations returning as the account
+  // Catches: a sign-in that read the tools returning as the account
   // question's answer because the page URL, such as an agent's link, already
   // named a route. Reef then adds the provider without asking.
   it.each([
@@ -724,7 +724,7 @@ describe('consent issuance', () => {
         api,
         new Request(
           `http://127.0.0.1:3000${basePath}?setup=${setup}&namespace=weather` +
-            '&operationsAccepted=1&account=fixed&returnFromConnect=1',
+            '&toolsAccepted=1&account=fixed&returnFromConnect=1',
         ),
         context,
         formWith({

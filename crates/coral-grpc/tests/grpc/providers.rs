@@ -926,14 +926,14 @@ async fn update_projects_saved_differences_and_requires_exact_interruption_accep
         .unwrap()
         .into_inner();
     assert_eq!(
-        first.configuration.as_ref().unwrap().operations,
-        vec![management::ReviewedProviderOperation {
+        first.configuration.as_ref().unwrap().tools,
+        vec![management::ReviewedProviderTool {
             key: "getForecast".into(),
             relative_path: "getForecast".into(),
             summary: "Get forecast".into(),
             tags: vec!["forecast".into()],
         }],
-        "configuration review exposes the previewed operations before publication"
+        "configuration review exposes the previewed tools before publication"
     );
     let published = providers
         .publish_provider(request(
@@ -1112,15 +1112,15 @@ async fn published_mcp(f: &Fixture, token: &str, server: &MockServer) -> String 
 }
 
 #[tokio::test]
-async fn list_operations_projects_exactly_the_declared_hints() {
+async fn list_tools_projects_exactly_the_declared_hints() {
     let f = Fixture::new().await;
     let token = f.token(&f.owner, "reef");
     let server = mcp_server(TOKEN).await;
     let provider = published_mcp(&f, &token, &server).await;
     let page = f
         .providers()
-        .list_operations(request(
-            management::ListOperationsRequest {
+        .list_tools(request(
+            management::ListToolsRequest {
                 parent: provider,
                 page_size: 0,
                 page_token: String::new(),
@@ -1132,14 +1132,14 @@ async fn list_operations_projects_exactly_the_declared_hints() {
         .unwrap()
         .into_inner();
     let lookup = page
-        .operations
+        .tools
         .iter()
-        .find(|operation| operation.relative_path == "lookup")
-        .expect("lookup Operation");
+        .find(|tool| tool.relative_path == "lookup")
+        .expect("lookup Tool");
     // A declared false stays false and an undeclared hint stays unset.
     assert_eq!(
         lookup.hints,
-        Some(management::OperationHints {
+        Some(management::ToolHints {
             read_only: Some(true),
             destructive: None,
             idempotent: None,
@@ -1462,9 +1462,9 @@ async fn providers_screen_read_latency() {
     document["paths"] = (0..1229)
         .map(|index| {
             (
-                format!("/operation{index}"),
+                format!("/tool{index}"),
                 json!({"get": {
-                    "operationId": format!("operation{index}"),
+                    "operationId": format!("tool{index}"),
                     "responses": {"200": {"description": "Result"}}
                 }}),
             )
@@ -1484,11 +1484,11 @@ async fn providers_screen_read_latency() {
     for _ in 0..3 {
         let start = std::time::Instant::now();
         let mut page_token = String::new();
-        let mut operations = Vec::new();
+        let mut tools = Vec::new();
         loop {
             let page = providers
-                .list_operations(request(
-                    management::ListOperationsRequest {
+                .list_tools(request(
+                    management::ListToolsRequest {
                         parent: publication.provider.clone(),
                         page_size: 100,
                         page_token,
@@ -1499,7 +1499,7 @@ async fn providers_screen_read_latency() {
                 .await
                 .unwrap()
                 .into_inner();
-            operations.extend(page.operations.into_iter().map(|operation| operation.name));
+            tools.extend(page.tools.into_iter().map(|tool| tool.name));
             page_token = page.next_page_token;
             if page_token.is_empty() {
                 break;
@@ -1507,12 +1507,12 @@ async fn providers_screen_read_latency() {
         }
         let catalog = start.elapsed();
         let policy_start = std::time::Instant::now();
-        for batch in operations.chunks(100) {
+        for batch in tools.chunks(100) {
             let decisions = policies
-                .get_operation_policies(request(
-                    management::GetOperationPoliciesRequest {
+                .get_tool_policies(request(
+                    management::GetToolPoliciesRequest {
                         parent: publication.provider.clone(),
-                        operations: batch.to_vec(),
+                        tools: batch.to_vec(),
                     },
                     &token,
                     "reef",
@@ -1531,9 +1531,9 @@ async fn providers_screen_read_latency() {
 
 /// coral-policy owns defaults and explicit decisions
 /// (`openapi_forecast_defaults_to_approval_and_owner_can_enable_it`). This checks
-/// the Operation name encoding, the state projection, and one denial.
+/// the Tool name encoding, the state projection, and one denial.
 #[tokio::test]
-async fn policy_service_projects_operation_decisions_and_refuses_members() {
+async fn policy_service_projects_tool_decisions_and_refuses_members() {
     let f = Fixture::new().await;
     let token = f.token(&f.owner, "reef");
     let publication = publish_workspace_document(
@@ -1544,22 +1544,21 @@ async fn policy_service_projects_operation_decisions_and_refuses_members() {
         "b0000000-0000-4000-8000-000000000011",
     )
     .await;
-    // The fixture's exact Operation Key is getForecast, encoded in the wire name.
-    let operation = format!("{}/operations/Z2V0Rm9yZWNhc3Q", publication.provider);
+    // The fixture's exact Tool Key is getForecast, encoded in the wire name.
+    let tool = format!("{}/tools/Z2V0Rm9yZWNhc3Q", publication.provider);
     let mut policies = f.policies();
-    let update = |access_state: management::OperationAccessState| {
-        management::UpdateOperationPoliciesRequest {
+    let update =
+        |access_state: management::ToolAccessState| management::UpdateToolPoliciesRequest {
             parent: publication.provider.clone(),
-            policies: vec![management::OperationPolicy {
-                operation: operation.clone(),
+            policies: vec![management::ToolPolicy {
+                tool: tool.clone(),
                 access_state: access_state.into(),
                 explicit: false,
             }],
-        }
-    };
+        };
     let denied = policies
-        .update_operation_policies(request(
-            update(management::OperationAccessState::Enabled),
+        .update_tool_policies(request(
+            update(management::ToolAccessState::Enabled),
             &f.token(&f.member, "reef"),
             "reef",
         ))
@@ -1570,18 +1569,18 @@ async fn policy_service_projects_operation_decisions_and_refuses_members() {
         (tonic::Code::PermissionDenied, "PERMISSION_DENIED")
     );
     policies
-        .update_operation_policies(request(
-            update(management::OperationAccessState::Enabled),
+        .update_tool_policies(request(
+            update(management::ToolAccessState::Enabled),
             &token,
             "reef",
         ))
         .await
         .unwrap();
     let updated = policies
-        .get_operation_policies(request(
-            management::GetOperationPoliciesRequest {
+        .get_tool_policies(request(
+            management::GetToolPoliciesRequest {
                 parent: publication.provider.clone(),
-                operations: vec![operation.clone()],
+                tools: vec![tool.clone()],
             },
             &token,
             "reef",
@@ -1591,9 +1590,9 @@ async fn policy_service_projects_operation_decisions_and_refuses_members() {
         .into_inner();
     assert_eq!(
         updated.policies,
-        vec![management::OperationPolicy {
-            operation,
-            access_state: management::OperationAccessState::Enabled.into(),
+        vec![management::ToolPolicy {
+            tool,
+            access_state: management::ToolAccessState::Enabled.into(),
             explicit: true,
         }]
     );
@@ -1919,14 +1918,14 @@ async fn provider_pages_round_trip_and_bind_their_token() {
 }
 
 #[tokio::test]
-async fn list_operations_projects_each_operation() {
+async fn list_tools_projects_each_tool() {
     let f = Fixture::new().await;
     let token = f.token(&f.owner, "reef");
     let provider = published_weather(&f, &token).await;
     let page = f
         .providers()
-        .list_operations(request(
-            management::ListOperationsRequest {
+        .list_tools(request(
+            management::ListToolsRequest {
                 parent: provider.name.clone(),
                 page_size: 1,
                 page_token: String::new(),
@@ -1937,24 +1936,24 @@ async fn list_operations_projects_each_operation() {
         .await
         .unwrap()
         .into_inner();
-    let [operation] = page.operations.as_slice() else {
-        panic!("one Operation: {page:?}")
+    let [tool] = page.tools.as_slice() else {
+        panic!("one Tool: {page:?}")
     };
     assert_eq!(
-        operation.name,
-        format!("{}/operations/Z2V0Rm9yZWNhc3Q", provider.name)
+        tool.name,
+        format!("{}/tools/Z2V0Rm9yZWNhc3Q", provider.name)
     );
-    assert_eq!(operation.relative_path, "getForecast");
+    assert_eq!(tool.relative_path, "getForecast");
     assert_eq!(
-        operation.hints,
-        Some(management::OperationHints::default()),
+        tool.hints,
+        Some(management::ToolHints::default()),
         "an OpenAPI Operation declares no hints"
     );
-    assert!(operation.available);
-    assert_eq!(operation.tags, vec!["forecast"]);
-    assert_eq!(operation.summary, "Get forecast");
+    assert!(tool.available);
+    assert_eq!(tool.tags, vec!["forecast"]);
+    assert_eq!(tool.summary, "Get forecast");
     assert_eq!(
-        operation.description,
+        tool.description,
         "Get the **daily forecast**.\n\nResults use the location's time zone."
     );
     assert!(page.next_page_token.is_empty());
@@ -2206,8 +2205,8 @@ async fn workspace_providers_are_independent_and_require_exact_scope_and_owner_m
             .unwrap_err();
         assert_eq!(concealed.code(), tonic::Code::NotFound);
         let catalog = providers
-            .list_operations(request(
-                management::ListOperationsRequest {
+            .list_tools(request(
+                management::ListToolsRequest {
                     parent: name.clone(),
                     page_size: 0,
                     page_token: String::new(),
