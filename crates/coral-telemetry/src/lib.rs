@@ -156,21 +156,24 @@ const HTTP_REQUEST_ERROR_MESSAGE: &str = "HTTP request failed";
 /// Opens the server span of one inbound HTTP request, under the caller's
 /// target, and continues a valid inbound W3C trace.
 ///
-/// `$name` names the listener's request span. `$request` is the inbound
-/// `http::Request`, and `$route` its matched route template, never the
-/// request path. The span carries only the method, route and response status;
-/// headers, body, query, cookies and the full URL stay off it. Record the
-/// response with [`record_http_response`].
+/// `$name` names the listener's request span in Coral's own logs; exported,
+/// it is named `{method} {route}`, as OpenTelemetry's HTTP conventions ask.
+/// `$request` is the inbound `http::Request`, and `$route` its matched route
+/// template, never the request path. The span carries only the method, route
+/// and response status; headers, body, query, cookies and the full URL stay
+/// off it. Record the response with [`record_http_response`].
 #[macro_export]
 macro_rules! http_request_span {
     ($name:literal, $request:expr, $route:expr) => {{
         let request: &$crate::__http::Request<_> = $request;
         let route: ::core::option::Option<&str> = $route;
+        let method = $crate::http_method(request.method());
         let span = ::tracing::info_span!(
             parent: None,
             $name,
+            otel.name = $crate::http_span_name(method, route),
             otel.kind = "server",
-            http.request.method = $crate::http_method(request.method()),
+            http.request.method = method,
             http.route = route,
             http.response.status_code = ::tracing::field::Empty,
             error.type = ::tracing::field::Empty,
@@ -184,6 +187,16 @@ macro_rules! http_request_span {
 
 #[doc(hidden)]
 pub use http as __http;
+
+/// The exported name of an HTTP server span: `{method} {route}`, the method
+/// alone without a route, and `HTTP` for a method outside the standard set.
+/// [`http_request_span!`] records it.
+#[doc(hidden)]
+#[must_use]
+pub fn http_span_name(method: &'static str, route: Option<&str>) -> String {
+    let method = if method == "_OTHER" { "HTTP" } else { method };
+    route.map_or_else(|| method.to_owned(), |route| format!("{method} {route}"))
+}
 
 /// The request method as a span field: a standard method's name, else
 /// `_OTHER`, so a caller cannot choose the text. [`http_request_span!`]
@@ -358,10 +371,28 @@ mod tests {
     /// the path, query, headers or cookies. A server error fails it.
     #[test]
     fn http_request_spans_carry_only_safe_fields() {
-        for (method, status, expected_method, failed) in [
-            ("GET", 200, "GET", false),
-            ("BREW-CANARY", 404, "_OTHER", false),
-            ("POST", 503, "POST", true),
+        for (method, status, expected_method, expected_name, failed) in [
+            (
+                "GET",
+                200,
+                "GET",
+                "GET /workspaces/{workspace_id}/mcp",
+                false,
+            ),
+            (
+                "BREW-CANARY",
+                404,
+                "_OTHER",
+                "HTTP /workspaces/{workspace_id}/mcp",
+                false,
+            ),
+            (
+                "POST",
+                503,
+                "POST",
+                "POST /workspaces/{workspace_id}/mcp",
+                true,
+            ),
         ] {
             let request = http::Request::builder()
                 .method(method)
@@ -391,6 +422,7 @@ mod tests {
             provider.force_flush().expect("flush spans");
             let spans = memory.get_finished_spans().expect("finished spans");
             let span = spans.first().expect("request span");
+            assert_eq!(span.name, expected_name, "{method}");
             let attribute = |name: &str| {
                 span.attributes
                     .iter()
@@ -459,6 +491,12 @@ mod tests {
                 "a malformed traceparent is ignored",
                 vec![("traceparent", "00-not-a-trace-01")],
                 false,
+                "",
+            ),
+            (
+                "a malformed tracestate is dropped and the trace kept",
+                vec![("traceparent", PARENT), ("tracestate", "not a list member")],
+                true,
                 "",
             ),
             (

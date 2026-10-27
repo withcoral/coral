@@ -18,6 +18,17 @@ use rmcp::model::ProtocolVersion;
 const PARKED: &str = "return await coral.providers.weather.getForecast({});";
 const ABSENT_RUN: &str = "00000000-0000-4000-8000-000000000000";
 
+/// A raw failed tool result without its per-call `trace_id`, to compare two
+/// calls. Its `content[0]` text is checked on receipt to be the JSON of
+/// `structuredContent`, so the structured result stands for both.
+fn untraced_result(result: &Value) -> Value {
+    json!({
+        "isError": result["isError"],
+        "content": result["content"].as_array().map(Vec::len),
+        "structuredContent": untraced(&result["structuredContent"]),
+    })
+}
+
 /// The only part of a tool result that a content-only client reads.
 fn text_json(result: &Value) -> Value {
     let text = result
@@ -216,8 +227,8 @@ async fn agents_observe_and_cancel_only_their_own_runs() {
                     "{version} {tool}"
                 );
                 assert_eq!(
-                    untraced(&run_tool(session, tool, run).await["structuredContent"]),
-                    untraced(&absent["structuredContent"]),
+                    untraced_result(&run_tool(session, tool, run).await),
+                    untraced_result(&absent),
                     "{version} {tool}: {case} looks absent"
                 );
             }
@@ -308,8 +319,8 @@ async fn check_concealed_descriptions(
         "{version}"
     );
     assert_eq!(
-        untraced(&concealed["structuredContent"]),
-        untraced(&absent["structuredContent"]),
+        untraced_result(&concealed),
+        untraced_result(&absent),
         "{version}: a disabled Tool looks absent"
     );
 }

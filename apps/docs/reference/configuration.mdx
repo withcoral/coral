@@ -78,6 +78,8 @@ All provider calls not covered by an explicit policy in this section are treated
 
 Controls telemetry export to an OpenTelemetry endpoint.
 
+Every request has a trace, even when you do not set `endpoint`. A failed MCP tool call returns its `trace_id`. `trace_filter` controls which spans Coral exports, not which requests are traced.
+
 | Key            | Description                                                                        | Required | Default                                                                                                                                 |
 | -------------- | ---------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `endpoint`     | URL of the http otel endpoint to which telemetry will be sent.                     | No       | N/A                                                                                                                                     |

@@ -20,26 +20,25 @@ const ABSENT: &str = "00000000-0000-4000-8000-000000000000";
 async fn tool_failures_name_the_trace_of_their_request() {
     let capture = capture();
     let tracer = Tracer::start().await;
-    let endpoint = tracer.endpoint();
     let mut failures = Vec::new();
     for (version_index, version) in SUPPORTED_PROTOCOL_VERSIONS.iter().enumerate() {
-        let session = RawSession::open(&endpoint, version).await;
+        let session = RawSession::open(&tracer.endpoint(), version).await;
         let task = session
             .tool("start_task", json!({"intent": "Locate failures by trace"}))
             .await["structuredContent"]["task_id"]
             .clone();
         for (case_index, (case, tool, arguments, code)) in [
             (
+                "a failure before a Task is attributed",
+                "search",
+                json!({"task_id": ABSENT, "intent": "Search an absent Task", "query": "weather"}),
+                "task_not_found",
+            ),
+            (
                 "an attributed failure",
                 "describe",
                 json!({"task_id": task, "intent": "Describe a missing tool", "path": "coral.providers.absent.tool"}),
                 "authoring_description_not_found",
-            ),
-            (
-                "a failure before attribution",
-                "search",
-                json!({"task_id": ABSENT, "intent": "Search an absent Task", "query": "weather"}),
-                "task_not_found",
             ),
             (
                 "a wait failure",
@@ -74,36 +73,36 @@ async fn tool_failures_name_the_trace_of_their_request() {
             );
             failures.push((context, parent, tool));
         }
-
-        // A zero parent span id makes the traceparent invalid.
-        let invalid = format!("{:032x}", 0xc0_a1ff + version_index);
-        let restarted = session
-            .tool_with_headers(
-                "wait",
-                json!({"run_id": ABSENT, "wait_ms": 0}),
-                &[("traceparent", &format!("00-{invalid}-0000000000000000-01"))],
-            )
-            .await;
-        assert_eq!(restarted["isError"], true, "{version}");
-        let restarted = restarted["structuredContent"]["trace_id"]
-            .as_str()
-            .unwrap_or_else(|| panic!("{version}: trace_id"))
-            .to_owned();
-        assert_ne!(
-            restarted, invalid,
-            "{version}: an invalid traceparent starts a new trace"
-        );
-        assert!(
-            coral_workspace::TraceId::parse(&restarted).is_ok(),
-            "{version}: {restarted} is a lowercase W3C trace id"
-        );
-        failures.push((
-            format!("{version} an invalid traceparent"),
-            restarted,
-            "wait",
-        ));
         session.close().await;
     }
+
+    // coral-telemetry owns which traceparents are valid; one invalid case
+    // shows that a new trace still names the failure.
+    let session = RawSession::open(&tracer.endpoint(), &SUPPORTED_PROTOCOL_VERSIONS[0]).await;
+    let invalid = "00000000000000000000000000c0a1ff";
+    let restarted = session
+        .tool_with_headers(
+            "wait",
+            json!({"run_id": ABSENT, "wait_ms": 0}),
+            // A zero parent span id makes the traceparent invalid.
+            &[("traceparent", &format!("00-{invalid}-0000000000000000-01"))],
+        )
+        .await;
+    assert_eq!(restarted["isError"], true);
+    let restarted = restarted["structuredContent"]["trace_id"]
+        .as_str()
+        .expect("trace_id")
+        .to_owned();
+    assert_ne!(
+        restarted, invalid,
+        "an invalid traceparent starts a new trace"
+    );
+    assert!(
+        coral_workspace::TraceId::parse(&restarted).is_ok(),
+        "{restarted} is a lowercase W3C trace id"
+    );
+    failures.push(("an invalid traceparent".to_owned(), restarted, "wait"));
+    session.close().await;
 
     capture
         .provider
@@ -131,7 +130,7 @@ fn assert_spans_in_trace(
             .find(|span| span.span_context.trace_id().to_string() == trace && span.name == name)
     };
     assert!(
-        in_trace("coral.mcp.request").is_some(),
+        in_trace("POST /workspaces/{workspace_id}/mcp").is_some(),
         "{context}: the request span shares the failure's trace"
     );
     let tool_span = in_trace(&format!("tools/call {tool}"))

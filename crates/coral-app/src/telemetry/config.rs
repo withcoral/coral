@@ -5,9 +5,10 @@ use serde::Deserialize;
 use crate::bootstrap::AppError;
 
 pub(super) const DEFAULT_TRACE_FILTER: &str = "coral_app=trace,coral_grpc=trace,coral_mcp=trace,coral_search=trace,coral_administration=trace,coral.http.body=off,coral.mcp.body=off";
-/// Targets whose spans always get trace context, whatever `trace_filter`
-/// exports: the listeners' request spans and the MCP tool span. A request's
-/// safe errors and records take their trace identifier from these spans.
+/// Targets whose info-level spans always get trace context, whatever
+/// `trace_filter` exports. They include every listener's request span and the
+/// MCP tool span, which a request's safe errors and records take their trace
+/// identifier from.
 pub(super) const REQUEST_CONTEXT_FILTER: &str = "coral_app=info,coral_grpc=info,coral_mcp=info";
 pub(super) const DEFAULT_LOG_FILTER: &str =
     "coral_app=info,coral_grpc=info,coral_mcp=info,coral_search=info,coral_administration=info";

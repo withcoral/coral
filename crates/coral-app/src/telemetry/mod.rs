@@ -424,16 +424,30 @@ mod tests {
             let subscriber = tracing_subscriber::Registry::default().with(layer);
 
             tracing::subscriber::with_default(subscriber, || {
-                let request = tracing::info_span!(target: "coral_mcp::http", "request");
-                let _entered = request.enter();
-                let first = coral_telemetry::TraceId::current_or_new();
-                let tool = tracing::info_span!(target: "coral_mcp::server", "tool");
-                assert_eq!(
-                    tool.in_scope(coral_telemetry::TraceId::current_or_new),
-                    first,
-                    "{case}"
-                );
-                assert_eq!(coral_telemetry::TraceId::current_or_new(), first, "{case}");
+                // One request span per listener, under each one's real target.
+                let requests = [
+                    tracing::info_span!(target: "coral_mcp::http", "mcp request"),
+                    tracing::info_span!(
+                        target: "coral_app::auth::authorization_server",
+                        "auth request"
+                    ),
+                    tracing::info_span!(target: "coral_grpc::grpc", "private request"),
+                ];
+                for request in requests {
+                    let _entered = request.enter();
+                    let first = coral_telemetry::TraceId::current_or_new();
+                    let tool = tracing::info_span!(target: "coral_mcp::server", "tool");
+                    assert_eq!(
+                        tool.in_scope(coral_telemetry::TraceId::current_or_new),
+                        first,
+                        "{case}: {request:?}"
+                    );
+                    assert_eq!(
+                        coral_telemetry::TraceId::current_or_new(),
+                        first,
+                        "{case}: {request:?}"
+                    );
+                }
             });
             provider.shutdown().expect("provider shutdown");
         }

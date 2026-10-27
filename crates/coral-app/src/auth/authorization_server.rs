@@ -1081,7 +1081,7 @@ mod tests {
         );
         let request = spans
             .iter()
-            .find(|span| span.name == "coral.auth.request")
+            .find(|span| span.name == "GET /.well-known/oauth-authorization-server")
             .expect("request span");
         let attribute = |name: &str| {
             request
