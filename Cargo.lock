@@ -843,6 +843,7 @@ dependencies = [
  "coral-run",
  "coral-search",
  "coral-task",
+ "coral-telemetry",
  "coral-test-support",
  "coral-workspace",
  "jsonschema",
@@ -1026,6 +1027,7 @@ dependencies = [
 name = "coral-telemetry"
 version = "1.3.0"
 dependencies = [
+ "http",
  "opentelemetry",
  "opentelemetry_sdk",
  "tracing",

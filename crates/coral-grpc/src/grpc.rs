@@ -158,17 +158,7 @@ async fn trace_request(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let span = tracing::info_span!(parent: None, "coral.private.request");
-    coral_telemetry::set_parent_from_trace_headers(
-        &span,
-        request
-            .headers()
-            .get("traceparent")
-            .and_then(|value| value.to_str().ok()),
-        request
-            .headers()
-            .get("tracestate")
-            .and_then(|value| value.to_str().ok()),
-    );
+    coral_telemetry::set_parent_from_http_headers(&span, request.headers());
     next.run(request).instrument(span).await
 }
 

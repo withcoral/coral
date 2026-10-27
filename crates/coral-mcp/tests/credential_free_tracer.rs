@@ -19,6 +19,7 @@ use coral_provider::{ManagementRequestId, ProviderModule, WorkspaceProviderPubli
 use coral_run::RunModule;
 use coral_search::UniversalSearchModule;
 use coral_task::TaskModule;
+use coral_telemetry as _;
 use coral_test_support::TestDatabase;
 use coral_workspace::{
     AuthenticatedUser, ChangeContext, TraceId, WorkspaceDisplayName, WorkspaceId, WorkspaceModule,
@@ -1295,7 +1296,7 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     .await;
     assert_eq!(unknown_namespace.is_error, Some(true));
     assert_eq!(
-        *structured(&unknown_namespace),
+        untraced(structured(&unknown_namespace)),
         json!({
             "code": "invalid_input",
             "message": "No Provider you can search has this namespace. Use one of: weather."
@@ -1856,6 +1857,8 @@ mod default_contracts;
 mod input_contracts;
 #[path = "credential_free_tracer/prompt_contracts.rs"]
 mod prompt_contracts;
+#[path = "credential_free_tracer/trace_contracts.rs"]
+mod trace_contracts;
 
 async fn check_raw_tool_listing(
     session: &RawSession,
@@ -2367,8 +2370,23 @@ impl RawSession {
     }
 
     async fn tool(&self, tool: &str, arguments: Value) -> Value {
-        self.result("tools/call", json!({"name":tool, "arguments":arguments}))
-            .await
+        self.tool_with_headers(tool, arguments, &[]).await
+    }
+
+    /// Like [`Self::tool`], with extra request headers such as W3C trace context.
+    async fn tool_with_headers(
+        &self,
+        tool: &str,
+        arguments: Value,
+        headers: &[(&str, &str)],
+    ) -> Value {
+        let params = json!({"name":tool, "arguments":arguments});
+        let mut request = self.request("tools/call", params.clone(), Some(2));
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let message = parse_message(request.send().await.expect("raw request")).await;
+        self.interpret("tools/call", &params, &message)
             .unwrap_or_else(|error| panic!("raw tool {tool} failed: {error}"))
     }
 
@@ -2742,6 +2760,17 @@ fn object(value: Value) -> Map<String, Value> {
         Value::Object(object) => object,
         _ => panic!("tool arguments must be an object"),
     }
+}
+
+/// A tool failure without its per-call `trace_id`, to compare two calls' failures.
+fn untraced(failure: &Value) -> Value {
+    let mut failure = failure.clone();
+    failure
+        .as_object_mut()
+        .expect("failure object")
+        .remove("trace_id")
+        .expect("every tool failure names its trace");
+    failure
 }
 
 fn structured(result: &CallToolResult) -> &Value {

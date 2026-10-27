@@ -18,6 +18,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{RwLock, oneshot};
 use tokio::task::JoinHandle;
 use tower::ServiceExt as _;
+use tracing::Instrument as _;
 
 use crate::authentication::{LocalAuthentication, now};
 use crate::server::McpServer;
@@ -208,7 +209,19 @@ async fn start_server(
         config: streamable_config,
     });
     let health_state = state.clone();
+    // The layer traces the routes added before it, so health probes open no span.
     let router = Router::new()
+        .route(WORKSPACE_MCP_ROUTE, any(mcp))
+        .route(ORGANIZATION_MCP_ROUTE, any(mcp))
+        .route(
+            &format!("{METADATA_ROOT}{WORKSPACE_MCP_ROUTE}"),
+            axum::routing::get(metadata),
+        )
+        .route(
+            &format!("{METADATA_ROOT}{ORGANIZATION_MCP_ROUTE}"),
+            axum::routing::get(metadata),
+        )
+        .layer(axum::middleware::from_fn(trace_request))
         .route("/healthz", axum::routing::get(|| async { StatusCode::OK }))
         .route(
             "/readyz",
@@ -223,16 +236,6 @@ async fn start_server(
                     }
                 }
             }),
-        )
-        .route(WORKSPACE_MCP_ROUTE, any(mcp))
-        .route(ORGANIZATION_MCP_ROUTE, any(mcp))
-        .route(
-            &format!("{METADATA_ROOT}{WORKSPACE_MCP_ROUTE}"),
-            axum::routing::get(metadata),
-        )
-        .route(
-            &format!("{METADATA_ROOT}{ORGANIZATION_MCP_ROUTE}"),
-            axum::routing::get(metadata),
         )
         .with_state(state.clone());
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -300,6 +303,40 @@ impl HttpState {
             }
         }
     }
+}
+
+/// The span of the HTTP request that carried an MCP message. RMCP runs tool
+/// handlers in its session task, outside the request, so each tool span takes
+/// this as its parent explicitly.
+#[derive(Clone)]
+pub(crate) struct RequestSpan(tracing::Span);
+
+impl RequestSpan {
+    /// The request span of the HTTP request that carried `context`'s message,
+    /// if one was opened and enabled.
+    pub(crate) fn parent_of(
+        context: &rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Option<tracing::Id> {
+        context
+            .extensions
+            .get::<axum::http::request::Parts>()?
+            .extensions
+            .get::<Self>()?
+            .0
+            .id()
+    }
+}
+
+async fn trace_request(mut request: Request<Body>, next: axum::middleware::Next) -> Response {
+    let route = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(axum::extract::MatchedPath::as_str);
+    let span = coral_telemetry::http_request_span!("coral.mcp.request", &request, route);
+    request.extensions_mut().insert(RequestSpan(span.clone()));
+    let response = next.run(request).instrument(span.clone()).await;
+    coral_telemetry::record_http_response(&span, response.status());
+    response
 }
 
 /// The well-known prefix protected-resource metadata is served under (RFC 9728).

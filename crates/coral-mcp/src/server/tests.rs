@@ -98,8 +98,9 @@ async fn wait(server: &McpServer, run_id: &RunId, wait_ms: Option<Value>) -> Val
     }
     let request =
         CallToolRequestParams::new("wait").with_arguments(arguments.as_object().unwrap().clone());
-    let Ok(CallToolResponse::Complete(result)) =
-        server.dispatch(request, Channel::Unavailable).await
+    let Ok(CallToolResponse::Complete(result)) = server
+        .dispatch(request, Channel::Unavailable, &TraceId::current_or_new())
+        .await
     else {
         panic!("wait without prompting completes")
     };
@@ -165,8 +166,9 @@ fn owner_lost_and_not_yet_recorded_project_stable_retryable_codes() {
         let super::DispatchError::Tool(failure) = super::run_failure(error) else {
             panic!("{label}: a tool failure, not a protocol error");
         };
-        let projected =
-            serde_json::to_value(&failure).expect("string-only tool failures serialize");
+        let projected = crate::projection::failure(&failure, &TraceId::current_or_new())
+            .structured_content
+            .expect("structured failure");
         assert_eq!(
             projected.get("code").and_then(serde_json::Value::as_str),
             Some(code),

@@ -14,10 +14,12 @@ use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::{BatchLogProcessor, SdkLoggerProvider};
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
-use opentelemetry_sdk::trace::{BatchSpanProcessor, SdkTracerProvider, TracerProviderBuilder};
-use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+use opentelemetry_sdk::trace::{
+    BatchSpanProcessor, SdkTracer, SdkTracerProvider, TracerProviderBuilder,
+};
+use tracing_opentelemetry::{OpenTelemetryLayer, OpenTelemetrySpanExt as _};
 use tracing_subscriber::Layer as _;
-use tracing_subscriber::filter::Targets;
+use tracing_subscriber::filter::{self, FilterExt as _, Filtered, Targets};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
@@ -26,7 +28,7 @@ pub mod config;
 
 use crate::bootstrap::AppError;
 pub use config::TelemetryConfig;
-use config::{DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
+use config::{DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER, REQUEST_CONTEXT_FILTER};
 static INIT: OnceLock<Result<(), String>> = OnceLock::new();
 static PROVIDER: Mutex<Option<SdkTracerProvider>> = Mutex::new(None);
 static LOGGER_PROVIDER: Mutex<Option<SdkLoggerProvider>> = Mutex::new(None);
@@ -58,6 +60,12 @@ fn build_trace_targets(filter: &str, fallback_filter: &str) -> (Targets, Option<
 
 fn trace_layer_filter(otlp_filter: &str) -> (Targets, Option<String>) {
     build_trace_targets(otlp_filter, DEFAULT_TRACE_FILTER)
+}
+
+fn request_context_targets() -> Targets {
+    REQUEST_CONTEXT_FILTER
+        .parse()
+        .expect("request context filter must be valid")
 }
 
 fn normalize_otlp_endpoint(endpoint: &str, signal: &str) -> String {
@@ -267,6 +275,38 @@ fn process_executable_name() -> String {
         .unwrap_or_else(|| "coral".to_string())
 }
 
+type TraceLayer = Filtered<
+    OpenTelemetryLayer<Registry, SdkTracer>,
+    filter::combinator::Or<Targets, Targets, Registry>,
+    Registry,
+>;
+
+/// The tracer provider and the layer that gives spans their trace context.
+///
+/// Both exist whatever the export settings, so a request's spans, operational
+/// logs and safe errors share one trace identifier. Request spans get context
+/// even when `trace_filter` does not export them. The OTLP exporter is
+/// attached only when `[otel]` configures an endpoint, and it sends only what
+/// `trace_filter` admits. Also returns a trace filter parse error, after which
+/// the default filter applies.
+fn trace_pipeline(
+    config: &TelemetryConfig,
+    resource: &Resource,
+) -> Result<(SdkTracerProvider, TraceLayer, Option<String>), AppError> {
+    let mut builder = SdkTracerProvider::builder().with_resource(resource.clone());
+    let (trace_targets, filter_error) = trace_layer_filter(&config.otel.trace_filter);
+    if let Some(endpoint) = configured_otlp_endpoint(config) {
+        let headers = parse_headers(config.otel.headers.as_deref().unwrap_or_default());
+        builder = add_otlp_trace_exporter(builder, endpoint, headers, trace_targets.clone())?;
+    }
+    let provider = builder.build();
+    let layer = tracing_opentelemetry::layer()
+        .with_tracer(provider.tracer("coral"))
+        .with_level(true)
+        .with_filter(trace_targets.or(request_context_targets()));
+    Ok((provider, layer, filter_error))
+}
+
 pub(crate) fn init_tracing(config: &TelemetryConfig, instance_id: &str) -> Result<(), AppError> {
     INIT.get_or_init(|| try_init_tracing(config, instance_id).map_err(|e| e.to_string()))
         .as_ref()
@@ -279,48 +319,23 @@ fn try_init_tracing(config: &TelemetryConfig, instance_id: &str) -> Result<(), A
     let endpoint = configured_otlp_endpoint(config);
     let (log_filter, log_filter_error) = build_log_filter(config.otel.log_filter.as_deref());
 
-    let mut trace_filter_error = None;
-    let otel_trace_layer = if endpoint.is_some() {
-        let resource = telemetry_resource(&config.otel.service_name, instance_id);
-        let mut builder = SdkTracerProvider::builder().with_resource(resource.clone());
-
-        if let Some(endpoint) = endpoint {
-            let headers = parse_headers(config.otel.headers.as_deref().unwrap_or_default());
-            let (otlp_trace_targets, error) =
-                build_trace_targets(&config.otel.trace_filter, DEFAULT_TRACE_FILTER);
-            trace_filter_error = error;
-            builder =
-                add_otlp_trace_exporter(builder, endpoint, headers.clone(), otlp_trace_targets)?;
-            let logger_provider = build_otlp_logger_provider(&resource, endpoint, headers.clone())?;
-            if let Ok(mut guard) = LOGGER_PROVIDER.lock() {
-                *guard = Some(logger_provider);
-            }
-            let meter_provider = build_otlp_meter_provider(&resource, endpoint, headers)?;
-            opentelemetry::global::set_meter_provider(meter_provider.clone());
-            if let Ok(mut guard) = METER_PROVIDER.lock() {
-                *guard = Some(meter_provider);
-            }
+    let resource = telemetry_resource(&config.otel.service_name, instance_id);
+    let (provider, otel_trace_layer, trace_filter_error) = trace_pipeline(config, &resource)?;
+    if let Ok(mut guard) = PROVIDER.lock() {
+        *guard = Some(provider);
+    }
+    if let Some(endpoint) = endpoint {
+        let headers = parse_headers(config.otel.headers.as_deref().unwrap_or_default());
+        let logger_provider = build_otlp_logger_provider(&resource, endpoint, headers.clone())?;
+        if let Ok(mut guard) = LOGGER_PROVIDER.lock() {
+            *guard = Some(logger_provider);
         }
-
-        let provider = builder.build();
-        let tracer = provider.tracer("coral");
-        let (trace_targets, layer_filter_error) = trace_layer_filter(&config.otel.trace_filter);
-        if trace_filter_error.is_none() {
-            trace_filter_error = layer_filter_error;
+        let meter_provider = build_otlp_meter_provider(&resource, endpoint, headers)?;
+        opentelemetry::global::set_meter_provider(meter_provider.clone());
+        if let Ok(mut guard) = METER_PROVIDER.lock() {
+            *guard = Some(meter_provider);
         }
-        let layer = tracing_opentelemetry::layer()
-            .with_tracer(tracer)
-            .with_level(true)
-            .with_filter(trace_targets);
-
-        if let Ok(mut guard) = PROVIDER.lock() {
-            *guard = Some(provider);
-        }
-
-        Some(layer)
-    } else {
-        None
-    };
+    }
 
     let otel_log_layer = LOGGER_PROVIDER.lock().ok().and_then(|guard| {
         guard.as_ref().map(|provider| {
@@ -385,8 +400,44 @@ pub fn shutdown_tracing() {
 #[cfg(test)]
 mod tests {
     use opentelemetry::{Key, Value};
+    use tracing_subscriber::layer::SubscriberExt as _;
 
-    use super::telemetry_resource;
+    use super::{TelemetryConfig, telemetry_resource, trace_pipeline};
+
+    /// With `[otel]` unset, or with a trace filter that exports no request
+    /// span, one request's operational logs and safe errors still share the
+    /// trace identifier of its request span.
+    #[test]
+    fn a_request_keeps_one_trace_id_whatever_the_export_settings() {
+        for (case, raw) in [
+            ("export unset", ""),
+            (
+                "a filter that exports no request span",
+                "[otel]\ntrace_filter = \"coral_search=trace\"\n",
+            ),
+        ] {
+            let config = TelemetryConfig::from_toml(raw).expect("telemetry config");
+            let resource = telemetry_resource("coral-test", "instance");
+            let (provider, layer, filter_error) =
+                trace_pipeline(&config, &resource).expect("trace pipeline");
+            assert_eq!(filter_error, None, "{case}");
+            let subscriber = tracing_subscriber::Registry::default().with(layer);
+
+            tracing::subscriber::with_default(subscriber, || {
+                let request = tracing::info_span!(target: "coral_mcp::http", "request");
+                let _entered = request.enter();
+                let first = coral_telemetry::TraceId::current_or_new();
+                let tool = tracing::info_span!(target: "coral_mcp::server", "tool");
+                assert_eq!(
+                    tool.in_scope(coral_telemetry::TraceId::current_or_new),
+                    first,
+                    "{case}"
+                );
+                assert_eq!(coral_telemetry::TraceId::current_or_new(), first, "{case}");
+            });
+            provider.shutdown().expect("provider shutdown");
+        }
+    }
 
     /// Operators filter exported telemetry by `service.instance.id` to find
     /// the Coral Instance that produced it.

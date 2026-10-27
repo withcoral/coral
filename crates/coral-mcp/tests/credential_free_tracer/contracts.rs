@@ -126,7 +126,7 @@ impl OutputContracts {
     ) {
         // Independent contract expectations, not required lists read back from the schema.
         let required: &[&str] = if result["isError"] == true {
-            &["code", "message"]
+            &["code", "message", "trace_id"]
         } else {
             match name {
                 "start_task" => &["task_id", "providers"],

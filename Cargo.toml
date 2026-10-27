@@ -56,6 +56,7 @@ encoding_rs = "0.8"
 etcetera = "0.11"
 flate2 = "1"
 futures-util = "0.3"
+http = "1"
 jsonschema = { version = "0.58.6", default-features = false }
 jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
 mime = "0.3"

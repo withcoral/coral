@@ -13,7 +13,7 @@ use rmcp::model::{
 };
 use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 use rmcp::{ErrorData, ServerHandler};
-use uuid::Uuid;
+use tracing::Instrument as _;
 
 use crate::McpRuntime;
 use crate::arguments::{
@@ -48,6 +48,22 @@ fn fallback_protocol_version() -> ProtocolVersion {
         .clone()
 }
 
+/// Every tool this Adapter serves.
+const TOOL_NAMES: [&str; 9] = [
+    StartTaskArguments::NAME,
+    SearchArguments::NAME,
+    DescribeArguments::NAME,
+    SaveFunctionArguments::NAME,
+    DeleteFunctionArguments::NAME,
+    ExecArguments::NAME,
+    WaitArguments::NAME,
+    CancelArguments::NAME,
+    EndTaskArguments::NAME,
+];
+
+/// Stable message recorded on a failed tool call's span.
+const TOOL_FAILURE_MESSAGE: &str = "MCP tool call failed";
+
 #[derive(Clone)]
 pub(crate) struct McpServer {
     runtime: McpRuntime,
@@ -78,6 +94,7 @@ impl McpServer {
         &self,
         mut request: CallToolRequestParams,
         channel: Channel,
+        trace: &TraceId,
     ) -> Result<CallToolResponse, DispatchError> {
         let prompting = Prompting::from_request(
             channel,
@@ -100,27 +117,27 @@ impl McpServer {
             }
             SearchArguments::NAME => {
                 let arguments = arguments::parse::<SearchArguments>(request.arguments)?;
-                self.search(arguments).await
+                self.search(arguments, trace).await
             }
             DescribeArguments::NAME => {
                 let arguments = arguments::parse::<DescribeArguments>(request.arguments)?;
-                self.describe(arguments).await
+                self.describe(arguments, trace).await
             }
             SaveFunctionArguments::NAME => {
                 let arguments = arguments::parse::<SaveFunctionArguments>(request.arguments)?;
-                self.save_function(arguments).await
+                self.save_function(arguments, trace).await
             }
             DeleteFunctionArguments::NAME => {
                 let arguments = arguments::parse::<DeleteFunctionArguments>(request.arguments)?;
-                self.delete_function(arguments).await
+                self.delete_function(arguments, trace).await
             }
             ExecArguments::NAME => {
                 let arguments = arguments::parse::<ExecArguments>(request.arguments)?;
-                return self.exec(arguments, prompting).await;
+                return self.exec(arguments, prompting, trace).await;
             }
             WaitArguments::NAME => {
                 let arguments = arguments::parse::<WaitArguments>(request.arguments)?;
-                return self.wait(arguments, prompting).await;
+                return self.wait(arguments, prompting, trace).await;
             }
             CancelArguments::NAME => {
                 let arguments = arguments::parse::<CancelArguments>(request.arguments)?;
@@ -163,6 +180,7 @@ impl McpServer {
             )
             .await
             .map_err(task_failure)?;
+        record_task(task.id());
         projection::success(projection::StartedTask {
             task_id: task.id().to_string(),
             providers: providers
@@ -173,8 +191,12 @@ impl McpServer {
         .map_err(DispatchError::Tool)
     }
 
-    async fn search(&self, arguments: SearchArguments) -> Result<CallToolResult, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
+    async fn search(
+        &self,
+        arguments: SearchArguments,
+        trace: &TraceId,
+    ) -> Result<CallToolResult, DispatchError> {
+        let call = self.attributed_command(&arguments.task_id, &arguments.intent, trace)?;
         let request = SearchInput {
             query: arguments.query,
             provider: arguments.provider,
@@ -196,8 +218,9 @@ impl McpServer {
     async fn describe(
         &self,
         arguments: DescribeArguments,
+        trace: &TraceId,
     ) -> Result<CallToolResult, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
+        let call = self.attributed_command(&arguments.task_id, &arguments.intent, trace)?;
         let result = self
             .runtime
             .modules
@@ -217,8 +240,9 @@ impl McpServer {
     async fn save_function(
         &self,
         arguments: SaveFunctionArguments,
+        trace: &TraceId,
     ) -> Result<CallToolResult, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
+        let call = self.attributed_command(&arguments.task_id, &arguments.intent, trace)?;
         let function = self
             .runtime
             .modules
@@ -239,8 +263,9 @@ impl McpServer {
     async fn delete_function(
         &self,
         arguments: DeleteFunctionArguments,
+        trace: &TraceId,
     ) -> Result<CallToolResult, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
+        let call = self.attributed_command(&arguments.task_id, &arguments.intent, trace)?;
         self.runtime
             .modules
             .commands
@@ -257,8 +282,9 @@ impl McpServer {
         &self,
         arguments: ExecArguments,
         prompting: Prompting,
+        trace: &TraceId,
     ) -> Result<CallToolResponse, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
+        let call = self.attributed_command(&arguments.task_id, &arguments.intent, trace)?;
         let timeout = arguments
             .run_timeout_ms
             .unwrap_or(arguments::DEFAULT_RUN_TIMEOUT_MS);
@@ -267,7 +293,7 @@ impl McpServer {
         // A retry answers prompts about the Run this call already started.
         if let Some(run_id) = prompting.continued_run().cloned() {
             return self
-                .observe_prompting(&run_id, &reread, &reread, prompting)
+                .observe_prompting(&run_id, &reread, &reread, prompting, trace)
                 .await;
         }
         let accepted = self
@@ -285,7 +311,7 @@ impl McpServer {
         }
         let observation =
             RunObservation::initial(Duration::from_millis(wait_ms)).map_err(invalid_input)?;
-        self.observe_prompting(accepted.run_id(), &observation, &reread, prompting)
+        self.observe_prompting(accepted.run_id(), &observation, &reread, prompting, trace)
             .await
     }
 
@@ -293,6 +319,7 @@ impl McpServer {
         &self,
         arguments: WaitArguments,
         prompting: Prompting,
+        trace: &TraceId,
     ) -> Result<CallToolResponse, DispatchError> {
         let run_id = RunId::parse(&arguments.run_id).map_err(invalid_input)?;
         let cursor = arguments
@@ -317,7 +344,7 @@ impl McpServer {
                 .with_wait(Duration::from_millis(wait_ms))
                 .map_err(invalid_input)?,
         };
-        self.observe_prompting(&run_id, &observation, &reread, prompting)
+        self.observe_prompting(&run_id, &observation, &reread, prompting, trace)
             .await
     }
 
@@ -330,9 +357,9 @@ impl McpServer {
         observation: &RunObservation,
         reread: &RunObservation,
         mut prompting: Prompting,
+        trace: &TraceId,
     ) -> Result<CallToolResponse, DispatchError> {
-        let trace = generated_trace_id()?;
-        self.answer_prompts(run_id, prompting.take_answers(), &trace)
+        self.answer_prompts(run_id, prompting.take_answers(), trace)
             .await?;
         let mut update = self.observe(run_id, observation).await?;
         while prompting.available() && !update.required_actions().is_empty() {
@@ -378,11 +405,11 @@ impl McpServer {
                             &self.runtime.principal,
                             &self.workspace_id,
                             &request,
-                            &trace,
+                            trace,
                         ));
                         let answer = prompt.ask(withdrawn, connected).await;
                         // Apply each answer at once: a later prompt may stay open.
-                        self.answer_prompts(run_id, vec![answer], &trace).await?;
+                        self.answer_prompts(run_id, vec![answer], trace).await?;
                     }
                     update = self.observe(run_id, reread).await?;
                 }
@@ -502,6 +529,7 @@ impl McpServer {
 
     async fn end_task(&self, arguments: EndTaskArguments) -> Result<CallToolResult, DispatchError> {
         let task_id = TaskId::parse(&arguments.task_id).map_err(invalid_input)?;
+        record_task(&task_id);
         let outcome = match arguments.outcome {
             TaskOutcomeArgument::Success => TaskOutcome::Success,
             TaskOutcomeArgument::Failure => TaskOutcome::Failure,
@@ -543,14 +571,40 @@ impl McpServer {
         &self,
         task_id: &str,
         intent: &str,
+        trace: &TraceId,
     ) -> Result<coral_task::AttributedCommand, DispatchError> {
+        let task_id = TaskId::parse(task_id).map_err(invalid_input)?;
+        record_task(&task_id);
         Ok(coral_task::AttributedCommand::new(
             self.runtime.principal.clone(),
             self.workspace_id.clone(),
-            TaskId::parse(task_id).map_err(invalid_input)?,
+            task_id,
             TaskIntent::parse(intent).map_err(invalid_input)?,
-            generated_trace_id()?,
+            trace.clone(),
         ))
+    }
+
+    /// Opens the span of one tool call as a child of the HTTP request that
+    /// carried it. The caller is authenticated, so it names the Workspace and
+    /// the Principal kind; the Task joins once the call names one.
+    fn tool_span(&self, name: &str, context: &RequestContext<RoleServer>) -> tracing::Span {
+        let request = crate::http::RequestSpan::parent_of(context);
+        // A name outside the tool list is caller text, so it stays off the span.
+        let tool = TOOL_NAMES.iter().copied().find(|tool| *tool == name);
+        tracing::info_span!(
+            parent: request,
+            "coral.mcp.tool",
+            otel.name = tool.map_or_else(|| "tools/call".to_owned(), |tool| format!("tools/call {tool}")),
+            otel.kind = "internal",
+            mcp.method.name = "tools/call",
+            gen_ai.tool.name = tool,
+            coral.workspace.id = %self.workspace_id,
+            coral.principal.kind = self.runtime.principal.principal().kind().as_storage_str(),
+            coral.task.id = tracing::field::Empty,
+            error.type = tracing::field::Empty,
+            exception.message = tracing::field::Empty,
+            status = tracing::field::Empty,
+        )
     }
 }
 
@@ -584,10 +638,25 @@ impl ServerHandler for McpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        match self.dispatch(request, Channel::negotiate(&context)).await {
-            Ok(response) => Ok(response),
-            Err(DispatchError::Tool(error)) => Ok(projection::failure(&error).into()),
-            Err(DispatchError::Protocol(error)) => Err(error),
+        let span = self.tool_span(request.name.as_ref(), &context);
+        let trace = span.in_scope(TraceId::current_or_new);
+        let dispatched = self
+            .dispatch(request, Channel::negotiate(&context), &trace)
+            .instrument(span.clone())
+            .await;
+        match dispatched {
+            Ok(response) => {
+                span.record("status", "ok");
+                Ok(response)
+            }
+            Err(DispatchError::Tool(error)) => {
+                coral_telemetry::record_failure(&span, error.code(), TOOL_FAILURE_MESSAGE);
+                Ok(projection::failure(&error, &trace).into())
+            }
+            Err(DispatchError::Protocol(error)) => {
+                coral_telemetry::record_failure(&span, "protocol_error", TOOL_FAILURE_MESSAGE);
+                Err(error)
+            }
         }
     }
 
@@ -656,9 +725,9 @@ fn now_unix_nanos() -> Result<i64, DispatchError> {
         .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))
 }
 
-fn generated_trace_id() -> Result<TraceId, DispatchError> {
-    TraceId::parse(&Uuid::new_v4().simple().to_string())
-        .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))
+/// Names the Task a tool call acts in on its span.
+fn record_task(task_id: &TaskId) {
+    tracing::Span::current().record("coral.task.id", tracing::field::display(task_id));
 }
 
 fn invalid_input(error: impl std::fmt::Display) -> DispatchError {

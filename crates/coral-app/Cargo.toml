@@ -13,7 +13,7 @@ workspace = true
 coral-administration.workspace = true
 coral-outbound = { workspace = true, features = ["transport"] }
 async-trait.workspace = true
-axum = { workspace = true, features = ["http1", "tokio"] }
+axum = { workspace = true, features = ["http1", "matched-path", "tokio"] }
 base64.workspace = true
 etcetera.workspace = true
 jsonwebtoken.workspace = true
