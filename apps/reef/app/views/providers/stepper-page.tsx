@@ -71,13 +71,15 @@ function StepperAttemptPage({
           (attempt.namespace || (recipe?.id ? recipeNamespace(recipe) : '') || undefined))
         : '',
   })
-  // Without a recipe, the document's own name suggests the namespace, then the
-  // source host. A host such as raw.githubusercontent.com names where the
-  // document lives, not the service. The person confirms it in Configuration.
-  const shownNamespace =
-    answers.namespace ??
-    (suggestedNamespace(setup?.configuration?.documentDisplayName ?? '') ||
-      suggestedNamespace(setup?.sourceHost.split('.')[0] ?? ''))
+  // A recipe offers its service. Without one, the document's own name suggests
+  // the namespace, then the source host. A host such as
+  // raw.githubusercontent.com names where the document lives, not the service.
+  // The person confirms it in Configuration.
+  const defaultNamespace = recipe?.id
+    ? recipeNamespace(recipe)
+    : suggestedNamespace(setup?.configuration?.documentDisplayName ?? '') ||
+      suggestedNamespace(setup?.sourceHost.split('.')[0] ?? '')
+  const shownNamespace = answers.namespace ?? defaultNamespace
   const local: CreationAttempt =
     attempt.state === 'frozen' ? attempt : { ...attempt, namespace: shownNamespace }
   const { stage, ended } = attemptProgress(local, setup, result)
@@ -102,6 +104,7 @@ function StepperAttemptPage({
       callbackUrl={callbackUrl}
       namespace={local.namespace}
       onNamespace={setNamespace}
+      defaultNamespace={defaultNamespace}
       takenNamespaces={takenNamespaces}
       takenDisplayNames={takenDisplayNames}
       suggestedName={answers.displayName ?? local.suggestedName}
