@@ -5,7 +5,6 @@ import { expect, it, onTestFinished, vi } from 'vitest'
 import { markupRoute, renderLivePage, renderRoute } from '@/test-support/route'
 import { Activity, duration } from './activity'
 import { ActivityArchivedContext } from './live'
-import { revealHref } from './navigation'
 import { ActionReviewSession } from '../actions/review'
 import { activityPage, approval, approvalRequest, run as waiting, workspace } from './fixtures'
 import type { ActivityPage, ActivityRow, ActivityViewProps } from './types'
@@ -550,10 +549,50 @@ const splitContext = {
   request: null,
   requestUnavailable: false,
 }
+const emission = {
+  kind: 'output' as const,
+  name: `${run.name}/events/3`,
+  workspace,
+  run: run.name,
+  label: 'output #3',
+  startedAt,
+  eventKind: 'program.emitted',
+  agent: '',
+}
 // Catches: a fixed Run header kept above the split, so a Run's header showed twice and an
-// tool call showed its parent Run's header above its own, or the close control left the
-// selected record's own header.
+// tool call showed its parent Run's header above its own, the close control left the
+// selected record's own header, or any record ended in a "View in history" link.
 it.each([
+  [
+    'an emission',
+    emission,
+    {
+      kind: 'output',
+      run: run.name,
+      event: { kind: 'program.emitted', value: '1', sequence: '3', occurredAt: startedAt },
+      context: splitContext,
+    },
+    'coral.emit #3',
+    'program output',
+  ],
+  [
+    'a log',
+    { ...emission, eventKind: 'program.logged' },
+    {
+      kind: 'output',
+      run: run.name,
+      event: {
+        kind: 'program.logged',
+        level: 'info',
+        message: 'sent 1',
+        sequence: '3',
+        occurredAt: startedAt,
+      },
+      context: splitContext,
+    },
+    'console.info #3',
+    'program log',
+  ],
   [
     'a Run',
     { ...run, intent: 'Send invoice reminders' },
@@ -606,58 +645,7 @@ it.each([
     expect(within(drawer).getAllByRole('button', { name: 'Close details' })).toEqual([
       within(header).getByRole('button', { name: 'Close details' }),
     ])
-  },
-)
-
-// Catches: an output inside the split offering a "Reveal record" link below it, an emitted
-// output outside the loaded list losing its only way back to its place in history, or a
-// program log showing "View in history" below its payload.
-it.each([
-  ['program.emitted', { kind: 'program.emitted', value: '1' }, 'coral.emit #1', true],
-  [
-    'program.logged',
-    { kind: 'program.logged', level: 'info', message: 'sent 1' },
-    'console.info #1',
-    false,
-  ],
-] as const)(
-  'leads a %s output outside the list back to history only when it is not a log',
-  (eventKind, payload, title, linked) => {
-    const output = {
-      kind: 'output' as const,
-      name: `${run.name}/events/1`,
-      workspace,
-      run: run.name,
-      label: 'output #1',
-      startedAt,
-      eventKind,
-      agent: '',
-    }
-    renderRoute(
-      <Activity
-        page={activityPage({
-          rows: [goal],
-          selected: output.name,
-          selectedRow: output,
-          detail: {
-            kind: 'output',
-            run: run.name,
-            event: { ...payload, sequence: '1', occurredAt: startedAt },
-            context: splitContext,
-          },
-        })}
-      />,
-      { entry: '/activity?record=two' },
-    )
-    const drawer = screen.getByRole('dialog')
-    expect(within(drawer).queryByRole('link', { name: 'Reveal record' })).toBeNull()
-    expect(within(drawer).getAllByRole('button', { name: 'Close details' })).toHaveLength(1)
-    // The split, its source and the record's own header stay.
-    expect(within(drawer).getByRole('region', { name: 'Accepted source' })).toBeInTheDocument()
-    const selected = within(drawer).getByRole('region', { name: 'Selected record' })
-    expect(within(selected).getByRole('heading', { level: 2 })).toHaveTextContent(title)
-    const history = within(selected).queryByRole('link', { name: 'View in history' })
-    if (linked) expect(history).toHaveAttribute('href', revealHref(output, { select: false }))
-    else expect(history).toBeNull()
+    for (const name of ['View in history', 'Reveal record'])
+      expect(within(drawer).queryByRole('link', { name })).toBeNull()
   },
 )

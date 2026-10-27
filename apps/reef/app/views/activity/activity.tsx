@@ -1484,14 +1484,14 @@ export function Activity({
                     position={orderedRecordPosition(detailPage, detailPage.selectedRow)}
                     close={railControls}
                   >
-                    <ActivityDetail key={detail.record} page={detailPage} sourceShown />
+                    <ActivityDetail key={detail.record} page={detailPage} />
                   </ExecutionSourceSplit>
                 ) : (
                   <PanelClose value={ownHeader ? railControls : null}>
                     <ActivityDetail key={detail.record} page={detailPage} />
                   </PanelClose>
                 )}
-                {/* A record inside the split leads back to history from its own detail. */}
+                {/* A record the list does not show, outside a Run's split, leads back to it. */}
                 {outside && page.detail?.kind !== 'run' && !runContext && (
                   <Button.InternalLink
                     size="small"

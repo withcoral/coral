@@ -44,14 +44,7 @@ export function runContextOf(detail: ActivityPage['detail']): RunDetail | undefi
   return undefined
 }
 
-export function ActivityDetail({
-  page,
-  sourceShown = false,
-}: {
-  page: ActivityPage
-  /** The caller shows the Run's accepted source beside this detail, so it does not repeat it. */
-  sourceShown?: boolean
-}) {
+export function ActivityDetail({ page }: { page: ActivityPage }) {
   const detail = page.detail
   if (!detail) return null
   // An approval is always reviewed inside its Run; any other selected call leads with itself.
@@ -64,7 +57,7 @@ export function ActivityDetail({
     const tool = detail.kind === 'invocation' ? detail : null
     return <ExecutionDetail page={page} detail={context} tool={tool} />
   }
-  return <RecordDetail page={page} sourceShown={sourceShown} />
+  return <RecordDetail page={page} />
 }
 
 function ExecutionDetail({
@@ -307,8 +300,8 @@ function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: In
 
 /** Records without a Run context. An approval always has one, so none is reviewed here.
  * A selected tool invocation leads with itself, so none is reviewed here either. */
-function RecordDetail({ page, sourceShown }: { page: ActivityPage; sourceShown: boolean }) {
-  const { recordHref, revealHref } = useActivityNavigation(page)
+function RecordDetail({ page }: { page: ActivityPage }) {
+  const { recordHref } = useActivityNavigation(page)
   const connected = useActivityConnected()
   const detail = page.detail
   const row = page.selectedRow
@@ -496,18 +489,7 @@ function RecordDetail({ page, sourceShown }: { page: ActivityPage; sourceShown: 
           )}
         </>
       )}
-      {detail.kind === 'output' && (
-        <>
-          <EventEvidence event={detail.event} recordHref={recordHref} />
-          {/* Inside its Run's split, an emitted output leads back to history itself. A program
-              log ends at its payload. */}
-          {sourceShown && row && detail.event.kind !== 'program.logged' && (
-            <Link to={revealHref(row, { select: false })} preventScrollReset>
-              View in history
-            </Link>
-          )}
-        </>
-      )}
+      {detail.kind === 'output' && <EventEvidence event={detail.event} recordHref={recordHref} />}
     </Panel>
   )
 }

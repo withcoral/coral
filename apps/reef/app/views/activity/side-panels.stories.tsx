@@ -2433,6 +2433,14 @@ function payloadCard(story: Story, card: string, title: string): Story {
       await expect(within(dialog).queryByRole('heading', { name: 'Context' })).toBeNull()
       await expect(dialog).not.toHaveTextContent('Technical details')
       await expect(dialog).not.toHaveTextContent('This log is not a user-facing result')
+      // The record ends at its payload: nothing, such as a link or a separator, shows below
+      // it. A detail leaving the split is not part of the record.
+      const selected = within(dialog).getByRole('region', { name: 'Selected record' })
+      const record = [...selected.children].find((child) => child.contains(region))!
+      const end = region.getBoundingClientRect().bottom
+      for (const element of record.querySelectorAll('*'))
+        if (!element.contains(region) && !region.contains(element))
+          await expect(element.getBoundingClientRect().bottom).toBeLessThanOrEqual(end + 0.5)
     },
   }
 }
