@@ -29,11 +29,13 @@ crates/coral-mcp/tests/output-schema/*.json linguist-generated
 # `npx electron scripts/render-dmg-background.mjs` in apps/desktop.
 apps/desktop/resources/dmg/*.png linguist-generated
 
-# Desktop icons, generated from Reef's favicon by `npm run icons`.
+# Desktop icons, generated from Reef's app icon by `npm run icons`.
 apps/desktop/resources/icons/*.png linguist-generated
 apps/desktop/resources/icons/*.ico linguist-generated
 apps/desktop/resources/icons/*.icns linguist-generated
 apps/desktop/resources/icons/icon.svg linguist-generated
+# Reef's legacy favicon, generated from its favicon.svg by the same command.
+apps/reef/public/favicon.ico linguist-generated
 
 # Complete provider documents mechanically generated from upstream definitions.
 apps/reef/recipes/*/openapi.json linguist-generated

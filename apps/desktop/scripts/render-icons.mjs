@@ -1,5 +1,6 @@
-// Regenerate Desktop's flat icons from Reef's favicon with electron-builder's
-// own icon converter. Run `npm run icons` in apps/desktop after changing it.
+// Regenerate Desktop's flat icons from Reef's app icon, and Reef's favicon.ico
+// from its favicon, with electron-builder's own icon converter. Run
+// `npm run icons` in apps/desktop after changing either.
 import { runIconsTool } from 'app-builder-lib/out/toolsets/icons.js'
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -7,13 +8,14 @@ import { join, resolve } from 'node:path'
 
 const desktopRoot = resolve(import.meta.dirname, '..')
 const directory = join(desktopRoot, 'resources', 'icons')
-const source = await readFile(join(desktopRoot, '..', 'reef', 'public', 'favicon.svg'), 'utf8')
+const reefPublic = join(desktopRoot, '..', 'reef', 'public')
+const source = await readFile(join(reefPublic, 'app-icon.svg'), 'utf8')
+// Reef's app icon places its 20-unit mark at 16 of the tile's 32 units, centered.
+const placement = 'translate(8 8) scale(0.8)'
+if (!source.includes(placement))
+  throw new Error(`Reef's app icon no longer places its mark with ${placement}; update this script`)
 // Enlarge the mark by 35% around the tile's center without changing the tile.
-if (!source.includes('translate(5 5)'))
-  throw new Error(
-    "Reef's favicon no longer places its mark with translate(5 5); update this script",
-  )
-const favicon = source.replace('translate(5 5)', 'translate(1.15 1.15) scale(1.35)')
+const favicon = source.replace(placement, 'translate(5.2 5.2) scale(1.08)')
 const darkFavicon = favicon.replace(
   /fill="(#FFFFFF|#111111)"/g,
   (_, color) => `fill="${color === '#FFFFFF' ? '#111111' : '#FFFFFF'}"`,
@@ -24,7 +26,7 @@ const darkFavicon = favicon.replace(
 // as the system's own items do.
 const trayTemplate = favicon
   .replace(/\s*<rect[^>]*\/>/, '')
-  .replace('translate(1.15 1.15) scale(1.35)', 'translate(0.45 -0.13) scale(1.46)')
+  .replace('translate(5.2 5.2) scale(1.08)', 'translate(3.33 3.33) scale(1.2667)')
   .replace('fill="#111111"', 'fill="#000000"')
 const macArtwork = (svg) =>
   svg
@@ -33,6 +35,11 @@ const macArtwork = (svg) =>
       '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none">\n  <g transform="translate(112 112) scale(25)">',
     )
     .replace('</svg>', '  </g>\n</svg>')
+// Reef's favicon.ico serves browsers that cannot show favicon.svg. An ICO cannot
+// follow the color scheme, so it drops the SVG's style and keeps the light mark.
+const reefFavicon = (await readFile(join(reefPublic, 'favicon.svg'), 'utf8'))
+  .replace(/\s*<style>.*<\/style>/, '')
+  .replace('<path', '<path fill="#000000"')
 
 const scratch = await mkdtemp(join(tmpdir(), 'coral-icons-'))
 try {
@@ -63,6 +70,11 @@ try {
   // Electron reads the `Template` suffix, and `@2x` for Retina displays.
   await copyFile(join(tray, '24x24.png'), join(directory, 'trayTemplate.png'))
   await copyFile(join(tray, '48x48.png'), join(directory, 'trayTemplate@2x.png'))
+  const legacy = join(scratch, 'favicon')
+  await mkdir(legacy)
+  await writeFile(join(legacy, 'source.svg'), reefFavicon)
+  await runIconsTool({ inputFile: join(legacy, 'source.svg'), outputFormat: 'ico', outDir: legacy })
+  await copyFile(join(legacy, 'icon.ico'), join(reefPublic, 'favicon.ico'))
 } finally {
   await rm(scratch, { recursive: true, force: true })
 }
