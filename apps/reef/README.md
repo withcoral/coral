@@ -210,6 +210,27 @@ npm test
 npm run build
 ```
 
+## Coral plugin onboarding
+
+`AGENTS_WITH_AVAILABLE_PLUGINS` names the MCP clients that may have a Coral plugin in
+this deployment, as a comma-separated list:
+
+```bash
+AGENTS_WITH_AVAILABLE_PLUGINS='claude, chatgpt'
+```
+
+The onboarding prompt then tells a client with one of these names that can find and
+install plugins to look for the plugin. If it finds the plugin and the person
+consents, it adds the MCP server through the plugin. Every other client, and every
+client when the variable is unset or empty, adds the server directly. The list only
+advertises a plugin; Reef does not check that it exists.
+
+Reef reads the variable at server startup, so set it in the server environment
+rather than at image build time. It trims each name, lowercases it, collapses
+inner spaces and drops empty and repeated entries. A name has at most 32 letters,
+digits, and single spaces, dots, hyphens or underscores between them, and the list
+has at most 8 names. Any other value fails startup and names the variable.
+
 ## Recorded browser scenarios
 
 See [Reel](e2e/README.md) for the disposable Coral + Reef stack,

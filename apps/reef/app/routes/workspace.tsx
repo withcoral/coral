@@ -18,6 +18,7 @@ import {
 import { agentView, membershipView, ownerView } from '@/lib/management-views.server'
 import { RECIPE_CHOICES } from '@/lib/provider-recipes/library.server'
 import { blockerLabel, listAllProviders, providerPath } from '@/lib/providers.server'
+import { runtimeConfigContext } from '@/lib/runtime-config.server'
 import { consumeWorkspaceOnboarding } from '@/lib/workspace-onboarding.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
 import { ActivitySummary } from '@/views/activity/summary/summary'
@@ -95,6 +96,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
           })),
         },
         onboarding,
+        agentsWithAvailablePlugins: context.get(runtimeConfigContext).agentsWithAvailablePlugins,
       },
       { headers: setCookie ? { ...privateHeaders, 'Set-Cookie': setCookie } : privateHeaders },
     )
