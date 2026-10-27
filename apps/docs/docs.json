@@ -1,37 +1,41 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "linden",
+  "theme": "mint",
   "name": "Coral Docs",
   "description": "Install Coral, publish providers from OpenAPI documents and MCP servers, and let your agents discover and call their operations over MCP.",
-  "logo": {
-    "dark": "/images/coral-wordmark-dark.svg",
-    "light": "/images/coral-wordmark-light.svg"
-  },
-  "favicon": {
-    "dark": "/images/coralMark-dark.png",
-    "light": "/images/coralMark-light.png"
-  },
+  "logo": "/images/coral-logo.svg",
+  "favicon": "/images/favicon.svg",
   "icons": {
     "library": "lucide"
   },
   "appearance": {
-    "default": "system",
+    "default": "light",
     "strict": true
   },
   "colors": {
-    "primary": "#398125",
-    "dark": "#398125",
-    "light": "#B2EAA5"
+    "primary": "#171717",
+    "light": "#fafafa",
+    "dark": "#171717"
+  },
+  "background": {
+    "color": {
+      "light": "#ffffff"
+    }
   },
   "fonts": {
-    "family": "Encode Sans Semi Expanded"
+    "heading": {
+      "family": "ABC Marist",
+      "weight": 400,
+      "source": "https://withcoral.com/fonts/ABCMarist-Regular.woff2",
+      "format": "woff2"
+    },
+    "body": {
+      "family": "Inter"
+    }
   },
   "styling": {
     "codeblocks": {
-      "theme": {
-        "light": "github-light",
-        "dark": "github-dark"
-      }
+      "theme": "github-light-default"
     }
   },
   "css": "/global.css",
@@ -45,11 +49,6 @@
       {
         "type": "github",
         "href": "https://github.com/withcoral/coral"
-      },
-      {
-        "type": "discord",
-        "_comment": "Mintlify only supports discord.gg link, so we can't use the canonical discord link here https://withcoral.com/discord",
-        "href": "https://discord.gg/h9aun8KpFF"
       }
     ]
   },
@@ -116,8 +115,8 @@
     }
   },
   "thumbnails": {
-    "background": "/images/og-image-dark.png",
-    "appearance": "dark"
+    "background": "/images/og-image.png",
+    "appearance": "light"
   },
   "seo": {
     "metatags": {

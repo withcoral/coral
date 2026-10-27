@@ -1,4 +1,4 @@
-![Coral cover](./apps/docs/images/cover.png)
+![Coral, with engraved orange corals](./apps/docs/images/cover.webp)
 
 # Coral
 
@@ -8,7 +8,7 @@ sandbox, adds the credentials, and checks every call against your policy.
 
 [![CI](https://github.com/withcoral/coral/actions/workflows/ci.yml/badge.svg)](https://github.com/withcoral/coral/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/withcoral/coral)](./LICENSE)
-[![Docs](https://img.shields.io/badge/docs-withcoral.com-398125)](https://withcoral.com/docs)
+[![Docs](https://img.shields.io/badge/docs-withcoral.com-171717)](https://withcoral.com/docs)
 [![Discord](https://img.shields.io/badge/chat-Discord-5865F2?logo=discord&logoColor=white)](https://withcoral.com/discord)
 
 ## Why Coral

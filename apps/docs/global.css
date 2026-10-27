@@ -1,10 +1,122 @@
-:root,
-[data-theme="light"] {
-  --text-color: rgba(0, 0, 0, 0.87);
-  --background-color: #f0f0f0;
+/* The design language of withcoral.com: ABC Marist titles, Inter text,
+   JetBrains Mono code, neutral greys with hairline borders, and coral
+   accents, on white. docs.json sets the colors and the title and body
+   fonts. */
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400..700&display=swap");
+
+:root {
+  /* Mintlify falls back to a sans. Fall back to a serif, as withcoral.com
+     does, wherever ABC Marist can't load, such as a local preview. */
+  --font-family-headings-custom: "ABC Marist", Georgia, serif !important;
+  --coral-eyebrow: #d53c05;
+  --coral-glow: #fdf2ef;
+  --hairline: rgb(0 0 0 / 0.06);
 }
 
-[data-theme="dark"] {
-  --text-color: rgba(255, 255, 255, 0.93);
-  --background-color: #191919;
+/* A soft coral pool behind the top of the content, as on the marketing
+   hero. It stays narrow enough to clear the sidebar, whose scroll fade
+   paints white. */
+body {
+  position: relative;
+}
+
+body::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 640px;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(ellipse 35% 480px at 50% 0, var(--coral-glow), transparent);
+}
+
+/* The lockup at the size the marketing navbar sets it. */
+#navbar .nav-logo {
+  height: 22px;
+}
+
+/* ABC Marist has one weight. Set titles at it rather than letting the
+   browser draw a faux bold. */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-weight: 400 !important;
+  font-synthesis-weight: none;
+}
+
+#page-title {
+  letter-spacing: -0.033em;
+  line-height: 1;
+}
+
+.prose :is(h2, h3, h4) {
+  letter-spacing: -0.01em;
+}
+
+/* Interface labels stay in the text face. */
+#table-of-contents h2,
+#sidebar h5 {
+  font-family: var(--font-family-body-custom) !important;
+  font-weight: 500 !important;
+}
+
+.eyebrow {
+  color: var(--coral-eyebrow) !important;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+/* The current page, as a pale pill like the marketing navbar's links. */
+#sidebar a[aria-current="page"],
+#sidebar li[data-active="true"] > a {
+  background-color: rgb(0 0 0 / 0.05);
+}
+
+/* Links at text weight with a faint underline, as in the marketing blog. */
+.prose a.link {
+  font-weight: inherit;
+  border-bottom: 0;
+  text-decoration: underline;
+  text-decoration-color: rgb(0 0 0 / 0.2);
+  text-underline-offset: 3px;
+}
+
+.prose a.link:hover {
+  text-decoration-color: rgb(0 0 0 / 0.5);
+}
+
+/* Code. */
+pre,
+code,
+kbd,
+.font-mono {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace !important;
+}
+
+.code-block {
+  border-color: var(--hairline) !important;
+  border-radius: 0.75rem;
+}
+
+.code-block,
+.code-block [data-component-part="code-block-root"] {
+  background-color: #fafafa !important;
+}
+
+.prose :not(pre) > code {
+  border: 0;
+  border-radius: 0.375rem;
+  background-color: #f5f5f5;
+  color: #404040;
+  padding: 0.125rem 0.375rem;
+  font-size: 0.85em;
+}
+
+/* Cards and tables take the same hairline as code. */
+.card,
+.prose table {
+  border-color: var(--hairline) !important;
 }
