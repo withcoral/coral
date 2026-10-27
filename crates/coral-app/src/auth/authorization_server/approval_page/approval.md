@@ -5,7 +5,7 @@ the stylesheet and its CSP hash. `../approval_page.rs` embeds these
 hand-authored files in Coral's authorization listener. No frontend build, Reef
 server, JavaScript, bundled fonts, or external assets are required. The page
 uses system fonts and the browser's light/dark preference.
-The Coral mark is embedded inline from `apps/reef/public/coral-light.svg`. The
+The Coral mark is embedded inline from `apps/reef/public/favicon.svg`. The
 client's icon is a generic one: client-provided artwork is neither fetched nor
 treated as verified branding. The left pane says what the client asks for and
 where the code goes; the right pane holds the decision and mirrors it: the
