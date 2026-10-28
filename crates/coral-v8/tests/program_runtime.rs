@@ -1675,6 +1675,85 @@ fn tool_error_preserves_optional_trace_and_resists_program_replacement() {
     );
 }
 
+/// Names a trace and lets each value crossing to it encode to at most
+/// `TRACED_HOST_BYTES`.
+struct TracedHost;
+
+const TRACED_HOST_BYTES: usize = 512;
+
+impl ProgramHost for TracedHost {
+    fn value_limits(&self) -> coral_value::ValueLimits {
+        coral_value::ValueLimits::new(1024, TRACED_HOST_BYTES, 1024, 1024).expect("limits")
+    }
+
+    fn trace_id(&self) -> Option<String> {
+        Some("0123456789abcdef0123456789abcdef".to_string())
+    }
+
+    fn invoke(
+        self: Arc<Self>,
+        _call_path: String,
+        _arguments_json: String,
+        _location: Option<AuthoredLocation>,
+    ) -> coral_v8::ToolFuture {
+        Box::pin(async { Ok(r#"{"data":null,"metadata":{"kind":"http"}}"#.to_string()) })
+    }
+
+    fn emit(
+        &self,
+        _value_json: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
+        Ok(())
+    }
+
+    fn log(
+        &self,
+        _level: ConsoleLevel,
+        _message: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn tool_errors_decided_before_the_host_name_its_trace() {
+    let program = ProgramCompiler::new(IsolateLimits::default())
+        .expect("compiler")
+        .compile(
+            compilation_deadline(),
+            &format!(
+                r#"
+        const seen = [];
+        for (const call of [
+            () => coral.providers.weather.getForecast(1n),
+            () => coral.providers.weather.getForecast({{}}, {{}}),
+            () => coral.providers.weather.getForecast({{ body: "x".repeat({TRACED_HOST_BYTES}) }}),
+        ]) {{
+            try {{ await call(); seen.push("accepted"); }}
+            catch (error) {{ seen.push([error.code, error.traceId]); }}
+        }}
+        return seen;
+    "#
+            ),
+        )
+        .expect("compile");
+    let output = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, Arc::new(TracedHost))
+        .expect("handled");
+    let trace = "0123456789abcdef0123456789abcdef";
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(output.final_value_json().expect("value"))
+            .expect("JSON"),
+        serde_json::json!([
+            ["invalid_input", trace],
+            ["invalid_input", trace],
+            ["tool_input_too_large", trace],
+        ])
+    );
+}
+
 #[test]
 fn unhandled_tool_errors_fail_execution_even_without_await() {
     let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("compiler");

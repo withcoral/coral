@@ -385,7 +385,8 @@ async fn a_tool_invocation_traces_its_gates_fence_and_persistence_under_the_run(
 
 /// A Run that ends in error names its Run Trace: its terminal update and
 /// detail carry the Run Trace identifier, and so does the Coral Failure the
-/// Program saw. A Run that succeeds names none.
+/// Program saw, whether Coral or the Program runtime decided it. A Run that
+/// succeeds names none.
 #[tokio::test]
 async fn a_failed_run_and_its_coral_failure_name_the_run_trace() {
     capture();
@@ -406,6 +407,7 @@ async fn a_failed_run_and_its_coral_failure_name_the_run_trace() {
     let mut ended = Vec::new();
     for source in [
         "await coral.providers.weather.getForecast({});",
+        "await coral.providers.weather.getForecast(1n);",
         "return 1;",
     ] {
         let accepted = runs
@@ -433,23 +435,22 @@ async fn a_failed_run_and_its_coral_failure_name_the_run_trace() {
             .expect("inspect the Run");
         ended.push((update, record, detail));
     }
-    let [
-        (failed, failed_record, failed_detail),
-        (succeeded, _, succeeded_detail),
-    ] = ended.try_into().ok().expect("two Runs");
+    let (succeeded, _, succeeded_detail) = ended.pop().expect("the succeeded Run");
 
-    let run_trace = failed_record.trace.expect("a stored Run Trace").trace_id();
-    assert_eq!(failed.state(), RunState::Failed);
-    assert_eq!(failed.trace_id(), Some(&run_trace));
-    assert_eq!(failed_detail.trace_id.as_ref(), Some(&run_trace));
-    let Some(RunTerminalOutcome::Failed(failure)) = failed.terminal_outcome() else {
-        panic!("the call to a disabled Tool fails its Run: {failed:?}");
-    };
-    let seen = failure
-        .error()
-        .and_then(|error| error.tool.as_ref())
-        .and_then(|tool| tool.trace_id.as_deref());
-    assert_eq!(seen, Some(run_trace.as_str()));
+    for (failed, failed_record, failed_detail) in ended {
+        let run_trace = failed_record.trace.expect("a stored Run Trace").trace_id();
+        assert_eq!(failed.state(), RunState::Failed);
+        assert_eq!(failed.trace_id(), Some(&run_trace));
+        assert_eq!(failed_detail.trace_id.as_ref(), Some(&run_trace));
+        let Some(RunTerminalOutcome::Failed(failure)) = failed.terminal_outcome() else {
+            panic!("the rejected call fails its Run: {failed:?}");
+        };
+        let seen = failure
+            .error()
+            .and_then(|error| error.tool.as_ref())
+            .and_then(|tool| tool.trace_id.as_deref());
+        assert_eq!(seen, Some(run_trace.as_str()));
+    }
     assert_eq!(succeeded.state(), RunState::Succeeded);
     assert_eq!(succeeded.trace_id(), None);
     assert_eq!(succeeded_detail.trace_id, None);

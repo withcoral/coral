@@ -89,6 +89,10 @@ impl coral_v8::ProgramHost for RunProgramHost {
         self.value_limits
     }
 
+    fn trace_id(&self) -> Option<String> {
+        self.trace_id.clone()
+    }
+
     fn invoke(
         self: Arc<Self>,
         call_path: String,
