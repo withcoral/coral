@@ -83,6 +83,20 @@ export const NativeFormConstraints: Story = {
     await expect(input).toHaveValue('Operations team')
     await expect(input).toBeRequired()
     await expect(input).toHaveAttribute('maxlength', '256')
+    await expect(input).not.toHaveAttribute('data-1p-ignore')
+    await expect(input).not.toHaveAttribute('data-lpignore')
+    await expect(input).not.toHaveAttribute('data-bwignore')
+  },
+}
+
+export const AutoCompleteOff: Story = {
+  args: { ariaLabel: 'Function path', autoComplete: 'off' },
+  play: async ({ canvas }) => {
+    const input = canvas.getByRole('textbox', { name: 'Function path' })
+    await expect(input).toHaveAttribute('autocomplete', 'off')
+    await expect(input).toHaveAttribute('data-1p-ignore')
+    await expect(input).toHaveAttribute('data-lpignore', 'true')
+    await expect(input).toHaveAttribute('data-bwignore')
   },
 }
 
