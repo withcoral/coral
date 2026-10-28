@@ -38,6 +38,17 @@ pub(crate) struct RunRecord {
 }
 
 impl RunRecord {
+    /// The Run Trace identifier its terminal diagnostic names: only for a
+    /// Run that failed, timed out or was interrupted.
+    pub(crate) fn diagnostic_trace_id(&self) -> Option<coral_telemetry::TraceId> {
+        matches!(
+            self.state,
+            RunState::Failed | RunState::TimedOut | RunState::Interrupted
+        )
+        .then(|| self.trace.as_ref().map(coral_telemetry::RunTrace::trace_id))
+        .flatten()
+    }
+
     /// Checks Emissions, Logs, Invocation results, and the Final Value against
     /// the shared budget. The Final Value is checked only at Run completion.
     pub(crate) fn output_fits(&self, additional: usize) -> bool {

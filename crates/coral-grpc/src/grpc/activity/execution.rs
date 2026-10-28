@@ -448,6 +448,10 @@ pub(super) async fn inspect_run(
             .last()
             .map_or(input.event_after, coral_run::RunEvent::sequence),
         has_more_events: detail.has_more_events,
+        trace_id: detail
+            .trace_id
+            .as_ref()
+            .map_or_else(String::new, |trace| trace.as_str().to_string()),
         events: detail.events.iter().map(|e| event(&workspace, e)).collect(),
         terminal: detail.terminal.map(|terminal| {
             use wire::inspect_run_response::Terminal as T;

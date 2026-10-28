@@ -826,6 +826,7 @@ pub struct RunUpdate {
     next_cursor: RunCursor,
     has_more: bool,
     terminal_outcome: Option<RunTerminalOutcome>,
+    pub(crate) trace_id: Option<coral_telemetry::TraceId>,
 }
 
 impl RunUpdate {
@@ -856,7 +857,15 @@ impl RunUpdate {
             next_cursor,
             has_more,
             terminal_outcome,
+            trace_id: None,
         })
+    }
+
+    /// The Run Trace identifier of a Run that failed, timed out or was
+    /// interrupted, for operator correlation. It grants no authority.
+    #[must_use]
+    pub const fn trace_id(&self) -> Option<&coral_telemetry::TraceId> {
+        self.trace_id.as_ref()
     }
 
     /// Returns the effective limits retained at Run admission.

@@ -20,10 +20,12 @@ pub(crate) async fn execute(
     output: ProgramOutputWriter,
     value_limits: ValueLimits,
     stop: Arc<ExecutionStop>,
+    trace_id: Option<String>,
 ) -> ExecutionCompletion {
     let host = Arc::new(RunProgramHost {
         runtime: tokio::runtime::Handle::current(),
         span: tracing::Span::current(),
+        trace_id,
         value_limits,
         stop: stop.clone(),
         linked_snapshots,
@@ -39,6 +41,8 @@ struct RunProgramHost {
     runtime: tokio::runtime::Handle,
     /// The Run's execute span: each Tool Invocation's span is its child.
     span: tracing::Span,
+    /// The Run Trace identifier each Coral Failure names to the Program.
+    trace_id: Option<String>,
     value_limits: ValueLimits,
     stop: Arc<ExecutionStop>,
     /// Linked Saved Function path to the identity of the Run's snapshot.
@@ -95,6 +99,7 @@ impl coral_v8::ProgramHost for RunProgramHost {
         let source_location = self.source_location(location);
         let runtime = self.runtime.clone();
         let span = self.span.clone();
+        let trace_id = self.trace_id.clone();
         // Start independently of V8 polling. Run termination owns cancellation
         // and durable child shutdown even if execution drops this JoinHandle.
         let invocation = runtime.spawn(
@@ -104,7 +109,7 @@ impl coral_v8::ProgramHost for RunProgramHost {
                     coral_v8::ToolHostError::Rejected {
                         code: CoralFailure::InvalidInput.code(),
                         message: CoralFailure::InvalidInput.message().into(),
-                        trace_id: None,
+                        trace_id: trace_id.clone(),
                     }
                 })?;
                 self.invoker
@@ -115,7 +120,7 @@ impl coral_v8::ProgramHost for RunProgramHost {
                             coral_v8::ToolHostError::Rejected {
                                 code: failure.code(),
                                 message: failure.message(),
-                                trace_id: None,
+                                trace_id: trace_id.clone(),
                             }
                         }
                         InvocationHostError::Upstream {

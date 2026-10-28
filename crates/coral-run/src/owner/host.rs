@@ -481,6 +481,10 @@ fn start_program(
     let linked_snapshots = accepted.linked_snapshots.clone();
     let limits = accepted.value_limits;
     let stop = handle.stop();
+    let trace_id = accepted
+        .trace
+        .as_ref()
+        .map(|trace| trace.trace_id().as_str().to_string());
     let handle = handle.clone();
     let span = phase_span(accepted.trace.as_ref(), &accepted.id, Phase::Execute);
     tokio::spawn(
@@ -493,6 +497,7 @@ fn start_program(
                 output,
                 limits,
                 stop,
+                trace_id,
             )
             .await;
             handle.send(Message::ProgramEnded(completion));

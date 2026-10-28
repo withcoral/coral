@@ -163,6 +163,7 @@ async fn read_update(
     } else {
         last_sequence
     };
+    let trace_id = run.diagnostic_trace_id();
     let mut update = RunUpdate::new(
         run.id.clone(),
         run.state,
@@ -173,6 +174,7 @@ async fn read_update(
         run.value_limits,
     )?;
     update.required_actions = actions;
+    update.trace_id = trace_id;
     Ok(update)
 }
 

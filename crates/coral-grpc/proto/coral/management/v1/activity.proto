@@ -548,6 +548,9 @@ message InspectRunResponse {
   // The request's account_connection, if it belongs to this Run and its invoking User
   // can still see it; otherwise empty. Read its detail through the Accounts service.
   string account_connection = 13;
+  // W3C trace ID of a Run that failed, timed out or was interrupted, or empty.
+  // Give it to the operator to find the Run in Coral's telemetry.
+  string trace_id = 14;
 }
 // The Program finished.
 message ActivityRunSucceeded {
