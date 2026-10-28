@@ -128,9 +128,9 @@ impl Recovered {
     /// A decision, as [`OwnerState::decide`] applies it: past the request's
     /// deadline its expiry comes first and the decision is a repeat, as it
     /// is after an expiry applied before; once the owner accepts no more
-    /// requests, the decision closes the request. Past the Run deadline the
-    /// expiry still comes first, since the request's timer comes no later: a
-    /// live owner's has fired by then.
+    /// requests, the decision closes the request. A decision that finds its
+    /// request's deadline passed applies the expiry first, as a live owner's
+    /// decision does, even past the Run deadline, which comes no earlier.
     fn decide(&mut self, request: DecisionRequest, limits: &OwnerLimits, now_unix_nanos: i64) {
         if self.steps.iter().any(
             |step| matches!(step, RecoveryStep::Expire(expired) if *expired == request.approval),
