@@ -20,14 +20,14 @@ use crate::testing::{SpanCapture, attribute};
 const ROUTE: &str = "/workspaces/{workspace_id}/mcp";
 
 /// Sends `request` to `router` and returns the spans it finished, with the
-/// response body.
+/// response body, empty if it broke off.
 async fn served(router: Router, request: Request<Body>) -> (Vec<SpanData>, Bytes) {
     let capture = SpanCapture::default();
     let _subscriber = tracing::subscriber::set_default(capture.subscriber());
     let response = router.oneshot(request).await.expect("response");
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
-        .expect("body");
+        .unwrap_or_default();
     (capture.finished(), body)
 }
 
@@ -239,6 +239,10 @@ enum Delivery {
     Headers,
     /// Any other call sends it in trailers after the body.
     Trailers,
+    /// The caller cuts a stream off, so no status arrives.
+    CutOff,
+    /// The stream breaks off with an error before its status.
+    BrokenOff,
 }
 
 /// A response body that yields the given frames, then ends.
@@ -264,8 +268,13 @@ impl http_body::Body for Frames {
 
 /// A gRPC request span is named by its method, unless the call ended
 /// UNIMPLEMENTED: then the caller chose the method, and it stays off. Only
-/// the server-fault statuses fail the span, wherever the status arrives.
+/// the server-fault statuses fail the span, wherever the status arrives. A
+/// stream that ends early still names its method and records a status.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of how a gRPC call's status arrives, or does not"
+)]
 async fn grpc_request_spans_name_only_served_methods() {
     const METHOD: &str = "coral.management.v1.WorkspaceService/UpdateWorkspace";
     for (path, code, delivery, name, method, status, failed) in [
@@ -297,6 +306,25 @@ async fn grpc_request_spans_name_only_served_methods() {
             "UNIMPLEMENTED",
             true,
         ),
+        // No code arrives for a stream that ends early; its span records one.
+        (
+            METHOD,
+            0,
+            Delivery::CutOff,
+            METHOD,
+            METHOD,
+            "CANCELLED",
+            false,
+        ),
+        (
+            METHOD,
+            0,
+            Delivery::BrokenOff,
+            METHOD,
+            METHOD,
+            "UNKNOWN",
+            true,
+        ),
     ] {
         let context = format!("{path} {code} {delivery:?}");
         let router = trace_grpc_routes(Router::new().route(
@@ -308,6 +336,13 @@ async fn grpc_request_spans_name_only_served_methods() {
                     Delivery::Headers => (status, Body::empty()).into_response(),
                     Delivery::Trailers => {
                         Frames::body([Ok(Frame::trailers(status))]).into_response()
+                    }
+                    Delivery::CutOff => {
+                        Frames::body([Ok(Frame::data(Bytes::from_static(b"message")))])
+                            .into_response()
+                    }
+                    Delivery::BrokenOff => {
+                        Frames::body([Err(std::io::Error::other("Canary"))]).into_response()
                     }
                 }
             }),

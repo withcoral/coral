@@ -60,6 +60,8 @@ const GRPC_STATUS_NAMES: [&str; 17] = [
 /// Codes that mark a server span failed: the server's faults, not the caller's.
 const GRPC_SERVER_ERRORS: [i32; 6] = [2, 4, 12, 13, 14, 15];
 
+const GRPC_CANCELLED: i32 = 1;
+const GRPC_UNKNOWN: i32 = 2;
 const GRPC_UNIMPLEMENTED: i32 = 12;
 
 /// Opens an HTTP server span for each request to the routes `router` has so
@@ -79,9 +81,11 @@ where
 
 /// Opens a gRPC server span for each call to the routes `router` has so far.
 ///
-/// A served method names the span, which stays open until the call's status
-/// arrives, in the response headers or in the trailers after the body. Only
-/// the server-fault statuses fail it.
+/// A served method names the span, which stays open until the response body
+/// ends. The call's status arrives in the response headers or in the trailers
+/// after the body. A stream the caller cuts off before its status records
+/// CANCELLED, and one that breaks off records UNKNOWN. Only the server-fault
+/// statuses fail the span.
 pub fn trace_grpc_routes<S>(router: Router<S>) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
@@ -235,7 +239,8 @@ fn record_grpc_status(span: &tracing::Span, path: &str, code: i32) {
 }
 
 /// A response body that holds its request's span open until it is dropped,
-/// and fails the span if it breaks off.
+/// and fails the span if it breaks off. A gRPC body that ends without its
+/// status records one.
 struct TracedBody {
     body: Body,
     span: tracing::Span,
@@ -265,9 +270,10 @@ impl http_body::Body for TracedBody {
                 }
             }
             // The error's text may come from anywhere, so only its kind is kept.
-            Poll::Ready(Some(Err(_error))) => {
-                record_failure(&this.span, "response_body", this.body_error);
-            }
+            Poll::Ready(Some(Err(_error))) => match this.grpc_path.take() {
+                Some(path) => record_grpc_status(&this.span, &path, GRPC_UNKNOWN),
+                None => record_failure(&this.span, "response_body", this.body_error),
+            },
             Poll::Ready(None) | Poll::Pending => {}
         }
         frame
@@ -279,6 +285,15 @@ impl http_body::Body for TracedBody {
 
     fn size_hint(&self) -> SizeHint {
         self.body.size_hint()
+    }
+}
+
+impl Drop for TracedBody {
+    fn drop(&mut self) {
+        // A gRPC stream dropped before its status was cut off by the caller.
+        if let Some(path) = self.grpc_path.take() {
+            record_grpc_status(&self.span, &path, GRPC_CANCELLED);
+        }
     }
 }
 
