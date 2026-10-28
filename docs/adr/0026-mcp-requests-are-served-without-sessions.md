@@ -12,7 +12,7 @@ landed elsewhere found no session. It was the last piece of per-instance state i
 ([ADR 0025](0025-outside-run-requests-reach-the-run-owner-through-the-run-inbox.md)) let any instance accept an outside
 Run Request.
 
-Coral now serves every MCP request on its own. No `Mcp-Session-Id` is issued and nothing is kept between requests: each
+Coral now serves every MCP request on its own. No session id is issued and nothing is kept between requests: each
 request's credential and endpoint name its Principal and Workspace (a Workspace MCP Endpoint fixes the Workspace in its
 URL, the Organization MCP Endpoint takes it from the credential, and a credential-free request to a local Workspace
 endpoint acts as the implicit local User, as before). A client on a protocol version before
@@ -36,10 +36,10 @@ elicitation, is in
   Code keeps its prompts on connections that negotiate 2026-07-28, its default since the v2 runtime; a connection it
   falls back to `initialize` on, or that `MCP_PROTOCOL_NEGOTIATION=legacy` forces, loses them too. Claude.ai and Claude
   Desktop never prompted.
-- **No standalone stream.** `GET` and `DELETE` on an MCP endpoint answer 405. Nothing is announced to a client outside
-  the response to its own request, so a prompt is no longer withdrawn when the action is decided elsewhere; the next Run
-  Update shows the decision.
-- **A session header is ignored.** A request that still carries `Mcp-Session-Id` is served like any other.
+- **No standalone stream.** The MCP endpoints serve only requests, never a stream a client opens on its own or a
+  request to end a session. Nothing is announced to a client outside the response to its own request, so a prompt is no
+  longer withdrawn when the action is decided elsewhere; the next Run Update shows the decision.
+- **A stale session header is ignored.** A request that still names a session is served like any other.
 
 ## Rejected
 
