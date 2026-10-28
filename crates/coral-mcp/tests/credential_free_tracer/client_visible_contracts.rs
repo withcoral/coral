@@ -11,12 +11,23 @@ use coral_run::{ProgramSource, RunObservation, RunState, RunSubmission, RunTimeo
 use coral_workspace::{AgentDisplayName, AuthenticatedPrincipal, OrganizationRole, WorkspaceRole};
 use serde_json::{Value, json};
 
-use super::{RawSession, Tracer, change};
+use super::{RawSession, Tracer, change, untraced};
 use coral_mcp::SUPPORTED_PROTOCOL_VERSIONS;
 use rmcp::model::ProtocolVersion;
 
 const PARKED: &str = "return await coral.providers.weather.getForecast({});";
 const ABSENT_RUN: &str = "00000000-0000-4000-8000-000000000000";
+
+/// A raw failed tool result without its per-call `trace_id`, to compare two
+/// calls. Its `content[0]` text is checked on receipt to be the JSON of
+/// `structuredContent`, so the structured result stands for both.
+fn untraced_result(result: &Value) -> Value {
+    json!({
+        "isError": result["isError"],
+        "content": result["content"].as_array().map(Vec::len),
+        "structuredContent": untraced(&result["structuredContent"]),
+    })
+}
 
 /// The only part of a tool result that a content-only client reads.
 fn text_json(result: &Value) -> Value {
@@ -216,8 +227,8 @@ async fn agents_observe_and_cancel_only_their_own_runs() {
                     "{version} {tool}"
                 );
                 assert_eq!(
-                    run_tool(session, tool, run).await,
-                    absent,
+                    untraced_result(&run_tool(session, tool, run).await),
+                    untraced_result(&absent),
                     "{version} {tool}: {case} looks absent"
                 );
             }
@@ -307,5 +318,9 @@ async fn check_concealed_descriptions(
         "authoring_description_not_found",
         "{version}"
     );
-    assert_eq!(concealed, absent, "{version}: a disabled Tool looks absent");
+    assert_eq!(
+        untraced_result(&concealed),
+        untraced_result(&absent),
+        "{version}: a disabled Tool looks absent"
+    );
 }
