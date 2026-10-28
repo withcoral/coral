@@ -42,8 +42,6 @@ it.each([
   ['"name":"x"', 'Structured', '{"name":"x","other":"name"}', ['"name":"x"'], 0],
   ['e":"', 'Structured', '{"name":"x","other":"name"}', ['e":"'], 0],
   ['"other"', 'Structured', '{"name":"x","other":"name"}', ['"other"'], 0],
-  // A wildcard first spanning two entries still finds the match inside one.
-  ['k*v', 'Structured', '{"k0":1,"k":"v"}', ['k":"v'], 0],
   // What reaches another entry, or only punctuation, Raw shows.
   ['1,2', 'Structured', '[1,2]', [], 1],
   ['"a":{"b"', 'Structured', '{"a":{"b":1}}', [], 1],

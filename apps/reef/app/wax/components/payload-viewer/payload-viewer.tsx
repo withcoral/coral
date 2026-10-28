@@ -1,6 +1,14 @@
-import { useVirtualizer } from '@tanstack/react-virtual'
+import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual'
 import classNames from 'classnames'
-import { useEffect, useEffectEvent, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 
 import { filterQuery } from '@/utils/filter-query'
 import * as Button from '@/wax/components/button'
@@ -16,6 +24,7 @@ import { jsonStructure, valueCount, type JsonNode } from './json-structure'
 import {
   findMatches,
   lineUnits,
+  lowerBound,
   LONG_STRING_LENGTH,
   structureUnits,
   type Range,
@@ -34,11 +43,14 @@ const ROW_ESTIMATE = 22
 const BODY_PADDING = 12
 /** Each level of a structure indents its rows this much. */
 const INDENT = 18
+/** A wrapped line longer than this shows as consecutive rows of this many characters, so a
+ * huge line, such as minified JSON, mounts only near the view too. */
+const SEGMENT_LENGTH = 500
 
 type Format = 'json' | 'text'
 type Mode = 'structured' | 'raw'
-/** What the expanded viewer opens with: the view you had. */
-type ViewState = { mode: Mode; wrap: boolean; folded: Set<number>; query: string; current: number }
+/** One row of a line view: part of line `line`, from `start` to `end` in the payload. */
+type Segment = { line: number; start: number; end: number }
 /** One line of a structure: a value, with its key before it and `trailing` (a comma) after
  * it, or the line that closes an open container. */
 type Row =
@@ -89,8 +101,12 @@ function Viewer({
   fileName,
   onExpandedChange,
   expanded,
-  initial,
-}: PayloadViewerProps & { expanded: boolean; initial?: ViewState }) {
+  initialFolded,
+}: PayloadViewerProps & {
+  expanded: boolean
+  /** The expanded viewer opens with the folds you had; nothing else changes inline. */
+  initialFolded?: Set<number>
+}) {
   const [open, setOpen] = useState(false)
   // From the open until the close has ended, so focus is back on Expand before a page moves.
   const [held, setHeld] = useState(false)
@@ -110,11 +126,11 @@ function Viewer({
     [structure, value],
   )
   const size = useMemo(() => byteSize(value), [value])
-  const [mode, setMode] = useState<Mode>(initial?.mode ?? 'structured')
-  const [wrap, setWrap] = useState(initial?.wrap ?? true)
-  const [folded, setFolded] = useState(() => initial?.folded ?? initialFolds(structure, large))
-  const [query, setQuery] = useState(initial?.query ?? '')
-  const [current, setCurrent] = useState(initial?.current ?? 0)
+  const [mode, setMode] = useState<Mode>('structured')
+  const [wrap, setWrap] = useState(true)
+  const [folded, setFolded] = useState(() => initialFolded ?? initialFolds(structure, large))
+  const [query, setQuery] = useState('')
+  const [current, setCurrent] = useState(0)
   const structured = structure !== null && mode === 'structured'
   const search = useMemo(() => filterQuery(query), [query])
   const parts = useMemo(() => (structure ? structureUnits(structure) : null), [structure])
@@ -138,46 +154,69 @@ function Viewer({
     () => (structured && structure ? structureRows(structure, folded) : null),
     [structured, structure, folded],
   )
-  /** By unit offset, the row that shows it. */
+  const segments = useMemo(
+    () => lineSegments(lines, wrap ? SEGMENT_LENGTH : Infinity),
+    [lines, wrap],
+  )
+  /** By unit offset, the structure row that shows it. */
   const rowOf = useMemo(() => {
     const at = new Map<number, number>()
-    if (rows)
-      rows.forEach((row, index) => {
-        if (row.kind !== 'value') return
-        if (row.keyStart !== undefined) at.set(row.keyStart, index)
-        if (row.node.kind !== 'object' && row.node.kind !== 'array') at.set(row.node.start, index)
-      })
-    else lines.forEach((line, index) => at.set(line.start, index))
+    rows?.forEach((row, index) => {
+      if (row.kind !== 'value') return
+      if (row.keyStart !== undefined) at.set(row.keyStart, index)
+      if (row.node.kind !== 'object' && row.node.kind !== 'array') at.set(row.node.start, index)
+    })
     return at
-  }, [rows, lines])
+  }, [rows])
+  /** The row that shows the payload at `offset`, in the unit starting at `unitStart`. */
+  const rowAt = (unitStart: number, offset: number) =>
+    rows
+      ? rowOf.get(unitStart)
+      : lowerBound(segments.length, (index) => segments[index]!.start > offset) - 1
   const body = useRef<HTMLDivElement>(null)
+  // The row that holds focus stays mounted, so focus never falls out of the viewer.
+  const [focusedRow, setFocusedRow] = useState<number | null>(null)
+  const getItemKey = useCallback(
+    (index: number) => (rows ? rowKey(rows[index]!) : segments[index]!.start),
+    [rows, segments],
+  )
+  const rangeExtractor = useCallback(
+    (range: Parameters<typeof defaultRangeExtractor>[0]) => {
+      const indexes = defaultRangeExtractor(range)
+      return focusedRow === null || focusedRow >= range.count || indexes.includes(focusedRow)
+        ? indexes
+        : [...indexes, focusedRow].toSorted((a, b) => a - b)
+    },
+    [focusedRow],
+  )
   // oxlint-disable-next-line react/incompatible-library -- TanStack Virtual owns scroll measurements; only its rows and sizes cross into render.
   const virtualizer = useVirtualizer({
-    count: rows ? rows.length : lines.length,
+    count: rows ? rows.length : segments.length,
     getScrollElement: () => body.current,
     // Before the body lays out, as on the server, the first rows render, so they show at once.
     initialRect: { width: 800, height: 720 },
     estimateSize: () => ROW_ESTIMATE,
-    getItemKey: (index) => (rows ? rowKey(rows[index]!) : lines[index]!.start),
+    getItemKey,
+    rangeExtractor,
     paddingStart: BODY_PADDING,
     paddingEnd: BODY_PADDING,
     overscan: 20,
   })
-  // The match to scroll to after the next render, and then its mark, once it has mounted.
-  // The expanded viewer opens on the match you were at.
-  const reveal = useRef<'row' | 'mark' | null>(initial?.query ? 'row' : null)
+  // After Find moves, the match's row scrolls into view; then its mark, once it has mounted.
+  const reveal = useRef<'row' | 'mark' | null>(null)
   useEffect(() => {
     if (reveal.current === 'row') {
       const match = matches[current]
-      const row = match && rowOf.get(units[match.units[0]!]!.start)
+      const row = match && rowAt(units[match.units[0]!]!.start, match.ranges[0]![0])
       reveal.current = row === undefined ? null : 'mark'
       if (row !== undefined) virtualizer.scrollToIndex(row, { align: 'center' })
-    } else if (reveal.current === 'mark') {
-      const mark = body.current?.querySelector('[aria-current="true"]')
-      if (!mark) return
-      reveal.current = null
-      mark.scrollIntoView?.({ block: 'nearest' })
     }
+    // A mark already mounted shows at once; one that mounts later shows when it renders.
+    if (reveal.current !== 'mark') return
+    const mark = body.current?.querySelector('[aria-current="true"]')
+    if (!mark) return
+    reveal.current = null
+    mark.scrollIntoView?.({ block: 'nearest' })
   })
   /** Moves to match `index` of `found` in `inUnits`, unfolding whatever hides it. */
   const go = (index: number, found: typeof matches, inUnits: Unit[]) => {
@@ -211,15 +250,15 @@ function Viewer({
     return byUnit
   }, [matches, units])
   const unitIndex = useMemo(() => new Map(units.map((unit, index) => [unit.start, index])), [units])
-  /** `text`, the unit starting at `start`, with its matches marked; `cut` cuts it short. */
-  const marked = (start: number, text: string, cut = text.length): ReactNode => {
+  /** `text`, the unit starting at `start`, from `from` to `cut`, with its matches marked. */
+  const marked = (start: number, text: string, cut = text.length, from = 0): ReactNode => {
     const highlights: Highlight[] = (marks.get(unitIndex.get(start) ?? -1) ?? [])
-      .filter(({ range }) => range[0] < cut)
+      .filter(({ range }) => range[0] < cut && range[1] > from)
       .map(({ range, index }) => ({
-        range: [range[0], Math.min(range[1], cut)],
+        range: [Math.max(range[0], from) - from, Math.min(range[1], cut) - from],
         current: index === current,
       }))
-    return <HighlightedMatches text={text.slice(0, cut)} highlights={highlights} />
+    return <HighlightedMatches text={text.slice(from, cut)} highlights={highlights} />
   }
   const toggle = (start: number) =>
     setFolded((before) => {
@@ -294,7 +333,7 @@ function Viewer({
                 truncated={truncated}
                 fileName={fileName}
                 expanded
-                initial={{ mode, wrap, folded, query, current }}
+                initialFolded={folded}
               />
             </Dialog.Popup>
           </Dialog.Portal>
@@ -388,6 +427,13 @@ function Viewer({
       aria-label={name}
       className={classNames(styles.rows, className)}
       style={{ blockSize: virtualizer.getTotalSize() }}
+      onFocus={(event) => {
+        const row = event.target.closest<HTMLElement>('[data-index]')
+        setFocusedRow(row ? Number(row.dataset.index) : null)
+      }}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setFocusedRow(null)
+      }}
     >
       {virtualizer.getVirtualItems().map((item) => (
         <div
@@ -407,31 +453,39 @@ function Viewer({
         <StructureRow row={rows[index]!} folded={folded} toggle={toggle} marked={marked} />
       ))
     : format === 'text'
-      ? virtual('Lines', false, (index) => (
-          <div
-            className={styles.numbered}
-            style={{ gridTemplateColumns: `${String(lines.length).length}ch minmax(0, 1fr)` }}
-          >
-            <span className={styles.lineNumber} aria-hidden>
-              {index + 1}
-            </span>
-            <span className={classNames(styles.lineText, wrap ? styles.wrapped : styles.unwrapped)}>
-              {marked(lines[index]!.start, lines[index]!.text)}
-            </span>
-          </div>
-        ))
+      ? virtual('Lines', false, (index) => {
+          const { line, start, end } = segments[index]!
+          const unit = lines[line]!
+          return (
+            <div
+              className={styles.numbered}
+              style={{ gridTemplateColumns: `${String(lines.length).length}ch minmax(0, 1fr)` }}
+            >
+              {/* A line's number shows on its first row only. */}
+              <span className={styles.lineNumber} aria-hidden>
+                {start === unit.start ? line + 1 : ''}
+              </span>
+              <span
+                className={classNames(styles.lineText, wrap ? styles.wrapped : styles.unwrapped)}
+              >
+                {marked(unit.start, unit.text, end - unit.start, start - unit.start)}
+              </span>
+            </div>
+          )
+        })
       : virtual('Raw', false, (index) => {
-          const line = lines[index]!
+          const { line, start, end } = segments[index]!
+          const unit = lines[line]!
+          const last = end === unit.start + unit.text.length
           return (
             <div className={classNames(styles.rawLine, wrap ? styles.wrapped : styles.unwrapped)}>
-              {marked(line.start, line.text)}
-              {/* Its own terminator, unseen, so the text stays exact. */}
-              <span className={styles.terminator}>
-                {value.slice(
-                  line.start + line.text.length,
-                  lines[index + 1]?.start ?? value.length,
-                )}
-              </span>
+              {marked(unit.start, unit.text, end - unit.start, start - unit.start)}
+              {/* Its line's own terminator, unseen, so the text stays exact. */}
+              {last && (
+                <span className={styles.terminator}>
+                  {value.slice(end, lines[line + 1]?.start ?? value.length)}
+                </span>
+              )}
             </div>
           )
         })
@@ -511,6 +565,21 @@ function structureRows(structure: JsonNode, folded: Set<number>): Row[] {
 }
 
 const rowKey = (row: Row) => `${row.kind} ${row.node.start}`
+
+/** Each line as rows of at most `length` characters, never splitting a surrogate pair. */
+function lineSegments(lines: Unit[], length: number): Segment[] {
+  const segments: Segment[] = []
+  lines.forEach(({ start, text }, line) => {
+    let from = 0
+    do {
+      let to = Math.min(from + length, text.length)
+      if (to < text.length && /[\uDC00-\uDFFF]/.test(text[to]!)) to--
+      segments.push({ line, start: start + from, end: start + to })
+      from = to
+    } while (from < text.length)
+  })
+  return segments
+}
 
 const nouns = { object: ['property', 'properties'], array: ['item', 'items'] } as const
 

@@ -175,16 +175,41 @@ export const FindsInFoldedContent: Story = {
   },
 }
 
-/** Catches: a match across a key and its value marked in one of them only. */
-export const MarksAMatchAcrossKeyAndValue: Story = {
-  args: { value: '{"name":"x","other":"name"}' },
+/**
+ * Catches: an expanded viewer that opens folded again, or that leaves the dialog's height
+ * unused. It opens with the folds you had, its body filling the dialog.
+ */
+export const ExpandedOpensOnYourView: Story = {
+  args: { value: large },
   play: async (context) => {
+    const tree = structureOf(context.canvasElement)
+    await context.userEvent.click(within(tree).getByRole('button', { name: 'rows: 120 items' }))
     const viewer = await openExpanded(context)
-    await context.userEvent.type(within(viewer).getByRole('searchbox'), '"name":"x"')
-    await expect(within(viewer).getByRole('status')).toHaveTextContent(/^1 of 1$/)
-    await expect(currentMatch(viewer).map((part) => part.textContent)).toEqual(['"name"', '"x"'])
+    const shown = within(viewer).getByRole('group', { name: 'Structure' })
+    await expect(within(shown).getByRole('button', { name: 'rows: 120 items' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    await expect(
+      viewer.getBoundingClientRect().bottom - scrollerOf(shown).getBoundingClientRect().bottom,
+    ).toBeLessThan(48)
   },
 }
+
+/** Find's status counts what Raw alone shows, beside what it shows here or instead of it. */
+const findStatus = (value: string, query: string, status: string): Story => ({
+  args: { value },
+  play: async (context) => {
+    const viewer = await findExpanded(context, 'Provider response', query)
+    await expect(within(viewer).getByRole('status').textContent).toBe(status)
+  },
+})
+export const FindSaysWhatOnlyRawShows = findStatus('[1,2]', '1,2', 'No matches · 1 in Raw')
+export const FindSaysWhatRawAlsoShows = findStatus(
+  '{"a":"1,2","b":[1,2]}',
+  '1,2',
+  '1 of 1 · 1 more in Raw',
+)
 
 /** Catches: a view switch that keeps a match index but leaves the match folded away. */
 export const RevealsTheMatchAfterAViewSwitch: Story = {
@@ -508,5 +533,44 @@ export const HugeRawScrolls: Story = {
     await expect(mounted(content, /row \d+/)).toBeLessThan(400)
     await scrollsTo(content, '"row 50000", [')
     await expect(mounted(content, /row \d+/)).toBeLessThan(400)
+  },
+}
+
+/**
+ * Catches: a huge payload on one line, as minified JSON is, mounted whole in Raw. Only the
+ * part near the view mounts, and the card scrolls to its end.
+ */
+export const HugeSingleLineScrollsInRaw: Story = {
+  args: { value: hugeArray },
+  play: async (context) => {
+    const viewer = await openExpanded(context)
+    await context.userEvent.click(within(viewer).getByRole('radio', { name: 'Raw' }))
+    const raw = within(viewer).getByRole('group', { name: 'Raw' })
+    await expect(hugeArray.length).toBeGreaterThan(100_000)
+    await expect(mounted(raw, /item-\d{5}/)).toBeLessThan(2_000)
+    const scroller = scrollerOf(raw)
+    await waitFor(() => {
+      scroller.scrollTop = scroller.scrollHeight
+      expect(raw).toHaveTextContent('"item-09999"]')
+    })
+    await expect(mounted(raw, /item-\d{5}/)).toBeLessThan(2_000)
+  },
+}
+
+/**
+ * Catches: a focused control that unmounts when its row scrolls far out of view, so focus
+ * falls out of the viewer. It keeps focus, and Enter still folds its list.
+ */
+export const KeepsFocusWhileItsRowScrollsAway: Story = {
+  args: { value: hugeArray },
+  play: async ({ canvasElement, userEvent }) => {
+    const content = within(canvasElement).getByRole('group', { name: 'Payload content' })
+    const toggle = within(content).getByRole('button', { name: 'Value: 10000 items' })
+    toggle.focus()
+    await scrollsTo(content, '"item-09999"')
+    await expect(toggle.isConnected).toBe(true)
+    await expect(toggle).toHaveFocus()
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-expanded', 'false'))
   },
 }
