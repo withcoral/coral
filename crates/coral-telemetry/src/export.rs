@@ -17,8 +17,9 @@ const DENIED_TARGETS: &[&str] = &["coral.http.body", "coral.mcp.body"];
 /// what may leave the host.
 ///
 /// A span leaves only when the operator's trace filter admits its target and
-/// level and its target is not a body target. The rest never reach `inner`,
-/// so they take no room in its export queue. Attributes named `coral.local.*`
+/// level and its target is not a body target. `inner` sees every span start,
+/// but only those spans end there, so the rest take no room in its export
+/// queue. Attributes named `coral.local.*`
 /// are removed from every exported span, event and link.
 #[derive(Debug)]
 pub struct OtlpSpanFilter<E> {

@@ -83,9 +83,10 @@ where
 ///
 /// A served method names the span, which stays open until the response body
 /// ends. The call's status arrives in the response headers or in the trailers
-/// after the body. A stream the caller cuts off before its status records
-/// CANCELLED, and one that breaks off records UNKNOWN. Only the server-fault
-/// statuses fail the span.
+/// after the body. A stream the caller cuts off before its end records
+/// CANCELLED, and one that ends or breaks off without a status records
+/// UNKNOWN. A response no gRPC handler started keeps the method `_OTHER`.
+/// Only the server-fault statuses fail the span.
 pub fn trace_grpc_routes<S>(router: Router<S>) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
@@ -187,13 +188,24 @@ async fn trace_grpc_request(mut request: Request, next: Next) -> Response {
     request.extensions_mut().insert(RequestSpan(span.clone()));
     let path = request.uri().path().to_owned();
     let response = next.run(request).instrument(span.clone()).await;
-    // Unless the headers carry the status, the trailers will.
     let grpc_path = match grpc_status(response.headers()) {
         Some(code) => {
-            record_grpc_status(&span, &path, code);
+            record_grpc_status(&span, Some(&path), code);
             None
         }
-        None => Some(path),
+        // A gRPC handler started this response, so its method is served and
+        // its status follows in the trailers.
+        None if response.status() == http::StatusCode::OK => Some(path),
+        // No gRPC handler answered, so the caller chose the path.
+        None => {
+            let code = if response.status() == http::StatusCode::NOT_FOUND {
+                GRPC_UNIMPLEMENTED
+            } else {
+                GRPC_UNKNOWN
+            };
+            record_grpc_status(&span, None, code);
+            None
+        }
     };
     response.map(|body| {
         Body::new(TracedBody {
@@ -210,10 +222,13 @@ fn grpc_status(headers: &http::HeaderMap) -> Option<i32> {
 }
 
 /// Records how a gRPC call ended. `path` is the request path,
-/// `/package.Service/Method`. A call that ended UNIMPLEMENTED records the
-/// method as `_OTHER`, since its caller chose it.
-fn record_grpc_status(span: &tracing::Span, path: &str, code: i32) {
-    let method = path.strip_prefix('/').filter(|method| !method.is_empty());
+/// `/package.Service/Method`, when a gRPC handler answered it. Without one,
+/// or for a call that ended UNIMPLEMENTED, the method is `_OTHER`, since the
+/// caller chose it.
+fn record_grpc_status(span: &tracing::Span, path: Option<&str>, code: i32) {
+    let method = path
+        .and_then(|path| path.strip_prefix('/'))
+        .filter(|method| !method.is_empty());
     match method {
         Some(method) if code != GRPC_UNIMPLEMENTED => {
             // The span has started by now, and a started span takes its new
@@ -266,15 +281,21 @@ impl http_body::Body for TracedBody {
                 if let Some(code) = frame.trailers_ref().and_then(grpc_status)
                     && let Some(path) = this.grpc_path.take()
                 {
-                    record_grpc_status(&this.span, &path, code);
+                    record_grpc_status(&this.span, Some(&path), code);
                 }
             }
             // The error's text may come from anywhere, so only its kind is kept.
             Poll::Ready(Some(Err(_error))) => match this.grpc_path.take() {
-                Some(path) => record_grpc_status(&this.span, &path, GRPC_UNKNOWN),
+                Some(path) => record_grpc_status(&this.span, Some(&path), GRPC_UNKNOWN),
                 None => record_failure(&this.span, "response_body", this.body_error),
             },
-            Poll::Ready(None) | Poll::Pending => {}
+            // A gRPC body that ends without a status broke the protocol.
+            Poll::Ready(None) => {
+                if let Some(path) = this.grpc_path.take() {
+                    record_grpc_status(&this.span, Some(&path), GRPC_UNKNOWN);
+                }
+            }
+            Poll::Pending => {}
         }
         frame
     }
@@ -290,9 +311,9 @@ impl http_body::Body for TracedBody {
 
 impl Drop for TracedBody {
     fn drop(&mut self) {
-        // A gRPC stream dropped before its status was cut off by the caller.
+        // A gRPC stream dropped before its end was cut off by the caller.
         if let Some(path) = self.grpc_path.take() {
-            record_grpc_status(&self.span, &path, GRPC_CANCELLED);
+            record_grpc_status(&self.span, Some(&path), GRPC_CANCELLED);
         }
     }
 }

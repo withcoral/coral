@@ -19,16 +19,40 @@ use crate::testing::{SpanCapture, attribute};
 
 const ROUTE: &str = "/workspaces/{workspace_id}/mcp";
 
-/// Sends `request` to `router` and returns the spans it finished, with the
-/// response body, empty if it broke off.
-async fn served(router: Router, request: Request<Body>) -> (Vec<SpanData>, Bytes) {
+/// Sends `request` to `router`, reads at most `frames` frames of the
+/// response body, then drops it, as a caller that hangs up would. Returns the
+/// spans that finished, with the data read or the body's error.
+async fn served(
+    router: Router,
+    request: Request<Body>,
+    frames: usize,
+) -> (Vec<SpanData>, Result<Bytes, axum::Error>) {
     let capture = SpanCapture::default();
     let _subscriber = tracing::subscriber::set_default(capture.subscriber());
     let response = router.oneshot(request).await.expect("response");
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap_or_default();
-    (capture.finished(), body)
+    let mut body = response.into_body();
+    let mut data = Vec::new();
+    let mut read = Ok(());
+    for _ in 0..frames {
+        let frame = std::future::poll_fn(|context| {
+            http_body::Body::poll_frame(Pin::new(&mut body), context)
+        })
+        .await;
+        match frame {
+            Some(Ok(frame)) => {
+                if let Ok(bytes) = frame.into_data() {
+                    data.extend_from_slice(&bytes);
+                }
+            }
+            Some(Err(error)) => {
+                read = Err(error);
+                break;
+            }
+            None => break,
+        }
+    }
+    drop(body);
+    (capture.finished(), read.map(|()| Bytes::from(data)))
 }
 
 /// An HTTP request span carries the method, route template and status, never
@@ -69,7 +93,7 @@ async fn http_request_spans_carry_only_safe_fields() {
             .header("authorization", "Bearer canary-token")
             .body(Body::empty())
             .expect("request");
-        let (spans, _body) = served(router, request).await;
+        let (spans, _body) = served(router, request, usize::MAX).await;
         let [span] = spans.as_slice() else {
             panic!("{method}: one request span: {spans:?}");
         };
@@ -100,7 +124,7 @@ async fn http_request_spans_carry_only_safe_fields() {
     let router = trace_http_routes(Router::new().route(ROUTE, any(|| async {})))
         .route("/healthz", any(|| async {}));
     let probe = Request::get("/healthz").body(Body::empty()).expect("probe");
-    let (spans, _body) = served(router, probe).await;
+    let (spans, _body) = served(router, probe, usize::MAX).await;
     assert!(spans.is_empty(), "a probe opens no span: {spans:?}");
 }
 
@@ -213,7 +237,8 @@ async fn requests_continue_only_one_valid_trace_and_never_baggage() {
                 .headers_mut()
                 .append(name, HeaderValue::from_static(value));
         }
-        let (spans, baggage) = served(router, request).await;
+        let (spans, baggage) = served(router, request, usize::MAX).await;
+        let baggage = baggage.expect("body");
         let [request] = spans.as_slice() else {
             panic!("{case}: one request span: {spans:?}");
         };
@@ -239,10 +264,14 @@ enum Delivery {
     Headers,
     /// Any other call sends it in trailers after the body.
     Trailers,
-    /// The caller cuts a stream off, so no status arrives.
+    /// The caller cuts a stream off before its end, so no status arrives.
     CutOff,
+    /// The stream ends without a status.
+    NoStatus,
     /// The stream breaks off with an error before its status.
     BrokenOff,
+    /// No gRPC handler answers: a plain 404 without a status.
+    NotGrpc,
 }
 
 /// A response body that yields the given frames, then ends.
@@ -269,7 +298,8 @@ impl http_body::Body for Frames {
 /// A gRPC request span is named by its method, unless the call ended
 /// UNIMPLEMENTED: then the caller chose the method, and it stays off. Only
 /// the server-fault statuses fail the span, wherever the status arrives. A
-/// stream that ends early still names its method and records a status.
+/// stream that ends early still names its method and records a status, but a
+/// response no gRPC handler started never names one.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -306,7 +336,7 @@ async fn grpc_request_spans_name_only_served_methods() {
             "UNIMPLEMENTED",
             true,
         ),
-        // No code arrives for a stream that ends early; its span records one.
+        // No code arrives in these; the span records one.
         (
             METHOD,
             0,
@@ -319,10 +349,28 @@ async fn grpc_request_spans_name_only_served_methods() {
         (
             METHOD,
             0,
+            Delivery::NoStatus,
+            METHOD,
+            METHOD,
+            "UNKNOWN",
+            true,
+        ),
+        (
+            METHOD,
+            0,
             Delivery::BrokenOff,
             METHOD,
             METHOD,
             "UNKNOWN",
+            true,
+        ),
+        (
+            "coral.management.v1.CanaryService/Method",
+            0,
+            Delivery::NotGrpc,
+            "grpc",
+            "_OTHER",
+            "UNIMPLEMENTED",
             true,
         ),
     ] {
@@ -337,10 +385,16 @@ async fn grpc_request_spans_name_only_served_methods() {
                     Delivery::Trailers => {
                         Frames::body([Ok(Frame::trailers(status))]).into_response()
                     }
-                    Delivery::CutOff => {
+                    Delivery::CutOff => Frames::body([
+                        Ok(Frame::data(Bytes::from_static(b"message"))),
+                        Ok(Frame::data(Bytes::from_static(b"message"))),
+                    ])
+                    .into_response(),
+                    Delivery::NoStatus => {
                         Frames::body([Ok(Frame::data(Bytes::from_static(b"message")))])
                             .into_response()
                     }
+                    Delivery::NotGrpc => StatusCode::NOT_FOUND.into_response(),
                     Delivery::BrokenOff => {
                         Frames::body([Err(std::io::Error::other("Canary"))]).into_response()
                     }
@@ -351,7 +405,17 @@ async fn grpc_request_spans_name_only_served_methods() {
             .header("grpc-metadata-canary", "Canary")
             .body(Body::empty())
             .expect("request");
-        let (spans, _body) = served(router, request).await;
+        let frames = if matches!(delivery, Delivery::CutOff) {
+            1
+        } else {
+            usize::MAX
+        };
+        let (spans, body) = served(router, request, frames).await;
+        assert_eq!(
+            body.is_err(),
+            matches!(delivery, Delivery::BrokenOff),
+            "{context}"
+        );
         let [span] = spans.as_slice() else {
             panic!("{context}: one request span: {spans:?}");
         };

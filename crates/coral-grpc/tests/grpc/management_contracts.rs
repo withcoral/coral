@@ -154,6 +154,29 @@ async fn management_validation_returns_standard_safe_error_info_and_preserves_tr
                 && span.name == "coral.management.v1.WorkspaceService/UpdateWorkspace"),
         "{spans:?}"
     );
+
+    // A health probe opens no span, as on the HTTP listeners.
+    let mut probe = tonic::Request::new(tonic_health::pb::HealthCheckRequest {
+        service: String::new(),
+    });
+    probe.metadata_mut().insert(
+        "traceparent",
+        "00-0000000000000000000000000000beef-00f067aa0ba902b7-01"
+            .parse()
+            .unwrap(),
+    );
+    tonic_health::pb::health_client::HealthClient::new(f.channel.clone())
+        .check(probe)
+        .await
+        .expect("health check");
+    let spans = capture.finished();
+    assert!(
+        !spans
+            .iter()
+            .any(|span| span.span_context.trace_id().to_string()
+                == "0000000000000000000000000000beef"),
+        "{spans:?}"
+    );
 }
 
 #[tokio::test]

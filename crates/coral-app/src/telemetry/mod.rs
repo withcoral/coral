@@ -486,6 +486,10 @@ mod tests {
                 span.is_recording(),
                 "an unsampled caller's request is recorded"
             );
+            assert!(
+                span.span_context().is_sampled(),
+                "and sampled, so it is exported"
+            );
         });
         provider.shutdown().expect("provider shutdown");
     }

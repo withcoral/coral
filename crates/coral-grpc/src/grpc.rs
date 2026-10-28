@@ -130,9 +130,6 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
                 services.clone(),
             ),
         )
-        .add_service(tonic_health::pb::health_server::HealthServer::new(
-            crate::health::AggregateHealthService::new(context.readiness),
-        ))
         .add_service(
             management::agent_registration_service_server::AgentRegistrationServiceServer::new(
                 services.clone(),
@@ -144,7 +141,10 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
         .add_service(internal::task_service_server::TaskServiceServer::new(services));
     let dispatch = routes.axum_router_mut();
     *dispatch = coral_telemetry::trace_grpc_routes(dispatch.clone());
-    routes
+    // Health probes are added after tracing, so they open no span.
+    routes.add_service(tonic_health::pb::health_server::HealthServer::new(
+        crate::health::AggregateHealthService::new(context.readiness),
+    ))
 }
 
 #[derive(Clone)]
