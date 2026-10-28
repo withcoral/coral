@@ -32,10 +32,10 @@ writer in the predicate of the history write itself. A lock without a write fenc
   its mailbox. Every re-claim mints a new claim id, and that id in every commit predicate fences a stale owner.
 - **Run Request.** Admit, Emit, Log and Finish come from the Program; Decide Approval and Cancel come from outside. A
   request is Applied (decided in memory), then Recorded (its chunk committed), then Settled (what it started has ended).
-  The Program shares the owner's fate, so it is answered at Applied; outside requesters are answered at Recorded. A
-  request that decides something is identified by the entity it decides (an Approval Request, a Run, an Invocation):
-  the first wins, and a repeat gets the recorded answer. Timers share the mailbox, so the clock never decides state
-  outside the owner.
+  The Program ends when its owner ends ([ADR 0027](0027-run-executors-compile-and-execute-programs.md)), so it is
+  answered at Applied; outside requesters are answered at Recorded. A request that decides something is identified by
+  the entity it decides (an Approval Request, a Run, an Invocation): the first wins, and a repeat gets the recorded
+  answer. Timers share the mailbox, so the clock never decides state outside the owner.
 - **Run Ledger.** The Run row's `chunk_sequence` is the head. The owner commits whenever it is free, not on a timer. A
   cap on Applied but unrecorded output bounds what an owner crash can lose; it never throttles admission. Every chunk
   commit renews the worker lease. A fenced owner acts on its commit's evidence: a claim mismatch is definitive, a head
@@ -51,14 +51,16 @@ writer in the predicate of the history write itself. A lock without a write fenc
   connection request; a periodic snapshot precheck of parked waits covers everything else. A wake-up is a hint, never
   evidence.
 - **Recovery.** The worker lease is ownership: no process touches a Run whose live lease it does not hold, except to
-  insert into its Run Inbox. An expired-lease sweep, run at boot before any listener binds and periodically after,
-  gives each abandoned `running` Run an owner. That owner applies the Run's passed timers in deadline order, then the
-  requests waiting in its Run Inbox, then writes one chunk that finishes the recorded termination or interrupts the
-  Run. Coral never resumes a Run. When an owner task ends without retiring, as a panic does, its supervisor takes over
-  the claim and writes the same one-chunk interruption.
-- **Rollout.** A deploy may briefly run an old and a new process side by side. On shutdown a process reports not
-  ready, refuses new Runs and waits the Shutdown Drain for its live Runs, then interrupts the rest. Whatever does not
-  commit is swept once its lease expires.
+  insert into its Run Inbox. An expired-lease sweep, run at boot before any listener binds and periodically after, gives
+  each abandoned `running` Run an owner. That owner applies the Run's passed timers in deadline order, then the requests
+  waiting in its Run Inbox, then writes one chunk that finishes the recorded termination or interrupts the Run. A Run
+  that no Run Executor has accepted goes back in a queue instead
+  ([ADR 0027](0027-run-executors-compile-and-execute-programs.md)). Coral never resumes a Run. When an owner task ends
+  without retiring, as a panic does, its supervisor takes over the claim and writes the same one-chunk interruption.
+- **Rollout.** A deploy may briefly run an old and a new process side by side. On shutdown a process reports not ready,
+  refuses new Runs, releases the leases of its Runs that no Run Executor has accepted
+  ([ADR 0027](0027-run-executors-compile-and-execute-programs.md)), waits the Shutdown Drain for its live Runs, then
+  interrupts the rest. Whatever does not commit is swept once its lease expires.
 - **Pool.** One pool, with no connection classes or reserved capacity. A Run holds at most one connection at a time.
 
 ## The contract every slice keeps
