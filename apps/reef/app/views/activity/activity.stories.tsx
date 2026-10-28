@@ -93,9 +93,9 @@ async function expectPinnedFooter(pane: HTMLElement, names: string[]) {
   await expect(scroller.scrollWidth).toBeLessThanOrEqual(scroller.clientWidth)
 }
 
-/** The height of the fade that marks evidence below the visible part of `scroller`. */
+/** How far evidence runs below the visible part of `scroller`; the bottom fade shows while it is above 0. */
 const fadeBelow = (scroller: HTMLElement) =>
-  parseFloat(getComputedStyle(scroller, '::after').height) || 0
+  parseFloat(getComputedStyle(scroller).getPropertyValue('--scroll-area-overflow-y-end')) || 0
 
 /** A short phone screen: Chromatic reads `viewports`; the Vitest run reads the `viewport` global. */
 const shortScreen = { viewport: { value: 'mobile1', isRotated: false } }

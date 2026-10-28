@@ -25,7 +25,6 @@ export function AnnotatedCodeBlock({
   highlight: range,
   followHighlight,
   revealKey,
-  surface,
 }: {
   code: string
   language: Language
@@ -33,8 +32,6 @@ export function AnnotatedCodeBlock({
   /** Auto-scroll the highlighted range into view when `revealKey` changes. */
   followHighlight: boolean
   revealKey: string
-  /** The surface the scroll fade blends into, such as 'floating' inside a drawer. */
-  surface?: 'content' | 'floating' | 'main'
 }) {
   const lines = useMemo(() => splitLines(highlightSource(code, language)), [code, language])
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -56,12 +53,7 @@ export function AnnotatedCodeBlock({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revealKey, followHighlight])
   return (
-    <ScrollArea
-      viewportRef={viewportRef}
-      viewportClassName={styles.viewport}
-      fade="both"
-      surface={surface}
-    >
+    <ScrollArea viewportRef={viewportRef} viewportClassName={styles.viewport} fade="both">
       <Typography.Code as="pre" className={styles.code}>
         {lines.map((runs, index) => {
           const lineNumber = index + 1
