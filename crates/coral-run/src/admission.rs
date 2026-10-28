@@ -249,6 +249,9 @@ impl RunModule {
         .ok_or(Error::RunNotFound)?;
         transaction.commit().await?;
         let update = accepted_update(&staged.run)?;
+        // The request that accepted the Run links to its trace, as the
+        // accept span links back to it.
+        crate::trace::link_request(staged.run.trace.as_ref());
         let StagedRun {
             run,
             actor,

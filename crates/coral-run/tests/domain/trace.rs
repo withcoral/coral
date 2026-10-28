@@ -75,8 +75,9 @@ fn span_names(spans: &[SpanData]) -> Vec<String> {
 }
 
 /// A Run accepted under a request gets its own trace. Its accept span is a
-/// root that links to the request, its phases are the accept span's
-/// children, and the Run row stores the accept span's context.
+/// root, it and the request link to each other once, even when the request
+/// goes on to observe the Run, its phases are the accept span's children,
+/// and the Run row stores the accept span's context.
 #[tokio::test]
 async fn an_accepted_run_gets_its_own_trace_linked_to_the_request() {
     let capture = capture();
@@ -85,12 +86,28 @@ async fn an_accepted_run_gets_its_own_trace_linked_to_the_request() {
 
     let request = tracing::info_span!("request");
     let request_trace = request.context().span().span_context().trace_id();
-    let accepted = fixture
-        .runs
-        .start(&principal, &workspace_id, submission("return 1;"))
-        .instrument(request.clone())
-        .await
-        .expect("accept the Run");
+    let accepted = async {
+        let accepted = fixture
+            .runs
+            .start(&principal, &workspace_id, submission("return 1;"))
+            .await
+            .expect("accept the Run");
+        fixture
+            .runs
+            .observe(
+                &principal,
+                &workspace_id,
+                accepted.run_id(),
+                &crate::RunObservation::initial(std::time::Duration::ZERO)
+                    .expect("observation")
+                    .by_acceptor(),
+            )
+            .await
+            .expect("observe the Run");
+        accepted
+    }
+    .instrument(request.clone())
+    .await;
     drop(request);
     let run = fixture
         .terminal_record(&workspace_id, accepted.run_id())
@@ -116,6 +133,14 @@ async fn an_accepted_run_gets_its_own_trace_linked_to_the_request() {
             .map(|link| link.span_context.clone())
             .collect::<Vec<_>>(),
         vec![request.span_context.clone()]
+    );
+    assert_eq!(
+        request
+            .links
+            .iter()
+            .map(|link| (link.span_context.trace_id(), link.span_context.span_id()))
+            .collect::<Vec<_>>(),
+        [(run_trace, accept.span_context.span_id())]
     );
     assert_eq!(
         attribute(accept, "run.id").as_deref(),

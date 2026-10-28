@@ -732,6 +732,7 @@ pub struct RunObservation {
     event_limit: u16,
     wait: Duration,
     batch_output: bool,
+    by_acceptor: bool,
 }
 
 impl RunObservation {
@@ -752,7 +753,22 @@ impl RunObservation {
             event_limit,
             wait: Duration::ZERO,
             batch_output: false,
+            by_acceptor: false,
         })
+    }
+
+    /// Marks this observation as made by the request that accepted the Run.
+    /// Acceptance already linked that request to the Run Trace, so the
+    /// observation links nothing more.
+    #[must_use]
+    pub const fn by_acceptor(mut self) -> Self {
+        self.by_acceptor = true;
+        self
+    }
+
+    /// Whether the request making this observation accepted the Run.
+    pub(crate) const fn is_by_acceptor(&self) -> bool {
+        self.by_acceptor
     }
 
     /// Observes a newly accepted Run, batching authored output until terminal state,

@@ -70,7 +70,8 @@ impl RunModule {
         run_id: &RunId,
         observation: &RunObservation,
     ) -> Result<RunUpdate, Error> {
-        self.observe_linking(actor, workspace_id, run_id, observation, true)
+        let link = !observation.is_by_acceptor();
+        self.observe_linking(actor, workspace_id, run_id, observation, link)
             .await
     }
 
