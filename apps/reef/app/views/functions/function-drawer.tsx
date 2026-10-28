@@ -7,6 +7,7 @@ import { SettingsRemoval } from '@/wax/components/settings-layout'
 import { ActionDialog } from '@/views/management/forms'
 import { Section } from '@/views/management/layout'
 import type { FormContext } from '@/views/management/types'
+import { useTabPath } from './functions-page'
 import { SavedAt } from './saved-at'
 import type { SavedFunctionDiagnosticView, SavedFunctionView } from './types'
 import * as styles from './functions.css'
@@ -27,7 +28,7 @@ function location(d: SavedFunctionDiagnosticView) {
   return d.column === null ? `Line ${d.line}` : `Line ${d.line}, column ${d.column}`
 }
 
-/** A drawer over the list whose closing returns to the list's address. */
+/** A drawer over the list whose closing returns to the tab it opened over. */
 function Drawer({
   listPath,
   title,
@@ -38,9 +39,10 @@ function Drawer({
   children: React.ReactNode
 }) {
   const navigate = useNavigate()
+  const returnPath = useTabPath() ?? listPath
   // The path names the function, so moving to another one while closing opens it.
   const drawer = Dialog.useCloseAfterExit(useLocation().pathname, () =>
-    navigate(listPath, { preventScrollReset: true }),
+    navigate(returnPath, { preventScrollReset: true }),
   )
   return (
     <Dialog.Root {...drawer}>

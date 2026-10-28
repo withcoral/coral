@@ -106,7 +106,14 @@ const meta = {
   parameters: { layout: 'fullscreen' },
   decorators: [
     (Story, context) => {
-      const Stub = createRoutesStub([{ path: '*', Component: Story }])
+      // The page reads its tab from the route, so the stub matches the real ones.
+      const Stub = createRoutesStub([
+        {
+          path: '/workspaces/:workspace/functions',
+          Component: Story,
+          children: [{ path: ':path' }, { path: 'namespaces/:namespace' }],
+        },
+      ])
       return (
         <Stub initialEntries={[context.parameters.initialEntry ?? '/workspaces/demo/functions']} />
       )
@@ -155,18 +162,15 @@ export const Filtered: Story = {
         .getAllByRole('link')
         .map((link) => link.textContent),
     ).toEqual(['All namespaces8', 'finance2'])
+    // A namespace is not part of the name a row shows, so it matches no row.
+    const filter = canvas.getByRole('searchbox', { name: 'Filter functions' })
+    await userEvent.clear(filter)
+    await userEvent.type(filter, 'finance')
+    await expect(canvas.getByText('No functions match.')).toBeVisible()
   },
 }
 export const NamespaceTabs: Story = {
-  render: () => (
-    <FunctionsPage
-      workspace={workspace}
-      functions={[
-        summary('other.imported', 'A function in the other namespace.'),
-        summary('weeklyDigest', 'A function without a namespace.'),
-      ]}
-    />
-  ),
+  render: () => <FunctionsPage workspace={workspace} functions={twoTabs} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     // All namespaces lists a top-level function outside every namespace group.
@@ -180,6 +184,39 @@ export const NamespaceTabs: Story = {
     await expect(canvas.queryByRole('link', { name: 'weeklyDigest' })).toBeNull()
     await expect(canvas.getByRole('link', { name: 'imported' })).toBeVisible()
     await userEvent.click(within(rail).getByRole('link', { name: /^All namespaces/ }))
+    await expect(canvas.getByRole('link', { name: 'weeklyDigest' })).toBeVisible()
+  },
+}
+const twoTabs = [
+  summary('other.imported', 'A function in the other namespace.'),
+  summary('weeklyDigest', 'A function without a namespace.'),
+]
+const railLink = (canvas: ReturnType<typeof within>, name: RegExp) =>
+  within(canvas.getByRole('navigation', { name: 'function namespaces' })).getByRole('link', {
+    name,
+  })
+export const NamespaceAddress: Story = {
+  render: () => <FunctionsPage workspace={workspace} functions={twoTabs} />,
+  parameters: { initialEntry: '/workspaces/demo/functions/namespaces/other' },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    // A namespace's address opens its tab, so a shared link keeps it.
+    await expect(railLink(canvas, /^other/)).toHaveAttribute('aria-current', 'page')
+    await expect(railLink(canvas, /^other/)).toHaveAttribute(
+      'href',
+      '/workspaces/demo/functions/namespaces/other',
+    )
+    await expect(canvas.getByRole('link', { name: 'imported' })).toBeVisible()
+    await expect(canvas.queryByRole('link', { name: 'weeklyDigest' })).toBeNull()
+  },
+}
+export const MissingNamespace: Story = {
+  render: () => <FunctionsPage workspace={workspace} functions={twoTabs} />,
+  parameters: { initialEntry: '/workspaces/demo/functions/namespaces/gone' },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    // A namespace with no functions left falls back to All.
+    await expect(railLink(canvas, /^All namespaces/)).toHaveAttribute('aria-current', 'page')
     await expect(canvas.getByRole('link', { name: 'weeklyDigest' })).toBeVisible()
   },
 }
@@ -224,8 +261,15 @@ export const Empty: Story = {
 export const Detail: Story = {
   render: () => detail(savedFunction),
   parameters: { initialEntry: '/workspaces/demo/functions/finance.monthlyTotals' },
-  play: async () => {
+  play: async ({ canvasElement }) => {
     await expect(await screen.findByRole('dialog', { name: 'finance.monthlyTotals' })).toBeVisible()
+    // A function's address opens the drawer over its namespace's tab. The open
+    // drawer hides the page from the accessibility tree.
+    await expect(
+      within(canvasElement)
+        .getAllByRole('link', { current: 'page', hidden: true })
+        .map((link) => link.textContent),
+    ).toEqual(['finance2'])
     // Reef reads and deletes Saved Functions, but cannot author or run them.
     await expect(screen.queryByRole('button', { name: /save|replace|run/i })).toBeNull()
     // Delete asks first, and names what breaks.
