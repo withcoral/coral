@@ -80,7 +80,6 @@ impl McpServer {
         &self,
         mut request: CallToolRequestParams,
         channel: Channel,
-        tool_call: &ToolCall,
     ) -> Result<CallToolResponse, DispatchError> {
         let prompting = Prompting::from_request(
             channel,
@@ -99,31 +98,31 @@ impl McpServer {
         let complete = match name {
             StartTaskArguments::NAME => {
                 let arguments = arguments::parse::<StartTaskArguments>(request.arguments)?;
-                self.start_task(arguments, tool_call).await
+                self.start_task(arguments).await
             }
             SearchArguments::NAME => {
                 let arguments = arguments::parse::<SearchArguments>(request.arguments)?;
-                self.search(arguments, tool_call).await
+                self.search(arguments).await
             }
             DescribeArguments::NAME => {
                 let arguments = arguments::parse::<DescribeArguments>(request.arguments)?;
-                self.describe(arguments, tool_call).await
+                self.describe(arguments).await
             }
             SaveFunctionArguments::NAME => {
                 let arguments = arguments::parse::<SaveFunctionArguments>(request.arguments)?;
-                self.save_function(arguments, tool_call).await
+                self.save_function(arguments).await
             }
             DeleteFunctionArguments::NAME => {
                 let arguments = arguments::parse::<DeleteFunctionArguments>(request.arguments)?;
-                self.delete_function(arguments, tool_call).await
+                self.delete_function(arguments).await
             }
             ExecArguments::NAME => {
                 let arguments = arguments::parse::<ExecArguments>(request.arguments)?;
-                return self.exec(arguments, prompting, tool_call).await;
+                return self.exec(arguments, prompting).await;
             }
             WaitArguments::NAME => {
                 let arguments = arguments::parse::<WaitArguments>(request.arguments)?;
-                return self.wait(arguments, prompting, tool_call).await;
+                return self.wait(arguments, prompting).await;
             }
             CancelArguments::NAME => {
                 let arguments = arguments::parse::<CancelArguments>(request.arguments)?;
@@ -131,7 +130,7 @@ impl McpServer {
             }
             EndTaskArguments::NAME => {
                 let arguments = arguments::parse::<EndTaskArguments>(request.arguments)?;
-                self.end_task(arguments, tool_call).await
+                self.end_task(arguments).await
             }
             _ => Err(DispatchError::Protocol(ErrorData::invalid_params(
                 format!("tool '{name}' not found"),
@@ -144,7 +143,6 @@ impl McpServer {
     async fn start_task(
         &self,
         arguments: StartTaskArguments,
-        tool_call: &ToolCall,
     ) -> Result<CallToolResult, DispatchError> {
         let intent = TaskIntent::parse(&arguments.intent).map_err(invalid_input)?;
         // Read before the Task starts, so a failed read leaves no Task behind.
@@ -167,7 +165,7 @@ impl McpServer {
             )
             .await
             .map_err(task_failure)?;
-        tool_call.record_task(task.id());
+        tool_call::record_task(task.id());
         projection::success(projection::StartedTask {
             task_id: task.id().to_string(),
             providers: providers
@@ -178,12 +176,8 @@ impl McpServer {
         .map_err(DispatchError::Tool)
     }
 
-    async fn search(
-        &self,
-        arguments: SearchArguments,
-        tool_call: &ToolCall,
-    ) -> Result<CallToolResult, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent, tool_call)?;
+    async fn search(&self, arguments: SearchArguments) -> Result<CallToolResult, DispatchError> {
+        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
         let request = SearchInput {
             query: arguments.query,
             provider: arguments.provider,
@@ -205,9 +199,8 @@ impl McpServer {
     async fn describe(
         &self,
         arguments: DescribeArguments,
-        tool_call: &ToolCall,
     ) -> Result<CallToolResult, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent, tool_call)?;
+        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
         let result = self
             .runtime
             .modules
@@ -227,9 +220,8 @@ impl McpServer {
     async fn save_function(
         &self,
         arguments: SaveFunctionArguments,
-        tool_call: &ToolCall,
     ) -> Result<CallToolResult, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent, tool_call)?;
+        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
         let function = self
             .runtime
             .modules
@@ -250,9 +242,8 @@ impl McpServer {
     async fn delete_function(
         &self,
         arguments: DeleteFunctionArguments,
-        tool_call: &ToolCall,
     ) -> Result<CallToolResult, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent, tool_call)?;
+        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
         self.runtime
             .modules
             .commands
@@ -269,9 +260,8 @@ impl McpServer {
         &self,
         arguments: ExecArguments,
         prompting: Prompting,
-        tool_call: &ToolCall,
     ) -> Result<CallToolResponse, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent, tool_call)?;
+        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
         let timeout = arguments
             .run_timeout_ms
             .unwrap_or(arguments::DEFAULT_RUN_TIMEOUT_MS);
@@ -280,7 +270,7 @@ impl McpServer {
         // A retry answers prompts about the Run this call already started.
         if let Some(run_id) = prompting.continued_run().cloned() {
             return self
-                .observe_prompting(&run_id, &reread, &reread, prompting, tool_call.trace())
+                .observe_prompting(&run_id, &reread, &reread, prompting)
                 .await;
         }
         let accepted = self
@@ -298,21 +288,14 @@ impl McpServer {
         }
         let observation =
             RunObservation::initial(Duration::from_millis(wait_ms)).map_err(invalid_input)?;
-        self.observe_prompting(
-            accepted.run_id(),
-            &observation,
-            &reread,
-            prompting,
-            tool_call.trace(),
-        )
-        .await
+        self.observe_prompting(accepted.run_id(), &observation, &reread, prompting)
+            .await
     }
 
     async fn wait(
         &self,
         arguments: WaitArguments,
         prompting: Prompting,
-        tool_call: &ToolCall,
     ) -> Result<CallToolResponse, DispatchError> {
         let run_id = RunId::parse(&arguments.run_id).map_err(invalid_input)?;
         let cursor = arguments
@@ -337,7 +320,7 @@ impl McpServer {
                 .with_wait(Duration::from_millis(wait_ms))
                 .map_err(invalid_input)?,
         };
-        self.observe_prompting(&run_id, &observation, &reread, prompting, tool_call.trace())
+        self.observe_prompting(&run_id, &observation, &reread, prompting)
             .await
     }
 
@@ -350,8 +333,8 @@ impl McpServer {
         observation: &RunObservation,
         reread: &RunObservation,
         mut prompting: Prompting,
-        trace: &TraceId,
     ) -> Result<CallToolResponse, DispatchError> {
+        let trace = &TraceId::current_or_new();
         self.answer_prompts(run_id, prompting.take_answers(), trace)
             .await?;
         let mut update = self.observe(run_id, observation).await?;
@@ -520,13 +503,9 @@ impl McpServer {
         self.run_update(&update).map_err(DispatchError::Tool)
     }
 
-    async fn end_task(
-        &self,
-        arguments: EndTaskArguments,
-        tool_call: &ToolCall,
-    ) -> Result<CallToolResult, DispatchError> {
+    async fn end_task(&self, arguments: EndTaskArguments) -> Result<CallToolResult, DispatchError> {
         let task_id = TaskId::parse(&arguments.task_id).map_err(invalid_input)?;
-        tool_call.record_task(&task_id);
+        tool_call::record_task(&task_id);
         let outcome = match arguments.outcome {
             TaskOutcomeArgument::Success => TaskOutcome::Success,
             TaskOutcomeArgument::Failure => TaskOutcome::Failure,
@@ -568,23 +547,16 @@ impl McpServer {
         &self,
         task_id: &str,
         intent: &str,
-        tool_call: &ToolCall,
     ) -> Result<coral_task::AttributedCommand, DispatchError> {
         let task_id = TaskId::parse(task_id).map_err(invalid_input)?;
-        tool_call.record_task(&task_id);
+        tool_call::record_task(&task_id);
         Ok(coral_task::AttributedCommand::new(
             self.runtime.principal.clone(),
             self.workspace_id.clone(),
             task_id,
             TaskIntent::parse(intent).map_err(invalid_input)?,
-            tool_call.trace().clone(),
+            TraceId::current_or_new(),
         ))
-    }
-
-    /// Opens a call to the tool `name`, carried by the HTTP request whose
-    /// span is `request`.
-    fn tool_call(&self, name: &str, request: Option<&tracing::Span>) -> ToolCall {
-        ToolCall::open(name, request, &self.workspace_id, &self.runtime.principal)
     }
 }
 
@@ -622,8 +594,13 @@ impl ServerHandler for McpServer {
             .extensions
             .get::<axum::http::request::Parts>()
             .and_then(|parts| coral_telemetry::request_span(&parts.extensions));
-        let call = self.tool_call(request.name.as_ref(), carrier);
-        let dispatched = Box::pin(self.dispatch(request, Channel::negotiate(&context), &call));
+        let call = ToolCall::open(
+            request.name.as_ref(),
+            carrier,
+            &self.workspace_id,
+            &self.runtime.principal,
+        );
+        let dispatched = Box::pin(self.dispatch(request, Channel::negotiate(&context)));
         call.run(dispatched).await
     }
 

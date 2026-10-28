@@ -20,6 +20,10 @@ const ABSENT: &str = "00000000-0000-4000-8000-000000000000";
 /// new trace for an invalid one, and is the trace of the exported request and
 /// tool spans either way.
 #[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of tool failures, each checked in every supported protocol version"
+)]
 async fn tool_failures_name_the_trace_of_their_request() {
     let capture = capture();
     let tracer = Tracer::start().await;
@@ -61,6 +65,7 @@ async fn tool_failures_name_the_trace_of_their_request() {
         {
             let context = format!("{version} {case}");
             let parent = format!("{:032x}", 0xc0_a100 + version_index * 16 + case_index);
+            let named = arguments["task_id"].as_str().map(str::to_owned);
             let continued = session
                 .tool_with_headers(
                     tool,
@@ -74,7 +79,7 @@ async fn tool_failures_name_the_trace_of_their_request() {
                 continued["structuredContent"]["trace_id"], parent,
                 "{context}: a valid traceparent continues its trace"
             );
-            failures.push((context, parent, tool, Some(code)));
+            failures.push((context, parent, tool, Some(code), named));
         }
         session.close().await;
     }
@@ -109,19 +114,28 @@ async fn tool_failures_name_the_trace_of_their_request() {
         restarted,
         "wait",
         Some("run_not_found"),
+        None,
     ));
     session.close().await;
 
     let spans = capture.spans.finished();
     let workspace = tracer.workspace_a.to_string();
-    for (context, trace, tool, failure) in failures {
-        assert_spans_in_trace(&spans, &context, &trace, tool, &workspace, failure);
+    for (context, trace, tool, failure, task) in &failures {
+        assert_spans_in_trace(
+            &spans,
+            context,
+            trace,
+            tool,
+            &workspace,
+            *failure,
+            task.as_deref(),
+        );
     }
 }
 
 /// The request span and the tool span both carry `trace`. The tool span is
 /// an MCP server span that names the caller's Workspace and Principal kind,
-/// and a tool failure's Coral code.
+/// the Task the call names, and a tool failure's Coral code.
 fn assert_spans_in_trace(
     spans: &[SpanData],
     context: &str,
@@ -129,6 +143,7 @@ fn assert_spans_in_trace(
     tool: &str,
     workspace: &str,
     failure: Option<&str>,
+    task: Option<&str>,
 ) {
     let in_trace = |name: &str| {
         spans
@@ -163,6 +178,7 @@ fn assert_spans_in_trace(
         failure,
         "{context}"
     );
+    assert_eq!(attribute("coral.task.id").as_deref(), task, "{context}");
 }
 
 /// A protocol error keeps its JSON-RPC code on the tool span. An unknown tool
@@ -298,8 +314,14 @@ async fn records_carry_the_trace_of_their_request() {
         .await;
         let started = format!("traced.started{version_index}");
         save(started.clone(), Vec::new()).await;
-        saved.push((format!("{version} continued"), continued, Some(parent)));
-        saved.push((format!("{version} started"), started, None));
+        let task = task.as_str().expect("task id").to_owned();
+        saved.push((
+            format!("{version} continued"),
+            continued,
+            Some(parent),
+            task.clone(),
+        ));
+        saved.push((format!("{version} started"), started, None, task));
         session.close().await;
     }
 
@@ -310,7 +332,7 @@ async fn records_carry_the_trace_of_their_request() {
         .await
         .expect("lifecycle events");
     let workspace = tracer.workspace_a.to_string();
-    for (context, path, parent) in saved {
+    for (context, path, parent, task) in saved {
         let recorded = events
             .iter()
             .find(|event| event.target_path().as_str() == path)
@@ -330,6 +352,7 @@ async fn records_carry_the_trace_of_their_request() {
             "save_function",
             &workspace,
             None,
+            Some(&task),
         );
     }
 }

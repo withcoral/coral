@@ -18,11 +18,10 @@ const CALLER_ERROR_CODES: [i32; 5] = [-32700, -32600, -32601, -32602, -32002];
 
 /// One tool call, traced as an MCP server span named `tools/call {tool}`.
 ///
-/// Everything the call records, and the failure it returns, carries the
-/// trace of that span.
+/// The call's handlers run inside that span, so the trace they read with
+/// [`TraceId::current_or_new`] is the one its failure names.
 pub(super) struct ToolCall {
     span: tracing::Span,
-    trace: TraceId,
 }
 
 impl ToolCall {
@@ -53,19 +52,7 @@ impl ToolCall {
             exception.message = tracing::field::Empty,
             status = tracing::field::Empty,
         );
-        let trace = span.in_scope(TraceId::current_or_new);
-        Self { span, trace }
-    }
-
-    /// The trace this call's records and failure carry.
-    pub(super) const fn trace(&self) -> &TraceId {
-        &self.trace
-    }
-
-    /// Names the Task the call acts in.
-    pub(super) fn record_task(&self, task: &TaskId) {
-        self.span
-            .record("coral.task.id", tracing::field::display(task));
+        Self { span }
     }
 
     /// Runs `dispatched` inside the call's span and records how it ended. A
@@ -85,7 +72,8 @@ impl ToolCall {
             Err(DispatchError::Tool(error)) => {
                 span.record("coral.mcp.failure.code", error.code());
                 coral_telemetry::record_failure(span, "tool_error", TOOL_FAILURE_MESSAGE);
-                Ok(projection::failure(&error, &self.trace).into())
+                let trace = span.in_scope(TraceId::current_or_new);
+                Ok(projection::failure(&error, &trace).into())
             }
             Err(DispatchError::Protocol(error)) => {
                 let code = error.code.0;
@@ -99,4 +87,10 @@ impl ToolCall {
             }
         }
     }
+}
+
+/// Names the Task that the current tool call acts in. Call it from the call's
+/// handler, where the tool span is current, not from inside a child span.
+pub(super) fn record_task(task: &TaskId) {
+    tracing::Span::current().record("coral.task.id", tracing::field::display(task));
 }
