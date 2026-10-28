@@ -1,15 +1,18 @@
 import { useDeferredValue, useMemo, useState, type ReactNode } from 'react'
-import { Link } from 'react-router'
+import classNames from 'classnames'
 import { CatalogLayout, CatalogRail, CatalogRailItem, CatalogToolbar } from '@/components/catalog'
 import { CopyMcpEndpoint } from '@/components/copy-mcp-endpoint'
 import { EmptyPage } from '@/components/empty-page'
 import { PolicyToggle } from '@/components/policy-toggle'
-import { Button, Table } from '@/wax/components'
+import { Button, Table, Typography } from '@/wax/components'
+import { HighlightedMatches } from '@/wax/components/highlighted-matches'
+import { Icon } from '@/wax/components/icon'
 import { PageLayout } from '@/wax/components/page-layout'
 import { Tooltip } from '@/wax/components/tooltip'
 import { trail } from '@/views/management/layout'
 import { useArrivalToast } from '@/lib/use-arrival-toast'
-import { filterQuery } from '@/utils/filter-query'
+import { countLabel } from '@/utils/count-label'
+import { filterQuery, type FilterQuery } from '@/utils/filter-query'
 import type { WorkspaceView } from '@/views/management/types'
 import type { SavedFunctionSummaryView } from './types'
 import * as styles from './functions.css'
@@ -57,27 +60,22 @@ function catalog(functions: SavedFunctionSummaryView[]) {
   return { topLevel, namespaces }
 }
 
-/** A row in a namespace lines its name up under the group label, one step in. */
-function FunctionRow({ member: { summary, name }, grouped }: { member: Member; grouped: boolean }) {
+/** A row opens its function's drawer; the name lines up under the column heading. */
+function FunctionRow({ member: { summary, name }, query }: { member: Member; query: FilterQuery }) {
   return (
     <Table.Row to={summary.href} preventScrollReset>
-      <Table.Cell>
-        <span className={grouped ? styles.groupedName : styles.name}>
-          <Button.Container
-            as={Link}
-            to={summary.href}
-            prefetch="intent"
-            preventScrollReset
-            variant="link"
-            size="32"
-          >
-            <Button.Text tooltip={name}>{name}</Button.Text>
-          </Button.Container>
-        </span>
-      </Table.Cell>
-      <Table.Cell control>
+      <span role="cell" className={styles.nameCell}>
+        <Table.RowLink to={summary.href}>
+          <Tooltip content={name} showOnlyWhenTruncated>
+            <span className={styles.name}>
+              <HighlightedMatches text={name} query={query} />
+            </span>
+          </Tooltip>
+        </Table.RowLink>
+      </span>
+      <span role="cell" className={styles.policyCell}>
         <PolicyPreview name={summary.path} />
-      </Table.Cell>
+      </span>
     </Table.Row>
   )
 }
@@ -87,29 +85,58 @@ function PolicyPreview({ name }: { name: string }) {
   return (
     <Tooltip content="Function policy is not available yet. Coral runs every function you save.">
       <span className={styles.policy} tabIndex={0}>
-        <PolicyToggle disabled label={`Policy for ${name}`} value="enabled" />
+        <PolicyToggle size="small" disabled label={`Policy for ${name}`} value="enabled" />
       </span>
     </Tooltip>
   )
 }
+
+const FILTER_ID = 'function-filter'
 
 /** The current User's own Saved Functions in one Workspace. Reef only reads them. */
 export function FunctionsPage({ workspace: w, functions, children }: FunctionsPageProps) {
   useArrivalToast(FUNCTION_DELETED, () => ({ title: 'Function deleted' }))
   const [railFilterInput, setRailFilterInput] = useState('')
   const [tableFilterInput, setTableFilterInput] = useState('')
-  const [current, setCurrent] = useState<string | null>(null)
+  // The rail's tab: one namespace, or null for every function.
+  const [tab, setTab] = useState<string | null>(null)
+  // The namespaces the reader collapsed. A filter leaves them collapsed.
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
+  const table = Table.useRowCursor({ filterId: FILTER_ID })
   const railQuery = filterQuery(useDeferredValue(railFilterInput))
   const tableQuery = filterQuery(useDeferredValue(tableFilterInput))
   const { topLevel, namespaces } = useMemo(() => catalog(functions), [functions])
   const matches = (m: Member) => tableQuery.matches(m.summary.path)
+  // The rail filter narrows the rail only, not the table.
   const listed = namespaces.filter((n) => railQuery.matches(n.name))
-  // A namespace filter that leaves some out narrows the table to the rest,
-  // which leaves out top-level functions: they belong to none.
-  const shownTopLevel = listed.length < namespaces.length ? [] : topLevel.filter(matches)
-  const shown = listed
+  // Top-level functions belong to no namespace, so only the All tab shows them.
+  const shownTopLevel = tab === null ? topLevel.filter(matches) : []
+  const shown = namespaces
+    .filter((n) => tab === null || n.name === tab)
     .map((n) => ({ ...n, members: n.members.filter(matches) }))
     .filter((n) => n.members.length > 0)
+  const anyExpanded = shown.some((n) => !collapsed.has(n.name))
+  const toggleCollapsed = (name: string) =>
+    setCollapsed((current) => {
+      const next = new Set(current)
+      if (!next.delete(name)) next.add(name)
+      return next
+    })
+  const toggleAllCollapsed = () => {
+    setCollapsed((current) => {
+      const next = new Set(current)
+      for (const n of shown) {
+        if (anyExpanded) next.add(n.name)
+        else next.delete(n.name)
+      }
+      return next
+    })
+    table.current?.scrollTo?.({ top: 0 })
+  }
+  const openTab = (name: string | null) => {
+    setTab(name)
+    table.current?.scrollTo?.({ top: 0 })
+  }
   const listPath = `${w.path}/functions`
   return (
     <PageLayout
@@ -138,24 +165,25 @@ export function FunctionsPage({ workspace: w, functions, children }: FunctionsPa
                 onChange: setRailFilterInput,
               }}
               empty={
-                listed.length > 0
+                listed.length > 0 || namespaces.length === 0
                   ? null
-                  : {
-                      message: railQuery.text
-                        ? `No namespaces match “${railQuery.text}”`
-                        : 'No namespaces yet.',
-                    }
+                  : { message: `No namespaces match “${railQuery.text}”` }
               }
             >
+              <CatalogRailItem
+                to={listPath}
+                current={tab === null}
+                onSelect={() => openTab(null)}
+                leading={<Icon name="Layers" size="20" color="secondary" />}
+                name="All namespaces"
+                count={functions.length}
+              />
               {listed.map((n) => (
                 <CatalogRailItem
                   key={n.domId}
-                  to={`${listPath}#${n.domId}`}
-                  current={n.domId === current}
-                  onSelect={() => {
-                    setCurrent(n.domId)
-                    document.getElementById(n.domId)?.scrollIntoView({ block: 'start' })
-                  }}
+                  to={listPath}
+                  current={n.name === tab}
+                  onSelect={() => openTab(n.name)}
                   name={n.name}
                   count={n.members.length}
                 />
@@ -166,36 +194,75 @@ export function FunctionsPage({ workspace: w, functions, children }: FunctionsPa
           <CatalogToolbar
             title="Functions"
             filter={{
+              id: FILTER_ID,
               label: 'Filter functions',
+              shortcut: '$mod+f',
               value: tableFilterInput,
               onChange: setTableFilterInput,
             }}
           />
           <Table.Container
+            ref={table}
             ariaLabel="Functions"
+            density="comfortable"
+            groupHeadings="prominent"
             layout="scroll"
             className={styles.table}
-            onPinnedGroupChange={setCurrent}
-            columns={[
-              { label: 'Function name', width: 'minmax(280px, 1fr)' },
-              { label: 'Policy', width: 'minmax(180px, 0.4fr)' },
-            ]}
+            columns={[{ width: 'minmax(280px, 1fr)' }, { width: 'max-content' }]}
           >
-            <Table.Head />
+            <Table.Head>
+              <Table.Row>
+                <span
+                  role="columnheader"
+                  className={classNames(styles.nameHeader, Table.groupToggleHeading)}
+                >
+                  <Button.IconButton
+                    variant="bare"
+                    size="22"
+                    name={anyExpanded ? 'ChevronsDownUp' : 'ChevronsUpDown'}
+                    tooltipText={anyExpanded ? 'Collapse all' : 'Expand all'}
+                    disabled={shown.length === 0}
+                    onClick={toggleAllCollapsed}
+                  />
+                  Function name
+                </span>
+                <span role="columnheader" className={styles.policyHeader}>
+                  Policy
+                </span>
+              </Table.Row>
+            </Table.Head>
             {shownTopLevel.length === 0 && shown.length === 0 && (
               <Table.Status>No functions match.</Table.Status>
             )}
             {shownTopLevel.length > 0 && (
               <Table.Body>
                 {shownTopLevel.map((m) => (
-                  <FunctionRow key={m.summary.path} member={m} grouped={false} />
+                  <FunctionRow key={m.summary.path} member={m} query={tableQuery} />
                 ))}
               </Table.Body>
             )}
             {shown.map((n) => (
-              <Table.Group key={n.domId} id={n.domId} label={n.name}>
+              <Table.Group
+                key={n.domId}
+                id={n.domId}
+                label={n.name}
+                collapsed={collapsed.has(n.name)}
+                heading={
+                  <span role="cell" className={styles.groupLabel}>
+                    <Table.GroupToggle
+                      collapsed={collapsed.has(n.name)}
+                      label={n.name}
+                      onToggle={() => toggleCollapsed(n.name)}
+                    />
+                    <Typography.BodyStrong as="span">{n.name}</Typography.BodyStrong>
+                    <Typography.BodySmall as="span" variant="tertiary">
+                      {countLabel(n.members.length, 'function')}
+                    </Typography.BodySmall>
+                  </span>
+                }
+              >
                 {n.members.map((m) => (
-                  <FunctionRow key={m.summary.path} member={m} grouped />
+                  <FunctionRow key={m.summary.path} member={m} query={tableQuery} />
                 ))}
               </Table.Group>
             ))}

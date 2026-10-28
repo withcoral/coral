@@ -8,6 +8,7 @@ import type {
   SetupView,
 } from './types'
 import * as styles from './providers.css'
+import { countLabel } from '@/utils/count-label'
 import { filterQuery } from '@/utils/filter-query'
 
 /** The one label each credential method has, wherever a method is named. */
@@ -20,10 +21,6 @@ export const authenticationLabels: Record<CredentialMethod | '', string> = {
   query: 'API keys in the query',
   device: 'OAuth device code',
   oauth: 'OAuth authorization code',
-}
-
-export function countLabel(count: number, noun: string) {
-  return `${count.toLocaleString('en-US')} ${noun}${count === 1 ? '' : 's'}`
 }
 
 export interface AuthenticationOption {

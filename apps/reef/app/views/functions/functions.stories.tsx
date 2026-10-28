@@ -147,14 +147,17 @@ export const Filtered: Story = {
     await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter functions' }), 'comp')
     await expect(canvas.getByRole('link', { name: 'completedSince' })).toBeVisible()
     await expect(canvas.queryByRole('link', { name: 'issueBrief' })).toBeNull()
+    // The rail filter narrows the rail only; All namespaces stays.
     await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter namespaces' }), 'fin')
-    await expect(canvas.getByText('No functions match.')).toBeVisible()
+    await expect(canvas.getByRole('link', { name: 'completedSince' })).toBeVisible()
     await expect(
-      within(canvas.getByRole('navigation', { name: 'function namespaces' })).getAllByRole('link'),
-    ).toHaveLength(1)
+      within(canvas.getByRole('navigation', { name: 'function namespaces' }))
+        .getAllByRole('link')
+        .map((link) => link.textContent),
+    ).toEqual(['All namespaces8', 'finance2'])
   },
 }
-export const TopLevelFunctions: Story = {
+export const NamespaceTabs: Story = {
   render: () => (
     <FunctionsPage
       workspace={workspace}
@@ -166,23 +169,36 @@ export const TopLevelFunctions: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    // A top-level function sits outside every namespace group and the rail.
-    await expect(canvas.queryByRole('rowgroup', { name: 'Other' })).toBeNull()
+    // All namespaces lists a top-level function outside every namespace group.
     const other = canvas.getByRole('rowgroup', { name: 'other' })
     await expect(within(other).getByRole('link', { name: 'imported' })).toBeVisible()
     await expect(within(other).queryByRole('link', { name: 'weeklyDigest' })).toBeNull()
     await expect(canvas.getByRole('link', { name: 'weeklyDigest' })).toBeVisible()
+    // A namespace's tab shows only that namespace.
     const rail = canvas.getByRole('navigation', { name: 'function namespaces' })
-    await expect(
-      within(rail)
-        .getAllByRole('link')
-        .map((link) => link.textContent),
-    ).toEqual(['other1'])
-    // A namespace filter that leaves no namespace out keeps them.
-    await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter namespaces' }), 'oth')
-    await expect(canvas.getByRole('link', { name: 'weeklyDigest' })).toBeVisible()
-    await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter namespaces' }), 'x')
+    await userEvent.click(within(rail).getByRole('link', { name: /^other/ }))
     await expect(canvas.queryByRole('link', { name: 'weeklyDigest' })).toBeNull()
+    await expect(canvas.getByRole('link', { name: 'imported' })).toBeVisible()
+    await userEvent.click(within(rail).getByRole('link', { name: /^All namespaces/ }))
+    await expect(canvas.getByRole('link', { name: 'weeklyDigest' })).toBeVisible()
+  },
+}
+export const CollapseAll: Story = {
+  render: () => <FunctionsPage workspace={workspace} functions={summaries} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    // A namespace's toggle hides its rows and keeps its heading.
+    await userEvent.click(canvas.getByRole('button', { name: 'Collapse linear' }))
+    await expect(canvas.queryByRole('link', { name: 'issueBrief' })).toBeNull()
+    await expect(canvas.getByRole('button', { name: 'Expand linear' })).toBeVisible()
+    await expect(canvas.getByRole('link', { name: 'monthlyTotals' })).toBeVisible()
+    // The header toggle collapses every namespace, then expands them all.
+    await userEvent.click(canvas.getByRole('button', { name: 'Collapse all' }))
+    await expect(canvas.queryByRole('link', { name: 'monthlyTotals' })).toBeNull()
+    await expect(canvas.getByRole('link', { name: 'weeklyDigest' })).toBeVisible()
+    await userEvent.click(canvas.getByRole('button', { name: 'Expand all' }))
+    await expect(canvas.getByRole('link', { name: 'monthlyTotals' })).toBeVisible()
+    await expect(canvas.getByRole('link', { name: 'issueBrief' })).toBeVisible()
   },
 }
 export const Deleted: Story = {
@@ -239,7 +255,9 @@ export const TruncatedDiagnostics: Story = {
   render: () => detail({ ...savedFunction, diagnostics, diagnosticsTruncated: true }),
   parameters: { initialEntry: '/workspaces/demo/functions/finance.monthlyTotals' },
   play: async () => {
-    await expect(await screen.findByText('Some diagnostics are missing')).toBeVisible()
+    await expect(
+      await screen.findByText(`Showing the first ${diagnostics.length} diagnostics only.`),
+    ).toBeVisible()
   },
 }
 export const Missing: Story = {

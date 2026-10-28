@@ -11,6 +11,10 @@ import { SavedAt } from './saved-at'
 import type { SavedFunctionDiagnosticView, SavedFunctionView } from './types'
 import * as styles from './functions.css'
 
+// The drawer caps the source and diagnostics; the rest scroll in place.
+const SOURCE_LINES = 20
+const DIAGNOSTIC_ROWS = 8
+
 const categories: Record<SavedFunctionDiagnosticView['category'], string> = {
   error: 'Error',
   warning: 'Warning',
@@ -87,24 +91,19 @@ export function FunctionDrawer({
         <CodeBlock value={f.declaration} format="typescript" framed />
       </Section>
       <Section title="Source">
-        <CodeBlock value={f.source} format="typescript" framed />
+        <CodeBlock value={f.source} format="typescript" framed maxLines={SOURCE_LINES} />
       </Section>
       <Section
         title="Diagnostics"
         description="Coral recorded these diagnostics when you saved the function. They do not stop it from running."
       >
-        {f.diagnosticsTruncated && (
-          <Banner variant="warning" title="Some diagnostics are missing">
-            Coral kept only the first diagnostics. Fix these diagnostics. Then save the function
-            again to see the rest.
-          </Banner>
-        )}
         {f.diagnostics.length === 0 ? (
           <Typography.Body as="p">Coral found no diagnostics in this function.</Typography.Body>
         ) : (
           <Table.Container
             ariaLabel="Diagnostics"
             layout="fixed"
+            maxRows={DIAGNOSTIC_ROWS}
             columns={[
               { label: 'Type', width: { fill: 1 } },
               { label: 'Location', width: { fill: 1.4 } },
@@ -122,6 +121,11 @@ export function FunctionDrawer({
               ))}
             </Table.Body>
           </Table.Container>
+        )}
+        {f.diagnosticsTruncated && (
+          <Typography.BodySmall as="p" variant="secondary">
+            {`Showing the first ${f.diagnostics.length.toLocaleString('en-US')} diagnostics only.`}
+          </Typography.BodySmall>
         )}
       </Section>
       {canDelete && (
