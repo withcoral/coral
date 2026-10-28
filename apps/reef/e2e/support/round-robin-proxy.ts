@@ -80,10 +80,9 @@ function forwardable(headers: IncomingHttpHeaders | OutgoingHttpHeaders) {
  * Balances each request, not each connection, across Coral Instances. Reef
  * keeps one HTTP/2 connection to Coral, so a per-connection balancer would
  * never move its requests between instances. Requests alternate between
- * instances unless a scenario pins them to one. A request in a 2025-11-25 MCP
- * session goes to the instance that issued the session, which holds it in
- * memory; a 2026-07-28 request has no session. Each forwarded request is
- * recorded with the connection it arrived on and the instance that served it.
+ * instances unless a scenario pins them to one; an MCP request carries no
+ * session, so any instance serves it. Each forwarded request is recorded with
+ * the connection it arrived on and the instance that served it.
  * The proxy listens first, so each Coral Instance can name it as its public
  * origin; `serve` then names the instances behind it.
  */
@@ -182,16 +181,12 @@ export async function startRoundRobinProxy() {
   // MCP and auth: plain HTTP/1.1, streamed both ways so held responses stay open.
   const agents = new Map<string, Agent>()
   const sockets = new Set<Socket>()
-  // A 2025-11-25 MCP session lives in the memory of the instance that issued it.
-  const mcpSessions = new Map<string, number>()
   const http1 = (front: 'mcp' | 'auth') => {
     const socketIds = new WeakMap<Socket, number>()
     let connections = 0
     const server = createHttpServer((request, response) => {
       if (!backends.length) return void response.writeHead(502).end()
-      const session = request.headers['mcp-session-id']
-      const instance =
-        (typeof session === 'string' ? mcpSessions.get(session) : undefined) ?? choose()
+      const instance = choose()
       const record: ProxiedRequest = {
         front,
         connection: socketIds.get(request.socket) ?? 0,
@@ -215,8 +210,6 @@ export async function startRoundRobinProxy() {
         },
         (answer) => {
           record.status = answer.statusCode ?? 0
-          const issued = answer.headers['mcp-session-id']
-          if (front === 'mcp' && typeof issued === 'string') mcpSessions.set(issued, instance)
           response.writeHead(answer.statusCode ?? 502, forwardable(answer.headers))
           answer.pipe(response)
         },
@@ -257,7 +250,7 @@ export async function startRoundRobinProxy() {
       if (instances.length < 2) throw new Error('A round-robin proxy needs two Coral Instances')
       backends = instances
     },
-    /** Sends every later request outside an MCP session to one instance, or alternates again with `undefined`. */
+    /** Sends every later request to one instance, or alternates again with `undefined`. */
     pin(instance: number | undefined) {
       if (instance !== undefined && !backends[instance]) throw new Error('No such Coral Instance')
       pinned = instance

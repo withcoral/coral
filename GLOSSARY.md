@@ -532,15 +532,17 @@ Authorized Workspace Owners find Agent approval actions through Reef's queue and
 action URL, bearer URL, MCP session state
 
 **Action Prompt**: A negotiated MCP elicitation that asks the invoking User about one current Approval Request or
-Account Connection Request of their own Run, while an observation of that Run is in progress. Each observing tool call
-asks about each current request at most once; a later call asks again while the request is still pending. An approval
-prompt is a form: accepting it approves that exact Invocation and declining it declines the Invocation, with the same
-first-wins rules as Reef. A connection prompt is a URL elicitation to the User's Reef page for that Provider Account, sent
-only to clients that support URL mode; declining it declines the request, and accepting it only opens the page. Dismissing a
-prompt without an answer decides nothing. An in-band prompt whose request no longer needs an answer is withdrawn; a
-later answer to an obsolete prompt decides nothing. The prompt keeps no durable state and grants no authority beyond the
-authenticated User's own. Agent bearer sessions, other Users, and Owners observing Agent Runs are never prompted.
-_Avoid_: one prompt per Run, form connection prompt
+Account Connection Request of their own Run, returned as an `input_required` result that the client answers by
+retrying the same call. Each observing tool call asks about each current request at most once; a later call asks again
+while the request is still pending. An approval prompt is a form: accepting it approves that exact Invocation and
+declining it declines the Invocation, with the same first-wins rules as Reef. A connection prompt is a URL elicitation
+to the User's Reef page for that Provider Account, sent only to clients that support URL mode; declining it declines the
+request, and accepting it only opens the page. Dismissing a prompt without an answer decides nothing, and a later answer
+to an obsolete prompt decides nothing. The prompt keeps no durable state and grants no authority beyond the
+authenticated User's own. Coral keeps no MCP session, so a client on a protocol version before 2026-07-28 is never
+prompted in-band: its Run Update names the required actions and the Run Status Page. Agent bearer sessions, other
+Users, and Owners observing Agent Runs are never prompted. _Avoid_: one prompt per Run, form connection prompt, in-band
+prompt
 
 **Approval Request**: A durable host-owned request for a human decision on one pending Tool Invocation. Reef is
 the v1 human resolution interface that every Request can use, in local and remote deployments; a deployment without its
@@ -785,8 +787,8 @@ checkpoints. _Avoid_: Administrative Lifecycle Event, stream chunk, workflow che
 
 **Coral Instance**: One running Coral server process, identified by a random id it generates each time it starts. The
 Coral Instance that holds a Run's claim owns that Run. While the claim's lease is live, no other Coral Instance takes
-the Run over. Any Coral Instance may receive an outside Run Request for the Run. _Avoid_: replica, node, worker, pod,
-process
+the Run over. Any Coral Instance may receive an outside Run Request for the Run, and any Coral Instance serves any MCP
+request, since Coral keeps no MCP session. _Avoid_: replica, node, worker, pod, process
 
 **Run Owner**: The single writer of one Coral Program Run while the Run is not terminal. It exists from Run acceptance
 until the Run ends, receives every Run Request, Invocation outcome, deadline and wake-up for that Run in one order, and

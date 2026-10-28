@@ -191,33 +191,6 @@ impl RunModule {
         Ok(())
     }
 
-    /// Whether the caller's own Account Connection Request ended connected, so an
-    /// opened connect page can be announced complete. Anything else is `false`.
-    pub async fn connection_connected(
-        &self,
-        actor: &AuthenticatedPrincipal,
-        workspace_id: &WorkspaceId,
-        request: &RequiredActionRequest,
-        trace: &TraceId,
-    ) -> bool {
-        let (RequiredActionRequest::AccountConnection(id), Some(accounts), Some(user), Ok(now)) = (
-            request,
-            &self.accounts,
-            actor.authenticated_user(),
-            self.now(),
-        ) else {
-            return false;
-        };
-        // The Account domain conceals another User's request as absent.
-        let context = ChangeContext::new(user.clone(), now, trace.clone());
-        accounts
-            .get_connection_request(&context, workspace_id, *id)
-            .await
-            .is_ok_and(|request| {
-                request.state == coral_provider::account::ConnectionState::Connected
-            })
-    }
-
     /// The caller's own Run and its current actions, or `None` for anyone else.
     async fn own_actions(
         &self,

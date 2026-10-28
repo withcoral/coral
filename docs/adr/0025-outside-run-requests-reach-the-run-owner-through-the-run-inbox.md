@@ -40,9 +40,9 @@ records it.
 - **Delivery lags slightly.** A decision made just before its Approval Request's deadline can end as expired.
 - **A requester may hear "not yet recorded".** Past a short wait the answer is retryable. No requester is told a
   request was Recorded when it was not.
-- **Scale-out is still not supported.** Several Coral Instances may own Runs and serve outside requests against one
-  Postgres database, but the self-host guides keep one replica until every single-process assumption is gone. MCP
-  in-band elicitation, for one, still keeps a session on one instance.
+- **Scale-out needs every single-process assumption gone.** Several Coral Instances may own Runs and serve outside
+  requests against one Postgres database. MCP in-band elicitation kept a session on one instance until
+  [ADR 0026](0026-mcp-requests-are-served-without-sessions.md) removed MCP sessions.
 
 ## Rejected
 

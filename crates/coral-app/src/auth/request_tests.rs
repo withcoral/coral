@@ -37,7 +37,7 @@ async fn http_oauth_requests_use_current_user_authority_not_sessions_or_metadata
         .await
         .unwrap();
     assert_eq!(accepted.status(), 200);
-    let session = accepted.headers()["mcp-session-id"].clone();
+    assert_no_session(&accepted);
     let principal = fixture
         .auth
         .authenticate(
@@ -50,8 +50,9 @@ async fn http_oauth_requests_use_current_user_authority_not_sessions_or_metadata
     assert_eq!(principal.principal().id().as_str(), "owner");
     assert_eq!(principal.principal().kind(), PrincipalKind::User);
     fixture
-        .assert_task_principal(&token.access_token, &session, &principal)
+        .assert_task_principal(&token.access_token, &principal)
         .await;
+    // A session header grants nothing: the token alone names the Principal.
     let other_token = fixture
         .issuer
         .issue_access_token(
@@ -60,16 +61,10 @@ async fn http_oauth_requests_use_current_user_authority_not_sessions_or_metadata
             &fixture.urls.resource(&fixture.workspace),
         )
         .unwrap();
-    let stolen = reqwest::Client::new()
-        .post(fixture.url(&fixture.workspace))
-        .header("Accept", "application/json, text/event-stream")
-        .header("mcp-session-id", session.clone())
-        .bearer_auth(&other_token.access_token)
-        .json(&serde_json::json!({"jsonrpc":"2.0", "id":2,"method":"tools/list"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(stolen.status(), 404);
+    let other = coral_workspace::AuthenticatedPrincipal::user(fixture.other.actor().clone());
+    fixture
+        .assert_task_principal(&other_token.access_token, &other)
+        .await;
     assert_eq!(
         fixture
             .request(&fixture.other_workspace)
@@ -88,7 +83,6 @@ async fn http_oauth_requests_use_current_user_authority_not_sessions_or_metadata
     let denied = fixture
         .request(&fixture.workspace)
         .bearer_auth(&token.access_token)
-        .header("mcp-session-id", session)
         .send()
         .await
         .unwrap();
@@ -117,7 +111,7 @@ async fn http_oauth_requests_use_current_user_authority_not_sessions_or_metadata
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one HTTP contract follows the same credential, identity and session through lifecycle changes"
+    reason = "one HTTP contract follows the same credential and identity through lifecycle changes"
 )]
 async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecycle_change() {
     let fixture = Fixture::new().await;
@@ -150,10 +144,8 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
         .await
         .unwrap();
     assert_eq!(accepted.status(), 200);
-    let session = accepted.headers()["mcp-session-id"].clone();
-    fixture
-        .assert_task_principal(credential, &session, &actor)
-        .await;
+    assert_no_session(&accepted);
+    fixture.assert_task_principal(credential, &actor).await;
     let before = fixture
         .workspaces
         .list_lifecycle_events(fixture.owner.actor(), &fixture.workspace)
@@ -175,7 +167,6 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
         let rejected = fixture
             .request(&fixture.workspace)
             .bearer_auth(bad)
-            .header("mcp-session-id", session.clone())
             .send()
             .await
             .unwrap();
@@ -216,7 +207,6 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
         fixture
             .request(&fixture.workspace)
             .bearer_auth(credential)
-            .header("mcp-session-id", session.clone())
             .send()
             .await
             .unwrap()
@@ -250,7 +240,6 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
         fixture
             .request(&fixture.workspace)
             .bearer_auth(rotated.credential.expose())
-            .header("mcp-session-id", session.clone())
             .send()
             .await
             .unwrap()
@@ -283,7 +272,6 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
             fixture
                 .request(&fixture.workspace)
                 .bearer_auth(rotated.credential.expose())
-                .header("mcp-session-id", session.clone())
                 .send()
                 .await
                 .unwrap()
@@ -351,7 +339,7 @@ async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fix
         .await
         .unwrap();
     assert_eq!(accepted.status(), 200);
-    let session = accepted.headers().get("mcp-session-id").unwrap().clone();
+    assert_no_session(&accepted);
     assert_eq!(
         response_message(accepted)
             .await
@@ -366,21 +354,23 @@ async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fix
             &fixture.organization_url(),
             &fixture.other_workspace,
             &token,
-            &session,
             &principal,
         )
         .await;
     let elsewhere = fixture
         .organization_request()
         .bearer_auth(scoped("owner", &fixture.workspace))
-        .header("mcp-session-id", session.clone())
         .send()
         .await
         .unwrap();
+    assert_eq!(elsewhere.status(), 200);
     assert_eq!(
-        elsewhere.status(),
-        404,
-        "a session belongs to the Workspace that opened it"
+        response_message(elsewhere)
+            .await
+            .pointer("/result/serverInfo/title")
+            .and_then(serde_json::Value::as_str),
+        Some("Coral · Workspace"),
+        "each request is served in the Workspace its own token fixes"
     );
 
     let workspace_url_token = fixture
@@ -492,7 +482,7 @@ async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fix
         .await
         .unwrap();
     assert_eq!(accepted.status(), 200);
-    let session = accepted.headers()["mcp-session-id"].clone();
+    assert_no_session(&accepted);
     let agent = fixture
         .auth
         .authenticate(
@@ -507,7 +497,6 @@ async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fix
             &fixture.organization_url(),
             &fixture.workspace,
             credential,
-            &session,
             &agent,
         )
         .await;
@@ -665,27 +654,25 @@ impl Fixture {
     async fn assert_task_principal(
         &self,
         credential: &str,
-        session: &reqwest::header::HeaderValue,
         actor: &coral_workspace::AuthenticatedPrincipal,
     ) {
         self.assert_task_principal_at(
             &self.url(&self.workspace),
             &self.workspace,
             credential,
-            session,
             actor,
         )
         .await;
     }
 
     /// Starts a Task through the MCP endpoint at `url` and checks that it
-    /// belongs to `actor` in `workspace`.
+    /// belongs to `actor` in `workspace`. The requests carry a made-up session
+    /// id, which Coral ignores: the credential alone names the Principal.
     async fn assert_task_principal_at(
         &self,
         url: &str,
         workspace: &WorkspaceId,
         credential: &str,
-        session: &reqwest::header::HeaderValue,
         actor: &coral_workspace::AuthenticatedPrincipal,
     ) {
         let client = reqwest::Client::new();
@@ -694,7 +681,7 @@ impl Fixture {
                 .post(url)
                 .bearer_auth(credential)
                 .header("Accept", "application/json, text/event-stream")
-                .header("mcp-session-id", session.clone())
+                .header("mcp-session-id", "forged-by-the-client")
         };
         let response = request()
             .json(&serde_json::json!({"jsonrpc":"2.0", "method":"notifications/initialized"}))
@@ -714,7 +701,11 @@ impl Fixture {
         .unwrap();
         // A User inspects their own Task; an Owner may inspect Workspace Agent
         // work. Agent access to a Task identifier is attribution, not browsing.
-        let inspector = coral_workspace::AuthenticatedPrincipal::user(self.owner.actor().clone());
+        let inspector = if actor.principal().kind() == PrincipalKind::User {
+            actor.clone()
+        } else {
+            coral_workspace::AuthenticatedPrincipal::user(self.owner.actor().clone())
+        };
         let task = self.tasks.get(&inspector, workspace, &id).await.unwrap();
         assert_eq!(task.principal(), actor.principal());
     }
@@ -735,6 +726,14 @@ impl Fixture {
         initialize_request(&self.url(workspace))
     }
 }
+/// Coral keeps no MCP session, so any Coral Instance can serve the next request.
+fn assert_no_session(response: &reqwest::Response) {
+    assert!(
+        response.headers().get("mcp-session-id").is_none(),
+        "initialize issues no session id"
+    );
+}
+
 fn initialize_request(url: &str) -> reqwest::RequestBuilder {
     reqwest::Client::new().post(url).header("Accept", "application/json, text/event-stream").json(&serde_json::json!({
         "jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":"2025-03-26", "capabilities":{}, "clientInfo":{"name":"organization_owner", "version":"1"}}

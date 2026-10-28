@@ -443,7 +443,7 @@ async fn the_organization_endpoint_needs_an_agent_credential_in_local_mode() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn sessions_are_bound_to_host_credential_workspace_and_protocol_window() {
+async fn requests_are_bound_to_host_credential_workspace_and_protocol_window() {
     let tracer = Tracer::start().await;
     let endpoint = tracer.endpoint();
     let hostile_host = reqwest::Client::new()
@@ -497,7 +497,7 @@ async fn sessions_are_bound_to_host_credential_workspace_and_protocol_window() {
     );
     check_protocol_window(&endpoint).await;
 
-    // A session on Workspace B reaches nothing that belongs to Workspace A.
+    // A client on Workspace B reaches nothing that belongs to Workspace A.
     let task_id = start_task(&client_a, "Keep Workspace A private").await;
     let failed = call(
         &client_a,
@@ -605,7 +605,6 @@ async fn handshakes_carry_instructions_and_no_readable_resources_on_every_versio
             })),
             "{version}: an output URI is not a readable resource"
         );
-        session.close().await;
     }
 }
 
@@ -637,7 +636,6 @@ async fn advertised_schemas_defaults_and_output_contracts_hold_on_every_version(
     for version in SUPPORTED_PROTOCOL_VERSIONS {
         let session = RawSession::open(&tracer.endpoint(), version).await;
         check_raw_tool_listing(&session, &task_id, &tracer.index).await;
-        session.close().await;
     }
     // Approval exposes each accepted deadline without waiting for it.
     tracer.require_approval().await;
@@ -765,7 +763,6 @@ async fn check_raw_oversized_items(endpoint: &str, task: &str, version: &Protoco
         assert_eq!(delivered, emitted, "{version}: every item arrives once, whole");
         assert!(oversized_pages > 0, "{version}: an item exceeded the target");
     }
-    session.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -780,7 +777,6 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
     for version in SUPPORTED_PROTOCOL_VERSIONS {
         let session = RawSession::open(&tracer.endpoint(), version).await;
         check_raw_terminal_states(&session, &task_id).await;
-        session.close().await;
     }
     let failed = call(
         &client_a,
@@ -1400,7 +1396,6 @@ async fn a_lost_worker_run_is_interrupted_not_a_tool_error() {
             interrupted.pointer("/structuredContent/events/0/value/value"),
             Some(&json!("before interruption"))
         );
-        session.close().await;
     }
 }
 
@@ -1701,7 +1696,6 @@ async fn check_raw_rich_paging(endpoint: &str, task: &str, protocol_version: &Pr
             json!(6)
         ]
     );
-    session.close().await;
 }
 
 async fn check_raw_human_action(endpoint: &str, task: &str, version: &ProtocolVersion) {
@@ -1765,7 +1759,6 @@ async fn check_raw_human_action(endpoint: &str, task: &str, version: &ProtocolVe
     assert_eq!(canceled["required_actions"], json!([]));
     assert_eq!(canceled["events"], update["events"]);
     assert_eq!(canceled["has_more"], false);
-    session.close().await;
 }
 
 async fn check_raw_terminal_states(session: &RawSession, task: &str) {
@@ -2024,7 +2017,6 @@ async fn check_protocol_window(endpoint: &str) {
             newest_legacy.as_str(),
             "initialize for {requested} lands on the newest legacy version in the window"
         );
-        landed.close().await;
     }
 
     let session = RawSession::open(endpoint, newest).await;
@@ -2041,7 +2033,6 @@ async fn check_protocol_window(endpoint: &str) {
         })
         .await;
     assert_header_mismatch(missing, "missing Mcp-Method").await;
-    session.close().await;
 }
 
 fn protocol_window_ends() -> (&'static ProtocolVersion, &'static ProtocolVersion) {
@@ -2137,7 +2128,6 @@ fn result_definition(method: &str) -> &'static str {
 struct RawSession {
     client: reqwest::Client,
     endpoint: String,
-    session: Option<String>,
     protocol_version: String,
     output_contracts: OutputContracts,
     /// Capabilities that 2026-07-28 requests declare in their `_meta`.
@@ -2184,9 +2174,10 @@ impl RawSession {
         session
     }
 
-    /// The legacy handshake: `initialize` and `notifications/initialized`,
-    /// bound to a server-issued session id. The server answers with a version
-    /// it supports over this handshake, which the caller inspects.
+    /// The legacy handshake: `initialize` and `notifications/initialized`.
+    /// Coral issues no session id, so every later request stands alone. The
+    /// server answers with a version it supports over this handshake, which
+    /// the caller inspects.
     async fn initialize(endpoint: &str, requested: &str) -> Self {
         Self::initialize_as(endpoint, requested, None).await
     }
@@ -2197,13 +2188,10 @@ impl RawSession {
             .json(&json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":requested, "capabilities":{}, "clientInfo":{"name":"raw-test", "version":"1"}}}))
             .send().await.expect("initialize");
         assert!(response.status().is_success(), "initialize {requested}");
-        let session = response
-            .headers()
-            .get("mcp-session-id")
-            .expect("initialize issues a session id")
-            .to_str()
-            .expect("session text")
-            .to_owned();
+        assert!(
+            response.headers().get("mcp-session-id").is_none(),
+            "initialize issues no session id: any Coral Instance serves the next request"
+        );
         let result = parse_message(response)
             .await
             .get("result")
@@ -2222,7 +2210,6 @@ impl RawSession {
         let session = Self {
             client,
             endpoint: endpoint.to_owned(),
-            session: Some(session),
             protocol_version,
             output_contracts: OutputContracts::default(),
             client_capabilities: json!({}),
@@ -2239,13 +2226,11 @@ impl RawSession {
     }
 
     /// The 2026-07-28 handshake: `server/discover`, after which every request
-    /// is self-describing and no session id exists. The advertised window must
-    /// be exactly the tested one.
+    /// is self-describing. The advertised window must be exactly the tested one.
     async fn discover_as(endpoint: &str, requested: &str, bearer: Option<&str>) -> Self {
         let mut session = Self {
             client: reqwest::Client::new(),
             endpoint: endpoint.to_owned(),
-            session: None,
             protocol_version: requested.to_owned(),
             output_contracts: OutputContracts::default(),
             client_capabilities: json!({}),
@@ -2293,9 +2278,6 @@ impl RawSession {
             .header("forwarded", "host=attacker.example;proto=http")
             .header("x-forwarded-host", "attacker.example")
             .header("x-forwarded-proto", "http");
-        if let Some(session) = &self.session {
-            request = request.header("mcp-session-id", session);
-        }
         request = authorized(request, self.bearer.as_deref());
         if self.standard_headers() {
             request = request.header("mcp-method", method);
@@ -2405,20 +2387,6 @@ impl RawSession {
             .expect("tampered request");
         tamper(request.headers_mut());
         self.client.execute(request).await.expect("tampered tool")
-    }
-
-    async fn close(self) {
-        let Some(session) = &self.session else {
-            return;
-        };
-        let request = self
-            .client
-            .delete(&self.endpoint)
-            .header("mcp-session-id", session);
-        let _closed = authorized(request, self.bearer.as_deref())
-            .send()
-            .await
-            .expect("close raw session");
     }
 }
 
