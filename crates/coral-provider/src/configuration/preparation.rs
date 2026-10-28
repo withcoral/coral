@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use coral_catalog::{
-    CatalogDiagnostic, CatalogDiagnosticSeverity, MaterializationOutcome, OperationAvailability,
+    CatalogDiagnostic, CatalogDiagnosticSeverity, MaterializationOutcome,
     ProviderConfigurationReview, ProviderCredentialContract, ProviderSetupInput,
-    ProviderSetupInputDigest,
+    ProviderSetupInputDigest, ToolAvailability,
 };
 use coral_outbound::DestinationPolicy;
 use serde::{Deserialize, Serialize};
@@ -33,8 +33,8 @@ pub(crate) struct PreparedReview {
     pub(crate) contract: ProviderCredentialContract,
     rejected_contract: ProviderCredentialContract,
     pub(crate) destinations: BTreeMap<String, String>,
-    pub(crate) operations: Vec<super::ReviewedOperation>,
-    pub(crate) unavailable_operations: BTreeMap<String, Vec<CatalogDiagnostic>>,
+    pub(crate) tools: Vec<super::ReviewedTool>,
+    pub(crate) unavailable_tools: BTreeMap<String, Vec<CatalogDiagnostic>>,
     pub(crate) diagnostic: Option<String>,
 }
 
@@ -95,8 +95,8 @@ impl PreparedReview {
         let mut rejected = self.clone();
         rejected.contract.clone_from(&self.rejected_contract);
         rejected.destinations.clear();
-        rejected.operations.clear();
-        rejected.unavailable_operations.clear();
+        rejected.tools.clear();
+        rejected.unavailable_tools.clear();
         rejected.diagnostic = Some(diagnostic.code().into());
         std::borrow::Cow::Owned(rejected)
     }
@@ -181,26 +181,25 @@ impl Preparation {
             },
             rejected_contract: ProviderCredentialContract::NONE,
             destinations: BTreeMap::new(),
-            operations: Vec::new(),
-            unavailable_operations: BTreeMap::new(),
+            tools: Vec::new(),
+            unavailable_tools: BTreeMap::new(),
             diagnostic: None,
         };
         review.rejected_contract.clone_from(&review.contract);
         match outcome {
             MaterializationOutcome::Ready(catalog) => {
                 review.contract = catalog.credential_contract();
-                for operation in catalog.operations() {
-                    review.operations.push(super::ReviewedOperation {
-                        key: operation.key().as_str().into(),
-                        relative_path: operation.relative_path().into(),
-                        summary: operation.summary().into(),
-                        tags: operation.presentation().tags().to_vec(),
+                for tool in catalog.tools() {
+                    review.tools.push(super::ReviewedTool {
+                        key: tool.key().as_str().into(),
+                        relative_path: tool.relative_path().into(),
+                        summary: tool.summary().into(),
+                        tags: tool.presentation().tags().to_vec(),
                     });
-                    if operation.availability() == OperationAvailability::Unavailable {
-                        review.unavailable_operations.insert(
-                            operation.key().as_str().into(),
-                            operation
-                                .diagnostics()
+                    if tool.availability() == ToolAvailability::Unavailable {
+                        review.unavailable_tools.insert(
+                            tool.key().as_str().into(),
+                            tool.diagnostics()
                                 .iter()
                                 .filter(|diagnostic| {
                                     diagnostic.severity() == CatalogDiagnosticSeverity::Error
@@ -209,7 +208,7 @@ impl Preparation {
                                 .collect(),
                         );
                     }
-                    let destination = match operation.execution_binding() {
+                    let destination = match tool.execution_binding() {
                         coral_catalog::ExecutionBinding::Http(binding) => binding.server_url(),
                         coral_catalog::ExecutionBinding::Mcp(binding) => Some(binding.server_url()),
                         coral_catalog::ExecutionBinding::Builtin(_) => None,
@@ -217,7 +216,7 @@ impl Preparation {
                     if let Some(url) = destination {
                         review
                             .destinations
-                            .insert(operation.key().as_str().into(), url.into());
+                            .insert(tool.key().as_str().into(), url.into());
                     }
                 }
             }

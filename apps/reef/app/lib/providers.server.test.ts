@@ -72,7 +72,7 @@ it.each([
   [
     SearchIndexState.FAILED,
     SearchIndexFailureReason.INVALID_ENTRY,
-    { state: 'failed', reason: 'One of the operations cannot become a search entry.' },
+    { state: 'failed', reason: 'One of the tools cannot become a search entry.' },
   ],
   [
     SearchIndexState.FAILED,
@@ -92,7 +92,7 @@ it.each([
   [
     SearchIndexState.FAILED,
     SearchIndexFailureReason.PROVIDER,
-    { state: 'failed', reason: "Search cannot read the provider's operations." },
+    { state: 'failed', reason: "Search cannot read the provider's tools." },
   ],
   [
     SearchIndexState.FAILED,

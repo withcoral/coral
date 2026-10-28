@@ -21,7 +21,7 @@ export const policyOptions: readonly {
     value: 'disabled',
     label: 'Disabled',
     icon: 'Ban',
-    description: 'Coral blocks every call. Search results do not show this operation.',
+    description: 'Coral blocks every call. Search results do not show this tool.',
   },
 ]
 

@@ -4,7 +4,7 @@
     reason = "integration crate uses only dependencies at the tested domain boundary"
 )]
 use coral_provider::{
-    CredentialRoute, InvocationOperationVerification, LifecycleAction, LifecycleOutcome,
+    CredentialRoute, InvocationToolVerification, LifecycleAction, LifecycleOutcome,
     ManagementRequestId, OpenApiDocument, ProviderCallRoot, ProviderDisplayName, ProviderModule,
     ProviderPublicationOutcome, ProviderRegenerationRequest, ProviderState,
     WorkspaceProviderPublicationRequest,
@@ -110,7 +110,7 @@ fn added_events(
         .collect()
 }
 
-/// The Operation catalogs discovery would search in `workspace`.
+/// The Tool catalogs discovery would search in `workspace`.
 async fn searchable_providers(
     database: &coral_db::Database,
     workspace: &WorkspaceId,
@@ -182,7 +182,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
     );
 
     let mut tx = database.begin().await.unwrap();
-    let retained = coral_provider::resolve_owner_operation_in_transaction(
+    let retained = coral_provider::resolve_owner_tool_in_transaction(
         &mut tx,
         workspace.id(),
         &format!("{}.forecast", provider.call_root().as_str()),
@@ -243,7 +243,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
     assert_eq!(updated.account_setting_version(), 1);
     let mut tx = database.begin().await.unwrap();
     assert_eq!(
-        coral_provider::verify_invocation_operation_in_transaction(
+        coral_provider::verify_invocation_tool_in_transaction(
             &mut tx,
             workspace.id(),
             &retained,
@@ -251,7 +251,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
         )
         .await
         .unwrap(),
-        coral_provider::InvocationOperationVerification::Current
+        coral_provider::InvocationToolVerification::Current
     );
     tx.rollback().await.unwrap();
     let conflict_setup = self::setup(&providers, &actor, workspace.id()).await;
@@ -298,11 +298,11 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
     );
     assert_eq!(
         providers
-            .inspect_operation(
+            .inspect_tool(
                 &actor,
                 workspace.id(),
                 provider.id(),
-                &coral_catalog::OperationKey::parse("forecast").unwrap(),
+                &coral_catalog::ToolKey::parse("forecast").unwrap(),
             )
             .await
             .unwrap()
@@ -329,7 +329,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
     );
     let mut tx = database.begin().await.unwrap();
     assert!(
-        coral_provider::resolve_owner_operation_in_transaction(
+        coral_provider::resolve_owner_tool_in_transaction(
             &mut tx,
             workspace.id(),
             &format!("{}.forecast", provider.call_root().as_str()),
@@ -339,7 +339,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
         .is_none()
     );
     assert_eq!(
-        coral_provider::verify_invocation_operation_in_transaction(
+        coral_provider::verify_invocation_tool_in_transaction(
             &mut tx,
             workspace.id(),
             &retained,
@@ -347,7 +347,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
         )
         .await
         .unwrap(),
-        InvocationOperationVerification::AuthorityLost,
+        InvocationToolVerification::AuthorityLost,
         "disablement blocks retained work"
     );
     tx.rollback().await.unwrap();
@@ -385,7 +385,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
     );
     let mut tx = database.begin().await.unwrap();
     assert_eq!(
-        coral_provider::verify_invocation_operation_in_transaction(
+        coral_provider::verify_invocation_tool_in_transaction(
             &mut tx,
             workspace.id(),
             &retained,
@@ -393,7 +393,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
         )
         .await
         .unwrap(),
-        InvocationOperationVerification::Current,
+        InvocationToolVerification::Current,
         "restoration makes retained work usable again"
     );
     tx.rollback().await.unwrap();
@@ -415,7 +415,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
     );
     let retained_after_deletion = async || {
         let mut tx = database.begin().await.unwrap();
-        let verification = coral_provider::verify_invocation_operation_in_transaction(
+        let verification = coral_provider::verify_invocation_tool_in_transaction(
             &mut tx,
             workspace.id(),
             &retained,
@@ -428,7 +428,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
     };
     assert_eq!(
         retained_after_deletion().await,
-        InvocationOperationVerification::AuthorityLost
+        InvocationToolVerification::AuthorityLost
     );
     assert!(matches!(
         providers
@@ -494,7 +494,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
     );
     assert_eq!(
         retained_after_deletion().await,
-        InvocationOperationVerification::AuthorityLost,
+        InvocationToolVerification::AuthorityLost,
         "a new Provider in the namespace does not revive retained work"
     );
     let replacement_events = providers
@@ -847,7 +847,7 @@ async fn existing_caller_binding_uses_the_workspace_provider_address() {
         Some(account_id)
     );
     let mut tx = database.begin().await.unwrap();
-    let retained = coral_provider::resolve_owner_operation_in_transaction(
+    let retained = coral_provider::resolve_owner_tool_in_transaction(
         &mut tx,
         workspace.id(),
         &format!("{}.forecast", provider.call_root().as_str()),

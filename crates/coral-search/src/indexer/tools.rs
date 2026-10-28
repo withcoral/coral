@@ -1,16 +1,16 @@
-//! The Operation indexer: one Provider Generation's entries in, one row per
-//! Operation and the Generation's state row out.
+//! The Tool indexer: one Provider Generation's entries in, one row per
+//! Tool and the Generation's state row out.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use coral_catalog::{CatalogDiagnostic, OperationKey, ProviderGenerationId};
+use coral_catalog::{CatalogDiagnostic, ProviderGenerationId, ToolKey};
 use coral_db::Transaction;
-use coral_provider::{ActiveGeneration, GenerationEntries, OperationEntry, ProviderId};
+use coral_provider::{ActiveGeneration, GenerationEntries, ProviderId, ToolEntry};
 use coral_workspace::WorkspaceId;
 
-use super::repository::{self, AttemptState, GenerationState, OperationRow, RecordedOutcome};
+use super::repository::{self, AttemptState, GenerationState, RecordedOutcome, ToolRow};
 use super::retry::RetryRule;
 use super::{
     DistinctWords, EntityIndexer, INDEXER_REVISION, IndexError, compact_identifier_variant,
@@ -18,13 +18,13 @@ use super::{
 };
 use crate::CallPath;
 
-/// Indexes the Operations of Provider Generations.
+/// Indexes the Tools of Provider Generations.
 #[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct OperationIndexer;
+pub(crate) struct ToolIndexer;
 
-/// What an Operation removal names.
+/// What a Tool removal names.
 #[derive(Debug, Clone)]
-pub(crate) enum OperationRemoval {
+pub(crate) enum ToolRemoval {
     /// Every Generation of a deleted Provider.
     Provider {
         workspace_id: WorkspaceId,
@@ -35,10 +35,10 @@ pub(crate) enum OperationRemoval {
 }
 
 #[async_trait]
-impl EntityIndexer for OperationIndexer {
+impl EntityIndexer for ToolIndexer {
     type Entry = GenerationEntries;
     type Rows<'e> = GenerationRows<'e>;
-    type Removal = OperationRemoval;
+    type Removal = ToolRemoval;
     type Expected = ActiveGeneration;
 
     fn workspace_id<'e>(&self, entries: &'e GenerationEntries) -> &'e WorkspaceId {
@@ -46,18 +46,17 @@ impl EntityIndexer for OperationIndexer {
     }
 
     /// Turns each entry into its row as the entries prepare it, so one
-    /// Operation's declaration fields are held at a time.
+    /// Tool's declaration fields are held at a time.
     fn rows<'e>(&self, entries: &'e GenerationEntries) -> Result<GenerationRows<'e>, IndexError> {
         let mut rows = GenerationRows::default();
-        for operation in entries.operations() {
-            let operation = operation?;
+        for tool in entries.tools() {
+            let tool = tool?;
             rows.warnings.extend(
-                operation
-                    .search_warnings()
+                tool.search_warnings()
                     .iter()
-                    .map(|warning| (operation.key(), warning.clone())),
+                    .map(|warning| (tool.key(), warning.clone())),
             );
-            rows.rows.push(operation_row(entries, &operation)?);
+            rows.rows.push(tool_row(entries, &tool)?);
         }
         Ok(rows)
     }
@@ -72,8 +71,8 @@ impl EntityIndexer for OperationIndexer {
         let workspace_id = entries.workspace_id();
         let generation_id = entries.generation_id();
         let attempted_at = now_unix_nanos()?;
-        repository::upsert_operation_rows(transaction, rows, attempted_at).await?;
-        // A Generation keeps its Operations, but the reconcile task prepares
+        repository::upsert_tool_rows(transaction, rows, attempted_at).await?;
+        // A Generation keeps its Tools, but the reconcile task prepares
         // entries under the current rules, which may leave one out; a rewrite
         // then removes that row.
         repository::delete_rows_not_written(transaction, workspace_id, generation_id, rows).await?;
@@ -90,17 +89,17 @@ impl EntityIndexer for OperationIndexer {
     async fn remove(
         &self,
         transaction: &mut Transaction<'_>,
-        removal: &OperationRemoval,
+        removal: &ToolRemoval,
     ) -> Result<(), IndexError> {
         match removal {
-            OperationRemoval::Provider {
+            ToolRemoval::Provider {
                 workspace_id,
                 provider_id,
             } => {
                 repository::lock_workspace(transaction, workspace_id).await?;
                 repository::delete_provider(transaction, workspace_id, provider_id).await?;
             }
-            OperationRemoval::Generation(generation_id) => {
+            ToolRemoval::Generation(generation_id) => {
                 repository::delete_generation(transaction, generation_id).await?;
             }
         }
@@ -149,7 +148,7 @@ impl EntityIndexer for OperationIndexer {
     }
 }
 
-impl OperationIndexer {
+impl ToolIndexer {
     /// Removes the rows and state rows of every Generation that is not in
     /// `active`, every Provider's active Generation: superseded ones, and
     /// those of a Provider deleted without a notification.
@@ -187,13 +186,13 @@ impl OperationIndexer {
 /// One Generation's rows, and the search warnings preparing them left.
 #[derive(Default)]
 pub(crate) struct GenerationRows<'e> {
-    rows: Vec<OperationRow<'e>>,
-    warnings: Vec<(&'e OperationKey, CatalogDiagnostic)>,
+    rows: Vec<ToolRow<'e>>,
+    warnings: Vec<(&'e ToolKey, CatalogDiagnostic)>,
 }
 
 impl<'e> GenerationRows<'e> {
-    /// Each Operation's search warnings, with its key.
-    pub(crate) fn warnings(&self) -> &[(&'e OperationKey, CatalogDiagnostic)] {
+    /// Each Tool's search warnings, with its key.
+    pub(crate) fn warnings(&self) -> &[(&'e ToolKey, CatalogDiagnostic)] {
         &self.warnings
     }
 }
@@ -244,7 +243,7 @@ impl AttemptedGeneration<'_> {
 }
 
 /// Records a failed attempt for the Generation: a `failed` state row with
-/// the error and its retry rule under `reconcile_interval`, and no Operation
+/// the error and its retry rule under `reconcile_interval`, and no Tool
 /// rows. The caller runs this in a fresh transaction after the attempt's
 /// transaction rolled back. Rows an earlier attempt wrote go too: a
 /// Generation whose state is `failed` counts as not searched, so none of its
@@ -297,30 +296,30 @@ fn generation_state(
     }
 }
 
-fn operation_row<'a>(
+fn tool_row<'a>(
     entries: &'a GenerationEntries,
-    operation: &OperationEntry<'a>,
-) -> Result<OperationRow<'a>, IndexError> {
-    let call_path = CallPath::operation(entries.call_root(), operation.relative_path())
+    tool: &ToolEntry<'a>,
+) -> Result<ToolRow<'a>, IndexError> {
+    let call_path = CallPath::tool(entries.call_root(), tool.relative_path())
         .map_err(|error| IndexError::InvalidEntry(error.to_string()))?;
-    let description = [Some(operation.description()), operation.guidance()]
+    let description = [Some(tool.description()), tool.guidance()]
         .into_iter()
         .flatten()
         .filter(|text| !text.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-    Ok(OperationRow {
+    Ok(ToolRow {
         workspace_id: entries.workspace_id(),
         provider_id: entries.provider_id(),
         generation_id: entries.generation_id(),
-        operation_key: operation.key(),
+        tool_key: tool.key(),
         call_path,
-        qualified_name: operation.relative_path(),
-        title: operation.title().unwrap_or_default().to_string(),
+        qualified_name: tool.relative_path(),
+        title: tool.title().unwrap_or_default().to_string(),
         description,
         provider_name: format!("{} {}", entries.call_root().name(), entries.display_name()),
-        searchable_text: searchable_text(entries, operation),
-        deprecated: operation.deprecated(),
+        searchable_text: searchable_text(entries, tool),
+        deprecated: tool.deprecated(),
     })
 }
 
@@ -329,10 +328,10 @@ fn operation_row<'a>(
 /// of the name-like fields, each once, as [`DistinctWords`] keeps them. The
 /// deprecation flag is a column, never text. Raise [`INDEXER_REVISION`]
 /// when this text changes.
-fn searchable_text(entries: &GenerationEntries, operation: &OperationEntry<'_>) -> String {
+fn searchable_text(entries: &GenerationEntries, tool: &ToolEntry<'_>) -> String {
     let names = [
-        operation.relative_path(),
-        operation.title().unwrap_or_default(),
+        tool.relative_path(),
+        tool.title().unwrap_or_default(),
         entries.call_root().name(),
         entries.display_name(),
     ];
@@ -341,10 +340,10 @@ fn searchable_text(entries: &GenerationEntries, operation: &OperationEntry<'_>) 
         .filter_map(compact_identifier_variant)
         .collect::<Vec<_>>();
     let mut words = DistinctWords::default();
-    for tag in operation.tags() {
+    for tag in tool.tags() {
         words.push(tag);
     }
-    for field in operation.declaration_fields() {
+    for field in tool.declaration_fields() {
         words.push_field(field.path().as_str(), field.text());
     }
     for variant in &variants {

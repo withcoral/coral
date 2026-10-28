@@ -13,12 +13,12 @@ import routes from '../routes'
 import * as providers from './providers'
 import { CredentialRoute_Kind } from '@/generated/coral/management/v1/provider_pb'
 
-const OPERATION_COUNT = 1229
-let operationCount = OPERATION_COUNT
+const TOOL_COUNT = 1229
+let toolCount = TOOL_COUNT
 
 const mocks = vi.hoisted(() => ({
   workspace: vi.fn(),
-  operations: vi.fn(),
+  tools: vi.fn(),
   providers: vi.fn(),
   policies: vi.fn(),
   userAccounts: vi.fn(),
@@ -33,15 +33,15 @@ const providerId = '11111111-1111-4111-8111-111111111111'
 const base = `/workspaces/${workspace}/providers/${providerId}`
 const provider = `workspaces/${workspace}/providers/11111111-1111-4111-8111-111111111111`
 const api = fakeManagement({
-  providers: { listProviders: mocks.providers, listOperations: mocks.operations },
-  policies: { getOperationPolicies: mocks.policies },
+  providers: { listProviders: mocks.providers, listTools: mocks.tools },
+  policies: { getToolPolicies: mocks.policies },
   accounts: { listUserAccounts: mocks.userAccounts },
 })
 const routers: ReturnType<typeof createMemoryRouter>[] = []
 
 beforeEach(() => {
   vi.resetAllMocks()
-  operationCount = OPERATION_COUNT
+  toolCount = TOOL_COUNT
   mocks.workspace.mockResolvedValue({
     api,
     workspace: {
@@ -66,25 +66,25 @@ beforeEach(() => {
     nextPageToken: '',
   })
   mocks.userAccounts.mockResolvedValue({ accounts: [] })
-  mocks.policies.mockImplementation(({ operations }: { operations: string[] }) => ({
-    policies: operations.map((operation) => ({ operation, accessState: 3, explicit: true })),
+  mocks.policies.mockImplementation(({ tools }: { tools: string[] }) => ({
+    policies: tools.map((tool) => ({ tool, accessState: 3, explicit: true })),
   }))
-  // 1,229 operations span several pages of the loader's page size.
-  mocks.operations.mockImplementation(
+  // 1,229 tools span several pages of the loader's page size.
+  mocks.tools.mockImplementation(
     ({ pageToken = '', pageSize }: { pageToken: string; pageSize: number }) => {
       const start = Number(pageToken)
-      const end = Math.min(start + pageSize, operationCount)
+      const end = Math.min(start + pageSize, toolCount)
       return Promise.resolve({
-        operations: Array.from({ length: end - start }, (_, i) => ({
-          name: `${provider}/operations/operation${start + i}`,
-          relativePath: `actions.operation${start + i}`,
-          summary: `Operation ${start + i}`,
+        tools: Array.from({ length: end - start }, (_, i) => ({
+          name: `${provider}/tools/tool${start + i}`,
+          relativePath: `actions.tool${start + i}`,
+          summary: `Tool ${start + i}`,
           effect: 3,
           available: true,
           diagnostics: [],
           tags: ['actions'],
         })),
-        nextPageToken: end < operationCount ? String(end) : '',
+        nextPageToken: end < toolCount ? String(end) : '',
       })
     },
   )
@@ -113,7 +113,7 @@ async function convert(entry: RouteConfigEntry): Promise<RouteObject> {
   } as RouteObject
 }
 
-async function makeRouter(entry = `${base}/ops/actions.operation0`) {
+async function makeRouter(entry = `${base}/tools/actions.tool0`) {
   const config = await routes
   const router = createMemoryRouter(await Promise.all(find(config).map(convert)), {
     initialEntries: [entry],
@@ -133,13 +133,13 @@ async function makeRouter(entry = `${base}/ops/actions.operation0`) {
 }
 
 // Catches: initial loading serializing a second catalog-sized set of policy reads.
-it.each([101, OPERATION_COUNT])(
-  'loads %i operations and saved policies within one paging pass plus one request',
+it.each([101, TOOL_COUNT])(
+  'loads %i tools and saved policies within one paging pass plus one request',
   async (count) => {
-    operationCount = count
+    toolCount = count
     vi.useFakeTimers()
     const requestLatency = 50
-    for (const mock of [mocks.operations, mocks.policies]) {
+    for (const mock of [mocks.tools, mocks.policies]) {
       const respond = mock.getMockImplementation()!
       mock.mockImplementation(async (...args: unknown[]) => {
         await new Promise((resolve) => setTimeout(resolve, requestLatency))
@@ -154,11 +154,9 @@ it.each([101, OPERATION_COUNT])(
     } as never)
     await vi.runAllTimersAsync()
     const loaded = await loading
-    const operations = loaded!.data.providers[0]!.operations
-    expect(operations).toHaveLength(count)
-    expect(
-      operations.every((operation: { policy: string }) => operation.policy === 'disabled'),
-    ).toBe(true)
+    const tools = loaded!.data.providers[0]!.tools
+    expect(tools).toHaveLength(count)
+    expect(tools.every((tool: { policy: string }) => tool.policy === 'disabled')).toBe(true)
     expect(Date.now() - start).toBeLessThanOrEqual((Math.ceil(count / 100) + 1) * requestLatency)
   },
 )
@@ -171,7 +169,7 @@ it.each([
 ] as const)(
   'rejects the page when a later %s read fails with %s',
   async (service, code, status) => {
-    const mock = service === 'catalog' ? mocks.operations : mocks.policies
+    const mock = service === 'catalog' ? mocks.tools : mocks.policies
     const respond = mock.getMockImplementation()!
     mock.mockImplementationOnce(respond).mockRejectedValueOnce(new ConnectError('failed', code))
     const router = await makeRouter()
@@ -181,10 +179,10 @@ it.each([
   },
 )
 
-// Catches: an operation without a policy decision displaying a guessed default.
-it('rejects the page when Coral leaves an operation without a policy decision', async () => {
+// Catches: a tool without a policy decision displaying a guessed default.
+it('rejects the page when Coral leaves a tool without a policy decision', async () => {
   const respond = mocks.policies.getMockImplementation()!
-  mocks.policies.mockImplementation(async (request: { operations: string[] }) => {
+  mocks.policies.mockImplementation(async (request: { tools: string[] }) => {
     const { policies } = await respond(request)
     return { policies: policies.slice(1) }
   })
@@ -193,20 +191,20 @@ it('rejects the page when Coral leaves an operation without a policy decision', 
   expect(router.state.loaderData.providers).toBeUndefined()
 })
 
-it('keeps the 1,229-operation tree out of operation navigation responses, but reauthorizes each click', async () => {
+it('keeps the 1,229-tool tree out of tool navigation responses, but reauthorizes each click', async () => {
   const router = await makeRouter()
   expect(router.state.errors).toBeNull()
   const tree = router.state.loaderData.providers
-  expect(tree.providers[0].operations).toHaveLength(OPERATION_COUNT)
+  expect(tree.providers[0].tools).toHaveLength(TOOL_COUNT)
   const initialAuthCalls = mocks.workspace.mock.calls.length
-  await router.navigate(`${base}/ops/actions.operation1`)
+  await router.navigate(`${base}/tools/actions.tool1`)
   expect(router.state.errors).toBeNull()
   expect(router.state.loaderData.providers).toBe(tree)
   expect(mocks.workspace.mock.calls.length).toBeGreaterThan(initialAuthCalls)
-  expect(JSON.stringify(router.state.loaderData['providers-operation']).length).toBeLessThan(2000)
+  expect(JSON.stringify(router.state.loaderData['providers-tool']).length).toBeLessThan(2000)
 
   mocks.workspace.mockRejectedValueOnce(new Response('Forbidden', { status: 403 }))
-  await router.navigate(`${base}/ops/actions.operation2`)
+  await router.navigate(`${base}/tools/actions.tool2`)
   expect(router.state.errors).not.toBeNull()
 })
 
@@ -221,8 +219,8 @@ it('reloads the catalog on an explicit refresh', async () => {
 it('never suppresses mutation-driven revalidation', () => {
   expect(
     providers.shouldRevalidate({
-      currentUrl: new URL(`https://reef.test${base}/ops/actions.operation0`),
-      nextUrl: new URL(`https://reef.test${base}/ops/actions.operation1`),
+      currentUrl: new URL(`https://reef.test${base}/tools/actions.tool0`),
+      nextUrl: new URL(`https://reef.test${base}/tools/actions.tool1`),
       formMethod: 'POST',
       defaultShouldRevalidate: true,
     } as never),
@@ -238,7 +236,7 @@ function decide(from: string, to: string) {
 }
 
 // Catches: the parent loader re-fetching the whole catalog when the rail or a
-// row only changes which provider or operation the address names.
+// row only changes which provider or tool the address names.
 it('reuses the tree across selection changes on the page, but not on leaving it', async () => {
   const router = await makeRouter()
   expect(router.state.errors).toBeNull()
@@ -258,7 +256,7 @@ it('reuses the tree across selection changes on the page, but not on leaving it'
 })
 
 // Catches: an address the catalog cannot name rendering a page.
-it.each([`/workspaces/${workspace}/providers/not-a-uuid`, `${base}/ops/missingOperation`])(
+it.each([`/workspaces/${workspace}/providers/not-a-uuid`, `${base}/tools/missingTool`])(
   'answers 404 for %s',
   async (path) => {
     const router = await makeRouter(path)

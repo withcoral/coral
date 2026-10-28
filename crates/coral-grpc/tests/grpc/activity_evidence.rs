@@ -321,7 +321,7 @@ async fn cancellation_retains_pending_and_dispatched_invocation_distinctions_and
         Some(wire::activity_request_reference::Request::Approval(name)) if name == &approval))
     );
 
-    policy(&f, &provider, coral_policy::OperationAccessState::Enabled).await;
+    policy(&f, &provider, coral_policy::ToolAccessState::Enabled).await;
     let dispatched = start(&f, source).await;
     wait_invocation(&f, &dispatched, false).await;
     let before = invocation(&f, &dispatched).await;
@@ -462,12 +462,9 @@ async fn invocation_wire_rejects_an_mcp_is_error_and_keeps_its_native_data() {
         panic!("an uncaught isError fails the Run")
     };
     let error = failure.error.expect("Program error");
-    assert_eq!(error.operation_code, "error_response");
-    assert_eq!(
-        error.operation_status, 0,
-        "an MCP outcome has no HTTP status"
-    );
-    assert!(error.operation_body.contains("private native error"));
+    assert_eq!(error.tool_code, "error_response");
+    assert_eq!(error.tool_status, 0, "an MCP outcome has no HTTP status");
+    assert!(error.tool_body.contains("private native error"));
     let exact = invocation(&f, &run).await;
     assert_eq!(
         exact.invocation.unwrap().outcome(),
@@ -791,7 +788,7 @@ async fn action_groups_keep_exec_intent_and_labels_after_selected_run_leaves_que
     );
     assert_ne!(
         first.request, second.request,
-        "identical Operations are separate exact decisions"
+        "identical Tools are separate exact decisions"
     );
     let encoded = String::from_utf8_lossy(&prost::Message::encode_to_vec(&queue)).into_owned();
     assert!(!encoded.contains("first"));
@@ -1093,15 +1090,15 @@ async fn publish_http(f: &Fixture, url: &str) -> coral_provider::ProviderId {
 async fn policy(
     f: &Fixture,
     provider: &coral_provider::ProviderId,
-    state: coral_policy::OperationAccessState,
+    state: coral_policy::ToolAccessState,
 ) {
-    coral_policy::OperationPolicyModule::new(f.database.database(), f.workspaces.clone())
+    coral_policy::ToolPolicyModule::new(f.database.database(), f.workspaces.clone())
         .set_access_state(
             &super::super::change(&f.owner),
-            coral_policy::OperationPolicyTarget::new(
+            coral_policy::ToolPolicyTarget::new(
                 f.workspace.id().clone(),
                 provider.clone(),
-                coral_catalog::OperationKey::parse("read").unwrap(),
+                coral_catalog::ToolKey::parse("read").unwrap(),
             ),
             state,
         )
@@ -1167,7 +1164,7 @@ async fn invocation_wire_rejects_an_http_error_status_with_its_evidence_and_keep
         .mount(&server)
         .await;
     let provider = publish_http(&f, &server.uri()).await;
-    policy(&f, &provider, coral_policy::OperationAccessState::Enabled).await;
+    policy(&f, &provider, coral_policy::ToolAccessState::Enabled).await;
     let source = "return await coral.providers.evidence.read({body: {private: 'argument'}});";
     let run = start(&f, source).await;
     let detail = terminal(&f, &run).await;
@@ -1175,10 +1172,10 @@ async fn invocation_wire_rejects_an_http_error_status_with_its_evidence_and_keep
         panic!("an uncaught upstream error fails the Run")
     };
     let error = failure.error.as_ref().expect("Program error");
-    assert_eq!(error.operation_code, "error_response");
-    assert_eq!(error.operation_status, 418);
-    assert_eq!(error.operation_body, r#"{"private":[null,42]}"#);
-    assert!(!error.operation_body_truncated);
+    assert_eq!(error.tool_code, "error_response");
+    assert_eq!(error.tool_status, 418);
+    assert_eq!(error.tool_body, r#"{"private":[null,42]}"#);
+    assert!(!error.tool_body_truncated);
     let exact = invocation(&f, &run).await;
     assert_eq!(
         exact.invocation.as_ref().unwrap().outcome(),
@@ -1201,7 +1198,7 @@ async fn invocation_wire_rejects_an_http_error_status_with_its_evidence_and_keep
     assert!(detail.events.iter().any(|event| matches!(&event.payload,
         Some(wire::activity_run_event::Payload::InvocationEnded(ended)) if ended.outcome() == wire::ActivityInvocationOutcome::UpstreamOutcome)));
 
-    policy(&f, &provider, coral_policy::OperationAccessState::Disabled).await;
+    policy(&f, &provider, coral_policy::ToolAccessState::Disabled).await;
     let run = start(&f, source).await;
     let detail = terminal(&f, &run).await;
     let Some(wire::inspect_run_response::Terminal::Failed(failure)) = detail.terminal else {
@@ -1217,7 +1214,7 @@ async fn invocation_wire_rejects_an_http_error_status_with_its_evidence_and_keep
     else {
         panic!("typed Coral Failure")
     };
-    assert_eq!(failure.code, "operation_disabled");
+    assert_eq!(failure.code, "tool_disabled");
     assert!(!failure.message.is_empty());
 }
 
@@ -1254,7 +1251,7 @@ async fn activity_records_carry_their_authored_location_on_every_projection() {
         .mount(&server)
         .await;
     let provider = publish_http(&f, &server.uri()).await;
-    policy(&f, &provider, coral_policy::OperationAccessState::Enabled).await;
+    policy(&f, &provider, coral_policy::ToolAccessState::Enabled).await;
     f.saved_functions
         .save(
             &coral_functions::SavedFunctionChangeContext::new(
@@ -1391,7 +1388,7 @@ async fn activity_summary_wire_rejects_malformed_and_hidden_windows_and_labels_i
         .mount(&server)
         .await;
     let provider = publish_http(&f, &server.uri()).await;
-    policy(&f, &provider, coral_policy::OperationAccessState::Enabled).await;
+    policy(&f, &provider, coral_policy::ToolAccessState::Enabled).await;
     let run = start(
         &f,
         "await coral.providers.evidence.read({body: {}}); return 'done';",
@@ -1432,10 +1429,10 @@ async fn activity_summary_wire_rejects_malformed_and_hidden_windows_and_labels_i
         .await
         .unwrap()
         .into_inner();
-    let [operation] = summary.operations.as_slice() else {
-        panic!("one Operation: {:?}", summary.operations)
+    let [tool] = summary.tools.as_slice() else {
+        panic!("one Tool: {:?}", summary.tools)
     };
-    assert_eq!(operation.call_path, "coral.providers.evidence.read");
+    assert_eq!(tool.call_path, "coral.providers.evidence.read");
     let [actor] = summary.actors.as_slice() else {
         panic!("one actor: {:?}", summary.actors)
     };

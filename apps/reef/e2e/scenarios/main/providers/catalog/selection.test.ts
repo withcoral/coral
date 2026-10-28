@@ -7,11 +7,11 @@ import { createWorkspace, publishWorkspaceProvider } from '../../../../support/p
 // cases; this scenario keeps what needs a real layout.
 test('A large catalog scrolls inside its table with aligned sticky rows', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {
-    const all = page.getByRole('checkbox', { name: 'Select all matching operations', exact: true })
+    const all = page.getByRole('checkbox', { name: 'Select all matching tools', exact: true })
     const checkbox = (name: string) =>
       page.getByRole('checkbox', { name: `Select ${name}`, exact: true })
-    const filter = page.getByRole('searchbox', { name: 'Filter operations', exact: true })
-    const table = page.getByRole('table', { name: 'Operations', exact: true })
+    const filter = page.getByRole('searchbox', { name: 'Filter tools', exact: true })
+    const table = page.getByRole('table', { name: 'Tools', exact: true })
     await step('Open a large catalog beside a small one', async () => {
       const workspace = await createWorkspace(actor.accessToken, `Selection ${crypto.randomUUID()}`)
       const entries = [
@@ -44,7 +44,7 @@ test('A large catalog scrolls inside its table with aligned sticky rows', async 
       await page.goto(`/workspaces/${workspace}/providers`)
       await table.waitFor()
       expect(await all.isDisabled()).toBe(false)
-      expect(await checkbox('large operations').isDisabled()).toBe(false)
+      expect(await checkbox('large tools').isDisabled()).toBe(false)
     })
     await step('Keep scrolling inside the table with aligned sticky rows', async () => {
       await filter.fill('')
@@ -118,34 +118,34 @@ test('A large catalog scrolls inside its table with aligned sticky rows', async 
 
 /**
  * Opening the details drawer is a route change to a sibling route id, so a
- * remount of the operations tab would silently discard the operator's
+ * remount of the tools tab would silently discard the operator's
  * selection. The bulk form and checked rows must survive opening, closing,
  * and history navigation.
  */
-test('Opening an operation drawer preserves the table selection', async (context) => {
+test('Opening a tool drawer preserves the table selection', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {
-    const table = page.getByRole('table', { name: 'Operations', exact: true })
+    const table = page.getByRole('table', { name: 'Tools', exact: true })
     const checkbox = (name: string) =>
       page.getByRole('checkbox', { name: `Select ${name}`, exact: true })
     const details = (name: string) => page.getByRole('link', { name, exact: true })
     // The drawer is modal, so it hides the table from accessibility queries.
     // CSS locators still see it, unlike getByRole, and stay readable while open.
-    // Only operation rows carry a details link, so this counts selected
-    // operations without matching the header or group checkboxes.
+    // Only tool rows carry a details link, so this counts selected
+    // tools without matching the header or group checkboxes.
     const checked = () =>
       page
         .locator('[role="table"] [role="row"]')
         .filter({ has: page.locator('input[type="checkbox"]:checked') })
-        .filter({ has: page.locator('a[href*="/ops/"]') })
+        .filter({ has: page.locator('a[href*="/tools/"]') })
         .count()
-    // The bulk form's Apply, while it counts this many selected operations.
+    // The bulk form's Apply, while it counts this many selected tools.
     const bulkAction = (count: number) =>
       page
         .locator('form[aria-label="Bulk policy"]')
         .filter({ hasText: new RegExp(`(^|\\D)${count} selected`) })
         .locator('button', { hasText: /^Apply$/ })
     let provider = ''
-    await step('Select operations in a provider catalog', async () => {
+    await step('Select tools in a provider catalog', async () => {
       const workspace = await createWorkspace(
         actor.accessToken,
         `Drawer selection ${crypto.randomUUID()}`,
@@ -158,7 +158,7 @@ test('Opening an operation drawer preserves the table selection', async (context
       )
       // The drawer routes nest under the explicit provider path.
       provider = `/${publication.provider}`
-      // The provider's tab leaves the Built-in Provider's operations out of
+      // The provider's tab leaves the Built-in Provider's tools out of
       // every selection.
       await page.goto(provider)
       await table.waitFor()
@@ -170,7 +170,7 @@ test('Opening an operation drawer preserves the table selection', async (context
     await step('Keep the selection while an unselected row opens its drawer', async () => {
       await details('third').click()
       await page.getByRole('dialog', { name: 'third', exact: true }).waitFor()
-      await page.waitForURL((url) => url.pathname === `${provider}/ops/third`)
+      await page.waitForURL((url) => url.pathname === `${provider}/tools/third`)
       expect(await checked()).toBe(2)
       expect(await bulkAction(2).count()).toBe(1)
       await page.keyboard.press('Escape')
@@ -207,9 +207,7 @@ test('Opening an operation drawer preserves the table selection', async (context
     await step('Keep a group selection while the drawer opens', async () => {
       await checkbox('first').uncheck()
       await checkbox('second').uncheck()
-      await page
-        .getByRole('checkbox', { name: 'Select all matching operations', exact: true })
-        .check()
+      await page.getByRole('checkbox', { name: 'Select all matching tools', exact: true }).check()
       expect(await checked()).toBe(3)
       await details('second').click()
       await page.getByRole('dialog', { name: 'second', exact: true }).waitFor()

@@ -41,7 +41,7 @@ impl EntityRetriever for SavedFunctionRetriever {
     }
 
     // TODO: a Provider filter could keep only the Saved Functions that call
-    // the named Providers. Until then the filter narrows Operations only.
+    // the named Providers. Until then the filter narrows Tools only.
     async fn list(
         &self,
         transaction: &mut Transaction<'_>,

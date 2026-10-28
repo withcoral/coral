@@ -1,22 +1,22 @@
-use coral_catalog::{OperationHints, OperationPresentation};
+use coral_catalog::{ToolHints, ToolPresentation};
 use serde_json::{Value, json};
 
 use crate::{
-    ApprovalRequirement, CallPath, EntityKind, OperationAuthoringDescription, ProviderCallRoot,
-    ProviderId, RetrieverCoverage, RetrieverState, RetrieverStatus, SearchCursor, SearchEvidence,
-    SearchHit, SearchPage, types::HitText,
+    ApprovalRequirement, CallPath, EntityKind, ProviderCallRoot, ProviderId, RetrieverCoverage,
+    RetrieverState, RetrieverStatus, SearchCursor, SearchEvidence, SearchHit, SearchPage,
+    ToolAuthoringDescription, types::HitText,
 };
 
 #[test]
 fn hints_project_only_what_the_provider_declared() {
     for (hints, expected) in [
-        (OperationHints::default(), json!({})),
+        (ToolHints::default(), json!({})),
         (
-            OperationHints::new(Some(true), None, None, None),
+            ToolHints::new(Some(true), None, None, None),
             json!({ "read_only": true }),
         ),
         (
-            OperationHints::new(Some(false), Some(true), Some(false), Some(true)),
+            ToolHints::new(Some(false), Some(true), Some(false), Some(true)),
             json!({
                 "read_only": false,
                 "destructive": true,
@@ -25,7 +25,7 @@ fn hints_project_only_what_the_provider_declared() {
             }),
         ),
         (
-            OperationHints::new(None, None, Some(true), Some(false)),
+            ToolHints::new(None, None, Some(true), Some(false)),
             json!({ "idempotent": true, "open_world": false }),
         ),
     ] {
@@ -43,25 +43,25 @@ fn a_hit_carries_only_what_the_agent_chooses_and_calls_by() {
     };
     for (name, hit, expected) in [
         (
-            "an Operation listed without a query, with nothing declared or set",
-            operation_hit(
+            "a Tool listed without a query, with nothing declared or set",
+            tool_hit(
                 text(None, &[]),
                 SearchEvidence::default(),
-                OperationHints::default(),
+                ToolHints::default(),
                 ApprovalRequirement::NotRequired,
                 false,
             ),
             json!({ "call_path": "coral.providers.github.pulls.list" }),
         ),
         (
-            "an Operation whose every field and flag applies",
-            operation_hit(
+            "a Tool whose every field and flag applies",
+            tool_hit(
                 text(Some("Prefer search for one author."), &["pulls"]),
                 SearchEvidence::new(
                     vec!["title".into(), "call_path".into(), "tags".into()],
                     vec!["result.data[].head".into(), "input.repo".into()],
                 ),
-                OperationHints::new(Some(true), None, None, Some(false)),
+                ToolHints::new(Some(true), None, None, Some(false)),
                 ApprovalRequirement::Required,
                 true,
             ),
@@ -75,8 +75,8 @@ fn a_hit_carries_only_what_the_agent_chooses_and_calls_by() {
             }),
         ),
         (
-            "an Operation with a matched argument its signature line does not show",
-            operation_hit(
+            "a Tool with a matched argument its signature line does not show",
+            tool_hit(
                 text(None, &[]),
                 SearchEvidence::new(
                     vec!["description".into()],
@@ -87,7 +87,7 @@ fn a_hit_carries_only_what_the_agent_chooses_and_calls_by() {
                         "result.data[].query".into(),
                     ],
                 ),
-                OperationHints::default(),
+                ToolHints::default(),
                 ApprovalRequirement::NotRequired,
                 false,
             ),
@@ -129,7 +129,7 @@ fn a_page_states_its_cursor_and_retriever_statuses_only_when_they_matter() {
                 None,
                 false,
                 vec![
-                    status(EntityKind::Operation, RetrieverState::ResultsFound),
+                    status(EntityKind::ProviderTool, RetrieverState::ResultsFound),
                     status(EntityKind::SavedFunction, RetrieverState::Empty),
                 ],
             ),
@@ -142,7 +142,7 @@ fn a_page_states_its_cursor_and_retriever_statuses_only_when_they_matter() {
                 Some(cursor.clone()),
                 true,
                 vec![
-                    status(EntityKind::Operation, RetrieverState::Partial),
+                    status(EntityKind::ProviderTool, RetrieverState::Partial),
                     status(EntityKind::SavedFunction, RetrieverState::ResultsFound),
                 ],
             ),
@@ -151,7 +151,7 @@ fn a_page_states_its_cursor_and_retriever_statuses_only_when_they_matter() {
                 "has_more": true,
                 "next_cursor": cursor.to_string(),
                 "retriever_statuses": [{
-                    "retriever": "operation",
+                    "retriever": "provider_tool",
                     "state": "partial",
                     "coverage": {
                         "eligible_units": 3,
@@ -168,15 +168,15 @@ fn a_page_states_its_cursor_and_retriever_statuses_only_when_they_matter() {
     }
 }
 
-fn operation_hit(
+fn tool_hit(
     text: HitText,
     evidence: SearchEvidence,
-    hints: OperationHints,
+    hints: ToolHints,
     approval: ApprovalRequirement,
     deprecated: bool,
 ) -> SearchHit {
     let call_root = ProviderCallRoot::parse("coral.providers.github").expect("call root");
-    let presentation: OperationPresentation = serde_json::from_value(json!({
+    let presentation: ToolPresentation = serde_json::from_value(json!({
         "title": "List pull requests",
         "description": "Lists pull requests.",
         "deprecated": deprecated,
@@ -184,8 +184,8 @@ fn operation_hit(
         "guidance": "Prefer search for one author.",
     }))
     .expect("presentation");
-    let description = OperationAuthoringDescription::new(
-        CallPath::operation(&call_root, "pulls.list").expect("Call Path"),
+    let description = ToolAuthoringDescription::new(
+        CallPath::tool(&call_root, "pulls.list").expect("Call Path"),
         "declare function list(): void;".into(),
         call_root,
         ProviderId::parse("6f1c7e52-7d1d-4a8e-9a43-3c1d1f0b5a10").expect("Provider id"),
@@ -194,7 +194,7 @@ fn operation_hit(
         hints,
         approval,
     );
-    SearchHit::from_operation(&description, text, evidence)
+    SearchHit::from_tool(&description, text, evidence)
 }
 
 fn status(retriever: EntityKind, state: RetrieverState) -> RetrieverStatus {

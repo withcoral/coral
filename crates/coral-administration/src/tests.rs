@@ -110,7 +110,7 @@ async fn join_as_owner(
         .unwrap();
 }
 
-/// One bearer-token Operation, so every published Provider needs an Account.
+/// One bearer-token Tool, so every published Provider needs an Account.
 const BEARER_OPENAPI: &str = r#"{"openapi":"3.0.3","info":{"title":"Private","version":"1"},"servers":[{"url":"https://example.com"}],"security":[{"token":[]}],"components":{"securitySchemes":{"token":{"type":"http","scheme":"bearer"}}},"paths":{"/value":{"get":{"operationId":"value","responses":{"200":{"description":"OK"}}}}}}"#;
 /// An Organization Owner keeps nothing when their Workspace Membership ends, and
 /// the sole designated Owner cannot leave until another Owner exists.

@@ -16,7 +16,7 @@ pub(crate) use repository::{exact_in_transaction, provider_id_in_transaction};
 mod tests;
 
 /// Immutable, Workspace-unique JavaScript path under which one Provider's
-/// Operations are called. No Call Root is a prefix of another, so at most one
+/// Tools are called. No Call Root is a prefix of another, so at most one
 /// owns a Call Path.
 ///
 /// Each kind of Provider is one variant. A rule that depends on the kind
@@ -92,7 +92,7 @@ impl ProviderCallRoot {
     }
 
     /// Splits `call_path` into the Call Root that owns it and the
-    /// Operation-relative path under that root, if a valid root owns it.
+    /// Tool-relative path under that root, if a valid root owns it.
     #[must_use]
     pub fn split_call_path(call_path: &str) -> Option<(Self, &str)> {
         call_path
@@ -132,7 +132,7 @@ impl ProviderCallRoot {
         root.rsplit('.').next().unwrap_or(root)
     }
 
-    /// Returns the Operation-relative path of a Call Path under this root, or
+    /// Returns the Tool-relative path of a Call Path under this root, or
     /// `None` when the path belongs elsewhere or has an empty or control segment.
     fn relative_path<'a>(&self, call_path: &'a str) -> Option<&'a str> {
         let relative = call_path.strip_prefix(self.as_str())?.strip_prefix('.')?;

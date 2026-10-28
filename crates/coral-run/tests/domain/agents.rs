@@ -191,32 +191,26 @@ async fn action_queue_and_approval_decisions_agree_after_authority_or_policy_cha
     #[derive(Debug, Clone, Copy)]
     enum Change {
         Agent(AgentLoss),
-        Policy(OperationAccessState),
+        Policy(ToolAccessState),
         WorkspaceArchived,
     }
     let changes = AgentLoss::ALL
         .map(Change::Agent)
         .into_iter()
-        .chain(
-            [
-                OperationAccessState::Enabled,
-                OperationAccessState::Disabled,
-            ]
-            .map(Change::Policy),
-        )
+        .chain([ToolAccessState::Enabled, ToolAccessState::Disabled].map(Change::Policy))
         .chain([Change::WorkspaceArchived]);
     for change_case in changes {
-        let setup = ApprovalGatedOperation::new("user:owner").await;
+        let setup = ApprovalGatedTool::new("user:owner").await;
         let (agent, registration) = agent_scope(
             &setup.fixture,
-            &setup.operation.principal,
-            &setup.operation.workspace_id,
+            &setup.tool.principal,
+            &setup.tool.workspace_id,
         )
         .await;
         let held = setup.hold(agent.clone()).await;
-        let (fixture, operation, approvals) = (&held.fixture, &held.operation, &held.approvals);
-        let owner = &operation.principal;
-        let workspace = &operation.workspace_id;
+        let (fixture, tool, approvals) = (&held.fixture, &held.tool, &held.approvals);
+        let owner = &tool.principal;
+        let workspace = &tool.workspace_id;
         let crate::RequiredActionRequest::InvocationApproval(request) =
             held.action().request.clone()
         else {
@@ -246,8 +240,8 @@ async fn action_queue_and_approval_decisions_agree_after_authority_or_policy_cha
                 fixture
                     .policies
                     .set_access_state(
-                        &change(operation.user.clone(), 41, '5'),
-                        operation.policy_target.clone(),
+                        &change(tool.user.clone(), 41, '5'),
+                        tool.policy_target.clone(),
                         state,
                     )
                     .await
@@ -256,7 +250,7 @@ async fn action_queue_and_approval_decisions_agree_after_authority_or_policy_cha
             Change::WorkspaceArchived => {
                 fixture
                     .workspaces
-                    .archive(&change(operation.user.clone(), 40, '6'), workspace)
+                    .archive(&change(tool.user.clone(), 40, '6'), workspace)
                     .await
                     .unwrap();
             }
@@ -369,16 +363,16 @@ async fn agent_lifecycle_loss_before_dispatch_blocks_send_but_allows_secret_free
             gate.clone(),
         )
         .await;
-        let operation = fixture.user_operation("user:owner", "Dispatch race").await;
+        let tool = fixture.user_tool("user:owner", "Dispatch race").await;
         let (agent, registration) =
-            agent_scope(&fixture, &operation.principal, &operation.workspace_id).await;
-        let accepted = fixture.runs.start(&agent, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast(); } catch (error) { if (error.code !== 'dispatch_authority_lost') throw error; } coral.emit('still computing'); return 42;",
+            agent_scope(&fixture, &tool.principal, &tool.workspace_id).await;
+        let accepted = fixture.runs.start(&agent, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast(); } catch (error) { if (error.code !== 'dispatch_authority_lost') throw error; } coral.emit('still computing'); return 42;",
         )).await.unwrap();
         wait_until(|| gate.entered()).await;
         loss.apply(
             &fixture,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             &agent,
             &registration,
         )
@@ -386,8 +380,8 @@ async fn agent_lifecycle_loss_before_dispatch_blocks_send_but_allows_secret_free
         release.send(()).unwrap();
         let terminal = wait_for_terminal(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
         )
         .await;
@@ -409,7 +403,7 @@ async fn agent_lifecycle_loss_before_dispatch_blocks_send_but_allows_secret_free
         );
         let denied = fixture
             .runs
-            .start(&agent, &operation.workspace_id, submission("return 0;"))
+            .start(&agent, &tool.workspace_id, submission("return 0;"))
             .await;
         assert!(
             matches!(&denied, Err(Error::Workspace(error)) if loss.denies(error)),
@@ -439,17 +433,17 @@ async fn agent_expiry_during_approval_check_is_catchable_and_preserves_computati
     )
     .await;
     fixture.runs.invocation_observer = Arc::new(ExpireApprovalAuthority(fixture.clock.clone()));
-    let operation = fixture
-        .user_operation("user:owner", "Approval expiry race")
+    let tool = fixture
+        .user_tool("user:owner", "Approval expiry race")
         .await;
-    fixture.require_approval(&operation).await;
-    let (agent, _) = agent_scope(&fixture, &operation.principal, &operation.workspace_id).await;
-    let accepted = fixture.runs.start(&agent, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast(); } catch (error) { if (error.code !== 'dispatch_authority_lost') throw error; } coral.emit('still computing'); return 42;",
+    fixture.require_approval(&tool).await;
+    let (agent, _) = agent_scope(&fixture, &tool.principal, &tool.workspace_id).await;
+    let accepted = fixture.runs.start(&agent, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast(); } catch (error) { if (error.code !== 'dispatch_authority_lost') throw error; } coral.emit('still computing'); return 42;",
     )).await.unwrap();
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
@@ -467,8 +461,8 @@ async fn agent_expiry_during_approval_check_is_catchable_and_preserves_computati
     assert!(
         retained_events(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             terminal.run_id()
         )
         .await
@@ -493,16 +487,14 @@ async fn agent_expiry_during_final_checks_blocks_dispatch_but_not_computation() 
     .await;
     let observer = AdvanceFenceTime::new(fixture.clock.clone(), 1_000_000);
     fixture.runs.invocation_observer = observer.clone();
-    let operation = fixture
-        .user_operation("user:owner", "Final expiry race")
-        .await;
-    let (agent, _) = agent_scope(&fixture, &operation.principal, &operation.workspace_id).await;
-    let run = fixture.runs.start(&agent, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast(); } catch (e) { coral.emit('still computing'); return e.code; } return 'unexpected dispatch';",
+    let tool = fixture.user_tool("user:owner", "Final expiry race").await;
+    let (agent, _) = agent_scope(&fixture, &tool.principal, &tool.workspace_id).await;
+    let run = fixture.runs.start(&agent, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast(); } catch (e) { coral.emit('still computing'); return e.code; } return 'unexpected dispatch';",
     )).await.unwrap();
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         run.run_id(),
     )
     .await;
@@ -533,20 +525,18 @@ async fn post_fence_agent_loss_commits_during_upstream_send_and_blocks_only_late
             upstream.clone(),
         )
         .await;
-        let operation = fixture
-            .user_operation("user:owner", "Post-fence race")
-            .await;
+        let tool = fixture.user_tool("user:owner", "Post-fence race").await;
         let (agent, registration) =
-            agent_scope(&fixture, &operation.principal, &operation.workspace_id).await;
-        let accepted = fixture.runs.start(&agent, &operation.workspace_id, submission("await coral.providers.weather.getForecast(); try { await coral.providers.weather.getForecast(); } catch (error) { return error.code; } throw new Error('second dispatch should fail');",
+            agent_scope(&fixture, &tool.principal, &tool.workspace_id).await;
+        let accepted = fixture.runs.start(&agent, &tool.workspace_id, submission("await coral.providers.weather.getForecast(); try { await coral.providers.weather.getForecast(); } catch (error) { return error.code; } throw new Error('second dispatch should fail');",
         )).await.unwrap();
         wait_until(|| upstream.entered.load(Ordering::SeqCst)).await;
         let changed = tokio::time::timeout(
             Duration::from_secs(2),
             loss.apply(
                 &fixture,
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 &agent,
                 &registration,
             ),
@@ -556,8 +546,8 @@ async fn post_fence_agent_loss_commits_during_upstream_send_and_blocks_only_late
         changed.expect("Agent administration must not wait on upstream send");
         let terminal = wait_for_terminal(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
         )
         .await;
@@ -569,8 +559,8 @@ async fn post_fence_agent_loss_commits_during_upstream_send_and_blocks_only_late
         assert_eq!(
             retained_events(
                 &fixture.runs,
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 terminal.run_id()
             )
             .await
@@ -592,22 +582,19 @@ async fn rotation_during_a_pending_invocation_changes_neither_authority_nor_hist
         gate.clone(),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:owner", "Rotate during work")
-        .await;
-    let (agent, registration) =
-        agent_scope(&fixture, &operation.principal, &operation.workspace_id).await;
+    let tool = fixture.user_tool("user:owner", "Rotate during work").await;
+    let (agent, registration) = agent_scope(&fixture, &tool.principal, &tool.workspace_id).await;
     let accepted = fixture
         .runs
-        .start(&agent, &operation.workspace_id, submission("invoke"))
+        .start(&agent, &tool.workspace_id, submission("invoke"))
         .await
         .unwrap();
     wait_until(|| gate.entered()).await;
     let before = fixture
         .runs
         .observe(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
             &immediate(None, 100),
         )
@@ -616,8 +603,8 @@ async fn rotation_during_a_pending_invocation_changes_neither_authority_nor_hist
     let rotated = fixture
         .workspaces
         .rotate_agent_credential(
-            &change(operation.user.clone(), 30, '2'),
-            &operation.workspace_id,
+            &change(tool.user.clone(), 30, '2'),
+            &tool.workspace_id,
             &registration,
         )
         .await
@@ -625,8 +612,8 @@ async fn rotation_during_a_pending_invocation_changes_neither_authority_nor_hist
     let after = fixture
         .runs
         .observe(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
             &immediate(None, 100),
         )
@@ -638,7 +625,7 @@ async fn rotation_during_a_pending_invocation_changes_neither_authority_nor_hist
     );
     let new_authentication = fixture
         .workspaces
-        .authenticate_agent(&operation.workspace_id, rotated.credential.expose(), 31)
+        .authenticate_agent(&tool.workspace_id, rotated.credential.expose(), 31)
         .await
         .unwrap();
     assert_eq!(agent, new_authentication);
@@ -646,7 +633,7 @@ async fn rotation_during_a_pending_invocation_changes_neither_authority_nor_hist
     let terminal = wait_for_terminal(
         &fixture.runs,
         &new_authentication,
-        &operation.workspace_id,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;

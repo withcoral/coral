@@ -50,11 +50,11 @@ If Toolbox requires client authentication, follow its [authentication documentat
 2. Select **Add custom** and enter the Toolbox endpoint in **MCP server URL**.
 3. Select **Connect**.
 4. Set the display name and namespace, then choose the sign-in method that matches your Toolbox configuration.
-5. Select **Next**. Authenticate if prompted, then review the discovered operations with **Expand all**.
+5. Select **Next**. Authenticate if prompted, then review the discovered tools with **Expand all**.
 6. Select **Next**, choose the account setting, and select **Add provider**.
 
 For a server without authentication, select **No authentication** and confirm **No account needed**.
-Review the provider's [operation policy](/guides/concepts#operation-policy) to choose which operations can run or require approval.
+Review the provider's [tool policy](/guides/concepts#tool-policy) to choose which tools can run or require approval.
 The database account's permissions still apply to every query.
 
 ## Query through Coral
@@ -66,7 +66,7 @@ Ask your agent to query the database using the provider's namespace.
 ## Deploy with Coral
 
 Without Toolbox client authentication, allow only Coral to reach its MCP endpoint.
-Direct access bypasses Coral's operation policy.
+Direct access bypasses Coral's tool policy.
 
 ### Local
 

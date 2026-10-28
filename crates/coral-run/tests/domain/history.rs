@@ -16,17 +16,11 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
         Arc::new(ApprovalWaitGate(gate.clone())),
     )
     .await;
-    let operation = fixture
-        .user_operation("invocation-reader", "invocations")
-        .await;
-    fixture.require_approval(&operation).await;
+    let tool = fixture.user_tool("invocation-reader", "invocations").await;
+    fixture.require_approval(&tool).await;
     let accepted = fixture
         .runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("invoke"),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission("invoke"))
         .await
         .unwrap();
     wait_until(|| gate.entered()).await;
@@ -34,8 +28,8 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
     let page = fixture
         .runs
         .activity_entries(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
             &RunEntryWindow::Start,
             1,
@@ -48,7 +42,7 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
     assert!(page.run.requires_action);
     assert_eq!(page.run.context_impact_bytes, None);
     let RunEntry::Invocation(row) = page.entries.first().unwrap() else {
-        panic!("operation row")
+        panic!("tool row")
     };
     assert_eq!(row.state, InvocationStatus::Pending);
     assert_eq!(row.context_impact_bytes, None);
@@ -58,8 +52,8 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
     let event = fixture
         .runs
         .activity_entries(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
             &RunEntryWindow::Event(page.next_after),
             1,
@@ -73,8 +67,8 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
     let exact = fixture
         .runs
         .inspect_event(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
             page.next_after,
         )
@@ -87,8 +81,8 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
     let anchored = fixture
         .runs
         .activity_entries(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
             &RunEntryWindow::Invocation(id.clone()),
             1,
@@ -102,8 +96,8 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
 
     let (other_workspace, other) = fixture.user_scope("other-invocation-reader", "other").await;
     for (actor, workspace) in [
-        (&other, &operation.workspace_id),
-        (&operation.principal, &other_workspace),
+        (&other, &tool.workspace_id),
+        (&tool.principal, &other_workspace),
     ] {
         assert!(matches!(
             fixture.runs.inspect_invocation(actor, workspace, &id).await,
@@ -120,8 +114,8 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
     let denied = fixture
         .runs
         .activity_entries(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
             &RunEntryWindow::Start,
             1,
@@ -138,7 +132,7 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
     );
     let detail = fixture
         .runs
-        .inspect_invocation(&operation.principal, &operation.workspace_id, &id)
+        .inspect_invocation(&tool.principal, &tool.workspace_id, &id)
         .await
         .unwrap();
     assert!(detail.outcome.is_none());
@@ -151,8 +145,8 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
     let approvals = fixture.approvals();
     approvals
         .decide(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             &approval,
             crate::approval::ApprovalDecision::Decline,
             Some("do not send"),
@@ -163,8 +157,8 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
     let page = fixture
         .runs
         .activity_entries(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
             &RunEntryWindow::Start,
             1,
@@ -173,7 +167,7 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
         .await
         .unwrap();
     let RunEntry::Invocation(row) = page.entries.first().unwrap() else {
-        panic!("operation row")
+        panic!("tool row")
     };
     assert_eq!(row.state, InvocationStatus::Ended);
     assert_eq!(row.context_impact_bytes, Some(0));
@@ -181,7 +175,7 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
     assert!(!page.run.requires_action);
     let retained = fixture
         .runs
-        .inspect_invocation(&operation.principal, &operation.workspace_id, &id)
+        .inspect_invocation(&tool.principal, &tool.workspace_id, &id)
         .await
         .unwrap();
     assert_eq!(retained.requests, detail.requests);
@@ -190,7 +184,7 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
     );
     let decision = fixture
         .runs
-        .inspect_approval(&operation.principal, &operation.workspace_id, &approval)
+        .inspect_approval(&tool.principal, &tool.workspace_id, &approval)
         .await
         .unwrap();
     assert_eq!(decision.state, crate::approval::ApprovalState::Declined);
@@ -198,8 +192,8 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
     release.send(()).unwrap();
     wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;

@@ -17,28 +17,26 @@ async fn updates_preserve_compatible_approved_work_but_replacement_and_settings_
             gate.clone(),
         )
         .await;
-        let mut operation = fixture
-            .user_operation("user:update-fence", "Update fence")
-            .await;
+        let mut tool = fixture.user_tool("user:update-fence", "Update fence").await;
         let (_directory, accounts) = if change_kind == "caller-contract" {
-            configure_user_caller(&fixture, &operation, "https://upstream.example").await
+            configure_user_caller(&fixture, &tool, "https://upstream.example").await
         } else {
             Box::pin(configure_shared_account(
                 &fixture,
-                &mut operation,
+                &mut tool,
                 "https://upstream.example",
                 "old-secret",
             ))
             .await
         };
-        let context = change(operation.user.clone(), 40, '4');
-        let scope = &operation.workspace_id;
+        let context = change(tool.user.clone(), 40, '4');
+        let scope = &tool.workspace_id;
         if change_kind == "caller-contract" {
             let authorization = accounts
                 .start_user_authorization(
                     &context,
                     scope,
-                    &operation.provider_id,
+                    &tool.provider_id,
                     ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                     None,
                 )
@@ -57,14 +55,13 @@ async fn updates_preserve_compatible_approved_work_but_replacement_and_settings_
                 .unwrap();
         }
         fixture.runs = fixture.runs.with_accounts(accounts.clone());
-        fixture.require_approval(&operation).await;
+        fixture.require_approval(&tool).await;
         let approvals = fixture.approvals();
-        let run = fixture.runs.start(&operation.principal, scope, submission("try { await coral.providers.weather.getForecast({}); return 'dispatched'; } catch (e) { return e.code; }")).await.unwrap();
-        let approval =
-            wait_for_approval(&approvals, &operation.principal, scope, run.run_id()).await;
+        let run = fixture.runs.start(&tool.principal, scope, submission("try { await coral.providers.weather.getForecast({}); return 'dispatched'; } catch (e) { return e.code; }")).await.unwrap();
+        let approval = wait_for_approval(&approvals, &tool.principal, scope, run.run_id()).await;
         approvals
             .decide(
-                &operation.principal,
+                &tool.principal,
                 scope,
                 &approval.id,
                 ApprovalDecision::Approve,
@@ -80,13 +77,13 @@ async fn updates_preserve_compatible_approved_work_but_replacement_and_settings_
                 &context,
                 scope,
                 coral_provider::ProviderSetupSource::Current,
-                Some(&operation.provider_id),
+                Some(&tool.provider_id),
             )
             .await
             .unwrap();
         let review = fixture
             .providers
-            .review_setup_configuration(&operation.user, scope, setup.id())
+            .review_setup_configuration(&tool.user, scope, setup.id())
             .await
             .unwrap();
         let mut values = review.confirmed.unwrap();
@@ -123,7 +120,7 @@ async fn updates_preserve_compatible_approved_work_but_replacement_and_settings_
         let mut request = ProviderRegenerationRequest::new(
             ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
             scope.clone(),
-            operation.provider_id.clone(),
+            tool.provider_id.clone(),
             setup.id().clone(),
             review.revision,
         )
@@ -158,8 +155,7 @@ async fn updates_preserve_compatible_approved_work_but_replacement_and_settings_
             coral_provider::ProviderPublicationOutcome::Succeeded
         );
         release.send(()).unwrap();
-        let terminal =
-            wait_for_terminal(&fixture.runs, &operation.principal, scope, run.run_id()).await;
+        let terminal = wait_for_terminal(&fixture.runs, &tool.principal, scope, run.run_id()).await;
         let continues = matches!(change_kind, "catalog" | "caller-contract");
         assert_eq!(
             upstream.sends.load(Ordering::SeqCst),
@@ -170,16 +166,11 @@ async fn updates_preserve_compatible_approved_work_but_replacement_and_settings_
             gate.fences.assert_no_dispatch();
         }
         assert_eq!(
-            retained_events(
-                &fixture.runs,
-                &operation.principal,
-                scope,
-                terminal.run_id()
-            )
-            .await
-            .iter()
-            .filter(|event| matches!(event.kind(), RunEventKind::InvocationStarted { .. }))
-            .count(),
+            retained_events(&fixture.runs, &tool.principal, scope, terminal.run_id())
+                .await
+                .iter()
+                .filter(|event| matches!(event.kind(), RunEventKind::InvocationStarted { .. }))
+                .count(),
             1
         );
         assert_eq!(

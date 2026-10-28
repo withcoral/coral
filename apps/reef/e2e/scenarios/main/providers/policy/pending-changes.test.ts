@@ -4,7 +4,7 @@ import { withOwnerSession } from '../../../../support/actors.ts'
 import { openApiDocument } from '../../../../support/provider-fixtures.ts'
 import { createWorkspace, publishWorkspaceProvider } from '../../../../support/providers.ts'
 
-/** The bulk form's Apply, while it counts this many selected operations. */
+/** The bulk form's Apply, while it counts this many selected tools. */
 const applyTo = (page: Page, count: number) =>
   page
     .getByRole('form', { name: 'Bulk policy', exact: true })
@@ -95,12 +95,12 @@ async function openPolicies(page: Page, accessToken: string) {
   )
   await page.goto(`/${provider}`)
   await row(page, 'first').waitFor()
-  // Leave the Built-in Provider's operations out of every selection.
+  // Leave the Built-in Provider's tools out of every selection.
   await page.getByRole('searchbox', { name: 'Filter providers' }).fill('Pending')
 }
 
 // Hold the actual browser POST, then let the real action/backend respond. No
-// synthetic success or failure payloads: rejection uses a nonexistent operation.
+// synthetic success or failure payloads: rejection uses a nonexistent tool.
 async function holdPolicies(page: Page, reject = false) {
   let release!: () => void
   const gate = new Promise<void>((resolve) => {
@@ -114,17 +114,17 @@ async function holdPolicies(page: Page, reject = false) {
     submitted.push(form)
     await gate
     if (reject) {
-      // Point the last selected operation at one Coral does not know, so the
-      // request reaches Coral and comes back with a per-operation failure.
-      const selected = form.getAll('selectedOperation')
-      const last = JSON.parse(selected.pop()!) as { provider: string; operation: string }
-      form.delete('selectedOperation')
-      for (const operation of selected) form.append('selectedOperation', operation)
+      // Point the last selected tool at one Coral does not know, so the
+      // request reaches Coral and comes back with a per-tool failure.
+      const selected = form.getAll('selectedTool')
+      const last = JSON.parse(selected.pop()!) as { provider: string; tool: string }
+      form.delete('selectedTool')
+      for (const tool of selected) form.append('selectedTool', tool)
       form.append(
-        'selectedOperation',
+        'selectedTool',
         JSON.stringify({
           ...last,
-          operation: last.operation.replace(/\/operations\/[^/]+$/, '/operations/missingOperation'),
+          tool: last.tool.replace(/\/tools\/[^/]+$/, '/tools/missingTool'),
         }),
       )
       return route.continue({ postData: form.toString() })
@@ -160,9 +160,9 @@ test('Inline pending policy survives filtering, blocks overlaps, and allows unre
         await page.emulateMedia({ reducedMotion: 'no-preference' })
       })
       await step('Filter away and restore a pending row without losing ownership', async () => {
-        await page.getByRole('searchbox', { name: 'Filter operations' }).fill('second')
+        await page.getByRole('searchbox', { name: 'Filter tools' }).fill('second')
         expect(await page.getByText('Saving…', { exact: true }).count()).toBe(0)
-        await page.getByRole('searchbox', { name: 'Filter operations' }).fill('')
+        await page.getByRole('searchbox', { name: 'Filter tools' }).fill('')
         await expect.poll(() => row(page, 'first').getAttribute('aria-busy')).toBe('true')
         expect(
           await row(page, 'first')
@@ -171,18 +171,16 @@ test('Inline pending policy survives filtering, blocks overlaps, and allows unre
         ).toBe(true)
         expect(await row(page, 'first').getByRole('checkbox').isDisabled()).toBe(false)
         // Group and header selection include the pending row; only Apply waits.
-        await page
-          .getByRole('checkbox', { name: 'Select all matching operations', exact: true })
-          .check()
+        await page.getByRole('checkbox', { name: 'Select all matching tools', exact: true }).check()
         expect(await row(page, 'first').getByRole('checkbox').isChecked()).toBe(true)
         expect(await applyTo(page, 3).isDisabled()).toBe(true)
         await page
-          .getByRole('checkbox', { name: 'Select all matching operations', exact: true })
+          .getByRole('checkbox', { name: 'Select all matching tools', exact: true })
           .uncheck()
-        await page.getByRole('checkbox', { name: 'Select Other operations', exact: true }).check()
+        await page.getByRole('checkbox', { name: 'Select Other tools', exact: true }).check()
         expect(await row(page, 'first').getByRole('checkbox').isChecked()).toBe(true)
         expect(await applyTo(page, 3).isDisabled()).toBe(true)
-        await page.getByRole('checkbox', { name: 'Select Other operations', exact: true }).uncheck()
+        await page.getByRole('checkbox', { name: 'Select Other tools', exact: true }).uncheck()
       })
       await step('Submit a disjoint inline mutation while the first is pending', async () => {
         await row(page, 'second').getByRole('radio', { name: 'Disabled', exact: true }).click()
@@ -253,7 +251,7 @@ test('Bulk pending policy survives toolbar unmount and rolls back a rejection ou
         ).toBe(true)
         expect(
           await page
-            .getByRole('checkbox', { name: 'Select all matching operations', exact: true })
+            .getByRole('checkbox', { name: 'Select all matching tools', exact: true })
             .isDisabled(),
         ).toBe(true)
         await applyTo(page, 2).click({ force: true })
@@ -261,11 +259,11 @@ test('Bulk pending policy survives toolbar unmount and rolls back a rejection ou
         expect(await row(page, 'third').getAttribute('aria-busy')).toBe('false')
       })
       await step('Unmount the bulk form, then roll back the rejected rows', async () => {
-        await page.getByRole('searchbox', { name: 'Filter operations' }).fill('third')
+        await page.getByRole('searchbox', { name: 'Filter tools' }).fill('third')
         expect(await page.getByText('Saving…', { exact: true }).count()).toBe(0)
         await expect.poll(() => held.submitted.length).toBe(1)
         held.release()
-        await page.getByRole('searchbox', { name: 'Filter operations' }).fill('')
+        await page.getByRole('searchbox', { name: 'Filter tools' }).fill('')
         for (const name of ['first', 'second']) {
           await row(page, name)
             .getByRole('radio', { name: 'Needs approval', exact: true, checked: true })

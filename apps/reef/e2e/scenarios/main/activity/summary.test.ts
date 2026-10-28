@@ -10,12 +10,12 @@ import {
   programRunner,
   type RunUpdate,
 } from '../../../support/providers.ts'
-import { OperationAccessState } from '../../../generated/coral/management/v1/policy_pb.ts'
+import { ToolAccessState } from '../../../generated/coral/management/v1/policy_pb.ts'
 
 const CALL =
   "try { await coral.providers.summaryFixture.read(); return 'sent'; } catch (error) { return error.code; }"
 
-test('The Overview summary counts a denied call as decided, not to fix, reads blocked and answered calls again when you return to it, opens a blocked operation to allow it, and keeps the period you choose in the URL', async (context) => {
+test('The Overview summary counts a denied call as decided, not to fix, reads blocked and answered calls again when you return to it, opens a blocked tool to allow it, and keeps the period you choose in the URL', async (context) => {
   const upstream = await listen(
     context,
     createServer((_request, response) => {
@@ -38,16 +38,16 @@ test('The Overview summary counts a denied call as decided, not to fix, reads bl
         'summaryFixture',
       )
     ).slice(1)
-    const operation = (await api.providers.listOperations({ parent: provider })).operations[0].name
-    const setPolicy = (accessState: OperationAccessState) =>
-      api.policies.updateOperationPolicies({
+    const tool = (await api.providers.listTools({ parent: provider })).tools[0].name
+    const setPolicy = (accessState: ToolAccessState) =>
+      api.policies.updateToolPolicies({
         parent: provider,
-        policies: [{ operation, accessState }],
+        policies: [{ tool, accessState }],
       })
     const summary = page.getByRole('region', { name: 'Activity summary', exact: true })
     const lens = (name: RegExp) => summary.getByRole('tab', { name })
-    // The full Call Path is each operation cell's title; the cell shows the provider and the operation.
-    const operationRow = (table: string) =>
+    // The full Call Path is each tool cell's title; the cell shows the provider and the tool.
+    const toolRow = (table: string) =>
       summary
         .getByRole('table', { name: table, exact: true })
         .getByRole('row')
@@ -67,7 +67,7 @@ test('The Overview summary counts a denied call as decided, not to fix, reads bl
 
     let paused!: RunUpdate
     await step('A call waits for approval', async () => {
-      await setPolicy(OperationAccessState.APPROVAL_REQUIRED)
+      await setPolicy(ToolAccessState.APPROVAL_REQUIRED)
       const started = await runner.exec(CALL)
       expect(started.isError).not.toBe(true)
       paused = started.structuredContent
@@ -96,24 +96,24 @@ test('The Overview summary counts a denied call as decided, not to fix, reads bl
         .getByRole('group', { name: 'Declined', exact: true })
         .getByText('1', { exact: true })
         .waitFor()
-      await operationRow('Calls not allowed').getByText('1', { exact: true }).waitFor()
+      await toolRow('Calls not allowed').getByText('1', { exact: true }).waitFor()
     })
 
     await step('A blocked call arrives when you return, without a reload', async () => {
-      await setPolicy(OperationAccessState.DISABLED)
+      await setPolicy(ToolAccessState.DISABLED)
       const blocked = await observeRun(runner, await runner.exec(CALL))
-      expect(blocked.update.final_value).toEqual({ kind: 'value', value: 'operation_disabled' })
+      expect(blocked.update.final_value).toEqual({ kind: 'value', value: 'tool_disabled' })
       await returnToOverview()
       const needsYou = lens(/^Needs you/)
       await needsYou.getByText('1 to fix', { exact: true }).waitFor()
       await needsYou.getByText('1 blocked', { exact: true }).waitFor()
       await needsYou.click()
-      await operationRow('To fix').getByText('Blocked by a rule', { exact: true }).waitFor()
+      await toolRow('To fix').getByText('Blocked by a rule', { exact: true }).waitFor()
     })
 
-    await step('The blocked row opens its operation, and you allow it there', async () => {
-      await operationRow('To fix').click()
-      await page.waitForURL((url) => url.pathname === `/${provider}/ops/read`)
+    await step('The blocked row opens its tool, and you allow it there', async () => {
+      await toolRow('To fix').click()
+      await page.waitForURL((url) => url.pathname === `/${provider}/tools/read`)
       const policy = page
         .getByRole('dialog', { name: 'read', exact: true })
         .getByRole('radiogroup', { name: 'Policy', exact: true })
@@ -136,7 +136,7 @@ test('The Overview summary counts a denied call as decided, not to fix, reads bl
       await returnToOverview()
       await summary.getByText('33% answered', { exact: true }).waitFor()
       await lens(/^Calls/).click()
-      await operationRow('Operations').getByText('3', { exact: true }).waitFor()
+      await toolRow('Tools').getByText('3', { exact: true }).waitFor()
       expect(new URL(page.url()).pathname).toBe(overview)
     })
 

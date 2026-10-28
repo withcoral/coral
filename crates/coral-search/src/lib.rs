@@ -6,7 +6,7 @@
 //! abridged, or the types of it that the caller names.
 //! It owns its index end to end: the committing workflows notify it, it
 //! writes a search-owned table, and it ranks inside the database. It composes
-//! Provider readiness, exact Operation policy, Principal-owned Saved
+//! Provider readiness, exact Tool policy, Principal-owned Saved
 //! Functions, and Workspace authority, and stores none of them. It has no
 //! upstream sender, Program Run data input, or observed-value input.
 //!
@@ -23,7 +23,7 @@
 //!   Call Roots a search's filter accepts from the caller. A filter that names
 //!   another is refused with that list.
 //! - [`UniversalSearchModule::inspect_provider_readiness`] derives caller readiness
-//!   from the Operation eligibility rule discovery uses, without reading Saved
+//!   from the Tool eligibility rule discovery uses, without reading Saved
 //!   Functions or the index.
 //! - [`UniversalSearchModule::inspect_search_index_states`] reports whether
 //!   the index holds each Provider's active Generation, apart from readiness.
@@ -68,7 +68,7 @@ use coral_workspace::{WorkspaceId, WorkspaceModule};
 use cursor::decode_cursor_position;
 use page::{Ranked, hydrate_page_in_transaction};
 use retriever::functions::SavedFunctionRetriever;
-use retriever::operations::OperationRetriever;
+use retriever::tools::ToolRetriever;
 use retriever::{
     Answer, EntityRetriever, QueryError, QueryRequest, RequestContext, abandon_query, begin_query,
     count, end_query,
@@ -79,13 +79,13 @@ pub use index::SearchIndex;
 pub use storage::{StorageError, prepare_storage};
 pub use types::{
     ApprovalRequirement, AuthoringDescription, CallPath, EntityKind, ExactAuthoringDescription,
-    ExactSavedFunctionDetail, OperationAuthoringDescription, OperationHit, ProviderCallRoot,
-    ProviderId, RetrieverCoverage, RetrieverState, RetrieverStatus, SEARCH_CURSOR_MAX_BYTES,
-    SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX, SEARCH_EVIDENCE_PATH_MAX_BYTES,
-    SEARCH_EVIDENCE_PATHS_MAX, SEARCH_PAGE_MAX_BYTES, SEARCH_QUERY_MAX_BYTES,
-    SEARCH_RESULT_LIMIT_MAX, SavedFunctionAuthoringDescription, SearchCursor, SearchEvidence,
-    SearchHit, SearchIndexFailure, SearchIndexState, SearchInput, SearchLimit, SearchPage,
-    SearchQuery, SearchRequest, provider_filter_value,
+    ExactSavedFunctionDetail, ProviderCallRoot, ProviderId, RetrieverCoverage, RetrieverState,
+    RetrieverStatus, SEARCH_CURSOR_MAX_BYTES, SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX,
+    SEARCH_EVIDENCE_PATH_MAX_BYTES, SEARCH_EVIDENCE_PATHS_MAX, SEARCH_PAGE_MAX_BYTES,
+    SEARCH_QUERY_MAX_BYTES, SEARCH_RESULT_LIMIT_MAX, SavedFunctionAuthoringDescription,
+    SearchCursor, SearchEvidence, SearchHit, SearchIndexFailure, SearchIndexState, SearchInput,
+    SearchLimit, SearchPage, SearchQuery, SearchRequest, ToolAuthoringDescription, ToolHit,
+    provider_filter_value,
 };
 
 /// How many ranked Search Entities each retriever hands the engine. The
@@ -98,7 +98,7 @@ pub struct UniversalSearchModule {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
     /// One retriever per Search Entity kind. At equal rank, an earlier
-    /// retriever's Entity comes first: Saved Functions, then Operations.
+    /// retriever's Entity comes first: Saved Functions, then Tools.
     retrievers: Arc<[Arc<dyn EntityRetriever>]>,
 }
 
@@ -115,7 +115,7 @@ impl UniversalSearchModule {
             database,
             workspaces,
             SavedFunctionRetriever::default(),
-            OperationRetriever::default(),
+            ToolRetriever::default(),
         )
     }
 
@@ -133,8 +133,8 @@ impl UniversalSearchModule {
             SavedFunctionRetriever {
                 fail_ranking: kinds.contains(&EntityKind::SavedFunction),
             },
-            OperationRetriever {
-                fail_ranking: kinds.contains(&EntityKind::Operation),
+            ToolRetriever {
+                fail_ranking: kinds.contains(&EntityKind::ProviderTool),
             },
         )
     }
@@ -143,14 +143,14 @@ impl UniversalSearchModule {
         database: Arc<Database>,
         workspaces: WorkspaceModule,
         functions: SavedFunctionRetriever,
-        operations: OperationRetriever,
+        tools: ToolRetriever,
     ) -> Self {
         Self {
             database,
             workspaces,
             retrievers: Arc::new([
                 Arc::new(functions) as Arc<dyn EntityRetriever>,
-                Arc::new(operations),
+                Arc::new(tools),
             ]),
         }
     }
@@ -255,7 +255,7 @@ impl UniversalSearchModule {
                 now_unix_nanos()?,
             )
             .await?;
-        let call_roots = retriever::operations::searchable_call_roots(
+        let call_roots = retriever::tools::searchable_call_roots(
             &mut transaction,
             RequestContext {
                 actor,
@@ -445,7 +445,7 @@ impl UniversalSearchModule {
         Ok(())
     }
 
-    /// Describes each Operation in `call_paths` that the caller can describe,
+    /// Describes each Tool in `call_paths` that the caller can describe,
     /// in one read snapshot.
     ///
     /// `describe`'s visibility rules apply. Every other path is omitted, and a
@@ -456,12 +456,12 @@ impl UniversalSearchModule {
     ///
     /// Returns safe operational persistence or authoritative-description
     /// failures.
-    pub async fn describe_operations(
+    pub async fn describe_tools(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         call_paths: &[CallPath],
-    ) -> Result<Vec<OperationAuthoringDescription>, Error> {
+    ) -> Result<Vec<ToolAuthoringDescription>, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let authority = match self
             .authorize(&mut transaction, actor, workspace_id)
@@ -481,8 +481,7 @@ impl UniversalSearchModule {
             loaded: &loaded,
         };
         let descriptions =
-            retriever::operations::describe_operations(&mut transaction, context, call_paths)
-                .await?;
+            retriever::tools::describe_tools(&mut transaction, context, call_paths).await?;
         transaction.commit().await?;
         Ok(descriptions)
     }

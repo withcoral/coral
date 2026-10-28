@@ -1,7 +1,7 @@
 import type { ExecutionRow, InvocationOutcome } from './types'
 
 /**
- * How an ended Operation call reads, in words you read. Its tone and the card under it keep
+ * How an ended Tool call reads, in words you read. Its tone and the card under it keep
  * Coral's exact distinction. A complete response reads only as completed here; the selected
  * call's own response can prove more.
  */

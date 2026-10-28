@@ -22,7 +22,7 @@ pub struct RunSummary {
     /// Current authorized action window, absent when this history query did not request it.
     /// A present empty page means no actions in that window, not unavailable evidence.
     pub action_page: Option<crate::ActionPage>,
-    /// Net retained UTF-8 payload bytes: returned output minus Operation Results.
+    /// Net retained UTF-8 payload bytes: returned output minus Tool Results.
     /// Absent while running or when an Invocation result is indeterminate.
     pub context_impact_bytes: Option<i64>,
     /// Accountable invoking Principal, also selecting exact child history attribution.
@@ -45,7 +45,7 @@ pub struct RunSummary {
 /// Arguments/result-free Invocation summary.
 #[derive(Clone, Debug)]
 pub struct InvocationSummary {
-    /// Negative retained Operation Result bytes; absent before completion or on uncertainty.
+    /// Negative retained Tool Result bytes; absent before completion or on uncertainty.
     pub context_impact_bytes: Option<i64>,
     /// Accountable caller, independent of a reviewer or credential owner.
     pub principal: coral_workspace::Principal,
@@ -59,8 +59,8 @@ pub struct InvocationSummary {
     pub run: RunId,
     /// Retained Provider identity.
     pub provider: coral_provider::ProviderId,
-    /// Retained Operation key.
-    pub operation: String,
+    /// Retained Tool key.
+    pub tool: String,
     /// Retained Program call path.
     pub call_path: String,
     /// Native lifecycle state.

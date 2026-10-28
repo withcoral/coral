@@ -8,14 +8,14 @@ import { withBrowserSession } from '../../../../support/browser-session.ts'
 import { managementClients } from '../../../../support/management.ts'
 import { bearerMcpServer } from '../../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   chooseAccount,
   collectDataResponses,
   confirmConfiguration,
   createWorkspace,
   openCustomSource,
   programRunner,
-  readOperations,
+  readTools,
   waitForPublication,
 } from '../../../../support/providers.ts'
 
@@ -46,12 +46,12 @@ test.for(['initial', 'different'] as const)(
           await page.getByLabel('Namespace', { exact: true }).fill('personalSecret')
           await confirmConfiguration(page, 'Bearer token')
           if (choice === 'different') {
-            await readOperations(page, discoveryToken)
+            await readTools(page, discoveryToken)
           }
-          await acceptOperations(page)
+          await acceptTools(page)
           // The same outcome whether or not discovery left a sign-in in hand:
           // your own account is the one you connect here, never the one that
-          // read the operations.
+          // read the tools.
           await chooseAccount(page, 'own-connect')
           const setupName = `workspaces/${workspace}/providerSetups/${new URL(page.url()).searchParams.get('setup')}`
           const discovery = await api.setups.getProviderSetup({ name: setupName })

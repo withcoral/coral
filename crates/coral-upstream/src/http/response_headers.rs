@@ -1,4 +1,4 @@
-//! Safe projection of the response headers an HTTP Operation Result retains.
+//! Safe projection of the response headers an HTTP Tool Result retains.
 //!
 //! A Result reaches Programs, MCP callers, and durable Run and Invocation
 //! records, so it keeps every header name and pair but no credential that an

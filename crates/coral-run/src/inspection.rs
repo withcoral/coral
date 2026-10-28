@@ -68,7 +68,7 @@ pub struct RunEventDetail {
 /// Retained Invocation outcome, preserving upstream facts without success inference.
 #[derive(Debug)]
 pub enum InvocationOutcome {
-    /// Complete upstream-native Operation Result.
+    /// Complete upstream-native Tool Result.
     UpstreamOutcome(serde_json::Value),
     /// Safe coded Coral inability to produce a complete upstream result.
     CoralFailure {

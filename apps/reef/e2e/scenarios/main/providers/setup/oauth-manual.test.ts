@@ -2,7 +2,7 @@ import { expect, test } from 'vitest'
 import { withOwnerSession } from '../../../../support/actors.ts'
 import { oauthMcpServer } from '../../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   accountQuestion,
   chooseAccount,
   collectDataResponses,
@@ -10,8 +10,8 @@ import {
   confirmConfiguration,
   createWorkspace,
   openCustomSource,
-  openOperation,
-  signInToReadOperations,
+  openTool,
+  signInToReadTools,
   waitForProviderStatus,
   waitForPublication,
 } from '../../../../support/providers.ts'
@@ -41,7 +41,7 @@ test('MCP discovery signs in through an explicit OAuth application and adds the 
       await page.getByLabel('Namespace', { exact: true }).fill('manual')
       await confirmConfiguration(page)
       expect(await accountQuestion(page).count()).toBe(0)
-      await signInToReadOperations(page)
+      await signInToReadTools(page)
       await page.getByRole('link', { name: 'Approve fixture access', exact: true }).waitFor()
       // No registration: the consent names the person's own application.
       expect(new URL(page.url()).searchParams.get('client_id')).toBe('manual-client')
@@ -49,7 +49,7 @@ test('MCP discovery signs in through an explicit OAuth application and adds the 
     })
     await step('Approving exchanges the code once', async () => {
       await page.getByRole('link', { name: 'Approve fixture access', exact: true }).click()
-      await acceptOperations(page)
+      await acceptTools(page)
       await chooseAccount(page, 'shared')
       await page.getByRole('button', { name: 'Add provider', exact: true }).waitFor()
       expect(upstream.counts.tokens).toBe(1)
@@ -61,8 +61,8 @@ test('MCP discovery signs in through an explicit OAuth application and adds the 
         available: 1,
         total: 1,
       })
-      // The operation's full name carries the chosen namespace.
-      const drawer = await openOperation(page, 'lookup')
+      // The tool's full name carries the chosen namespace.
+      const drawer = await openTool(page, 'lookup')
       await drawer.getByText('coral.providers.manual.lookup', { exact: true }).waitFor()
     })
     for (const body of await responses()) {

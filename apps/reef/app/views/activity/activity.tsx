@@ -69,7 +69,7 @@ export function rowLabel(row: ActivityRow): string {
     case 'run':
       return row.submission?.intent || row.actor || 'exec'
     case 'invocation':
-      return row.callPath || row.operation
+      return row.callPath || row.tool
     case 'output':
       return row.label
   }
@@ -90,7 +90,7 @@ function rowIcon(row: ActivityRow): { name: IconName; label: string } {
     case 'run':
       return { name: 'Play', label: 'exec' }
     case 'invocation':
-      return { name: 'Zap', label: 'operation' }
+      return { name: 'Zap', label: 'tool' }
     case 'output':
       return row.eventKind === 'program.logged'
         ? { name: 'Terminal', label: 'log' }
@@ -139,7 +139,7 @@ function rowStatus(row: ActivityRow): RowStatus | undefined {
           label: row.state,
         }
       // A complete response stays neutral whether the Program received it or was rejected with it
-      // as an Operation Error: the row holds no response to tell, so it says only that one came.
+      // as a Tool Error: the row holds no response to tell, so it says only that one came.
       return {
         tone:
           row.outcome === 'coral_failure'
@@ -201,10 +201,10 @@ function emptyBranchMessage(row: Extract<ActivityRow, { kind: 'task' | 'run' }>)
   if (row.kind === 'task')
     return row.endedAt ? 'This task made no calls.' : 'This task has not made a call yet.'
   // Reef cannot tell whether a Run in an unknown state has ended.
-  if (row.state === 'unknown') return 'This execution has no recorded operations.'
+  if (row.state === 'unknown') return 'This execution has no recorded tools.'
   return row.state === 'running'
-    ? 'This execution has not called an operation yet.'
-    : 'This execution called no operations.'
+    ? 'This execution has not called a tool yet.'
+    : 'This execution called no tools.'
 }
 function LoadRecords({
   control,

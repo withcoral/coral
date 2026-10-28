@@ -47,7 +47,7 @@ pub(super) async fn credential_evidence(
     user: &AuthenticatedUser,
 ) -> coral_provider::account::CredentialEvidence {
     let mut tx = database.begin().await.unwrap();
-    let target = coral_provider::resolve_owner_operation_in_transaction(
+    let target = coral_provider::resolve_owner_tool_in_transaction(
         &mut tx,
         workspace,
         "coral.providers.private.value",

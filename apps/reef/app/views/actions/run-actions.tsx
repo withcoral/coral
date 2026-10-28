@@ -86,7 +86,7 @@ export function RunActions({
             {shown.map((item) => {
               const approval = item.kind === 'approval'
               const target = approval
-                ? item.callPath || 'operation'
+                ? item.callPath || 'tool'
                 : `Connect your ${item.providerLabel || 'provider'} account`
               return (
                 <List.Item as="li" key={item.name}>

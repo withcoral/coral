@@ -53,8 +53,8 @@ service ProviderService {
   rpc RestoreProvider(RestoreProviderRequest) returns (Provider);
   // Removes current configuration and credentials, preserving retained history.
   rpc DeleteProvider(DeleteProviderRequest) returns (google.protobuf.Empty);
-  // Lists current catalog metadata, including unavailable Operations.
-  rpc ListOperations(ListOperationsRequest) returns (ListOperationsResponse);
+  // Lists current catalog metadata, including unavailable Tools.
+  rpc ListTools(ListToolsRequest) returns (ListToolsResponse);
 }
 
 // Reversible lifecycle, separate from caller-specific readiness.
@@ -69,14 +69,14 @@ enum ProviderState {
 
 // Effect hints the upstream definition declared. An unset hint is undeclared;
 // Coral never assumes a protocol default.
-message OperationHints {
-  // The Operation declares that it changes nothing.
+message ToolHints {
+  // The Tool declares that it changes nothing.
   optional bool read_only = 1;
-  // The Operation declares that it may destroy data.
+  // The Tool declares that it may destroy data.
   optional bool destructive = 2;
-  // The Operation declares that repeating a call has no further effect.
+  // The Tool declares that repeating a call has no further effect.
   optional bool idempotent = 3;
-  // The Operation declares that it reaches entities outside the Provider.
+  // The Tool declares that it reaches entities outside the Provider.
   optional bool open_world = 4;
 }
 
@@ -91,8 +91,8 @@ enum ProviderBlocker {
   // The inspected Agent needs its own Account before discovery; not a configuration
   // failure. A User's own Account is never reported here.
   PROVIDER_BLOCKER_CALLER_ACCOUNT_REQUIRED = 4;
-  // No Operation passes structural availability and current policy.
-  PROVIDER_BLOCKER_NO_OPERATIONS_READY = 5;
+  // No Tool passes structural availability and current policy.
+  PROVIDER_BLOCKER_NO_TOOLS_READY = 5;
   // An Owner must connect the Provider's shared Account.
   PROVIDER_BLOCKER_SHARED_ACCOUNT_REQUIRED = 6;
   // The Provider requires credentials but its setting supplies none.
@@ -106,9 +106,9 @@ enum SearchIndexState {
   SEARCH_INDEX_STATE_UNSPECIFIED = 0;
   // No indexing attempt has reached the active Generation yet.
   SEARCH_INDEX_STATE_PENDING = 1;
-  // Search holds the active Generation's Operations.
+  // Search holds the active Generation's Tools.
   SEARCH_INDEX_STATE_INDEXED = 2;
-  // The last attempt failed: search cannot find the Operations until a retry succeeds.
+  // The last attempt failed: search cannot find the Tools until a retry succeeds.
   SEARCH_INDEX_STATE_FAILED = 3;
 }
 
@@ -117,7 +117,7 @@ enum SearchIndexState {
 enum SearchIndexFailureReason {
   // Not failed, not recognized by this client, or recorded before Coral kept the kind.
   SEARCH_INDEX_FAILURE_REASON_UNSPECIFIED = 0;
-  // An Operation could not become a search entry.
+  // A Tool could not become a search entry.
   SEARCH_INDEX_FAILURE_REASON_INVALID_ENTRY = 1;
   // The write did not finish within its limit.
   SEARCH_INDEX_FAILURE_REASON_TIMED_OUT = 2;
@@ -224,7 +224,7 @@ message DeleteProviderRequest {
 }
 
 // Reads the Provider's current administrative catalog.
-message ListOperationsRequest {
+message ListToolsRequest {
   // Exact Provider resource.
   string parent = 1;
   // Maximum results, bounded to 100; zero selects the default.
@@ -233,11 +233,11 @@ message ListOperationsRequest {
   string page_token = 3;
 }
 
-// Safe complete catalog metadata, including structurally unavailable Operations.
-message ProviderOperation {
-  // {provider}/operations/{encoded Operation Key}; not a separate entity identity.
+// Safe complete catalog metadata, including structurally unavailable Tools.
+message ProviderTool {
+  // {provider}/tools/{encoded Tool Key}; not a separate entity identity.
   string name = 1;
-  // Operation path relative to the immutable Provider namespace.
+  // Tool path relative to the immutable Provider namespace.
   string relative_path = 2;
   // Safe upstream-authored summary.
   string summary = 3;
@@ -245,7 +245,7 @@ message ProviderOperation {
   reserved "effect";
   // Structural invocability, independent of credentials and approval.
   bool available = 5;
-  // Safe structural diagnostics for unavailable Operations.
+  // Safe structural diagnostics for unavailable Tools.
   repeated ProviderDiagnostic diagnostics = 6;
   // Safe upstream-authored grouping metadata.
   repeated string tags = 7;
@@ -253,13 +253,13 @@ message ProviderOperation {
   string description = 8;
   // Declared effect hints. A declared read-only hint, like a safe HTTP method,
   // makes the policy default `enabled`.
-  OperationHints hints = 9;
+  ToolHints hints = 9;
 }
 
-// One page of administrative Operation metadata.
-message ListOperationsResponse {
-  // Current Operations in canonical order.
-  repeated ProviderOperation operations = 1;
+// One page of administrative Tool metadata.
+message ListToolsResponse {
+  // Current Tools in canonical order.
+  repeated ProviderTool tools = 1;
   // Empty when no further page remains.
   string next_page_token = 2;
 }
@@ -644,12 +644,12 @@ message ProviderServerOption {
   repeated ProviderServerVariable variables = 2;
 }
 
-// Operations inheriting one server declaration.
+// Tools inheriting one server declaration.
 message ProviderServerGroup {
   // Location of the declaration in the document.
   string declaration = 1;
-  // Operation Keys affected by this declaration.
-  repeated string operations = 2;
+  // Tool Keys affected by this declaration.
+  repeated string tools = 2;
   // Available declared alternatives.
   repeated ProviderServerOption options = 3;
 }
@@ -664,20 +664,20 @@ message ProviderConfigurationDifference {
   optional string document = 3;
 }
 
-// One Operation excluded from the callable catalog and its safe structural reasons.
-message UnavailableProviderOperation {
-  // Operation Key in the previewed catalog.
+// One Tool excluded from the callable catalog and its safe structural reasons.
+message UnavailableProviderTool {
+  // Tool Key in the previewed catalog.
   string key = 1;
   // Blocking diagnostics from catalog materialization.
   repeated string reasons = 2;
 }
 
-// One Operation in a previewed catalog, with the labels the setup steps list it by.
-// Availability is not repeated here; unavailable_operations carries it by Key.
-message ReviewedProviderOperation {
-  // Operation Key in the previewed catalog.
+// One Tool in a previewed catalog, with the labels the setup steps list it by.
+// Availability is not repeated here; unavailable_tools carries it by Key.
+message ReviewedProviderTool {
+  // Tool Key in the previewed catalog.
   string key = 1;
-  // Operation-relative Call Path projection.
+  // Tool-relative Call Path projection.
   string relative_path = 2;
   // Safe summary; empty when the Provider authored none.
   string summary = 3;
@@ -695,12 +695,12 @@ message ProviderConfigurationReview {
   ProviderConfiguration confirmed = 3;
   // Safe classification of document authentication declarations.
   string authentication_status = 4;
-  // Main and Operation-specific server controls.
+  // Main and Tool-specific server controls.
   repeated ProviderServerGroup servers = 5;
-  // Resolved destinations by Operation Key.
+  // Resolved destinations by Tool Key.
   map<string, string> destinations = 6;
-  // Operations that final validation currently marks unavailable.
-  repeated UnavailableProviderOperation unavailable_operations = 7;
+  // Tools that final validation currently marks unavailable.
+  repeated UnavailableProviderTool unavailable_tools = 7;
   // Safe structural diagnostic code.
   string diagnostic = 8;
   // Recoverable field errors without submitted values.
@@ -724,8 +724,8 @@ message ProviderConfigurationReview {
   bool updating = 17;
   // The host can currently bootstrap an OAuth client for this Setup.
   bool automatic_client_available = 18;
-  // Every previewed Operation with the labels the operations step groups and lists by.
-  repeated ReviewedProviderOperation operations = 19;
+  // Every previewed Tool with the labels the tools step groups and lists by.
+  repeated ReviewedProviderTool tools = 19;
   // Discovered, read-only device endpoint; empty when not advertised.
   string device_authorization_url = 20;
 }

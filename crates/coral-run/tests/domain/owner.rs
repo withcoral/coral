@@ -1191,27 +1191,19 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
 
     let (engine, _release) = BlockingEngine::new();
     let fixture = TestModules::new(Arc::new(engine)).await;
-    let operation = fixture
-        .user_operation("user:apply-fence", "Fence rows")
-        .await;
+    let tool = fixture.user_tool("user:apply-fence", "Fence rows").await;
     let run = fixture
         .runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("return 1;"),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission("return 1;"))
         .await
         .unwrap();
-    wait_until_started(&fixture, &operation.workspace_id, run.run_id()).await;
-    let record = fixture
-        .run_record(&operation.workspace_id, run.run_id())
-        .await;
+    wait_until_started(&fixture, &tool.workspace_id, run.run_id()).await;
+    let record = fixture.run_record(&tool.workspace_id, run.run_id()).await;
     // Four Invocations: a request names one of them, so a batch says which
     // ones it holds.
     let mut invocations = Vec::new();
     for _ in 0..4 {
-        invocations.push(admitted_invocation(&fixture, &operation, run.run_id()).await);
+        invocations.push(admitted_invocation(&fixture, &tool, run.run_id()).await);
     }
     let ids: [crate::InvocationId; 4] = invocations
         .iter()
@@ -1219,7 +1211,7 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         .collect::<Vec<_>>()
         .try_into()
         .expect("four Invocations");
-    let invoker = test_invoker(&fixture, &operation, &record);
+    let invoker = test_invoker(&fixture, &tool, &record);
     let fence_as = |state: &mut OwnerState, index: usize, now: i64| -> (Vec<Effect>, FenceAnswer) {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let admitted = invocations.get(index).expect("one of four").clone();
@@ -1670,7 +1662,7 @@ type Woken = tokio::sync::oneshot::Receiver<()>;
 /// Parks `admitted` on `wait`, as a landed held recheck reports it.
 fn park(
     state: &mut OwnerState,
-    invoker: &crate::invocation::OperationInvoker,
+    invoker: &crate::invocation::ToolInvoker,
     admitted: &Arc<crate::invocation::AdmittedInvocation>,
     wait: ParkedWait,
     now: i64,
@@ -1742,24 +1734,18 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
 
     let (engine, _release) = BlockingEngine::new();
     let fixture = TestModules::new(Arc::new(engine)).await;
-    let operation = fixture
-        .user_operation("user:apply-requests", "Request rows")
+    let tool = fixture
+        .user_tool("user:apply-requests", "Request rows")
         .await;
     let run = fixture
         .runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("return 1;"),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission("return 1;"))
         .await
         .unwrap();
-    wait_until_started(&fixture, &operation.workspace_id, run.run_id()).await;
-    let record = fixture
-        .run_record(&operation.workspace_id, run.run_id())
-        .await;
-    let admitted = admitted_invocation(&fixture, &operation, run.run_id()).await;
-    let invoker = test_invoker(&fixture, &operation, &record);
+    wait_until_started(&fixture, &tool.workspace_id, run.run_id()).await;
+    let record = fixture.run_record(&tool.workspace_id, run.run_id()).await;
+    let admitted = admitted_invocation(&fixture, &tool, run.run_id()).await;
+    let invoker = test_invoker(&fixture, &tool, &record);
 
     // Two decisions on one request: the first rides the next chunk with the
     // deletion of its row; the second, a repeat, has its row deleted by the
@@ -2421,24 +2407,18 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
 async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_rest() {
     let (engine, _release) = BlockingEngine::new();
     let fixture = TestModules::new(Arc::new(engine)).await;
-    let operation = fixture
-        .user_operation("user:apply-wakeups", "Parked waits")
+    let tool = fixture
+        .user_tool("user:apply-wakeups", "Parked waits")
         .await;
     let run = fixture
         .runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("return 1;"),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission("return 1;"))
         .await
         .unwrap();
-    wait_until_started(&fixture, &operation.workspace_id, run.run_id()).await;
-    let record = fixture
-        .run_record(&operation.workspace_id, run.run_id())
-        .await;
-    let admitted = admitted_invocation(&fixture, &operation, run.run_id()).await;
-    let invoker = test_invoker(&fixture, &operation, &record);
+    wait_until_started(&fixture, &tool.workspace_id, run.run_id()).await;
+    let record = fixture.run_record(&tool.workspace_id, run.run_id()).await;
+    let admitted = admitted_invocation(&fixture, &tool, run.run_id()).await;
+    let invoker = test_invoker(&fixture, &tool, &record);
 
     // An approval wait, then a connection wait: the first arms the periodic
     // precheck, the second the subscription. A ring before the subscription

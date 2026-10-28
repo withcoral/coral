@@ -20,7 +20,7 @@ describe('Table Group', () => {
       <Container columns={columns}>
         <Head />
         <Group label="Provider">
-          <Group label="Operations" heading={<Cell fullWidth>Operations</Cell>}>
+          <Group label="Tools" heading={<Cell fullWidth>Tools</Cell>}>
             <Row>
               <Cell>listIssues</Cell>
               <Cell>12</Cell>
@@ -33,7 +33,7 @@ describe('Table Group', () => {
     // The head and the top-level group; the nested group is presentational.
     expect(screen.getAllByRole('rowgroup')).toHaveLength(2)
     expect(screen.getByRole('rowgroup', { name: 'Provider' })).toBeInTheDocument()
-    expect(screen.queryByRole('rowgroup', { name: 'Operations' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('rowgroup', { name: 'Tools' })).not.toBeInTheDocument()
     const levels = screen
       .getAllByRole('row')
       .map((row) => row.getAttribute('aria-level'))

@@ -4,13 +4,13 @@ import { managementClients } from '../../../support/management.ts'
 import { openApiDocument } from '../../../support/provider-fixtures.ts'
 import {
   addedProviders,
-  acceptOperations,
+  acceptTools,
   backToConfiguration,
   chooseAccount,
   chooseFile,
   confirmConfiguration,
   createWorkspace,
-  openOperation,
+  openTool,
   openProviderSettings,
   setNamespace,
   waitForPublication,
@@ -26,7 +26,7 @@ test('Editing configuration after a lost Add starts a new attempt and keeps the 
       await chooseFile(page, 'revise.json', openApiDocument('Revise API', { hello: {} }))
       await page.getByRole('button', { name: 'Read', exact: true }).click()
       await confirmConfiguration(page)
-      await acceptOperations(page)
+      await acceptTools(page)
       await setNamespace(page, 'revised')
       await page.route(
         '**/new.data*',
@@ -46,7 +46,7 @@ test('Editing configuration after a lost Add starts a new attempt and keeps the 
     await step('Review a revised configuration without reusing the lost request', async () => {
       await backToConfiguration(page)
       await confirmConfiguration(page, 'Bearer token')
-      await acceptOperations(page)
+      await acceptTools(page)
       expect(await page.locator('input[name="requestId"]').last().inputValue()).not.toBe(
         lostRequest,
       )
@@ -79,11 +79,11 @@ test('Workspace creation and Update recover exact publication requests', async (
       await chooseFile(page, 'replay.json', openApiDocument('Replay provider', { hello: {} }))
       await page.getByRole('button', { name: 'Read', exact: true }).click()
       await confirmConfiguration(page)
-      await acceptOperations(page)
+      await acceptTools(page)
       await setNamespace(page, 'replayed')
       await backToConfiguration(page)
       await confirmConfiguration(page)
-      await acceptOperations(page)
+      await acceptTools(page)
     })
     await step('Recover the committed creation with the same namespace', async () => {
       await page.route(
@@ -108,8 +108,8 @@ test('Workspace creation and Update recover exact publication requests', async (
       await page.getByRole('button', { name: 'Retry', exact: true }).click()
       await waitForPublication(page)
       providerPath = new URL(page.url()).pathname
-      // The operation's full name carries the namespace the replay kept.
-      const drawer = await openOperation(page, 'hello')
+      // The tool's full name carries the namespace the replay kept.
+      const drawer = await openTool(page, 'hello')
       await drawer.getByText('coral.providers.replayed.hello', { exact: true }).waitFor()
       const listed = await api.providers.listProviders({ parent: `workspaces/${workspace}` })
       expect(addedProviders(listed.providers).map((provider) => provider.name)).toEqual([
@@ -161,18 +161,15 @@ test('Workspace creation and Update recover exact publication requests', async (
       // An update returns to the provider's settings.
       await page.waitForURL((url) => url.pathname === `${providerPath}/settings`)
       await page.goto(providerPath)
-      // The operation's full name carries the namespace the replay kept.
-      const drawer = await openOperation(page, 'hello')
+      // The tool's full name carries the namespace the replay kept.
+      const drawer = await openTool(page, 'hello')
       await drawer.getByText('coral.providers.replayed.hello', { exact: true }).waitFor()
       const listed = await api.providers.listProviders({ parent: `workspaces/${workspace}` })
       expect(addedProviders(listed.providers).map((provider) => provider.name)).toEqual([
         providerPath.slice(1),
       ])
-      const operations = await api.providers.listOperations({ parent: providerPath.slice(1) })
-      expect(operations.operations.map((operation) => operation.relativePath).toSorted()).toEqual([
-        'hello',
-        'later',
-      ])
+      const tools = await api.providers.listTools({ parent: providerPath.slice(1) })
+      expect(tools.tools.map((tool) => tool.relativePath).toSorted()).toEqual(['hello', 'later'])
     })
   })
 })
@@ -189,7 +186,7 @@ test('Recover a lost Add response by replaying the same request identity', async
       await chooseFile(page, 'replay.json', openApiDocument('Replay API', { hello: {} }))
       await page.getByRole('button', { name: 'Read', exact: true }).click()
       await confirmConfiguration(page)
-      await acceptOperations(page)
+      await acceptTools(page)
       await setNamespace(page, 'recovered')
     })
     await step('Lose only the response, after Coral commits', async () => {

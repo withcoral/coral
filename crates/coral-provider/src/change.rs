@@ -4,7 +4,7 @@
 //! Every path that changes an existing Provider names its change here. An
 //! Owner-added Provider permits every change. The Built-in Provider, which
 //! Coral manages, permits only disabling and restoring it, so a new kind of
-//! change is denied for it until someone allows it below. Its Operations'
+//! change is denied for it until someone allows it below. Its Tools'
 //! policy belongs to `coral-policy` and stays open.
 use coral_db::Transaction;
 use coral_workspace::WorkspaceId;

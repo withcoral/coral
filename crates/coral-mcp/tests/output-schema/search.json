@@ -47,11 +47,11 @@
       "properties": {
         "call_path": {
           "type": "string",
-          "description": "`coral.providers.<namespace>.…` for an Operation,\n`coral.functions.…` for a Saved Function."
+          "description": "`coral.providers.<namespace>.…` for a provider tool,\n`coral.functions.…` for a Saved Function."
         },
         "signature_line": {
           "type": "string",
-          "description": "The callable's input members one level deep; an Operation's result\ndata types by name, an unnamed object as `{…}`; a Saved Function's\nresult members one level deep. At most 512 UTF-8 bytes."
+          "description": "The callable's input members one level deep; a provider tool's result\ndata types by name, an unnamed object as `{…}`; a Saved Function's\nresult members one level deep. At most 512 UTF-8 bytes."
         },
         "description_snippet": {
           "type": "string",
@@ -88,7 +88,7 @@
         },
         "deprecated": {
           "type": "boolean",
-          "description": "Present, and true, only when the Operation is deprecated."
+          "description": "Present, and true, only when the provider tool is deprecated."
         }
       },
       "required": [
@@ -140,7 +140,7 @@
     "Retriever": {
       "type": "string",
       "enum": [
-        "operation",
+        "provider_tool",
         "saved_function"
       ]
     },

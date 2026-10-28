@@ -12,29 +12,29 @@ async fn account_authority_loss_fences_already_prepared_credentials_for_both_rou
             gate.clone(),
         )
         .await;
-        let mut operation = fixture
-            .user_operation("user:account-loss", "Account authority race")
+        let mut tool = fixture
+            .user_tool("user:account-loss", "Account authority race")
             .await;
         let (_directory, accounts) = if fixed {
             Box::pin(configure_shared_account(
                 &fixture,
-                &mut operation,
+                &mut tool,
                 "https://upstream.example",
                 "fence-credential-canary",
             ))
             .await
         } else {
-            configure_user_caller(&fixture, &operation, "https://upstream.example").await
+            configure_user_caller(&fixture, &tool, "https://upstream.example").await
         };
-        let context = change(operation.user.clone(), 40, '4');
-        let scope = operation.workspace_id.clone();
+        let context = change(tool.user.clone(), 40, '4');
+        let scope = tool.workspace_id.clone();
         let request = ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap();
         let account_id = if fixed {
             accounts
                 .get_account(
                     &context,
                     &scope,
-                    &operation.provider_id,
+                    &tool.provider_id,
                     &coral_provider::account::AccountScope::Shared,
                 )
                 .await
@@ -44,7 +44,7 @@ async fn account_authority_loss_fences_already_prepared_credentials_for_both_rou
                 .id
         } else {
             let pending = accounts
-                .start_user_authorization(&context, &scope, &operation.provider_id, request, None)
+                .start_user_authorization(&context, &scope, &tool.provider_id, request, None)
                 .await
                 .unwrap();
             accounts
@@ -62,18 +62,18 @@ async fn account_authority_loss_fences_already_prepared_credentials_for_both_rou
                 .unwrap()
         };
         fixture.runs = fixture.runs.with_accounts(accounts.clone());
-        let run = fixture.runs.start(&operation.principal, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast(); } catch (e) { return e.code; } return 'unexpected dispatch';",
+        let run = fixture.runs.start(&tool.principal, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast(); } catch (e) { return e.code; } return 'unexpected dispatch';",
         )).await.unwrap();
         wait_until(|| gate.entered()).await;
         accounts
-            .disconnect(&context, &scope, &operation.provider_id, account_id)
+            .disconnect(&context, &scope, &tool.provider_id, account_id)
             .await
             .unwrap();
         release.send(()).unwrap();
         let terminal = wait_for_terminal(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run.run_id(),
         )
         .await;
@@ -97,29 +97,29 @@ async fn reconnect_fences_prepared_credentials_without_changing_account_or_route
     for fixed in [false, true] {
         let server = MockServer::start().await;
         let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-        let mut operation = fixture
-            .user_operation_at("user:reconnect", "Reconnect", &server.uri())
+        let mut tool = fixture
+            .user_tool_at("user:reconnect", "Reconnect", &server.uri())
             .await;
         let (_directory, accounts) = if fixed {
             Box::pin(configure_shared_account(
                 &fixture,
-                &mut operation,
+                &mut tool,
                 &server.uri(),
                 "old-account-canary",
             ))
             .await
         } else {
-            configure_user_caller(&fixture, &operation, &server.uri()).await
+            configure_user_caller(&fixture, &tool, &server.uri()).await
         };
-        let context = change(operation.user.clone(), 40, '4');
-        let scope = operation.workspace_id.clone();
+        let context = change(tool.user.clone(), 40, '4');
+        let scope = tool.workspace_id.clone();
         let request = || ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap();
         let account_id = if fixed {
             accounts
                 .get_account(
                     &context,
                     &scope,
-                    &operation.provider_id,
+                    &tool.provider_id,
                     &coral_provider::account::AccountScope::Shared,
                 )
                 .await
@@ -129,7 +129,7 @@ async fn reconnect_fences_prepared_credentials_without_changing_account_or_route
                 .id
         } else {
             let pending = accounts
-                .start_user_authorization(&context, &scope, &operation.provider_id, request(), None)
+                .start_user_authorization(&context, &scope, &tool.provider_id, request(), None)
                 .await
                 .unwrap();
             accounts
@@ -148,19 +148,19 @@ async fn reconnect_fences_prepared_credentials_without_changing_account_or_route
         };
         let before = fixture
             .providers
-            .inspect_providers(&operation.user, &operation.workspace_id)
+            .inspect_providers(&tool.user, &tool.workspace_id)
             .await
             .unwrap();
         let (gate, release) = FenceGate::blocking();
         let mut runs = fixture.live_runs(None).with_accounts(accounts.clone());
         runs.invocation_observer = gate.clone();
-        let pending = runs.start(&operation.principal, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }")).await.unwrap();
+        let pending = runs.start(&tool.principal, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }")).await.unwrap();
         wait_until(|| gate.entered()).await;
         let reconnect = accounts
             .start_reconnect(
                 &context,
                 &scope,
-                &operation.provider_id,
+                &tool.provider_id,
                 account_id,
                 request(),
                 None,
@@ -180,13 +180,8 @@ async fn reconnect_fences_prepared_credentials_without_changing_account_or_route
             .unwrap();
         assert_eq!(completed.account_id, Some(account_id));
         release.send(()).unwrap();
-        let terminal = wait_for_terminal(
-            &runs,
-            &operation.principal,
-            &operation.workspace_id,
-            pending.run_id(),
-        )
-        .await;
+        let terminal =
+            wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, pending.run_id()).await;
         let Some(RunTerminalOutcome::Succeeded {
             final_value: FinalValue::Present(value),
         }) = terminal.terminal_outcome()
@@ -208,7 +203,7 @@ async fn reconnect_fences_prepared_credentials_without_changing_account_or_route
         );
         let after = fixture
             .providers
-            .inspect_providers(&operation.user, &operation.workspace_id)
+            .inspect_providers(&tool.user, &tool.workspace_id)
             .await
             .unwrap();
         assert_eq!(before, after);
@@ -217,8 +212,8 @@ async fn reconnect_fences_prepared_credentials_without_changing_account_or_route
                 accounts
                     .get_account(
                         &context,
-                        &operation.workspace_id,
-                        &operation.provider_id,
+                        &tool.workspace_id,
+                        &tool.provider_id,
                         &coral_provider::account::AccountScope::User
                     )
                     .await
@@ -242,19 +237,14 @@ async fn reconnect_fences_prepared_credentials_without_changing_account_or_route
         runs.invocation_observer = Arc::new(NoopInvocationObserver);
         let later = runs
             .start(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 submission("return await coral.providers.weather.getForecast({});"),
             )
             .await
             .unwrap();
-        let terminal = wait_for_terminal(
-            &runs,
-            &operation.principal,
-            &operation.workspace_id,
-            later.run_id(),
-        )
-        .await;
+        let terminal =
+            wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, later.run_id()).await;
         assert_eq!(terminal.state(), RunState::Succeeded);
         assert!(!format!("{terminal:?}").contains("new-account-canary"));
     }
@@ -262,11 +252,11 @@ async fn reconnect_fences_prepared_credentials_without_changing_account_or_route
 
 /// A User Account connected through a public OAuth client whose refresh the
 /// token endpoint rejects with `invalid_client` until `broken` is cleared.
-/// Every Invocation of the Operation needs approval.
+/// Every Invocation of the Tool needs approval.
 struct PublicClientAccount {
     server: MockServer,
     fixture: TestModules,
-    operation: OperationFixture,
+    tool: ToolFixture,
     _directory: tempfile::TempDir,
     accounts: coral_provider::account::AccountModule,
     context: ChangeContext,
@@ -283,13 +273,12 @@ impl PublicClientAccount {
         use coral_provider::account::SetupOAuthClient;
         let server = MockServer::start().await;
         let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-        let operation = fixture
-            .user_operation_at("user:client-failure", "Application repair", &server.uri())
+        let tool = fixture
+            .user_tool_at("user:client-failure", "Application repair", &server.uri())
             .await;
-        let (directory, accounts) =
-            configure_user_caller(&fixture, &operation, &server.uri()).await;
-        let context = change(operation.user.clone(), 40, '4');
-        let owner = &operation.workspace_id;
+        let (directory, accounts) = configure_user_caller(&fixture, &tool, &server.uri()).await;
+        let context = change(tool.user.clone(), 40, '4');
+        let owner = &tool.workspace_id;
         let document = serde_json::json!({
             "openapi":"3.1.0", "info":{"title":"OAuth weather","version":"1"},
             "servers":[{"url":server.uri()}], "security":[{"oauth":["read"]}],
@@ -310,7 +299,7 @@ impl PublicClientAccount {
             .unwrap();
         let review = fixture
             .providers
-            .review_setup_configuration(&operation.user, owner, setup.id())
+            .review_setup_configuration(&tool.user, owner, setup.id())
             .await
             .unwrap();
         let review = accounts
@@ -338,7 +327,7 @@ impl PublicClientAccount {
                 ProviderRegenerationRequest::new(
                     ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                     owner.clone(),
-                    operation.provider_id.clone(),
+                    tool.provider_id.clone(),
                     setup.id().clone(),
                     review.revision,
                 )
@@ -347,15 +336,15 @@ impl PublicClientAccount {
             .await
             .unwrap();
         let broken = Self::mount_token_endpoint(&server).await;
-        let account_id = Self::connect(&accounts, &context, &operation).await;
+        let account_id = Self::connect(&accounts, &context, &tool).await;
         let runs = fixture.live_runs(Some(accounts.clone()));
-        fixture.require_approval(&operation).await;
+        fixture.require_approval(&tool).await;
         // Decisions are recorded by the Run's owner, which the live module holds.
         let approvals = runs.approvals();
         Self {
             server,
             fixture,
-            operation,
+            tool,
             _directory: directory,
             accounts,
             context,
@@ -370,13 +359,13 @@ impl PublicClientAccount {
     async fn connect(
         accounts: &coral_provider::account::AccountModule,
         context: &ChangeContext,
-        operation: &OperationFixture,
+        tool: &ToolFixture,
     ) -> coral_provider::account::ProviderAccountId {
         let authorization = accounts
             .start_user_authorization(
                 context,
-                &operation.workspace_id,
-                &operation.provider_id,
+                &tool.workspace_id,
+                &tool.provider_id,
                 ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                 Some(
                     coral_provider::account::OAuthClient::new(
@@ -398,7 +387,7 @@ impl PublicClientAccount {
         accounts
             .complete_oauth(
                 context,
-                &operation.workspace_id,
+                &tool.workspace_id,
                 authorization.id,
                 &state,
                 Secret::new("code-canary".into()).unwrap(),
@@ -461,7 +450,7 @@ impl PublicClientAccount {
 
     /// Starts the Program and approves its Invocation.
     async fn start_approved(&self) -> (crate::RunId, crate::approval::ApprovalRequest) {
-        let (user, owner) = (&self.operation.principal, &self.operation.workspace_id);
+        let (user, owner) = (&self.tool.principal, &self.tool.workspace_id);
         let run = self
             .runs
             .start(user, owner, submission(Self::SOURCE))
@@ -489,8 +478,8 @@ impl PublicClientAccount {
     async fn returned(&self, run: &crate::RunId) -> (crate::RunUpdate, serde_json::Value) {
         let terminal = wait_for_terminal(
             &self.runs,
-            &self.operation.principal,
-            &self.operation.workspace_id,
+            &self.tool.principal,
+            &self.tool.workspace_id,
             run,
         )
         .await;
@@ -509,8 +498,8 @@ impl PublicClientAccount {
             .accounts
             .oauth_client_status(
                 &self.context,
-                &self.operation.workspace_id,
-                &self.operation.provider_id,
+                &self.tool.workspace_id,
+                &self.tool.provider_id,
             )
             .await
             .unwrap();
@@ -525,7 +514,7 @@ impl PublicClientAccount {
         terminal: &crate::RunUpdate,
         approved: &crate::approval::ApprovalRequest,
     ) {
-        let (user, owner) = (&self.operation.principal, &self.operation.workspace_id);
+        let (user, owner) = (&self.tool.principal, &self.tool.workspace_id);
         assert_eq!(
             &self.approvals.get(user, owner, &approved.id).await.unwrap(),
             approved
@@ -560,7 +549,7 @@ impl PublicClientAccount {
                 .credential_status(
                     &self.context,
                     owner,
-                    &self.operation.provider_id,
+                    &self.tool.provider_id,
                     self.account_id
                 )
                 .await
@@ -572,7 +561,7 @@ impl PublicClientAccount {
                 .get_account(
                     &self.context,
                     owner,
-                    &self.operation.provider_id,
+                    &self.tool.provider_id,
                     &coral_provider::account::AccountScope::User
                 )
                 .await
@@ -638,9 +627,9 @@ async fn a_token_renewed_during_the_fence_hold_is_the_one_dispatched() {
     account.runs.invocation_observer = gate.clone();
     let (run, approved) = account.start_approved().await;
     wait_until(|| gate.entered()).await;
-    let owner = &account.operation.workspace_id;
+    let owner = &account.tool.workspace_id;
     let mut tx = account.fixture.database.begin().await.unwrap();
-    let target = coral_provider::resolve_owner_operation_in_transaction(
+    let target = coral_provider::resolve_owner_tool_in_transaction(
         &mut tx,
         owner,
         "coral.providers.weather.getForecast",
@@ -651,7 +640,7 @@ async fn a_token_renewed_during_the_fence_hold_is_the_one_dispatched() {
     let evidence = coral_provider::account::select_in_transaction(
         &mut tx,
         &target,
-        account.operation.principal.principal(),
+        account.tool.principal.principal(),
     )
     .await
     .unwrap()
@@ -668,7 +657,7 @@ async fn a_token_renewed_during_the_fence_hold_is_the_one_dispatched() {
     assert_eq!(
         account
             .accounts
-            .credentials(owner, &account.operation.provider_id, &evidence, far_future)
+            .credentials(owner, &account.tool.provider_id, &evidence, far_future)
             .await
             .unwrap()
             .get(coral_credentials::CredentialValues::TOKEN)
@@ -685,16 +674,16 @@ async fn a_token_renewed_during_the_fence_hold_is_the_one_dispatched() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_caller_route_without_accounts_is_a_catchable_account_required_failure() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let operation = fixture
-        .user_operation("user:unconfigured-caller", "Caller route")
+    let tool = fixture
+        .user_tool("user:unconfigured-caller", "Caller route")
         .await;
     let (_directory, _accounts) =
-        configure_user_caller(&fixture, &operation, "https://upstream.example").await;
+        configure_user_caller(&fixture, &tool, "https://upstream.example").await;
     let runs = fixture.live_runs(None);
     let accepted = runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             submission(
                 "try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }",
             ),
@@ -703,8 +692,8 @@ async fn a_caller_route_without_accounts_is_a_catchable_account_required_failure
         .unwrap();
     let terminal = wait_for_terminal(
         &runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
@@ -746,7 +735,7 @@ impl CredentialScheme {
     async fn publish(
         self,
         fixture: &TestModules,
-        operation: &mut OperationFixture,
+        tool: &mut ToolFixture,
         server: &str,
     ) -> (tempfile::TempDir, coral_provider::account::AccountModule) {
         let secret = |value: &str| coral_credentials::Secret::new(value.into()).unwrap();
@@ -754,7 +743,7 @@ impl CredentialScheme {
             Self::Bearer => {
                 Box::pin(configure_shared_account(
                     fixture,
-                    operation,
+                    tool,
                     server,
                     "bearer-run-canary",
                 ))
@@ -776,10 +765,7 @@ impl CredentialScheme {
                         ("app_key_auth".to_string(), secret("app-run-canary")),
                     ]))
                     .unwrap();
-                Box::pin(configure_shared_provider(
-                    fixture, operation, &document, values,
-                ))
-                .await
+                Box::pin(configure_shared_provider(fixture, tool, &document, values)).await
             }
             Self::AuthoredHeader => {
                 let document = serde_json::json!({
@@ -789,7 +775,7 @@ impl CredentialScheme {
                 });
                 Box::pin(configure_authored_provider(
                     fixture,
-                    operation,
+                    tool,
                     &document,
                     coral_catalog::AuthenticationConfiguration::HeaderCredentials {
                         headers: std::collections::BTreeMap::from([(
@@ -836,29 +822,27 @@ async fn shared_account_credentials_reach_the_upstream_but_never_run_history() {
             .mount(&server)
             .await;
         let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-        let mut operation = fixture
-            .user_operation_at(
+        let mut tool = fixture
+            .user_tool_at(
                 "user:credential-scheme",
                 "Credential schemes",
                 &server.uri(),
             )
             .await;
-        let (_directory, accounts) = scheme
-            .publish(&fixture, &mut operation, &server.uri())
-            .await;
+        let (_directory, accounts) = scheme.publish(&fixture, &mut tool, &server.uri()).await;
         let runs = fixture.live_runs(Some(accounts));
         let accepted = runs
             .start(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 submission("return await coral.providers.weather.getForecast({});"),
             )
             .await
             .unwrap();
         let terminal = wait_for_terminal(
             &runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
         )
         .await;
@@ -867,8 +851,8 @@ async fn shared_account_credentials_reach_the_upstream_but_never_run_history() {
             "{terminal:?}{}",
             run_history_text(
                 &runs,
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 accepted.run_id()
             )
             .await
@@ -895,8 +879,8 @@ async fn a_path_argument_cannot_send_shared_credentials_to_an_undeclared_endpoin
         .mount(&server)
         .await;
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let mut operation = fixture
-        .user_operation_at("user:path-traversal", "Path traversal", &server.uri())
+    let mut tool = fixture
+        .user_tool_at("user:path-traversal", "Path traversal", &server.uri())
         .await;
     let document = serde_json::json!({
         "openapi":"3.1.0", "info":{"title":"Private weather","version":"1"},
@@ -910,7 +894,7 @@ async fn a_path_argument_cannot_send_shared_credentials_to_an_undeclared_endpoin
     });
     let (_directory, accounts) = Box::pin(configure_shared_provider(
         &fixture,
-        &mut operation,
+        &mut tool,
         &document,
         coral_credentials::CredentialValues::token(Secret::new("traversal-canary".into()).unwrap()),
     ))
@@ -919,8 +903,8 @@ async fn a_path_argument_cannot_send_shared_credentials_to_an_undeclared_endpoin
     // Unchecked, `/v1/cities/../forecast` would reach `/v1/forecast`.
     let accepted = runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             submission(
                 r#"
                 let refused;
@@ -935,8 +919,8 @@ async fn a_path_argument_cannot_send_shared_credentials_to_an_undeclared_endpoin
         .unwrap();
     let terminal = wait_for_terminal(
         &runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
@@ -974,18 +958,13 @@ async fn agent_caller_dispatch_uses_only_preprovisioned_credentials_without_inte
         .mount(&server)
         .await;
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let operation = fixture
-        .user_operation_at("user:agent-operator", "Agent caller", &server.uri())
+    let tool = fixture
+        .user_tool_at("user:agent-operator", "Agent caller", &server.uri())
         .await;
-    let agent = registered_agent(
-        &fixture.workspaces,
-        &operation.principal,
-        &operation.workspace_id,
-    )
-    .await;
-    let context = change(operation.user.clone(), 40, '4');
-    let scope = operation.workspace_id.clone();
-    let (_dir, accounts) = configure_user_caller(&fixture, &operation, &server.uri()).await;
+    let agent = registered_agent(&fixture.workspaces, &tool.principal, &tool.workspace_id).await;
+    let context = change(tool.user.clone(), 40, '4');
+    let scope = tool.workspace_id.clone();
+    let (_dir, accounts) = configure_user_caller(&fixture, &tool, &server.uri()).await;
     let runs = fixture.live_runs(None).with_accounts(accounts.clone());
     let source = "try { return (await coral.providers.weather.getForecast({})).data; } catch (error) { return error.code; }";
     for (stage, expected) in [
@@ -997,11 +976,11 @@ async fn agent_caller_dispatch_uses_only_preprovisioned_credentials_without_inte
     .enumerate()
     {
         let accepted = runs
-            .start(&agent, &operation.workspace_id, submission(source))
+            .start(&agent, &tool.workspace_id, submission(source))
             .await
             .unwrap();
         let terminal =
-            wait_for_terminal(&runs, &agent, &operation.workspace_id, accepted.run_id()).await;
+            wait_for_terminal(&runs, &agent, &tool.workspace_id, accepted.run_id()).await;
         let Some(RunTerminalOutcome::Succeeded {
             final_value: FinalValue::Present(value),
         }) = terminal.terminal_outcome()
@@ -1012,7 +991,7 @@ async fn agent_caller_dispatch_uses_only_preprovisioned_credentials_without_inte
         assert!(!format!("{terminal:?}").contains("agent-run-canary"));
         assert!(
             accounts
-                .list_connection_requests(&context, &operation.workspace_id)
+                .list_connection_requests(&context, &tool.workspace_id)
                 .await
                 .unwrap()
                 .is_empty()
@@ -1028,7 +1007,7 @@ async fn agent_caller_dispatch_uses_only_preprovisioned_credentials_without_inte
                 .providers
                 .prepare_openapi_fixture(
                     &context,
-                    &operation.workspace_id,
+                    &tool.workspace_id,
                     OpenApiDocument::parse(&changed.to_string()).unwrap(),
                 )
                 .await
@@ -1040,7 +1019,7 @@ async fn agent_caller_dispatch_uses_only_preprovisioned_credentials_without_inte
                     ProviderRegenerationRequest::new(
                         ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                         scope.clone(),
-                        operation.provider_id.clone(),
+                        tool.provider_id.clone(),
                         setup.id().clone(),
                         1,
                     )
@@ -1052,9 +1031,9 @@ async fn agent_caller_dispatch_uses_only_preprovisioned_credentials_without_inte
             let authorization = accounts
                 .start_agent_authorization(
                     &context,
-                    &operation.workspace_id,
+                    &tool.workspace_id,
                     agent.principal().id(),
-                    &operation.provider_id,
+                    &tool.provider_id,
                     ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                     None,
                 )

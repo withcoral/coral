@@ -12,5 +12,5 @@ type Story = StoryObj<typeof meta>
 
 export const Default: Story = {}
 export const Long: Story = {
-  args: { children: 'coral.providers.a_very_long_program_name.and.a.deeply.nested.operation.path' },
+  args: { children: 'coral.providers.a_very_long_program_name.and.a.deeply.nested.tool.path' },
 }

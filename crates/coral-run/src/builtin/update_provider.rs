@@ -9,9 +9,8 @@
 //! call that changes only the display name takes the path of Reef's settings
 //! page instead: a rename that keeps the Provider's Generation.
 
-use super::setup_operation::{
-    self, Publisher, SetupOperation, configuration_rejection, recover_published, request_id,
-    setup_error,
+use super::setup_tool::{
+    self, Publisher, SetupTool, configuration_rejection, recover_published, request_id, setup_error,
 };
 use super::{BuiltinHost, provider_facts};
 use crate::lifecycle::RunRecord;
@@ -19,7 +18,7 @@ use crate::{CoralFailure, Error, InvocationId, InvocationResultKind, Rejection};
 use async_trait::async_trait;
 use coral_catalog::{SourceChange, UpdateProviderArguments, UpdateProviderResult};
 use coral_db::Transaction;
-use coral_policy::ExactOperationRules;
+use coral_policy::ExactToolRules;
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::{
     Provider, ProviderDisplayName, ProviderPublicationOutcome, ProviderRegenerationPublication,
@@ -91,7 +90,7 @@ impl UpdateProvider {
             provider: saved.provider,
             source,
         };
-        setup_operation::perform(&update, host, context).await
+        setup_tool::perform(&update, host, context).await
     }
 
     /// Where the Update Setup reads the Provider from. A refresh reads the
@@ -123,14 +122,14 @@ impl UpdateProvider {
                 },
             },
             SourceChange::Replace(source) => {
-                setup_operation::setup_source(source.clone(), request_headers())
+                setup_tool::setup_source(source.clone(), request_headers())
             }
         })
     }
 }
 
 #[async_trait]
-impl SetupOperation for TargetedUpdate<'_> {
+impl SetupTool for TargetedUpdate<'_> {
     type Configured = ConfiguredUpdate;
     type Publication = ProviderRegenerationPublication;
 
@@ -203,7 +202,7 @@ impl SetupOperation for TargetedUpdate<'_> {
             )
             .await
             .map_err(update_error)?;
-        let publisher = setup_operation::publisher(
+        let publisher = setup_tool::publisher(
             host,
             context,
             setup.id(),
@@ -263,7 +262,7 @@ impl SetupOperation for TargetedUpdate<'_> {
             )),
             namespace: self.call.namespace.as_str().to_owned(),
         }
-        .into_operation_result()
+        .into_tool_result()
     }
 
     async fn publish(
@@ -297,7 +296,7 @@ impl SetupOperation for TargetedUpdate<'_> {
             | coral_provider::Error::AccountRequired => {
                 Error::InvocationRejected(CoralFailure::ProviderPublicationFailed.into())
             }
-            other => setup_operation::publication_error(other),
+            other => setup_tool::publication_error(other),
         }
     }
 
@@ -311,7 +310,7 @@ impl SetupOperation for TargetedUpdate<'_> {
                 CoralFailure::ProviderPublicationFailed.into(),
             ));
         }
-        setup_operation::published_result(host, self.provider.id(), published_result)
+        setup_tool::published_result(host, self.provider.id(), published_result)
             .await
             .map_err(result_error)
     }
@@ -334,7 +333,7 @@ async fn rename(
     })?;
     let Some(publisher) = host.publisher else {
         return Err(Error::InvocationRejected(
-            CoralFailure::OperationUnavailable.into(),
+            CoralFailure::ToolUnavailable.into(),
         ));
     };
     // A Run that ended could no longer return the Provider: rename nothing.
@@ -353,14 +352,14 @@ async fn rename(
             }
             other => update_error(other),
         })?;
-    setup_operation::published_result(host, renamed.id(), published_result)
+    setup_tool::published_result(host, renamed.id(), published_result)
         .await
         .map_err(result_error)
 }
 
 /// Settles an `updateProvider` whose worker was lost after the dispatch
 /// fence, from the regeneration Publication Coral attempted under the
-/// Invocation's identity. A published change becomes the Operation Result;
+/// Invocation's identity. A published change becomes the Tool Result;
 /// otherwise the Run ended first. A Setup that was never published expires at
 /// its deadline. A rename leaves no record of the call that made it, so a lost
 /// rename is indeterminate.
@@ -393,16 +392,13 @@ pub(super) async fn recover(
     recover_published(transaction, run, provider, published_result).await
 }
 
-/// The Operation Result for a change Coral published.
-fn published_result(
-    published: &PublishedProvider,
-    rules: &ExactOperationRules,
-) -> serde_json::Value {
+/// The Tool Result for a change Coral published.
+fn published_result(published: &PublishedProvider, rules: &ExactToolRules) -> serde_json::Value {
     UpdateProviderResult::Published {
         namespace: published.provider.call_root().name().to_owned(),
         facts: provider_facts(published, rules),
     }
-    .into_operation_result()
+    .into_tool_result()
 }
 
 /// A Provider deleted since Coral changed it is a failure the Program can

@@ -262,7 +262,7 @@ impl ProviderWorkflow {
     }
 }
 
-/// A Built-in Operation publishes through this workflow, so its Publication
+/// A Built-in Tool publishes through this workflow, so its Publication
 /// and its search notification are the ones Reef's gives.
 #[async_trait::async_trait]
 impl WorkspaceProviderPublisher for ProviderWorkflow {

@@ -158,6 +158,14 @@ it.each([
   ['opening a function keeps the list', list, `${list}/linear.issueBrief`, undefined, false],
   ['moving between functions keeps the list', `${list}/a.b`, `${list}/a.c`, undefined, false],
   ['closing a function keeps the list', `${list}/a.b`, list, undefined, false],
+  ['opening a namespace keeps the list', list, `${list}/namespaces/linear`, undefined, false],
+  [
+    'closing a function to its tab keeps the list',
+    `${list}/a.b`,
+    `${list}/namespaces/a`,
+    undefined,
+    false,
+  ],
   ['a refresh reloads the list', list, list, undefined, true],
   [
     'another workspace reloads the list',

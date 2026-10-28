@@ -1,4 +1,4 @@
-//! Attributed command choreography. Operation decisions and writes stay with their owners.
+//! Attributed command choreography. Tool decisions and writes stay with their owners.
 use crate::{
     AttemptEvidence, AttemptKind, AttributedCommand, DiscoveryContext, Error, InteractionId,
     TaskModule,
@@ -12,24 +12,24 @@ use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The longest Call Path `describe` accepts. It lives here, not in `CallPath::parse`,
-/// until the catalog marks an Operation with a longer Call Path unavailable: search
-/// builds Operation Call Paths through the same type.
+/// until the catalog marks a Tool with a longer Call Path unavailable: search
+/// builds Tool Call Paths through the same type.
 const DESCRIBE_CALL_PATH_MAX_BYTES: usize = 1024;
 
-/// Reads Operation declarations as `describe` would for one caller, so typing
+/// Reads Tool declarations as `describe` would for one caller, so typing
 /// adds nothing the caller cannot already discover.
-struct CallerOperationDeclarations<'a> {
+struct CallerToolDeclarations<'a> {
     search: &'a SearchModule,
     actor: &'a AuthenticatedPrincipal,
     workspace_id: &'a WorkspaceId,
 }
 
 #[async_trait::async_trait]
-impl coral_functions::OperationDeclarationReader for CallerOperationDeclarations<'_> {
+impl coral_functions::ToolDeclarationReader for CallerToolDeclarations<'_> {
     async fn read(
         &self,
         call_paths: &[String],
-    ) -> Result<Vec<coral_functions::OperationDeclaration>, Box<dyn std::error::Error + Send + Sync>>
+    ) -> Result<Vec<coral_functions::ToolDeclaration>, Box<dyn std::error::Error + Send + Sync>>
     {
         let call_paths = call_paths
             .iter()
@@ -37,11 +37,11 @@ impl coral_functions::OperationDeclarationReader for CallerOperationDeclarations
             .collect::<Vec<_>>();
         Ok(self
             .search
-            .describe_operations(self.actor, self.workspace_id, &call_paths)
+            .describe_tools(self.actor, self.workspace_id, &call_paths)
             .await?
             .into_iter()
             .map(|description| {
-                coral_functions::OperationDeclaration::new(
+                coral_functions::ToolDeclaration::new(
                     description.call_path().as_str().to_owned(),
                     description.typescript_declaration().to_owned(),
                 )
@@ -162,7 +162,7 @@ impl TaskCommands {
                     &context,
                     &call.workspace_id,
                     save,
-                    Some(&CallerOperationDeclarations {
+                    Some(&CallerToolDeclarations {
                         search: &self.search,
                         actor: &call.actor,
                         workspace_id: &call.workspace_id,

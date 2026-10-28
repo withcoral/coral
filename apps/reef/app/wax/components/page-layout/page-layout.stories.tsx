@@ -33,18 +33,18 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof meta>
 
-const operations = Array.from({ length: 50 }, (_, i) => (
+const tools = Array.from({ length: 50 }, (_, i) => (
   <Typography.Body as="p" key={i}>
-    Operation {i + 1}
+    Tool {i + 1}
   </Typography.Body>
 ))
 // Split pages own their scrolling inside the bounded body.
-const splitContent = <div style={{ height: '100%', overflowY: 'auto' }}>{operations}</div>
+const splitContent = <div style={{ height: '100%', overflowY: 'auto' }}>{tools}</div>
 
 export const Standard: Story = {}
-export const StandardOverflow: Story = { args: { children: operations } }
+export const StandardOverflow: Story = { args: { children: tools } }
 export const Wide: Story = { args: { variant: 'wide' } }
-export const WideOverflow: Story = { args: { variant: 'wide', children: operations } }
+export const WideOverflow: Story = { args: { variant: 'wide', children: tools } }
 export const Split: Story = { args: { variant: 'split', children: splitContent } }
 export const SplitWithActions: Story = {
   args: {
@@ -59,7 +59,7 @@ export const SplitWithActions: Story = {
     ],
     actions: (
       <>
-        <Button.TextButton variant="secondary">Refresh operations</Button.TextButton>
+        <Button.TextButton variant="secondary">Refresh tools</Button.TextButton>
         <Button.TextButton>Add provider</Button.TextButton>
       </>
     ),

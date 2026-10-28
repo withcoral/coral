@@ -70,7 +70,7 @@ pub(super) fn project_mcp_typescript(
     })
 }
 
-/// Returns whether a stored MCP Operation's callable takes `input`, from the
+/// Returns whether a stored MCP-backed Tool's callable takes `input`, from the
 /// same projection that materialization ran.
 pub(crate) fn declares_input(
     input_schema: &SchemaId,

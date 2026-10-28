@@ -3,7 +3,7 @@
 use coral_outbound::{EndpointUrl, ResourceIdentifier};
 
 /// Validated HTTPS or explicit loopback HTTP origin for authenticated human review.
-/// The MCP listener requires one; built-in Operations link to Reef pages under it.
+/// The MCP listener requires one; built-in Tools link to Reef pages under it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HumanInterfaceUrl(String);
 

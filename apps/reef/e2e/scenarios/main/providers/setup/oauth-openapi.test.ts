@@ -2,7 +2,7 @@ import { expect, test } from 'vitest'
 import { withOwnerSession } from '../../../../support/actors.ts'
 import { oauthApiServer } from '../../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   accountQuestion,
   chooseAccount,
   chooseFile,
@@ -10,7 +10,7 @@ import {
   confirmConfiguration,
   createWorkspace,
   nextPublication,
-  openOperation,
+  openTool,
   openProviderSettings,
   programRunner,
   waitForProviderStatus,
@@ -39,7 +39,7 @@ test('OpenAPI OAuth with one shared account: consent, resume, forged callbacks, 
       await page.getByRole('button', { name: 'Read', exact: true }).click()
       await page.getByLabel('Namespace', { exact: true }).fill('records')
       await confirmConfiguration(page)
-      await acceptOperations(page)
+      await acceptTools(page)
       await page.waitForURL((url) => url.searchParams.has('setup'))
       await accountQuestion(page).waitFor()
       stepperUrl = page.url()
@@ -117,8 +117,8 @@ test('OpenAPI OAuth with one shared account: consent, resume, forged callbacks, 
     })
     await step('A complete exchange adds it', async () => {
       await waitForProviderStatus(page, 'Records', 'Ready', { available: 1, total: 1 })
-      // The operation's full name carries the chosen namespace.
-      const drawer = await openOperation(page, 'listRecords')
+      // The tool's full name carries the chosen namespace.
+      const drawer = await openTool(page, 'listRecords')
       await drawer.getByText('coral.providers.records.listRecords', { exact: true }).waitFor()
       await page.keyboard.press('Escape')
       await drawer.waitFor({ state: 'hidden' })
@@ -130,7 +130,7 @@ test('OpenAPI OAuth with one shared account: consent, resume, forged callbacks, 
         .waitFor()
     })
     await step('A Program run resolves the shared account', async () => {
-      // A GET Operation runs without approval, so the call reaches upstream
+      // A GET Tool runs without approval, so the call reaches upstream
       // with the shared account's token.
       const run = programRunner(page, target, workspace)
       const result = await run('return await coral.providers.records.listRecords({});')
@@ -162,7 +162,7 @@ test('OpenAPI OAuth with each person’s own account signs nobody in until they 
       await page.getByRole('button', { name: 'Read', exact: true }).click()
       await page.getByLabel('Namespace', { exact: true }).fill('records')
       await confirmConfiguration(page)
-      await acceptOperations(page)
+      await acceptTools(page)
       await accountQuestion(page).waitFor()
       await chooseAccount(page, 'own-later')
       expect(await page.getByRole('button', { name: /^Sign in/ }).count()).toBe(0)

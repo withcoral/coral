@@ -54,23 +54,23 @@ const datadog: SetupView = {
     servers: [
       {
         declaration: '#/servers',
-        operations: ['metrics/list', 'monitors/list'],
+        tools: ['metrics/list', 'monitors/list'],
         options: [{ url: 'https://api.datadoghq.com/', variables: [] }],
       },
     ],
-    operations: [],
+    tools: [],
     destinations: {
       ...Object.fromEntries(
         Array.from({ length: 233 }, (_, index) => [
-          `metrics/operation-${index + 1}`,
+          `metrics/tool-${index + 1}`,
           'https://api.datadoghq.com/',
         ]),
       ),
       'logs/submit': 'https://http-intake.logs.datadoghq.com/',
       'ip-ranges/get': 'https://ip-ranges.datadoghq.com/',
     },
-    operationCount: null,
-    unavailableOperations: [],
+    toolCount: null,
+    unavailableTools: [],
     diagnostic: '',
     readable: true,
     errors: {},
@@ -115,7 +115,7 @@ const workspaceAttempt: CreationAttempt = {
   kind: 'workspace',
   setupId: 'setup-1',
   configure: false,
-  operationsAccepted: true,
+  toolsAccepted: true,
   account: null,
   namespace: 'datadog_v1',
 }

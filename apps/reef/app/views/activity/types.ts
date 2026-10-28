@@ -1,5 +1,5 @@
 import type { ConnectionState } from '@/views/accounts/types'
-import type { OperationHintsView } from '@/views/providers/types'
+import type { ToolHintsView } from '@/views/providers/types'
 import type { ActivityViewport } from '@/lib/activity-live-types'
 
 /** History, pending shortcuts, and exact selection share one authorized reader. */
@@ -86,7 +86,7 @@ export interface InvocationRow extends Omit<ExecutionRow, 'state'> {
   state: InvocationState
   run: string
   provider: string
-  operation: string
+  tool: string
   callPath: string
   outcome: InvocationOutcome
   dispatchedAt: string | null
@@ -108,13 +108,13 @@ export interface ProgramError {
   name: string
   message: string
   frames: { source: string; line: number; column: number }[]
-  operationCode: string
-  operationTraceId: string
+  toolCode: string
+  toolTraceId: string
   /** HTTP status of the upstream response that rejected the call, or 0. */
-  operationStatus: number
+  toolStatus: number
   /** Start of that response's JSON-encoded data, or empty. */
-  operationBody: string
-  operationBodyTruncated: boolean
+  toolBody: string
+  toolBodyTruncated: boolean
   cause: ProgramError | null
   errors: ProgramError[]
   truncated: boolean
@@ -301,7 +301,7 @@ export interface ActivityPage {
   selected: string | null
   /** Server-selected initial request; pin this identity without refetching the page. */
   initialRequest?: string
-  /** An exact approval resolves its operation as the review selection. */
+  /** An exact approval resolves its tool as the review selection. */
   initialRecord?: string
   /**
    * The oldest action you can take in the selected record's Run, read while live mode
@@ -318,7 +318,7 @@ export interface ActivityPage {
 }
 
 /**
- * A current request of a Run and the record that reviews it: the waiting operation for
+ * A current request of a Run and the record that reviews it: the waiting tool for
  * an approval, the Run for an account connection.
  */
 export interface LiveAction {
@@ -333,7 +333,7 @@ export type RunRow = Extract<ActivityRow, { kind: 'run' }>
 export interface LiveLatest {
   /**
    * The oldest action you can take in any Run page live mode may follow, timed by when
-   * the operation that waits on it started, not by when the request was made. `task`
+   * the tool that waits on it started, not by when the request was made. `task`
    * is the Run's Task, empty for a standalone Run.
    */
   action?: { task: string; action: LiveAction }
@@ -407,26 +407,26 @@ export type DiscoveryContext =
   | { kind: 'describe'; callPath: string; types: string[] }
   | { kind: 'unknown' }
 /** A kind of Search Entity, as Coral stores it. */
-export type DiscoveryEntityKind = 'operation' | 'saved_function'
-/** What an Operation's provider and Workspace policy state about a call. */
-export interface OperationFlags {
+export type DiscoveryEntityKind = 'provider_tool' | 'saved_function'
+/** What a Tool's provider and Workspace policy state about a call. */
+export interface ToolFlags {
   approvalRequired: boolean
   deprecated: boolean
-  hints: OperationHintsView
+  hints: ToolHintsView
 }
-export interface OperationFacts extends OperationFlags {
+export interface ToolFacts extends ToolFlags {
   providerLabel: string
 }
 export interface SearchHit {
   kind: DiscoveryEntityKind
   callPath: string
-  /** The Operation's title when the page states it, otherwise the path under its namespace. */
+  /** The Tool's title when the page states it, otherwise the path under its namespace. */
   title: string
   signatureLine: string
   /** Cut Markdown. Show it as text. */
   descriptionSnippet: string
   guidanceSnippet: string | null
-  operation: OperationFlags | null
+  tool: ToolFlags | null
   /** Why the hit matched: tags, and the field names and declaration paths an untrimmed page lists. */
   matched: { fields: string[]; tags: string[]; paths: string[] }
   /** Today's catalog page for the target; null when the target is gone. */
@@ -461,7 +461,7 @@ export interface Description {
   /** Provider or author prose; may contain Markdown. */
   description: string
   declaration: string
-  operation: (OperationFacts & { tags: string[]; guidance: string | null }) | null
+  tool: (ToolFacts & { tags: string[]; guidance: string | null }) | null
   savedFunction: {
     source: string
     diagnostics: DescriptionDiagnostic[]

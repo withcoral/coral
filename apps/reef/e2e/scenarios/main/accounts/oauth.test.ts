@@ -9,7 +9,7 @@ import {
   ProviderAccountState,
 } from '../../../generated/coral/management/v1/account_pb.ts'
 import {
-  acceptOperations,
+  acceptTools,
   addProviderFromFile,
   chooseAccount,
   chooseFile,
@@ -143,7 +143,7 @@ test.for(['complete', 'deny'] as const)(
             await page.getByRole('button', { name: 'Read', exact: true }).click()
             await page.getByLabel('Namespace', { exact: true }).fill('personalRecords')
             await confirmConfiguration(page)
-            await acceptOperations(page)
+            await acceptTools(page)
             setupName = `workspaces/${workspace}/providerSetups/${new URL(page.url()).searchParams.get('setup')}`
             expect(upstream.counts.consents).toBe(0)
             await chooseAccount(page, 'own-connect')

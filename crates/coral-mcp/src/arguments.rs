@@ -19,7 +19,7 @@ const DESCRIBE_INTENT_DESCRIPTION: &str =
     "What the search result did not show that you need from this declaration.";
 const FUNCTION_PATH_DESCRIPTION: &str =
     "Dotted path under coral.functions, without that prefix, such as reports.summarize.";
-const SEARCH_TOOL_DESCRIPTION: &str = "Search current visible Operations and Saved Functions. In `query`, give keywords for the capability you need. Leave out people, record titles, IDs, dates and other record values. Each result is a summary with a signature line. Call a read directly when its signature line is complete. Call describe first when the line was cut, its input names a type you do not see, or before a write. When the user names the service, pass its namespace in `provider`, or `coral.workspace` for Coral's own operations. Otherwise, leave `provider` out. `start_task` lists the namespaces you can search. The filter narrows Operations to one Provider; Saved Functions stay. A page lists `retriever_statuses` only when results may be missing; retry shortly or list without a query.";
+const SEARCH_TOOL_DESCRIPTION: &str = "Search current visible provider tools and Saved Functions. In `query`, give keywords for the capability you need. Leave out people, record titles, IDs, dates and other record values. Each result is a summary with a signature line. Call a read directly when its signature line is complete. Call describe first when the line was cut, its input names a type you do not see, or before a write. When the user names the service, pass its namespace in `provider`, or `coral.workspace` for the Built-in Provider's tools. Otherwise, leave `provider` out. `start_task` lists the namespaces you can search. The filter narrows provider tools to one Provider; Saved Functions stay. A page lists `retriever_statuses` only when results may be missing; retry shortly or list without a query.";
 const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or wait on this Run. Without it, the response returns the Run's events from the start.";
 pub(crate) const DEFAULT_RUN_TIMEOUT_MS: u64 = 900_000;
 pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 10_000;
@@ -64,7 +64,7 @@ pub(crate) struct SearchArguments {
     #[schemars(
         length(min = 1, max = 128),
         regex(pattern = r"^([A-Za-z_$][A-Za-z0-9_$]*|coral\.workspace)$"),
-        description = "Namespace from coral.providers.<namespace>.<operation>, as listed by start_task, or coral.workspace for Coral's own operations. Omit unless the user names the service."
+        description = "Namespace from coral.providers.<namespace>.<tool>, as listed by start_task, or coral.workspace for the Built-in Provider's tools. Omit unless the user names the service."
     )]
     pub(crate) provider: Option<String>,
     #[schemars(
@@ -97,7 +97,7 @@ pub(crate) struct DescribeArguments {
     pub(crate) intent: String,
     #[schemars(
         length(min = 1),
-        description = "Complete Call Path: coral.providers.<namespace>.<operation>, coral.workspace.<operation> or coral.functions.<path>."
+        description = "Complete Call Path: coral.providers.<namespace>.<tool>, coral.workspace.<tool> or coral.functions.<path>."
     )]
     pub(crate) path: String,
     #[schemars(
@@ -307,7 +307,7 @@ pub(crate) fn tools() -> Vec<Tool> {
             mutation_annotations("Delete Function", true, false),
         ),
         tool::<ExecArguments, crate::projection::RunUpdateResult<'_>>(
-            "Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole Operation Result. Log diagnostics with `console.log`. A thrown `coral.OperationError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.",
+            "Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole provider tool result. Log diagnostics with `console.log`. A thrown `coral.ToolError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.",
             mutation_annotations("Execute Program", true, true),
         ),
         tool::<WaitArguments, crate::projection::RunUpdateResult<'_>>(

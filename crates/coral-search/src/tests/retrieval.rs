@@ -4,9 +4,9 @@
 //! Saved Function saves, converges the index with one reconcile pass, and
 //! observes what an agent sees through `UniversalSearchModule::search`.
 
-use coral_catalog::OperationKey;
+use coral_catalog::ToolKey;
 use coral_db::DatabaseSystem;
-use coral_policy::{OperationAccessState, OperationPolicyTarget};
+use coral_policy::{ToolAccessState, ToolPolicyTarget};
 use coral_provider::ProviderId;
 use coral_provider::access::ProviderCallRoot;
 use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceId};
@@ -18,7 +18,7 @@ use crate::{
 
 const USER: &str = "user:search-retrieval";
 
-/// Two GitHub Operations and two Saved Functions that all match `issues`.
+/// Two GitHub Tools and two Saved Functions that all match `issues`.
 const GITHUB: &str = r#"{
   "openapi": "3.1.0",
   "info": { "title": "GitHub", "version": "1.0.0" },
@@ -210,7 +210,7 @@ async fn a_mixed_query_fuses_each_kinds_ranking_by_position() {
         "equal ranks put the Saved Function first"
     );
     assert_eq!(
-        state(&page, EntityKind::Operation),
+        state(&page, EntityKind::ProviderTool),
         RetrieverState::ResultsFound
     );
     assert_eq!(
@@ -218,7 +218,7 @@ async fn a_mixed_query_fuses_each_kinds_ranking_by_position() {
         RetrieverState::ResultsFound
     );
 
-    // The Provider filter narrows Operations only: Saved Functions stay, for
+    // The Provider filter narrows Tools only: Saved Functions stay, for
     // a query and for a listing.
     let github = ProviderCallRoot::parse("coral.providers.github").unwrap();
     let filtered = corpus.search(issues.with_provider(github.clone())).await;
@@ -241,16 +241,14 @@ async fn a_mixed_query_fuses_each_kinds_ranking_by_position() {
 #[tokio::test]
 async fn relevance_waits_for_the_index_while_listing_and_describe_do_not() {
     let corpus = Corpus::unconverged().await;
-    let operations = [
+    let tools = [
         "coral.providers.github.issues.list",
         "coral.providers.github.pulls.list",
     ];
 
     let listed = corpus.search(SearchRequest::list()).await;
     assert!(
-        operations
-            .iter()
-            .all(|operation| paths(&listed).contains(operation)),
+        tools.iter().all(|tool| paths(&listed).contains(tool)),
         "listing reads no index"
     );
     let described = corpus
@@ -259,12 +257,12 @@ async fn relevance_waits_for_the_index_while_listing_and_describe_do_not() {
         .describe(
             &corpus.principal,
             &corpus.workspace,
-            &CallPath::parse(operations[0]).unwrap(),
+            &CallPath::parse(tools[0]).unwrap(),
             &[],
         )
         .await
         .expect("describe reads no index");
-    assert_eq!(described.authoring().call_path().as_str(), operations[0]);
+    assert_eq!(described.authoring().call_path().as_str(), tools[0]);
 
     let before = corpus.search(Corpus::query("issues")).await;
     assert!(
@@ -273,22 +271,22 @@ async fn relevance_waits_for_the_index_while_listing_and_describe_do_not() {
             .all(|path| !path.starts_with("coral.providers.")),
         "relevance omits a Provider whose rows have not landed"
     );
-    let operation = status(&before, EntityKind::Operation);
-    assert_eq!(operation.state(), RetrieverState::Partial);
+    let tool = status(&before, EntityKind::ProviderTool);
+    assert_eq!(tool.state(), RetrieverState::Partial);
     assert_eq!(
         (
-            operation.coverage().eligible_units(),
-            operation.coverage().searched_units(),
-            operation.coverage().failed_units(),
+            tool.coverage().eligible_units(),
+            tool.coverage().searched_units(),
+            tool.coverage().failed_units(),
         ),
         (1, 0, 1)
     );
 
     corpus.modules.converge().await;
     let after = corpus.search(Corpus::query("issues")).await;
-    assert!(paths(&after).contains(&operations[0]));
+    assert!(paths(&after).contains(&tools[0]));
     assert_eq!(
-        state(&after, EntityKind::Operation),
+        state(&after, EntityKind::ProviderTool),
         RetrieverState::ResultsFound
     );
 
@@ -309,7 +307,7 @@ async fn relevance_waits_for_the_index_while_listing_and_describe_do_not() {
         "a superseded Generation's rows never rank, even before they go"
     );
     assert_eq!(
-        state(&superseded, EntityKind::Operation),
+        state(&superseded, EntityKind::ProviderTool),
         RetrieverState::Partial
     );
 
@@ -326,11 +324,11 @@ async fn relevance_waits_for_the_index_while_listing_and_describe_do_not() {
         "a superseded Generation's stored rows never rank"
     );
     assert_eq!(
-        status(&list, EntityKind::Operation)
+        status(&list, EntityKind::ProviderTool)
             .coverage()
             .returned_count(),
         1,
-        "the ranked window holds only the active Generation's Operation, not the stored superseded ones"
+        "the ranked window holds only the active Generation's Tool, not the stored superseded ones"
     );
 }
 
@@ -353,12 +351,12 @@ async fn hits_leave_out_what_the_caller_may_not_see() {
         .policies
         .set_access_state(
             &change(corpus.user.clone(), 80, '8'),
-            OperationPolicyTarget::new(
+            ToolPolicyTarget::new(
                 corpus.workspace.clone(),
                 corpus.github.clone(),
-                OperationKey::parse("issues/list").unwrap(),
+                ToolKey::parse("issues/list").unwrap(),
             ),
-            OperationAccessState::Disabled,
+            ToolAccessState::Disabled,
         )
         .await
         .unwrap();
@@ -384,7 +382,7 @@ async fn hits_leave_out_what_the_caller_may_not_see() {
             "coral.providers.github.pulls.list",
             "coral.functions.reports.weekly",
         ],
-        "neither a disabled Operation nor another Principal's Saved Function ranks"
+        "neither a disabled Tool nor another Principal's Saved Function ranks"
     );
 
     let weather = Corpus::query("forecast")
@@ -495,7 +493,7 @@ async fn a_retriever_that_cannot_rank_keeps_the_others_results() {
     let search = |kinds: &[EntityKind]| corpus.modules.failing_search(kinds);
     let issues = Corpus::query("issues");
 
-    let page = search(&[EntityKind::Operation])
+    let page = search(&[EntityKind::ProviderTool])
         .search(&corpus.principal, &corpus.workspace, &issues)
         .await
         .expect("the Saved Function retriever still ranks");
@@ -506,14 +504,17 @@ async fn a_retriever_that_cannot_rank_keeps_the_others_results() {
             "coral.functions.reports.weekly",
         ]
     );
-    assert_eq!(state(&page, EntityKind::Operation), RetrieverState::Error);
+    assert_eq!(
+        state(&page, EntityKind::ProviderTool),
+        RetrieverState::Error
+    );
     assert_eq!(
         state(&page, EntityKind::SavedFunction),
         RetrieverState::ResultsFound
     );
 
     assert!(matches!(
-        search(&[EntityKind::Operation, EntityKind::SavedFunction])
+        search(&[EntityKind::ProviderTool, EntityKind::SavedFunction])
             .search(&corpus.principal, &corpus.workspace, &issues)
             .await,
         Err(crate::Error::ServiceUnavailable)
@@ -597,12 +598,12 @@ async fn both_backends_rank_one_corpus_in_the_same_order() {
         .policies
         .set_access_state(
             &change(user.clone(), 30, '3'),
-            OperationPolicyTarget::new(
+            ToolPolicyTarget::new(
                 workspace.clone(),
                 orders,
-                OperationKey::parse("fifth/item").unwrap(),
+                ToolKey::parse("fifth/item").unwrap(),
             ),
-            OperationAccessState::Disabled,
+            ToolAccessState::Disabled,
         )
         .await
         .unwrap();
@@ -668,7 +669,7 @@ async fn evidence_explains_a_match_by_the_words_of_a_dotted_term() {
     assert_eq!(weekly.evidence().fields(), ["call_path", "description"]);
 }
 
-/// Operations whose names differ only inside camelCase. `getOutlook` also
+/// Tools whose names differ only inside camelCase. `getOutlook` also
 /// holds `outlook` as a word in its description, and `listWarnings` holds it
 /// in its title.
 const CAMEL: &str = r#"{
@@ -756,7 +757,7 @@ async fn a_query_without_a_searchable_term_is_empty_even_while_entities_wait() {
     for corpus in [Corpus::unconverged().await, Corpus::new().await] {
         for query in ["ab", "...", "___"] {
             let page = corpus.search(Corpus::query(query)).await;
-            for kind in [EntityKind::Operation, EntityKind::SavedFunction] {
+            for kind in [EntityKind::ProviderTool, EntityKind::SavedFunction] {
                 let status = status(&page, kind);
                 assert_eq!(status.state(), RetrieverState::Empty, "{query:?}: {kind:?}");
                 assert_eq!(status.coverage().failed_units(), 0, "{query:?}: {kind:?}");
@@ -778,7 +779,7 @@ async fn a_query_of_the_largest_size_still_ranks_by_its_phrase_patterns() {
             query.push_str(filler);
         }
         let page = corpus.search(Corpus::query(&query)).await;
-        for kind in [EntityKind::Operation, EntityKind::SavedFunction] {
+        for kind in [EntityKind::ProviderTool, EntityKind::SavedFunction] {
             assert_eq!(
                 status(&page, kind).coverage().failed_units(),
                 0,
@@ -942,19 +943,18 @@ fn scoring_document() -> String {
     let filler = (1..=30)
         .map(|index| parameter(format!("filler{index}"), "Vash teln ober kip mun dral."))
         .collect::<Vec<_>>();
-    let operation =
+    let tool =
         |id: &str, summary: &str, description: Option<&str>, parameters: Vec<serde_json::Value>| {
-            let mut operation = serde_json::json!({
+            let mut tool = serde_json::json!({
                 "operationId": id, "summary": summary, "parameters": parameters,
                 "responses": { "200": { "description": "OK" } }
             });
             if let Some(description) = description {
-                operation
-                    .as_object_mut()
+                tool.as_object_mut()
                     .expect("an operation object")
                     .insert("description".to_string(), serde_json::json!(description));
             }
-            serde_json::json!({ "get": operation })
+            serde_json::json!({ "get": tool })
         };
     let schema_repeats = (1..=6)
         .map(|index| parameter(format!("note{index}"), "Frosk the glimmet near a brandle."))
@@ -966,21 +966,21 @@ fn scoring_document() -> String {
         "servers": [{ "url": "https://zentro.example" }],
         "security": [],
         "paths": {
-            "/forms": operation("storeQuib", "Tracer one",
+            "/forms": tool("storeQuib", "Tracer one",
                 Some("Plonks, plonked, plonking, plonker and plonkish."), Vec::new()),
-            "/plonk": operation("dropNib", "Plonk a nib", None, Vec::new()),
-            "/snibs": operation("storeMub", "Snib, snibs, snibbed and snibbing",
+            "/plonk": tool("dropNib", "Plonk a nib", None, Vec::new()),
+            "/snibs": tool("storeMub", "Snib, snibs, snibbed and snibbing",
                 Some("Tracer ten."), Vec::new()),
-            "/snib": operation("pickSnib", "Tracer eleven", Some("Snib the pick."), Vec::new()),
-            "/gorvex": operation("listGorvex", "Tracer two", None, Vec::new()),
-            "/tupa": operation("readTupa", "Tracer three", Some("Read the gorvex."), Vec::new()),
-            "/wimble": operation("fetchZQXWimble", "Tracer four", None, Vec::new()),
-            "/slib": operation("readSlib", "Tracer five", Some("Read the wimble."), Vec::new()),
-            "/short-schema": operation("brandleFrosk", "Tracer six", None, Vec::new()),
-            "/long-schema": operation("listYorbs", "Tracer seven", None, schema_repeats),
-            "/short-body": operation("quabbleSnorf", "Tracer eight",
+            "/snib": tool("pickSnib", "Tracer eleven", Some("Snib the pick."), Vec::new()),
+            "/gorvex": tool("listGorvex", "Tracer two", None, Vec::new()),
+            "/tupa": tool("readTupa", "Tracer three", Some("Read the gorvex."), Vec::new()),
+            "/wimble": tool("fetchZQXWimble", "Tracer four", None, Vec::new()),
+            "/slib": tool("readSlib", "Tracer five", Some("Read the wimble."), Vec::new()),
+            "/short-schema": tool("brandleFrosk", "Tracer six", None, Vec::new()),
+            "/long-schema": tool("listYorbs", "Tracer seven", None, schema_repeats),
+            "/short-body": tool("quabbleSnorf", "Tracer eight",
                 Some("Quabble the snorf."), Vec::new()),
-            "/long-body": operation("listDrams", "Tracer nine",
+            "/long-body": tool("listDrams", "Tracer nine",
                 Some("Zinder of a snorf, quabble. Snorf with zinder, quabble. Zinder, snorf and quabble."),
                 filler),
         }

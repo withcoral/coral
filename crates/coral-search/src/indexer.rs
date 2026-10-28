@@ -6,14 +6,14 @@
 //! [`crate::SearchIndex`] owns when each transaction begins and ends.
 
 pub(crate) mod functions;
-pub(crate) mod operations;
 mod repository;
 mod retry;
+pub(crate) mod tools;
 
 pub(crate) use repository::generation_outcomes_in_workspace;
 
 #[cfg(any(test, feature = "test-fixtures"))]
-pub(crate) use repository::{generation_states_in_workspace, operation_rows_in_workspace};
+pub(crate) use repository::{generation_states_in_workspace, tool_rows_in_workspace};
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -26,7 +26,7 @@ use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
 
 /// The revision of the indexed text that this indexer writes. Raise it with
-/// each change to the text or columns of an Operation or Saved Function row.
+/// each change to the text or columns of a Tool or Saved Function row.
 /// A reconcile pass then indexes again what an older indexer revision wrote.
 ///
 /// 1: schema text holds each word once.

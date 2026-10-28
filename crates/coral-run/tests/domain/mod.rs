@@ -28,6 +28,7 @@ mod scoping;
 mod summary;
 mod support;
 mod updates;
+mod upgrade;
 
 use coral_outbound::DestinationPolicy;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
@@ -35,8 +36,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use coral_catalog::{OpenApiDocument, OperationKey};
-use coral_policy::{OperationAccessState, OperationPolicyModule, OperationPolicyTarget};
+use coral_catalog::{OpenApiDocument, ToolKey};
+use coral_policy::{ToolAccessState, ToolPolicyModule, ToolPolicyTarget};
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::{
     ManagementRequestId, ProviderId, ProviderModule, ProviderRegenerationRequest,

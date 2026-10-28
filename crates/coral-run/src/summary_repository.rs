@@ -49,7 +49,7 @@ pub(crate) async fn call_outcomes(
     since: i64,
 ) -> Result<Vec<OutcomeEvidence>, Error> {
     let fields = ["call_path", "result_kind", "failure_code"];
-    let mut select = authorized_runs_with(authority, "operation_invocations", "i");
+    let mut select = authorized_runs_with(authority, "tool_invocations", "i");
     select
         .columns(fields.map(|name| (Alias::new("i"), Alias::new(name))))
         .expr_as(

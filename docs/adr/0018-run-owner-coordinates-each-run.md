@@ -99,5 +99,7 @@ writer in the predicate of the history write itself. A lock without a write fenc
   beside a recorded deadline rather than deriving state from `now`.
 - **Migrations are expand-only across one release,** because a new process migrates at boot while the old one still
   serves.
+  ADR 0024's rename of Operations to Provider Tools is the one exception: its release needs a stop-then-start
+  upgrade.
 - **Request work shares the pool with Run Ledger work.** Reconsider reserved permits in the one pool if the sign-in or
   readiness probes exceed their budgets while every Run transaction is short.

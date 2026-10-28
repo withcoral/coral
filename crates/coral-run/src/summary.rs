@@ -14,10 +14,10 @@ pub struct ActivitySummary {
     /// Invocations that ended in the window, by outcome.
     pub calls: CallOutcomes,
     /// Call Paths with stopped Invocations, most stopped first. Only a resolved
-    /// Call Path is stored, so the list holds at most one row per Operation.
-    pub stopped: Vec<StoppedOperation>,
+    /// Call Path is stored, so the list holds at most one row per Tool.
+    pub stopped: Vec<StoppedTool>,
     /// Call Paths with ended Invocations, busiest first, bounded like `stopped`.
-    pub operations: Vec<OperationCalls>,
+    pub tools: Vec<ToolCalls>,
     /// Approval requests decided in the window.
     pub approvals: ApprovalDecisions,
     /// Net context bytes of the measured work that ended in the window, as Activity
@@ -51,7 +51,7 @@ pub struct CallOutcomes {
 
 /// One Call Path's stopped Invocations, by who must act.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StoppedOperation {
+pub struct StoppedTool {
     /// Retained Program Call Path.
     pub call_path: String,
     /// Invocations a rule stopped.
@@ -64,7 +64,7 @@ pub struct StoppedOperation {
 
 /// One Call Path's ended Invocations.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OperationCalls {
+pub struct ToolCalls {
     /// Retained Program Call Path.
     pub call_path: String,
     /// Ended Invocations.
@@ -112,7 +112,7 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
         (
             InvocationResultKind::CoralFailure,
             Some(
-                F::OperationDisabled
+                F::ToolDisabled
                 | F::ApprovalRequired
                 | F::AuthorityLost
                 | F::OutboundDestinationRejected,
@@ -134,13 +134,13 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
                 | F::ProviderUnavailable
                 | F::ProviderNamespaceConflict
                 | F::ProviderPublicationFailed
-                | F::OperationUnavailable,
+                | F::ToolUnavailable,
             ),
         ) => CallOutcome::NeedsSetup,
         (
             InvocationResultKind::CoralFailure,
             Some(
-                F::OperationNotFound
+                F::ToolNotFound
                 | F::ProviderNotFound
                 | F::InvalidInput
                 | F::InputTooLarge
@@ -176,7 +176,7 @@ impl CallOutcomes {
     }
 }
 
-impl StoppedOperation {
+impl StoppedTool {
     /// The count an outcome adds to, or `None` when the call was not stopped.
     fn total_mut(&mut self, outcome: CallOutcome) -> Option<&mut i64> {
         match outcome {
@@ -192,18 +192,16 @@ impl StoppedOperation {
     }
 }
 
-fn tally(
-    evidence: Vec<OutcomeEvidence>,
-) -> (CallOutcomes, Vec<StoppedOperation>, Vec<OperationCalls>) {
+fn tally(evidence: Vec<OutcomeEvidence>) -> (CallOutcomes, Vec<StoppedTool>, Vec<ToolCalls>) {
     let mut calls = CallOutcomes::default();
-    let mut stopped = BTreeMap::<String, StoppedOperation>::new();
+    let mut stopped = BTreeMap::<String, StoppedTool>::new();
     let mut ended = BTreeMap::<String, i64>::new();
     for group in evidence {
         let outcome = outcome(group.kind, group.failure);
         *calls.total_mut(outcome) += group.calls;
         let op = stopped
             .entry(group.call_path.clone())
-            .or_insert_with(|| StoppedOperation {
+            .or_insert_with(|| StoppedTool {
                 call_path: group.call_path.clone(),
                 blocked: 0,
                 not_allowed: 0,
@@ -217,12 +215,12 @@ fn tally(
     let mut stopped: Vec<_> = stopped.into_values().filter(|op| op.total() > 0).collect();
     // Stable sorts keep Call Path order among equal counts.
     stopped.sort_by_key(|op| Reverse(op.total()));
-    let mut operations: Vec<_> = ended
+    let mut tools: Vec<_> = ended
         .into_iter()
-        .map(|(call_path, calls)| OperationCalls { call_path, calls })
+        .map(|(call_path, calls)| ToolCalls { call_path, calls })
         .collect();
-    operations.sort_by_key(|op| Reverse(op.calls));
-    (calls, stopped, operations)
+    tools.sort_by_key(|op| Reverse(op.calls));
+    (calls, stopped, tools)
 }
 
 impl RunModule {
@@ -261,11 +259,11 @@ impl RunModule {
         }
         // Principal order breaks ties, so both backends return one order.
         actors.sort_by(|a, b| (a.bytes, a.principal.id()).cmp(&(b.bytes, b.principal.id())));
-        let (calls, stopped, operations) = tally(evidence);
+        let (calls, stopped, tools) = tally(evidence);
         Ok(ActivitySummary {
             calls,
             stopped,
-            operations,
+            tools,
             approvals,
             context_impact_bytes: (!actors.is_empty())
                 .then(|| actors.iter().map(|actor| actor.bytes).sum()),
@@ -287,7 +285,7 @@ mod tests {
         let failure = |code| (K::CoralFailure, Some(code));
         let table = [
             ((K::UpstreamOutcome, None), O::Answered),
-            (failure(F::OperationDisabled), O::Blocked),
+            (failure(F::ToolDisabled), O::Blocked),
             (failure(F::ApprovalRequired), O::Blocked),
             (failure(F::AuthorityLost), O::Blocked),
             (failure(F::OutboundDestinationRejected), O::Blocked),
@@ -303,8 +301,8 @@ mod tests {
             (failure(F::ProviderUnavailable), O::NeedsSetup),
             (failure(F::ProviderNamespaceConflict), O::NeedsSetup),
             (failure(F::ProviderPublicationFailed), O::NeedsSetup),
-            (failure(F::OperationUnavailable), O::NeedsSetup),
-            (failure(F::OperationNotFound), O::Failed),
+            (failure(F::ToolUnavailable), O::NeedsSetup),
+            (failure(F::ToolNotFound), O::Failed),
             (failure(F::ProviderNotFound), O::Failed),
             (failure(F::InvalidInput), O::Failed),
             (failure(F::InputTooLarge), O::Failed),

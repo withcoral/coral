@@ -4,7 +4,7 @@ use crate::schema::{
 };
 use crate::{CatalogDiagnostic, HttpExecutionBinding, HttpResponseStatus, SchemaGraph, SchemaId};
 
-/// The type an HTTP Operation declares for each declared success response:
+/// The type an HTTP Tool declares for each declared success response:
 /// `{ status, data, metadata }`, with `status` beside `data` so checking it
 /// narrows `data`. Its type arguments are, in order, the response's data
 /// type, its status, and its media type: `HttpResult<Data, Status, MediaType>`.
@@ -20,7 +20,7 @@ const HTTP_SUCCESS_STATUS: &str = "HttpStatus2xx";
 /// The `unique symbol` that brands the success range type. Programs cannot
 /// name it, so no Program reads a brand the runtime status never carries.
 const HTTP_STATUS_RANGE_BRAND: &str = "HttpStatusRangeBrand";
-/// Every type name an HTTP Operation's declaration declares itself.
+/// Every type name an HTTP Tool's declaration declares itself.
 pub(crate) const DECLARED_TYPE_NAMES: [&str; 2] = [HTTP_RESULT, HTTP_SUCCESS_STATUS];
 
 const DECODE_DIAGNOSTIC: &str = "{ readonly code: string; readonly message: string }";
@@ -34,7 +34,7 @@ fn http_metadata(media_type: &str) -> String {
     )
 }
 
-/// The HTTP Operation Result of one declared success.
+/// The HTTP Tool Result of one declared success.
 fn http_result_declaration() -> String {
     format!(
         "type {HTTP_RESULT}<Data, Status, MediaType> = {{ status: Status; data: Data; metadata: {} }};",
@@ -139,7 +139,7 @@ pub(super) fn project_typescript(
     })
 }
 
-/// Returns whether a stored HTTP Operation's callable takes `input`, from the
+/// Returns whether a stored HTTP Tool's callable takes `input`, from the
 /// same projection that materialization ran.
 pub(crate) fn declares_input(
     input_schema: &SchemaId,

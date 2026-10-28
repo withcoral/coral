@@ -27,8 +27,8 @@ fn saved_functions(fixture: &TestModules) -> SavedFunctionModule {
 }
 
 /// Runs one real-V8 Program that calls a linked Saved Function, emits in a
-/// loop and fans out Operation calls, and waits for it to succeed.
-async fn run_located_program() -> (TestModules, OperationFixture, crate::RunId) {
+/// loop and fans out Tool calls, and waits for it to succeed.
+async fn run_located_program() -> (TestModules, ToolFixture, crate::RunId) {
     let fixture = TestModules::with_upstream(
         Arc::new(
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
@@ -37,13 +37,13 @@ async fn run_located_program() -> (TestModules, OperationFixture, crate::RunId) 
         Arc::new(ScriptedUpstream::json(200, serde_json::json!(null))),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:locations", "Record authored locations")
+    let tool = fixture
+        .user_tool("user:locations", "Record authored locations")
         .await;
     saved_functions(&fixture)
         .save(
-            &saved_function_change(operation.principal.clone(), 30, 'a'),
-            &operation.workspace_id,
+            &saved_function_change(tool.principal.clone(), 30, 'a'),
+            &tool.workspace_id,
             SavedFunctionSave::new(
                 SavedFunctionPath::parse("weather.forecast").expect("path"),
                 SavedFunctionDescription::parse("Forecast one city").expect("description"),
@@ -56,8 +56,8 @@ async fn run_located_program() -> (TestModules, OperationFixture, crate::RunId) 
     let accepted = fixture
         .runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             submission(
                 "const cities: string[] = [\"Paris\", \"Rome\"];\nfor (const city of cities) {\n    await coral.emit({ city });\n}\nawait coral.functions.weather.forecast(\"Oslo\");\nawait Promise.all(cities.map((city) => coral.providers.weather.getForecast({ city })));",
             ),
@@ -66,8 +66,8 @@ async fn run_located_program() -> (TestModules, OperationFixture, crate::RunId) 
         .expect("accepted");
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
@@ -80,7 +80,7 @@ async fn run_located_program() -> (TestModules, OperationFixture, crate::RunId) 
         terminal.terminal_outcome()
     );
     let run_id = accepted.run_id().clone();
-    (fixture, operation, run_id)
+    (fixture, tool, run_id)
 }
 
 /// Each record's kind and location, in the order every read path returns it.
@@ -93,14 +93,14 @@ struct ReadLocations {
 
 async fn read_locations(
     fixture: &TestModules,
-    operation: &OperationFixture,
+    tool: &ToolFixture,
     run_id: &crate::RunId,
 ) -> ReadLocations {
     let detail = fixture
         .runs
         .inspect_run(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run_id,
             &crate::RunInspection {
                 event_limit: 100,
@@ -131,8 +131,8 @@ async fn read_locations(
     let entries = fixture
         .runs
         .activity_entries(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run_id,
             &crate::RunEntryWindow::Start,
             100,
@@ -147,7 +147,7 @@ async fn read_locations(
                 // Exact Invocation evidence agrees with its row.
                 let exact = fixture
                     .runs
-                    .inspect_invocation(&operation.principal, &operation.workspace_id, &summary.id)
+                    .inspect_invocation(&tool.principal, &tool.workspace_id, &summary.id)
                     .await
                     .expect("inspect Invocation");
                 assert_eq!(exact.summary.source_location, summary.source_location);
@@ -176,15 +176,15 @@ async fn read_locations(
 
 #[tokio::test]
 async fn each_record_keeps_the_authored_location_of_its_own_call() {
-    let (fixture, operation, run_id) = run_located_program().await;
+    let (fixture, tool, run_id) = run_located_program().await;
     // Replacing and then deleting the current Saved Function cannot move a
     // recorded location off the Run's snapshot.
     let functions = saved_functions(&fixture);
     let path = SavedFunctionPath::parse("weather.forecast").expect("path");
     functions
         .save(
-            &saved_function_change(operation.principal.clone(), 40, 'b'),
-            &operation.workspace_id,
+            &saved_function_change(tool.principal.clone(), 40, 'b'),
+            &tool.workspace_id,
             SavedFunctionSave::new(
                 path.clone(),
                 SavedFunctionDescription::parse("Replaced").expect("description"),
@@ -196,13 +196,13 @@ async fn each_record_keeps_the_authored_location_of_its_own_call() {
         .expect("replace Saved Function");
     functions
         .delete(
-            &saved_function_change(operation.principal.clone(), 41, 'c'),
-            &operation.workspace_id,
+            &saved_function_change(tool.principal.clone(), 41, 'c'),
+            &tool.workspace_id,
             &path,
         )
         .await
         .expect("delete Saved Function");
-    let read = read_locations(&fixture, &operation, &run_id).await;
+    let read = read_locations(&fixture, &tool, &run_id).await;
     assert_eq!(read.snapshot_source, ACCEPTED_SAVED_FUNCTION);
     let in_snapshot = |line, column| {
         Some(SourceLocation {
@@ -221,7 +221,7 @@ async fn each_record_keeps_the_authored_location_of_its_own_call() {
             ("logged", in_snapshot(2, 13)),
         ]
     );
-    // Activity rows carry the same locations, Operation calls in admission order.
+    // Activity rows carry the same locations, Tool calls in admission order.
     assert_eq!(
         read.rows,
         vec![
@@ -237,10 +237,10 @@ async fn each_record_keeps_the_authored_location_of_its_own_call() {
 
 #[tokio::test]
 async fn records_without_a_recorded_location_read_back_as_unavailable() {
-    let (fixture, operation, run_id) = run_located_program().await;
-    let recorded = read_locations(&fixture, &operation, &run_id).await;
+    let (fixture, tool, run_id) = run_located_program().await;
+    let recorded = read_locations(&fixture, &tool, &run_id).await;
     // Records written before Coral captured locations keep NULL columns.
-    for table in ["operation_invocations", "program_run_events"] {
+    for table in ["tool_invocations", "program_run_events"] {
         fixture
             .inject_fault(&format!(
                 "UPDATE {table} SET source_document = NULL, source_saved_function_id = NULL, \
@@ -248,7 +248,7 @@ async fn records_without_a_recorded_location_read_back_as_unavailable() {
             ))
             .await;
     }
-    let read = read_locations(&fixture, &operation, &run_id).await;
+    let read = read_locations(&fixture, &tool, &run_id).await;
     let unavailable = |records: &[(&'static str, Option<SourceLocation>)]| {
         records
             .iter()
@@ -261,11 +261,11 @@ async fn records_without_a_recorded_location_read_back_as_unavailable() {
 
 #[tokio::test]
 async fn storage_rejects_an_incomplete_or_misplaced_location() {
-    let (fixture, operation, run_id) = run_located_program().await;
-    let before = read_locations(&fixture, &operation, &run_id).await;
+    let (fixture, tool, run_id) = run_located_program().await;
+    let before = read_locations(&fixture, &tool, &run_id).await;
     for statement in [
         // A document without a position.
-        format!("UPDATE operation_invocations SET source_line = NULL WHERE run_id = '{run_id}'"),
+        format!("UPDATE tool_invocations SET source_line = NULL WHERE run_id = '{run_id}'"),
         // A position without a document.
         format!(
             "UPDATE program_run_events SET source_document = NULL \
@@ -273,7 +273,7 @@ async fn storage_rejects_an_incomplete_or_misplaced_location() {
         ),
         // A Saved Function location without its snapshot identity.
         format!(
-            "UPDATE operation_invocations SET source_saved_function_id = NULL \
+            "UPDATE tool_invocations SET source_saved_function_id = NULL \
              WHERE run_id = '{run_id}' AND source_document = 'saved_function'"
         ),
         // Lifecycle Events never carry a location.
@@ -293,7 +293,7 @@ async fn storage_rejects_an_incomplete_or_misplaced_location() {
             "{statement}: {error}"
         );
     }
-    let after = read_locations(&fixture, &operation, &run_id).await;
+    let after = read_locations(&fixture, &tool, &run_id).await;
     assert_eq!(after.events, before.events);
     assert_eq!(after.rows, before.rows);
 }

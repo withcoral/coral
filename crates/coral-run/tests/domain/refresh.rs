@@ -3,14 +3,14 @@ use super::*;
 use axum::http::StatusCode;
 use coral_provider::account::OAuthClient;
 
-async fn assert_waiting(runs: &RunModule, operation: &OperationFixture, run: &crate::RunId) {
+async fn assert_waiting(runs: &RunModule, tool: &ToolFixture, run: &crate::RunId) {
     // Observe after the waiting interval, rather than canceling an observation
     // mid-transaction. This test controls token contention, not database cancellation.
     tokio::time::sleep(Duration::from_millis(200)).await;
     let update = runs
         .observe(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             run,
             &immediate(None, 100),
         )
@@ -41,19 +41,14 @@ async fn a_waiting_invocations_cancellation_or_deadline_does_not_cancel_the_refr
             .mount(&server)
             .await;
         let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-        let operation = fixture
-            .user_operation_at("user:stopped-refresh", "Stopped waiter", &server.uri())
+        let tool = fixture
+            .user_tool_at("user:stopped-refresh", "Stopped waiter", &server.uri())
             .await;
-        let (_directory, accounts) =
-            oauth_account(&fixture, &operation, &server, &endpoint.url).await;
+        let (_directory, accounts) = oauth_account(&fixture, &tool, &server, &endpoint.url).await;
         let runs = fixture.live_runs(Some(accounts));
         let source = "return await coral.providers.weather.getForecast({});";
         let first = runs
-            .start(
-                &operation.principal,
-                &operation.workspace_id,
-                submission(source),
-            )
+            .start(&tool.principal, &tool.workspace_id, submission(source))
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
@@ -61,8 +56,8 @@ async fn a_waiting_invocations_cancellation_or_deadline_does_not_cancel_the_refr
             .unwrap();
         let second = runs
             .start(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 RunSubmission::new(
                     ProgramSource::parse(source).unwrap(),
                     RunTimeout::from_millis(if deadline { 1_000 } else { 60_000 }).unwrap(),
@@ -70,11 +65,11 @@ async fn a_waiting_invocations_cancellation_or_deadline_does_not_cancel_the_refr
             )
             .await
             .unwrap();
-        assert_waiting(&runs, &operation, second.run_id()).await;
+        assert_waiting(&runs, &tool, second.run_id()).await;
         if !deadline {
             runs.cancel(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 second.run_id(),
                 &immediate(None, 100),
             )
@@ -87,8 +82,8 @@ async fn a_waiting_invocations_cancellation_or_deadline_does_not_cancel_the_refr
             loop {
                 let update = runs
                     .observe(
-                        &operation.principal,
-                        &operation.workspace_id,
+                        &tool.principal,
+                        &tool.workspace_id,
                         second.run_id(),
                         &immediate(None, 100),
                     )
@@ -112,13 +107,8 @@ async fn a_waiting_invocations_cancellation_or_deadline_does_not_cancel_the_refr
         );
         assert!(server.received_requests().await.unwrap().is_empty());
         endpoint.release.notify_one();
-        let terminal = wait_for_terminal(
-            &runs,
-            &operation.principal,
-            &operation.workspace_id,
-            first.run_id(),
-        )
-        .await;
+        let terminal =
+            wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, first.run_id()).await;
         assert_eq!(terminal.state(), RunState::Succeeded, "{terminal:?}");
         assert_eq!(endpoint.exchanges.load(Ordering::SeqCst), 1);
     }
@@ -134,17 +124,16 @@ async fn reconnect_disconnect_and_setting_changes_fence_invocations_waiting_on_a
         let endpoint = TokenEndpoint::new(StatusCode::OK).await;
         let server = MockServer::start().await;
         let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-        let operation = fixture
-            .user_operation_at("user:fenced-refresh", "Fenced refresh", &server.uri())
+        let tool = fixture
+            .user_tool_at("user:fenced-refresh", "Fenced refresh", &server.uri())
             .await;
-        let (_directory, accounts) =
-            oauth_account(&fixture, &operation, &server, &endpoint.url).await;
-        let context = change(operation.user.clone(), 40, '4');
+        let (_directory, accounts) = oauth_account(&fixture, &tool, &server, &endpoint.url).await;
+        let context = change(tool.user.clone(), 40, '4');
         let account = accounts
             .get_account(
                 &context,
-                &operation.workspace_id,
-                &operation.provider_id,
+                &tool.workspace_id,
+                &tool.provider_id,
                 &coral_provider::account::AccountScope::User,
             )
             .await
@@ -154,31 +143,23 @@ async fn reconnect_disconnect_and_setting_changes_fence_invocations_waiting_on_a
         let runs = fixture.live_runs(None).with_accounts(accounts.clone());
         let source = "try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }";
         let first = runs
-            .start(
-                &operation.principal,
-                &operation.workspace_id,
-                submission(source),
-            )
+            .start(&tool.principal, &tool.workspace_id, submission(source))
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
             .await
             .unwrap();
         let second = runs
-            .start(
-                &operation.principal,
-                &operation.workspace_id,
-                submission(source),
-            )
+            .start(&tool.principal, &tool.workspace_id, submission(source))
             .await
             .unwrap();
-        assert_waiting(&runs, &operation, second.run_id()).await;
+        assert_waiting(&runs, &tool, second.run_id()).await;
         if mutation == "reconnect" {
             let authorization = accounts
                 .start_reconnect(
                     &context,
-                    &operation.workspace_id,
-                    &operation.provider_id,
+                    &tool.workspace_id,
+                    &tool.provider_id,
                     account.id,
                     ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                     Some(
@@ -191,21 +172,21 @@ async fn reconnect_disconnect_and_setting_changes_fence_invocations_waiting_on_a
                 )
                 .await
                 .unwrap();
-            complete_oauth(&accounts, &context, &operation.workspace_id, &authorization).await;
+            complete_oauth(&accounts, &context, &tool.workspace_id, &authorization).await;
         } else if mutation == "setting" {
             let setup = fixture
                 .providers
                 .prepare_setup(
                     &context,
-                    &operation.workspace_id,
+                    &tool.workspace_id,
                     coral_provider::ProviderSetupSource::Current,
-                    Some(&operation.provider_id),
+                    Some(&tool.provider_id),
                 )
                 .await
                 .unwrap();
             let review = fixture
                 .providers
-                .review_setup_configuration(&operation.user, &operation.workspace_id, setup.id())
+                .review_setup_configuration(&tool.user, &tool.workspace_id, setup.id())
                 .await
                 .unwrap();
             let mut values = review.confirmed.unwrap();
@@ -214,7 +195,7 @@ async fn reconnect_disconnect_and_setting_changes_fence_invocations_waiting_on_a
                 .providers
                 .confirm_setup_configuration(
                     &context,
-                    &operation.workspace_id,
+                    &tool.workspace_id,
                     setup.id(),
                     review.revision,
                     values,
@@ -228,8 +209,8 @@ async fn reconnect_disconnect_and_setting_changes_fence_invocations_waiting_on_a
                     &context,
                     ProviderRegenerationRequest::new(
                         ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
-                        operation.workspace_id.clone(),
-                        operation.provider_id.clone(),
+                        tool.workspace_id.clone(),
+                        tool.provider_id.clone(),
                         setup.id().clone(),
                         review.revision,
                     )
@@ -240,44 +221,29 @@ async fn reconnect_disconnect_and_setting_changes_fence_invocations_waiting_on_a
                 .unwrap();
         } else {
             accounts
-                .disconnect(
-                    &context,
-                    &operation.workspace_id,
-                    &operation.provider_id,
-                    account.id,
-                )
+                .disconnect(&context, &tool.workspace_id, &tool.provider_id, account.id)
                 .await
                 .unwrap();
         }
         let winner = accounts
             .get_account(
                 &context,
-                &operation.workspace_id,
-                &operation.provider_id,
+                &tool.workspace_id,
+                &tool.provider_id,
                 &coral_provider::account::AccountScope::User,
             )
             .await
             .unwrap();
         // The waiter need not wait for the upstream exchange to discover lost authorization.
-        let terminal = wait_for_terminal(
-            &runs,
-            &operation.principal,
-            &operation.workspace_id,
-            second.run_id(),
-        )
-        .await;
+        let terminal =
+            wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, second.run_id()).await;
         assert!(
             matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded { final_value: FinalValue::Present(value) }) if value.as_json() == &serde_json::json!("account_required")),
             "{terminal:?}"
         );
         endpoint.release.notify_one();
-        let terminal = wait_for_terminal(
-            &runs,
-            &operation.principal,
-            &operation.workspace_id,
-            first.run_id(),
-        )
-        .await;
+        let terminal =
+            wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, first.run_id()).await;
         assert!(
             matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded { final_value: FinalValue::Present(value) }) if value.as_json() == &serde_json::json!("account_required")),
             "{terminal:?}"
@@ -288,8 +254,8 @@ async fn reconnect_disconnect_and_setting_changes_fence_invocations_waiting_on_a
             accounts
                 .get_account(
                     &context,
-                    &operation.workspace_id,
-                    &operation.provider_id,
+                    &tool.workspace_id,
+                    &tool.provider_id,
                     &coral_provider::account::AccountScope::User
                 )
                 .await
@@ -304,48 +270,44 @@ async fn offboarding_and_rejoin_fence_a_late_refresh_without_overwriting_the_new
     let endpoint = TokenEndpoint::new(StatusCode::OK).await;
     let server = MockServer::start().await;
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let operation = fixture
-        .user_operation_at(
+    let tool = fixture
+        .user_tool_at(
             "user:offboarded-refresh",
             "Offboarding refresh",
             &server.uri(),
         )
         .await;
-    let (_directory, accounts) = oauth_account(&fixture, &operation, &server, &endpoint.url).await;
+    let (_directory, accounts) = oauth_account(&fixture, &tool, &server, &endpoint.url).await;
     let runs = fixture.live_runs(None).with_accounts(accounts.clone());
-    let run = runs.start(&operation.principal, &operation.workspace_id,
+    let run = runs.start(&tool.principal, &tool.workspace_id,
         submission("try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }")).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
         .await
         .unwrap();
-    let administrator = fixture.workspace_admin(&operation).await;
+    let administrator = fixture.workspace_admin(&tool).await;
     coral_administration::AccessLifecycleModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
     )
-    .remove_workspace_member(
-        &administrator,
-        &operation.workspace_id,
-        operation.user.user_id(),
-    )
+    .remove_workspace_member(&administrator, &tool.workspace_id, tool.user.user_id())
     .await
     .unwrap();
     fixture
         .workspaces
         .set_membership(
             &administrator,
-            &operation.workspace_id,
-            &operation.user,
+            &tool.workspace_id,
+            &tool.user,
             WorkspaceRole::Member,
         )
         .await
         .unwrap();
-    let context = change(operation.user.clone(), 40, '4');
+    let context = change(tool.user.clone(), 40, '4');
     let authorization = accounts
         .start_user_authorization(
             &context,
-            &operation.workspace_id,
-            &operation.provider_id,
+            &tool.workspace_id,
+            &tool.provider_id,
             ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
             Some(
                 OAuthClient::new(
@@ -357,24 +319,19 @@ async fn offboarding_and_rejoin_fence_a_late_refresh_without_overwriting_the_new
         )
         .await
         .unwrap();
-    complete_oauth(&accounts, &context, &operation.workspace_id, &authorization).await;
+    complete_oauth(&accounts, &context, &tool.workspace_id, &authorization).await;
     let fresh = accounts
         .get_account(
             &context,
-            &operation.workspace_id,
-            &operation.provider_id,
+            &tool.workspace_id,
+            &tool.provider_id,
             &coral_provider::account::AccountScope::User,
         )
         .await
         .unwrap();
     endpoint.release.notify_one();
-    let terminal = wait_for_terminal(
-        &runs,
-        &operation.principal,
-        &operation.workspace_id,
-        run.run_id(),
-    )
-    .await;
+    let terminal =
+        wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, run.run_id()).await;
     assert!(
         matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded { final_value: FinalValue::Present(value) })
         if value.as_json() == &serde_json::json!("account_required")),
@@ -386,8 +343,8 @@ async fn offboarding_and_rejoin_fence_a_late_refresh_without_overwriting_the_new
         accounts
             .get_account(
                 &context,
-                &operation.workspace_id,
-                &operation.provider_id,
+                &tool.workspace_id,
+                &tool.provider_id,
                 &coral_provider::account::AccountScope::User
             )
             .await
@@ -405,17 +362,16 @@ async fn failed_refresh_settles_waiting_invocations_without_retrying_the_exchang
         let endpoint = TokenEndpoint::new(status).await;
         let server = MockServer::start().await;
         let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-        let operation = fixture
-            .user_operation_at("user:failed-refresh", "Failed refresh", &server.uri())
+        let tool = fixture
+            .user_tool_at("user:failed-refresh", "Failed refresh", &server.uri())
             .await;
-        let (_directory, accounts) =
-            oauth_account(&fixture, &operation, &server, &endpoint.url).await;
-        let context = change(operation.user.clone(), 40, '4');
+        let (_directory, accounts) = oauth_account(&fixture, &tool, &server, &endpoint.url).await;
+        let context = change(tool.user.clone(), 40, '4');
         let before = accounts
             .get_account(
                 &context,
-                &operation.workspace_id,
-                &operation.provider_id,
+                &tool.workspace_id,
+                &tool.provider_id,
                 &coral_provider::account::AccountScope::User,
             )
             .await
@@ -425,34 +381,21 @@ async fn failed_refresh_settles_waiting_invocations_without_retrying_the_exchang
         let runs = fixture.live_runs(None).with_accounts(accounts.clone());
         let source = "try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }";
         let first = runs
-            .start(
-                &operation.principal,
-                &operation.workspace_id,
-                submission(source),
-            )
+            .start(&tool.principal, &tool.workspace_id, submission(source))
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
             .await
             .unwrap();
         let second = runs
-            .start(
-                &operation.principal,
-                &operation.workspace_id,
-                submission(source),
-            )
+            .start(&tool.principal, &tool.workspace_id, submission(source))
             .await
             .unwrap();
-        assert_waiting(&runs, &operation, second.run_id()).await;
+        assert_waiting(&runs, &tool, second.run_id()).await;
         endpoint.release.notify_one();
         for run in [first, second] {
-            let terminal = wait_for_terminal(
-                &runs,
-                &operation.principal,
-                &operation.workspace_id,
-                run.run_id(),
-            )
-            .await;
+            let terminal =
+                wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, run.run_id()).await;
             assert!(
                 matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded { final_value: FinalValue::Present(value) }) if value.as_json() == &serde_json::json!(code)),
                 "{terminal:?}"
@@ -464,8 +407,8 @@ async fn failed_refresh_settles_waiting_invocations_without_retrying_the_exchang
         let after = accounts
             .get_account(
                 &context,
-                &operation.workspace_id,
-                &operation.provider_id,
+                &tool.workspace_id,
+                &tool.provider_id,
                 &coral_provider::account::AccountScope::User,
             )
             .await
@@ -509,50 +452,42 @@ async fn concurrent_invocations_wait_for_one_refresh_across_catalog_update_and_e
         .mount(&server)
         .await;
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let operation = fixture
-        .user_operation_at(
+    let tool = fixture
+        .user_tool_at(
             "user:concurrent-refresh",
             "Concurrent refresh",
             &server.uri(),
         )
         .await;
-    let (_directory, accounts) = oauth_account(&fixture, &operation, &server, &endpoint.url).await;
+    let (_directory, accounts) = oauth_account(&fixture, &tool, &server, &endpoint.url).await;
     let runs = fixture.live_runs(Some(accounts));
     let source = "coral.emit('once'); return await coral.providers.weather.getForecast({});";
     let first = runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission(source),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission(source))
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
         .await
         .unwrap();
     let second = runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission(source),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission(source))
         .await
         .unwrap();
-    assert_waiting(&runs, &operation, second.run_id()).await;
-    let context = change(operation.user.clone(), 40, '4');
+    assert_waiting(&runs, &tool, second.run_id()).await;
+    let context = change(tool.user.clone(), 40, '4');
     let setup = fixture
         .providers
         .prepare_setup(
             &context,
-            &operation.workspace_id,
+            &tool.workspace_id,
             coral_provider::ProviderSetupSource::Current,
-            Some(&operation.provider_id),
+            Some(&tool.provider_id),
         )
         .await
         .unwrap();
     let review = fixture
         .providers
-        .review_setup_configuration(&operation.user, &operation.workspace_id, setup.id())
+        .review_setup_configuration(&tool.user, &tool.workspace_id, setup.id())
         .await
         .unwrap();
     let mut values = review.confirmed.unwrap();
@@ -561,7 +496,7 @@ async fn concurrent_invocations_wait_for_one_refresh_across_catalog_update_and_e
         .providers
         .confirm_setup_configuration(
             &context,
-            &operation.workspace_id,
+            &tool.workspace_id,
             setup.id(),
             review.revision,
             values,
@@ -575,8 +510,8 @@ async fn concurrent_invocations_wait_for_one_refresh_across_catalog_update_and_e
             &context,
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
-                operation.workspace_id.clone(),
-                operation.provider_id.clone(),
+                tool.workspace_id.clone(),
+                tool.provider_id.clone(),
                 setup.id().clone(),
                 review.revision,
             ),
@@ -587,13 +522,8 @@ async fn concurrent_invocations_wait_for_one_refresh_across_catalog_update_and_e
     assert!(server.received_requests().await.unwrap().is_empty());
     endpoint.release.notify_one();
     for run in [first, second] {
-        let terminal = wait_for_terminal(
-            &runs,
-            &operation.principal,
-            &operation.workspace_id,
-            run.run_id(),
-        )
-        .await;
+        let terminal =
+            wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, run.run_id()).await;
         assert_eq!(terminal.state(), RunState::Succeeded, "{terminal:?}");
         assert!(
             matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded { final_value: FinalValue::Present(value) })
@@ -602,8 +532,8 @@ async fn concurrent_invocations_wait_for_one_refresh_across_catalog_update_and_e
         let mut counts = [0; 4];
         for event in retained_events(
             &runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             terminal.run_id(),
         )
         .await

@@ -2,7 +2,7 @@
 //! a Program: who can publish it, for a new Provider or an update, what the
 //! Program learns about the Provider it published, and how Coral ends a Setup
 //! that nobody will finish.
-use coral_catalog::OperationAvailability;
+use coral_catalog::ToolAvailability;
 use coral_db::Transaction;
 use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceAction, WorkspaceId};
 
@@ -17,7 +17,7 @@ pub enum SetupPublishability {
     /// Coral can publish it now, with no person.
     Coral,
     /// A person must finish it: the source needs a credential, which only a
-    /// person gives, or its Operations are known only after a sign-in.
+    /// person gives, or its Tools are known only after a sign-in.
     Person,
     /// Nobody can publish it under this route.
     Rejected(PublishabilityRejection),
@@ -101,10 +101,10 @@ impl ProviderModule {
     /// A route the Program asks for must suit the source, as for a new
     /// Provider. Coral publishes an update alone only when its Setup is ready
     /// and the update keeps the route, the credential contract, and every
-    /// Operation Key of the active Generation, with each Operation that runs
+    /// Tool Key of the active Generation, with each Tool that runs
     /// now still able to run. A new route or contract needs a person to
     /// confirm the incompatible configuration, and nobody can review dropped
-    /// or broken Operations before the source is read, so each of those needs
+    /// or broken Tools before the source is read, so each of those needs
     /// a person.
     ///
     /// # Errors
@@ -131,7 +131,7 @@ impl ProviderModule {
         let active = crate::repository::provider_in_transaction(&mut tx, owner, target)
             .await?
             .ok_or(Error::ProviderNotFound)?;
-        let kept = coral_catalog::operations_in_transaction(&mut tx, &active.generation_id).await?;
+        let kept = coral_catalog::tools_in_transaction(&mut tx, &active.generation_id).await?;
         tx.rollback().await?;
         if !loaded.setup.state().is_open() {
             return Err(Error::ProviderSetupNotApplicable);
@@ -150,17 +150,17 @@ impl ProviderModule {
             return Ok(SetupPublishability::Rejected(rejection));
         }
         let previewed = review
-            .operations
+            .tools
             .iter()
-            .map(|operation| operation.key.as_str())
+            .map(|tool| tool.key.as_str())
             .collect::<std::collections::HashSet<_>>();
-        // An Operation that cannot run now breaks no Program when it still
+        // A Tool that cannot run now breaks no Program when it still
         // cannot.
-        let keeps_operations = kept.iter().all(|operation| {
-            let key = operation.key().as_str();
+        let keeps_tools = kept.iter().all(|tool| {
+            let key = tool.key().as_str();
             previewed.contains(key)
-                && (operation.availability() == OperationAvailability::Unavailable
-                    || !review.unavailable_operations.contains_key(key))
+                && (tool.availability() == ToolAvailability::Unavailable
+                    || !review.unavailable_tools.contains_key(key))
         });
         let keeps_route =
             route.is_none_or(|route| route == active.provider.access().credential_route());
@@ -168,7 +168,7 @@ impl ProviderModule {
             if loaded.setup.state() == ProviderSetupState::Ready
                 && keeps_route
                 && review.interrupts_access == Some(false)
-                && keeps_operations
+                && keeps_tools
             {
                 SetupPublishability::Coral
             } else {
@@ -185,10 +185,10 @@ pub struct PublishedProvider {
     pub provider: Provider,
     /// How its credentials are sent upstream.
     pub authentication: coral_catalog::AuthenticationKind,
-    /// The Operations the Principal reaches whose Operation Availability is
+    /// The Tools the Principal reaches whose Tool Availability is
     /// available, while the Provider is active; none while it is disabled.
     /// Policy can still disable some.
-    pub operations: Vec<coral_catalog::CatalogSearchTarget>,
+    pub tools: Vec<coral_catalog::CatalogSearchTarget>,
     /// Whether this Principal must still connect an Account before calling it.
     pub account_required: bool,
 }
@@ -210,7 +210,7 @@ pub async fn published_provider_in_transaction(
         crate::repository::provider_in_transaction(&mut *transaction, workspace_id, provider)
             .await?
             .ok_or(Error::ProviderNotFound)?;
-    // A Publication creates an Owner-added Provider, whose Operations every
+    // A Publication creates an Owner-added Provider, whose Tools every
     // Principal reaches whatever its role.
     published_active_provider_in_transaction(transaction, active, principal, None).await
 }
@@ -226,14 +226,14 @@ pub(crate) async fn published_active_provider_in_transaction(
     let contract =
         coral_catalog::credential_contract_in_transaction(transaction, &active.generation_id)
             .await?;
-    let operations = match active.provider.state() {
+    let tools = match active.provider.state() {
         crate::ProviderState::Active => coral_catalog::available_search_targets_in_transaction(
             transaction,
             &active.generation_id,
         )
         .await?
         .into_iter()
-        .filter(|operation| crate::reaches(active.provider.call_root(), operation.key(), role))
+        .filter(|tool| crate::reaches(active.provider.call_root(), tool.key(), role))
         .collect(),
         crate::ProviderState::Disabled => Vec::new(),
     };
@@ -248,7 +248,7 @@ pub(crate) async fn published_active_provider_in_transaction(
     Ok(PublishedProvider {
         provider: active.provider,
         authentication,
-        operations,
+        tools,
         account_required,
     })
 }

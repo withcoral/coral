@@ -11,7 +11,7 @@ import { collectDataResponses } from '../../../../support/data-responses.ts'
 import { oauthMcpServer } from '../../../../support/provider-fixtures.ts'
 import {
   addedProviders,
-  acceptOperations,
+  acceptTools,
   checkRadio,
   chooseAccount,
   confirmConfiguration,
@@ -23,14 +23,14 @@ import {
   programRunner,
   discardSettingsChange,
   saveConfirmedSettingsChange,
-  signInToReadOperations,
+  signInToReadTools,
   waitForPublication,
 } from '../../../../support/providers.ts'
 import { withOwner } from '../../../../support/topology.ts'
 
 // Every change returns to the provider's settings, where it opens.
 const save = async (page: Page) => {
-  expect(new URL(page.url()).searchParams.has('operationsAccepted')).toBe(false)
+  expect(new URL(page.url()).searchParams.has('toolsAccepted')).toBe(false)
   await page.getByRole('button', { name: 'Save', exact: true }).click()
   await page.waitForURL((url) => url.pathname.endsWith('/settings'))
 }
@@ -56,9 +56,9 @@ export async function sharedAccountAtomicity(context: TestContext) {
       await page.getByRole('button', { name: 'Connect', exact: true }).click()
       await page.getByLabel('Namespace', { exact: true }).fill('atomicupdate')
       await confirmConfiguration(page)
-      await signInToReadOperations(page)
+      await signInToReadTools(page)
       await approveConsent()
-      await acceptOperations(page)
+      await acceptTools(page)
       await chooseAccount(page, 'shared')
       await page.getByRole('button', { name: 'Add provider', exact: true }).click()
       await waitForPublication(page)
@@ -72,8 +72,8 @@ export async function sharedAccountAtomicity(context: TestContext) {
       expect(
         await page.getByRole('textbox', { name: /^(OpenAPI URL|MCP server URL)$/ }).count(),
       ).toBe(0)
-      await page.getByRole('button', { name: 'Read operations', exact: true }).click()
-      await page.getByRole('heading', { name: 'Access to read operations', exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Read tools', exact: true }).click()
+      await page.getByRole('heading', { name: 'Access to read tools', exact: true }).waitFor()
       expect(await page.getByRole('textbox', { name: 'Display name', exact: true }).count()).toBe(0)
       await page
         .getByRole('button', { name: 'Use the existing shared account', exact: true })
@@ -87,7 +87,7 @@ export async function sharedAccountAtomicity(context: TestContext) {
       active.knobs.issuerPath = '/new-issuer'
       await openProviderSettings(page)
       await page.getByRole('link', { name: 'Check for updates', exact: true }).click()
-      await page.getByRole('button', { name: 'Read operations', exact: true }).click()
+      await page.getByRole('button', { name: 'Read tools', exact: true }).click()
       // The configuration step opens; the page before the read has no fields.
       await page.getByLabel('Display name', { exact: true }).waitFor()
       expect(await page.getByRole('button', { name: /^Sign in/ }).count()).toBe(0)

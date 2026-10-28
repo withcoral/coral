@@ -67,7 +67,7 @@ async fn agent_update(shared: bool, removal_first: bool) {
         .unwrap();
     let database = f.db.database();
     let mut tx = database.begin().await.unwrap();
-    let target = coral_provider::resolve_owner_operation_in_transaction(
+    let target = coral_provider::resolve_owner_tool_in_transaction(
         &mut tx,
         f.workspace.id(),
         "coral.providers.private.value",

@@ -20,7 +20,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       {
         workspace,
         selectedProvider: params.provider ? uuidOr404(params.provider) : null,
-        selectedOperation: params.operation ?? null,
+        selectedTool: params.tool ?? null,
       },
       { headers: privateHeaders },
     )
@@ -32,11 +32,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 export default function ProvidersSelectionRoute({ loaderData, actionData }: Route.ComponentProps) {
   const tree = useOutletContext<ProvidersData>()
   const pending = useNavigation().state !== 'idle'
-  const { selectedProvider, selectedOperation } = loaderData
+  const { selectedProvider, selectedTool } = loaderData
   const provider = tree.providers.find((i) => i.id === selectedProvider)
   if (
     (selectedProvider && !provider) ||
-    (selectedOperation && !provider?.operations.some((o) => o.relativePath === selectedOperation))
+    (selectedTool && !provider?.tools.some((o) => o.relativePath === selectedTool))
   )
     throw new Response('Not found', { status: 404 })
   return (

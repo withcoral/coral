@@ -9,7 +9,7 @@
 )]
 use coral_catalog::{
     AuthenticationConfiguration, CredentialField, CredentialSource, HeaderBinding,
-    MaterializationOutcome, OpenApiDocument, OperationAvailability, materialize,
+    MaterializationOutcome, OpenApiDocument, ToolAvailability, materialize,
 };
 use coral_outbound::DestinationPolicy;
 use std::collections::BTreeMap;
@@ -24,7 +24,7 @@ fn prepared(document: &OpenApiDocument) -> coral_catalog::PreparedProviderCatalo
 }
 
 #[test]
-fn configuration_metadata_does_not_build_the_operation_schema_graph() {
+fn configuration_metadata_does_not_build_the_tool_schema_graph() {
     let document = OpenApiDocument::parse(
         r##"{
         "openapi":"3.0.3", "info":{"title":"Review first","version":"1"},
@@ -39,12 +39,12 @@ fn configuration_metadata_does_not_build_the_operation_schema_graph() {
         .configuration_review()
         .expect("schema validation belongs to catalog preparation, not metadata inspection");
     assert_eq!(review.suggested.display_name, "Review first");
-    assert_eq!(review.servers[0].operations, ["data"]);
+    assert_eq!(review.servers[0].tools, ["data"]);
     let configured = document.configure(review.suggested).unwrap();
     let catalog = prepared(&configured);
     assert_eq!(
-        catalog.operations()[0].availability(),
-        OperationAvailability::Unavailable,
+        catalog.tools()[0].availability(),
+        ToolAvailability::Unavailable,
         "metadata inspection must not weaken catalog validation"
     );
 }
@@ -102,10 +102,7 @@ async fn fingerprints_retain_confirmed_selection_provenance_and_persisted_config
     let custom = declared.configure(custom_configuration).unwrap();
     assert_eq!(declared.as_str(), document.as_str());
     assert_eq!(custom.as_str(), document.as_str());
-    assert_eq!(
-        prepared(&declared).operations(),
-        prepared(&custom).operations()
-    );
+    assert_eq!(prepared(&declared).tools(), prepared(&custom).tools());
     assert_ne!(
         prepared(&declared).fingerprint(),
         prepared(&custom).fingerprint(),
@@ -187,8 +184,7 @@ fn replacement_removes_old_security_parameters_without_removing_ordinary_argumen
     ) else {
         panic!("replacement resolves old security requirements");
     };
-    let coral_catalog::ExecutionBinding::Http(binding) =
-        catalog.operations()[0].execution_binding()
+    let coral_catalog::ExecutionBinding::Http(binding) = catalog.tools()[0].execution_binding()
     else {
         panic!("HTTP binding");
     };
@@ -231,8 +227,8 @@ fn confirmed_bearer_replaces_document_authentication_without_changing_the_source
         catalog.credential_contract().destinations(),
         &["https://api.example.test/"]
     );
-    for operation in catalog.operations() {
-        let coral_catalog::ExecutionBinding::Http(binding) = operation.execution_binding() else {
+    for tool in catalog.tools() {
+        let coral_catalog::ExecutionBinding::Http(binding) = tool.execution_binding() else {
             panic!("HTTP binding");
         };
         assert_eq!(binding.credential_slots().len(), 1);
@@ -277,7 +273,7 @@ fn authentication_configuration_cannot_contain_derived_or_nested_contracts() {
 }
 
 #[test]
-fn review_and_materialization_share_referenced_declarations_and_operation_keys() {
+fn review_and_materialization_share_referenced_declarations_and_tool_keys() {
     let document = OpenApiDocument::parse(
         &serde_json::json!({
             "openapi": "3.1.0", "info": { "title": "References", "version": "1" },
@@ -301,18 +297,18 @@ fn review_and_materialization_share_referenced_declarations_and_operation_keys()
         .iter()
         .find(|group| group.declaration == "#/components/pathItems/Shared/servers")
         .unwrap();
-    assert_eq!(local.operations.len(), 2);
+    assert_eq!(local.tools.len(), 2);
     let catalog = prepared(&document.configure(review.suggested.clone()).unwrap());
     assert_eq!(
-        local.operations,
+        local.tools,
         catalog
-            .operations()
+            .tools()
             .iter()
-            .map(|operation| operation.key().as_str())
+            .map(|tool| tool.key().as_str())
             .collect::<Vec<_>>()
     );
-    for operation in catalog.operations() {
-        let coral_catalog::ExecutionBinding::Http(binding) = operation.execution_binding() else {
+    for tool in catalog.tools() {
+        let coral_catalog::ExecutionBinding::Http(binding) = tool.execution_binding() else {
             panic!("HTTP")
         };
         assert_eq!(binding.server_url(), Some("https://local.test/v1"));
@@ -320,7 +316,7 @@ fn review_and_materialization_share_referenced_declarations_and_operation_keys()
 }
 
 #[test]
-fn declaration_scoped_variables_preserve_root_path_and_operation_destinations() {
+fn declaration_scoped_variables_preserve_root_path_and_tool_destinations() {
     use coral_catalog::ServerSelection;
     let document = OpenApiDocument::parse(r#"{
       "openapi":"3.0.3", "info":{"title":"Datadog","version":"1"}, "security":[],
@@ -342,13 +338,13 @@ fn declaration_scoped_variables_preserve_root_path_and_operation_destinations() 
         .unwrap();
     assert_eq!(
         shared
-            .operations
+            .tools
             .iter()
             .map(String::as_str)
             .collect::<std::collections::BTreeSet<_>>(),
         std::collections::BTreeSet::from(["logs", "remove"])
     );
-    assert_eq!(review.servers[0].operations, ["main"]);
+    assert_eq!(review.servers[0].tools, ["main"]);
     let mut configuration = review.suggested;
     let ServerSelection::Declared { variables, .. } =
         configuration.servers.get_mut("#/servers").unwrap()
@@ -363,14 +359,13 @@ fn declaration_scoped_variables_preserve_root_path_and_operation_destinations() 
         panic!("configured catalog");
     };
     let destinations = catalog
-        .operations()
+        .tools()
         .iter()
-        .map(|operation| {
-            let coral_catalog::ExecutionBinding::Http(binding) = operation.execution_binding()
-            else {
+        .map(|tool| {
+            let coral_catalog::ExecutionBinding::Http(binding) = tool.execution_binding() else {
                 panic!("HTTP");
             };
-            (operation.key().as_str(), binding.server_url().unwrap())
+            (tool.key().as_str(), binding.server_url().unwrap())
         })
         .collect::<std::collections::BTreeMap<_, _>>();
     assert_eq!(destinations["main"], "https://api.eu.test/v1");
@@ -406,8 +401,7 @@ fn invalid_enum_preserves_configuration_and_typed_variables_use_declared_default
     variables.insert("port".into(), "9443".into());
     let typed = accepted.configure(changed.clone()).unwrap();
     let catalog = prepared(&typed);
-    let coral_catalog::ExecutionBinding::Http(binding) =
-        catalog.operations()[0].execution_binding()
+    let coral_catalog::ExecutionBinding::Http(binding) = catalog.tools()[0].execution_binding()
     else {
         panic!("HTTP");
     };
@@ -465,7 +459,7 @@ fn multiple_servers_require_explicit_selection_or_custom_destination() {
             selected.servers.insert("#/servers".into(), selection);
             let catalog = prepared(&document.configure(selected).unwrap());
             let coral_catalog::ExecutionBinding::Http(binding) =
-                catalog.operations()[0].execution_binding()
+                catalog.tools()[0].execution_binding()
             else {
                 panic!("HTTP");
             };
@@ -479,7 +473,7 @@ fn multiple_servers_require_explicit_selection_or_custom_destination() {
 
 #[test]
 fn unresolved_local_servers_do_not_discard_usable_siblings_or_inherit_root_replacement() {
-    use coral_catalog::{OperationAvailability, ServerSelection};
+    use coral_catalog::{ServerSelection, ToolAvailability};
     use serde_json::json;
     for servers in [
         json!([{"url":"https://{site}","variables":{"site":{"enum":["one.test"]}}}]),
@@ -500,17 +494,17 @@ fn unresolved_local_servers_do_not_discard_usable_siblings_or_inherit_root_repla
             },
         );
         let catalog = prepared(&document.configure(configuration).unwrap());
-        assert_eq!(catalog.operations().len(), 2);
+        assert_eq!(catalog.tools().len(), 2);
         assert_eq!(
-            catalog.operations()[0].availability(),
-            OperationAvailability::Available
+            catalog.tools()[0].availability(),
+            ToolAvailability::Available
         );
         assert_eq!(
-            catalog.operations()[1].availability(),
-            OperationAvailability::Unavailable
+            catalog.tools()[1].availability(),
+            ToolAvailability::Unavailable
         );
         assert_eq!(
-            catalog.operations()[1].diagnostic().unwrap().code(),
+            catalog.tools()[1].diagnostic().unwrap().code(),
             "unresolved_server_configuration"
         );
         assert_eq!(
@@ -518,7 +512,7 @@ fn unresolved_local_servers_do_not_discard_usable_siblings_or_inherit_root_repla
             &["https://replacement.test/"]
         );
         assert!(
-            !serde_json::to_string(catalog.operations()[1].diagnostics())
+            !serde_json::to_string(catalog.tools()[1].diagnostics())
                 .unwrap()
                 .contains("secret-canary")
         );
@@ -545,8 +539,7 @@ fn replacing_declared_authentication_removes_old_credential_injection() {
         configuration.authentication = Some(authentication);
         let configured = document.configure(configuration).unwrap();
         let catalog = prepared(&configured);
-        let coral_catalog::ExecutionBinding::Http(binding) =
-            catalog.operations()[0].execution_binding()
+        let coral_catalog::ExecutionBinding::Http(binding) = catalog.tools()[0].execution_binding()
         else {
             panic!("HTTP");
         };
@@ -619,14 +612,13 @@ fn authentication_defaults_distinguish_missing_unused_anonymous_and_ambiguous_me
             catalog.credential_contract().authentication(),
             &one_header_key("x-api-key")
         );
-        let coral_catalog::ExecutionBinding::Http(binding) =
-            catalog.operations()[0].execution_binding()
+        let coral_catalog::ExecutionBinding::Http(binding) = catalog.tools()[0].execution_binding()
         else {
             panic!("HTTP");
         };
         assert!(
             binding.parameters().is_empty(),
-            "host credential slots are not Operation arguments"
+            "host credential slots are not Tool arguments"
         );
     }
 }
@@ -817,7 +809,7 @@ fn oauth_review_does_not_suggest_unbounded_or_secret_bearing_declarations() {
 }
 
 #[test]
-fn mixed_operation_security_never_silently_selects_a_method() {
+fn mixed_tool_security_never_silently_selects_a_method() {
     use serde_json::json;
     for security in [None, Some(json!([])), Some(json!([{"key":[]}]))] {
         let mut source: serde_json::Value =
@@ -837,10 +829,9 @@ fn mixed_operation_security_never_silently_selects_a_method() {
         confirmed.authentication = Some(AuthenticationConfiguration::Bearer);
         assert!(
             prepared(&document.configure(confirmed).unwrap())
-                .operations()
+                .tools()
                 .iter()
-                .all(|operation| operation.availability()
-                    == coral_catalog::OperationAvailability::Available)
+                .all(|tool| tool.availability() == coral_catalog::ToolAvailability::Available)
         );
     }
 }
@@ -932,15 +923,15 @@ fn destination_binding_waits_for_final_authoring_availability() {
     configuration.authentication = Some(AuthenticationConfiguration::Bearer);
     let catalog = prepared(&document.configure(configuration).unwrap());
     assert_eq!(
-        catalog.operations()[1].diagnostic().unwrap().code(),
-        "operation_authoring_description_too_large"
+        catalog.tools()[1].diagnostic().unwrap().code(),
+        "tool_authoring_description_too_large"
     );
     assert_eq!(catalog.credential_contract(), baseline);
 }
 
 #[test]
 fn only_available_credential_destinations_affect_compatibility() {
-    use coral_catalog::{ExecutionBinding, OperationAvailability};
+    use coral_catalog::{ExecutionBinding, ToolAvailability};
     use serde_json::json;
     let catalog = |extra: Option<(&str, bool)>, authentication: AuthenticationConfiguration| {
         let mut source: serde_json::Value =
@@ -972,11 +963,11 @@ fn only_available_credential_destinations_affect_compatibility() {
             "{url}, unavailable={unavailable}"
         );
         assert_eq!(
-            catalog.operations()[0].availability() == OperationAvailability::Unavailable,
+            catalog.tools()[0].availability() == ToolAvailability::Unavailable,
             unavailable
         );
-        for operation in catalog.operations() {
-            let ExecutionBinding::Http(binding) = operation.execution_binding() else {
+        for tool in catalog.tools() {
+            let ExecutionBinding::Http(binding) = tool.execution_binding() else {
                 panic!("HTTP");
             };
             assert_eq!(
@@ -996,7 +987,7 @@ fn only_available_credential_destinations_affect_compatibility() {
 }
 
 #[test]
-fn destination_compatibility_uses_normalized_base_paths_not_operation_count() {
+fn destination_compatibility_uses_normalized_base_paths_not_tool_count() {
     use serde_json::json;
     let contract = |base: &str, extra: bool| {
         let mut source = json!({"openapi":"3.0.3","info":{"title":"Destinations","version":"1"},"servers":[{"url":base}],"paths":{"/data":{"get":{"responses":{"200":{"description":"OK"}}}}}});
@@ -1636,8 +1627,8 @@ fn a_query_credential_is_never_a_program_argument() {
         serde_json::from_str(simple_document().as_str()).expect("fixture JSON");
     source["security"] = serde_json::json!([]);
     for path in source["paths"].as_object_mut().unwrap().values_mut() {
-        for operation in path.as_object_mut().unwrap().values_mut() {
-            operation["parameters"] = serde_json::json!([
+        for tool in path.as_object_mut().unwrap().values_mut() {
+            tool["parameters"] = serde_json::json!([
                 {"name": "token", "in": "query", "schema": {"type": "string"}},
                 {"name": "limit", "in": "query", "schema": {"type": "integer"}}
             ]);
@@ -1648,8 +1639,8 @@ fn a_query_credential_is_never_a_program_argument() {
     configuration.authentication = Some(query(&[("token", from_field("token"))]));
     configuration.credential_fields = presented(&["token"]);
     let catalog = prepared(&document.configure(configuration).unwrap());
-    for operation in catalog.operations() {
-        let coral_catalog::ExecutionBinding::Http(binding) = operation.execution_binding() else {
+    for tool in catalog.tools() {
+        let coral_catalog::ExecutionBinding::Http(binding) = tool.execution_binding() else {
             panic!("HTTP binding");
         };
         let names = binding

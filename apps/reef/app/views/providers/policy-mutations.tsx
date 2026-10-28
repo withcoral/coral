@@ -3,25 +3,25 @@ import type { ReactNode } from 'react'
 import { useFetcher, useFetchers } from 'react-router'
 
 import {
-  decodeSelectedOperations,
+  decodeSelectedTools,
   selectionKey,
-  type SelectedOperation,
+  type SelectedTool,
   type SelectionKey,
 } from './selection'
-import type { OperationOutcome, OperationView, PolicyActionResult } from './types'
+import type { ToolOutcome, ToolView, PolicyActionResult } from './types'
 
 type Request = {
   id: string
   action: string
   data: FormData
   onConfirmed?: (confirmed: SelectionKey[]) => void
-  targets: SelectedOperation[]
+  targets: SelectedTool[]
 }
-const targetsOf = (data: FormData): SelectedOperation[] => decodeSelectedOperations(data) ?? []
+const targetsOf = (data: FormData): SelectedTool[] => decodeSelectedTools(data) ?? []
 
 type Mutations = {
   /** A bulk submission is in flight, so selection must hold still. An inline
-   * row or drawer change locks only its own operation. */
+   * row or drawer change locks only its own tool. */
   bulkPending: boolean
   submit: (
     data: FormData,
@@ -31,25 +31,23 @@ type Mutations = {
   ) => void
   state: (
     provider: string,
-    operation: string,
+    tool: string,
   ) => {
     pending: boolean
-    policy?: OperationView['policy']
-    /** The last request on this operation did not settle it. Cleared by the next. */
-    failure?: OperationFailure
+    policy?: ToolView['policy']
+    /** The last request on this tool did not settle it. Cleared by the next. */
+    failure?: ToolFailure
   }
 }
 
-export type OperationFailure = { status: 'failed' | 'unconfirmed'; reason: string }
+export type ToolFailure = { status: 'failed' | 'unconfirmed'; reason: string }
 const Context = createContext<Mutations | null>(null)
 
 /** Own requests above filtered rows and the conditional bulk toolbar. Only active
  * requests mount a fetcher, rather than allocating one for every catalog row. */
 export function PolicyMutations({ children }: { children: ReactNode }) {
   const [requests, setRequests] = useState<Request[]>([])
-  const [failures, setFailures] = useState<ReadonlyMap<SelectionKey, OperationFailure>>(
-    () => new Map(),
-  )
+  const [failures, setFailures] = useState<ReadonlyMap<SelectionKey, ToolFailure>>(() => new Map())
 
   const fetchers = useFetchers()
   const complete = useCallback((request: Request, result: PolicyActionResult | undefined) => {
@@ -68,7 +66,7 @@ export function PolicyMutations({ children }: { children: ReactNode }) {
     // A new attempt supersedes the outcome of the last.
     setFailures((current) => {
       const next = new Map(current)
-      for (const target of targets) next.delete(selectionKey(target.provider, target.operation))
+      for (const target of targets) next.delete(selectionKey(target.provider, target.tool))
       return next.size === current.size ? current : next
     })
     setRequests((current) => {
@@ -76,20 +74,20 @@ export function PolicyMutations({ children }: { children: ReactNode }) {
       // so the authoritative overlap check is against the live request list.
       const taken = new Set(
         current.flatMap((item) =>
-          item.targets.map((target) => selectionKey(target.provider, target.operation)),
+          item.targets.map((target) => selectionKey(target.provider, target.tool)),
         ),
       )
-      if (targets.some((target) => taken.has(selectionKey(target.provider, target.operation))))
+      if (targets.some((target) => taken.has(selectionKey(target.provider, target.tool))))
         return current
       return [...current, { id, action, data, onConfirmed, targets }]
     })
   }
-  const pending = new Map<string, { pending: boolean; policy?: OperationView['policy'] }>()
+  const pending = new Map<string, { pending: boolean; policy?: ToolView['policy'] }>()
   const fetchersByKey = new Map(fetchers.map((fetcher) => [fetcher.key, fetcher]))
   for (const request of requests) {
-    // A submitted request owns its operations immediately. Waiting for the
+    // A submitted request owns its tools immediately. Waiting for the
     // fetcher to report busy leaves a render where every overlap guard reads
-    // "not pending", so a second change could target the same operation.
+    // "not pending", so a second change could target the same tool.
     const fetcher = fetchersByKey.get(request.id)
     const access = fetcher?.formData?.get('access') ?? request.data.get('access')
     const failed = (fetcher?.data as PolicyActionResult | undefined)?.error
@@ -98,10 +96,10 @@ export function PolicyMutations({ children }: { children: ReactNode }) {
         ? access
         : undefined
     for (const target of request.targets)
-      pending.set(selectionKey(target.provider, target.operation), { pending: true, policy })
+      pending.set(selectionKey(target.provider, target.tool), { pending: true, policy })
   }
-  const state: Mutations['state'] = (provider, operation) => {
-    const key = selectionKey(provider, operation)
+  const state: Mutations['state'] = (provider, tool) => {
+    const key = selectionKey(provider, tool)
     return pending.get(key) ?? { pending: false, failure: failures.get(key) }
   }
   return (
@@ -161,10 +159,10 @@ const UNCONFIRMED = 'The response was lost. Verify the saved policy before you r
  * target. A lost response confirms nothing: it is not evidence that nothing
  * changed, so the targets stay selected and the reader is told to verify.
  */
-export function settle(targets: SelectedOperation[], result: PolicyActionResult | undefined) {
+export function settle(targets: SelectedTool[], result: PolicyActionResult | undefined) {
   const lost = result === undefined || (!result.error && !result.message)
-  const outcomes: OperationOutcome[] =
-    result?.operations ??
+  const outcomes: ToolOutcome[] =
+    result?.tools ??
     targets.map((target) =>
       lost
         ? { ...target, status: 'unconfirmed' }
@@ -173,9 +171,9 @@ export function settle(targets: SelectedOperation[], result: PolicyActionResult 
           : { ...target, status: 'updated' },
     )
   const confirmed: SelectionKey[] = []
-  const failures = new Map<SelectionKey, OperationFailure>()
+  const failures = new Map<SelectionKey, ToolFailure>()
   for (const outcome of outcomes) {
-    const key = selectionKey(outcome.provider, outcome.operation)
+    const key = selectionKey(outcome.provider, outcome.tool)
     if (outcome.status === 'updated') confirmed.push(key)
     else if (outcome.status === 'failed') failures.set(key, outcome)
     else failures.set(key, { status: 'unconfirmed', reason: UNCONFIRMED })

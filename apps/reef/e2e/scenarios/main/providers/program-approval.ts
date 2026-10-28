@@ -4,7 +4,7 @@ import { shownArguments } from '../../../support/arguments.ts'
 import { managementClients } from '../../../support/management.ts'
 import { openApiDocument } from '../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   addedProviders,
   connectSharedAccount,
   observeRun,
@@ -81,9 +81,9 @@ export async function approvedProgramProvider(context: TestContext) {
       expect(new URL(link).origin).toBe(new URL(target.baseURL).origin)
       expect(new URL(link).pathname).toBe(`/workspaces/${id}/providers/new`)
     })
-    await step('Review the operations, connect the account, and add the provider', async () => {
+    await step('Review the tools, connect the account, and add the provider', async () => {
       await page.goto(link)
-      await acceptOperations(page)
+      await acceptTools(page)
       await connectSharedAccount(page, 'weather-token')
       const add = page.getByRole('button', { name: 'Add provider', exact: true })
       await add.waitFor()

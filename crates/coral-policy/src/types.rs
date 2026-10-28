@@ -1,32 +1,32 @@
 use std::collections::BTreeMap;
 
-use coral_catalog::{CatalogSearchTarget, HttpMethod, OperationHints, OperationKey};
+use coral_catalog::{CatalogSearchTarget, HttpMethod, ToolHints, ToolKey};
 use coral_provider::ProviderId;
 use coral_telemetry::TraceId;
 use coral_workspace::{AuthoritySource, UserId, WorkspaceId};
 
 use crate::Error;
 
-/// Exact address of one Workspace Operation policy decision.
+/// Exact address of one Workspace Tool policy decision.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct OperationPolicyTarget {
+pub struct ToolPolicyTarget {
     workspace_id: WorkspaceId,
     provider_id: ProviderId,
-    operation_key: OperationKey,
+    tool_key: ToolKey,
 }
 
-impl OperationPolicyTarget {
-    /// Builds an exact Workspace, Provider, and Operation Key address.
+impl ToolPolicyTarget {
+    /// Builds an exact Workspace, Provider, and Tool Key address.
     #[must_use]
     pub const fn new(
         workspace_id: WorkspaceId,
         provider_id: ProviderId,
-        operation_key: OperationKey,
+        tool_key: ToolKey,
     ) -> Self {
         Self {
             workspace_id,
             provider_id,
-            operation_key,
+            tool_key,
         }
     }
 
@@ -42,16 +42,16 @@ impl OperationPolicyTarget {
         &self.provider_id
     }
 
-    /// Returns the Provider-scoped Operation Key.
+    /// Returns the Provider-scoped Tool Key.
     #[must_use]
-    pub const fn operation_key(&self) -> &OperationKey {
-        &self.operation_key
+    pub const fn tool_key(&self) -> &ToolKey {
+        &self.tool_key
     }
 }
 
-/// Workspace decision for one exact Operation through one Provider.
+/// Workspace decision for one exact Tool through one Provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OperationAccessState {
+pub enum ToolAccessState {
     /// Admission can continue without an Invocation Approval.
     Enabled,
     /// Admission requires an exact Invocation Approval.
@@ -60,7 +60,7 @@ pub enum OperationAccessState {
     Disabled,
 }
 
-impl OperationAccessState {
+impl ToolAccessState {
     pub(crate) const fn as_storage_str(self) -> &'static str {
         match self {
             Self::Enabled => "enabled",
@@ -75,23 +75,23 @@ impl OperationAccessState {
             "approval_required" => Ok(Self::ApprovalRequired),
             "disabled" => Ok(Self::Disabled),
             _ => Err(Error::CorruptData(format!(
-                "Operation policy has unrecognized access state '{value}'"
+                "Tool policy has unrecognized access state '{value}'"
             ))),
         }
     }
 }
 
-impl From<OperationAccessState> for coral_catalog::BuiltinAccessState {
-    fn from(state: OperationAccessState) -> Self {
+impl From<ToolAccessState> for coral_catalog::BuiltinAccessState {
+    fn from(state: ToolAccessState) -> Self {
         match state {
-            OperationAccessState::Enabled => Self::Enabled,
-            OperationAccessState::ApprovalRequired => Self::ApprovalRequired,
-            OperationAccessState::Disabled => Self::Disabled,
+            ToolAccessState::Enabled => Self::Enabled,
+            ToolAccessState::ApprovalRequired => Self::ApprovalRequired,
+            ToolAccessState::Disabled => Self::Disabled,
         }
     }
 }
 
-impl From<coral_catalog::BuiltinAccessState> for OperationAccessState {
+impl From<coral_catalog::BuiltinAccessState> for ToolAccessState {
     fn from(state: coral_catalog::BuiltinAccessState) -> Self {
         match state {
             coral_catalog::BuiltinAccessState::Enabled => Self::Enabled,
@@ -101,73 +101,69 @@ impl From<coral_catalog::BuiltinAccessState> for OperationAccessState {
     }
 }
 
-/// Every exact Operation rule of one Workspace, read once for discovery.
+/// Every exact Tool rule of one Workspace, read once for discovery.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ExactOperationRules {
-    rules: BTreeMap<ProviderId, BTreeMap<OperationKey, OperationAccessState>>,
+pub struct ExactToolRules {
+    rules: BTreeMap<ProviderId, BTreeMap<ToolKey, ToolAccessState>>,
 }
 
-impl ExactOperationRules {
+impl ExactToolRules {
     pub(crate) const fn new(
-        rules: BTreeMap<ProviderId, BTreeMap<OperationKey, OperationAccessState>>,
+        rules: BTreeMap<ProviderId, BTreeMap<ToolKey, ToolAccessState>>,
     ) -> Self {
         Self { rules }
     }
 
-    /// Returns the Workspace decision for one Operation: its exact rule, else
+    /// Returns the Workspace decision for one Tool: its exact rule, else
     /// the default that its declared hints and HTTP method give.
     #[must_use]
     pub fn access_state(
         &self,
         provider_id: &ProviderId,
-        operation_key: &OperationKey,
-        hints: OperationHints,
+        tool_key: &ToolKey,
+        hints: ToolHints,
         http_method: Option<HttpMethod>,
-    ) -> OperationAccessState {
+    ) -> ToolAccessState {
         self.rules
             .get(provider_id)
-            .and_then(|operations| operations.get(operation_key))
+            .and_then(|tools| tools.get(tool_key))
             .copied()
             .unwrap_or_else(|| crate::default_access_state(hints, http_method))
     }
 
-    /// Whether the Workspace disables `operation` of `provider_id`, so no
+    /// Whether the Workspace disables `tool` of `provider_id`, so no
     /// Principal can call it, discovery leaves it out, and no count includes
     /// it.
     #[must_use]
-    pub fn disables(&self, provider_id: &ProviderId, operation: &CatalogSearchTarget) -> bool {
-        self.access_state(
-            provider_id,
-            operation.key(),
-            operation.hints(),
-            operation.http_method(),
-        ) == OperationAccessState::Disabled
+    pub fn disables(&self, provider_id: &ProviderId, tool: &CatalogSearchTarget) -> bool {
+        self.access_state(provider_id, tool.key(), tool.hints(), tool.http_method())
+            == ToolAccessState::Disabled
     }
 
-    /// Returns every Operation that an exact rule disables. No default is
-    /// `disabled`, so no other Operation is disabled.
-    pub fn disabled(&self) -> impl Iterator<Item = (&ProviderId, &OperationKey)> {
-        self.rules.iter().flat_map(|(provider_id, operations)| {
-            operations
+    /// Returns every Tool that an exact rule disables. No default is
+    /// `disabled`, so no other Tool is disabled.
+    pub fn disabled(&self) -> impl Iterator<Item = (&ProviderId, &ToolKey)> {
+        self.rules.iter().flat_map(|(provider_id, tools)| {
+            tools
                 .iter()
-                .filter(|(_, state)| **state == OperationAccessState::Disabled)
-                .map(move |(operation_key, _)| (provider_id, operation_key))
+                .filter(|(_, state)| **state == ToolAccessState::Disabled)
+                .map(move |(tool_key, _)| (provider_id, tool_key))
         })
     }
 }
 
-/// Current effective decision for one exact Operation policy target.
+/// Current effective decision for one exact Tool policy target.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OperationPolicyDecision {
-    target: OperationPolicyTarget,
-    access_state: OperationAccessState,
+pub struct ToolPolicyDecision {
+    target: ToolPolicyTarget,
+    access_state: ToolAccessState,
     explicit: bool,
 }
 
-impl OperationPolicyDecision {
+impl ToolPolicyDecision {
     pub(crate) const fn new(
-        target: OperationPolicyTarget,
-        access_state: OperationAccessState,
+        target: ToolPolicyTarget,
+        access_state: ToolAccessState,
         explicit: bool,
     ) -> Self {
         Self {
@@ -179,13 +175,13 @@ impl OperationPolicyDecision {
 
     /// Returns the exact policy target.
     #[must_use]
-    pub const fn target(&self) -> &OperationPolicyTarget {
+    pub const fn target(&self) -> &ToolPolicyTarget {
         &self.target
     }
 
     /// Returns the enabled, approval-required, or disabled decision.
     #[must_use]
-    pub const fn access_state(&self) -> OperationAccessState {
+    pub const fn access_state(&self) -> ToolAccessState {
         self.access_state
     }
 
@@ -196,31 +192,31 @@ impl OperationPolicyDecision {
     }
 }
 
-/// Accepted Operation-policy lifecycle action.
+/// Accepted Tool-policy lifecycle action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleAction {
-    /// An exact Operation Access State was created or changed.
+    /// An exact Tool Access State was created or changed.
     AccessStateUpdated,
 }
 
 impl LifecycleAction {
     pub(crate) const fn as_storage_str(self) -> &'static str {
         match self {
-            Self::AccessStateUpdated => "operation_policy.access_state_updated",
+            Self::AccessStateUpdated => "tool_policy.access_state_updated",
         }
     }
 
     pub(crate) fn from_storage_str(value: &str) -> Result<Self, Error> {
         match value {
-            "operation_policy.access_state_updated" => Ok(Self::AccessStateUpdated),
+            "tool_policy.access_state_updated" => Ok(Self::AccessStateUpdated),
             _ => Err(Error::CorruptData(format!(
-                "Operation-policy lifecycle Event has unrecognized action '{value}'"
+                "Tool-policy lifecycle Event has unrecognized action '{value}'"
             ))),
         }
     }
 }
 
-/// Accepted result carried by an Operation-policy lifecycle Event.
+/// Accepted result carried by a Tool-policy lifecycle Event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleOutcome {
     /// The policy change and Event committed together.
@@ -238,16 +234,16 @@ impl LifecycleOutcome {
         match value {
             "accepted" => Ok(Self::Accepted),
             _ => Err(Error::CorruptData(format!(
-                "Operation-policy lifecycle Event has unrecognized outcome '{value}'"
+                "Tool-policy lifecycle Event has unrecognized outcome '{value}'"
             ))),
         }
     }
 }
 
-/// Safe immutable evidence of one accepted Operation-policy change.
+/// Safe immutable evidence of one accepted Tool-policy change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdministrativeLifecycleEvent {
-    target: OperationPolicyTarget,
+    target: ToolPolicyTarget,
     actor_user_id: UserId,
     authority_source: AuthoritySource,
     action: LifecycleAction,
@@ -263,7 +259,7 @@ impl AdministrativeLifecycleEvent {
         reason = "the immutable Event projection has one persistence constructor"
     )]
     pub(crate) const fn new(
-        target: OperationPolicyTarget,
+        target: ToolPolicyTarget,
         actor_user_id: UserId,
         authority_source: AuthoritySource,
         action: LifecycleAction,
@@ -286,7 +282,7 @@ impl AdministrativeLifecycleEvent {
 
     /// Returns the exact policy target without an access-state value.
     #[must_use]
-    pub const fn target(&self) -> &OperationPolicyTarget {
+    pub const fn target(&self) -> &ToolPolicyTarget {
         &self.target
     }
 

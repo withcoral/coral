@@ -27,7 +27,7 @@ async fn run_fan_out_load() {
     let admit_wait = Duration::from_secs(setting_u64("CORAL_LOAD_ADMIT_WAIT_SECS", 120));
 
     let mut h = Harness::arrange("fanout").await;
-    // HTTP Operations require approval by default; the busy Run keeps that policy.
+    // HTTP Tools require approval by default; the busy Run keeps that policy.
     publish_http(&h.f, &h.f.workspace, "evidence", &h.upstream.uri()).await;
     let mut probe = h.open_probe().await;
     let approvals = h.f.runs.approvals();

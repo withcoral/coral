@@ -5,8 +5,8 @@
     reason = "assert known tool result JSON members"
 )]
 
-use coral_catalog::OperationKey;
-use coral_policy::{OperationAccessState, OperationPolicyTarget};
+use coral_catalog::ToolKey;
+use coral_policy::{ToolAccessState, ToolPolicyTarget};
 use coral_run::{ProgramSource, RunObservation, RunState, RunSubmission, RunTimeout};
 use coral_workspace::{AgentDisplayName, AuthenticatedPrincipal, OrganizationRole, WorkspaceRole};
 use serde_json::{Value, json};
@@ -36,15 +36,15 @@ async fn content_only_clients_read_results_and_actionable_rejections() {
         .policies
         .set_access_state(
             &change(tracer.local_user.clone(), 60, 'b'),
-            OperationPolicyTarget::new(
+            ToolPolicyTarget::new(
                 tracer.workspace_a.clone(),
                 tracer.provider_id.clone(),
-                OperationKey::parse("lostWorker").expect("Operation Key"),
+                ToolKey::parse("lostWorker").expect("Tool Key"),
             ),
-            OperationAccessState::Disabled,
+            ToolAccessState::Disabled,
         )
         .await
-        .expect("disable an installed Operation");
+        .expect("disable an installed Tool");
     for version in SUPPORTED_PROTOCOL_VERSIONS {
         let session = RawSession::open(&tracer.endpoint(), version).await;
         let started = session
@@ -287,7 +287,7 @@ async fn run_tool(session: &RawSession, tool: &str, run: &Value) -> Value {
     session.tool(tool, arguments).await
 }
 
-/// A disabled Operation and a path that never existed give one result.
+/// A disabled Tool and a path that never existed give one result.
 async fn check_concealed_descriptions(
     session: &RawSession,
     task: &Value,
@@ -307,8 +307,5 @@ async fn check_concealed_descriptions(
         "authoring_description_not_found",
         "{version}"
     );
-    assert_eq!(
-        concealed, absent,
-        "{version}: a disabled Operation looks absent"
-    );
+    assert_eq!(concealed, absent, "{version}: a disabled Tool looks absent");
 }

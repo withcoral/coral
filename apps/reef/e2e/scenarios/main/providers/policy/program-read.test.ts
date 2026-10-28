@@ -6,10 +6,10 @@ import {
   observeRun,
   programRunner,
   publishWorkspaceProvider,
-  setOperationPolicy,
+  setToolPolicy,
 } from '../../../../support/providers.ts'
 
-test("An agent's Program finds the operations an owner disabled in Reef", async (context) => {
+test("An agent's Program finds the tools an owner disabled in Reef", async (context) => {
   await withOwnerSession(context, async ({ page, target, actor, step }) => {
     const api = managementClients(actor.accessToken)
     const workspace = await api.workspaces.createWorkspace({
@@ -29,11 +29,11 @@ test("An agent's Program finds the operations an owner disabled in Reef", async 
     })
     const agent = programRunner(page, target, workspace.name.split('/')[1], {
       accessToken: issued.credential,
-      taskIntent: 'Find disabled operations',
+      taskIntent: 'Find disabled tools',
     })
     await step('The owner disables lookup', async () => {
       await page.goto(`/${provider}`)
-      await setOperationPolicy(page, 'lookup', 'Disabled')
+      await setToolPolicy(page, 'lookup', 'Disabled')
     })
     await step('getPolicy names lookup as disabled', async () => {
       const { update } = await observeRun(

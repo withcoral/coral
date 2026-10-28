@@ -21,40 +21,32 @@ async fn caller_connection_is_shared_and_canceling_one_run_does_not_cancel_anoth
         .mount(&server)
         .await;
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let operation = fixture
-        .user_operation_at("user:connecting", "Caller wait", &server.uri())
+    let tool = fixture
+        .user_tool_at("user:connecting", "Caller wait", &server.uri())
         .await;
-    let context = change(operation.user.clone(), 40, '4');
-    let scope = operation.workspace_id.clone();
-    let (_dir, accounts) = configure_user_caller(&fixture, &operation, &server.uri()).await;
+    let context = change(tool.user.clone(), 40, '4');
+    let scope = tool.workspace_id.clone();
+    let (_dir, accounts) = configure_user_caller(&fixture, &tool, &server.uri()).await;
     let runs = fixture.live_runs(None).with_accounts(accounts.clone());
     let source = "return await coral.providers.weather.getForecast({});";
     let first = runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission(source),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission(source))
         .await
         .unwrap();
     let second = runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission(source),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission(source))
         .await
         .unwrap();
     let request = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let requests = accounts
-                .list_connection_requests(&context, &operation.workspace_id)
+                .list_connection_requests(&context, &tool.workspace_id)
                 .await
                 .unwrap();
             let first_detail = runs
                 .observe(
-                    &operation.principal,
-                    &operation.workspace_id,
+                    &tool.principal,
+                    &tool.workspace_id,
                     first.run_id(),
                     &immediate(None, 100),
                 )
@@ -62,8 +54,8 @@ async fn caller_connection_is_shared_and_canceling_one_run_does_not_cancel_anoth
                 .unwrap();
             let second_detail = runs
                 .observe(
-                    &operation.principal,
-                    &operation.workspace_id,
+                    &tool.principal,
+                    &tool.workspace_id,
                     second.run_id(),
                     &immediate(None, 100),
                 )
@@ -81,29 +73,24 @@ async fn caller_connection_is_shared_and_canceling_one_run_does_not_cancel_anoth
     .await
     .expect("two admitted calls share one durable request");
     runs.cancel(
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         first.run_id(),
         &immediate(None, 100),
     )
     .await
     .unwrap();
     assert_eq!(
-        wait_for_terminal(
-            &runs,
-            &operation.principal,
-            &operation.workspace_id,
-            first.run_id()
-        )
-        .await
-        .state(),
+        wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, first.run_id())
+            .await
+            .state(),
         RunState::Canceled
     );
     let authorization = accounts
         .start_user_authorization(
             &context,
-            &operation.workspace_id,
-            &operation.provider_id,
+            &tool.workspace_id,
+            &tool.provider_id,
             ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
             None,
         )
@@ -120,18 +107,13 @@ async fn caller_connection_is_shared_and_canceling_one_run_does_not_cancel_anoth
         )
         .await
         .unwrap();
-    let terminal = wait_for_terminal(
-        &runs,
-        &operation.principal,
-        &operation.workspace_id,
-        second.run_id(),
-    )
-    .await;
+    let terminal =
+        wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, second.run_id()).await;
     assert_eq!(terminal.state(), RunState::Succeeded);
     assert!(!format!("{terminal:?}").contains("caller-canary"));
     assert_eq!(
         accounts
-            .get_connection_request(&context, &operation.workspace_id, request.id)
+            .get_connection_request(&context, &tool.workspace_id, request.id)
             .await
             .unwrap()
             .state,
@@ -140,20 +122,15 @@ async fn caller_connection_is_shared_and_canceling_one_run_does_not_cancel_anoth
     let connection = crate::RequiredActionRequest::AccountConnection(request.id);
     let trace = coral_workspace::TraceId::current_or_new();
     assert!(
-        runs.connection_connected(
-            &operation.principal,
-            &operation.workspace_id,
-            &connection,
-            &trace
-        )
-        .await,
+        runs.connection_connected(&tool.principal, &tool.workspace_id, &connection, &trace)
+            .await,
         "an opened connect page completes once the Account connects"
     );
     let other = AuthenticatedPrincipal::user(
         fixture
             .workspace_user(
-                &operation.workspace_id,
-                &operation.user,
+                &tool.workspace_id,
+                &tool.user,
                 "user:connecting-owner",
                 WorkspaceRole::Owner,
             )
@@ -161,19 +138,18 @@ async fn caller_connection_is_shared_and_canceling_one_run_does_not_cancel_anoth
     );
     assert!(
         !runs
-            .connection_connected(&other, &operation.workspace_id, &connection, &trace)
+            .connection_connected(&other, &tool.workspace_id, &connection, &trace)
             .await,
         "another User never sees the request connect"
     );
-    assert_connection_completion_event(&accounts, &context, &operation.workspace_id, request.id)
-        .await;
+    assert_connection_completion_event(&accounts, &context, &tool.workspace_id, request.id).await;
 }
 
 /// A Run whose only Invocation waits on its User's connection request.
 struct WaitingConnection {
     server: MockServer,
     fixture: TestModules,
-    operation: OperationFixture,
+    tool: ToolFixture,
     _directory: tempfile::TempDir,
     accounts: coral_provider::account::AccountModule,
     context: ChangeContext,
@@ -186,29 +162,28 @@ impl WaitingConnection {
     async fn new() -> Self {
         let server = MockServer::start().await;
         let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-        let operation = fixture
-            .user_operation_at("user:gate-loss", "Connection gate", &server.uri())
+        let tool = fixture
+            .user_tool_at("user:gate-loss", "Connection gate", &server.uri())
             .await;
-        let (directory, accounts) =
-            configure_user_caller(&fixture, &operation, &server.uri()).await;
+        let (directory, accounts) = configure_user_caller(&fixture, &tool, &server.uri()).await;
         let runs = fixture.live_runs(Some(accounts.clone()));
         let accepted = runs
             .start(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 submission(
                     "try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }",
                 ),
             )
             .await
             .unwrap();
-        let request = wait_for_connection(&accounts, &operation).await;
+        let request = wait_for_connection(&accounts, &tool).await;
         Self {
             server,
-            context: change(operation.user.clone(), 40, '4'),
+            context: change(tool.user.clone(), 40, '4'),
             run: accepted.run_id().clone(),
             fixture,
-            operation,
+            tool,
             _directory: directory,
             accounts,
             runs,
@@ -217,7 +192,7 @@ impl WaitingConnection {
     }
 
     fn scope(&self) -> &coral_workspace::WorkspaceId {
-        &self.operation.workspace_id
+        &self.tool.workspace_id
     }
 
     async fn start_connecting(&self) -> coral_provider::account::Authorization {
@@ -225,7 +200,7 @@ impl WaitingConnection {
             .start_user_authorization(
                 &self.context,
                 self.scope(),
-                &self.operation.provider_id,
+                &self.tool.provider_id,
                 ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                 None,
             )
@@ -261,13 +236,7 @@ impl WaitingConnection {
     }
 
     async fn terminal(&self) -> crate::RunUpdate {
-        wait_for_terminal(
-            &self.runs,
-            &self.operation.principal,
-            self.scope(),
-            &self.run,
-        )
-        .await
+        wait_for_terminal(&self.runs, &self.tool.principal, self.scope(), &self.run).await
     }
 }
 
@@ -316,7 +285,7 @@ impl GateLoss {
             }
             Self::Expiry => {
                 let at_deadline = change(
-                    waiting.operation.user.clone(),
+                    waiting.tool.user.clone(),
                     waiting.request.expires_at_unix_nanos,
                     '6',
                 );
@@ -338,7 +307,7 @@ impl GateLoss {
                     .get_account(
                         context,
                         scope,
-                        &waiting.operation.provider_id,
+                        &waiting.tool.provider_id,
                         &coral_provider::account::AccountScope::User,
                     )
                     .await
@@ -346,7 +315,7 @@ impl GateLoss {
                     .account
                     .unwrap();
                 accounts
-                    .disconnect(context, scope, &waiting.operation.provider_id, account.id)
+                    .disconnect(context, scope, &waiting.tool.provider_id, account.id)
                     .await
                     .unwrap();
             }
@@ -372,7 +341,7 @@ async fn move_to_shared_account(waiting: &WaitingConnection) {
         .prepare_update_fixture(
             context,
             scope,
-            &waiting.operation.provider_id,
+            &waiting.tool.provider_id,
             OpenApiDocument::parse(&document.to_string()).unwrap(),
         )
         .await
@@ -410,7 +379,7 @@ async fn move_to_shared_account(waiting: &WaitingConnection) {
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                 scope.clone(),
-                waiting.operation.provider_id.clone(),
+                waiting.tool.provider_id.clone(),
                 setup.id().clone(),
                 confirmed.revision,
             )
@@ -433,7 +402,7 @@ async fn connection_gate_losses_settle_the_invocation_once_without_sending() {
         assert_final_code(&terminal, loss.code());
         let events = retained_events(
             &waiting.runs,
-            &waiting.operation.principal,
+            &waiting.tool.principal,
             waiting.scope(),
             &waiting.run,
         )
@@ -546,22 +515,22 @@ async fn the_owner_arms_a_timer_at_a_connection_requests_deadline() {
         probe.clone(),
     )
     .await;
-    let operation = fixture
-        .user_operation_at("user:connection-timer", "Connection timer", &server.uri())
+    let tool = fixture
+        .user_tool_at("user:connection-timer", "Connection timer", &server.uri())
         .await;
-    let (_directory, accounts) = configure_user_caller(&fixture, &operation, &server.uri()).await;
+    let (_directory, accounts) = configure_user_caller(&fixture, &tool, &server.uri()).await;
     let runs = fixture.runs.clone().with_accounts(accounts.clone());
     let accepted = runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             submission(
                 "try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }",
             ),
         )
         .await
         .unwrap();
-    let request = wait_for_connection(&accounts, &operation).await;
+    let request = wait_for_connection(&accounts, &tool).await;
     let timer = crate::owner::Timer::Connection(request.id);
     wait_until(|| probe.armed(&timer).is_some()).await;
     let after_nanos = probe.armed(&timer).unwrap();
@@ -577,8 +546,8 @@ async fn the_owner_arms_a_timer_at_a_connection_requests_deadline() {
     );
     let terminal = runs
         .cancel(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
             &immediate(None, 100),
         )
@@ -617,7 +586,7 @@ async fn a_declined_or_expired_request_does_not_bind_a_later_connection() {
                 .get_account(
                     &waiting.context,
                     waiting.scope(),
-                    &waiting.operation.provider_id,
+                    &waiting.tool.provider_id,
                     &coral_provider::account::AccountScope::User
                 )
                 .await
@@ -679,7 +648,7 @@ async fn connection_requests_are_concealed_from_other_users() {
             .fixture
             .workspace_user(
                 scope,
-                &waiting.operation.user,
+                &waiting.tool.user,
                 "user:other-owner",
                 WorkspaceRole::Owner,
             )
@@ -742,14 +711,14 @@ async fn caller_connection_outlives_run_deadlines_and_empty_waiter_sets() {
         .mount(&server)
         .await;
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let operation = fixture
-        .user_operation_at(
+    let tool = fixture
+        .user_tool_at(
             "user:deadline-connection",
             "Independent deadlines",
             &server.uri(),
         )
         .await;
-    let (directory, accounts) = configure_user_caller(&fixture, &operation, &server.uri()).await;
+    let (directory, accounts) = configure_user_caller(&fixture, &tool, &server.uri()).await;
     let mut runs = fixture.live_runs(None).with_accounts(accounts.clone());
     runs.clock = fixture.clock.clone();
     runs.execution_policy =
@@ -760,22 +729,18 @@ async fn caller_connection_outlives_run_deadlines_and_empty_waiter_sets() {
         RunTimeout::from_millis(10_000).unwrap(),
     );
     let first = runs
-        .start(&operation.principal, &operation.workspace_id, short)
+        .start(&tool.principal, &tool.workspace_id, short)
         .await
         .unwrap();
-    let request = wait_for_connection(&accounts, &operation).await;
+    let request = wait_for_connection(&accounts, &tool).await;
     let second = runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission(source),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission(source))
         .await
         .unwrap();
     let second_waiting = wait_for_actions(
         &runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         second.run_id(),
         1,
         1,
@@ -786,7 +751,7 @@ async fn caller_connection_outlives_run_deadlines_and_empty_waiter_sets() {
         crate::RequiredActionRequest::AccountConnection(request.id)
     );
     let queue = runs
-        .required_actions(&operation.principal, None, None, 10)
+        .required_actions(&tool.principal, None, None, 10)
         .await
         .unwrap();
     let [queued] = queue.actions.as_slice() else {
@@ -810,18 +775,13 @@ async fn caller_connection_outlives_run_deadlines_and_empty_waiter_sets() {
     assert_eq!(first_card.call_path, "coral.providers.weather.getForecast");
     // Expire only the short Run, not either worker's 30-second claim lease.
     fixture.clock.next.store(20_000_000_000, Ordering::SeqCst);
-    let terminal = wait_for_terminal(
-        &runs,
-        &operation.principal,
-        &operation.workspace_id,
-        first.run_id(),
-    )
-    .await;
+    let terminal =
+        wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, first.run_id()).await;
     assert_eq!(terminal.state(), RunState::TimedOut);
     let surviving = runs
         .observe(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             second.run_id(),
             &immediate(None, 100),
         )
@@ -833,31 +793,26 @@ async fn caller_connection_outlives_run_deadlines_and_empty_waiter_sets() {
         second_waiting.required_actions(),
         "another Run's deadline does not detach this Run's shared action"
     );
-    let context = change(operation.user.clone(), 20_000_000_000, '7');
+    let context = change(tool.user.clone(), 20_000_000_000, '7');
     assert_eq!(
         accounts
-            .list_connection_requests(&context, &operation.workspace_id)
+            .list_connection_requests(&context, &tool.workspace_id)
             .await
             .unwrap(),
         vec![request.clone()]
     );
     runs.cancel(
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         second.run_id(),
         &immediate(None, 100),
     )
     .await
     .unwrap();
     assert_eq!(
-        wait_for_terminal(
-            &runs,
-            &operation.principal,
-            &operation.workspace_id,
-            second.run_id()
-        )
-        .await
-        .state(),
+        wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, second.run_id())
+            .await
+            .state(),
         RunState::Canceled
     );
     let reopened = coral_provider::account::AccountModule::new(
@@ -866,7 +821,7 @@ async fn caller_connection_outlives_run_deadlines_and_empty_waiter_sets() {
     );
     assert_eq!(
         reopened
-            .get_connection_request(&context, &operation.workspace_id, request.id)
+            .get_connection_request(&context, &tool.workspace_id, request.id)
             .await
             .unwrap(),
         request
@@ -874,8 +829,8 @@ async fn caller_connection_outlives_run_deadlines_and_empty_waiter_sets() {
     let authorization = reopened
         .start_user_authorization(
             &context,
-            &operation.workspace_id,
-            &operation.provider_id,
+            &tool.workspace_id,
+            &tool.provider_id,
             ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
             None,
         )
@@ -884,7 +839,7 @@ async fn caller_connection_outlives_run_deadlines_and_empty_waiter_sets() {
     reopened
         .submit_secret(
             &context,
-            &operation.workspace_id.clone(),
+            &tool.workspace_id.clone(),
             authorization.id,
             coral_credentials::CredentialValues::token(
                 coral_credentials::Secret::new("after-deadline".into()).unwrap(),
@@ -893,22 +848,13 @@ async fn caller_connection_outlives_run_deadlines_and_empty_waiter_sets() {
         .await
         .unwrap();
     let later = runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission(source),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission(source))
         .await
         .unwrap();
     assert_eq!(
-        wait_for_terminal(
-            &runs,
-            &operation.principal,
-            &operation.workspace_id,
-            later.run_id()
-        )
-        .await
-        .state(),
+        wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, later.run_id())
+            .await
+            .state(),
         RunState::Succeeded
     );
 }
@@ -933,31 +879,31 @@ async fn caller_connection_cannot_complete_an_obsolete_contract_after_regenerati
         .mount(&server)
         .await;
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let operation = fixture
-        .user_operation_at(
+    let tool = fixture
+        .user_tool_at(
             "user:pinned-connection",
             "Pinned connection contract",
             &server.uri(),
         )
         .await;
-    let (_directory, accounts) = configure_user_caller(&fixture, &operation, &server.uri()).await;
-    let context = change(operation.user.clone(), 40, '4');
+    let (_directory, accounts) = configure_user_caller(&fixture, &tool, &server.uri()).await;
+    let context = change(tool.user.clone(), 40, '4');
     let runs = fixture.live_runs(None).with_accounts(accounts.clone());
     let accepted = runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             submission("return await coral.providers.weather.getForecast({});"),
         )
         .await
         .unwrap();
-    wait_for_connection(&accounts, &operation).await;
-    let scope = operation.workspace_id.clone();
+    wait_for_connection(&accounts, &tool).await;
+    let scope = tool.workspace_id.clone();
     let authorization = accounts
         .start_user_authorization(
             &context,
-            &operation.workspace_id,
-            &operation.provider_id,
+            &tool.workspace_id,
+            &tool.provider_id,
             ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
             None,
         )
@@ -973,7 +919,7 @@ async fn caller_connection_cannot_complete_an_obsolete_contract_after_regenerati
         .providers
         .prepare_openapi_fixture(
             &context,
-            &operation.workspace_id,
+            &tool.workspace_id,
             OpenApiDocument::parse(&changed.to_string()).unwrap(),
         )
         .await
@@ -985,7 +931,7 @@ async fn caller_connection_cannot_complete_an_obsolete_contract_after_regenerati
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                 scope.clone(),
-                operation.provider_id.clone(),
+                tool.provider_id.clone(),
                 setup.id().clone(),
                 1,
             )
@@ -1014,7 +960,7 @@ async fn caller_connection_cannot_complete_an_obsolete_contract_after_regenerati
         .get_account(
             &context,
             &scope,
-            &operation.provider_id,
+            &tool.provider_id,
             &coral_provider::account::AccountScope::User,
         )
         .await
@@ -1027,11 +973,11 @@ async fn caller_connection_cannot_complete_an_obsolete_contract_after_regenerati
     );
     assert_eq!(account.connected_at_unix_nanos, None);
     assert_eq!(account.configured_by_user_id, None);
-    let terminal = wait_for_terminal(&runs, &operation.principal, &scope, accepted.run_id()).await;
+    let terminal = wait_for_terminal(&runs, &tool.principal, &scope, accepted.run_id()).await;
     assert_eq!(terminal.state(), RunState::Failed);
     let observed = runs
         .observe(
-            &operation.principal,
+            &tool.principal,
             &scope,
             accepted.run_id(),
             &immediate(None, 100),
@@ -1041,8 +987,8 @@ async fn caller_connection_cannot_complete_an_obsolete_contract_after_regenerati
     assert_eq!(
         retained_events(
             &runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             observed.run_id()
         )
         .await
@@ -1081,28 +1027,28 @@ async fn caller_connection_reconnect_preserves_account_and_fences_prepared_dispa
         .mount(&server)
         .await;
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let operation = fixture
-        .user_operation_at("user:existing-account", "Existing account", &server.uri())
+    let tool = fixture
+        .user_tool_at("user:existing-account", "Existing account", &server.uri())
         .await;
-    let (_directory, accounts) = configure_user_caller(&fixture, &operation, &server.uri()).await;
-    let context = change(operation.user.clone(), 40, '4');
-    let scope = operation.workspace_id.clone();
+    let (_directory, accounts) = configure_user_caller(&fixture, &tool, &server.uri()).await;
+    let context = change(tool.user.clone(), 40, '4');
+    let scope = tool.workspace_id.clone();
 
     let mut runs = fixture.live_runs(None).with_accounts(accounts.clone());
     let accepted = runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             submission("return await coral.providers.weather.getForecast({});"),
         )
         .await
         .unwrap();
-    let request = wait_for_connection(&accounts, &operation).await;
+    let request = wait_for_connection(&accounts, &tool).await;
     let authorization = accounts
         .start_user_authorization(
             &context,
             &scope,
-            &operation.provider_id,
+            &tool.provider_id,
             ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
             None,
         )
@@ -1131,18 +1077,17 @@ async fn caller_connection_reconnect_preserves_account_and_fences_prepared_dispa
     );
     assert_eq!(
         accounts
-            .decline_connection(&context, &operation.workspace_id, request.id)
+            .decline_connection(&context, &tool.workspace_id, request.id)
             .await
             .unwrap(),
         connected
     );
-    assert_connection_completion_event(&accounts, &context, &operation.workspace_id, request.id)
-        .await;
+    assert_connection_completion_event(&accounts, &context, &tool.workspace_id, request.id).await;
     assert_eq!(
         wait_for_terminal(
             &runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id()
         )
         .await
@@ -1151,14 +1096,14 @@ async fn caller_connection_reconnect_preserves_account_and_fences_prepared_dispa
     );
     let (gate, release) = FenceGate::blocking();
     runs.invocation_observer = gate.clone();
-    let later = runs.start(&operation.principal, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }")).await.unwrap();
+    let later = runs.start(&tool.principal, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }")).await.unwrap();
     wait_until(|| gate.entered()).await;
     for secret in ["different-account", "existing-account"] {
         let reconnect = accounts
             .start_reconnect(
                 &context,
                 &scope,
-                &operation.provider_id,
+                &tool.provider_id,
                 original,
                 ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                 None,
@@ -1179,13 +1124,8 @@ async fn caller_connection_reconnect_preserves_account_and_fences_prepared_dispa
         assert_eq!(completed.account_id, Some(original));
     }
     release.send(()).unwrap();
-    let terminal = wait_for_terminal(
-        &runs,
-        &operation.principal,
-        &operation.workspace_id,
-        later.run_id(),
-    )
-    .await;
+    let terminal =
+        wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, later.run_id()).await;
     let Some(RunTerminalOutcome::Succeeded {
         final_value: FinalValue::Present(value),
     }) = terminal.terminal_outcome()
@@ -1210,10 +1150,10 @@ async fn a_completed_connection_wakes_exactly_its_parked_run_within_the_gap_afte
     forecast_once(&server, "first-canary").await;
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
     let first = fixture
-        .user_operation_at("user:first-connecting", "First caller wait", &server.uri())
+        .user_tool_at("user:first-connecting", "First caller wait", &server.uri())
         .await;
     let second = fixture
-        .user_operation_at(
+        .user_tool_at(
             "user:second-connecting",
             "Second caller wait",
             &server.uri(),
@@ -1322,10 +1262,10 @@ async fn with_the_change_listener_down_the_periodic_precheck_still_finds_a_compl
     let server = MockServer::start().await;
     forecast_once(&server, "outage-canary").await;
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let operation = fixture
-        .user_operation_at("user:outage-connecting", "Caller wait", &server.uri())
+    let tool = fixture
+        .user_tool_at("user:outage-connecting", "Caller wait", &server.uri())
         .await;
-    let (_directory, accounts) = configure_user_caller(&fixture, &operation, &server.uri()).await;
+    let (_directory, accounts) = configure_user_caller(&fixture, &tool, &server.uri()).await;
     let probe = WaitProbe::new();
     let mut runs = fixture.live_runs(Some(accounts.clone()));
     runs.invocation_observer = probe.clone();
@@ -1335,13 +1275,13 @@ async fn with_the_change_listener_down_the_periodic_precheck_still_finds_a_compl
         .with_wakeups(Duration::from_millis(200), Duration::from_secs(3));
     let run = runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             submission("return await coral.providers.weather.getForecast({});"),
         )
         .await
         .unwrap();
-    wait_for_connection(&accounts, &operation).await;
+    wait_for_connection(&accounts, &tool).await;
     probe.until_parked(1).await;
     fixture
         .database
@@ -1350,14 +1290,9 @@ async fn with_the_change_listener_down_the_periodic_precheck_still_finds_a_compl
         .unwrap();
     wait_until(|| fixture.database.subscribe_changes().is_err()).await;
 
-    connect_caller(&accounts, &operation, "outage-canary").await;
-    let terminal = wait_for_terminal(
-        &runs,
-        &operation.principal,
-        &operation.workspace_id,
-        run.run_id(),
-    )
-    .await;
+    connect_caller(&accounts, &tool, "outage-canary").await;
+    let terminal =
+        wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, run.run_id()).await;
 
     assert_eq!(terminal.state(), RunState::Succeeded);
     let prechecks = probe.prechecks();

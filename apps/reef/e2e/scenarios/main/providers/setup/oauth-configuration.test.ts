@@ -2,13 +2,13 @@ import { expect, test } from 'vitest'
 import { withOwnerSession } from '../../../../support/actors.ts'
 import { bearerMcpServer, oauthMcpServer } from '../../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   accountQuestion,
   chooseAccount,
   confirmConfiguration,
   createWorkspace,
   openCustomSource,
-  readOperations,
+  readTools,
   signInMethods,
   waitForProviderStatus,
   waitForPublication,
@@ -44,7 +44,7 @@ test.for(['anonymous', 'bearer', 'oauth'])(
         ).toBe(0)
         if (method === 'anonymous') {
           expect(upstream.counts.discovery).toBeGreaterThan(0)
-          expect(await page.getByText('No operations found', { exact: true }).count()).toBe(0)
+          expect(await page.getByText('No tools found', { exact: true }).count()).toBe(0)
         }
         if (method === 'oauth') {
           for (const [label, value] of [
@@ -69,14 +69,14 @@ test.for(['anonymous', 'bearer', 'oauth'])(
           expect(methods).not.toContain('OAuth authorization code')
         }
         await confirmConfiguration(page, method === 'bearer' ? 'Bearer token' : undefined)
-        if (method === 'anonymous') await page.getByText('1 operation', { exact: true }).waitFor()
+        if (method === 'anonymous') await page.getByText('1 tool', { exact: true }).waitFor()
       })
       if (method === 'bearer')
         await step('A refused token returns review without exposing the token', async () => {
-          await readOperations(page, 'wrong-token')
+          await readTools(page, 'wrong-token')
           await confirmConfiguration(page, 'Bearer token')
-          await readOperations(page, secret)
-          await acceptOperations(page)
+          await readTools(page, secret)
+          await acceptTools(page)
           await accountQuestion(page).waitFor()
           expect(await page.content()).not.toContain(secret)
         })
@@ -116,8 +116,8 @@ test('Update completes protected MCP discovery without replacing the shared acco
       await page.getByRole('button', { name: 'Connect', exact: true }).click()
       await page.getByLabel('Namespace', { exact: true }).fill('protected')
       await confirmConfiguration(page, 'Bearer token')
-      await readOperations(page, secret)
-      await acceptOperations(page)
+      await readTools(page, secret)
+      await acceptTools(page)
       await chooseAccount(page, 'shared')
       await page.getByRole('button', { name: 'Add provider', exact: true }).click()
       await waitForPublication(page)
@@ -125,9 +125,9 @@ test('Update completes protected MCP discovery without replacing the shared acco
     })
     await step('Review and authorize only discovery for this linked update', async () => {
       await page.goto(`${providerPath}/update`)
-      await page.getByRole('button', { name: 'Read operations', exact: true }).click()
+      await page.getByRole('button', { name: 'Read tools', exact: true }).click()
       await page.getByLabel('Token', { exact: true }).fill(secret)
-      await page.getByRole('button', { name: 'List operations', exact: true }).click()
+      await page.getByRole('button', { name: 'List tools', exact: true }).click()
       await page.getByRole('radio', { name: 'Keep the current account', exact: true }).check()
       // Keeping the shared account needs no consent, so Save publishes at once.
       await page.getByRole('button', { name: 'Save', exact: true }).click()

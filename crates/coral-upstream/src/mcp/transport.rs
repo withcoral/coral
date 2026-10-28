@@ -42,8 +42,9 @@ impl Captured {
     }
 }
 
-/// The JSON-RPC error an MCP peer returned for the Operation request. Only the
-/// standard code is typed; the peer's message and data never leave the Adapter.
+/// The JSON-RPC error an MCP peer returned for a tool call or a resource
+/// read. Only the standard code is typed; the peer's message and data never
+/// leave the Adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpRejection {
     /// JSON-RPC `-32602`: the peer refused the request parameters. For a tool
@@ -354,7 +355,7 @@ fn capture(
     Ok(())
 }
 
-/// A JSON-RPC error is the peer's complete answer to the Operation request, not
+/// A JSON-RPC error is the peer's complete answer to the request, not
 /// a missing result. A refused `initialize` is still no session at all.
 fn capture_rejection(
     slot: &Mutex<Option<Captured>>,

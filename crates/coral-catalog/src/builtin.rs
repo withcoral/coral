@@ -1,11 +1,11 @@
-//! The Built-in Provider's Coral-defined Operation catalog.
+//! The Built-in Provider's Coral-defined Tool catalog.
 //!
-//! Coral defines each Operation here in Rust: its Operation Key, input and
-//! output schemas, presentation, and Operation Hints. No OpenAPI document or
+//! Coral defines each Tool here in Rust: its Tool Key, input and
+//! output schemas, presentation, and Tool Hints. No OpenAPI document or
 //! MCP snapshot exists. The Generation pins this catalog's identity instead,
 //! so each Workspace's Generation records which definition it materialized.
 //!
-//! Each Operation's module owns its whole contract: the schemas a Program is
+//! Each Tool's module owns its whole contract: the schemas a Program is
 //! typed from, the arguments Coral reads against the input schema, and the
 //! result it writes against the output schema. Each schema is derived from
 //! the types Coral reads or writes, and a test holds each parser and result to
@@ -27,9 +27,9 @@ use crate::schema::{
     TypeScriptProjector, canonicalize, render_callable_declaration,
 };
 use crate::{
-    AuthenticationKind, CatalogDiagnostic, Error, ExecutionBinding, MaterializedOperation,
-    OperationHints, OperationKey, OperationPresentation, PreparedProviderCatalog, SchemaGraph,
-    SchemaId, SchemaSemantics,
+    AuthenticationKind, CatalogDiagnostic, Error, ExecutionBinding, MaterializedTool,
+    PreparedProviderCatalog, SchemaGraph, SchemaId, SchemaSemantics, ToolHints, ToolKey,
+    ToolPresentation,
 };
 
 mod add_provider;
@@ -96,9 +96,9 @@ impl fmt::Display for BuiltinCatalogIdentity {
     }
 }
 
-/// One Coral-owned Operation that this Coral version performs itself.
+/// One Coral-owned Tool that this Coral version performs itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuiltinOperation {
+pub enum BuiltinTool {
     /// Adds a Provider from an OpenAPI document or URL, or an MCP server URL.
     /// Coral publishes it when nobody needs to sign in; otherwise a person
     /// finishes it in Reef.
@@ -110,10 +110,10 @@ pub enum BuiltinOperation {
     /// of it and send back only those fields.
     GetProvider,
     /// Reads the exact rules a Workspace Owner set for one Provider's
-    /// Operations, so a Program can find the ones discovery hides.
+    /// Tools, so a Program can find the ones discovery hides.
     GetPolicy,
-    /// Sets the exact state of 1–100 Operations of one Provider. It never
-    /// reaches a Built-in Operation.
+    /// Sets the exact state of 1–100 Tools of one Provider. It never
+    /// reaches a Built-in Tool.
     UpdatePolicy,
     /// Changes one Owner-created Provider's configuration or source. Coral
     /// publishes the change when nobody needs to act; otherwise a person
@@ -121,7 +121,7 @@ pub enum BuiltinOperation {
     UpdateProvider,
 }
 
-impl BuiltinOperation {
+impl BuiltinTool {
     const ALL: [Self; 6] = [
         Self::AddProvider,
         Self::ListProviders,
@@ -131,7 +131,7 @@ impl BuiltinOperation {
         Self::UpdateProvider,
     ];
 
-    /// Returns the Operation Key, which is also its relative path.
+    /// Returns the Tool Key, which is also its relative path.
     #[must_use]
     pub const fn key(self) -> &'static str {
         match self {
@@ -144,17 +144,15 @@ impl BuiltinOperation {
         }
     }
 
-    /// Returns the Built-in Operation under `key`, or `None` for one that
+    /// Returns the Built-in Tool under `key`, or `None` for one that
     /// another Coral version defines.
     #[must_use]
     pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|operation| operation.key() == key)
+        Self::ALL.into_iter().find(|tool| tool.key() == key)
     }
 
     /// Returns the Workspace action a Principal's authority must permit for
-    /// it to discover or call this Operation.
+    /// it to discover or call this Tool.
     #[must_use]
     pub const fn needs(self) -> WorkspaceAction {
         match self {
@@ -186,28 +184,28 @@ impl BuiltinCatalog {
     ///
     /// Returns an invalid built-in definition.
     pub fn running() -> Result<Self, Error> {
-        Self::from_definitions(BuiltinOperation::ALL.into_iter().map(definition).collect())
+        Self::from_definitions(BuiltinTool::ALL.into_iter().map(definition).collect())
     }
 
-    /// Prepares this Coral version's catalog plus Operations it does not
+    /// Prepares this Coral version's catalog plus Tools it does not
     /// perform, as another Coral version could publish them. Each extra
-    /// Operation takes an object and returns one.
+    /// Tool takes an object and returns one.
     ///
     /// # Errors
     ///
     /// Returns an invalid built-in definition.
     #[cfg(any(test, feature = "test-fixtures"))]
-    pub fn with_unknown_operations(
-        extra: impl IntoIterator<Item = (&'static str, OperationHints)>,
+    pub fn with_unknown_tools(
+        extra: impl IntoIterator<Item = (&'static str, ToolHints)>,
     ) -> Result<Self, Error> {
         let mut definitions: Vec<Definition> =
-            BuiltinOperation::ALL.into_iter().map(definition).collect();
+            BuiltinTool::ALL.into_iter().map(definition).collect();
         definitions.extend(extra.into_iter().map(|(key, hints)| Definition {
             key,
-            summary: "An Operation another Coral version defines",
-            presentation: OperationPresentation::new(
+            summary: "A Tool another Coral version defines",
+            presentation: ToolPresentation::new(
                 None,
-                "An Operation another Coral version defines.".to_string(),
+                "A Tool another Coral version defines.".to_string(),
                 false,
                 Vec::new(),
                 None,
@@ -240,28 +238,29 @@ impl BuiltinCatalog {
     }
 }
 
-/// A Built-in Provider Operation's Execution Binding. It names the
-/// Coral-owned Operation and carries no destination, credential, or routing data.
+/// A Built-in Provider Tool's Execution Binding. It names the
+/// Coral-owned Tool and carries no destination, credential, or routing data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuiltinExecutionBinding {
-    /// The Operation Key. Another Coral version may name an Operation that
+    /// The Tool Key. Another Coral version may name a Tool that
     /// this version does not perform.
-    operation: OperationKey,
+    #[serde(rename = "tool")]
+    tool: ToolKey,
     input_schema: SchemaId,
     output_schema: SchemaId,
 }
 
 impl BuiltinExecutionBinding {
-    /// Returns the Coral-owned Operation this binding names, or `None` when
-    /// another Coral version published an Operation this version does not
+    /// Returns the Coral-owned Tool this binding names, or `None` when
+    /// another Coral version published a Tool this version does not
     /// perform.
     #[must_use]
-    pub fn operation(&self) -> Option<BuiltinOperation> {
-        BuiltinOperation::from_key(self.operation.as_str())
+    pub fn tool(&self) -> Option<BuiltinTool> {
+        BuiltinTool::from_key(self.tool.as_str())
     }
 
-    pub(crate) const fn operation_key(&self) -> &OperationKey {
-        &self.operation
+    pub(crate) const fn tool_key(&self) -> &ToolKey {
+        &self.tool
     }
 
     /// Returns the authoritative input-schema root.
@@ -293,7 +292,7 @@ impl BuiltinExecutionBinding {
     }
 }
 
-/// One Built-in Operation's arguments, read against its input schema and
+/// One Built-in Tool's arguments, read against its input schema and
 /// checked by every rule that needs no Workspace state.
 #[derive(Debug, Clone)]
 pub enum BuiltinArguments {
@@ -312,32 +311,27 @@ pub enum BuiltinArguments {
 }
 
 impl BuiltinArguments {
-    /// Reads `operation`'s arguments.
+    /// Reads `tool`'s arguments.
     ///
     /// # Errors
     ///
     /// Returns every argument to correct. A shape the schema forbids stops
     /// the reading at its first problem; the other checks each report theirs.
-    pub fn parse(
-        operation: BuiltinOperation,
-        arguments: &Value,
-    ) -> Result<Self, Vec<ArgumentProblem>> {
-        match operation {
-            BuiltinOperation::AddProvider => AddProviderArguments::parse(arguments)
+    pub fn parse(tool: BuiltinTool, arguments: &Value) -> Result<Self, Vec<ArgumentProblem>> {
+        match tool {
+            BuiltinTool::AddProvider => AddProviderArguments::parse(arguments)
                 .map(|arguments| Self::AddProvider(Box::new(arguments))),
-            BuiltinOperation::ListProviders => {
+            BuiltinTool::ListProviders => {
                 list_providers::parse(arguments).map(|()| Self::ListProviders)
             }
-            BuiltinOperation::GetProvider => {
+            BuiltinTool::GetProvider => {
                 GetProviderArguments::parse(arguments).map(Self::GetProvider)
             }
-            BuiltinOperation::GetPolicy => {
-                GetPolicyArguments::parse(arguments).map(Self::GetPolicy)
-            }
-            BuiltinOperation::UpdatePolicy => {
+            BuiltinTool::GetPolicy => GetPolicyArguments::parse(arguments).map(Self::GetPolicy),
+            BuiltinTool::UpdatePolicy => {
                 UpdatePolicyArguments::parse(arguments).map(Self::UpdatePolicy)
             }
-            BuiltinOperation::UpdateProvider => UpdateProviderArguments::parse(arguments)
+            BuiltinTool::UpdateProvider => UpdateProviderArguments::parse(arguments)
                 .map(|arguments| Self::UpdateProvider(Box::new(arguments))),
         }
     }
@@ -440,13 +434,13 @@ fn derived_schema<T: JsonSchema>(contract: Contract) -> Value {
         .to_value()
 }
 
-/// The Operation Result a Built-in Operation returns, with Coral as the
+/// The Tool Result a Built-in Tool returns, with Coral as the
 /// Upstream Service.
-fn operation_result(data: &impl Serialize) -> Value {
+fn tool_result(data: &impl Serialize) -> Value {
     json!({ "data": data, "metadata": { "kind": "builtin" } })
 }
 
-/// A Credential Route, as Built-in Operations spell it.
+/// A Credential Route, as Built-in Tools spell it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BuiltinCredentialRoute {
@@ -517,7 +511,7 @@ const fn authentication_name(kind: AuthenticationKind) -> &'static str {
     }
 }
 
-/// An Operation Access State, as Built-in Operations spell it.
+/// A Tool Access State, as Built-in Tools spell it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BuiltinAccessState {
@@ -531,7 +525,7 @@ pub enum BuiltinAccessState {
 
 impl JsonSchema for BuiltinAccessState {
     fn schema_name() -> std::borrow::Cow<'static, str> {
-        "OperationAccessState".into()
+        "ToolAccessState".into()
     }
 
     fn inline_schema() -> bool {
@@ -583,9 +577,10 @@ pub struct ProviderFacts {
         description = "How Coral sends the Provider's credentials."
     )]
     pub authentication: AuthenticationKind,
-    /// How many of its Operations the caller can discover and call.
-    #[schemars(description = "How many of the Provider's Operations you can discover and call.")]
-    pub operations: usize,
+    /// How many of its Tools the caller can discover and call.
+    #[schemars(description = "How many of the Provider's Tools you can discover and call.")]
+    #[serde(rename = "tools")]
+    pub tools: usize,
     /// Whether the caller must connect an Account before calling it.
     #[schemars(
         description = "True when you must connect your own Account before your calls can use the \
@@ -597,20 +592,20 @@ pub struct ProviderFacts {
 struct Definition {
     key: &'static str,
     summary: &'static str,
-    presentation: OperationPresentation,
-    hints: OperationHints,
+    presentation: ToolPresentation,
+    hints: ToolHints,
     input: Value,
     output: Value,
 }
 
-fn definition(operation: BuiltinOperation) -> Definition {
-    match operation {
-        BuiltinOperation::AddProvider => add_provider::definition(),
-        BuiltinOperation::ListProviders => list_providers::definition(),
-        BuiltinOperation::GetProvider => get_provider::definition(),
-        BuiltinOperation::GetPolicy => get_policy::definition(),
-        BuiltinOperation::UpdatePolicy => update_policy::definition(),
-        BuiltinOperation::UpdateProvider => update_provider::definition(),
+fn definition(tool: BuiltinTool) -> Definition {
+    match tool {
+        BuiltinTool::AddProvider => add_provider::definition(),
+        BuiltinTool::ListProviders => list_providers::definition(),
+        BuiltinTool::GetProvider => get_provider::definition(),
+        BuiltinTool::GetPolicy => get_policy::definition(),
+        BuiltinTool::UpdatePolicy => update_policy::definition(),
+        BuiltinTool::UpdateProvider => update_provider::definition(),
     }
 }
 
@@ -624,8 +619,8 @@ fn prepare(definitions: Vec<Definition>) -> Result<PreparedProviderCatalog, Cata
         let output_schema = schemas
             .add_embedded_schema(&schema_source(definition.key, "output"), &definition.output)?;
         let binding = BuiltinExecutionBinding {
-            operation: OperationKey::parse(definition.key)
-                .map_err(|_error| invalid("a built-in Operation Key is invalid"))?,
+            tool: ToolKey::parse(definition.key)
+                .map_err(|_error| invalid("a built-in Tool Key is invalid"))?,
             input_schema,
             output_schema,
         };
@@ -637,13 +632,13 @@ fn prepare(definitions: Vec<Definition>) -> Result<PreparedProviderCatalog, Cata
         .map_err(|_error| invalid("the built-in schema graph cannot be encoded"))?;
     let type_names = typescript_names(&schema_graph);
     let mut shared_types = SharedTypes::default();
-    let mut operations = Vec::with_capacity(drafts.len());
+    let mut tools = Vec::with_capacity(drafts.len());
     for (definition, binding) in drafts {
-        let key = binding.operation_key().clone();
+        let key = binding.tool_key().clone();
         let relative_path = definition.key.to_string();
         let (declaration, type_references) =
             project(&binding, &schema_graph, &type_names, &mut shared_types)?;
-        if crate::types::operation_description_too_large(
+        if crate::types::tool_description_too_large(
             &relative_path,
             BUILTIN_PROVIDER_DISPLAY_NAME,
             &declaration,
@@ -652,11 +647,11 @@ fn prepare(definitions: Vec<Definition>) -> Result<PreparedProviderCatalog, Cata
         .is_some()
         {
             return Err(invalid(
-                "a built-in Operation description exceeds the discovery limit",
+                "a built-in Tool description exceeds the discovery limit",
             ));
         }
         let execution_binding = ExecutionBinding::Builtin(binding.clone());
-        operations.push(MaterializedOperation::new(
+        tools.push(MaterializedTool::new(
             key,
             relative_path,
             definition.summary.to_string(),
@@ -679,7 +674,7 @@ fn prepare(definitions: Vec<Definition>) -> Result<PreparedProviderCatalog, Cata
         BUILTIN_PROVIDER_DISPLAY_NAME.to_string(),
         schema_graph,
         schema_graph_json,
-        operations,
+        tools,
         shared_types,
     ))
 }

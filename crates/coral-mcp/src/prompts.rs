@@ -378,7 +378,7 @@ fn elicitation(
     let heading = if matches!(prompt.request, RequiredActionRequest::InvocationApproval(_)) {
         // The agent's stated reason, asked as the question being approved.
         intent.map_or_else(
-            || "Approve this operation?".to_owned(),
+            || "Approve this tool call?".to_owned(),
             |intent| format!("{}?", intent.trim_end_matches(['.', '!', '?'])),
         )
     } else {
@@ -390,7 +390,7 @@ fn elicitation(
     };
     let mut lines = vec![heading, String::new()];
     if !prompt.call_path.is_empty() {
-        lines.push(format!("Operation: {}", prompt.call_path));
+        lines.push(format!("Tool: {}", prompt.call_path));
     }
     let expires =
         chrono::DateTime::from_timestamp_nanos(prompt.deadline_at_unix_nanos).format("%H:%M UTC");
@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn messages_lead_with_the_question_and_name_no_buttons() {
         let approval = prompt(APPROVAL, "coral.providers.linear.listIssues");
-        let details = "Operation: coral.providers.linear.listIssues\n\
+        let details = "Tool: coral.providers.linear.listIssues\n\
                        Expires: 18:21 UTC · https://reef.example.test/workspaces/w/runs/r";
         assert_eq!(
             message(&approval, Some("List Linear issues assigned to the user")),
@@ -473,7 +473,7 @@ mod tests {
         );
         assert_eq!(
             message(&approval, None),
-            format!("Approve this operation?\n\n{details}")
+            format!("Approve this tool call?\n\n{details}")
         );
     }
 
@@ -493,7 +493,7 @@ mod tests {
         assert_eq!(
             message,
             "Connect your Linear account to continue.\n\n\
-             Operation: coral.providers.linear.listIssues\n\
+             Tool: coral.providers.linear.listIssues\n\
              Expires: 18:21 UTC"
         );
         assert_eq!(url, "https://reef.example.test/workspaces/w/accounts/p");

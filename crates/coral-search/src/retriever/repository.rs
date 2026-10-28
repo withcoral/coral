@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 
-use coral_catalog::{OperationKey, ProviderGenerationId};
+use coral_catalog::{ProviderGenerationId, ToolKey};
 use coral_db::{DatabaseSystem, Error, Transaction};
 use coral_functions::SavedFunctionId;
 use coral_provider::ProviderId;
@@ -41,17 +41,17 @@ enum SearchIndexStates {
     State,
 }
 
-const OPERATION: &str = "operation";
+const TOOL: &str = "provider_tool";
 const SAVED_FUNCTION: &str = "saved_function";
 const COMPLETE: &str = "complete";
 
 /// The rows one kind's statement may rank, as its visibility step decided.
 enum Scope<'a> {
-    /// Operations of the visible, ready Providers' active Generations, less
-    /// the Workspace's disabled Operations and those the caller does not
+    /// Tools of the visible, ready Providers' active Generations, less
+    /// the Workspace's disabled Tools and those the caller does not
     /// reach. coral-provider names each Provider's active Generation; the
     /// statement does not read it again.
-    Operations {
+    Tools {
         workspace_id: &'a WorkspaceId,
         provider_ids: &'a [String],
         generation_ids: &'a [String],
@@ -67,7 +67,7 @@ enum Scope<'a> {
 impl Scope<'_> {
     const fn workspace_id(&self) -> &WorkspaceId {
         match self {
-            Self::Operations { workspace_id, .. } | Self::SavedFunctions { workspace_id, .. } => {
+            Self::Tools { workspace_id, .. } | Self::SavedFunctions { workspace_id, .. } => {
                 workspace_id
             }
         }
@@ -77,7 +77,7 @@ impl Scope<'_> {
     fn sql(&self, binds: &mut Binds) -> String {
         let workspace = binds.push(self.workspace_id().to_string());
         match self {
-            Self::Operations {
+            Self::Tools {
                 provider_ids,
                 generation_ids,
                 excluded,
@@ -92,7 +92,7 @@ impl Scope<'_> {
                         format!("SELECT jsonb_array_elements_text({generations}::jsonb)"),
                         format!(
                             "SELECT 1 FROM jsonb_array_elements({excluded}::jsonb) AS x(v) \
-                             WHERE x.v->>0 = d.provider_id AND x.v->>1 = d.operation_key"
+                             WHERE x.v->>0 = d.provider_id AND x.v->>1 = d.tool_key"
                         ),
                     ),
                     DatabaseSystem::Sqlite => (
@@ -101,7 +101,7 @@ impl Scope<'_> {
                         format!(
                             "SELECT 1 FROM json_each({excluded}) AS x \
                              WHERE json_extract(x.value, '$[0]') = d.provider_id \
-                             AND json_extract(x.value, '$[1]') = d.operation_key"
+                             AND json_extract(x.value, '$[1]') = d.tool_key"
                         ),
                     ),
                 };
@@ -111,7 +111,7 @@ impl Scope<'_> {
                 // so two sets select the same rows as the pairs would; the
                 // Provider condition stays for its index.
                 format!(
-                    "d.workspace_id = {workspace} AND d.kind = '{OPERATION}' \
+                    "d.workspace_id = {workspace} AND d.kind = '{TOOL}' \
                      AND d.provider_id IN ({providers}) \
                      AND d.provider_generation_id IN ({generations}) \
                      AND NOT EXISTS ({excluded})"
@@ -136,14 +136,14 @@ impl Scope<'_> {
 struct RankedRow {
     call_path: String,
     provider_id: Option<String>,
-    operation_key: Option<String>,
+    tool_key: Option<String>,
     saved_function_id: Option<String>,
 }
 
-/// One ranked Operation: its Provider, its key, and its Call Path.
-pub(super) struct RankedOperation {
+/// One ranked Tool: its Provider, its key, and its Call Path.
+pub(super) struct RankedTool {
     pub(super) provider_id: ProviderId,
-    pub(super) operation_key: OperationKey,
+    pub(super) tool_key: ToolKey,
     pub(super) call_path: CallPath,
 }
 
@@ -160,18 +160,18 @@ pub(super) struct Ranking<T> {
     pub(super) near_spellings: Vec<String>,
 }
 
-/// Ranks the Operations of `providers` for the plan, best first, at most
+/// Ranks the Tools of `providers` for the plan, best first, at most
 /// `limit`. Only rows of `generations`, the Providers' active Generations,
-/// rank. The `excluded` Operations are left out.
-pub(super) async fn rank_operations(
+/// rank. The `excluded` Tools are left out.
+pub(super) async fn rank_tools(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     providers: &[ProviderId],
     generations: &[ProviderGenerationId],
-    excluded: &[(ProviderId, OperationKey)],
+    excluded: &[(ProviderId, ToolKey)],
     plan: &QueryPlan,
     limit: usize,
-) -> Result<Ranking<RankedOperation>, RetrievalError> {
+) -> Result<Ranking<RankedTool>, RetrievalError> {
     let provider_ids = providers
         .iter()
         .map(ToString::to_string)
@@ -184,7 +184,7 @@ pub(super) async fn rank_operations(
         .iter()
         .map(|(provider, key)| (provider.to_string(), key.as_str().to_string()))
         .collect::<Vec<_>>();
-    let scope = Scope::Operations {
+    let scope = Scope::Tools {
         workspace_id,
         provider_ids: &provider_ids,
         generation_ids: &generation_ids,
@@ -194,17 +194,14 @@ pub(super) async fn rank_operations(
     let entities = rows
         .into_iter()
         .map(|row| {
-            let (Some(provider_id), Some(operation_key)) = (row.provider_id, row.operation_key)
-            else {
-                return Err(RetrievalError::Corrupt(
-                    "an Operation row has no owner keys",
-                ));
+            let (Some(provider_id), Some(tool_key)) = (row.provider_id, row.tool_key) else {
+                return Err(RetrievalError::Corrupt("a Tool row has no owner keys"));
             };
-            Ok(RankedOperation {
+            Ok(RankedTool {
                 provider_id: ProviderId::parse(&provider_id)
                     .map_err(|_invalid| RetrievalError::Corrupt("invalid Provider id"))?,
-                operation_key: OperationKey::parse(&operation_key)
-                    .map_err(|_invalid| RetrievalError::Corrupt("invalid Operation Key"))?,
+                tool_key: ToolKey::parse(&tool_key)
+                    .map_err(|_invalid| RetrievalError::Corrupt("invalid Tool Key"))?,
                 call_path: call_path(&row.call_path)?,
             })
         })
@@ -298,12 +295,12 @@ async fn rank_postgres(
     let limit = binds.push(limit_value(limit));
     let sql = format!(
         "WITH candidates AS MATERIALIZED ( \
-             SELECT d.doc_id, d.call_path, d.provider_id, d.operation_key, d.saved_function_id, \
+             SELECT d.doc_id, d.call_path, d.provider_id, d.tool_key, d.saved_function_id, \
                     d.qualified_name, d.title, d.description, d.provider_name, d.tsv, d.doc_len \
              FROM search_entities AS d \
              WHERE {conditions} AND ({matches}) \
          ) \
-         SELECT c.call_path, c.provider_id, c.operation_key, c.saved_function_id \
+         SELECT c.call_path, c.provider_id, c.tool_key, c.saved_function_id \
          FROM candidates AS c \
          CROSS JOIN LATERAL ({score_sql}) AS s \
          ORDER BY \
@@ -435,7 +432,7 @@ async fn rank_sqlite(
     let phrase = phrase_points(&mut binds, "d", plan);
     let limit = binds.push(limit_value(limit));
     let sql = format!(
-        "SELECT d.call_path, d.provider_id, d.operation_key, d.saved_function_id \
+        "SELECT d.call_path, d.provider_id, d.tool_key, d.saved_function_id \
          FROM search_entities_fts AS f \
          JOIN search_entities AS d ON d.workspace_id = f.workspace_id AND d.doc_id = f.doc_id \
          WHERE f.workspace_id = d.workspace_id AND search_entities_fts MATCH {match_query} \
@@ -601,7 +598,7 @@ pub(super) async fn complete_generations(
                 .column(SearchIndexStates::TargetId)
                 .from(SearchIndexStates::Table)
                 .and_where(Expr::col(SearchIndexStates::WorkspaceId).eq(workspace_id.to_string()))
-                .and_where(Expr::col(SearchIndexStates::Kind).eq(OPERATION))
+                .and_where(Expr::col(SearchIndexStates::Kind).eq(TOOL))
                 .and_where(Expr::col(SearchIndexStates::State).eq(COMPLETE))
                 .to_owned(),
         )

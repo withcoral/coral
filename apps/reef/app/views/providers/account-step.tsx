@@ -39,7 +39,7 @@ const SIGN_IN_ACTION = 'Sign in and share the account'
 /**
  * Whose account the provider uses, as two columns of outcomes: one shared
  * account on the left, individual accounts on the right. A sign-in made to read
- * the operations is already in hand by now, so keeping it and replacing it are
+ * the tools is already in hand by now, so keeping it and replacing it are
  * options under the route they belong to rather than a control beside one.
  */
 export function AccountStep({
@@ -62,7 +62,7 @@ export function AccountStep({
   pending: boolean
   result?: StepperResult
   callbackUrl: string
-  /** The step before this one, which accepted the operations. */
+  /** The step before this one, which accepted the tools. */
   backPath: string
   /** Where the recipe says to find the credentials to enter. */
   documentationUrl?: string | null
@@ -228,7 +228,7 @@ export function AccountStep({
                   </Radio.Item>
                 )}
                 {/* Individual accounts start with one too, and the sign-in already
-                    made was for reading the operations, not for using them. */}
+                    made was for reading the tools, not for using them. */}
                 <Radio.Item
                   variant="card"
                   value="own-connect"

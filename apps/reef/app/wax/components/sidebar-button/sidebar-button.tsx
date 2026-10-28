@@ -19,7 +19,8 @@ export interface SidebarButtonProps<T extends ElementType = 'button'> {
   as?: T
   /** Supplementary status; include its meaning in the link's accessible name. */
   badge?: string
-  children: React.ReactNode
+  /** The label. A menu trigger's children take its place. */
+  children?: React.ReactNode
   className?: string
   disabled?: boolean
   icon: IconName

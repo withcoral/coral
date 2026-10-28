@@ -40,7 +40,7 @@ enum AgentState {
   AGENT_STATE_DISABLED = 2;
 }
 
-// Independent reasons Coral access is blocked, not Operation or client readiness.
+// Independent reasons Coral access is blocked, not Tool or client readiness.
 enum AgentAccessBlocker {
   // Unknown; clients must not imply access is enabled.
   AGENT_ACCESS_BLOCKER_UNSPECIFIED = 0;

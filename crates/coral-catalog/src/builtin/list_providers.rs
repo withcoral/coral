@@ -8,19 +8,19 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::{
-    ArgumentProblem, BuiltinCredentialRoute, BuiltinOperation, Definition, ProviderFacts,
-    derived_schema, empty_object_schema, operation_result, words_schema,
+    ArgumentProblem, BuiltinCredentialRoute, BuiltinTool, Definition, ProviderFacts,
+    derived_schema, empty_object_schema, tool_result, words_schema,
 };
-use crate::{OperationHints, OperationPresentation};
+use crate::{ToolHints, ToolPresentation};
 
 /// Any Principal that can inspect the Workspace lists its Providers.
 pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Inspect;
 
 pub(super) fn definition() -> Definition {
     Definition {
-        key: BuiltinOperation::ListProviders.key(),
+        key: BuiltinTool::ListProviders.key(),
         summary: "List the Providers in this Workspace",
-        presentation: OperationPresentation::new(
+        presentation: ToolPresentation::new(
             Some("List providers".to_string()),
             "List every Provider in this Workspace, including disabled ones and Coral's \
              own, in the order they were created. Also list the Providers your addProvider \
@@ -29,7 +29,7 @@ pub(super) fn definition() -> Definition {
             false,
             vec!["providers".to_string()],
             Some(
-                "Pass an empty object. Call a Provider's Operations under its callRoot. A \
+                "Pass an empty object. Call a Provider's Tools under its callRoot. A \
                  namespace is taken when coral.providers.<namespace> is a callRoot under \
                  providers, even when its Provider is disabled. A Provider that addProvider \
                  asked a person to finish is under setups until it is published, and then \
@@ -39,8 +39,8 @@ pub(super) fn definition() -> Definition {
                     .to_string(),
             ),
         ),
-        // Read-only: the default Operation Access State is enabled.
-        hints: OperationHints::new(Some(true), None, Some(true), None),
+        // Read-only: the default Tool Access State is enabled.
+        hints: ToolHints::new(Some(true), None, Some(true), None),
         input: empty_object_schema(),
         output: derived_schema::<ListProvidersResult>(Contract::Serialize),
     }
@@ -83,10 +83,10 @@ pub struct ListProvidersResult {
 }
 
 impl ListProvidersResult {
-    /// The Operation Result.
+    /// The Tool Result.
     #[must_use]
-    pub fn into_operation_result(self) -> Value {
-        operation_result(&self)
+    pub fn into_tool_result(self) -> Value {
+        tool_result(&self)
     }
 }
 
@@ -95,9 +95,9 @@ impl ListProvidersResult {
 #[serde(rename_all = "camelCase")]
 #[schemars(rename = "Provider", deny_unknown_fields, description = "")]
 pub struct ListedProvider {
-    /// The Call Root its Operations are called under, such as
+    /// The Call Root its Tools are called under, such as
     /// `coral.providers.github`, or `coral.workspace` for the Built-in Provider.
-    #[schemars(description = "The path you call the Provider's Operations under: \
+    #[schemars(description = "The path you call the Provider's Tools under: \
                        coral.providers.<namespace> for a Provider a person added, or \
                        coral.workspace for Coral's own.")]
     pub call_root: String,
@@ -162,8 +162,8 @@ pub struct ListedSetup {
     #[schemars(
         description = "What the person does next: awaiting_configuration to confirm how Coral \
                        reads the source, awaiting_sign_in to sign in so that Coral can read its \
-                       Operations, awaiting_discovery to try again on the page when Coral could \
-                       not read the Operations after the sign-in (the person does not sign in \
+                       Tools, awaiting_discovery to try again on the page when Coral could \
+                       not read the Tools after the sign-in (the person does not sign in \
                        again), or ready to add the Provider, signing in first when its route \
                        needs an account."
     )]
@@ -182,9 +182,9 @@ pub struct ListedSetup {
 pub enum ListedSetupState {
     /// The person confirms how Coral reads the source.
     AwaitingConfiguration,
-    /// The person signs in so that Coral can read the source's Operations.
+    /// The person signs in so that Coral can read the source's Tools.
     AwaitingSignIn,
-    /// The person signed in, but Coral has not read the source's Operations.
+    /// The person signed in, but Coral has not read the source's Tools.
     /// The person tries again, without a new sign-in.
     AwaitingDiscovery,
     /// Coral read the source. The person adds the Provider, after signing in

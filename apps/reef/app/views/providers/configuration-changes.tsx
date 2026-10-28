@@ -1,6 +1,7 @@
 import { Banner, Button, Table } from '@/wax/components'
 import * as Dialog from '@/wax/components/dialog'
-import { authenticationLabels, countLabel, serverLabel } from './configuration-details'
+import { countLabel } from '@/utils/count-label'
+import { authenticationLabels, serverLabel } from './configuration-details'
 import type { SetupView } from './types'
 
 /**

@@ -15,7 +15,7 @@ use v8 as _;
 
 const DECLARATION_MAX_BYTES: usize = 256 * 1024;
 
-const UNKNOWN_OPERATION: u64 = 100_001;
+const UNKNOWN_TOOL: u64 = 100_001;
 
 const DECLARATION_TOO_LARGE: u64 = 100_002;
 
@@ -27,7 +27,7 @@ export default function (input: { "owner": string; "repo": string }): Promise<Ht
 const TREE_GET: &str = r#"type Node = { "name": string; "parent"?: Node };
 export default function (): Promise<{ status: 200; data: Node }>;"#;
 
-// A reserved word is a valid Operation segment.
+// A reserved word is a valid Tool segment.
 const REPOS_DELETE: &str =
     "export default function (input: { \"repo\": string }): Promise<{ status: 204; data: null }>;";
 
@@ -47,30 +47,30 @@ fn deadline() -> std::time::Instant {
     std::time::Instant::now() + coral_v8::COMPILATION_TIMEOUT
 }
 
-fn operation(path: &str, declaration: &str) -> CallableDeclaration {
+fn tool(path: &str, declaration: &str) -> CallableDeclaration {
     CallableDeclaration::new(
         path.split('.').map(str::to_string).collect(),
         declaration.to_string(),
     )
 }
 
-fn operations() -> Vec<CallableDeclaration> {
+fn tools() -> Vec<CallableDeclaration> {
     vec![
-        operation("providers.github.repos.get", REPOS_GET),
-        operation("providers.github.repos.delete", REPOS_DELETE),
-        operation("providers.tree.get", TREE_GET),
-        operation("providers.notion.search", NOTION_SEARCH),
-        operation("providers.exported.get", EXPORTED_GET),
-        operation("workspace.listProviders", LIST_PROVIDERS),
+        tool("providers.github.repos.get", REPOS_GET),
+        tool("providers.github.repos.delete", REPOS_DELETE),
+        tool("providers.tree.get", TREE_GET),
+        tool("providers.notion.search", NOTION_SEARCH),
+        tool("providers.exported.get", EXPORTED_GET),
+        tool("workspace.listProviders", LIST_PROVIDERS),
     ]
 }
 
-/// Prepares `source` as Saved Function save does: typed by `operations` and
+/// Prepares `source` as Saved Function save does: typed by `tools` and
 /// `weather.forecast` along the Call Paths the source names.
 fn prepare(
     compiler: &ProgramCompiler,
     source: &str,
-    operations: Vec<CallableDeclaration>,
+    tools: Vec<CallableDeclaration>,
     declaration_max_bytes: usize,
 ) -> Result<SavedFunctionCompilation, coral_v8::Error> {
     let named = compiler.saved_function_call_paths(deadline(), source)?;
@@ -78,8 +78,8 @@ fn prepare(
         deadline(),
         source,
         &CoralDeclarations::new(declaration_max_bytes)
-            .with_operations(named.operations(), operations)
-            .with_functions(vec![operation("weather.forecast", FORECAST)]),
+            .with_tools(named.tools(), tools)
+            .with_functions(vec![tool("weather.forecast", FORECAST)]),
     )
 }
 
@@ -113,14 +113,14 @@ fn saved_function_diagnostics_check_calls_against_declarations() {
             &[(2345, Some(2), Some(43))],
         ),
         (
-            "a reserved-word Operation segment",
+            "a reserved-word Tool segment",
             "export default async function remove() {\n  await coral.providers.github.repos.delete({ repo: \"coral\", nope: 1 });\n}",
             &[(2353, Some(2), Some(62))],
         ),
         (
-            "a Call Path that names no Operation the caller can call",
+            "a Call Path that names no Tool the caller can call",
             "export default async function stars() {\n  const r = await coral.providers.github.repos.gett({ owner: 1 });\n  return r.data.anything;\n}",
-            &[(UNKNOWN_OPERATION, Some(2), Some(19))],
+            &[(UNKNOWN_TOOL, Some(2), Some(19))],
         ),
         (
             "a read of an undeclared result shape",
@@ -128,14 +128,14 @@ fn saved_function_diagnostics_check_calls_against_declarations() {
             &[(18046, Some(3), Some(10))],
         ),
         (
-            "a wrong Built-in Operation input",
+            "a wrong Built-in Tool input",
             "export default async function namespaces() {\n  const r = await coral.workspace.listProviders({ limit: \"all\" });\n  return r.providers.map((p) => p.callRoot);\n}",
             &[(2322, Some(2), Some(51))],
         ),
         (
-            "a Built-in Operation that does not exist",
+            "a Built-in Tool that does not exist",
             "export default async function wipe() {\n  return coral.workspace.deleteEverything();\n}",
-            &[(UNKNOWN_OPERATION, Some(2), Some(10))],
+            &[(UNKNOWN_TOOL, Some(2), Some(10))],
         ),
         (
             "an alias to a namespace that holds nothing the caller can call",
@@ -155,11 +155,11 @@ fn saved_function_diagnostics_check_calls_against_declarations() {
         (
             "a provider namespace the caller cannot see",
             "export default async function hidden() {\n  return coral.providers.secret.things.list();\n}",
-            &[(UNKNOWN_OPERATION, Some(2), Some(10))],
+            &[(UNKNOWN_TOOL, Some(2), Some(10))],
         ),
     ];
     for (name, source, expected) in cases {
-        let compilation = prepare(&compiler, source, operations(), DECLARATION_MAX_BYTES)
+        let compilation = prepare(&compiler, source, tools(), DECLARATION_MAX_BYTES)
             .unwrap_or_else(|error| panic!("{name}: save is advisory: {error:?}"));
         assert_eq!(
             errors(compilation.diagnostics()),
@@ -171,12 +171,12 @@ fn saved_function_diagnostics_check_calls_against_declarations() {
 }
 
 /// The message names the chain as written, whether or not a sibling
-/// Operation under the same root resolved.
+/// Tool under the same root resolved.
 #[test]
-fn unknown_operation_diagnostic_names_the_call_path_only() {
+fn unknown_tool_diagnostic_names_the_call_path_only() {
     let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
-    for (name, operations) in [
-        ("beside a resolved sibling", operations()),
+    for (name, tools) in [
+        ("beside a resolved sibling", tools()),
         ("alone in its root", Vec::new()),
     ] {
         for call_path in [
@@ -186,7 +186,7 @@ fn unknown_operation_diagnostic_names_the_call_path_only() {
             let compilation = prepare(
                 &compiler,
                 &format!("export default async function f() {{\n  return {call_path}();\n}}"),
-                operations.clone(),
+                tools.clone(),
                 DECLARATION_MAX_BYTES,
             )
             .expect("advisory save");
@@ -197,7 +197,7 @@ fn unknown_operation_diagnostic_names_the_call_path_only() {
                 .collect::<Vec<_>>();
             assert_eq!(
                 messages,
-                [format!("{call_path} names no Operation that you can call.")],
+                [format!("{call_path} names no Tool that you can call.")],
                 "{name}: {call_path}"
             );
         }
@@ -205,12 +205,12 @@ fn unknown_operation_diagnostic_names_the_call_path_only() {
 }
 
 #[test]
-fn saved_function_declaration_inlines_an_operation_result_type() {
+fn saved_function_declaration_inlines_a_tool_result_type() {
     let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
     let compilation = prepare(
         &compiler,
         "export default async function repo(owner: string) {\n  const r = await coral.providers.github.repos.get({ owner, repo: \"coral\" });\n  return r.data.owner;\n}",
-        operations(),
+        tools(),
         DECLARATION_MAX_BYTES,
     )
     .expect("typed save");
@@ -225,7 +225,7 @@ fn saved_function_declaration_inlines_an_operation_result_type() {
     );
 }
 
-/// Each diagnostic names the Operation by its Call Path.
+/// Each diagnostic names the Tool by its Call Path.
 #[test]
 fn an_uninlinable_result_type_saves_the_untyped_declaration() {
     let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
@@ -252,7 +252,7 @@ fn an_uninlinable_result_type_saves_the_untyped_declaration() {
             "'coral.providers.exported.get'",
         ),
     ] {
-        let compilation = prepare(&compiler, source, operations(), declaration_max_bytes)
+        let compilation = prepare(&compiler, source, tools(), declaration_max_bytes)
             .unwrap_or_else(|error| panic!("{name}: typing never fails a save: {error:?}"));
         assert!(
             compilation.declaration().contains("Promise<any>"),
@@ -276,7 +276,7 @@ fn an_uninlinable_result_type_saves_the_untyped_declaration() {
 }
 
 #[test]
-fn call_path_analysis_names_every_candidate_operation_call_path() {
+fn call_path_analysis_names_every_candidate_tool_call_path() {
     let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
     let named = compiler
         .saved_function_call_paths(
@@ -285,7 +285,7 @@ fn call_path_analysis_names_every_candidate_operation_call_path() {
         )
         .expect("analyze Saved Function");
     assert_eq!(
-        named.operations().call_paths(),
+        named.tools().call_paths(),
         [
             "coral.providers.github.repos",
             "coral.providers.github.repos.get",

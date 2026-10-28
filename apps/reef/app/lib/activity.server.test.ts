@@ -69,17 +69,17 @@ const execution = {
   startedAtUnixNanos: 2_000_000_000n,
   requiresAction: true,
 }
-const operation = {
+const tool = {
   name: invocation,
   workspace,
   run,
   task,
-  operation: 'send',
+  tool: 'send',
   callPath: 'mail.send',
   state: ActivityInvocationState.PENDING,
   requiresAction: true,
 }
-// A source location as Coral sends it on an operation, an emission or a log.
+// A source location as Coral sends it on a tool, an emission or a log.
 type StoredLocation = {
   document:
     | { case: 'program'; value: Record<string, never> }
@@ -112,7 +112,7 @@ const READS: Record<string, string> = {
   browseRunEntries: 'entries',
   inspectRun: 'run',
   inspectRunEvent: 'event',
-  inspectInvocation: 'operation',
+  inspectInvocation: 'invocation',
   inspectApproval: 'approval',
   getAccountConnectionRequest: 'connection',
 }
@@ -272,7 +272,7 @@ function interactionDetail(
           name: interaction,
           agent: agentOf(options),
           kind: options.describe ? 'describe' : 'search',
-          intent: 'Find operations',
+          intent: 'Find tools',
           outcome: 'succeeded',
         },
         evidence: {
@@ -293,8 +293,8 @@ function interactionDetail(
 }
 
 const githubProvider = '00000000-0000-4000-8000-000000000009'
-/** Every Operation that the stored discovery fixtures name. */
-const fixtureOperations = [
+/** Every Tool that the stored discovery fixtures name. */
+const fixtureTools = [
   'pulls.checkIfMerged',
   'pulls.deleteReviewComment',
   'pulls.merge',
@@ -306,7 +306,7 @@ const fixtureOperations = [
 function catalog(
   options: {
     namespaces?: string[]
-    operations?: string[]
+    tools?: string[]
     functions?: string[]
     concealed?: boolean
   } = {},
@@ -323,8 +323,8 @@ function catalog(
                 callRoot: `coral.providers.${namespace}`,
               })),
             },
-      listOperations: () => ({
-        operations: (options.operations ?? fixtureOperations).map((relativePath) => ({
+      listTools: () => ({
+        tools: (options.tools ?? fixtureTools).map((relativePath) => ({
           relativePath,
         })),
       }),
@@ -405,7 +405,7 @@ function runEntries(
                   record: {
                     case: 'invocation',
                     value: {
-                      ...operation,
+                      ...tool,
                       contextImpactBytes: options.contextImpact ? -150000n : undefined,
                       sourceLocation: options.location,
                     },
@@ -534,11 +534,10 @@ function invocationDetail(
   return {
     activity: {
       inspectInvocation: () => {
-        if (options.invocationUnavailable)
-          refuse('operation unavailable', options.invocationUnavailable)
+        if (options.invocationUnavailable) refuse('tool unavailable', options.invocationUnavailable)
         return {
           invocation: {
-            ...operation,
+            ...tool,
             agent: agentOf(options),
             state: options.resolved
               ? ActivityInvocationState.ENDED
@@ -601,7 +600,7 @@ function connectionRequest(options: { hiddenRequest?: boolean } = {}): Handlers 
   }
 }
 
-/** The reads that open an operation for review inside its Task and Run. */
+/** The reads that open a tool for review inside its Task and Run. */
 function reviewReads(
   options: Parameters<typeof runDetail>[0] & Parameters<typeof approvalDetail>[0] = {},
 ) {
@@ -621,7 +620,7 @@ const DETAIL_OR_CHILD = [
   'entries',
   'run',
   'event',
-  'operation',
+  'invocation',
   'approval',
   'connection',
 ]
@@ -651,7 +650,7 @@ function revealLink(page: ActivityPage, location: string): URL {
 }
 
 describe('hierarchical activity through the private server interface', () => {
-  it('selects and loads the exact operation approval once, but never chooses another action during observation', async () => {
+  it('selects and loads the exact tool approval once, but never chooses another action during observation', async () => {
     const { api, calls } = coral(list(), ...reviewReads())
     const input = request({ record: invocation })
     const initial = await loadActivity(input, api, { scope })
@@ -676,7 +675,7 @@ describe('hierarchical activity through the private server interface', () => {
       expect(calls.some(({ method }) => method === 'approval')).toBe(false)
     },
   )
-  it('does not show a sibling operation approval as the selected operation', async () => {
+  it('does not show a sibling tool approval as the selected tool', async () => {
     const { api } = coral(
       list(),
       taskDetail(),
@@ -695,7 +694,7 @@ describe('hierarchical activity through the private server interface', () => {
       requestUnavailable: true,
     })
   })
-  it('conceals an operation approval whose Run is unavailable instead of reviewing it without context', async () => {
+  it('conceals a tool approval whose Run is unavailable instead of reviewing it without context', async () => {
     const { api } = coral(list(), ...reviewReads({ runDetailUnavailable: true }))
     const page = await loadActivity(request({ record: invocation, request: approval }), api, {
       scope,
@@ -1038,7 +1037,7 @@ describe('hierarchical activity through the private server interface', () => {
     expect(page.branches[run].next).toBe('3')
     expect(loaded(calls, 'task')).toBe(1)
     expect(loaded(calls, 'entries')).toBe(1)
-    expect(loaded(calls, 'tool', 'run', 'event', 'operation', 'approval')).toBe(0)
+    expect(loaded(calls, 'tool', 'run', 'event', 'invocation', 'approval')).toBe(0)
     expect(JSON.stringify(page)).not.toMatch(/secretSource|private@example|invoices.*24/)
   })
   it.each([0n, 200n])(
@@ -1075,7 +1074,7 @@ describe('hierarchical activity through the private server interface', () => {
         { name: invocation },
         { name: `${run}/events/3` },
       ])
-      expect(loaded(calls, 'tool', 'run', 'event', 'operation', 'approval')).toBe(0)
+      expect(loaded(calls, 'tool', 'run', 'event', 'invocation', 'approval')).toBe(0)
       expect(calls.find((call) => call.method === 'task')?.input).toMatchObject({
         viewport: { offset: 100n },
       })
@@ -1156,9 +1155,9 @@ describe('hierarchical activity through the private server interface', () => {
   })
   it.each([
     ['from its Run', run, false, goal.intent],
-    ['from its operation', invocation, false, goal.intent],
+    ['from its tool', invocation, false, goal.intent],
     // An unavailable Task leaves the intent out, not the review.
-    ['from its operation, with its Task unavailable', invocation, true, undefined],
+    ['from its tool, with its Task unavailable', invocation, true, undefined],
   ])(
     'reviews an approval selected %s with the intent of the Task that owns the Run',
     async (_label, record, taskUnavailable, taskIntent) => {
@@ -1220,7 +1219,7 @@ describe('hierarchical activity through the private server interface', () => {
       expect(review && 'taskIntent' in review).toBe(false)
     },
   )
-  it('keeps exact operation detail selected outside the list and opens only its own approval', async () => {
+  it('keeps exact tool detail selected outside the list and opens only its own approval', async () => {
     const { api, calls } = coral(
       list(),
       runDetail(),
@@ -1251,9 +1250,9 @@ describe('hierarchical activity through the private server interface', () => {
       },
     })
     expect(loaded(calls, 'tool')).toBe(1)
-    expect(loaded(calls, 'task', 'entries', 'run', 'event', 'operation')).toBe(0)
+    expect(loaded(calls, 'task', 'entries', 'run', 'event', 'invocation')).toBe(0)
   })
-  it('links an Operation hit of a historical search page to the current operation', async () => {
+  it('links a Tool hit of a historical search page to the current tool', async () => {
     const { api } = coral(
       list(),
       interactionDetail({ response: stored.complete }),
@@ -1262,14 +1261,14 @@ describe('hierarchical activity through the private server interface', () => {
     const page = await loadActivity(request({ record: interaction, tree: '1' }), api, { scope })
     expect(searchHits(page).map((hit) => hit.currentHref)).toEqual(
       ['checkIfMerged', 'deleteReviewComment', 'merge', 'getMergeAsyncResult', 'updateBranch'].map(
-        (path) => `/${workspace}/providers/${githubProvider}/ops/pulls.${path}`,
+        (path) => `/${workspace}/providers/${githubProvider}/tools/pulls.${path}`,
       ),
     )
   })
   it.each([
     ['its provider is current', ['github'], 'pulls.checkIfMerged'],
     ['its provider is gone', ['linear'], 'coral.providers.github.pulls.checkIfMerged'],
-  ])('titles an untitled Operation hit by its path when %s', async (_, namespaces, title) => {
+  ])('titles an untitled Tool hit by its path when %s', async (_, namespaces, title) => {
     const response = JSON.parse(stored.complete) as { hits: { title: string | null }[] }
     response.hits[0]!.title = null
     const { api } = coral(
@@ -1282,10 +1281,10 @@ describe('hierarchical activity through the private server interface', () => {
   })
   it.each([
     ['its provider is gone', catalog({ namespaces: ['linear'] })],
-    // The provider stays, but an update removed the operation.
-    ['its operation is gone', catalog({ namespaces: ['github'], operations: ['issues.create'] })],
+    // The provider stays, but an update removed the tool.
+    ['its tool is gone', catalog({ namespaces: ['github'], tools: ['issues.create'] })],
     ['you cannot list providers', catalog({ concealed: true })],
-  ])('leaves an Operation hit without a link when %s', async (_, current) => {
+  ])('leaves a Tool hit without a link when %s', async (_, current) => {
     const { api } = coral(list(), interactionDetail({ response: stored.complete }), current)
     const page = await loadActivity(request({ record: interaction, tree: '1' }), api, { scope })
     expect(searchHits(page).map((hit) => hit.currentHref)).toEqual(Array(5).fill(null))
@@ -1315,16 +1314,16 @@ describe('hierarchical activity through the private server interface', () => {
     const page = await loadActivity(request({ record: interaction, tree: '1' }), api, { scope })
     const [savedFunction, merge] = searchHits(page)
     expect(savedFunction).toMatchObject({ kind: 'saved_function', currentHref: href })
-    expect(merge.currentHref).toBe(`/${workspace}/providers/${githubProvider}/ops/pulls.merge`)
+    expect(merge.currentHref).toBe(`/${workspace}/providers/${githubProvider}/tools/pulls.merge`)
     expect(loaded(calls, 'listSavedFunctions')).toBe(reads)
   })
-  it('links a historical description to the current operation', async () => {
+  it('links a historical description to the current tool', async () => {
     const { api } = coral(
       list(),
       interactionDetail({
         describe: 'coral.providers.github.issues.create',
         types: ['Repository'],
-        response: stored.describeOperation,
+        response: stored.describeTool,
       }),
       catalog({ namespaces: ['github'] }),
     )
@@ -1340,7 +1339,7 @@ describe('hierarchical activity through the private server interface', () => {
           kind: 'describe',
           description: {
             title: 'Create an issue',
-            currentHref: `/${workspace}/providers/${githubProvider}/ops/issues.create`,
+            currentHref: `/${workspace}/providers/${githubProvider}/tools/issues.create`,
           },
         },
       },
@@ -1385,12 +1384,12 @@ describe('hierarchical activity through the private server interface', () => {
     })
     expect(loaded(calls, 'event')).toBe(1)
     expect(loaded(calls, 'run')).toBe(1)
-    expect(loaded(calls, 'task', 'entries', 'operation')).toBe(0)
+    expect(loaded(calls, 'task', 'entries', 'invocation')).toBe(0)
   })
   // Catches: a location Coral stored lost, or mistranslated, on one of the reads that carry it.
   it.each<[string, Handlers[], Parameters<typeof request>[0], (page: ActivityPage) => unknown[]]>([
     [
-      'a selected operation',
+      'a selected tool',
       [invocationDetail({ resolved: true, ordinary: true, location: inSnapshot }), runDetail()],
       { record: invocation },
       (page) => [page.selectedRow, page.detail?.kind === 'invocation' && page.detail.invocation],
@@ -1402,7 +1401,7 @@ describe('hierarchical activity through the private server interface', () => {
       (page) => [page.selectedRow],
     ],
     [
-      'an expanded Run’s operation and emission',
+      'an expanded Run’s tool and emission',
       [taskDetail(), runEntries({ location: inSnapshot })],
       { expand: [task, run] },
       (page) => page.branches[run]!.rows,
@@ -1434,7 +1433,7 @@ describe('hierarchical activity through the private server interface', () => {
       undefined,
     ],
     ['no location', undefined, undefined],
-  ])('reads an operation located in %s', async (_, location, expected) => {
+  ])('reads a tool located in %s', async (_, location, expected) => {
     const { api } = coral(
       list(),
       invocationDetail({ resolved: true, ordinary: true, location }),
@@ -1449,7 +1448,7 @@ describe('hierarchical activity through the private server interface', () => {
   // that hides an expired session, a refused request or a cancelled load behind the record.
   const selections = [
     {
-      selected: 'an operation',
+      selected: 'a tool',
       reads: (code?: Code) => [
         invocationDetail({ resolved: true, ordinary: true, invocationUnavailable: code }),
       ],
@@ -1521,7 +1520,7 @@ describe('hierarchical activity through the private server interface', () => {
       ).rejects.toMatchObject({ code })
     },
   )
-  it('authorizes an ordinary operation selection’s parent Run source the same way, not only an approval review', async () => {
+  it('authorizes an ordinary tool selection’s parent Run source the same way, not only an approval review', async () => {
     const { api, calls } = coral(
       list(),
       invocationDetail({ resolved: true, ordinary: true }),
@@ -1549,7 +1548,7 @@ describe('hierarchical activity through the private server interface', () => {
       { requestUnavailable: true },
     ],
     [
-      'an approval for another operation',
+      'an approval for another tool',
       [invocationDetail(), approvalDetail({ wrongApprovalInvocation: true })],
       approval,
       { requestUnavailable: true },
@@ -1561,7 +1560,7 @@ describe('hierarchical activity through the private server interface', () => {
       { request: { kind: 'account_connection' } },
     ],
   ] as never)(
-    'keeps the parent Run’s source for an operation selected with %s',
+    'keeps the parent Run’s source for a tool selected with %s',
     async (_, handlers, selected, expected) => {
       const { api, calls } = coral(list(), runDetail(), ...handlers)
       const page = await loadActivity(
@@ -1669,7 +1668,7 @@ describe('hierarchical activity through the private server interface', () => {
     })
     expect(calls.filter((call) => call.method === 'approval')).toHaveLength(1)
   })
-  it('conceals an unavailable request without discarding authorized operation evidence', async () => {
+  it('conceals an unavailable request without discarding authorized tool evidence', async () => {
     const page = await loadActivity(
       request({ record: invocation, request: approval, tree: '1' }),
       coral(list(), invocationDetail(), approvalDetail({ hiddenRequest: true }), runDetail()).api,
@@ -1731,9 +1730,9 @@ describe('hierarchical activity through the private server interface', () => {
     })
     expect(page.selected).toBe(run)
     expect(page.detail?.kind).toBe('run')
-    expect(calls.some((call) => call.method === 'operation')).toBe(false)
+    expect(calls.some((call) => call.method === 'invocation')).toBe(false)
   })
-  it('allows exact child selection on a stable Run link but conceals an operation from another Run', async () => {
+  it('allows exact child selection on a stable Run link but conceals a tool from another Run', async () => {
     const { api } = coral(list(), ...reviewReads())
     const own = await loadRunActivity(request({ record: invocation, request: approval }), api, {
       workspace: workspace.split('/')[1],
@@ -1864,16 +1863,16 @@ describe('hierarchical activity through the private server interface', () => {
   })
 })
 
-/** An operation of `run` that waits on a request, as Coral lists and inspects it. */
+/** A tool of `run` that waits on a request, as Coral lists and inspects it. */
 interface Wait {
   id: string
   startedAt: bigint
   request: { kind: 'approval' | 'accountConnection'; id: string }
   /** The caller can decide the approval, or the connection is still pending. */
   actionable?: boolean
-  /** Coral still reports the operation waiting. */
+  /** Coral still reports the tool waiting. */
   waiting?: boolean
-  /** Its approval was approved; the operation no longer waits. */
+  /** Its approval was approved; the tool no longer waits. */
   decided?: boolean
   /** The 100-child page of the Run's children that lists it. */
   page?: number
@@ -1908,11 +1907,11 @@ const connectionWait = (id: string, startedAt: bigint, extra: Partial<Wait> = {}
 /** An emission of `run`, selected while live mode follows the Run. */
 const followed = (extra: Record<string, string | undefined> = {}) =>
   request({ record: `${run}/events/3`, tree: '1', live: '1', ...extra })
-/** The action that reviews `wait` on its operation. */
+/** The action that reviews `wait` on its tool. */
 const target = (wait: Wait) => ({ run, record: waitName(wait.id), request: requestName(wait) })
 
 /**
- * A Run whose operations wait on `waits`, listed in the order given. Its current requests
+ * A Run whose tools wait on `waits`, listed in the order given. Its current requests
  * come in two action pages: the first holds the last wait, the second all the others.
  */
 function waitingRun(waits: Wait[]): Handlers {
@@ -1981,7 +1980,7 @@ function waitingRuns(runs: Record<string, Wait[]>): Handlers {
                 record: {
                   case: 'invocation' as const,
                   value: {
-                    ...operation,
+                    ...tool,
                     name: waitName(wait.id),
                     startedAtUnixNanos: wait.startedAt,
                     requiresAction: waiting(wait),
@@ -1997,7 +1996,7 @@ function waitingRuns(runs: Record<string, Wait[]>): Handlers {
         const wait = all.find((item) => waitName(item.id) === input.name)
         return {
           invocation: {
-            ...operation,
+            ...tool,
             run: ownerOf(wait),
             name: input.name,
             startedAtUnixNanos: wait?.startedAt,
@@ -2021,7 +2020,7 @@ function waitingRuns(runs: Record<string, Wait[]>): Handlers {
 }
 
 describe("Live's oldest action in the followed Run", () => {
-  it('times every approval on every action page by its operation, then identity', async () => {
+  it('times every approval on every action page by its tool, then identity', async () => {
     // `b` alone is on the first action page; its equal-time tie `a` and the newer `c`
     // are on the second, and far past the first history page.
     const a = approvalWait('a', 5n, { page: 3 })
@@ -2030,10 +2029,10 @@ describe("Live's oldest action in the followed Run", () => {
     const { api, calls } = coral(list(), runEvent(), waitingRun([c, a, b]))
     const page = await loadActivity(followed(), api, { scope })
     expect(page.liveAction).toEqual(target(a))
-    // Each approval and its operation are read once; the Run's history is not.
+    // Each approval and its tool are read once; the Run's history is not.
     expect(loaded(calls, 'entries')).toBe(0)
     expect(loaded(calls, 'approval')).toBe(3)
-    expect(loaded(calls, 'operation')).toBe(3)
+    expect(loaded(calls, 'invocation')).toBe(3)
   })
   it.each(['latest', 'task'])('reads it while live mode follows the %s scope', async (live) => {
     const oldest = approvalWait('a', 1n)
@@ -2049,14 +2048,14 @@ describe("Live's oldest action in the followed Run", () => {
     const page = await loadActivity(followed({ actionsAfter: 'older-actions' }), api, { scope })
     expect(page.liveAction).toEqual(target(oldest))
   })
-  it('reads no operation of an approval you cannot decide, and no history', async () => {
+  it('reads no tool of an approval you cannot decide, and no history', async () => {
     const waits = ['a', 'b', 'c'].map((id, index) =>
       approvalWait(id, BigInt(index), { actionable: false, page: 9 }),
     )
     const { api, calls } = coral(list(), runEvent(), waitingRun(waits))
     const page = await loadActivity(followed(), api, { scope })
     expect(page.liveAction).toBeUndefined()
-    expect(loaded(calls, 'entries', 'operation')).toBe(0)
+    expect(loaded(calls, 'entries', 'invocation')).toBe(0)
   })
   it.each([
     { name: 'an earlier timestamp', early: 1n, approvalTime: 5n },
@@ -2073,7 +2072,7 @@ describe("Live's oldest action in the followed Run", () => {
     { name: 'an older connection wins', connected: 3n, approved: 4n, chosen: 'x' },
     { name: 'an older approval wins', connected: 5n, approved: 4n, chosen: 'y' },
   ])(
-    'times a connection by the first operation that waits on it: $name',
+    'times a connection by the first tool that waits on it: $name',
     async ({ connected, approved, chosen }) => {
       const x = connectionWait('x', connected, { page: 1 })
       const y = approvalWait('y', approved)
@@ -2091,7 +2090,7 @@ describe("Live's oldest action in the followed Run", () => {
       chosen: 'b',
     },
     {
-      name: 'an operation that no longer waits',
+      name: 'a tool that no longer waits',
       waits: [approvalWait('a', 1n, { waiting: false }), approvalWait('b', 2n)],
       chosen: 'b',
     },
@@ -2112,7 +2111,7 @@ describe("Live's oldest action in the followed Run", () => {
     const { api } = coral(list(), runEvent(), waitingRun(waits))
     const page = await loadActivity(followed(), api, { scope })
     const wait = waits.find((item) => item.id === chosen)
-    // An account connection is reviewed on its Run, an approval on its operation.
+    // An account connection is reviewed on its Run, an approval on its tool.
     expect(page.liveAction).toEqual(
       wait && {
         ...target(wait),
@@ -2128,7 +2127,7 @@ describe("Live's oldest action in the followed Run", () => {
     const { api, calls } = coral(list(), runEvent(), waitingRun(waits))
     const page = await loadActivity(followed(query), api, { scope })
     expect(page.liveAction).toBeUndefined()
-    expect(loaded(calls, 'entries', 'operation', 'approval', 'connection')).toBe(0)
+    expect(loaded(calls, 'entries', 'invocation', 'approval', 'connection')).toBe(0)
   })
   it('reads the next action once the reviewed approval is decided, with live mode off', async () => {
     const decided = approvalWait('a', 1n, { decided: true })
@@ -2355,7 +2354,7 @@ describe("Page live's projection past the list", () => {
   const idle: LiveRoot = { kind: 'task', id: 'idle', runs: [{ id: 'idle-run', ended: true }] }
   it.each<{ name: string; roots: LiveRoot[]; chosen: ReturnType<typeof actionIn> }>([
     {
-      name: 'the operation that started waiting first, across Tasks',
+      name: 'the tool that started waiting first, across Tasks',
       roots: [
         idle,
         { kind: 'task', id: 'n', partial: true, runs: [{ id: 'b', waits: [late] }] },
@@ -2500,7 +2499,7 @@ describe("Page live's projection past the list", () => {
       { kind: 'task', id: 'gone', unlisted: true, runs: [{ id: 'g' }] },
       { kind: 'task', id: 'n', partial: true, runs: [{ id: 'b' }] },
     ]
-    const tool: Handlers = {
+    const taskTool: Handlers = {
       activity: {
         inspectTaskInteraction: () => ({
           interaction: {
@@ -2512,7 +2511,7 @@ describe("Page live's projection past the list", () => {
         }),
       },
     }
-    const { api, calls } = coral(liveWorld(roots), tool)
+    const { api, calls } = coral(liveWorld(roots), taskTool)
     const record = `${taskName('gone')}/interactions/search`
     const page = await loadActivity(onLatest({ record }), api, { scope })
     expect(liveNames(page.liveLatest)).toEqual({
@@ -2867,7 +2866,7 @@ describe('a request reviewed from a later page of the Run actions', () => {
   // under it and a connection loses its provider's name.
   it.each([
     ['its Run', run],
-    ['its operation', invocation],
+    ['its tool', invocation],
   ])('keeps the page an approval opened from %s', async (_label, record) => {
     const { api, calls } = coral(
       list(),

@@ -62,5 +62,5 @@ export function useAccountAudience(): AccountAudience {
 
 /** What each account choice means for the people and agents who call the provider. */
 export function accountHelp(audience: AccountAudience): Record<AccountChoice, string> {
-  return { none: 'Coral sends no account credentials with operation calls.', ...audience.help }
+  return { none: 'Coral sends no account credentials with tool calls.', ...audience.help }
 }

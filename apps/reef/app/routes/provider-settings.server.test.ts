@@ -271,20 +271,20 @@ it('falls back to the shared-account blocker when the shared read fails', async 
   expect((await load()).provider).toMatchObject({ connection: 'not_connected' })
 })
 
-// Catches: a disabled provider, or one with no callable operation, looking
+// Catches: a disabled provider, or one with no callable tool, looking
 // the same as a ready one in settings.
-it('says whether the provider is enabled and has operations ready', async () => {
+it('says whether the provider is enabled and has tools ready', async () => {
   responses['providers.getProvider'] = () =>
     provider({
       state: ProviderState.DISABLED,
-      blockers: [ProviderBlocker.PROVIDER_DISABLED, ProviderBlocker.NO_OPERATIONS_READY],
+      blockers: [ProviderBlocker.PROVIDER_DISABLED, ProviderBlocker.NO_TOOLS_READY],
     })
   signedInAs('member')
   expect((await load()).provider).toMatchObject({
     enabled: false,
-    operationsReady: false,
+    toolsReady: false,
   })
 
   responses['providers.getProvider'] = () => provider()
-  expect((await load()).provider).toMatchObject({ enabled: true, operationsReady: true })
+  expect((await load()).provider).toMatchObject({ enabled: true, toolsReady: true })
 })
