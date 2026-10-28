@@ -54,9 +54,10 @@ writer in the predicate of the history write itself. A lock without a write fenc
   insert into its Run Inbox. An expired-lease sweep, run at boot before any listener binds and periodically after, gives
   each abandoned `running` Run an owner. That owner applies the Run's passed timers in deadline order, then the requests
   waiting in its Run Inbox, then writes one chunk that finishes the recorded termination or interrupts the Run. A Run
-  that no Run Executor has accepted goes back in a queue instead
-  ([ADR 0027](0027-run-executors-compile-and-execute-programs.md)). Coral never resumes a Run. When an owner task ends
-  without retiring, as a panic does, its supervisor takes over the claim and writes the same one-chunk interruption.
+  that no Run Executor has accepted, with no recorded termination and no cancellation waiting in its Run Inbox, goes
+  back in a queue instead ([ADR 0027](0027-run-executors-compile-and-execute-programs.md)). Coral never resumes a Run.
+  When an owner task ends without retiring, as a panic does, its supervisor takes over the claim and writes the same
+  one-chunk interruption.
 - **Rollout.** A deploy may briefly run an old and a new process side by side. On shutdown a process reports not ready,
   refuses new Runs, releases the leases of its Runs that no Run Executor has accepted
   ([ADR 0027](0027-run-executors-compile-and-execute-programs.md)), waits the Shutdown Drain for its live Runs, then

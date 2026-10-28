@@ -21,9 +21,10 @@ each part.
 | Docker Compose, Kubernetes | Its own container, shared by every Coral Instance, found through one DNS name | The orchestrator's limit, sized above the heap limits it holds | A lower CPU weight than Coral, never a quota |
 | A remote runtime | Behind a bridge: a Run Executor in its own container that drives the runtime | The lower of Coral's limit and the runtime's | The lower of the Run CPU Budget and the runtime's |
 
-`coral` runs local children only when no `run_executor_address` is configured. The two never mix. A local child runs as
-Coral's OS user with an empty environment, so it isolates resource use and failures, not access. A Run Executor in its
-own container also isolates access: it has no egress, no volume and no secret.
+`coral` runs local children only when no `run_executor_address` is configured. The two never mix. Coral resolves every
+address behind that name, opens one link to each, and resolves again every 10 s. A local child runs as Coral's OS user
+with an empty environment, so it isolates resource use and failures, not access. A Run Executor in its own container
+also isolates access: it has no egress, no volume and no secret. A bridge reaches only its runtime.
 
 ## The shape
 
@@ -72,11 +73,11 @@ own container also isolates access: it has no egress, no volume and no secret.
   accepted wait.
 - **Resources.** The V8 heap limit per Run stays the graceful end: only that Run fails, with `memory_limit_exceeded`. An
   OS memory limit ends the whole Run Executor, and its Runs record Interrupted. The **Run CPU Budget** counts CPU time
-  on the Run's own thread. It defaults to the Run deadline, so it ends a Run only when an operator lowers it with
-  `execution_cpu_seconds`. A Run over it fails with `cpu_limit_exceeded`, and the Run Executor's other Runs go on. The
-  workspace forbids `unsafe` code, so a V8 interrupt every 100 ms reads the Run thread's own CPU clock. Windows has no
-  safe call for that clock, so Coral refuses `execution_cpu_seconds` there. A compile runs outside any budget, with its
-  own 2 s limit.
+  on the Run's own thread. It defaults to the Run's time limit, from its start to its deadline, so it ends a Run only
+  when an operator lowers it with `execution_cpu_seconds`. A Run over it fails with `cpu_limit_exceeded`, and the Run
+  Executor's other Runs go on. The workspace forbids `unsafe` code, so a V8 interrupt every 100 ms reads the Run
+  thread's own CPU clock. Windows has no safe call for that clock, so Coral refuses `execution_cpu_seconds` there. A
+  compile runs outside any budget, with its own 2 s limit.
 
 ## Authority
 
@@ -155,8 +156,9 @@ amends this ADR.
 ## Changes to ADR 0018
 
 - **Run Request**: "The Program shares the owner's fate" becomes "The Program ends when its owner ends".
-- **Recovery**: a recovered owner queues a Run that no Run Executor has accepted, instead of interrupting it. No Program
-  code has run, so nothing is resumed.
+- **Recovery**: a recovered owner queues a Run that no Run Executor has accepted, instead of interrupting it, unless a
+  termination is recorded or a cancellation waits in its Run Inbox. The Run has no deadline yet, and no Program code has
+  run, so nothing is resumed.
 - **Rollout**: at the start of the Shutdown Drain, a Coral Instance releases the leases of its waiting Runs.
 
 ## Consequences
@@ -172,7 +174,7 @@ amends this ADR.
   a busy Run Executor.
 - **The same Program can pass on one Run Executor and fail on another** whose limits are lower.
 - **On Windows, an operator cannot lower the Run CPU Budget.** Windows runs only Desktop, where the default applies.
-- **macOS has no Rust job in CI.** Its process-group and priority code shares the POSIX path that the Linux tests
+- **macOS has no Rust test job in CI.** Its process-group and priority code shares the POSIX path that the Linux tests
   cover.
 
 ## Rejected

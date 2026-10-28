@@ -791,10 +791,10 @@ process
 
 **Run Executor**: The runtime outside the Coral process that executes accepted Coral Program packages for their Run
 Owners, each in a fresh V8 isolate, and, when it runs locally or in its own container, compiles Programs with the
-Program Compiler. It is identified by a random id it generates each time it starts. It holds no secret, no database
-connection and no outbound network beyond its link to Coral and any remote runtime it drives, and reaches Coral only
-through Run Requests for the Runs Coral placed on it. Its isolates run in its own process, or on a remote runtime that
-it drives. _Avoid_: worker, runner, sandbox host, Execution Host
+Program Compiler. It is identified by a random id it generates each time it starts. It receives no secret and no
+database connection, and opens no connection except its link to Coral and any remote runtime it drives. It reaches Coral
+only over that link, where its only requests are Run Requests for the Runs Coral placed on it. Its isolates run in its
+own process, or on a remote runtime that it drives. _Avoid_: worker, runner, sandbox host, Execution Host
 
 **Run Owner**: The single writer of one Coral Program Run while the Run is not terminal. It exists from Run acceptance
 until the Run ends, receives every Run Request, Invocation outcome, deadline and wake-up for that Run in one order, and
@@ -805,8 +805,8 @@ Applied one. A repeat of the same Run Request receives the recorded answer. Outs
 Run Inbox. Workspace- and Provider-scoped changes reach it only as wake-ups. When a Run's worker lease lapses and no Run
 Owner renews it, Coral recreates its Run Owner. The recreated owner records any deadline that passed, applies the
 requests in the Run's Run Inbox, records the interruption or the termination already decided, and retires. A Run that no
-Run Executor has accepted goes back in a queue instead. Coral never resumes a Run. _Avoid_: Run actor, claim holder,
-lock holder, sweeper, external writer
+Run Executor has accepted, with nothing to record, goes back in a queue instead of being interrupted. Coral never
+resumes a Run. _Avoid_: Run actor, claim holder, lock holder, sweeper, external writer
 
 **Run Ledger**: The durable record of one Coral Program Run that its Run Owner appends to in chunks: the Program Run
 Events, the Run-scoped records they describe, and the Run's head. Every chunk advances the head by one and commits only
@@ -840,10 +840,10 @@ Program observes the refusal; a refused Invocation result ends that Invocation w
 that does not fit fails the Run. Tool arguments do not count. _Avoid_: approximate budget, soft limit, output
 quota, bounded overshoot
 
-**Run CPU Budget**: The CPU time that one Coral Program Run may use while its Program executes. Time spent waiting
-for a Tool, an approval or an answer from the Run Owner does not count. A Run that exceeds its budget fails, and the
-other Runs on its Run Executor go on. By default the budget equals the Run deadline, so only a lower budget set by the
-operator ends a Run before its deadline. _Avoid_: CPU timeout, CPU quota
+**Run CPU Budget**: The CPU time that one Coral Program Run may use while its Program executes. Time spent waiting for a
+Tool, an approval or an answer from the Run Owner does not count. A Run that exceeds its budget fails, and the other
+Runs on its Run Executor go on. By default the budget equals the Run's time limit, from its start to its deadline, so
+only a lower budget set by the operator ends a Run before its deadline. _Avoid_: CPU timeout, CPU quota
 
 **Program Emission**: A bounded, structured value that a Coral Program explicitly publishes during its Run. An Emission
 is durable caller-facing output, does not suspend execution, and remains observable if the Run later fails. _Avoid_:
